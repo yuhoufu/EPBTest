@@ -29,11 +29,11 @@
         private void InitializeComponent()
         {
             this.components = new System.ComponentModel.Container();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle6 = new System.Windows.Forms.DataGridViewCellStyle();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle7 = new System.Windows.Forms.DataGridViewCellStyle();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle8 = new System.Windows.Forms.DataGridViewCellStyle();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle9 = new System.Windows.Forms.DataGridViewCellStyle();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle10 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle1 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle2 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle3 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle4 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle5 = new System.Windows.Forms.DataGridViewCellStyle();
             this.uiStyleManager1 = new Sunny.UI.UIStyleManager(this.components);
             this.RadEmb1 = new Sunny.UI.UIRadioButton();
             this.LabEmb1 = new Sunny.UI.UILabel();
@@ -56,9 +56,10 @@
             this.zedGraphRealChart = new ZedGraph.ZedGraphControl();
             this.uiGroupAllControl = new Sunny.UI.UIGroupBox();
             this.uiTableLayoutPanel7 = new Sunny.UI.UITableLayoutPanel();
-            this.BtnAutoLearn = new Sunny.UI.UIButton();
             this.BtnStop = new Sunny.UI.UIButton();
             this.BtnStartTest = new Sunny.UI.UIButton();
+            this.BtnAutoLearn = new Sunny.UI.UIButton();
+            this.BtnPause = new Sunny.UI.UIButton();
             this.uiGroupInfo = new Sunny.UI.UIGroupBox();
             this.z = new Sunny.UI.UITableLayoutPanel();
             this.BtnRunLog = new Sunny.UI.UIButton();
@@ -80,7 +81,6 @@
             this.uiLabel2 = new Sunny.UI.UILabel();
             this.uiLabel3 = new Sunny.UI.UILabel();
             this.DiReadTimer = new System.Windows.Forms.Timer(this.components);
-            this.BtnPause = new Sunny.UI.UIButton();
             this.uiTableLayoutPanel2.SuspendLayout();
             this.uiGroupBox1.SuspendLayout();
             this.uiGroupAllControl.SuspendLayout();
@@ -101,11 +101,11 @@
             this.RadEmb1.Checked = true;
             this.RadEmb1.Cursor = System.Windows.Forms.Cursors.Hand;
             this.RadEmb1.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.RadEmb1.Location = new System.Drawing.Point(719, 107);
+            this.RadEmb1.Location = new System.Drawing.Point(659, 98);
             this.RadEmb1.MinimumSize = new System.Drawing.Size(1, 1);
             this.RadEmb1.Name = "RadEmb1";
             this.RadEmb1.RadioButtonSize = 32;
-            this.RadEmb1.Size = new System.Drawing.Size(44, 43);
+            this.RadEmb1.Size = new System.Drawing.Size(44, 39);
             this.RadEmb1.TabIndex = 10;
             this.RadEmb1.Text = "EMB1";
             this.RadEmb1.Visible = false;
@@ -114,9 +114,9 @@
             // 
             this.LabEmb1.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.LabEmb1.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.LabEmb1.Location = new System.Drawing.Point(769, 324);
+            this.LabEmb1.Location = new System.Drawing.Point(709, 296);
             this.LabEmb1.Name = "LabEmb1";
-            this.LabEmb1.Size = new System.Drawing.Size(7, 47);
+            this.LabEmb1.Size = new System.Drawing.Size(7, 45);
             this.LabEmb1.TabIndex = 11;
             this.LabEmb1.Text = "0";
             this.LabEmb1.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -128,15 +128,15 @@
             this.AlertEmb1.Dock = System.Windows.Forms.DockStyle.Fill;
             this.AlertEmb1.Font = new System.Drawing.Font("宋体", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
             this.AlertEmb1.Interval = 2000;
-            this.AlertEmb1.Location = new System.Drawing.Point(2095, 892);
-            this.AlertEmb1.Margin = new System.Windows.Forms.Padding(13, 3, 3, 3);
+            this.AlertEmb1.Location = new System.Drawing.Point(1935, 820);
+            this.AlertEmb1.Margin = new System.Windows.Forms.Padding(12, 3, 3, 3);
             this.AlertEmb1.MinimumSize = new System.Drawing.Size(1, 1);
             this.AlertEmb1.Name = "AlertEmb1";
             this.AlertEmb1.OffCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(140)))), ((int)(((byte)(140)))), ((int)(((byte)(140)))));
             this.AlertEmb1.OnCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
             this.AlertEmb1.Radius = 0;
             this.AlertEmb1.Shape = Sunny.UI.UIShape.Square;
-            this.AlertEmb1.Size = new System.Drawing.Size(69, 56);
+            this.AlertEmb1.Size = new System.Drawing.Size(63, 51);
             this.AlertEmb1.State = Sunny.UI.UILightState.Off;
             this.AlertEmb1.TabIndex = 12;
             this.AlertEmb1.Text = "uiLight1";
@@ -184,7 +184,7 @@
             this.uiTableLayoutPanel2.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 8F));
             this.uiTableLayoutPanel2.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 12F));
             this.uiTableLayoutPanel2.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 8.5F));
-            this.uiTableLayoutPanel2.Size = new System.Drawing.Size(779, 414);
+            this.uiTableLayoutPanel2.Size = new System.Drawing.Size(719, 378);
             this.uiTableLayoutPanel2.TabIndex = 1;
             this.uiTableLayoutPanel2.TagString = null;
             // 
@@ -195,13 +195,13 @@
             this.TxtTargetCycles.DoubleValue = 100000D;
             this.TxtTargetCycles.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.TxtTargetCycles.IntValue = 100000;
-            this.TxtTargetCycles.Location = new System.Drawing.Point(327, 247);
+            this.TxtTargetCycles.Location = new System.Drawing.Point(301, 226);
             this.TxtTargetCycles.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.TxtTargetCycles.MinimumSize = new System.Drawing.Size(1, 16);
             this.TxtTargetCycles.Name = "TxtTargetCycles";
             this.TxtTargetCycles.Padding = new System.Windows.Forms.Padding(5);
             this.TxtTargetCycles.ShowText = false;
-            this.TxtTargetCycles.Size = new System.Drawing.Size(166, 39);
+            this.TxtTargetCycles.Size = new System.Drawing.Size(147, 35);
             this.TxtTargetCycles.TabIndex = 44;
             this.TxtTargetCycles.Text = "100000";
             this.TxtTargetCycles.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
@@ -214,13 +214,13 @@
             this.TxtTestCycleTime.DoubleValue = 3D;
             this.TxtTestCycleTime.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.TxtTestCycleTime.IntValue = 3;
-            this.TxtTestCycleTime.Location = new System.Drawing.Point(327, 178);
+            this.TxtTestCycleTime.Location = new System.Drawing.Point(301, 163);
             this.TxtTestCycleTime.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.TxtTestCycleTime.MinimumSize = new System.Drawing.Size(1, 16);
             this.TxtTestCycleTime.Name = "TxtTestCycleTime";
             this.TxtTestCycleTime.Padding = new System.Windows.Forms.Padding(5);
             this.TxtTestCycleTime.ShowText = false;
-            this.TxtTestCycleTime.Size = new System.Drawing.Size(166, 39);
+            this.TxtTestCycleTime.Size = new System.Drawing.Size(147, 35);
             this.TxtTestCycleTime.TabIndex = 44;
             this.TxtTestCycleTime.Text = "3";
             this.TxtTestCycleTime.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
@@ -232,9 +232,9 @@
             this.uiLabel7.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiLabel7.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiLabel7.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel7.Location = new System.Drawing.Point(14, 35);
+            this.uiLabel7.Location = new System.Drawing.Point(13, 32);
             this.uiLabel7.Name = "uiLabel7";
-            this.uiLabel7.Size = new System.Drawing.Size(306, 49);
+            this.uiLabel7.Size = new System.Drawing.Size(281, 45);
             this.uiLabel7.TabIndex = 33;
             this.uiLabel7.TagString = "试验名称";
             this.uiLabel7.Text = "试验名称";
@@ -246,9 +246,9 @@
             this.uiLabel9.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiLabel9.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiLabel9.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel9.Location = new System.Drawing.Point(14, 173);
+            this.uiLabel9.Location = new System.Drawing.Point(13, 158);
             this.uiLabel9.Name = "uiLabel9";
-            this.uiLabel9.Size = new System.Drawing.Size(306, 49);
+            this.uiLabel9.Size = new System.Drawing.Size(281, 45);
             this.uiLabel9.TabIndex = 35;
             this.uiLabel9.Text = "频   率";
             this.uiLabel9.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -259,9 +259,9 @@
             this.uiLabel10.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiLabel10.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiLabel10.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel10.Location = new System.Drawing.Point(14, 242);
+            this.uiLabel10.Location = new System.Drawing.Point(13, 221);
             this.uiLabel10.Name = "uiLabel10";
-            this.uiLabel10.Size = new System.Drawing.Size(306, 49);
+            this.uiLabel10.Size = new System.Drawing.Size(281, 45);
             this.uiLabel10.TabIndex = 36;
             this.uiLabel10.Text = "目标次数";
             this.uiLabel10.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -272,13 +272,13 @@
             this.TxtTestName.Cursor = System.Windows.Forms.Cursors.IBeam;
             this.TxtTestName.Dock = System.Windows.Forms.DockStyle.Fill;
             this.TxtTestName.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.TxtTestName.Location = new System.Drawing.Point(327, 40);
+            this.TxtTestName.Location = new System.Drawing.Point(301, 37);
             this.TxtTestName.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.TxtTestName.MinimumSize = new System.Drawing.Size(1, 16);
             this.TxtTestName.Name = "TxtTestName";
             this.TxtTestName.Padding = new System.Windows.Forms.Padding(5);
             this.TxtTestName.ShowText = false;
-            this.TxtTestName.Size = new System.Drawing.Size(385, 39);
+            this.TxtTestName.Size = new System.Drawing.Size(351, 35);
             this.TxtTestName.TabIndex = 43;
             this.TxtTestName.Text = "Long Time1";
             this.TxtTestName.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
@@ -290,9 +290,9 @@
             this.uiLabel8.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiLabel8.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiLabel8.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel8.Location = new System.Drawing.Point(14, 104);
+            this.uiLabel8.Location = new System.Drawing.Point(13, 95);
             this.uiLabel8.Name = "uiLabel8";
-            this.uiLabel8.Size = new System.Drawing.Size(306, 49);
+            this.uiLabel8.Size = new System.Drawing.Size(281, 45);
             this.uiLabel8.TabIndex = 45;
             this.uiLabel8.Text = "试验标准";
             this.uiLabel8.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -303,13 +303,13 @@
             this.TxtTestStandard.Cursor = System.Windows.Forms.Cursors.IBeam;
             this.TxtTestStandard.Dock = System.Windows.Forms.DockStyle.Fill;
             this.TxtTestStandard.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.TxtTestStandard.Location = new System.Drawing.Point(327, 109);
+            this.TxtTestStandard.Location = new System.Drawing.Point(301, 100);
             this.TxtTestStandard.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.TxtTestStandard.MinimumSize = new System.Drawing.Size(1, 16);
             this.TxtTestStandard.Name = "TxtTestStandard";
             this.TxtTestStandard.Padding = new System.Windows.Forms.Padding(5);
             this.TxtTestStandard.ShowText = false;
-            this.TxtTestStandard.Size = new System.Drawing.Size(385, 39);
+            this.TxtTestStandard.Size = new System.Drawing.Size(351, 35);
             this.TxtTestStandard.TabIndex = 46;
             this.TxtTestStandard.Text = "QRYM-2022 ";
             this.TxtTestStandard.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
@@ -320,9 +320,9 @@
             this.uiLabel11.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiLabel11.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiLabel11.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel11.Location = new System.Drawing.Point(500, 173);
+            this.uiLabel11.Location = new System.Drawing.Point(455, 158);
             this.uiLabel11.Name = "uiLabel11";
-            this.uiLabel11.Size = new System.Drawing.Size(74, 49);
+            this.uiLabel11.Size = new System.Drawing.Size(74, 45);
             this.uiLabel11.TabIndex = 48;
             this.uiLabel11.Text = "Hz";
             this.uiLabel11.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -334,10 +334,10 @@
             this.ChkEmb1.Cursor = System.Windows.Forms.Cursors.Hand;
             this.ChkEmb1.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.ChkEmb1.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.ChkEmb1.Location = new System.Drawing.Point(719, 38);
+            this.ChkEmb1.Location = new System.Drawing.Point(659, 35);
             this.ChkEmb1.MinimumSize = new System.Drawing.Size(1, 1);
             this.ChkEmb1.Name = "ChkEmb1";
-            this.ChkEmb1.Size = new System.Drawing.Size(44, 41);
+            this.ChkEmb1.Size = new System.Drawing.Size(44, 39);
             this.ChkEmb1.TabIndex = 37;
             this.ChkEmb1.Text = "EMB1";
             this.ChkEmb1.Visible = false;
@@ -348,12 +348,12 @@
             this.BtnCancel.Dock = System.Windows.Forms.DockStyle.Fill;
             this.BtnCancel.FillDisableColor = System.Drawing.Color.FromArgb(((int)(((byte)(115)))), ((int)(((byte)(179)))), ((int)(((byte)(255)))));
             this.BtnCancel.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.BtnCancel.Location = new System.Drawing.Point(41, 327);
+            this.BtnCancel.Location = new System.Drawing.Point(40, 299);
             this.BtnCancel.Margin = new System.Windows.Forms.Padding(30, 3, 3, 3);
             this.BtnCancel.MinimumSize = new System.Drawing.Size(1, 1);
             this.BtnCancel.Name = "BtnCancel";
             this.BtnCancel.RectDisableColor = System.Drawing.Color.LightBlue;
-            this.BtnCancel.Size = new System.Drawing.Size(199, 43);
+            this.BtnCancel.Size = new System.Drawing.Size(174, 39);
             this.BtnCancel.TabIndex = 50;
             this.BtnCancel.Text = "取消";
             this.BtnCancel.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
@@ -365,11 +365,11 @@
             this.BtnApply.Cursor = System.Windows.Forms.Cursors.Hand;
             this.BtnApply.Dock = System.Windows.Forms.DockStyle.Fill;
             this.BtnApply.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.BtnApply.Location = new System.Drawing.Point(580, 327);
+            this.BtnApply.Location = new System.Drawing.Point(535, 299);
             this.BtnApply.Margin = new System.Windows.Forms.Padding(3, 3, 30, 3);
             this.BtnApply.MinimumSize = new System.Drawing.Size(1, 1);
             this.BtnApply.Name = "BtnApply";
-            this.BtnApply.Size = new System.Drawing.Size(156, 43);
+            this.BtnApply.Size = new System.Drawing.Size(141, 39);
             this.BtnApply.TabIndex = 49;
             this.BtnApply.Text = "确认";
             this.BtnApply.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
@@ -381,11 +381,11 @@
             this.BtnSettingDetail.Cursor = System.Windows.Forms.Cursors.Hand;
             this.BtnSettingDetail.FillDisableColor = System.Drawing.Color.FromArgb(((int)(((byte)(115)))), ((int)(((byte)(179)))), ((int)(((byte)(255)))));
             this.BtnSettingDetail.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.BtnSettingDetail.Location = new System.Drawing.Point(326, 327);
+            this.BtnSettingDetail.Location = new System.Drawing.Point(300, 299);
             this.BtnSettingDetail.MinimumSize = new System.Drawing.Size(1, 1);
             this.BtnSettingDetail.Name = "BtnSettingDetail";
             this.BtnSettingDetail.RectDisableColor = System.Drawing.Color.LightBlue;
-            this.BtnSettingDetail.Size = new System.Drawing.Size(167, 43);
+            this.BtnSettingDetail.Size = new System.Drawing.Size(167, 39);
             this.BtnSettingDetail.TabIndex = 47;
             this.BtnSettingDetail.Text = "详细";
             this.BtnSettingDetail.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
@@ -397,13 +397,13 @@
             this.uiGroupBox1.Controls.Add(this.uiTableLayoutPanel2);
             this.uiGroupBox1.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiGroupBox1.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.uiGroupBox1.Location = new System.Drawing.Point(24, 25);
+            this.uiGroupBox1.Location = new System.Drawing.Point(22, 23);
             this.uiGroupBox1.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.uiGroupBox1.MinimumSize = new System.Drawing.Size(1, 1);
             this.uiGroupBox1.Name = "uiGroupBox1";
             this.uiGroupBox1.Padding = new System.Windows.Forms.Padding(0, 32, 0, 0);
             this.uiTableLayoutPanelMain.SetRowSpan(this.uiGroupBox1, 4);
-            this.uiGroupBox1.Size = new System.Drawing.Size(779, 446);
+            this.uiGroupBox1.Size = new System.Drawing.Size(719, 410);
             this.uiGroupBox1.TabIndex = 2;
             this.uiGroupBox1.Text = "试验设置";
             this.uiGroupBox1.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
@@ -424,7 +424,7 @@
             this.zedGraphRealChart.ScrollMinX = 0D;
             this.zedGraphRealChart.ScrollMinY = 0D;
             this.zedGraphRealChart.ScrollMinY2 = 0D;
-            this.zedGraphRealChart.Size = new System.Drawing.Size(1276, 472);
+            this.zedGraphRealChart.Size = new System.Drawing.Size(1174, 428);
             this.zedGraphRealChart.TabIndex = 4;
             this.zedGraphRealChart.UseExtendedPrintDialog = true;
             this.zedGraphRealChart.ContextMenuBuilder += new ZedGraph.ZedGraphControl.ContextMenuBuilderEventHandler(this.zedGraphRealChart_ContextMenuBuilder);
@@ -435,12 +435,12 @@
             this.uiGroupAllControl.Controls.Add(this.uiTableLayoutPanel7);
             this.uiGroupAllControl.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiGroupAllControl.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiGroupAllControl.Location = new System.Drawing.Point(831, 976);
+            this.uiGroupAllControl.Location = new System.Drawing.Point(767, 897);
             this.uiGroupAllControl.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.uiGroupAllControl.MinimumSize = new System.Drawing.Size(1, 1);
             this.uiGroupAllControl.Name = "uiGroupAllControl";
             this.uiGroupAllControl.Padding = new System.Windows.Forms.Padding(0, 32, 0, 0);
-            this.uiGroupAllControl.Size = new System.Drawing.Size(1332, 94);
+            this.uiGroupAllControl.Size = new System.Drawing.Size(1230, 86);
             this.uiGroupAllControl.TabIndex = 6;
             this.uiGroupAllControl.Text = null;
             this.uiGroupAllControl.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
@@ -471,26 +471,9 @@
             this.uiTableLayoutPanel7.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 10F));
             this.uiTableLayoutPanel7.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 75F));
             this.uiTableLayoutPanel7.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 15F));
-            this.uiTableLayoutPanel7.Size = new System.Drawing.Size(1332, 62);
+            this.uiTableLayoutPanel7.Size = new System.Drawing.Size(1230, 54);
             this.uiTableLayoutPanel7.TabIndex = 35;
             this.uiTableLayoutPanel7.TagString = null;
-            // 
-            // BtnAutoLearn
-            // 
-            this.BtnAutoLearn.Cursor = System.Windows.Forms.Cursors.Hand;
-            this.BtnAutoLearn.FillDisableColor = System.Drawing.Color.FromArgb(((int)(((byte)(115)))), ((int)(((byte)(179)))), ((int)(((byte)(255)))));
-            this.BtnAutoLearn.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.BtnAutoLearn.Location = new System.Drawing.Point(229, 9);
-            this.BtnAutoLearn.MinimumSize = new System.Drawing.Size(1, 1);
-            this.BtnAutoLearn.Name = "BtnAutoLearn";
-            this.BtnAutoLearn.Radius = 1;
-            this.BtnAutoLearn.RectDisableColor = System.Drawing.Color.LightBlue;
-            this.BtnAutoLearn.Size = new System.Drawing.Size(200, 40);
-            this.BtnAutoLearn.TabIndex = 52;
-            this.BtnAutoLearn.Text = "自学习";
-            this.BtnAutoLearn.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.BtnAutoLearn.Visible = false;
-            this.BtnAutoLearn.Click += new System.EventHandler(this.BtnAutoLearn_Click);
             // 
             // BtnStop
             // 
@@ -501,14 +484,14 @@
             this.BtnStop.FillPressColor = System.Drawing.Color.Red;
             this.BtnStop.FillSelectedColor = System.Drawing.Color.Red;
             this.BtnStop.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.BtnStop.Location = new System.Drawing.Point(1105, 9);
+            this.BtnStop.Location = new System.Drawing.Point(1021, 8);
             this.BtnStop.MinimumSize = new System.Drawing.Size(1, 1);
             this.BtnStop.Name = "BtnStop";
             this.BtnStop.RectColor = System.Drawing.Color.Red;
             this.BtnStop.RectHoverColor = System.Drawing.Color.Red;
             this.BtnStop.RectPressColor = System.Drawing.Color.Red;
             this.BtnStop.RectSelectedColor = System.Drawing.Color.Red;
-            this.BtnStop.Size = new System.Drawing.Size(200, 40);
+            this.BtnStop.Size = new System.Drawing.Size(184, 34);
             this.BtnStop.TabIndex = 49;
             this.BtnStop.Text = "停止试验";
             this.BtnStop.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
@@ -520,28 +503,62 @@
             this.BtnStartTest.Dock = System.Windows.Forms.DockStyle.Fill;
             this.BtnStartTest.FillDisableColor = System.Drawing.Color.FromArgb(((int)(((byte)(115)))), ((int)(((byte)(179)))), ((int)(((byte)(255)))));
             this.BtnStartTest.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.BtnStartTest.Location = new System.Drawing.Point(564, 9);
+            this.BtnStartTest.Location = new System.Drawing.Point(522, 8);
             this.BtnStartTest.MinimumSize = new System.Drawing.Size(1, 1);
             this.BtnStartTest.Name = "BtnStartTest";
             this.BtnStartTest.RectDisableColor = System.Drawing.Color.LightBlue;
-            this.BtnStartTest.Size = new System.Drawing.Size(200, 40);
+            this.BtnStartTest.Size = new System.Drawing.Size(184, 34);
             this.BtnStartTest.TabIndex = 50;
             this.BtnStartTest.Text = "开始试验";
             this.BtnStartTest.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
             this.BtnStartTest.Click += new System.EventHandler(this.BtnStartTest_Click);
+            // 
+            // BtnAutoLearn
+            // 
+            this.BtnAutoLearn.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.BtnAutoLearn.FillDisableColor = System.Drawing.Color.FromArgb(((int)(((byte)(115)))), ((int)(((byte)(179)))), ((int)(((byte)(255)))));
+            this.BtnAutoLearn.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.BtnAutoLearn.Location = new System.Drawing.Point(213, 8);
+            this.BtnAutoLearn.MinimumSize = new System.Drawing.Size(1, 1);
+            this.BtnAutoLearn.Name = "BtnAutoLearn";
+            this.BtnAutoLearn.Radius = 1;
+            this.BtnAutoLearn.RectDisableColor = System.Drawing.Color.LightBlue;
+            this.BtnAutoLearn.Size = new System.Drawing.Size(200, 34);
+            this.BtnAutoLearn.TabIndex = 52;
+            this.BtnAutoLearn.Text = "自学习";
+            this.BtnAutoLearn.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.BtnAutoLearn.Visible = false;
+            this.BtnAutoLearn.Click += new System.EventHandler(this.BtnAutoLearn_Click);
+            // 
+            // BtnPause
+            // 
+            this.BtnPause.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.BtnPause.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.BtnPause.FillDisableColor = System.Drawing.Color.FromArgb(((int)(((byte)(115)))), ((int)(((byte)(179)))), ((int)(((byte)(255)))));
+            this.BtnPause.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.BtnPause.Location = new System.Drawing.Point(23, 8);
+            this.BtnPause.MinimumSize = new System.Drawing.Size(1, 1);
+            this.BtnPause.Name = "BtnPause";
+            this.BtnPause.Radius = 1;
+            this.BtnPause.RectDisableColor = System.Drawing.Color.LightBlue;
+            this.BtnPause.Size = new System.Drawing.Size(184, 34);
+            this.BtnPause.TabIndex = 53;
+            this.BtnPause.Text = "暂停";
+            this.BtnPause.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.BtnPause.Click += new System.EventHandler(this.BtnPause_Click);
             // 
             // uiGroupInfo
             // 
             this.uiGroupInfo.Controls.Add(this.z);
             this.uiGroupInfo.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiGroupInfo.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.uiGroupInfo.Location = new System.Drawing.Point(24, 481);
+            this.uiGroupInfo.Location = new System.Drawing.Point(22, 443);
             this.uiGroupInfo.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.uiGroupInfo.MinimumSize = new System.Drawing.Size(1, 1);
             this.uiGroupInfo.Name = "uiGroupInfo";
             this.uiGroupInfo.Padding = new System.Windows.Forms.Padding(0, 32, 0, 0);
             this.uiTableLayoutPanelMain.SetRowSpan(this.uiGroupInfo, 10);
-            this.uiGroupInfo.Size = new System.Drawing.Size(779, 589);
+            this.uiGroupInfo.Size = new System.Drawing.Size(719, 540);
             this.uiGroupInfo.TabIndex = 7;
             this.uiGroupInfo.Text = "信息";
             this.uiGroupInfo.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
@@ -567,7 +584,7 @@
             this.z.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 20F));
             this.z.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 9F));
             this.z.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 20F));
-            this.z.Size = new System.Drawing.Size(779, 557);
+            this.z.Size = new System.Drawing.Size(719, 508);
             this.z.TabIndex = 37;
             this.z.TagString = null;
             // 
@@ -576,11 +593,11 @@
             this.BtnRunLog.Cursor = System.Windows.Forms.Cursors.Hand;
             this.BtnRunLog.Dock = System.Windows.Forms.DockStyle.Fill;
             this.BtnRunLog.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.BtnRunLog.Location = new System.Drawing.Point(23, 494);
+            this.BtnRunLog.Location = new System.Drawing.Point(23, 449);
             this.BtnRunLog.MinimumSize = new System.Drawing.Size(1, 1);
             this.BtnRunLog.Name = "BtnRunLog";
             this.BtnRunLog.Radius = 4;
-            this.BtnRunLog.Size = new System.Drawing.Size(215, 39);
+            this.BtnRunLog.Size = new System.Drawing.Size(197, 35);
             this.BtnRunLog.TabIndex = 52;
             this.BtnRunLog.Text = "运行日志";
             this.BtnRunLog.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
@@ -599,7 +616,7 @@
             this.RtbInfo.Padding = new System.Windows.Forms.Padding(2);
             this.RtbInfo.Radius = 1;
             this.RtbInfo.ShowText = false;
-            this.RtbInfo.Size = new System.Drawing.Size(729, 451);
+            this.RtbInfo.Size = new System.Drawing.Size(669, 406);
             this.RtbInfo.TabIndex = 0;
             this.RtbInfo.TextAlignment = System.Drawing.ContentAlignment.MiddleCenter;
             // 
@@ -608,11 +625,11 @@
             this.BtnErrorLog.Cursor = System.Windows.Forms.Cursors.Hand;
             this.BtnErrorLog.Dock = System.Windows.Forms.DockStyle.Fill;
             this.BtnErrorLog.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.BtnErrorLog.Location = new System.Drawing.Point(539, 494);
+            this.BtnErrorLog.Location = new System.Drawing.Point(497, 449);
             this.BtnErrorLog.MinimumSize = new System.Drawing.Size(1, 1);
             this.BtnErrorLog.Name = "BtnErrorLog";
             this.BtnErrorLog.Radius = 4;
-            this.BtnErrorLog.Size = new System.Drawing.Size(215, 39);
+            this.BtnErrorLog.Size = new System.Drawing.Size(197, 35);
             this.BtnErrorLog.TabIndex = 53;
             this.BtnErrorLog.Text = "错误日志";
             this.BtnErrorLog.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
@@ -622,52 +639,52 @@
             // 
             this.dgvRealData.AllowUserToAddRows = false;
             this.dgvRealData.AllowUserToDeleteRows = false;
-            dataGridViewCellStyle6.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
-            dataGridViewCellStyle6.BackColor = System.Drawing.Color.WhiteSmoke;
-            dataGridViewCellStyle6.Font = new System.Drawing.Font("Arial Narrow", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.dgvRealData.AlternatingRowsDefaultCellStyle = dataGridViewCellStyle6;
+            dataGridViewCellStyle1.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+            dataGridViewCellStyle1.BackColor = System.Drawing.Color.WhiteSmoke;
+            dataGridViewCellStyle1.Font = new System.Drawing.Font("Arial Narrow", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.dgvRealData.AlternatingRowsDefaultCellStyle = dataGridViewCellStyle1;
             this.dgvRealData.BackgroundColor = System.Drawing.Color.White;
             this.dgvRealData.ColumnHeadersBorderStyle = System.Windows.Forms.DataGridViewHeaderBorderStyle.Single;
-            dataGridViewCellStyle7.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
-            dataGridViewCellStyle7.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            dataGridViewCellStyle7.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            dataGridViewCellStyle7.ForeColor = System.Drawing.Color.White;
-            dataGridViewCellStyle7.SelectionBackColor = System.Drawing.SystemColors.Highlight;
-            dataGridViewCellStyle7.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
-            dataGridViewCellStyle7.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
-            this.dgvRealData.ColumnHeadersDefaultCellStyle = dataGridViewCellStyle7;
+            dataGridViewCellStyle2.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+            dataGridViewCellStyle2.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            dataGridViewCellStyle2.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            dataGridViewCellStyle2.ForeColor = System.Drawing.Color.White;
+            dataGridViewCellStyle2.SelectionBackColor = System.Drawing.SystemColors.Highlight;
+            dataGridViewCellStyle2.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
+            dataGridViewCellStyle2.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
+            this.dgvRealData.ColumnHeadersDefaultCellStyle = dataGridViewCellStyle2;
             this.dgvRealData.ColumnHeadersHeight = 35;
-            dataGridViewCellStyle8.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleLeft;
-            dataGridViewCellStyle8.BackColor = System.Drawing.SystemColors.Window;
-            dataGridViewCellStyle8.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            dataGridViewCellStyle8.ForeColor = System.Drawing.SystemColors.ControlText;
-            dataGridViewCellStyle8.SelectionBackColor = System.Drawing.SystemColors.Highlight;
-            dataGridViewCellStyle8.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
-            dataGridViewCellStyle8.WrapMode = System.Windows.Forms.DataGridViewTriState.False;
-            this.dgvRealData.DefaultCellStyle = dataGridViewCellStyle8;
+            dataGridViewCellStyle3.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleLeft;
+            dataGridViewCellStyle3.BackColor = System.Drawing.SystemColors.Window;
+            dataGridViewCellStyle3.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            dataGridViewCellStyle3.ForeColor = System.Drawing.SystemColors.ControlText;
+            dataGridViewCellStyle3.SelectionBackColor = System.Drawing.SystemColors.Highlight;
+            dataGridViewCellStyle3.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
+            dataGridViewCellStyle3.WrapMode = System.Windows.Forms.DataGridViewTriState.False;
+            this.dgvRealData.DefaultCellStyle = dataGridViewCellStyle3;
             this.dgvRealData.Dock = System.Windows.Forms.DockStyle.Fill;
             this.dgvRealData.EnableHeadersVisualStyles = false;
             this.dgvRealData.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
             this.dgvRealData.GridColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            this.dgvRealData.Location = new System.Drawing.Point(830, 583);
+            this.dgvRealData.Location = new System.Drawing.Point(766, 537);
             this.dgvRealData.Name = "dgvRealData";
-            dataGridViewCellStyle9.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
-            dataGridViewCellStyle9.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(235)))), ((int)(((byte)(243)))), ((int)(((byte)(255)))));
-            dataGridViewCellStyle9.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            dataGridViewCellStyle9.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            dataGridViewCellStyle9.SelectionBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            dataGridViewCellStyle9.SelectionForeColor = System.Drawing.Color.White;
-            dataGridViewCellStyle9.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
-            this.dgvRealData.RowHeadersDefaultCellStyle = dataGridViewCellStyle9;
+            dataGridViewCellStyle4.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+            dataGridViewCellStyle4.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(235)))), ((int)(((byte)(243)))), ((int)(((byte)(255)))));
+            dataGridViewCellStyle4.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            dataGridViewCellStyle4.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            dataGridViewCellStyle4.SelectionBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            dataGridViewCellStyle4.SelectionForeColor = System.Drawing.Color.White;
+            dataGridViewCellStyle4.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
+            this.dgvRealData.RowHeadersDefaultCellStyle = dataGridViewCellStyle4;
             this.dgvRealData.RowHeadersWidth = 30;
-            dataGridViewCellStyle10.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
-            dataGridViewCellStyle10.BackColor = System.Drawing.Color.Lavender;
-            dataGridViewCellStyle10.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.dgvRealData.RowsDefaultCellStyle = dataGridViewCellStyle10;
+            dataGridViewCellStyle5.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+            dataGridViewCellStyle5.BackColor = System.Drawing.Color.Lavender;
+            dataGridViewCellStyle5.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.dgvRealData.RowsDefaultCellStyle = dataGridViewCellStyle5;
             this.uiTableLayoutPanelMain.SetRowSpan(this.dgvRealData, 5);
             this.dgvRealData.RowTemplate.Height = 35;
             this.dgvRealData.SelectedIndex = -1;
-            this.dgvRealData.Size = new System.Drawing.Size(739, 272);
+            this.dgvRealData.Size = new System.Drawing.Size(682, 249);
             this.dgvRealData.StripeEvenColor = System.Drawing.Color.Lavender;
             this.dgvRealData.StripeOddColor = System.Drawing.Color.WhiteSmoke;
             this.dgvRealData.TabIndex = 0;
@@ -679,13 +696,13 @@
             this.uiGroupCurve.Controls.Add(this.uiTableLayoutPanel6);
             this.uiGroupCurve.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiGroupCurve.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiGroupCurve.Location = new System.Drawing.Point(831, 25);
+            this.uiGroupCurve.Location = new System.Drawing.Point(767, 23);
             this.uiGroupCurve.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.uiGroupCurve.MinimumSize = new System.Drawing.Size(1, 1);
             this.uiGroupCurve.Name = "uiGroupCurve";
             this.uiGroupCurve.Padding = new System.Windows.Forms.Padding(0, 32, 0, 0);
             this.uiTableLayoutPanelMain.SetRowSpan(this.uiGroupCurve, 5);
-            this.uiGroupCurve.Size = new System.Drawing.Size(1332, 550);
+            this.uiGroupCurve.Size = new System.Drawing.Size(1230, 506);
             this.uiGroupCurve.TabIndex = 36;
             this.uiGroupCurve.Text = null;
             this.uiGroupCurve.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
@@ -705,7 +722,7 @@
             this.uiTableLayoutPanel6.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 10F));
             this.uiTableLayoutPanel6.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100F));
             this.uiTableLayoutPanel6.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 20F));
-            this.uiTableLayoutPanel6.Size = new System.Drawing.Size(1332, 518);
+            this.uiTableLayoutPanel6.Size = new System.Drawing.Size(1230, 474);
             this.uiTableLayoutPanel6.TabIndex = 36;
             this.uiTableLayoutPanel6.TagString = null;
             // 
@@ -722,9 +739,9 @@
             this.LedRunTime.IntervalIn = 2;
             this.LedRunTime.IntervalV = 2;
             this.LedRunTime.LedBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
-            this.LedRunTime.Location = new System.Drawing.Point(12, 6);
+            this.LedRunTime.Location = new System.Drawing.Point(11, 6);
             this.LedRunTime.Name = "LedRunTime";
-            this.LedRunTime.Size = new System.Drawing.Size(437, 53);
+            this.LedRunTime.Size = new System.Drawing.Size(402, 48);
             this.LedRunTime.TabIndex = 0;
             this.LedRunTime.Text = "00D 00H 00M";
             // 
@@ -738,13 +755,13 @@
             this.uiTableLayoutPanel4.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
             this.uiTableLayoutPanel4.Controls.Add(this.LedRunTime, 1, 1);
             this.uiTableLayoutPanel4.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel4.Location = new System.Drawing.Point(1702, 583);
+            this.uiTableLayoutPanel4.Location = new System.Drawing.Point(1572, 537);
             this.uiTableLayoutPanel4.Name = "uiTableLayoutPanel4";
             this.uiTableLayoutPanel4.RowCount = 3;
             this.uiTableLayoutPanel4.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
             this.uiTableLayoutPanel4.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 90F));
             this.uiTableLayoutPanel4.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
-            this.uiTableLayoutPanel4.Size = new System.Drawing.Size(462, 66);
+            this.uiTableLayoutPanel4.Size = new System.Drawing.Size(426, 61);
             this.uiTableLayoutPanel4.TabIndex = 37;
             this.uiTableLayoutPanel4.TagString = null;
             // 
@@ -758,13 +775,13 @@
             this.uiTableLayoutPanel9.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
             this.uiTableLayoutPanel9.Controls.Add(this.LedRunCycles, 1, 1);
             this.uiTableLayoutPanel9.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel9.Location = new System.Drawing.Point(1702, 685);
+            this.uiTableLayoutPanel9.Location = new System.Drawing.Point(1572, 631);
             this.uiTableLayoutPanel9.Name = "uiTableLayoutPanel9";
             this.uiTableLayoutPanel9.RowCount = 3;
             this.uiTableLayoutPanel9.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
             this.uiTableLayoutPanel9.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 90F));
             this.uiTableLayoutPanel9.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
-            this.uiTableLayoutPanel9.Size = new System.Drawing.Size(462, 67);
+            this.uiTableLayoutPanel9.Size = new System.Drawing.Size(426, 61);
             this.uiTableLayoutPanel9.TabIndex = 38;
             this.uiTableLayoutPanel9.TagString = null;
             // 
@@ -781,9 +798,9 @@
             this.LedRunCycles.IntervalIn = 2;
             this.LedRunCycles.IntervalV = 2;
             this.LedRunCycles.LedBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
-            this.LedRunCycles.Location = new System.Drawing.Point(12, 6);
+            this.LedRunCycles.Location = new System.Drawing.Point(11, 6);
             this.LedRunCycles.Name = "LedRunCycles";
-            this.LedRunCycles.Size = new System.Drawing.Size(437, 54);
+            this.LedRunCycles.Size = new System.Drawing.Size(402, 48);
             this.LedRunCycles.TabIndex = 0;
             this.LedRunCycles.Text = "0";
             // 
@@ -797,13 +814,13 @@
             this.uiTableLayoutPanel10.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
             this.uiTableLayoutPanel10.Controls.Add(this.LedLastCycles, 1, 1);
             this.uiTableLayoutPanel10.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel10.Location = new System.Drawing.Point(1702, 787);
+            this.uiTableLayoutPanel10.Location = new System.Drawing.Point(1572, 724);
             this.uiTableLayoutPanel10.Name = "uiTableLayoutPanel10";
             this.uiTableLayoutPanel10.RowCount = 3;
             this.uiTableLayoutPanel10.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
             this.uiTableLayoutPanel10.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 90F));
             this.uiTableLayoutPanel10.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
-            this.uiTableLayoutPanel10.Size = new System.Drawing.Size(462, 68);
+            this.uiTableLayoutPanel10.Size = new System.Drawing.Size(426, 62);
             this.uiTableLayoutPanel10.TabIndex = 39;
             this.uiTableLayoutPanel10.TagString = null;
             // 
@@ -820,9 +837,9 @@
             this.LedLastCycles.IntervalIn = 2;
             this.LedLastCycles.IntervalV = 2;
             this.LedLastCycles.LedBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
-            this.LedLastCycles.Location = new System.Drawing.Point(12, 6);
+            this.LedLastCycles.Location = new System.Drawing.Point(11, 6);
             this.LedLastCycles.Name = "LedLastCycles";
-            this.LedLastCycles.Size = new System.Drawing.Size(437, 55);
+            this.LedLastCycles.Size = new System.Drawing.Size(402, 49);
             this.LedLastCycles.TabIndex = 0;
             this.LedLastCycles.Text = "1000000";
             // 
@@ -832,10 +849,10 @@
             this.ProcBar.Dock = System.Windows.Forms.DockStyle.Fill;
             this.ProcBar.FillColor = System.Drawing.Color.FromArgb(((int)(((byte)(235)))), ((int)(((byte)(243)))), ((int)(((byte)(255)))));
             this.ProcBar.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.ProcBar.Location = new System.Drawing.Point(830, 892);
+            this.ProcBar.Location = new System.Drawing.Point(766, 820);
             this.ProcBar.MinimumSize = new System.Drawing.Size(3, 3);
             this.ProcBar.Name = "ProcBar";
-            this.ProcBar.Size = new System.Drawing.Size(1249, 56);
+            this.ProcBar.Size = new System.Drawing.Size(1154, 51);
             this.ProcBar.Style = Sunny.UI.UIStyle.Custom;
             this.ProcBar.TabIndex = 41;
             this.ProcBar.Text = "uiProcessBar1";
@@ -848,14 +865,14 @@
             // uiTableLayoutPanelMain
             // 
             this.uiTableLayoutPanelMain.ColumnCount = 8;
-            this.uiTableLayoutPanelMain.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanelMain.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 18F));
             this.uiTableLayoutPanelMain.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 37F));
-            this.uiTableLayoutPanelMain.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanelMain.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 18F));
             this.uiTableLayoutPanelMain.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 35F));
             this.uiTableLayoutPanelMain.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 6F));
             this.uiTableLayoutPanelMain.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 18F));
             this.uiTableLayoutPanelMain.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 4F));
-            this.uiTableLayoutPanelMain.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanelMain.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 18F));
             this.uiTableLayoutPanelMain.Controls.Add(this.uiTableLayoutPanel9, 5, 8);
             this.uiTableLayoutPanelMain.Controls.Add(this.dgvRealData, 3, 6);
             this.uiTableLayoutPanelMain.Controls.Add(this.uiGroupAllControl, 3, 14);
@@ -873,7 +890,7 @@
             this.uiTableLayoutPanelMain.Location = new System.Drawing.Point(0, 0);
             this.uiTableLayoutPanelMain.Name = "uiTableLayoutPanelMain";
             this.uiTableLayoutPanelMain.RowCount = 16;
-            this.uiTableLayoutPanelMain.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanelMain.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 18F));
             this.uiTableLayoutPanelMain.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 11.01064F));
             this.uiTableLayoutPanelMain.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 11.01064F));
             this.uiTableLayoutPanelMain.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 11.01064F));
@@ -886,10 +903,10 @@
             this.uiTableLayoutPanelMain.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 7.156673F));
             this.uiTableLayoutPanelMain.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 3.002901F));
             this.uiTableLayoutPanelMain.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 6.005803F));
-            this.uiTableLayoutPanelMain.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanelMain.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 18F));
             this.uiTableLayoutPanelMain.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 10.00967F));
-            this.uiTableLayoutPanelMain.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 10F));
-            this.uiTableLayoutPanelMain.Size = new System.Drawing.Size(2189, 1091);
+            this.uiTableLayoutPanelMain.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 9F));
+            this.uiTableLayoutPanelMain.Size = new System.Drawing.Size(2021, 1007);
             this.uiTableLayoutPanelMain.TabIndex = 42;
             this.uiTableLayoutPanelMain.TagString = null;
             // 
@@ -898,9 +915,9 @@
             this.uiLabel1.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiLabel1.Font = new System.Drawing.Font("宋体", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
             this.uiLabel1.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel1.Location = new System.Drawing.Point(1575, 580);
+            this.uiLabel1.Location = new System.Drawing.Point(1454, 534);
             this.uiLabel1.Name = "uiLabel1";
-            this.uiLabel1.Size = new System.Drawing.Size(121, 72);
+            this.uiLabel1.Size = new System.Drawing.Size(112, 67);
             this.uiLabel1.TabIndex = 42;
             this.uiLabel1.Text = "运行时间";
             this.uiLabel1.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -910,9 +927,9 @@
             this.uiLabel2.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiLabel2.Font = new System.Drawing.Font("宋体", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
             this.uiLabel2.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel2.Location = new System.Drawing.Point(1575, 682);
+            this.uiLabel2.Location = new System.Drawing.Point(1454, 628);
             this.uiLabel2.Name = "uiLabel2";
-            this.uiLabel2.Size = new System.Drawing.Size(121, 73);
+            this.uiLabel2.Size = new System.Drawing.Size(112, 67);
             this.uiLabel2.TabIndex = 43;
             this.uiLabel2.Text = "完成次数";
             this.uiLabel2.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -922,9 +939,9 @@
             this.uiLabel3.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiLabel3.Font = new System.Drawing.Font("宋体", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
             this.uiLabel3.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel3.Location = new System.Drawing.Point(1575, 784);
+            this.uiLabel3.Location = new System.Drawing.Point(1454, 721);
             this.uiLabel3.Name = "uiLabel3";
-            this.uiLabel3.Size = new System.Drawing.Size(121, 74);
+            this.uiLabel3.Size = new System.Drawing.Size(112, 68);
             this.uiLabel3.TabIndex = 44;
             this.uiLabel3.Text = "剩余次数";
             this.uiLabel3.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -934,29 +951,12 @@
             this.DiReadTimer.Interval = 50;
             this.DiReadTimer.Tick += new System.EventHandler(this.DiReadTimer_Tick);
             // 
-            // BtnPause
-            // 
-            this.BtnPause.Cursor = System.Windows.Forms.Cursors.Hand;
-            this.BtnPause.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.BtnPause.FillDisableColor = System.Drawing.Color.FromArgb(((int)(((byte)(115)))), ((int)(((byte)(179)))), ((int)(((byte)(255)))));
-            this.BtnPause.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.BtnPause.Location = new System.Drawing.Point(23, 9);
-            this.BtnPause.MinimumSize = new System.Drawing.Size(1, 1);
-            this.BtnPause.Name = "BtnPause";
-            this.BtnPause.Radius = 1;
-            this.BtnPause.RectDisableColor = System.Drawing.Color.LightBlue;
-            this.BtnPause.Size = new System.Drawing.Size(200, 40);
-            this.BtnPause.TabIndex = 53;
-            this.BtnPause.Text = "暂停";
-            this.BtnPause.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.BtnPause.Click += new System.EventHandler(this.BtnPause_Click);
-            // 
             // FrmMainMonitor
             // 
-            this.AutoScaleDimensions = new System.Drawing.SizeF(13F, 26F);
+            this.AutoScaleDimensions = new System.Drawing.SizeF(12F, 24F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
             this.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.ClientSize = new System.Drawing.Size(2189, 1091);
+            this.ClientSize = new System.Drawing.Size(2021, 1007);
             this.ControlBox = false;
             this.Controls.Add(this.uiTableLayoutPanelMain);
             this.Name = "FrmMainMonitor";
