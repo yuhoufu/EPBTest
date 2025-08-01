@@ -96,12 +96,12 @@
     <Compile Include="FrmAdjustTorque.Designer.cs">
       <DependentUpon>FrmAdjustTorque.cs</DependentUpon>
     </Compile>
-    <Compile Include="FrmEpbMainMonitor.cs">
+    <None Include="FrmEpbMainMonitor.cs">
       <SubType>Form</SubType>
-    </Compile>
-    <Compile Include="FrmEpbMainMonitor.Designer.cs">
+    </None>
+    <None Include="FrmEpbMainMonitor.Designer.cs">
       <DependentUpon>FrmEpbMainMonitor.cs</DependentUpon>
-    </Compile>
+    </None>
     <Compile Include="FrmMainMonitor.cs">
       <SubType>Form</SubType>
     </Compile>
