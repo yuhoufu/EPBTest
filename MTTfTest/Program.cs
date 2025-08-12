@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using MTEmbTest;
 
 namespace MtEmbTest
 {
@@ -21,7 +22,8 @@ namespace MtEmbTest
                 SetProcessDPIAware();
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            Application.Run(new Main_Frm());
+            //Application.Run(new Main_Frm());
+            Application.Run(new FrmEpbMainMonitor());
         }
     }
 }
