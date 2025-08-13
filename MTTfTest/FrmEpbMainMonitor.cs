@@ -1,4 +1,6 @@
-﻿using System;
+﻿using DataOperation;
+using MtEmbTest;
+using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Data;
@@ -47,89 +49,182 @@ namespace MTEmbTest
             };
         }
 
-        private void uiButton1_Click(object sender, EventArgs e)
-        {
+        //
+        // private void FrmEpbMainMonitor_Load(object sender, EventArgs e)
+        // {
+        //
+        //     try
+        //     {
+        //         DaqTimeSpanMilSeconds = 1000.0 / ClsGlobal.DaqFrequency;
+        //         
+        //         activeWriteBuffer = bufferA;
+        //         readyReadBuffer = bufferB;
+        //
+        //         string ReadMsg = ClsXmlOperation.ReadCanNameChannelToDictionary(System.Environment.CurrentDirectory + @"\Config\CanChannel.xml", out EmbToChannel);
+        //         if (ReadMsg.IndexOf("OK") < 0)
+        //         {
+        //             MessageBox.Show(ReadMsg);
+        //             return;
+        //         }
+        //
+        //         if (EmbToChannel.Count < 1)
+        //         {
+        //             MessageBox.Show("未读取到EMB和CAN的关联关系！");
+        //             return;
+        //         }
+        //
+        //         ReadMsg = ClsXmlOperation.GetDaqAIUsedChannels(System.Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev1", out Dev1UsedDaqAIChannels);
+        //         if (ReadMsg.IndexOf("OK") < 0)
+        //         {
+        //             MessageBox.Show(ReadMsg);
+        //             return;
+        //         }
+        //
+        //         if (Dev1UsedDaqAIChannels.Length < 1)
+        //         {
+        //             MessageBox.Show("未读取到 Dev1 DAQ AI 相关信息！");
+        //             return;
+        //         }
+        //
+        //
+        //
+        //         ReadMsg = ClsXmlOperation.GetDaqAIUsedChannels(System.Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev2", out Dev2UsedDaqAIChannels);
+        //         if (ReadMsg.IndexOf("OK") < 0)
+        //         {
+        //             MessageBox.Show(ReadMsg);
+        //             return;
+        //         }
+        //
+        //         if (Dev2UsedDaqAIChannels.Length < 1)
+        //         {
+        //             MessageBox.Show("未读取到 Dev2 DAQ AI 相关信息！");
+        //             return;
+        //         }
+        //
+        //
+        //
+        //         ReadMsg = ClsXmlOperation.GetDaqAIChannelMapping(System.Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev1", Dev1UsedDaqAIChannels, out EMBToDaqCurrentChannel);
+        //         if (ReadMsg.IndexOf("OK") < 0)
+        //         {
+        //             MessageBox.Show(ReadMsg);
+        //             return;
+        //         }
+        //
+        //         if (EMBToDaqCurrentChannel.Count < 1)
+        //         {
+        //             MessageBox.Show("未读取到DAQ电流和EMB控制器对应关系！");
+        //             return;
+        //         }
+        //
+        //
+        //
+        //
+        //         ReadMsg = ClsXmlOperation.GetDaqScaleMapping(System.Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev1", out ParaNameToScale);
+        //         if (ReadMsg.IndexOf("OK") < 0)
+        //         {
+        //             MessageBox.Show(ReadMsg);
+        //             return;
+        //         }
+        //
+        //         ReadMsg = ClsXmlOperation.GetDaqOffsetMapping(System.Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev1", out ParaNameToOffset);
+        //         if (ReadMsg.IndexOf("OK") < 0)
+        //         {
+        //             MessageBox.Show(ReadMsg);
+        //             return;
+        //         }
+        //
+        //         ReadMsg = ClsXmlOperation.GetDaqZeroValueMapping(System.Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev1", out ParaNameToZeroValue);
+        //         if (ReadMsg.IndexOf("OK") < 0)
+        //         {
+        //             MessageBox.Show(ReadMsg);
+        //             return;
+        //         }
+        //
+        //
+        //
+        //
+        //
+        //
+        //
+        //         int handleNo = -1;
+        //
+        //         // EmbToChannel 是无序的，要排序后再对应，此处应该有捂脸的表情包
+        //
+        //
+        //         var sortedKeys = EmbToChannel.Keys.OrderBy(key => key).ToList();
+        //
+        //         foreach (var key in sortedKeys)
+        //         {
+        //             handleNo++;
+        //             EmbNoToChannel[handleNo] = EmbToChannel[key];         //处理顺序和波道对应
+        //             EmbNoToName[handleNo] = key;
+        //         }
+        //
+        //         //给处理序号和通道号字典赋值
+        //
+        //
+        //
+        //         LoadEmbControler();
+        //
+        //
+        //         InitializeCurve();
+        //         StartListen();
+        //         MakeCurveMapping();
+        //         MakeDirectionMapping();
+        //         LoadTestConfigFromXml();
+        //         LoadEMBHandlerAndFrameNo();
+        //
+        //         RtbInfo.Invoke(new SetTextCallback(SetInfoText), "1. 编辑试验信息并确认");
+        //         //   RtbInfo.Invoke(new SetTextCallback(SetInfoText), "2. CAN卡初始化");
+        //         //   RtbInfo.Invoke(new SetTextCallback(SetInfoText), "3. 打开各个电源开关");
+        //         RtbInfo.Invoke(new SetTextCallback(SetInfoText), "2. 自学习/开始试验");
+        //
+        //
+        //         ClsDiskProc.MakeSubDir(testConfig.StoreDir);
+        //
+        //         string MainDrive = testConfig.StoreDir.Trim().Substring(0, 2);
+        //
+        //         long LastSpace = ClsDiskProc.GetHardDiskSpace(MainDrive);
+        //         if (LastSpace == 0)
+        //         {
+        //             MessageBox.Show("指定磁盘不存在！");
+        //         }
+        //         if (LastSpace < 50)
+        //         {
+        //             MessageBox.Show("剩余磁盘空间小于" + LastSpace.ToString() + "GB");
+        //         }
+        //
+        //
+        //
+        //
+        //
+        //         ChkEmb3.Checked = false;
+        //         ChkEmb4.Checked = false;
+        //         ChkEmb5.Checked = false;
+        //         ChkEmb6.Checked = false;
+        //
+        //
+        //         LoadCanDbc();
+        //
+        //
+        //
+        //
+        //
+        //
+        //
+        //     }
+        //
+        //     catch (Exception ex)
+        //     {
+        //         MessageBox.Show("初始化错误 : " + ex.Message);
+        //     }
+        //
+        //
+        //
+        // }
+        //
+        //
 
-        }
 
-        private void uiGroupBox6_Click(object sender, EventArgs e)
-        {
-
-        }
-
-        private void LabEmb1_Click(object sender, EventArgs e)
-        {
-
-        }
-
-        private void uiRadioButton3_CheckedChanged(object sender, EventArgs e)
-        {
-
-        }
-
-        private void uiTableLayoutPanel1_Paint(object sender, PaintEventArgs e)
-        {
-
-        }
-
-        private void dgvRealData_CellContentClick(object sender, DataGridViewCellEventArgs e)
-        {
-
-        }
-
-        private void BtnStop_Click(object sender, EventArgs e)
-        {
-
-        }
-
-        private void BtnStartTest_Click(object sender, EventArgs e)
-        {
-
-        }
-
-        private void BtnAutoLearn_Click(object sender, EventArgs e)
-        {
-
-        }
-
-        private void BtnPause_Click(object sender, EventArgs e)
-        {
-
-        }
-
-        private void zedGraphRealChart_ContextMenuBuilder(ZedGraph.ZedGraphControl sender, ContextMenuStrip menuStrip, Point mousePt, ZedGraph.ZedGraphControl.ContextMenuObjectState objState)
-        {
-
-        }
-
-        private void BtnApply_Click(object sender, EventArgs e)
-        {
-
-        }
-
-        private void BtnSettingDetail_Click(object sender, EventArgs e)
-        {
-
-        }
-
-        private void BtnCancel_Click(object sender, EventArgs e)
-        {
-
-        }
-
-        private void BtnRunLog_Click(object sender, EventArgs e)
-        {
-
-        }
-
-        private void BtnErrorLog_Click(object sender, EventArgs e)
-        {
-
-        }
-
-        private void AlertEmb1_Click(object sender, EventArgs e)
-        {
-
-        }
     }
 }
