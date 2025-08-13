@@ -22,8 +22,8 @@ namespace MtEmbTest
                 SetProcessDPIAware();
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            //Application.Run(new Main_Frm());
-            Application.Run(new FrmEpbMainMonitor());
+            Application.Run(new Main_Frm());
+            //Application.Run(new FrmEpbMainMonitor());
         }
     }
 }

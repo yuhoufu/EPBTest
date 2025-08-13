@@ -505,7 +505,8 @@ namespace MtEmbTest
 
 
 
-            FrmMainMonitor frmRealMonitor = new FrmMainMonitor();
+            //FrmMainMonitor frmRealMonitor = new FrmMainMonitor();
+            FrmEpbMainMonitor frmRealMonitor = new FrmEpbMainMonitor();
             frmRealMonitor.Name = "实时监视";
             OpenChildForm(frmRealMonitor);
         }
