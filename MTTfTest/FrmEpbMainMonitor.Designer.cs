@@ -28,6 +28,22 @@
         /// </summary>
         private void InitializeComponent()
         {
+            this.components = new System.ComponentModel.Container();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle121 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle122 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle123 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle124 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle125 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle126 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle127 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle128 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle129 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle130 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle131 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle132 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle133 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle134 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle135 = new System.Windows.Forms.DataGridViewCellStyle();
             this.uiTableLayoutPanel1 = new Sunny.UI.UITableLayoutPanel();
             this.uiGroupBox2 = new Sunny.UI.UIGroupBox();
             this.tableLayoutPanel1 = new System.Windows.Forms.TableLayoutPanel();
@@ -83,6 +99,9 @@
             this.uiLabel17 = new Sunny.UI.UILabel();
             this.uiLabel18 = new Sunny.UI.UILabel();
             this.uiLabel19 = new Sunny.UI.UILabel();
+            this.uiPanel2 = new Sunny.UI.UIPanel();
+            this.uiPanel3 = new Sunny.UI.UIPanel();
+            this.uiPanel4 = new Sunny.UI.UIPanel();
             this.uiGroupBox1 = new Sunny.UI.UIGroupBox();
             this.uiTableLayoutPanel2 = new Sunny.UI.UITableLayoutPanel();
             this.TxtTargetCycles = new Sunny.UI.UITextBox();
@@ -97,38 +116,208 @@
             this.uiTableLayoutPanel4 = new Sunny.UI.UITableLayoutPanel();
             this.uiGroupBox4 = new Sunny.UI.UIGroupBox();
             this.uiTableLayoutPanel5 = new Sunny.UI.UITableLayoutPanel();
-            this.uiCheckBox2 = new Sunny.UI.UICheckBox();
-            this.uiCheckBox1 = new Sunny.UI.UICheckBox();
-            this.uiCheckBox3 = new Sunny.UI.UICheckBox();
+            this.checkEdit12 = new DevExpress.XtraEditors.CheckEdit();
+            this.checkEdit11 = new DevExpress.XtraEditors.CheckEdit();
+            this.checkEdit10 = new DevExpress.XtraEditors.CheckEdit();
             this.uiGroupBox5 = new Sunny.UI.UIGroupBox();
             this.uiTableLayoutPanel7 = new Sunny.UI.UITableLayoutPanel();
-            this.uiCheckBox7 = new Sunny.UI.UICheckBox();
-            this.uiCheckBox8 = new Sunny.UI.UICheckBox();
-            this.uiCheckBox9 = new Sunny.UI.UICheckBox();
+            this.checkEdit1 = new DevExpress.XtraEditors.CheckEdit();
+            this.checkEdit3 = new DevExpress.XtraEditors.CheckEdit();
+            this.checkEdit2 = new DevExpress.XtraEditors.CheckEdit();
             this.uiGroupBox6 = new Sunny.UI.UIGroupBox();
             this.uiTableLayoutPanel8 = new Sunny.UI.UITableLayoutPanel();
-            this.uiCheckBox10 = new Sunny.UI.UICheckBox();
-            this.uiCheckBox11 = new Sunny.UI.UICheckBox();
-            this.uiCheckBox12 = new Sunny.UI.UICheckBox();
+            this.checkEdit6 = new DevExpress.XtraEditors.CheckEdit();
+            this.checkEdit4 = new DevExpress.XtraEditors.CheckEdit();
+            this.checkEdit5 = new DevExpress.XtraEditors.CheckEdit();
             this.uiGroupBox7 = new Sunny.UI.UIGroupBox();
             this.uiTableLayoutPanel9 = new Sunny.UI.UITableLayoutPanel();
-            this.uiCheckBox13 = new Sunny.UI.UICheckBox();
-            this.uiCheckBox14 = new Sunny.UI.UICheckBox();
-            this.uiCheckBox15 = new Sunny.UI.UICheckBox();
+            this.checkEdit9 = new DevExpress.XtraEditors.CheckEdit();
+            this.checkEdit8 = new DevExpress.XtraEditors.CheckEdit();
+            this.checkEdit7 = new DevExpress.XtraEditors.CheckEdit();
             this.BtnCancel = new Sunny.UI.UIButton();
             this.BtnApply = new Sunny.UI.UIButton();
-            this.uiPanel1 = new Sunny.UI.UIPanel();
-            this.uiTableLayoutPanel6 = new Sunny.UI.UITableLayoutPanel();
-            this.uiCheckBox4 = new Sunny.UI.UICheckBox();
-            this.uiCheckBox5 = new Sunny.UI.UICheckBox();
-            this.uiCheckBox6 = new Sunny.UI.UICheckBox();
-            this.ChkEmb1 = new Sunny.UI.UICheckBox();
-            this.uiButton1 = new Sunny.UI.UIButton();
             this.uiGroupBox3 = new Sunny.UI.UIGroupBox();
             this.uiTableLayoutPanel3 = new Sunny.UI.UITableLayoutPanel();
-            this.uiPanel2 = new Sunny.UI.UIPanel();
-            this.uiPanel3 = new Sunny.UI.UIPanel();
-            this.uiPanel4 = new Sunny.UI.UIPanel();
+            this.zedGraphRealChart = new ZedGraph.ZedGraphControl();
+            this.uiTableLayoutPanel6 = new Sunny.UI.UITableLayoutPanel();
+            this.checkEdit13 = new DevExpress.XtraEditors.CheckEdit();
+            this.checkEdit14 = new DevExpress.XtraEditors.CheckEdit();
+            this.checkEdit15 = new DevExpress.XtraEditors.CheckEdit();
+            this.checkEdit16 = new DevExpress.XtraEditors.CheckEdit();
+            this.checkEdit17 = new DevExpress.XtraEditors.CheckEdit();
+            this.checkEdit18 = new DevExpress.XtraEditors.CheckEdit();
+            this.checkEdit19 = new DevExpress.XtraEditors.CheckEdit();
+            this.checkEdit20 = new DevExpress.XtraEditors.CheckEdit();
+            this.checkEdit21 = new DevExpress.XtraEditors.CheckEdit();
+            this.checkEdit22 = new DevExpress.XtraEditors.CheckEdit();
+            this.checkEdit23 = new DevExpress.XtraEditors.CheckEdit();
+            this.checkEdit24 = new DevExpress.XtraEditors.CheckEdit();
+            this.textEdit1 = new DevExpress.XtraEditors.TextEdit();
+            this.textEdit2 = new DevExpress.XtraEditors.TextEdit();
+            this.textEdit3 = new DevExpress.XtraEditors.TextEdit();
+            this.textEdit4 = new DevExpress.XtraEditors.TextEdit();
+            this.textEdit5 = new DevExpress.XtraEditors.TextEdit();
+            this.textEdit6 = new DevExpress.XtraEditors.TextEdit();
+            this.textEdit7 = new DevExpress.XtraEditors.TextEdit();
+            this.textEdit8 = new DevExpress.XtraEditors.TextEdit();
+            this.textEdit9 = new DevExpress.XtraEditors.TextEdit();
+            this.textEdit10 = new DevExpress.XtraEditors.TextEdit();
+            this.textEdit11 = new DevExpress.XtraEditors.TextEdit();
+            this.textEdit12 = new DevExpress.XtraEditors.TextEdit();
+            this.uiTableLayoutPanel14 = new Sunny.UI.UITableLayoutPanel();
+            this.uiGroupInfo = new Sunny.UI.UIGroupBox();
+            this.z = new Sunny.UI.UITableLayoutPanel();
+            this.BtnRunLog = new Sunny.UI.UIButton();
+            this.RtbInfo = new Sunny.UI.UIRichTextBox();
+            this.BtnErrorLog = new Sunny.UI.UIButton();
+            this.uiTableLayoutPanel15 = new Sunny.UI.UITableLayoutPanel();
+            this.uiTableLayoutPanel23 = new Sunny.UI.UITableLayoutPanel();
+            this.uiLedDisplay1 = new Sunny.UI.UILedDisplay();
+            this.uiTableLayoutPanel32 = new Sunny.UI.UITableLayoutPanel();
+            this.uiLedDisplay5 = new Sunny.UI.UILedDisplay();
+            this.uiTableLayoutPanel41 = new Sunny.UI.UITableLayoutPanel();
+            this.uiLedDisplay9 = new Sunny.UI.UILedDisplay();
+            this.uiProcessBar3 = new Sunny.UI.UIProcessBar();
+            this.uiGroupBox18 = new Sunny.UI.UIGroupBox();
+            this.uiTableLayoutPanel42 = new Sunny.UI.UITableLayoutPanel();
+            this.uiButton23 = new Sunny.UI.UIButton();
+            this.uiTableLayoutPanel16 = new Sunny.UI.UITableLayoutPanel();
+            this.LedRunCycles = new Sunny.UI.UILedDisplay();
+            this.uiTextBox1 = new Sunny.UI.UITextBox();
+            this.uiLabel29 = new Sunny.UI.UILabel();
+            this.uiTableLayoutPanelMain = new Sunny.UI.UITableLayoutPanel();
+            this.dgvRealData = new Sunny.UI.UIDataGridView();
+            this.uiGroupAllControl = new Sunny.UI.UIGroupBox();
+            this.uiTableLayoutPanel17 = new Sunny.UI.UITableLayoutPanel();
+            this.BtnStop = new Sunny.UI.UIButton();
+            this.BtnStartTest = new Sunny.UI.UIButton();
+            this.BtnAutoLearn = new Sunny.UI.UIButton();
+            this.BtnPause = new Sunny.UI.UIButton();
+            this.uiGroupCurve = new Sunny.UI.UIGroupBox();
+            this.uiTableLayoutPanel18 = new Sunny.UI.UITableLayoutPanel();
+            this.zedGraphControl1 = new ZedGraph.ZedGraphControl();
+            this.uiGroupBox8 = new Sunny.UI.UIGroupBox();
+            this.uiTableLayoutPanel19 = new Sunny.UI.UITableLayoutPanel();
+            this.uiTextBox3 = new Sunny.UI.UITextBox();
+            this.uiTextBox4 = new Sunny.UI.UITextBox();
+            this.uiLabel30 = new Sunny.UI.UILabel();
+            this.uiLabel31 = new Sunny.UI.UILabel();
+            this.uiLabel32 = new Sunny.UI.UILabel();
+            this.uiLabel33 = new Sunny.UI.UILabel();
+            this.uiTextBox2 = new Sunny.UI.UITextBox();
+            this.uiLabel34 = new Sunny.UI.UILabel();
+            this.ChkEmb1 = new Sunny.UI.UICheckBox();
+            this.RadEmb1 = new Sunny.UI.UIRadioButton();
+            this.uiButton2 = new Sunny.UI.UIButton();
+            this.uiButton1 = new Sunny.UI.UIButton();
+            this.BtnSettingDetail = new Sunny.UI.UIButton();
+            this.uiGroupBox9 = new Sunny.UI.UIGroupBox();
+            this.uiTableLayoutPanel20 = new Sunny.UI.UITableLayoutPanel();
+            this.uiButton3 = new Sunny.UI.UIButton();
+            this.uiRichTextBox1 = new Sunny.UI.UIRichTextBox();
+            this.uiButton4 = new Sunny.UI.UIButton();
+            this.uiTableLayoutPanel21 = new Sunny.UI.UITableLayoutPanel();
+            this.LedRunTime = new Sunny.UI.UILedDisplay();
+            this.ProcBar = new Sunny.UI.UIProcessBar();
+            this.uiTableLayoutPanel22 = new Sunny.UI.UITableLayoutPanel();
+            this.LedLastCycles = new Sunny.UI.UILedDisplay();
+            this.uiLabel35 = new Sunny.UI.UILabel();
+            this.uiLabel36 = new Sunny.UI.UILabel();
+            this.uiLabel37 = new Sunny.UI.UILabel();
+            this.AlertEmb1 = new Sunny.UI.UILight();
+            this.uiTableLayoutPanel24 = new Sunny.UI.UITableLayoutPanel();
+            this.uiLedDisplay2 = new Sunny.UI.UILedDisplay();
+            this.uiTextBox5 = new Sunny.UI.UITextBox();
+            this.uiTableLayoutPanel25 = new Sunny.UI.UITableLayoutPanel();
+            this.uiDataGridView1 = new Sunny.UI.UIDataGridView();
+            this.uiGroupBox10 = new Sunny.UI.UIGroupBox();
+            this.uiTableLayoutPanel26 = new Sunny.UI.UITableLayoutPanel();
+            this.uiButton5 = new Sunny.UI.UIButton();
+            this.uiButton6 = new Sunny.UI.UIButton();
+            this.uiButton7 = new Sunny.UI.UIButton();
+            this.uiButton8 = new Sunny.UI.UIButton();
+            this.uiGroupBox11 = new Sunny.UI.UIGroupBox();
+            this.uiTableLayoutPanel27 = new Sunny.UI.UITableLayoutPanel();
+            this.zedGraphControl2 = new ZedGraph.ZedGraphControl();
+            this.uiGroupBox12 = new Sunny.UI.UIGroupBox();
+            this.uiTableLayoutPanel28 = new Sunny.UI.UITableLayoutPanel();
+            this.uiTextBox7 = new Sunny.UI.UITextBox();
+            this.uiLabel42 = new Sunny.UI.UILabel();
+            this.uiTextBox8 = new Sunny.UI.UITextBox();
+            this.uiLabel38 = new Sunny.UI.UILabel();
+            this.uiLabel39 = new Sunny.UI.UILabel();
+            this.uiLabel40 = new Sunny.UI.UILabel();
+            this.uiLabel41 = new Sunny.UI.UILabel();
+            this.uiTextBox6 = new Sunny.UI.UITextBox();
+            this.uiLabel43 = new Sunny.UI.UILabel();
+            this.uiCheckBox1 = new Sunny.UI.UICheckBox();
+            this.uiRadioButton1 = new Sunny.UI.UIRadioButton();
+            this.uiButton11 = new Sunny.UI.UIButton();
+            this.uiButton9 = new Sunny.UI.UIButton();
+            this.uiButton10 = new Sunny.UI.UIButton();
+            this.uiGroupBox13 = new Sunny.UI.UIGroupBox();
+            this.uiTableLayoutPanel29 = new Sunny.UI.UITableLayoutPanel();
+            this.uiButton12 = new Sunny.UI.UIButton();
+            this.uiRichTextBox2 = new Sunny.UI.UIRichTextBox();
+            this.uiButton13 = new Sunny.UI.UIButton();
+            this.uiProcessBar1 = new Sunny.UI.UIProcessBar();
+            this.uiTableLayoutPanel30 = new Sunny.UI.UITableLayoutPanel();
+            this.uiLedDisplay3 = new Sunny.UI.UILedDisplay();
+            this.uiLabel44 = new Sunny.UI.UILabel();
+            this.uiLabel45 = new Sunny.UI.UILabel();
+            this.uiLabel46 = new Sunny.UI.UILabel();
+            this.uiLight1 = new Sunny.UI.UILight();
+            this.uiTableLayoutPanel31 = new Sunny.UI.UITableLayoutPanel();
+            this.uiLedDisplay4 = new Sunny.UI.UILedDisplay();
+            this.uiTableLayoutPanel33 = new Sunny.UI.UITableLayoutPanel();
+            this.uiLedDisplay6 = new Sunny.UI.UILedDisplay();
+            this.uiTextBox9 = new Sunny.UI.UITextBox();
+            this.uiButton14 = new Sunny.UI.UIButton();
+            this.uiTableLayoutPanel34 = new Sunny.UI.UITableLayoutPanel();
+            this.uiDataGridView2 = new Sunny.UI.UIDataGridView();
+            this.uiGroupBox14 = new Sunny.UI.UIGroupBox();
+            this.uiTableLayoutPanel35 = new Sunny.UI.UITableLayoutPanel();
+            this.uiButton15 = new Sunny.UI.UIButton();
+            this.uiButton16 = new Sunny.UI.UIButton();
+            this.uiButton17 = new Sunny.UI.UIButton();
+            this.uiButton18 = new Sunny.UI.UIButton();
+            this.uiGroupBox15 = new Sunny.UI.UIGroupBox();
+            this.uiTableLayoutPanel36 = new Sunny.UI.UITableLayoutPanel();
+            this.zedGraphControl3 = new ZedGraph.ZedGraphControl();
+            this.uiGroupBox16 = new Sunny.UI.UIGroupBox();
+            this.uiTableLayoutPanel37 = new Sunny.UI.UITableLayoutPanel();
+            this.uiTextBox11 = new Sunny.UI.UITextBox();
+            this.uiLabel51 = new Sunny.UI.UILabel();
+            this.uiTextBox12 = new Sunny.UI.UITextBox();
+            this.uiLabel47 = new Sunny.UI.UILabel();
+            this.uiLabel48 = new Sunny.UI.UILabel();
+            this.uiLabel49 = new Sunny.UI.UILabel();
+            this.uiLabel50 = new Sunny.UI.UILabel();
+            this.uiTextBox10 = new Sunny.UI.UITextBox();
+            this.uiLabel52 = new Sunny.UI.UILabel();
+            this.uiCheckBox2 = new Sunny.UI.UICheckBox();
+            this.uiRadioButton2 = new Sunny.UI.UIRadioButton();
+            this.uiButton20 = new Sunny.UI.UIButton();
+            this.uiButton19 = new Sunny.UI.UIButton();
+            this.uiGroupBox17 = new Sunny.UI.UIGroupBox();
+            this.uiTableLayoutPanel38 = new Sunny.UI.UITableLayoutPanel();
+            this.uiButton21 = new Sunny.UI.UIButton();
+            this.uiRichTextBox3 = new Sunny.UI.UIRichTextBox();
+            this.uiButton22 = new Sunny.UI.UIButton();
+            this.uiTableLayoutPanel39 = new Sunny.UI.UITableLayoutPanel();
+            this.uiLedDisplay7 = new Sunny.UI.UILedDisplay();
+            this.uiProcessBar2 = new Sunny.UI.UIProcessBar();
+            this.uiLabel53 = new Sunny.UI.UILabel();
+            this.uiLabel54 = new Sunny.UI.UILabel();
+            this.uiLabel55 = new Sunny.UI.UILabel();
+            this.uiLight2 = new Sunny.UI.UILight();
+            this.uiTableLayoutPanel40 = new Sunny.UI.UITableLayoutPanel();
+            this.uiLedDisplay8 = new Sunny.UI.UILedDisplay();
+            this.uiLabel56 = new Sunny.UI.UILabel();
+            this.uiLabel57 = new Sunny.UI.UILabel();
+            this.uiLabel58 = new Sunny.UI.UILabel();
+            this.uiLight3 = new Sunny.UI.UILight();
+            this.uiButton24 = new Sunny.UI.UIButton();
             this.uiTableLayoutPanel1.SuspendLayout();
             this.uiGroupBox2.SuspendLayout();
             this.tableLayoutPanel1.SuspendLayout();
@@ -141,60 +330,146 @@
             this.uiTableLayoutPanel4.SuspendLayout();
             this.uiGroupBox4.SuspendLayout();
             this.uiTableLayoutPanel5.SuspendLayout();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit12.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit11.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit10.Properties)).BeginInit();
             this.uiGroupBox5.SuspendLayout();
             this.uiTableLayoutPanel7.SuspendLayout();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit1.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit3.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit2.Properties)).BeginInit();
             this.uiGroupBox6.SuspendLayout();
             this.uiTableLayoutPanel8.SuspendLayout();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit6.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit4.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit5.Properties)).BeginInit();
             this.uiGroupBox7.SuspendLayout();
             this.uiTableLayoutPanel9.SuspendLayout();
-            this.uiPanel1.SuspendLayout();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit9.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit8.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit7.Properties)).BeginInit();
+            this.uiGroupBox3.SuspendLayout();
+            this.uiTableLayoutPanel3.SuspendLayout();
             this.uiTableLayoutPanel6.SuspendLayout();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit13.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit14.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit15.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit16.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit17.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit18.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit19.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit20.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit21.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit22.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit23.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit24.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit1.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit2.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit3.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit4.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit5.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit6.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit7.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit8.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit9.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit10.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit11.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit12.Properties)).BeginInit();
+            this.uiTableLayoutPanel14.SuspendLayout();
+            this.uiGroupInfo.SuspendLayout();
+            this.z.SuspendLayout();
+            this.uiTableLayoutPanel15.SuspendLayout();
+            this.uiTableLayoutPanel23.SuspendLayout();
+            this.uiTableLayoutPanel32.SuspendLayout();
+            this.uiTableLayoutPanel41.SuspendLayout();
+            this.uiGroupBox18.SuspendLayout();
+            this.uiTableLayoutPanel42.SuspendLayout();
+            this.uiTableLayoutPanel16.SuspendLayout();
+            this.uiTableLayoutPanelMain.SuspendLayout();
+            ((System.ComponentModel.ISupportInitialize)(this.dgvRealData)).BeginInit();
+            this.uiGroupAllControl.SuspendLayout();
+            this.uiTableLayoutPanel17.SuspendLayout();
+            this.uiGroupCurve.SuspendLayout();
+            this.uiTableLayoutPanel18.SuspendLayout();
+            this.uiGroupBox8.SuspendLayout();
+            this.uiTableLayoutPanel19.SuspendLayout();
+            this.uiGroupBox9.SuspendLayout();
+            this.uiTableLayoutPanel20.SuspendLayout();
+            this.uiTableLayoutPanel21.SuspendLayout();
+            this.uiTableLayoutPanel22.SuspendLayout();
+            this.uiTableLayoutPanel24.SuspendLayout();
+            this.uiTableLayoutPanel25.SuspendLayout();
+            ((System.ComponentModel.ISupportInitialize)(this.uiDataGridView1)).BeginInit();
+            this.uiGroupBox10.SuspendLayout();
+            this.uiTableLayoutPanel26.SuspendLayout();
+            this.uiGroupBox11.SuspendLayout();
+            this.uiTableLayoutPanel27.SuspendLayout();
+            this.uiGroupBox12.SuspendLayout();
+            this.uiTableLayoutPanel28.SuspendLayout();
+            this.uiGroupBox13.SuspendLayout();
+            this.uiTableLayoutPanel29.SuspendLayout();
+            this.uiTableLayoutPanel30.SuspendLayout();
+            this.uiTableLayoutPanel31.SuspendLayout();
+            this.uiTableLayoutPanel33.SuspendLayout();
+            this.uiTableLayoutPanel34.SuspendLayout();
+            ((System.ComponentModel.ISupportInitialize)(this.uiDataGridView2)).BeginInit();
+            this.uiGroupBox14.SuspendLayout();
+            this.uiTableLayoutPanel35.SuspendLayout();
+            this.uiGroupBox15.SuspendLayout();
+            this.uiTableLayoutPanel36.SuspendLayout();
+            this.uiGroupBox16.SuspendLayout();
+            this.uiTableLayoutPanel37.SuspendLayout();
+            this.uiGroupBox17.SuspendLayout();
+            this.uiTableLayoutPanel38.SuspendLayout();
+            this.uiTableLayoutPanel39.SuspendLayout();
+            this.uiTableLayoutPanel40.SuspendLayout();
             this.SuspendLayout();
             // 
             // uiTableLayoutPanel1
             // 
-            this.uiTableLayoutPanel1.ColumnCount = 7;
-            this.uiTableLayoutPanel1.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 18F));
-            this.uiTableLayoutPanel1.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 1085F));
-            this.uiTableLayoutPanel1.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 18F));
-            this.uiTableLayoutPanel1.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 50F));
-            this.uiTableLayoutPanel1.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 18F));
-            this.uiTableLayoutPanel1.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 50F));
-            this.uiTableLayoutPanel1.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 18F));
+            this.uiTableLayoutPanel1.ColumnCount = 5;
+            this.uiTableLayoutPanel1.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 9F));
+            this.uiTableLayoutPanel1.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 542F));
+            this.uiTableLayoutPanel1.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 9F));
+            this.uiTableLayoutPanel1.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 100F));
+            this.uiTableLayoutPanel1.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 9F));
+            this.uiTableLayoutPanel1.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel1.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
             this.uiTableLayoutPanel1.Controls.Add(this.uiGroupBox2, 1, 5);
             this.uiTableLayoutPanel1.Controls.Add(this.uiGroupBox1, 1, 1);
-            this.uiTableLayoutPanel1.Controls.Add(this.uiPanel1, 3, 3);
             this.uiTableLayoutPanel1.Controls.Add(this.uiGroupBox3, 3, 1);
-            this.uiTableLayoutPanel1.Controls.Add(this.uiTableLayoutPanel3, 3, 5);
+            this.uiTableLayoutPanel1.Controls.Add(this.uiTableLayoutPanel14, 3, 5);
             this.uiTableLayoutPanel1.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiTableLayoutPanel1.Location = new System.Drawing.Point(0, 0);
+            this.uiTableLayoutPanel1.Margin = new System.Windows.Forms.Padding(2);
             this.uiTableLayoutPanel1.Name = "uiTableLayoutPanel1";
             this.uiTableLayoutPanel1.RowCount = 9;
-            this.uiTableLayoutPanel1.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 18F));
+            this.uiTableLayoutPanel1.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 9F));
             this.uiTableLayoutPanel1.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 25F));
-            this.uiTableLayoutPanel1.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 18F));
+            this.uiTableLayoutPanel1.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 9F));
             this.uiTableLayoutPanel1.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 25F));
-            this.uiTableLayoutPanel1.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 18F));
+            this.uiTableLayoutPanel1.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 9F));
             this.uiTableLayoutPanel1.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 25F));
-            this.uiTableLayoutPanel1.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 18F));
+            this.uiTableLayoutPanel1.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 9F));
             this.uiTableLayoutPanel1.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 25F));
-            this.uiTableLayoutPanel1.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 18F));
-            this.uiTableLayoutPanel1.Size = new System.Drawing.Size(1975, 1239);
+            this.uiTableLayoutPanel1.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 9F));
+            this.uiTableLayoutPanel1.Size = new System.Drawing.Size(1424, 861);
             this.uiTableLayoutPanel1.TabIndex = 0;
             this.uiTableLayoutPanel1.TagString = null;
+            this.uiTableLayoutPanel1.Paint += new System.Windows.Forms.PaintEventHandler(this.uiTableLayoutPanel1_Paint);
             // 
             // uiGroupBox2
             // 
             this.uiGroupBox2.Controls.Add(this.tableLayoutPanel1);
             this.uiGroupBox2.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiGroupBox2.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.uiGroupBox2.Location = new System.Drawing.Point(22, 633);
-            this.uiGroupBox2.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.uiGroupBox2.Location = new System.Drawing.Point(11, 437);
+            this.uiGroupBox2.Margin = new System.Windows.Forms.Padding(2);
             this.uiGroupBox2.MinimumSize = new System.Drawing.Size(1, 1);
             this.uiGroupBox2.Name = "uiGroupBox2";
             this.uiGroupBox2.Padding = new System.Windows.Forms.Padding(0, 32, 0, 0);
             this.uiTableLayoutPanel1.SetRowSpan(this.uiGroupBox2, 3);
-            this.uiGroupBox2.Size = new System.Drawing.Size(1077, 582);
+            this.uiGroupBox2.Size = new System.Drawing.Size(538, 413);
             this.uiGroupBox2.TabIndex = 4;
             this.uiGroupBox2.Text = "EPB 控制";
             this.uiGroupBox2.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
@@ -224,7 +499,7 @@
             this.tableLayoutPanel1.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 1F));
             this.tableLayoutPanel1.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 50F));
             this.tableLayoutPanel1.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 18F));
-            this.tableLayoutPanel1.Size = new System.Drawing.Size(1077, 550);
+            this.tableLayoutPanel1.Size = new System.Drawing.Size(538, 381);
             this.tableLayoutPanel1.TabIndex = 0;
             // 
             // uiTableLayoutPanel11
@@ -247,13 +522,13 @@
             this.uiTableLayoutPanel11.Controls.Add(this.uiLabel24, 0, 1);
             this.uiTableLayoutPanel11.Controls.Add(this.uiLabel25, 0, 2);
             this.uiTableLayoutPanel11.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel11.Location = new System.Drawing.Point(542, 21);
+            this.uiTableLayoutPanel11.Location = new System.Drawing.Point(272, 21);
             this.uiTableLayoutPanel11.Name = "uiTableLayoutPanel11";
             this.uiTableLayoutPanel11.RowCount = 3;
             this.uiTableLayoutPanel11.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
             this.uiTableLayoutPanel11.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
             this.uiTableLayoutPanel11.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
-            this.uiTableLayoutPanel11.Size = new System.Drawing.Size(514, 250);
+            this.uiTableLayoutPanel11.Size = new System.Drawing.Size(244, 166);
             this.uiTableLayoutPanel11.TabIndex = 0;
             this.uiTableLayoutPanel11.TagString = null;
             // 
@@ -262,11 +537,11 @@
             this.uiLabel3.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiLabel3.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiLabel3.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel3.Location = new System.Drawing.Point(393, 19);
+            this.uiLabel3.Location = new System.Drawing.Point(187, 5);
             this.uiLabel3.Name = "uiLabel3";
-            this.uiLabel3.Size = new System.Drawing.Size(115, 45);
+            this.uiLabel3.Size = new System.Drawing.Size(54, 45);
             this.uiLabel3.TabIndex = 36;
-            this.uiLabel3.Text = "1000000";
+            this.uiLabel3.Text = "100000";
             this.uiLabel3.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
             this.uiLabel3.Click += new System.EventHandler(this.LabEmb1_Click);
             // 
@@ -277,10 +552,10 @@
             this.uiSwitch7.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiSwitch7.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiSwitch7.InActiveText = "OFF";
-            this.uiSwitch7.Location = new System.Drawing.Point(145, 105);
+            this.uiSwitch7.Location = new System.Drawing.Point(69, 72);
             this.uiSwitch7.MinimumSize = new System.Drawing.Size(1, 1);
             this.uiSwitch7.Name = "uiSwitch7";
-            this.uiSwitch7.Size = new System.Drawing.Size(112, 39);
+            this.uiSwitch7.Size = new System.Drawing.Size(52, 21);
             this.uiSwitch7.SwitchShape = Sunny.UI.UISwitch.UISwitchShape.Square;
             this.uiSwitch7.TabIndex = 34;
             this.uiSwitch7.Text = "uiSwitch2";
@@ -291,10 +566,10 @@
             this.uiSwitch8.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiSwitch8.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiSwitch8.InActiveText = "STOP";
-            this.uiSwitch8.Location = new System.Drawing.Point(269, 105);
+            this.uiSwitch8.Location = new System.Drawing.Point(128, 72);
             this.uiSwitch8.MinimumSize = new System.Drawing.Size(1, 1);
             this.uiSwitch8.Name = "uiSwitch8";
-            this.uiSwitch8.Size = new System.Drawing.Size(112, 39);
+            this.uiSwitch8.Size = new System.Drawing.Size(53, 21);
             this.uiSwitch8.TabIndex = 35;
             this.uiSwitch8.Text = "uiSwitch2";
             // 
@@ -304,10 +579,10 @@
             this.uiSwitch9.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiSwitch9.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiSwitch9.InActiveText = "STOP";
-            this.uiSwitch9.Location = new System.Drawing.Point(269, 22);
+            this.uiSwitch9.Location = new System.Drawing.Point(128, 17);
             this.uiSwitch9.MinimumSize = new System.Drawing.Size(1, 1);
             this.uiSwitch9.Name = "uiSwitch9";
-            this.uiSwitch9.Size = new System.Drawing.Size(112, 39);
+            this.uiSwitch9.Size = new System.Drawing.Size(53, 21);
             this.uiSwitch9.TabIndex = 35;
             this.uiSwitch9.Text = "uiSwitch2";
             // 
@@ -318,10 +593,10 @@
             this.uiSwitch10.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiSwitch10.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiSwitch10.InActiveText = "OFF";
-            this.uiSwitch10.Location = new System.Drawing.Point(145, 22);
+            this.uiSwitch10.Location = new System.Drawing.Point(69, 17);
             this.uiSwitch10.MinimumSize = new System.Drawing.Size(1, 1);
             this.uiSwitch10.Name = "uiSwitch10";
-            this.uiSwitch10.Size = new System.Drawing.Size(112, 39);
+            this.uiSwitch10.Size = new System.Drawing.Size(52, 21);
             this.uiSwitch10.SwitchShape = Sunny.UI.UISwitch.UISwitchShape.Square;
             this.uiSwitch10.TabIndex = 34;
             this.uiSwitch10.Text = "uiSwitch2";
@@ -331,11 +606,11 @@
             this.uiLabel4.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiLabel4.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiLabel4.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel4.Location = new System.Drawing.Point(393, 102);
+            this.uiLabel4.Location = new System.Drawing.Point(187, 60);
             this.uiLabel4.Name = "uiLabel4";
-            this.uiLabel4.Size = new System.Drawing.Size(115, 45);
+            this.uiLabel4.Size = new System.Drawing.Size(54, 45);
             this.uiLabel4.TabIndex = 36;
-            this.uiLabel4.Text = "1000000";
+            this.uiLabel4.Text = "100000";
             this.uiLabel4.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
             this.uiLabel4.Click += new System.EventHandler(this.LabEmb1_Click);
             // 
@@ -346,10 +621,10 @@
             this.uiSwitch11.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiSwitch11.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiSwitch11.InActiveText = "OFF";
-            this.uiSwitch11.Location = new System.Drawing.Point(145, 188);
+            this.uiSwitch11.Location = new System.Drawing.Point(69, 127);
             this.uiSwitch11.MinimumSize = new System.Drawing.Size(1, 1);
             this.uiSwitch11.Name = "uiSwitch11";
-            this.uiSwitch11.Size = new System.Drawing.Size(112, 39);
+            this.uiSwitch11.Size = new System.Drawing.Size(52, 21);
             this.uiSwitch11.SwitchShape = Sunny.UI.UISwitch.UISwitchShape.Square;
             this.uiSwitch11.TabIndex = 34;
             this.uiSwitch11.Text = "uiSwitch2";
@@ -360,10 +635,10 @@
             this.uiSwitch12.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiSwitch12.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiSwitch12.InActiveText = "STOP";
-            this.uiSwitch12.Location = new System.Drawing.Point(269, 188);
+            this.uiSwitch12.Location = new System.Drawing.Point(128, 127);
             this.uiSwitch12.MinimumSize = new System.Drawing.Size(1, 1);
             this.uiSwitch12.Name = "uiSwitch12";
-            this.uiSwitch12.Size = new System.Drawing.Size(112, 39);
+            this.uiSwitch12.Size = new System.Drawing.Size(53, 21);
             this.uiSwitch12.TabIndex = 35;
             this.uiSwitch12.Text = "uiSwitch2";
             // 
@@ -372,11 +647,11 @@
             this.uiLabel5.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiLabel5.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiLabel5.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel5.Location = new System.Drawing.Point(393, 185);
+            this.uiLabel5.Location = new System.Drawing.Point(187, 115);
             this.uiLabel5.Name = "uiLabel5";
-            this.uiLabel5.Size = new System.Drawing.Size(115, 45);
+            this.uiLabel5.Size = new System.Drawing.Size(54, 45);
             this.uiLabel5.TabIndex = 36;
-            this.uiLabel5.Text = "1000000";
+            this.uiLabel5.Text = "100000";
             this.uiLabel5.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
             this.uiLabel5.Click += new System.EventHandler(this.LabEmb1_Click);
             // 
@@ -385,9 +660,9 @@
             this.uiLabel23.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiLabel23.Font = new System.Drawing.Font("Arial", 10F);
             this.uiLabel23.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel23.Location = new System.Drawing.Point(6, 27);
+            this.uiLabel23.Location = new System.Drawing.Point(3, 13);
             this.uiLabel23.Name = "uiLabel23";
-            this.uiLabel23.Size = new System.Drawing.Size(126, 28);
+            this.uiLabel23.Size = new System.Drawing.Size(60, 28);
             this.uiLabel23.TabIndex = 37;
             this.uiLabel23.Text = "EPB 04";
             this.uiLabel23.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -397,9 +672,9 @@
             this.uiLabel24.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiLabel24.Font = new System.Drawing.Font("Arial", 10F);
             this.uiLabel24.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel24.Location = new System.Drawing.Point(6, 110);
+            this.uiLabel24.Location = new System.Drawing.Point(3, 68);
             this.uiLabel24.Name = "uiLabel24";
-            this.uiLabel24.Size = new System.Drawing.Size(126, 28);
+            this.uiLabel24.Size = new System.Drawing.Size(60, 28);
             this.uiLabel24.TabIndex = 37;
             this.uiLabel24.Text = "EPB 05";
             this.uiLabel24.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -409,9 +684,9 @@
             this.uiLabel25.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiLabel25.Font = new System.Drawing.Font("Arial", 10F);
             this.uiLabel25.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel25.Location = new System.Drawing.Point(6, 194);
+            this.uiLabel25.Location = new System.Drawing.Point(3, 124);
             this.uiLabel25.Name = "uiLabel25";
-            this.uiLabel25.Size = new System.Drawing.Size(126, 28);
+            this.uiLabel25.Size = new System.Drawing.Size(60, 28);
             this.uiLabel25.TabIndex = 37;
             this.uiLabel25.Text = "EPB 06";
             this.uiLabel25.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -436,13 +711,13 @@
             this.uiTableLayoutPanel12.Controls.Add(this.uiLabel21, 0, 1);
             this.uiTableLayoutPanel12.Controls.Add(this.uiLabel22, 0, 2);
             this.uiTableLayoutPanel12.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel12.Location = new System.Drawing.Point(21, 278);
+            this.uiTableLayoutPanel12.Location = new System.Drawing.Point(21, 194);
             this.uiTableLayoutPanel12.Name = "uiTableLayoutPanel12";
             this.uiTableLayoutPanel12.RowCount = 3;
             this.uiTableLayoutPanel12.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
             this.uiTableLayoutPanel12.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
             this.uiTableLayoutPanel12.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
-            this.uiTableLayoutPanel12.Size = new System.Drawing.Size(514, 250);
+            this.uiTableLayoutPanel12.Size = new System.Drawing.Size(244, 166);
             this.uiTableLayoutPanel12.TabIndex = 0;
             this.uiTableLayoutPanel12.TagString = null;
             // 
@@ -451,11 +726,11 @@
             this.uiLabel6.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiLabel6.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiLabel6.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel6.Location = new System.Drawing.Point(393, 19);
+            this.uiLabel6.Location = new System.Drawing.Point(187, 5);
             this.uiLabel6.Name = "uiLabel6";
-            this.uiLabel6.Size = new System.Drawing.Size(115, 45);
+            this.uiLabel6.Size = new System.Drawing.Size(54, 45);
             this.uiLabel6.TabIndex = 36;
-            this.uiLabel6.Text = "1000000";
+            this.uiLabel6.Text = "100000";
             this.uiLabel6.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
             this.uiLabel6.Click += new System.EventHandler(this.LabEmb1_Click);
             // 
@@ -466,10 +741,10 @@
             this.uiSwitch13.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiSwitch13.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiSwitch13.InActiveText = "OFF";
-            this.uiSwitch13.Location = new System.Drawing.Point(145, 105);
+            this.uiSwitch13.Location = new System.Drawing.Point(69, 72);
             this.uiSwitch13.MinimumSize = new System.Drawing.Size(1, 1);
             this.uiSwitch13.Name = "uiSwitch13";
-            this.uiSwitch13.Size = new System.Drawing.Size(112, 39);
+            this.uiSwitch13.Size = new System.Drawing.Size(52, 21);
             this.uiSwitch13.SwitchShape = Sunny.UI.UISwitch.UISwitchShape.Square;
             this.uiSwitch13.TabIndex = 34;
             this.uiSwitch13.Text = "uiSwitch2";
@@ -480,10 +755,10 @@
             this.uiSwitch14.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiSwitch14.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiSwitch14.InActiveText = "STOP";
-            this.uiSwitch14.Location = new System.Drawing.Point(269, 105);
+            this.uiSwitch14.Location = new System.Drawing.Point(128, 72);
             this.uiSwitch14.MinimumSize = new System.Drawing.Size(1, 1);
             this.uiSwitch14.Name = "uiSwitch14";
-            this.uiSwitch14.Size = new System.Drawing.Size(112, 39);
+            this.uiSwitch14.Size = new System.Drawing.Size(53, 21);
             this.uiSwitch14.TabIndex = 35;
             this.uiSwitch14.Text = "uiSwitch2";
             // 
@@ -493,10 +768,10 @@
             this.uiSwitch15.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiSwitch15.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiSwitch15.InActiveText = "STOP";
-            this.uiSwitch15.Location = new System.Drawing.Point(269, 22);
+            this.uiSwitch15.Location = new System.Drawing.Point(128, 17);
             this.uiSwitch15.MinimumSize = new System.Drawing.Size(1, 1);
             this.uiSwitch15.Name = "uiSwitch15";
-            this.uiSwitch15.Size = new System.Drawing.Size(112, 39);
+            this.uiSwitch15.Size = new System.Drawing.Size(53, 21);
             this.uiSwitch15.TabIndex = 35;
             this.uiSwitch15.Text = "uiSwitch2";
             // 
@@ -507,10 +782,10 @@
             this.uiSwitch16.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiSwitch16.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiSwitch16.InActiveText = "OFF";
-            this.uiSwitch16.Location = new System.Drawing.Point(145, 22);
+            this.uiSwitch16.Location = new System.Drawing.Point(69, 17);
             this.uiSwitch16.MinimumSize = new System.Drawing.Size(1, 1);
             this.uiSwitch16.Name = "uiSwitch16";
-            this.uiSwitch16.Size = new System.Drawing.Size(112, 39);
+            this.uiSwitch16.Size = new System.Drawing.Size(52, 21);
             this.uiSwitch16.SwitchShape = Sunny.UI.UISwitch.UISwitchShape.Square;
             this.uiSwitch16.TabIndex = 34;
             this.uiSwitch16.Text = "uiSwitch2";
@@ -520,11 +795,11 @@
             this.uiLabel12.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiLabel12.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiLabel12.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel12.Location = new System.Drawing.Point(393, 102);
+            this.uiLabel12.Location = new System.Drawing.Point(187, 60);
             this.uiLabel12.Name = "uiLabel12";
-            this.uiLabel12.Size = new System.Drawing.Size(115, 45);
+            this.uiLabel12.Size = new System.Drawing.Size(54, 45);
             this.uiLabel12.TabIndex = 36;
-            this.uiLabel12.Text = "1000000";
+            this.uiLabel12.Text = "100000";
             this.uiLabel12.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
             this.uiLabel12.Click += new System.EventHandler(this.LabEmb1_Click);
             // 
@@ -534,10 +809,10 @@
             this.uiSwitch18.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiSwitch18.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiSwitch18.InActiveText = "STOP";
-            this.uiSwitch18.Location = new System.Drawing.Point(269, 188);
+            this.uiSwitch18.Location = new System.Drawing.Point(128, 127);
             this.uiSwitch18.MinimumSize = new System.Drawing.Size(1, 1);
             this.uiSwitch18.Name = "uiSwitch18";
-            this.uiSwitch18.Size = new System.Drawing.Size(112, 39);
+            this.uiSwitch18.Size = new System.Drawing.Size(53, 21);
             this.uiSwitch18.TabIndex = 35;
             this.uiSwitch18.Text = "uiSwitch2";
             // 
@@ -546,11 +821,11 @@
             this.uiLabel13.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiLabel13.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiLabel13.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel13.Location = new System.Drawing.Point(393, 185);
+            this.uiLabel13.Location = new System.Drawing.Point(187, 115);
             this.uiLabel13.Name = "uiLabel13";
-            this.uiLabel13.Size = new System.Drawing.Size(115, 45);
+            this.uiLabel13.Size = new System.Drawing.Size(54, 45);
             this.uiLabel13.TabIndex = 36;
-            this.uiLabel13.Text = "1000000";
+            this.uiLabel13.Text = "100000";
             this.uiLabel13.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
             this.uiLabel13.Click += new System.EventHandler(this.LabEmb1_Click);
             // 
@@ -561,10 +836,10 @@
             this.uiSwitch17.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiSwitch17.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiSwitch17.InActiveText = "OFF";
-            this.uiSwitch17.Location = new System.Drawing.Point(145, 188);
+            this.uiSwitch17.Location = new System.Drawing.Point(69, 127);
             this.uiSwitch17.MinimumSize = new System.Drawing.Size(1, 1);
             this.uiSwitch17.Name = "uiSwitch17";
-            this.uiSwitch17.Size = new System.Drawing.Size(112, 39);
+            this.uiSwitch17.Size = new System.Drawing.Size(52, 21);
             this.uiSwitch17.SwitchShape = Sunny.UI.UISwitch.UISwitchShape.Square;
             this.uiSwitch17.TabIndex = 34;
             this.uiSwitch17.Text = "uiSwitch2";
@@ -574,9 +849,9 @@
             this.uiLabel20.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiLabel20.Font = new System.Drawing.Font("Arial", 10F);
             this.uiLabel20.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel20.Location = new System.Drawing.Point(6, 27);
+            this.uiLabel20.Location = new System.Drawing.Point(3, 13);
             this.uiLabel20.Name = "uiLabel20";
-            this.uiLabel20.Size = new System.Drawing.Size(126, 28);
+            this.uiLabel20.Size = new System.Drawing.Size(60, 28);
             this.uiLabel20.TabIndex = 37;
             this.uiLabel20.Text = "EPB 07";
             this.uiLabel20.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -586,9 +861,9 @@
             this.uiLabel21.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiLabel21.Font = new System.Drawing.Font("Arial", 10F);
             this.uiLabel21.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel21.Location = new System.Drawing.Point(6, 110);
+            this.uiLabel21.Location = new System.Drawing.Point(3, 68);
             this.uiLabel21.Name = "uiLabel21";
-            this.uiLabel21.Size = new System.Drawing.Size(126, 28);
+            this.uiLabel21.Size = new System.Drawing.Size(60, 28);
             this.uiLabel21.TabIndex = 37;
             this.uiLabel21.Text = "EPB 08";
             this.uiLabel21.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -598,9 +873,9 @@
             this.uiLabel22.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiLabel22.Font = new System.Drawing.Font("Arial", 10F);
             this.uiLabel22.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel22.Location = new System.Drawing.Point(6, 194);
+            this.uiLabel22.Location = new System.Drawing.Point(3, 124);
             this.uiLabel22.Name = "uiLabel22";
-            this.uiLabel22.Size = new System.Drawing.Size(126, 28);
+            this.uiLabel22.Size = new System.Drawing.Size(60, 28);
             this.uiLabel22.TabIndex = 37;
             this.uiLabel22.Text = "EPB 09";
             this.uiLabel22.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -625,13 +900,13 @@
             this.uiTableLayoutPanel13.Controls.Add(this.uiLabel27, 0, 1);
             this.uiTableLayoutPanel13.Controls.Add(this.uiLabel28, 0, 2);
             this.uiTableLayoutPanel13.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel13.Location = new System.Drawing.Point(542, 278);
+            this.uiTableLayoutPanel13.Location = new System.Drawing.Point(272, 194);
             this.uiTableLayoutPanel13.Name = "uiTableLayoutPanel13";
             this.uiTableLayoutPanel13.RowCount = 3;
             this.uiTableLayoutPanel13.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
             this.uiTableLayoutPanel13.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
             this.uiTableLayoutPanel13.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
-            this.uiTableLayoutPanel13.Size = new System.Drawing.Size(514, 250);
+            this.uiTableLayoutPanel13.Size = new System.Drawing.Size(244, 166);
             this.uiTableLayoutPanel13.TabIndex = 0;
             this.uiTableLayoutPanel13.TagString = null;
             // 
@@ -640,11 +915,11 @@
             this.uiLabel14.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiLabel14.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiLabel14.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel14.Location = new System.Drawing.Point(393, 19);
+            this.uiLabel14.Location = new System.Drawing.Point(187, 5);
             this.uiLabel14.Name = "uiLabel14";
-            this.uiLabel14.Size = new System.Drawing.Size(115, 45);
+            this.uiLabel14.Size = new System.Drawing.Size(54, 45);
             this.uiLabel14.TabIndex = 36;
-            this.uiLabel14.Text = "1000000";
+            this.uiLabel14.Text = "100000";
             this.uiLabel14.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
             this.uiLabel14.Click += new System.EventHandler(this.LabEmb1_Click);
             // 
@@ -655,10 +930,10 @@
             this.uiSwitch19.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiSwitch19.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiSwitch19.InActiveText = "OFF";
-            this.uiSwitch19.Location = new System.Drawing.Point(145, 105);
+            this.uiSwitch19.Location = new System.Drawing.Point(69, 72);
             this.uiSwitch19.MinimumSize = new System.Drawing.Size(1, 1);
             this.uiSwitch19.Name = "uiSwitch19";
-            this.uiSwitch19.Size = new System.Drawing.Size(112, 39);
+            this.uiSwitch19.Size = new System.Drawing.Size(52, 21);
             this.uiSwitch19.SwitchShape = Sunny.UI.UISwitch.UISwitchShape.Square;
             this.uiSwitch19.TabIndex = 34;
             this.uiSwitch19.Text = "uiSwitch2";
@@ -669,10 +944,10 @@
             this.uiSwitch20.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiSwitch20.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiSwitch20.InActiveText = "STOP";
-            this.uiSwitch20.Location = new System.Drawing.Point(269, 105);
+            this.uiSwitch20.Location = new System.Drawing.Point(128, 72);
             this.uiSwitch20.MinimumSize = new System.Drawing.Size(1, 1);
             this.uiSwitch20.Name = "uiSwitch20";
-            this.uiSwitch20.Size = new System.Drawing.Size(112, 39);
+            this.uiSwitch20.Size = new System.Drawing.Size(53, 21);
             this.uiSwitch20.TabIndex = 35;
             this.uiSwitch20.Text = "uiSwitch2";
             // 
@@ -682,10 +957,10 @@
             this.uiSwitch21.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiSwitch21.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiSwitch21.InActiveText = "STOP";
-            this.uiSwitch21.Location = new System.Drawing.Point(269, 22);
+            this.uiSwitch21.Location = new System.Drawing.Point(128, 17);
             this.uiSwitch21.MinimumSize = new System.Drawing.Size(1, 1);
             this.uiSwitch21.Name = "uiSwitch21";
-            this.uiSwitch21.Size = new System.Drawing.Size(112, 39);
+            this.uiSwitch21.Size = new System.Drawing.Size(53, 21);
             this.uiSwitch21.TabIndex = 35;
             this.uiSwitch21.Text = "uiSwitch2";
             // 
@@ -696,10 +971,10 @@
             this.uiSwitch22.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiSwitch22.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiSwitch22.InActiveText = "OFF";
-            this.uiSwitch22.Location = new System.Drawing.Point(145, 22);
+            this.uiSwitch22.Location = new System.Drawing.Point(69, 17);
             this.uiSwitch22.MinimumSize = new System.Drawing.Size(1, 1);
             this.uiSwitch22.Name = "uiSwitch22";
-            this.uiSwitch22.Size = new System.Drawing.Size(112, 39);
+            this.uiSwitch22.Size = new System.Drawing.Size(52, 21);
             this.uiSwitch22.SwitchShape = Sunny.UI.UISwitch.UISwitchShape.Square;
             this.uiSwitch22.TabIndex = 34;
             this.uiSwitch22.Text = "uiSwitch2";
@@ -709,11 +984,11 @@
             this.uiLabel15.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiLabel15.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiLabel15.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel15.Location = new System.Drawing.Point(393, 102);
+            this.uiLabel15.Location = new System.Drawing.Point(187, 60);
             this.uiLabel15.Name = "uiLabel15";
-            this.uiLabel15.Size = new System.Drawing.Size(115, 45);
+            this.uiLabel15.Size = new System.Drawing.Size(54, 45);
             this.uiLabel15.TabIndex = 36;
-            this.uiLabel15.Text = "1000000";
+            this.uiLabel15.Text = "100000";
             this.uiLabel15.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
             this.uiLabel15.Click += new System.EventHandler(this.LabEmb1_Click);
             // 
@@ -724,10 +999,10 @@
             this.uiSwitch23.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiSwitch23.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiSwitch23.InActiveText = "OFF";
-            this.uiSwitch23.Location = new System.Drawing.Point(145, 188);
+            this.uiSwitch23.Location = new System.Drawing.Point(69, 127);
             this.uiSwitch23.MinimumSize = new System.Drawing.Size(1, 1);
             this.uiSwitch23.Name = "uiSwitch23";
-            this.uiSwitch23.Size = new System.Drawing.Size(112, 39);
+            this.uiSwitch23.Size = new System.Drawing.Size(52, 21);
             this.uiSwitch23.SwitchShape = Sunny.UI.UISwitch.UISwitchShape.Square;
             this.uiSwitch23.TabIndex = 34;
             this.uiSwitch23.Text = "uiSwitch2";
@@ -738,10 +1013,10 @@
             this.uiSwitch24.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiSwitch24.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiSwitch24.InActiveText = "STOP";
-            this.uiSwitch24.Location = new System.Drawing.Point(269, 188);
+            this.uiSwitch24.Location = new System.Drawing.Point(128, 127);
             this.uiSwitch24.MinimumSize = new System.Drawing.Size(1, 1);
             this.uiSwitch24.Name = "uiSwitch24";
-            this.uiSwitch24.Size = new System.Drawing.Size(112, 39);
+            this.uiSwitch24.Size = new System.Drawing.Size(53, 21);
             this.uiSwitch24.TabIndex = 35;
             this.uiSwitch24.Text = "uiSwitch2";
             // 
@@ -750,11 +1025,11 @@
             this.uiLabel16.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiLabel16.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiLabel16.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel16.Location = new System.Drawing.Point(393, 185);
+            this.uiLabel16.Location = new System.Drawing.Point(187, 115);
             this.uiLabel16.Name = "uiLabel16";
-            this.uiLabel16.Size = new System.Drawing.Size(115, 45);
+            this.uiLabel16.Size = new System.Drawing.Size(54, 45);
             this.uiLabel16.TabIndex = 36;
-            this.uiLabel16.Text = "1000000";
+            this.uiLabel16.Text = "100000";
             this.uiLabel16.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
             this.uiLabel16.Click += new System.EventHandler(this.LabEmb1_Click);
             // 
@@ -763,9 +1038,9 @@
             this.uiLabel26.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiLabel26.Font = new System.Drawing.Font("Arial", 10F);
             this.uiLabel26.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel26.Location = new System.Drawing.Point(6, 27);
+            this.uiLabel26.Location = new System.Drawing.Point(3, 13);
             this.uiLabel26.Name = "uiLabel26";
-            this.uiLabel26.Size = new System.Drawing.Size(126, 28);
+            this.uiLabel26.Size = new System.Drawing.Size(60, 28);
             this.uiLabel26.TabIndex = 37;
             this.uiLabel26.Text = "EPB 10";
             this.uiLabel26.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -775,9 +1050,9 @@
             this.uiLabel27.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiLabel27.Font = new System.Drawing.Font("Arial", 10F);
             this.uiLabel27.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel27.Location = new System.Drawing.Point(6, 110);
+            this.uiLabel27.Location = new System.Drawing.Point(3, 68);
             this.uiLabel27.Name = "uiLabel27";
-            this.uiLabel27.Size = new System.Drawing.Size(126, 28);
+            this.uiLabel27.Size = new System.Drawing.Size(60, 28);
             this.uiLabel27.TabIndex = 37;
             this.uiLabel27.Text = "EPB 11";
             this.uiLabel27.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -787,9 +1062,9 @@
             this.uiLabel28.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiLabel28.Font = new System.Drawing.Font("Arial", 10F);
             this.uiLabel28.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel28.Location = new System.Drawing.Point(6, 194);
+            this.uiLabel28.Location = new System.Drawing.Point(3, 124);
             this.uiLabel28.Name = "uiLabel28";
-            this.uiLabel28.Size = new System.Drawing.Size(126, 28);
+            this.uiLabel28.Size = new System.Drawing.Size(60, 28);
             this.uiLabel28.TabIndex = 37;
             this.uiLabel28.Text = "EPB 12";
             this.uiLabel28.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -820,7 +1095,7 @@
             this.uiTableLayoutPanel10.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
             this.uiTableLayoutPanel10.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
             this.uiTableLayoutPanel10.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
-            this.uiTableLayoutPanel10.Size = new System.Drawing.Size(514, 250);
+            this.uiTableLayoutPanel10.Size = new System.Drawing.Size(244, 166);
             this.uiTableLayoutPanel10.TabIndex = 0;
             this.uiTableLayoutPanel10.TagString = null;
             // 
@@ -829,11 +1104,11 @@
             this.LabEmb1.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.LabEmb1.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.LabEmb1.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.LabEmb1.Location = new System.Drawing.Point(393, 19);
+            this.LabEmb1.Location = new System.Drawing.Point(187, 5);
             this.LabEmb1.Name = "LabEmb1";
-            this.LabEmb1.Size = new System.Drawing.Size(115, 45);
+            this.LabEmb1.Size = new System.Drawing.Size(54, 45);
             this.LabEmb1.TabIndex = 36;
-            this.LabEmb1.Text = "1000000";
+            this.LabEmb1.Text = "100000";
             this.LabEmb1.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
             this.LabEmb1.Click += new System.EventHandler(this.LabEmb1_Click);
             // 
@@ -844,10 +1119,10 @@
             this.uiSwitch1.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiSwitch1.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiSwitch1.InActiveText = "OFF";
-            this.uiSwitch1.Location = new System.Drawing.Point(145, 105);
+            this.uiSwitch1.Location = new System.Drawing.Point(69, 72);
             this.uiSwitch1.MinimumSize = new System.Drawing.Size(1, 1);
             this.uiSwitch1.Name = "uiSwitch1";
-            this.uiSwitch1.Size = new System.Drawing.Size(112, 39);
+            this.uiSwitch1.Size = new System.Drawing.Size(52, 21);
             this.uiSwitch1.SwitchShape = Sunny.UI.UISwitch.UISwitchShape.Square;
             this.uiSwitch1.TabIndex = 34;
             this.uiSwitch1.Text = "uiSwitch2";
@@ -858,10 +1133,10 @@
             this.uiSwitch2.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiSwitch2.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiSwitch2.InActiveText = "STOP";
-            this.uiSwitch2.Location = new System.Drawing.Point(269, 105);
+            this.uiSwitch2.Location = new System.Drawing.Point(128, 72);
             this.uiSwitch2.MinimumSize = new System.Drawing.Size(1, 1);
             this.uiSwitch2.Name = "uiSwitch2";
-            this.uiSwitch2.Size = new System.Drawing.Size(112, 39);
+            this.uiSwitch2.Size = new System.Drawing.Size(53, 21);
             this.uiSwitch2.TabIndex = 35;
             this.uiSwitch2.Text = "uiSwitch2";
             // 
@@ -871,10 +1146,10 @@
             this.uiSwitch5.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiSwitch5.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiSwitch5.InActiveText = "STOP";
-            this.uiSwitch5.Location = new System.Drawing.Point(269, 22);
+            this.uiSwitch5.Location = new System.Drawing.Point(128, 17);
             this.uiSwitch5.MinimumSize = new System.Drawing.Size(1, 1);
             this.uiSwitch5.Name = "uiSwitch5";
-            this.uiSwitch5.Size = new System.Drawing.Size(112, 39);
+            this.uiSwitch5.Size = new System.Drawing.Size(53, 21);
             this.uiSwitch5.TabIndex = 35;
             this.uiSwitch5.Text = "uiSwitch2";
             // 
@@ -885,10 +1160,10 @@
             this.uiSwitch6.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiSwitch6.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiSwitch6.InActiveText = "OFF";
-            this.uiSwitch6.Location = new System.Drawing.Point(145, 22);
+            this.uiSwitch6.Location = new System.Drawing.Point(69, 17);
             this.uiSwitch6.MinimumSize = new System.Drawing.Size(1, 1);
             this.uiSwitch6.Name = "uiSwitch6";
-            this.uiSwitch6.Size = new System.Drawing.Size(112, 39);
+            this.uiSwitch6.Size = new System.Drawing.Size(52, 21);
             this.uiSwitch6.SwitchShape = Sunny.UI.UISwitch.UISwitchShape.Square;
             this.uiSwitch6.TabIndex = 34;
             this.uiSwitch6.Text = "uiSwitch2";
@@ -898,11 +1173,11 @@
             this.uiLabel1.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiLabel1.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiLabel1.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel1.Location = new System.Drawing.Point(393, 102);
+            this.uiLabel1.Location = new System.Drawing.Point(187, 60);
             this.uiLabel1.Name = "uiLabel1";
-            this.uiLabel1.Size = new System.Drawing.Size(114, 45);
+            this.uiLabel1.Size = new System.Drawing.Size(54, 45);
             this.uiLabel1.TabIndex = 36;
-            this.uiLabel1.Text = "1000000";
+            this.uiLabel1.Text = "100000";
             this.uiLabel1.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
             this.uiLabel1.Click += new System.EventHandler(this.LabEmb1_Click);
             // 
@@ -913,10 +1188,10 @@
             this.uiSwitch3.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiSwitch3.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiSwitch3.InActiveText = "OFF";
-            this.uiSwitch3.Location = new System.Drawing.Point(145, 188);
+            this.uiSwitch3.Location = new System.Drawing.Point(69, 127);
             this.uiSwitch3.MinimumSize = new System.Drawing.Size(1, 1);
             this.uiSwitch3.Name = "uiSwitch3";
-            this.uiSwitch3.Size = new System.Drawing.Size(112, 39);
+            this.uiSwitch3.Size = new System.Drawing.Size(52, 21);
             this.uiSwitch3.SwitchShape = Sunny.UI.UISwitch.UISwitchShape.Square;
             this.uiSwitch3.TabIndex = 34;
             this.uiSwitch3.Text = "uiSwitch2";
@@ -927,10 +1202,10 @@
             this.uiSwitch4.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiSwitch4.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiSwitch4.InActiveText = "STOP";
-            this.uiSwitch4.Location = new System.Drawing.Point(269, 188);
+            this.uiSwitch4.Location = new System.Drawing.Point(128, 127);
             this.uiSwitch4.MinimumSize = new System.Drawing.Size(1, 1);
             this.uiSwitch4.Name = "uiSwitch4";
-            this.uiSwitch4.Size = new System.Drawing.Size(112, 39);
+            this.uiSwitch4.Size = new System.Drawing.Size(53, 21);
             this.uiSwitch4.TabIndex = 35;
             this.uiSwitch4.Text = "uiSwitch2";
             // 
@@ -939,11 +1214,11 @@
             this.uiLabel2.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiLabel2.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiLabel2.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel2.Location = new System.Drawing.Point(393, 185);
+            this.uiLabel2.Location = new System.Drawing.Point(187, 115);
             this.uiLabel2.Name = "uiLabel2";
-            this.uiLabel2.Size = new System.Drawing.Size(114, 45);
+            this.uiLabel2.Size = new System.Drawing.Size(54, 45);
             this.uiLabel2.TabIndex = 36;
-            this.uiLabel2.Text = "1000000";
+            this.uiLabel2.Text = "100000";
             this.uiLabel2.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
             this.uiLabel2.Click += new System.EventHandler(this.LabEmb1_Click);
             // 
@@ -952,9 +1227,9 @@
             this.uiLabel17.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiLabel17.Font = new System.Drawing.Font("Arial", 10F);
             this.uiLabel17.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel17.Location = new System.Drawing.Point(6, 27);
+            this.uiLabel17.Location = new System.Drawing.Point(3, 13);
             this.uiLabel17.Name = "uiLabel17";
-            this.uiLabel17.Size = new System.Drawing.Size(126, 28);
+            this.uiLabel17.Size = new System.Drawing.Size(60, 28);
             this.uiLabel17.TabIndex = 37;
             this.uiLabel17.Text = "EPB 01";
             this.uiLabel17.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -964,9 +1239,9 @@
             this.uiLabel18.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiLabel18.Font = new System.Drawing.Font("Arial", 10F);
             this.uiLabel18.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel18.Location = new System.Drawing.Point(6, 110);
+            this.uiLabel18.Location = new System.Drawing.Point(3, 68);
             this.uiLabel18.Name = "uiLabel18";
-            this.uiLabel18.Size = new System.Drawing.Size(126, 28);
+            this.uiLabel18.Size = new System.Drawing.Size(60, 28);
             this.uiLabel18.TabIndex = 37;
             this.uiLabel18.Text = "EPB 02";
             this.uiLabel18.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -976,25 +1251,77 @@
             this.uiLabel19.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiLabel19.Font = new System.Drawing.Font("Arial", 10F);
             this.uiLabel19.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel19.Location = new System.Drawing.Point(6, 194);
+            this.uiLabel19.Location = new System.Drawing.Point(3, 124);
             this.uiLabel19.Name = "uiLabel19";
-            this.uiLabel19.Size = new System.Drawing.Size(126, 28);
+            this.uiLabel19.Size = new System.Drawing.Size(60, 28);
             this.uiLabel19.TabIndex = 37;
             this.uiLabel19.Text = "EPB 03";
             this.uiLabel19.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiPanel2
+            // 
+            this.uiPanel2.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.uiPanel2.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiPanel2.FillColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.uiPanel2.FillColor2 = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.uiPanel2.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiPanel2.Location = new System.Drawing.Point(18, 190);
+            this.uiPanel2.Margin = new System.Windows.Forms.Padding(0);
+            this.uiPanel2.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiPanel2.Name = "uiPanel2";
+            this.uiPanel2.Radius = 1;
+            this.uiPanel2.Size = new System.Drawing.Size(250, 1);
+            this.uiPanel2.TabIndex = 55;
+            this.uiPanel2.Text = null;
+            this.uiPanel2.TextAlignment = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiPanel3
+            // 
+            this.uiPanel3.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.uiPanel3.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiPanel3.FillColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.uiPanel3.FillColor2 = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.uiPanel3.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiPanel3.Location = new System.Drawing.Point(269, 190);
+            this.uiPanel3.Margin = new System.Windows.Forms.Padding(0);
+            this.uiPanel3.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiPanel3.Name = "uiPanel3";
+            this.uiPanel3.Radius = 1;
+            this.uiPanel3.Size = new System.Drawing.Size(250, 1);
+            this.uiPanel3.TabIndex = 55;
+            this.uiPanel3.Text = null;
+            this.uiPanel3.TextAlignment = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiPanel4
+            // 
+            this.uiPanel4.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.uiPanel4.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiPanel4.FillColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.uiPanel4.FillColor2 = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.uiPanel4.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiPanel4.Location = new System.Drawing.Point(268, 18);
+            this.uiPanel4.Margin = new System.Windows.Forms.Padding(0);
+            this.uiPanel4.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiPanel4.Name = "uiPanel4";
+            this.uiPanel4.Radius = 1;
+            this.tableLayoutPanel1.SetRowSpan(this.uiPanel4, 3);
+            this.uiPanel4.Size = new System.Drawing.Size(1, 345);
+            this.uiPanel4.TabIndex = 55;
+            this.uiPanel4.Text = null;
+            this.uiPanel4.TextAlignment = System.Drawing.ContentAlignment.MiddleCenter;
             // 
             // uiGroupBox1
             // 
             this.uiGroupBox1.Controls.Add(this.uiTableLayoutPanel2);
             this.uiGroupBox1.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiGroupBox1.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.uiGroupBox1.Location = new System.Drawing.Point(22, 23);
-            this.uiGroupBox1.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.uiGroupBox1.Location = new System.Drawing.Point(11, 11);
+            this.uiGroupBox1.Margin = new System.Windows.Forms.Padding(2);
             this.uiGroupBox1.MinimumSize = new System.Drawing.Size(1, 1);
             this.uiGroupBox1.Name = "uiGroupBox1";
             this.uiGroupBox1.Padding = new System.Windows.Forms.Padding(0, 32, 0, 0);
             this.uiTableLayoutPanel1.SetRowSpan(this.uiGroupBox1, 3);
-            this.uiGroupBox1.Size = new System.Drawing.Size(1077, 582);
+            this.uiGroupBox1.Size = new System.Drawing.Size(538, 413);
             this.uiGroupBox1.TabIndex = 3;
             this.uiGroupBox1.Text = "试验设置";
             this.uiGroupBox1.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
@@ -1044,7 +1371,7 @@
             this.uiTableLayoutPanel2.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 6F));
             this.uiTableLayoutPanel2.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 10F));
             this.uiTableLayoutPanel2.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 3F));
-            this.uiTableLayoutPanel2.Size = new System.Drawing.Size(1077, 550);
+            this.uiTableLayoutPanel2.Size = new System.Drawing.Size(538, 381);
             this.uiTableLayoutPanel2.TabIndex = 1;
             this.uiTableLayoutPanel2.TagString = null;
             // 
@@ -1055,13 +1382,13 @@
             this.TxtTargetCycles.DoubleValue = 100000D;
             this.TxtTargetCycles.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.TxtTargetCycles.IntValue = 100000;
-            this.TxtTargetCycles.Location = new System.Drawing.Point(454, 219);
+            this.TxtTargetCycles.Location = new System.Drawing.Point(223, 151);
             this.TxtTargetCycles.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.TxtTargetCycles.MinimumSize = new System.Drawing.Size(1, 16);
             this.TxtTargetCycles.Name = "TxtTargetCycles";
             this.TxtTargetCycles.Padding = new System.Windows.Forms.Padding(5);
             this.TxtTargetCycles.ShowText = false;
-            this.TxtTargetCycles.Size = new System.Drawing.Size(257, 45);
+            this.TxtTargetCycles.Size = new System.Drawing.Size(92, 28);
             this.TxtTargetCycles.TabIndex = 44;
             this.TxtTargetCycles.Text = "100000";
             this.TxtTargetCycles.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
@@ -1074,13 +1401,13 @@
             this.TxtTestCycleTime.DoubleValue = 3D;
             this.TxtTestCycleTime.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.TxtTestCycleTime.IntValue = 3;
-            this.TxtTestCycleTime.Location = new System.Drawing.Point(454, 153);
+            this.TxtTestCycleTime.Location = new System.Drawing.Point(223, 106);
             this.TxtTestCycleTime.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.TxtTestCycleTime.MinimumSize = new System.Drawing.Size(1, 16);
             this.TxtTestCycleTime.Name = "TxtTestCycleTime";
             this.TxtTestCycleTime.Padding = new System.Windows.Forms.Padding(5);
             this.TxtTestCycleTime.ShowText = false;
-            this.TxtTestCycleTime.Size = new System.Drawing.Size(257, 45);
+            this.TxtTestCycleTime.Size = new System.Drawing.Size(92, 28);
             this.TxtTestCycleTime.TabIndex = 44;
             this.TxtTestCycleTime.Text = "3";
             this.TxtTestCycleTime.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
@@ -1092,9 +1419,9 @@
             this.uiLabel7.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiLabel7.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiLabel7.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel7.Location = new System.Drawing.Point(20, 16);
+            this.uiLabel7.Location = new System.Drawing.Point(9, 11);
             this.uiLabel7.Name = "uiLabel7";
-            this.uiLabel7.Size = new System.Drawing.Size(427, 55);
+            this.uiLabel7.Size = new System.Drawing.Size(207, 38);
             this.uiLabel7.TabIndex = 33;
             this.uiLabel7.TagString = "试验名称";
             this.uiLabel7.Text = "试验名称";
@@ -1106,9 +1433,9 @@
             this.uiLabel9.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiLabel9.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiLabel9.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel9.Location = new System.Drawing.Point(20, 148);
+            this.uiLabel9.Location = new System.Drawing.Point(9, 101);
             this.uiLabel9.Name = "uiLabel9";
-            this.uiLabel9.Size = new System.Drawing.Size(427, 55);
+            this.uiLabel9.Size = new System.Drawing.Size(207, 38);
             this.uiLabel9.TabIndex = 35;
             this.uiLabel9.Text = "频   率";
             this.uiLabel9.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -1119,9 +1446,9 @@
             this.uiLabel10.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiLabel10.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiLabel10.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel10.Location = new System.Drawing.Point(20, 214);
+            this.uiLabel10.Location = new System.Drawing.Point(9, 146);
             this.uiLabel10.Name = "uiLabel10";
-            this.uiLabel10.Size = new System.Drawing.Size(427, 55);
+            this.uiLabel10.Size = new System.Drawing.Size(207, 38);
             this.uiLabel10.TabIndex = 36;
             this.uiLabel10.Text = "目标次数";
             this.uiLabel10.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -1132,13 +1459,13 @@
             this.TxtTestName.Cursor = System.Windows.Forms.Cursors.IBeam;
             this.TxtTestName.Dock = System.Windows.Forms.DockStyle.Fill;
             this.TxtTestName.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.TxtTestName.Location = new System.Drawing.Point(454, 21);
+            this.TxtTestName.Location = new System.Drawing.Point(223, 16);
             this.TxtTestName.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.TxtTestName.MinimumSize = new System.Drawing.Size(1, 16);
             this.TxtTestName.Name = "TxtTestName";
             this.TxtTestName.Padding = new System.Windows.Forms.Padding(5);
             this.TxtTestName.ShowText = false;
-            this.TxtTestName.Size = new System.Drawing.Size(548, 45);
+            this.TxtTestName.Size = new System.Drawing.Size(251, 28);
             this.TxtTestName.TabIndex = 43;
             this.TxtTestName.Text = "Long Time1";
             this.TxtTestName.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
@@ -1150,9 +1477,9 @@
             this.uiLabel8.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiLabel8.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiLabel8.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel8.Location = new System.Drawing.Point(20, 82);
+            this.uiLabel8.Location = new System.Drawing.Point(9, 56);
             this.uiLabel8.Name = "uiLabel8";
-            this.uiLabel8.Size = new System.Drawing.Size(427, 55);
+            this.uiLabel8.Size = new System.Drawing.Size(207, 38);
             this.uiLabel8.TabIndex = 45;
             this.uiLabel8.Text = "试验标准";
             this.uiLabel8.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -1163,13 +1490,13 @@
             this.TxtTestStandard.Cursor = System.Windows.Forms.Cursors.IBeam;
             this.TxtTestStandard.Dock = System.Windows.Forms.DockStyle.Fill;
             this.TxtTestStandard.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.TxtTestStandard.Location = new System.Drawing.Point(454, 87);
+            this.TxtTestStandard.Location = new System.Drawing.Point(223, 61);
             this.TxtTestStandard.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.TxtTestStandard.MinimumSize = new System.Drawing.Size(1, 16);
             this.TxtTestStandard.Name = "TxtTestStandard";
             this.TxtTestStandard.Padding = new System.Windows.Forms.Padding(5);
             this.TxtTestStandard.ShowText = false;
-            this.TxtTestStandard.Size = new System.Drawing.Size(548, 45);
+            this.TxtTestStandard.Size = new System.Drawing.Size(251, 28);
             this.TxtTestStandard.TabIndex = 46;
             this.TxtTestStandard.Text = "QRYM-2022 ";
             this.TxtTestStandard.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
@@ -1180,9 +1507,9 @@
             this.uiLabel11.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiLabel11.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiLabel11.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel11.Location = new System.Drawing.Point(718, 148);
+            this.uiLabel11.Location = new System.Drawing.Point(322, 101);
             this.uiLabel11.Name = "uiLabel11";
-            this.uiLabel11.Size = new System.Drawing.Size(74, 55);
+            this.uiLabel11.Size = new System.Drawing.Size(74, 38);
             this.uiLabel11.TabIndex = 48;
             this.uiLabel11.Text = "Hz";
             this.uiLabel11.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -1199,13 +1526,13 @@
             this.uiTableLayoutPanel4.Controls.Add(this.uiGroupBox6, 0, 1);
             this.uiTableLayoutPanel4.Controls.Add(this.uiGroupBox7, 1, 1);
             this.uiTableLayoutPanel4.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel4.Location = new System.Drawing.Point(20, 305);
+            this.uiTableLayoutPanel4.Location = new System.Drawing.Point(9, 209);
             this.uiTableLayoutPanel4.Name = "uiTableLayoutPanel4";
             this.uiTableLayoutPanel4.RowCount = 2;
             this.uiTableLayoutPanel2.SetRowSpan(this.uiTableLayoutPanel4, 5);
             this.uiTableLayoutPanel4.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 50F));
             this.uiTableLayoutPanel4.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 50F));
-            this.uiTableLayoutPanel4.Size = new System.Drawing.Size(845, 225);
+            this.uiTableLayoutPanel4.Size = new System.Drawing.Size(414, 152);
             this.uiTableLayoutPanel4.TabIndex = 51;
             this.uiTableLayoutPanel4.TagString = null;
             // 
@@ -1219,7 +1546,7 @@
             this.uiGroupBox4.MinimumSize = new System.Drawing.Size(1, 1);
             this.uiGroupBox4.Name = "uiGroupBox4";
             this.uiGroupBox4.Padding = new System.Windows.Forms.Padding(0, 32, 0, 0);
-            this.uiGroupBox4.Size = new System.Drawing.Size(414, 102);
+            this.uiGroupBox4.Size = new System.Drawing.Size(199, 66);
             this.uiGroupBox4.TabIndex = 6;
             this.uiGroupBox4.Text = "电源1";
             this.uiGroupBox4.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
@@ -1230,74 +1557,80 @@
             this.uiTableLayoutPanel5.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
             this.uiTableLayoutPanel5.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
             this.uiTableLayoutPanel5.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
-            this.uiTableLayoutPanel5.Controls.Add(this.uiCheckBox2, 1, 0);
-            this.uiTableLayoutPanel5.Controls.Add(this.uiCheckBox1, 0, 0);
-            this.uiTableLayoutPanel5.Controls.Add(this.uiCheckBox3, 2, 0);
+            this.uiTableLayoutPanel5.Controls.Add(this.checkEdit12, 1, 0);
+            this.uiTableLayoutPanel5.Controls.Add(this.checkEdit11, 2, 0);
+            this.uiTableLayoutPanel5.Controls.Add(this.checkEdit10, 0, 0);
             this.uiTableLayoutPanel5.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiTableLayoutPanel5.Location = new System.Drawing.Point(0, 32);
             this.uiTableLayoutPanel5.Name = "uiTableLayoutPanel5";
             this.uiTableLayoutPanel5.RowCount = 1;
             this.uiTableLayoutPanel5.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100F));
-            this.uiTableLayoutPanel5.Size = new System.Drawing.Size(414, 70);
+            this.uiTableLayoutPanel5.Size = new System.Drawing.Size(199, 34);
             this.uiTableLayoutPanel5.TabIndex = 0;
             this.uiTableLayoutPanel5.TagString = null;
             // 
-            // uiCheckBox2
+            // checkEdit12
             // 
-            this.uiCheckBox2.CheckBoxSize = 32;
-            this.uiCheckBox2.Checked = true;
-            this.uiCheckBox2.Cursor = System.Windows.Forms.Cursors.Hand;
-            this.uiCheckBox2.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiCheckBox2.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.uiCheckBox2.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiCheckBox2.Location = new System.Drawing.Point(141, 3);
-            this.uiCheckBox2.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiCheckBox2.Name = "uiCheckBox2";
-            this.uiCheckBox2.Size = new System.Drawing.Size(132, 64);
-            this.uiCheckBox2.TabIndex = 52;
-            this.uiCheckBox2.Text = "2";
+            this.checkEdit12.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.checkEdit12.Location = new System.Drawing.Point(69, 3);
+            this.checkEdit12.Name = "checkEdit12";
+            this.checkEdit12.Properties.AllowFocused = false;
+            this.checkEdit12.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.checkEdit12.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.checkEdit12.Properties.Appearance.Options.UseBackColor = true;
+            this.checkEdit12.Properties.Appearance.Options.UseForeColor = true;
+            this.checkEdit12.Properties.Caption = "2";
+            this.checkEdit12.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.checkEdit12.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.checkEdit12.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.checkEdit12.Size = new System.Drawing.Size(60, 28);
+            this.checkEdit12.TabIndex = 0;
             // 
-            // uiCheckBox1
+            // checkEdit11
             // 
-            this.uiCheckBox1.CheckBoxSize = 32;
-            this.uiCheckBox1.Checked = true;
-            this.uiCheckBox1.Cursor = System.Windows.Forms.Cursors.Hand;
-            this.uiCheckBox1.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiCheckBox1.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.uiCheckBox1.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiCheckBox1.Location = new System.Drawing.Point(3, 3);
-            this.uiCheckBox1.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiCheckBox1.Name = "uiCheckBox1";
-            this.uiCheckBox1.Size = new System.Drawing.Size(132, 64);
-            this.uiCheckBox1.TabIndex = 52;
-            this.uiCheckBox1.Text = "1";
+            this.checkEdit11.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.checkEdit11.Location = new System.Drawing.Point(135, 3);
+            this.checkEdit11.Name = "checkEdit11";
+            this.checkEdit11.Properties.AllowFocused = false;
+            this.checkEdit11.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.checkEdit11.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.checkEdit11.Properties.Appearance.Options.UseBackColor = true;
+            this.checkEdit11.Properties.Appearance.Options.UseForeColor = true;
+            this.checkEdit11.Properties.Caption = "3";
+            this.checkEdit11.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.checkEdit11.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.checkEdit11.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.checkEdit11.Size = new System.Drawing.Size(61, 28);
+            this.checkEdit11.TabIndex = 0;
             // 
-            // uiCheckBox3
+            // checkEdit10
             // 
-            this.uiCheckBox3.CheckBoxSize = 32;
-            this.uiCheckBox3.Checked = true;
-            this.uiCheckBox3.Cursor = System.Windows.Forms.Cursors.Hand;
-            this.uiCheckBox3.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiCheckBox3.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.uiCheckBox3.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiCheckBox3.Location = new System.Drawing.Point(279, 3);
-            this.uiCheckBox3.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiCheckBox3.Name = "uiCheckBox3";
-            this.uiCheckBox3.Size = new System.Drawing.Size(132, 64);
-            this.uiCheckBox3.TabIndex = 52;
-            this.uiCheckBox3.Text = "3";
+            this.checkEdit10.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.checkEdit10.Location = new System.Drawing.Point(3, 3);
+            this.checkEdit10.Name = "checkEdit10";
+            this.checkEdit10.Properties.AllowFocused = false;
+            this.checkEdit10.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.checkEdit10.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.checkEdit10.Properties.Appearance.Options.UseBackColor = true;
+            this.checkEdit10.Properties.Appearance.Options.UseForeColor = true;
+            this.checkEdit10.Properties.Caption = "1";
+            this.checkEdit10.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.checkEdit10.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.checkEdit10.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.checkEdit10.Size = new System.Drawing.Size(60, 28);
+            this.checkEdit10.TabIndex = 0;
             // 
             // uiGroupBox5
             // 
             this.uiGroupBox5.Controls.Add(this.uiTableLayoutPanel7);
             this.uiGroupBox5.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiGroupBox5.Font = new System.Drawing.Font("宋体", 10.5F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiGroupBox5.Location = new System.Drawing.Point(426, 5);
+            this.uiGroupBox5.Location = new System.Drawing.Point(211, 5);
             this.uiGroupBox5.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.uiGroupBox5.MinimumSize = new System.Drawing.Size(1, 1);
             this.uiGroupBox5.Name = "uiGroupBox5";
             this.uiGroupBox5.Padding = new System.Windows.Forms.Padding(0, 32, 0, 0);
-            this.uiGroupBox5.Size = new System.Drawing.Size(415, 102);
+            this.uiGroupBox5.Size = new System.Drawing.Size(199, 66);
             this.uiGroupBox5.TabIndex = 6;
             this.uiGroupBox5.Text = "电源2";
             this.uiGroupBox5.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
@@ -1308,74 +1641,80 @@
             this.uiTableLayoutPanel7.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
             this.uiTableLayoutPanel7.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
             this.uiTableLayoutPanel7.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
-            this.uiTableLayoutPanel7.Controls.Add(this.uiCheckBox7, 1, 0);
-            this.uiTableLayoutPanel7.Controls.Add(this.uiCheckBox8, 0, 0);
-            this.uiTableLayoutPanel7.Controls.Add(this.uiCheckBox9, 2, 0);
+            this.uiTableLayoutPanel7.Controls.Add(this.checkEdit1, 1, 0);
+            this.uiTableLayoutPanel7.Controls.Add(this.checkEdit3, 2, 0);
+            this.uiTableLayoutPanel7.Controls.Add(this.checkEdit2, 0, 0);
             this.uiTableLayoutPanel7.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiTableLayoutPanel7.Location = new System.Drawing.Point(0, 32);
             this.uiTableLayoutPanel7.Name = "uiTableLayoutPanel7";
             this.uiTableLayoutPanel7.RowCount = 1;
             this.uiTableLayoutPanel7.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100F));
-            this.uiTableLayoutPanel7.Size = new System.Drawing.Size(415, 70);
+            this.uiTableLayoutPanel7.Size = new System.Drawing.Size(199, 34);
             this.uiTableLayoutPanel7.TabIndex = 53;
             this.uiTableLayoutPanel7.TagString = null;
             // 
-            // uiCheckBox7
+            // checkEdit1
             // 
-            this.uiCheckBox7.CheckBoxSize = 32;
-            this.uiCheckBox7.Checked = true;
-            this.uiCheckBox7.Cursor = System.Windows.Forms.Cursors.Hand;
-            this.uiCheckBox7.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiCheckBox7.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.uiCheckBox7.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiCheckBox7.Location = new System.Drawing.Point(141, 3);
-            this.uiCheckBox7.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiCheckBox7.Name = "uiCheckBox7";
-            this.uiCheckBox7.Size = new System.Drawing.Size(132, 64);
-            this.uiCheckBox7.TabIndex = 52;
-            this.uiCheckBox7.Text = "5";
+            this.checkEdit1.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.checkEdit1.Location = new System.Drawing.Point(69, 3);
+            this.checkEdit1.Name = "checkEdit1";
+            this.checkEdit1.Properties.AllowFocused = false;
+            this.checkEdit1.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.checkEdit1.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.checkEdit1.Properties.Appearance.Options.UseBackColor = true;
+            this.checkEdit1.Properties.Appearance.Options.UseForeColor = true;
+            this.checkEdit1.Properties.Caption = "5";
+            this.checkEdit1.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.checkEdit1.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.checkEdit1.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.checkEdit1.Size = new System.Drawing.Size(60, 28);
+            this.checkEdit1.TabIndex = 0;
             // 
-            // uiCheckBox8
+            // checkEdit3
             // 
-            this.uiCheckBox8.CheckBoxSize = 32;
-            this.uiCheckBox8.Checked = true;
-            this.uiCheckBox8.Cursor = System.Windows.Forms.Cursors.Hand;
-            this.uiCheckBox8.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiCheckBox8.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.uiCheckBox8.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiCheckBox8.Location = new System.Drawing.Point(3, 3);
-            this.uiCheckBox8.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiCheckBox8.Name = "uiCheckBox8";
-            this.uiCheckBox8.Size = new System.Drawing.Size(132, 64);
-            this.uiCheckBox8.TabIndex = 52;
-            this.uiCheckBox8.Text = "4";
+            this.checkEdit3.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.checkEdit3.Location = new System.Drawing.Point(135, 3);
+            this.checkEdit3.Name = "checkEdit3";
+            this.checkEdit3.Properties.AllowFocused = false;
+            this.checkEdit3.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.checkEdit3.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.checkEdit3.Properties.Appearance.Options.UseBackColor = true;
+            this.checkEdit3.Properties.Appearance.Options.UseForeColor = true;
+            this.checkEdit3.Properties.Caption = "6";
+            this.checkEdit3.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.checkEdit3.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.checkEdit3.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.checkEdit3.Size = new System.Drawing.Size(61, 28);
+            this.checkEdit3.TabIndex = 0;
             // 
-            // uiCheckBox9
+            // checkEdit2
             // 
-            this.uiCheckBox9.CheckBoxSize = 32;
-            this.uiCheckBox9.Checked = true;
-            this.uiCheckBox9.Cursor = System.Windows.Forms.Cursors.Hand;
-            this.uiCheckBox9.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiCheckBox9.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.uiCheckBox9.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiCheckBox9.Location = new System.Drawing.Point(279, 3);
-            this.uiCheckBox9.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiCheckBox9.Name = "uiCheckBox9";
-            this.uiCheckBox9.Size = new System.Drawing.Size(133, 64);
-            this.uiCheckBox9.TabIndex = 52;
-            this.uiCheckBox9.Text = "6";
+            this.checkEdit2.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.checkEdit2.Location = new System.Drawing.Point(3, 3);
+            this.checkEdit2.Name = "checkEdit2";
+            this.checkEdit2.Properties.AllowFocused = false;
+            this.checkEdit2.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.checkEdit2.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.checkEdit2.Properties.Appearance.Options.UseBackColor = true;
+            this.checkEdit2.Properties.Appearance.Options.UseForeColor = true;
+            this.checkEdit2.Properties.Caption = "4";
+            this.checkEdit2.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.checkEdit2.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.checkEdit2.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.checkEdit2.Size = new System.Drawing.Size(60, 28);
+            this.checkEdit2.TabIndex = 0;
             // 
             // uiGroupBox6
             // 
             this.uiGroupBox6.Controls.Add(this.uiTableLayoutPanel8);
             this.uiGroupBox6.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiGroupBox6.Font = new System.Drawing.Font("宋体", 10.5F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiGroupBox6.Location = new System.Drawing.Point(4, 117);
+            this.uiGroupBox6.Location = new System.Drawing.Point(4, 81);
             this.uiGroupBox6.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.uiGroupBox6.MinimumSize = new System.Drawing.Size(1, 1);
             this.uiGroupBox6.Name = "uiGroupBox6";
             this.uiGroupBox6.Padding = new System.Windows.Forms.Padding(0, 32, 0, 0);
-            this.uiGroupBox6.Size = new System.Drawing.Size(414, 103);
+            this.uiGroupBox6.Size = new System.Drawing.Size(199, 66);
             this.uiGroupBox6.TabIndex = 6;
             this.uiGroupBox6.Text = "电源3";
             this.uiGroupBox6.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
@@ -1387,74 +1726,80 @@
             this.uiTableLayoutPanel8.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
             this.uiTableLayoutPanel8.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
             this.uiTableLayoutPanel8.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
-            this.uiTableLayoutPanel8.Controls.Add(this.uiCheckBox10, 1, 0);
-            this.uiTableLayoutPanel8.Controls.Add(this.uiCheckBox11, 0, 0);
-            this.uiTableLayoutPanel8.Controls.Add(this.uiCheckBox12, 2, 0);
+            this.uiTableLayoutPanel8.Controls.Add(this.checkEdit6, 2, 0);
+            this.uiTableLayoutPanel8.Controls.Add(this.checkEdit4, 0, 0);
+            this.uiTableLayoutPanel8.Controls.Add(this.checkEdit5, 1, 0);
             this.uiTableLayoutPanel8.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiTableLayoutPanel8.Location = new System.Drawing.Point(0, 32);
             this.uiTableLayoutPanel8.Name = "uiTableLayoutPanel8";
             this.uiTableLayoutPanel8.RowCount = 1;
             this.uiTableLayoutPanel8.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100F));
-            this.uiTableLayoutPanel8.Size = new System.Drawing.Size(414, 71);
+            this.uiTableLayoutPanel8.Size = new System.Drawing.Size(199, 34);
             this.uiTableLayoutPanel8.TabIndex = 53;
             this.uiTableLayoutPanel8.TagString = null;
             // 
-            // uiCheckBox10
+            // checkEdit6
             // 
-            this.uiCheckBox10.CheckBoxSize = 32;
-            this.uiCheckBox10.Checked = true;
-            this.uiCheckBox10.Cursor = System.Windows.Forms.Cursors.Hand;
-            this.uiCheckBox10.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiCheckBox10.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.uiCheckBox10.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiCheckBox10.Location = new System.Drawing.Point(141, 3);
-            this.uiCheckBox10.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiCheckBox10.Name = "uiCheckBox10";
-            this.uiCheckBox10.Size = new System.Drawing.Size(132, 65);
-            this.uiCheckBox10.TabIndex = 52;
-            this.uiCheckBox10.Text = "8";
+            this.checkEdit6.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.checkEdit6.Location = new System.Drawing.Point(135, 3);
+            this.checkEdit6.Name = "checkEdit6";
+            this.checkEdit6.Properties.AllowFocused = false;
+            this.checkEdit6.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.checkEdit6.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.checkEdit6.Properties.Appearance.Options.UseBackColor = true;
+            this.checkEdit6.Properties.Appearance.Options.UseForeColor = true;
+            this.checkEdit6.Properties.Caption = "9";
+            this.checkEdit6.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.checkEdit6.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.checkEdit6.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.checkEdit6.Size = new System.Drawing.Size(61, 28);
+            this.checkEdit6.TabIndex = 0;
             // 
-            // uiCheckBox11
+            // checkEdit4
             // 
-            this.uiCheckBox11.CheckBoxSize = 32;
-            this.uiCheckBox11.Checked = true;
-            this.uiCheckBox11.Cursor = System.Windows.Forms.Cursors.Hand;
-            this.uiCheckBox11.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiCheckBox11.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.uiCheckBox11.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiCheckBox11.Location = new System.Drawing.Point(3, 3);
-            this.uiCheckBox11.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiCheckBox11.Name = "uiCheckBox11";
-            this.uiCheckBox11.Size = new System.Drawing.Size(132, 65);
-            this.uiCheckBox11.TabIndex = 52;
-            this.uiCheckBox11.Text = "7";
+            this.checkEdit4.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.checkEdit4.Location = new System.Drawing.Point(3, 3);
+            this.checkEdit4.Name = "checkEdit4";
+            this.checkEdit4.Properties.AllowFocused = false;
+            this.checkEdit4.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.checkEdit4.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.checkEdit4.Properties.Appearance.Options.UseBackColor = true;
+            this.checkEdit4.Properties.Appearance.Options.UseForeColor = true;
+            this.checkEdit4.Properties.Caption = "7";
+            this.checkEdit4.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.checkEdit4.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.checkEdit4.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.checkEdit4.Size = new System.Drawing.Size(60, 28);
+            this.checkEdit4.TabIndex = 0;
             // 
-            // uiCheckBox12
+            // checkEdit5
             // 
-            this.uiCheckBox12.CheckBoxSize = 32;
-            this.uiCheckBox12.Checked = true;
-            this.uiCheckBox12.Cursor = System.Windows.Forms.Cursors.Hand;
-            this.uiCheckBox12.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiCheckBox12.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.uiCheckBox12.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiCheckBox12.Location = new System.Drawing.Point(279, 3);
-            this.uiCheckBox12.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiCheckBox12.Name = "uiCheckBox12";
-            this.uiCheckBox12.Size = new System.Drawing.Size(132, 65);
-            this.uiCheckBox12.TabIndex = 52;
-            this.uiCheckBox12.Text = "9";
+            this.checkEdit5.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.checkEdit5.Location = new System.Drawing.Point(69, 3);
+            this.checkEdit5.Name = "checkEdit5";
+            this.checkEdit5.Properties.AllowFocused = false;
+            this.checkEdit5.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.checkEdit5.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.checkEdit5.Properties.Appearance.Options.UseBackColor = true;
+            this.checkEdit5.Properties.Appearance.Options.UseForeColor = true;
+            this.checkEdit5.Properties.Caption = "8";
+            this.checkEdit5.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.checkEdit5.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.checkEdit5.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.checkEdit5.Size = new System.Drawing.Size(60, 28);
+            this.checkEdit5.TabIndex = 0;
             // 
             // uiGroupBox7
             // 
             this.uiGroupBox7.Controls.Add(this.uiTableLayoutPanel9);
             this.uiGroupBox7.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiGroupBox7.Font = new System.Drawing.Font("宋体", 10.5F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiGroupBox7.Location = new System.Drawing.Point(426, 117);
+            this.uiGroupBox7.Location = new System.Drawing.Point(211, 81);
             this.uiGroupBox7.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.uiGroupBox7.MinimumSize = new System.Drawing.Size(1, 1);
             this.uiGroupBox7.Name = "uiGroupBox7";
             this.uiGroupBox7.Padding = new System.Windows.Forms.Padding(0, 32, 0, 0);
-            this.uiGroupBox7.Size = new System.Drawing.Size(415, 103);
+            this.uiGroupBox7.Size = new System.Drawing.Size(199, 66);
             this.uiGroupBox7.TabIndex = 6;
             this.uiGroupBox7.Text = "电源4";
             this.uiGroupBox7.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
@@ -1465,62 +1810,68 @@
             this.uiTableLayoutPanel9.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
             this.uiTableLayoutPanel9.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
             this.uiTableLayoutPanel9.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
-            this.uiTableLayoutPanel9.Controls.Add(this.uiCheckBox13, 1, 0);
-            this.uiTableLayoutPanel9.Controls.Add(this.uiCheckBox14, 0, 0);
-            this.uiTableLayoutPanel9.Controls.Add(this.uiCheckBox15, 2, 0);
+            this.uiTableLayoutPanel9.Controls.Add(this.checkEdit9, 2, 0);
+            this.uiTableLayoutPanel9.Controls.Add(this.checkEdit8, 1, 0);
+            this.uiTableLayoutPanel9.Controls.Add(this.checkEdit7, 0, 0);
             this.uiTableLayoutPanel9.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiTableLayoutPanel9.Location = new System.Drawing.Point(0, 32);
             this.uiTableLayoutPanel9.Name = "uiTableLayoutPanel9";
             this.uiTableLayoutPanel9.RowCount = 1;
             this.uiTableLayoutPanel9.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100F));
-            this.uiTableLayoutPanel9.Size = new System.Drawing.Size(415, 71);
+            this.uiTableLayoutPanel9.Size = new System.Drawing.Size(199, 34);
             this.uiTableLayoutPanel9.TabIndex = 53;
             this.uiTableLayoutPanel9.TagString = null;
             // 
-            // uiCheckBox13
+            // checkEdit9
             // 
-            this.uiCheckBox13.CheckBoxSize = 32;
-            this.uiCheckBox13.Checked = true;
-            this.uiCheckBox13.Cursor = System.Windows.Forms.Cursors.Hand;
-            this.uiCheckBox13.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiCheckBox13.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.uiCheckBox13.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiCheckBox13.Location = new System.Drawing.Point(141, 3);
-            this.uiCheckBox13.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiCheckBox13.Name = "uiCheckBox13";
-            this.uiCheckBox13.Size = new System.Drawing.Size(132, 65);
-            this.uiCheckBox13.TabIndex = 52;
-            this.uiCheckBox13.Text = "12";
+            this.checkEdit9.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.checkEdit9.Location = new System.Drawing.Point(135, 3);
+            this.checkEdit9.Name = "checkEdit9";
+            this.checkEdit9.Properties.AllowFocused = false;
+            this.checkEdit9.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.checkEdit9.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.checkEdit9.Properties.Appearance.Options.UseBackColor = true;
+            this.checkEdit9.Properties.Appearance.Options.UseForeColor = true;
+            this.checkEdit9.Properties.Caption = "12";
+            this.checkEdit9.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.checkEdit9.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.checkEdit9.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.checkEdit9.Size = new System.Drawing.Size(61, 28);
+            this.checkEdit9.TabIndex = 0;
             // 
-            // uiCheckBox14
+            // checkEdit8
             // 
-            this.uiCheckBox14.CheckBoxSize = 32;
-            this.uiCheckBox14.Checked = true;
-            this.uiCheckBox14.Cursor = System.Windows.Forms.Cursors.Hand;
-            this.uiCheckBox14.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiCheckBox14.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.uiCheckBox14.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiCheckBox14.Location = new System.Drawing.Point(3, 3);
-            this.uiCheckBox14.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiCheckBox14.Name = "uiCheckBox14";
-            this.uiCheckBox14.Size = new System.Drawing.Size(132, 65);
-            this.uiCheckBox14.TabIndex = 52;
-            this.uiCheckBox14.Text = "11";
+            this.checkEdit8.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.checkEdit8.Location = new System.Drawing.Point(69, 3);
+            this.checkEdit8.Name = "checkEdit8";
+            this.checkEdit8.Properties.AllowFocused = false;
+            this.checkEdit8.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.checkEdit8.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.checkEdit8.Properties.Appearance.Options.UseBackColor = true;
+            this.checkEdit8.Properties.Appearance.Options.UseForeColor = true;
+            this.checkEdit8.Properties.Caption = "11";
+            this.checkEdit8.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.checkEdit8.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.checkEdit8.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.checkEdit8.Size = new System.Drawing.Size(60, 28);
+            this.checkEdit8.TabIndex = 0;
             // 
-            // uiCheckBox15
+            // checkEdit7
             // 
-            this.uiCheckBox15.CheckBoxSize = 32;
-            this.uiCheckBox15.Checked = true;
-            this.uiCheckBox15.Cursor = System.Windows.Forms.Cursors.Hand;
-            this.uiCheckBox15.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiCheckBox15.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.uiCheckBox15.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiCheckBox15.Location = new System.Drawing.Point(279, 3);
-            this.uiCheckBox15.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiCheckBox15.Name = "uiCheckBox15";
-            this.uiCheckBox15.Size = new System.Drawing.Size(133, 65);
-            this.uiCheckBox15.TabIndex = 52;
-            this.uiCheckBox15.Text = "13";
+            this.checkEdit7.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.checkEdit7.Location = new System.Drawing.Point(3, 3);
+            this.checkEdit7.Name = "checkEdit7";
+            this.checkEdit7.Properties.AllowFocused = false;
+            this.checkEdit7.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.checkEdit7.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.checkEdit7.Properties.Appearance.Options.UseBackColor = true;
+            this.checkEdit7.Properties.Appearance.Options.UseForeColor = true;
+            this.checkEdit7.Properties.Caption = "10";
+            this.checkEdit7.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.checkEdit7.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.checkEdit7.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.checkEdit7.Size = new System.Drawing.Size(60, 28);
+            this.checkEdit7.TabIndex = 0;
             // 
             // BtnCancel
             // 
@@ -1528,11 +1879,11 @@
             this.BtnCancel.Cursor = System.Windows.Forms.Cursors.Hand;
             this.BtnCancel.FillDisableColor = System.Drawing.Color.FromArgb(((int)(((byte)(115)))), ((int)(((byte)(179)))), ((int)(((byte)(255)))));
             this.BtnCancel.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.BtnCancel.Location = new System.Drawing.Point(871, 393);
+            this.BtnCancel.Location = new System.Drawing.Point(429, 269);
             this.BtnCancel.MinimumSize = new System.Drawing.Size(1, 1);
             this.BtnCancel.Name = "BtnCancel";
             this.BtnCancel.RectDisableColor = System.Drawing.Color.LightBlue;
-            this.BtnCancel.Size = new System.Drawing.Size(154, 49);
+            this.BtnCancel.Size = new System.Drawing.Size(106, 32);
             this.BtnCancel.TabIndex = 50;
             this.BtnCancel.Text = "取消";
             this.BtnCancel.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
@@ -1542,90 +1893,1297 @@
             this.uiTableLayoutPanel2.SetColumnSpan(this.BtnApply, 4);
             this.BtnApply.Cursor = System.Windows.Forms.Cursors.Hand;
             this.BtnApply.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.BtnApply.Location = new System.Drawing.Point(871, 481);
+            this.BtnApply.Location = new System.Drawing.Point(429, 329);
             this.BtnApply.MinimumSize = new System.Drawing.Size(1, 1);
             this.BtnApply.Name = "BtnApply";
-            this.BtnApply.Size = new System.Drawing.Size(154, 49);
+            this.BtnApply.Size = new System.Drawing.Size(106, 32);
             this.BtnApply.TabIndex = 49;
             this.BtnApply.Text = "确认";
             this.BtnApply.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
             // 
-            // uiPanel1
+            // uiGroupBox3
             // 
-            this.uiPanel1.Controls.Add(this.uiTableLayoutPanel6);
-            this.uiPanel1.Controls.Add(this.ChkEmb1);
-            this.uiPanel1.Controls.Add(this.uiButton1);
-            this.uiPanel1.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiPanel1.Location = new System.Drawing.Point(1125, 328);
-            this.uiPanel1.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
-            this.uiPanel1.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiPanel1.Name = "uiPanel1";
-            this.uiPanel1.Size = new System.Drawing.Size(401, 257);
-            this.uiPanel1.TabIndex = 5;
-            this.uiPanel1.Text = "uiPanel1";
-            this.uiPanel1.TextAlignment = System.Drawing.ContentAlignment.MiddleCenter;
+            this.uiGroupBox3.Controls.Add(this.uiTableLayoutPanel3);
+            this.uiGroupBox3.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiGroupBox3.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiGroupBox3.Location = new System.Drawing.Point(564, 14);
+            this.uiGroupBox3.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.uiGroupBox3.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiGroupBox3.Name = "uiGroupBox3";
+            this.uiGroupBox3.Padding = new System.Windows.Forms.Padding(0, 32, 0, 0);
+            this.uiTableLayoutPanel1.SetRowSpan(this.uiGroupBox3, 3);
+            this.uiGroupBox3.Size = new System.Drawing.Size(847, 407);
+            this.uiGroupBox3.TabIndex = 5;
+            this.uiGroupBox3.Text = null;
+            this.uiGroupBox3.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
+            // 
+            // uiTableLayoutPanel3
+            // 
+            this.uiTableLayoutPanel3.BackColor = System.Drawing.Color.Transparent;
+            this.uiTableLayoutPanel3.ColumnCount = 2;
+            this.uiTableLayoutPanel3.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 79.45691F));
+            this.uiTableLayoutPanel3.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 20.54309F));
+            this.uiTableLayoutPanel3.Controls.Add(this.zedGraphRealChart, 0, 0);
+            this.uiTableLayoutPanel3.Controls.Add(this.uiTableLayoutPanel6, 0, 1);
+            this.uiTableLayoutPanel3.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTableLayoutPanel3.Location = new System.Drawing.Point(0, 32);
+            this.uiTableLayoutPanel3.Name = "uiTableLayoutPanel3";
+            this.uiTableLayoutPanel3.RowCount = 3;
+            this.uiTableLayoutPanel3.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 86.26761F));
+            this.uiTableLayoutPanel3.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 13.73239F));
+            this.uiTableLayoutPanel3.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 46F));
+            this.uiTableLayoutPanel3.Size = new System.Drawing.Size(847, 375);
+            this.uiTableLayoutPanel3.TabIndex = 0;
+            this.uiTableLayoutPanel3.TagString = null;
+            // 
+            // zedGraphRealChart
+            // 
+            this.zedGraphRealChart.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.zedGraphRealChart.IsEnableHZoom = false;
+            this.zedGraphRealChart.IsEnableVZoom = false;
+            this.zedGraphRealChart.IsEnableWheelZoom = false;
+            this.zedGraphRealChart.Location = new System.Drawing.Point(11, 11);
+            this.zedGraphRealChart.Margin = new System.Windows.Forms.Padding(11);
+            this.zedGraphRealChart.Name = "zedGraphRealChart";
+            this.zedGraphRealChart.ScrollGrace = 0D;
+            this.zedGraphRealChart.ScrollMaxX = 0D;
+            this.zedGraphRealChart.ScrollMaxY = 0D;
+            this.zedGraphRealChart.ScrollMaxY2 = 0D;
+            this.zedGraphRealChart.ScrollMinX = 0D;
+            this.zedGraphRealChart.ScrollMinY = 0D;
+            this.zedGraphRealChart.ScrollMinY2 = 0D;
+            this.zedGraphRealChart.Size = new System.Drawing.Size(651, 261);
+            this.zedGraphRealChart.TabIndex = 5;
+            this.zedGraphRealChart.UseExtendedPrintDialog = true;
             // 
             // uiTableLayoutPanel6
             // 
-            this.uiTableLayoutPanel6.ColumnCount = 3;
-            this.uiTableLayoutPanel6.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
-            this.uiTableLayoutPanel6.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
-            this.uiTableLayoutPanel6.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
-            this.uiTableLayoutPanel6.Controls.Add(this.uiCheckBox4, 1, 0);
-            this.uiTableLayoutPanel6.Controls.Add(this.uiCheckBox5, 0, 0);
-            this.uiTableLayoutPanel6.Controls.Add(this.uiCheckBox6, 2, 0);
-            this.uiTableLayoutPanel6.Location = new System.Drawing.Point(8, 8);
+            this.uiTableLayoutPanel6.ColumnCount = 12;
+            this.uiTableLayoutPanel6.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 8.333333F));
+            this.uiTableLayoutPanel6.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 8.333333F));
+            this.uiTableLayoutPanel6.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 8.333333F));
+            this.uiTableLayoutPanel6.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 8.333333F));
+            this.uiTableLayoutPanel6.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 8.333333F));
+            this.uiTableLayoutPanel6.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 8.333333F));
+            this.uiTableLayoutPanel6.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 8.333333F));
+            this.uiTableLayoutPanel6.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 8.333333F));
+            this.uiTableLayoutPanel6.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 8.333333F));
+            this.uiTableLayoutPanel6.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 8.333333F));
+            this.uiTableLayoutPanel6.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 8.333333F));
+            this.uiTableLayoutPanel6.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 8.333333F));
+            this.uiTableLayoutPanel6.Controls.Add(this.checkEdit13, 0, 0);
+            this.uiTableLayoutPanel6.Controls.Add(this.checkEdit14, 1, 0);
+            this.uiTableLayoutPanel6.Controls.Add(this.checkEdit15, 2, 0);
+            this.uiTableLayoutPanel6.Controls.Add(this.checkEdit16, 3, 0);
+            this.uiTableLayoutPanel6.Controls.Add(this.checkEdit17, 4, 0);
+            this.uiTableLayoutPanel6.Controls.Add(this.checkEdit18, 5, 0);
+            this.uiTableLayoutPanel6.Controls.Add(this.checkEdit19, 6, 0);
+            this.uiTableLayoutPanel6.Controls.Add(this.checkEdit20, 7, 0);
+            this.uiTableLayoutPanel6.Controls.Add(this.checkEdit21, 8, 0);
+            this.uiTableLayoutPanel6.Controls.Add(this.checkEdit22, 9, 0);
+            this.uiTableLayoutPanel6.Controls.Add(this.checkEdit23, 10, 0);
+            this.uiTableLayoutPanel6.Controls.Add(this.checkEdit24, 11, 0);
+            this.uiTableLayoutPanel6.Controls.Add(this.textEdit1, 0, 1);
+            this.uiTableLayoutPanel6.Controls.Add(this.textEdit2, 1, 1);
+            this.uiTableLayoutPanel6.Controls.Add(this.textEdit3, 2, 1);
+            this.uiTableLayoutPanel6.Controls.Add(this.textEdit4, 3, 1);
+            this.uiTableLayoutPanel6.Controls.Add(this.textEdit5, 4, 1);
+            this.uiTableLayoutPanel6.Controls.Add(this.textEdit6, 5, 1);
+            this.uiTableLayoutPanel6.Controls.Add(this.textEdit7, 6, 1);
+            this.uiTableLayoutPanel6.Controls.Add(this.textEdit8, 7, 1);
+            this.uiTableLayoutPanel6.Controls.Add(this.textEdit9, 8, 1);
+            this.uiTableLayoutPanel6.Controls.Add(this.textEdit10, 9, 1);
+            this.uiTableLayoutPanel6.Controls.Add(this.textEdit11, 10, 1);
+            this.uiTableLayoutPanel6.Controls.Add(this.textEdit12, 11, 1);
+            this.uiTableLayoutPanel6.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTableLayoutPanel6.Location = new System.Drawing.Point(3, 286);
             this.uiTableLayoutPanel6.Name = "uiTableLayoutPanel6";
-            this.uiTableLayoutPanel6.RowCount = 1;
-            this.uiTableLayoutPanel6.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100F));
-            this.uiTableLayoutPanel6.Size = new System.Drawing.Size(306, 70);
-            this.uiTableLayoutPanel6.TabIndex = 53;
+            this.uiTableLayoutPanel6.RowCount = 2;
+            this.uiTableLayoutPanel3.SetRowSpan(this.uiTableLayoutPanel6, 2);
+            this.uiTableLayoutPanel6.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 50F));
+            this.uiTableLayoutPanel6.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 50F));
+            this.uiTableLayoutPanel6.Size = new System.Drawing.Size(667, 86);
+            this.uiTableLayoutPanel6.TabIndex = 6;
             this.uiTableLayoutPanel6.TagString = null;
             // 
-            // uiCheckBox4
+            // checkEdit13
             // 
-            this.uiCheckBox4.CheckBoxSize = 32;
-            this.uiCheckBox4.Checked = true;
-            this.uiCheckBox4.Cursor = System.Windows.Forms.Cursors.Hand;
-            this.uiCheckBox4.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiCheckBox4.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.uiCheckBox4.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiCheckBox4.Location = new System.Drawing.Point(104, 3);
-            this.uiCheckBox4.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiCheckBox4.Name = "uiCheckBox4";
-            this.uiCheckBox4.Size = new System.Drawing.Size(95, 64);
-            this.uiCheckBox4.TabIndex = 52;
-            this.uiCheckBox4.Text = "2";
+            this.checkEdit13.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.checkEdit13.Location = new System.Drawing.Point(3, 3);
+            this.checkEdit13.Name = "checkEdit13";
+            this.checkEdit13.Properties.AllowFocused = false;
+            this.checkEdit13.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.checkEdit13.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.checkEdit13.Properties.Appearance.Options.UseBackColor = true;
+            this.checkEdit13.Properties.Appearance.Options.UseForeColor = true;
+            this.checkEdit13.Properties.Caption = "1";
+            this.checkEdit13.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.checkEdit13.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.checkEdit13.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.checkEdit13.Size = new System.Drawing.Size(49, 37);
+            this.checkEdit13.TabIndex = 0;
             // 
-            // uiCheckBox5
+            // checkEdit14
             // 
-            this.uiCheckBox5.CheckBoxSize = 32;
-            this.uiCheckBox5.Checked = true;
-            this.uiCheckBox5.Cursor = System.Windows.Forms.Cursors.Hand;
-            this.uiCheckBox5.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiCheckBox5.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.uiCheckBox5.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiCheckBox5.Location = new System.Drawing.Point(3, 3);
-            this.uiCheckBox5.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiCheckBox5.Name = "uiCheckBox5";
-            this.uiCheckBox5.Size = new System.Drawing.Size(95, 64);
-            this.uiCheckBox5.TabIndex = 52;
-            this.uiCheckBox5.Text = "1";
+            this.checkEdit14.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.checkEdit14.Location = new System.Drawing.Point(58, 3);
+            this.checkEdit14.Name = "checkEdit14";
+            this.checkEdit14.Properties.AllowFocused = false;
+            this.checkEdit14.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.checkEdit14.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.checkEdit14.Properties.Appearance.Options.UseBackColor = true;
+            this.checkEdit14.Properties.Appearance.Options.UseForeColor = true;
+            this.checkEdit14.Properties.Caption = "2";
+            this.checkEdit14.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.checkEdit14.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.checkEdit14.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.checkEdit14.Size = new System.Drawing.Size(49, 37);
+            this.checkEdit14.TabIndex = 0;
             // 
-            // uiCheckBox6
+            // checkEdit15
             // 
-            this.uiCheckBox6.CheckBoxSize = 32;
-            this.uiCheckBox6.Checked = true;
-            this.uiCheckBox6.Cursor = System.Windows.Forms.Cursors.Hand;
-            this.uiCheckBox6.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiCheckBox6.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.uiCheckBox6.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiCheckBox6.Location = new System.Drawing.Point(205, 3);
-            this.uiCheckBox6.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiCheckBox6.Name = "uiCheckBox6";
-            this.uiCheckBox6.Size = new System.Drawing.Size(98, 64);
-            this.uiCheckBox6.TabIndex = 52;
-            this.uiCheckBox6.Text = "3";
+            this.checkEdit15.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.checkEdit15.Location = new System.Drawing.Point(113, 3);
+            this.checkEdit15.Name = "checkEdit15";
+            this.checkEdit15.Properties.AllowFocused = false;
+            this.checkEdit15.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.checkEdit15.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.checkEdit15.Properties.Appearance.Options.UseBackColor = true;
+            this.checkEdit15.Properties.Appearance.Options.UseForeColor = true;
+            this.checkEdit15.Properties.Caption = "3";
+            this.checkEdit15.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.checkEdit15.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.checkEdit15.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.checkEdit15.Size = new System.Drawing.Size(49, 37);
+            this.checkEdit15.TabIndex = 0;
+            // 
+            // checkEdit16
+            // 
+            this.checkEdit16.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.checkEdit16.Location = new System.Drawing.Point(168, 3);
+            this.checkEdit16.Name = "checkEdit16";
+            this.checkEdit16.Properties.AllowFocused = false;
+            this.checkEdit16.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.checkEdit16.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.checkEdit16.Properties.Appearance.Options.UseBackColor = true;
+            this.checkEdit16.Properties.Appearance.Options.UseForeColor = true;
+            this.checkEdit16.Properties.Caption = "4";
+            this.checkEdit16.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.checkEdit16.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.checkEdit16.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.checkEdit16.Size = new System.Drawing.Size(49, 37);
+            this.checkEdit16.TabIndex = 0;
+            // 
+            // checkEdit17
+            // 
+            this.checkEdit17.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.checkEdit17.Location = new System.Drawing.Point(223, 3);
+            this.checkEdit17.Name = "checkEdit17";
+            this.checkEdit17.Properties.AllowFocused = false;
+            this.checkEdit17.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.checkEdit17.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.checkEdit17.Properties.Appearance.Options.UseBackColor = true;
+            this.checkEdit17.Properties.Appearance.Options.UseForeColor = true;
+            this.checkEdit17.Properties.Caption = "5";
+            this.checkEdit17.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.checkEdit17.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.checkEdit17.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.checkEdit17.Size = new System.Drawing.Size(49, 37);
+            this.checkEdit17.TabIndex = 0;
+            // 
+            // checkEdit18
+            // 
+            this.checkEdit18.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.checkEdit18.Location = new System.Drawing.Point(278, 3);
+            this.checkEdit18.Name = "checkEdit18";
+            this.checkEdit18.Properties.AllowFocused = false;
+            this.checkEdit18.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.checkEdit18.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.checkEdit18.Properties.Appearance.Options.UseBackColor = true;
+            this.checkEdit18.Properties.Appearance.Options.UseForeColor = true;
+            this.checkEdit18.Properties.Caption = "6";
+            this.checkEdit18.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.checkEdit18.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.checkEdit18.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.checkEdit18.Size = new System.Drawing.Size(49, 37);
+            this.checkEdit18.TabIndex = 0;
+            // 
+            // checkEdit19
+            // 
+            this.checkEdit19.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.checkEdit19.Location = new System.Drawing.Point(333, 3);
+            this.checkEdit19.Name = "checkEdit19";
+            this.checkEdit19.Properties.AllowFocused = false;
+            this.checkEdit19.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.checkEdit19.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.checkEdit19.Properties.Appearance.Options.UseBackColor = true;
+            this.checkEdit19.Properties.Appearance.Options.UseForeColor = true;
+            this.checkEdit19.Properties.Caption = "7";
+            this.checkEdit19.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.checkEdit19.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.checkEdit19.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.checkEdit19.Size = new System.Drawing.Size(49, 37);
+            this.checkEdit19.TabIndex = 0;
+            // 
+            // checkEdit20
+            // 
+            this.checkEdit20.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.checkEdit20.Location = new System.Drawing.Point(388, 3);
+            this.checkEdit20.Name = "checkEdit20";
+            this.checkEdit20.Properties.AllowFocused = false;
+            this.checkEdit20.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.checkEdit20.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.checkEdit20.Properties.Appearance.Options.UseBackColor = true;
+            this.checkEdit20.Properties.Appearance.Options.UseForeColor = true;
+            this.checkEdit20.Properties.Caption = "8";
+            this.checkEdit20.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.checkEdit20.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.checkEdit20.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.checkEdit20.Size = new System.Drawing.Size(49, 37);
+            this.checkEdit20.TabIndex = 0;
+            // 
+            // checkEdit21
+            // 
+            this.checkEdit21.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.checkEdit21.Location = new System.Drawing.Point(443, 3);
+            this.checkEdit21.Name = "checkEdit21";
+            this.checkEdit21.Properties.AllowFocused = false;
+            this.checkEdit21.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.checkEdit21.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.checkEdit21.Properties.Appearance.Options.UseBackColor = true;
+            this.checkEdit21.Properties.Appearance.Options.UseForeColor = true;
+            this.checkEdit21.Properties.Caption = "9";
+            this.checkEdit21.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.checkEdit21.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.checkEdit21.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.checkEdit21.Size = new System.Drawing.Size(49, 37);
+            this.checkEdit21.TabIndex = 0;
+            // 
+            // checkEdit22
+            // 
+            this.checkEdit22.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.checkEdit22.Location = new System.Drawing.Point(498, 3);
+            this.checkEdit22.Name = "checkEdit22";
+            this.checkEdit22.Properties.AllowFocused = false;
+            this.checkEdit22.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.checkEdit22.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.checkEdit22.Properties.Appearance.Options.UseBackColor = true;
+            this.checkEdit22.Properties.Appearance.Options.UseForeColor = true;
+            this.checkEdit22.Properties.Caption = "10";
+            this.checkEdit22.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.checkEdit22.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.checkEdit22.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.checkEdit22.Size = new System.Drawing.Size(49, 37);
+            this.checkEdit22.TabIndex = 0;
+            // 
+            // checkEdit23
+            // 
+            this.checkEdit23.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.checkEdit23.Location = new System.Drawing.Point(553, 3);
+            this.checkEdit23.Name = "checkEdit23";
+            this.checkEdit23.Properties.AllowFocused = false;
+            this.checkEdit23.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.checkEdit23.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.checkEdit23.Properties.Appearance.Options.UseBackColor = true;
+            this.checkEdit23.Properties.Appearance.Options.UseForeColor = true;
+            this.checkEdit23.Properties.Caption = "11";
+            this.checkEdit23.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.checkEdit23.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.checkEdit23.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.checkEdit23.Size = new System.Drawing.Size(49, 37);
+            this.checkEdit23.TabIndex = 0;
+            // 
+            // checkEdit24
+            // 
+            this.checkEdit24.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.checkEdit24.Location = new System.Drawing.Point(608, 3);
+            this.checkEdit24.Name = "checkEdit24";
+            this.checkEdit24.Properties.AllowFocused = false;
+            this.checkEdit24.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.checkEdit24.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.checkEdit24.Properties.Appearance.Options.UseBackColor = true;
+            this.checkEdit24.Properties.Appearance.Options.UseForeColor = true;
+            this.checkEdit24.Properties.Caption = "12";
+            this.checkEdit24.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.checkEdit24.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.checkEdit24.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.checkEdit24.Size = new System.Drawing.Size(56, 37);
+            this.checkEdit24.TabIndex = 0;
+            // 
+            // textEdit1
+            // 
+            this.textEdit1.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.textEdit1.EditValue = "12.34";
+            this.textEdit1.Location = new System.Drawing.Point(3, 54);
+            this.textEdit1.Name = "textEdit1";
+            this.textEdit1.Size = new System.Drawing.Size(49, 20);
+            this.textEdit1.TabIndex = 1;
+            // 
+            // textEdit2
+            // 
+            this.textEdit2.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.textEdit2.EditValue = "12.34";
+            this.textEdit2.Location = new System.Drawing.Point(58, 54);
+            this.textEdit2.Name = "textEdit2";
+            this.textEdit2.Size = new System.Drawing.Size(49, 20);
+            this.textEdit2.TabIndex = 1;
+            // 
+            // textEdit3
+            // 
+            this.textEdit3.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.textEdit3.EditValue = "12.34";
+            this.textEdit3.Location = new System.Drawing.Point(113, 54);
+            this.textEdit3.Name = "textEdit3";
+            this.textEdit3.Size = new System.Drawing.Size(49, 20);
+            this.textEdit3.TabIndex = 1;
+            // 
+            // textEdit4
+            // 
+            this.textEdit4.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.textEdit4.EditValue = "12.34";
+            this.textEdit4.Location = new System.Drawing.Point(168, 54);
+            this.textEdit4.Name = "textEdit4";
+            this.textEdit4.Size = new System.Drawing.Size(49, 20);
+            this.textEdit4.TabIndex = 1;
+            // 
+            // textEdit5
+            // 
+            this.textEdit5.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.textEdit5.EditValue = "12.34";
+            this.textEdit5.Location = new System.Drawing.Point(223, 54);
+            this.textEdit5.Name = "textEdit5";
+            this.textEdit5.Size = new System.Drawing.Size(49, 20);
+            this.textEdit5.TabIndex = 1;
+            // 
+            // textEdit6
+            // 
+            this.textEdit6.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.textEdit6.EditValue = "12.34";
+            this.textEdit6.Location = new System.Drawing.Point(278, 54);
+            this.textEdit6.Name = "textEdit6";
+            this.textEdit6.Size = new System.Drawing.Size(49, 20);
+            this.textEdit6.TabIndex = 1;
+            // 
+            // textEdit7
+            // 
+            this.textEdit7.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.textEdit7.EditValue = "12.34";
+            this.textEdit7.Location = new System.Drawing.Point(333, 54);
+            this.textEdit7.Name = "textEdit7";
+            this.textEdit7.Size = new System.Drawing.Size(49, 20);
+            this.textEdit7.TabIndex = 1;
+            // 
+            // textEdit8
+            // 
+            this.textEdit8.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.textEdit8.EditValue = "12.34";
+            this.textEdit8.Location = new System.Drawing.Point(388, 54);
+            this.textEdit8.Name = "textEdit8";
+            this.textEdit8.Size = new System.Drawing.Size(49, 20);
+            this.textEdit8.TabIndex = 1;
+            // 
+            // textEdit9
+            // 
+            this.textEdit9.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.textEdit9.EditValue = "12.34";
+            this.textEdit9.Location = new System.Drawing.Point(443, 54);
+            this.textEdit9.Name = "textEdit9";
+            this.textEdit9.Size = new System.Drawing.Size(49, 20);
+            this.textEdit9.TabIndex = 1;
+            // 
+            // textEdit10
+            // 
+            this.textEdit10.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.textEdit10.EditValue = "12.34";
+            this.textEdit10.Location = new System.Drawing.Point(498, 54);
+            this.textEdit10.Name = "textEdit10";
+            this.textEdit10.Size = new System.Drawing.Size(49, 20);
+            this.textEdit10.TabIndex = 1;
+            // 
+            // textEdit11
+            // 
+            this.textEdit11.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.textEdit11.EditValue = "12.34";
+            this.textEdit11.Location = new System.Drawing.Point(553, 54);
+            this.textEdit11.Name = "textEdit11";
+            this.textEdit11.Size = new System.Drawing.Size(49, 20);
+            this.textEdit11.TabIndex = 1;
+            // 
+            // textEdit12
+            // 
+            this.textEdit12.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.textEdit12.EditValue = "12.34";
+            this.textEdit12.Location = new System.Drawing.Point(611, 54);
+            this.textEdit12.Name = "textEdit12";
+            this.textEdit12.Size = new System.Drawing.Size(49, 20);
+            this.textEdit12.TabIndex = 1;
+            // 
+            // uiTableLayoutPanel14
+            // 
+            this.uiTableLayoutPanel14.ColumnCount = 2;
+            this.uiTableLayoutPanel14.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 42.99176F));
+            this.uiTableLayoutPanel14.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 57.00824F));
+            this.uiTableLayoutPanel14.Controls.Add(this.uiGroupInfo, 0, 0);
+            this.uiTableLayoutPanel14.Controls.Add(this.uiTableLayoutPanel15, 1, 0);
+            this.uiTableLayoutPanel14.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTableLayoutPanel14.Location = new System.Drawing.Point(563, 438);
+            this.uiTableLayoutPanel14.Name = "uiTableLayoutPanel14";
+            this.uiTableLayoutPanel14.RowCount = 3;
+            this.uiTableLayoutPanel1.SetRowSpan(this.uiTableLayoutPanel14, 3);
+            this.uiTableLayoutPanel14.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 76.73611F));
+            this.uiTableLayoutPanel14.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 23.26389F));
+            this.uiTableLayoutPanel14.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 77F));
+            this.uiTableLayoutPanel14.Size = new System.Drawing.Size(849, 411);
+            this.uiTableLayoutPanel14.TabIndex = 6;
+            this.uiTableLayoutPanel14.TagString = null;
+            // 
+            // uiGroupInfo
+            // 
+            this.uiGroupInfo.Controls.Add(this.z);
+            this.uiGroupInfo.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiGroupInfo.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiGroupInfo.Location = new System.Drawing.Point(2, 2);
+            this.uiGroupInfo.Margin = new System.Windows.Forms.Padding(2);
+            this.uiGroupInfo.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiGroupInfo.Name = "uiGroupInfo";
+            this.uiGroupInfo.Padding = new System.Windows.Forms.Padding(0, 32, 0, 0);
+            this.uiTableLayoutPanel14.SetRowSpan(this.uiGroupInfo, 3);
+            this.uiGroupInfo.Size = new System.Drawing.Size(361, 407);
+            this.uiGroupInfo.TabIndex = 8;
+            this.uiGroupInfo.Text = "信息";
+            this.uiGroupInfo.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
+            // 
+            // z
+            // 
+            this.z.BackColor = System.Drawing.Color.Transparent;
+            this.z.ColumnCount = 5;
+            this.z.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.z.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 30F));
+            this.z.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 40F));
+            this.z.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 30F));
+            this.z.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.z.Controls.Add(this.BtnRunLog, 1, 3);
+            this.z.Controls.Add(this.RtbInfo, 1, 1);
+            this.z.Controls.Add(this.BtnErrorLog, 3, 3);
+            this.z.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.z.Location = new System.Drawing.Point(0, 32);
+            this.z.Name = "z";
+            this.z.RowCount = 5;
+            this.z.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 10F));
+            this.z.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 91F));
+            this.z.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.z.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 9F));
+            this.z.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.z.Size = new System.Drawing.Size(361, 375);
+            this.z.TabIndex = 37;
+            this.z.TagString = null;
+            // 
+            // BtnRunLog
+            // 
+            this.BtnRunLog.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.BtnRunLog.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.BtnRunLog.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.BtnRunLog.Location = new System.Drawing.Point(23, 328);
+            this.BtnRunLog.MinimumSize = new System.Drawing.Size(1, 1);
+            this.BtnRunLog.Name = "BtnRunLog";
+            this.BtnRunLog.Radius = 1;
+            this.BtnRunLog.Size = new System.Drawing.Size(90, 23);
+            this.BtnRunLog.TabIndex = 52;
+            this.BtnRunLog.Text = "运行日志";
+            this.BtnRunLog.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            // 
+            // RtbInfo
+            // 
+            this.z.SetColumnSpan(this.RtbInfo, 3);
+            this.RtbInfo.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.RtbInfo.FillColor = System.Drawing.Color.White;
+            this.RtbInfo.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.RtbInfo.Location = new System.Drawing.Point(24, 15);
+            this.RtbInfo.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.RtbInfo.MinimumSize = new System.Drawing.Size(1, 1);
+            this.RtbInfo.Name = "RtbInfo";
+            this.RtbInfo.Padding = new System.Windows.Forms.Padding(2);
+            this.RtbInfo.Radius = 1;
+            this.RtbInfo.ShowText = false;
+            this.RtbInfo.Size = new System.Drawing.Size(312, 285);
+            this.RtbInfo.TabIndex = 0;
+            this.RtbInfo.TextAlignment = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // BtnErrorLog
+            // 
+            this.BtnErrorLog.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.BtnErrorLog.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.BtnErrorLog.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.BtnErrorLog.Location = new System.Drawing.Point(247, 328);
+            this.BtnErrorLog.MinimumSize = new System.Drawing.Size(1, 1);
+            this.BtnErrorLog.Name = "BtnErrorLog";
+            this.BtnErrorLog.Radius = 1;
+            this.BtnErrorLog.Size = new System.Drawing.Size(90, 23);
+            this.BtnErrorLog.TabIndex = 53;
+            this.BtnErrorLog.Text = "错误日志";
+            this.BtnErrorLog.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            // 
+            // uiTableLayoutPanel15
+            // 
+            this.uiTableLayoutPanel15.ColumnCount = 3;
+            this.uiTableLayoutPanel15.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 44.07583F));
+            this.uiTableLayoutPanel15.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 55.92417F));
+            this.uiTableLayoutPanel15.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 55F));
+            this.uiTableLayoutPanel15.Controls.Add(this.uiLight3, 2, 3);
+            this.uiTableLayoutPanel15.Controls.Add(this.uiLabel58, 0, 2);
+            this.uiTableLayoutPanel15.Controls.Add(this.uiLabel57, 0, 1);
+            this.uiTableLayoutPanel15.Controls.Add(this.uiLabel56, 0, 0);
+            this.uiTableLayoutPanel15.Controls.Add(this.uiTableLayoutPanel23, 1, 1);
+            this.uiTableLayoutPanel15.Controls.Add(this.uiTableLayoutPanel32, 1, 0);
+            this.uiTableLayoutPanel15.Controls.Add(this.uiTableLayoutPanel41, 1, 2);
+            this.uiTableLayoutPanel15.Controls.Add(this.uiProcessBar3, 0, 3);
+            this.uiTableLayoutPanel15.Controls.Add(this.uiGroupBox18, 0, 4);
+            this.uiTableLayoutPanel15.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTableLayoutPanel15.Location = new System.Drawing.Point(368, 3);
+            this.uiTableLayoutPanel15.Name = "uiTableLayoutPanel15";
+            this.uiTableLayoutPanel15.RowCount = 5;
+            this.uiTableLayoutPanel14.SetRowSpan(this.uiTableLayoutPanel15, 3);
+            this.uiTableLayoutPanel15.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 20F));
+            this.uiTableLayoutPanel15.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 20F));
+            this.uiTableLayoutPanel15.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 20F));
+            this.uiTableLayoutPanel15.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 20F));
+            this.uiTableLayoutPanel15.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 20F));
+            this.uiTableLayoutPanel15.Size = new System.Drawing.Size(478, 405);
+            this.uiTableLayoutPanel15.TabIndex = 9;
+            this.uiTableLayoutPanel15.TagString = null;
+            // 
+            // uiTableLayoutPanel23
+            // 
+            this.uiTableLayoutPanel23.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiTableLayoutPanel23.ColumnCount = 3;
+            this.uiTableLayoutPanel15.SetColumnSpan(this.uiTableLayoutPanel23, 2);
+            this.uiTableLayoutPanel23.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
+            this.uiTableLayoutPanel23.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 96F));
+            this.uiTableLayoutPanel23.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
+            this.uiTableLayoutPanel23.Controls.Add(this.uiLedDisplay1, 1, 1);
+            this.uiTableLayoutPanel23.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTableLayoutPanel23.Location = new System.Drawing.Point(188, 83);
+            this.uiTableLayoutPanel23.Margin = new System.Windows.Forms.Padding(2);
+            this.uiTableLayoutPanel23.Name = "uiTableLayoutPanel23";
+            this.uiTableLayoutPanel23.RowCount = 3;
+            this.uiTableLayoutPanel23.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
+            this.uiTableLayoutPanel23.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 90F));
+            this.uiTableLayoutPanel23.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
+            this.uiTableLayoutPanel23.Size = new System.Drawing.Size(288, 77);
+            this.uiTableLayoutPanel23.TabIndex = 38;
+            this.uiTableLayoutPanel23.TagString = null;
+            // 
+            // uiLedDisplay1
+            // 
+            this.uiLedDisplay1.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.uiLedDisplay1.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiLedDisplay1.BorderColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiLedDisplay1.BorderInColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiLedDisplay1.CharCount = 8;
+            this.uiLedDisplay1.Font = new System.Drawing.Font("微软雅黑", 16.03791F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLedDisplay1.ForeColor = System.Drawing.Color.Lime;
+            this.uiLedDisplay1.ImeMode = System.Windows.Forms.ImeMode.NoControl;
+            this.uiLedDisplay1.IntervalIn = 2;
+            this.uiLedDisplay1.IntervalV = 2;
+            this.uiLedDisplay1.LedBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiLedDisplay1.Location = new System.Drawing.Point(7, 20);
+            this.uiLedDisplay1.Margin = new System.Windows.Forms.Padding(2);
+            this.uiLedDisplay1.Name = "uiLedDisplay1";
+            this.uiLedDisplay1.Size = new System.Drawing.Size(272, 34);
+            this.uiLedDisplay1.TabIndex = 0;
+            this.uiLedDisplay1.Text = "0";
+            // 
+            // uiTableLayoutPanel32
+            // 
+            this.uiTableLayoutPanel32.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiTableLayoutPanel32.ColumnCount = 3;
+            this.uiTableLayoutPanel15.SetColumnSpan(this.uiTableLayoutPanel32, 2);
+            this.uiTableLayoutPanel32.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
+            this.uiTableLayoutPanel32.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 96F));
+            this.uiTableLayoutPanel32.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
+            this.uiTableLayoutPanel32.Controls.Add(this.uiLedDisplay5, 1, 1);
+            this.uiTableLayoutPanel32.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTableLayoutPanel32.Location = new System.Drawing.Point(188, 2);
+            this.uiTableLayoutPanel32.Margin = new System.Windows.Forms.Padding(2);
+            this.uiTableLayoutPanel32.Name = "uiTableLayoutPanel32";
+            this.uiTableLayoutPanel32.RowCount = 3;
+            this.uiTableLayoutPanel32.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
+            this.uiTableLayoutPanel32.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 90F));
+            this.uiTableLayoutPanel32.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
+            this.uiTableLayoutPanel32.Size = new System.Drawing.Size(288, 77);
+            this.uiTableLayoutPanel32.TabIndex = 37;
+            this.uiTableLayoutPanel32.TagString = null;
+            // 
+            // uiLedDisplay5
+            // 
+            this.uiLedDisplay5.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.uiLedDisplay5.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiLedDisplay5.BorderColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiLedDisplay5.BorderInColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiLedDisplay5.CharCount = 11;
+            this.uiLedDisplay5.Font = new System.Drawing.Font("微软雅黑", 10.5782F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLedDisplay5.ForeColor = System.Drawing.Color.Lime;
+            this.uiLedDisplay5.ImeMode = System.Windows.Forms.ImeMode.NoControl;
+            this.uiLedDisplay5.IntervalIn = 2;
+            this.uiLedDisplay5.IntervalV = 2;
+            this.uiLedDisplay5.LedBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiLedDisplay5.Location = new System.Drawing.Point(7, 20);
+            this.uiLedDisplay5.Margin = new System.Windows.Forms.Padding(2);
+            this.uiLedDisplay5.Name = "uiLedDisplay5";
+            this.uiLedDisplay5.Size = new System.Drawing.Size(272, 34);
+            this.uiLedDisplay5.TabIndex = 0;
+            this.uiLedDisplay5.Text = "00D 00H 00M";
+            // 
+            // uiTableLayoutPanel41
+            // 
+            this.uiTableLayoutPanel41.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiTableLayoutPanel41.ColumnCount = 3;
+            this.uiTableLayoutPanel15.SetColumnSpan(this.uiTableLayoutPanel41, 2);
+            this.uiTableLayoutPanel41.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
+            this.uiTableLayoutPanel41.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 96F));
+            this.uiTableLayoutPanel41.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
+            this.uiTableLayoutPanel41.Controls.Add(this.uiLedDisplay9, 1, 1);
+            this.uiTableLayoutPanel41.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTableLayoutPanel41.Location = new System.Drawing.Point(188, 164);
+            this.uiTableLayoutPanel41.Margin = new System.Windows.Forms.Padding(2);
+            this.uiTableLayoutPanel41.Name = "uiTableLayoutPanel41";
+            this.uiTableLayoutPanel41.RowCount = 3;
+            this.uiTableLayoutPanel41.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
+            this.uiTableLayoutPanel41.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 90F));
+            this.uiTableLayoutPanel41.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
+            this.uiTableLayoutPanel41.Size = new System.Drawing.Size(288, 77);
+            this.uiTableLayoutPanel41.TabIndex = 39;
+            this.uiTableLayoutPanel41.TagString = null;
+            // 
+            // uiLedDisplay9
+            // 
+            this.uiLedDisplay9.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.uiLedDisplay9.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiLedDisplay9.BorderColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiLedDisplay9.BorderInColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiLedDisplay9.CharCount = 8;
+            this.uiLedDisplay9.Font = new System.Drawing.Font("微软雅黑", 16.03791F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLedDisplay9.ForeColor = System.Drawing.Color.Gold;
+            this.uiLedDisplay9.ImeMode = System.Windows.Forms.ImeMode.NoControl;
+            this.uiLedDisplay9.IntervalIn = 2;
+            this.uiLedDisplay9.IntervalV = 2;
+            this.uiLedDisplay9.LedBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiLedDisplay9.Location = new System.Drawing.Point(7, 20);
+            this.uiLedDisplay9.Margin = new System.Windows.Forms.Padding(2);
+            this.uiLedDisplay9.Name = "uiLedDisplay9";
+            this.uiLedDisplay9.Size = new System.Drawing.Size(272, 34);
+            this.uiLedDisplay9.TabIndex = 0;
+            this.uiLedDisplay9.Text = "1000000";
+            // 
+            // uiProcessBar3
+            // 
+            this.uiTableLayoutPanel15.SetColumnSpan(this.uiProcessBar3, 2);
+            this.uiProcessBar3.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiProcessBar3.FillColor = System.Drawing.Color.FromArgb(((int)(((byte)(235)))), ((int)(((byte)(243)))), ((int)(((byte)(255)))));
+            this.uiProcessBar3.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiProcessBar3.Location = new System.Drawing.Point(2, 245);
+            this.uiProcessBar3.Margin = new System.Windows.Forms.Padding(2);
+            this.uiProcessBar3.MinimumSize = new System.Drawing.Size(2, 2);
+            this.uiProcessBar3.Name = "uiProcessBar3";
+            this.uiProcessBar3.Size = new System.Drawing.Size(418, 77);
+            this.uiProcessBar3.Style = Sunny.UI.UIStyle.Custom;
+            this.uiProcessBar3.TabIndex = 41;
+            this.uiProcessBar3.Text = "uiProcessBar1";
+            // 
+            // uiGroupBox18
+            // 
+            this.uiTableLayoutPanel15.SetColumnSpan(this.uiGroupBox18, 3);
+            this.uiGroupBox18.Controls.Add(this.uiTableLayoutPanel42);
+            this.uiGroupBox18.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiGroupBox18.Location = new System.Drawing.Point(2, 326);
+            this.uiGroupBox18.Margin = new System.Windows.Forms.Padding(2);
+            this.uiGroupBox18.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiGroupBox18.Name = "uiGroupBox18";
+            this.uiGroupBox18.Padding = new System.Windows.Forms.Padding(0, 32, 0, 0);
+            this.uiGroupBox18.Size = new System.Drawing.Size(474, 72);
+            this.uiGroupBox18.TabIndex = 6;
+            this.uiGroupBox18.Text = null;
+            this.uiGroupBox18.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
+            // 
+            // uiTableLayoutPanel42
+            // 
+            this.uiTableLayoutPanel42.BackColor = System.Drawing.Color.Transparent;
+            this.uiTableLayoutPanel42.ColumnCount = 4;
+            this.uiTableLayoutPanel42.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel42.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 50F));
+            this.uiTableLayoutPanel42.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 50F));
+            this.uiTableLayoutPanel42.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel42.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel42.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel42.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel42.Controls.Add(this.uiButton24, 1, 1);
+            this.uiTableLayoutPanel42.Controls.Add(this.uiButton23, 2, 1);
+            this.uiTableLayoutPanel42.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTableLayoutPanel42.Location = new System.Drawing.Point(0, 32);
+            this.uiTableLayoutPanel42.Name = "uiTableLayoutPanel42";
+            this.uiTableLayoutPanel42.RowCount = 3;
+            this.uiTableLayoutPanel42.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 10F));
+            this.uiTableLayoutPanel42.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 75F));
+            this.uiTableLayoutPanel42.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 15F));
+            this.uiTableLayoutPanel42.Size = new System.Drawing.Size(474, 40);
+            this.uiTableLayoutPanel42.TabIndex = 35;
+            this.uiTableLayoutPanel42.TagString = null;
+            // 
+            // uiButton23
+            // 
+            this.uiButton23.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.uiButton23.FillColor = System.Drawing.Color.IndianRed;
+            this.uiButton23.FillHoverColor = System.Drawing.Color.Red;
+            this.uiButton23.FillPressColor = System.Drawing.Color.Red;
+            this.uiButton23.FillSelectedColor = System.Drawing.Color.Red;
+            this.uiButton23.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiButton23.Location = new System.Drawing.Point(240, 7);
+            this.uiButton23.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiButton23.Name = "uiButton23";
+            this.uiButton23.Radius = 3;
+            this.uiButton23.RectColor = System.Drawing.Color.Red;
+            this.uiButton23.RectHoverColor = System.Drawing.Color.Red;
+            this.uiButton23.RectPressColor = System.Drawing.Color.Red;
+            this.uiButton23.RectSelectedColor = System.Drawing.Color.Red;
+            this.uiButton23.Size = new System.Drawing.Size(130, 24);
+            this.uiButton23.TabIndex = 49;
+            this.uiButton23.Text = "停止试验";
+            this.uiButton23.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            // 
+            // uiTableLayoutPanel16
+            // 
+            this.uiTableLayoutPanel16.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiTableLayoutPanel16.ColumnCount = 3;
+            this.uiTableLayoutPanelMain.SetColumnSpan(this.uiTableLayoutPanel16, 2);
+            this.uiTableLayoutPanel16.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
+            this.uiTableLayoutPanel16.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 96F));
+            this.uiTableLayoutPanel16.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
+            this.uiTableLayoutPanel16.Controls.Add(this.LedRunCycles, 1, 1);
+            this.uiTableLayoutPanel16.Location = new System.Drawing.Point(802, 498);
+            this.uiTableLayoutPanel16.Margin = new System.Windows.Forms.Padding(2);
+            this.uiTableLayoutPanel16.Name = "uiTableLayoutPanel16";
+            this.uiTableLayoutPanel16.RowCount = 3;
+            this.uiTableLayoutPanel16.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
+            this.uiTableLayoutPanel16.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 90F));
+            this.uiTableLayoutPanel16.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
+            this.uiTableLayoutPanel16.Size = new System.Drawing.Size(216, 50);
+            this.uiTableLayoutPanel16.TabIndex = 38;
+            this.uiTableLayoutPanel16.TagString = null;
+            // 
+            // LedRunCycles
+            // 
+            this.LedRunCycles.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.LedRunCycles.BorderColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.LedRunCycles.BorderInColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.LedRunCycles.CharCount = 8;
+            this.LedRunCycles.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.LedRunCycles.Font = new System.Drawing.Font("微软雅黑", 16.03791F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.LedRunCycles.ForeColor = System.Drawing.Color.Lime;
+            this.LedRunCycles.ImeMode = System.Windows.Forms.ImeMode.NoControl;
+            this.LedRunCycles.IntervalIn = 2;
+            this.LedRunCycles.IntervalV = 2;
+            this.LedRunCycles.LedBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.LedRunCycles.Location = new System.Drawing.Point(6, 4);
+            this.LedRunCycles.Margin = new System.Windows.Forms.Padding(2);
+            this.LedRunCycles.Name = "LedRunCycles";
+            this.LedRunCycles.Size = new System.Drawing.Size(203, 41);
+            this.LedRunCycles.TabIndex = 0;
+            this.LedRunCycles.Text = "0";
+            // 
+            // uiTextBox1
+            // 
+            this.uiTableLayoutPanel19.SetColumnSpan(this.uiTextBox1, 3);
+            this.uiTextBox1.Cursor = System.Windows.Forms.Cursors.IBeam;
+            this.uiTextBox1.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTextBox1.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiTextBox1.Location = new System.Drawing.Point(151, 30);
+            this.uiTextBox1.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.uiTextBox1.MinimumSize = new System.Drawing.Size(1, 16);
+            this.uiTextBox1.Name = "uiTextBox1";
+            this.uiTextBox1.Padding = new System.Windows.Forms.Padding(5);
+            this.uiTextBox1.ShowText = false;
+            this.uiTextBox1.Size = new System.Drawing.Size(158, 26);
+            this.uiTextBox1.TabIndex = 43;
+            this.uiTextBox1.Text = "Long Time1";
+            this.uiTextBox1.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
+            this.uiTextBox1.Watermark = "";
+            // 
+            // uiLabel29
+            // 
+            this.uiLabel29.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiLabel29.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiLabel29.Location = new System.Drawing.Point(366, 238);
+            this.uiLabel29.Name = "uiLabel29";
+            this.uiLabel29.Size = new System.Drawing.Size(1, 36);
+            this.uiLabel29.TabIndex = 11;
+            this.uiLabel29.Text = "0";
+            this.uiLabel29.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            this.uiLabel29.Visible = false;
+            // 
+            // uiTableLayoutPanelMain
+            // 
+            this.uiTableLayoutPanelMain.ColumnCount = 8;
+            this.uiTableLayoutPanelMain.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 9F));
+            this.uiTableLayoutPanelMain.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 37F));
+            this.uiTableLayoutPanelMain.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 9F));
+            this.uiTableLayoutPanelMain.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 35F));
+            this.uiTableLayoutPanelMain.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 6F));
+            this.uiTableLayoutPanelMain.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 18F));
+            this.uiTableLayoutPanelMain.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 4F));
+            this.uiTableLayoutPanelMain.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 9F));
+            this.uiTableLayoutPanelMain.Controls.Add(this.dgvRealData, 3, 6);
+            this.uiTableLayoutPanelMain.Controls.Add(this.uiGroupAllControl, 3, 14);
+            this.uiTableLayoutPanelMain.Controls.Add(this.uiGroupCurve, 3, 1);
+            this.uiTableLayoutPanelMain.Controls.Add(this.uiGroupBox8, 1, 1);
+            this.uiTableLayoutPanelMain.Controls.Add(this.uiGroupBox9, 1, 5);
+            this.uiTableLayoutPanelMain.Controls.Add(this.uiTableLayoutPanel21, 5, 6);
+            this.uiTableLayoutPanelMain.Controls.Add(this.ProcBar, 3, 12);
+            this.uiTableLayoutPanelMain.Controls.Add(this.uiTableLayoutPanel22, 5, 10);
+            this.uiTableLayoutPanelMain.Controls.Add(this.uiLabel35, 4, 6);
+            this.uiTableLayoutPanelMain.Controls.Add(this.uiLabel36, 4, 8);
+            this.uiTableLayoutPanelMain.Controls.Add(this.uiLabel37, 4, 10);
+            this.uiTableLayoutPanelMain.Controls.Add(this.AlertEmb1, 6, 12);
+            this.uiTableLayoutPanelMain.Controls.Add(this.uiTableLayoutPanel16, 5, 8);
+            this.uiTableLayoutPanelMain.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTableLayoutPanelMain.Location = new System.Drawing.Point(0, 0);
+            this.uiTableLayoutPanelMain.Margin = new System.Windows.Forms.Padding(2);
+            this.uiTableLayoutPanelMain.Name = "uiTableLayoutPanelMain";
+            this.uiTableLayoutPanelMain.RowCount = 16;
+            this.uiTableLayoutPanelMain.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 9F));
+            this.uiTableLayoutPanelMain.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 11.01064F));
+            this.uiTableLayoutPanelMain.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 11.01064F));
+            this.uiTableLayoutPanelMain.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 11.01064F));
+            this.uiTableLayoutPanelMain.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 11.01064F));
+            this.uiTableLayoutPanelMain.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 10.00967F));
+            this.uiTableLayoutPanelMain.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 7.00677F));
+            this.uiTableLayoutPanelMain.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 2.901354F));
+            this.uiTableLayoutPanelMain.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 7.059961F));
+            this.uiTableLayoutPanelMain.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 2.804642F));
+            this.uiTableLayoutPanelMain.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 7.156673F));
+            this.uiTableLayoutPanelMain.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 3.002901F));
+            this.uiTableLayoutPanelMain.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 6.005803F));
+            this.uiTableLayoutPanelMain.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 9F));
+            this.uiTableLayoutPanelMain.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 10.00967F));
+            this.uiTableLayoutPanelMain.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 4F));
+            this.uiTableLayoutPanelMain.Size = new System.Drawing.Size(1032, 791);
+            this.uiTableLayoutPanelMain.TabIndex = 42;
+            this.uiTableLayoutPanelMain.TagString = null;
+            // 
+            // dgvRealData
+            // 
+            this.dgvRealData.AllowUserToAddRows = false;
+            this.dgvRealData.AllowUserToDeleteRows = false;
+            dataGridViewCellStyle121.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+            dataGridViewCellStyle121.BackColor = System.Drawing.Color.WhiteSmoke;
+            dataGridViewCellStyle121.Font = new System.Drawing.Font("Arial Narrow", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.dgvRealData.AlternatingRowsDefaultCellStyle = dataGridViewCellStyle121;
+            this.dgvRealData.BackgroundColor = System.Drawing.Color.White;
+            this.dgvRealData.ColumnHeadersBorderStyle = System.Windows.Forms.DataGridViewHeaderBorderStyle.Single;
+            dataGridViewCellStyle122.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+            dataGridViewCellStyle122.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            dataGridViewCellStyle122.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            dataGridViewCellStyle122.ForeColor = System.Drawing.Color.White;
+            dataGridViewCellStyle122.SelectionBackColor = System.Drawing.SystemColors.Highlight;
+            dataGridViewCellStyle122.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
+            dataGridViewCellStyle122.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
+            this.dgvRealData.ColumnHeadersDefaultCellStyle = dataGridViewCellStyle122;
+            this.dgvRealData.ColumnHeadersHeight = 35;
+            dataGridViewCellStyle123.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleLeft;
+            dataGridViewCellStyle123.BackColor = System.Drawing.SystemColors.Window;
+            dataGridViewCellStyle123.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            dataGridViewCellStyle123.ForeColor = System.Drawing.SystemColors.ControlText;
+            dataGridViewCellStyle123.SelectionBackColor = System.Drawing.SystemColors.Highlight;
+            dataGridViewCellStyle123.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
+            dataGridViewCellStyle123.WrapMode = System.Windows.Forms.DataGridViewTriState.False;
+            this.dgvRealData.DefaultCellStyle = dataGridViewCellStyle123;
+            this.dgvRealData.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.dgvRealData.EnableHeadersVisualStyles = false;
+            this.dgvRealData.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.dgvRealData.GridColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.dgvRealData.Location = new System.Drawing.Point(391, 423);
+            this.dgvRealData.Margin = new System.Windows.Forms.Padding(2);
+            this.dgvRealData.Name = "dgvRealData";
+            dataGridViewCellStyle124.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+            dataGridViewCellStyle124.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(235)))), ((int)(((byte)(243)))), ((int)(((byte)(255)))));
+            dataGridViewCellStyle124.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            dataGridViewCellStyle124.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            dataGridViewCellStyle124.SelectionBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            dataGridViewCellStyle124.SelectionForeColor = System.Drawing.Color.White;
+            dataGridViewCellStyle124.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
+            this.dgvRealData.RowHeadersDefaultCellStyle = dataGridViewCellStyle124;
+            this.dgvRealData.RowHeadersWidth = 30;
+            dataGridViewCellStyle125.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+            dataGridViewCellStyle125.BackColor = System.Drawing.Color.Lavender;
+            dataGridViewCellStyle125.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.dgvRealData.RowsDefaultCellStyle = dataGridViewCellStyle125;
+            this.uiTableLayoutPanelMain.SetRowSpan(this.dgvRealData, 5);
+            this.dgvRealData.RowTemplate.Height = 35;
+            this.dgvRealData.SelectedIndex = -1;
+            this.dgvRealData.Size = new System.Drawing.Size(347, 201);
+            this.dgvRealData.StripeEvenColor = System.Drawing.Color.Lavender;
+            this.dgvRealData.StripeOddColor = System.Drawing.Color.WhiteSmoke;
+            this.dgvRealData.TabIndex = 0;
+            this.dgvRealData.CellContentClick += new System.Windows.Forms.DataGridViewCellEventHandler(this.dgvRealData_CellContentClick);
+            // 
+            // uiGroupAllControl
+            // 
+            this.uiTableLayoutPanelMain.SetColumnSpan(this.uiGroupAllControl, 4);
+            this.uiGroupAllControl.Controls.Add(this.uiTableLayoutPanel17);
+            this.uiGroupAllControl.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiGroupAllControl.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiGroupAllControl.Location = new System.Drawing.Point(391, 706);
+            this.uiGroupAllControl.Margin = new System.Windows.Forms.Padding(2);
+            this.uiGroupAllControl.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiGroupAllControl.Name = "uiGroupAllControl";
+            this.uiGroupAllControl.Padding = new System.Windows.Forms.Padding(0, 32, 0, 0);
+            this.uiGroupAllControl.Size = new System.Drawing.Size(627, 72);
+            this.uiGroupAllControl.TabIndex = 6;
+            this.uiGroupAllControl.Text = null;
+            this.uiGroupAllControl.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
+            // 
+            // uiTableLayoutPanel17
+            // 
+            this.uiTableLayoutPanel17.BackColor = System.Drawing.Color.Transparent;
+            this.uiTableLayoutPanel17.ColumnCount = 7;
+            this.uiTableLayoutPanel17.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel17.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 16F));
+            this.uiTableLayoutPanel17.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 26F));
+            this.uiTableLayoutPanel17.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 16F));
+            this.uiTableLayoutPanel17.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 26F));
+            this.uiTableLayoutPanel17.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 16F));
+            this.uiTableLayoutPanel17.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel17.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel17.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel17.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel17.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel17.Controls.Add(this.BtnStop, 5, 1);
+            this.uiTableLayoutPanel17.Controls.Add(this.BtnStartTest, 3, 1);
+            this.uiTableLayoutPanel17.Controls.Add(this.BtnAutoLearn, 2, 1);
+            this.uiTableLayoutPanel17.Controls.Add(this.BtnPause, 1, 1);
+            this.uiTableLayoutPanel17.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTableLayoutPanel17.Location = new System.Drawing.Point(0, 32);
+            this.uiTableLayoutPanel17.Name = "uiTableLayoutPanel17";
+            this.uiTableLayoutPanel17.RowCount = 3;
+            this.uiTableLayoutPanel17.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 10F));
+            this.uiTableLayoutPanel17.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 75F));
+            this.uiTableLayoutPanel17.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 15F));
+            this.uiTableLayoutPanel17.Size = new System.Drawing.Size(627, 40);
+            this.uiTableLayoutPanel17.TabIndex = 35;
+            this.uiTableLayoutPanel17.TagString = null;
+            // 
+            // BtnStop
+            // 
+            this.BtnStop.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.BtnStop.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.BtnStop.FillColor = System.Drawing.Color.IndianRed;
+            this.BtnStop.FillHoverColor = System.Drawing.Color.Red;
+            this.BtnStop.FillPressColor = System.Drawing.Color.Red;
+            this.BtnStop.FillSelectedColor = System.Drawing.Color.Red;
+            this.BtnStop.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.BtnStop.Location = new System.Drawing.Point(513, 7);
+            this.BtnStop.MinimumSize = new System.Drawing.Size(1, 1);
+            this.BtnStop.Name = "BtnStop";
+            this.BtnStop.Radius = 3;
+            this.BtnStop.RectColor = System.Drawing.Color.Red;
+            this.BtnStop.RectHoverColor = System.Drawing.Color.Red;
+            this.BtnStop.RectPressColor = System.Drawing.Color.Red;
+            this.BtnStop.RectSelectedColor = System.Drawing.Color.Red;
+            this.BtnStop.Size = new System.Drawing.Size(87, 24);
+            this.BtnStop.TabIndex = 49;
+            this.BtnStop.Text = "停止试验";
+            this.BtnStop.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.BtnStop.Click += new System.EventHandler(this.BtnStop_Click);
+            // 
+            // BtnStartTest
+            // 
+            this.BtnStartTest.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.BtnStartTest.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.BtnStartTest.FillDisableColor = System.Drawing.Color.FromArgb(((int)(((byte)(115)))), ((int)(((byte)(179)))), ((int)(((byte)(255)))));
+            this.BtnStartTest.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.BtnStartTest.Location = new System.Drawing.Point(268, 7);
+            this.BtnStartTest.MinimumSize = new System.Drawing.Size(1, 1);
+            this.BtnStartTest.Name = "BtnStartTest";
+            this.BtnStartTest.Radius = 3;
+            this.BtnStartTest.RectDisableColor = System.Drawing.Color.LightBlue;
+            this.BtnStartTest.Size = new System.Drawing.Size(87, 24);
+            this.BtnStartTest.TabIndex = 50;
+            this.BtnStartTest.Text = "开始试验";
+            this.BtnStartTest.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.BtnStartTest.Click += new System.EventHandler(this.BtnStartTest_Click);
+            // 
+            // BtnAutoLearn
+            // 
+            this.BtnAutoLearn.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.BtnAutoLearn.FillDisableColor = System.Drawing.Color.FromArgb(((int)(((byte)(115)))), ((int)(((byte)(179)))), ((int)(((byte)(255)))));
+            this.BtnAutoLearn.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.BtnAutoLearn.Location = new System.Drawing.Point(116, 7);
+            this.BtnAutoLearn.MinimumSize = new System.Drawing.Size(1, 1);
+            this.BtnAutoLearn.Name = "BtnAutoLearn";
+            this.BtnAutoLearn.Radius = 1;
+            this.BtnAutoLearn.RectDisableColor = System.Drawing.Color.LightBlue;
+            this.BtnAutoLearn.Size = new System.Drawing.Size(146, 24);
+            this.BtnAutoLearn.TabIndex = 52;
+            this.BtnAutoLearn.Text = "自学习";
+            this.BtnAutoLearn.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.BtnAutoLearn.Visible = false;
+            this.BtnAutoLearn.Click += new System.EventHandler(this.BtnAutoLearn_Click);
+            // 
+            // BtnPause
+            // 
+            this.BtnPause.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.BtnPause.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.BtnPause.FillDisableColor = System.Drawing.Color.FromArgb(((int)(((byte)(115)))), ((int)(((byte)(179)))), ((int)(((byte)(255)))));
+            this.BtnPause.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.BtnPause.Location = new System.Drawing.Point(23, 7);
+            this.BtnPause.MinimumSize = new System.Drawing.Size(1, 1);
+            this.BtnPause.Name = "BtnPause";
+            this.BtnPause.Radius = 1;
+            this.BtnPause.RectDisableColor = System.Drawing.Color.LightBlue;
+            this.BtnPause.Size = new System.Drawing.Size(87, 24);
+            this.BtnPause.TabIndex = 53;
+            this.BtnPause.Text = "暂停";
+            this.BtnPause.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.BtnPause.Click += new System.EventHandler(this.BtnPause_Click);
+            // 
+            // uiGroupCurve
+            // 
+            this.uiTableLayoutPanelMain.SetColumnSpan(this.uiGroupCurve, 4);
+            this.uiGroupCurve.Controls.Add(this.uiTableLayoutPanel18);
+            this.uiGroupCurve.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiGroupCurve.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiGroupCurve.Location = new System.Drawing.Point(391, 11);
+            this.uiGroupCurve.Margin = new System.Windows.Forms.Padding(2);
+            this.uiGroupCurve.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiGroupCurve.Name = "uiGroupCurve";
+            this.uiGroupCurve.Padding = new System.Windows.Forms.Padding(0, 32, 0, 0);
+            this.uiTableLayoutPanelMain.SetRowSpan(this.uiGroupCurve, 5);
+            this.uiGroupCurve.Size = new System.Drawing.Size(627, 408);
+            this.uiGroupCurve.TabIndex = 36;
+            this.uiGroupCurve.Text = null;
+            this.uiGroupCurve.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
+            // 
+            // uiTableLayoutPanel18
+            // 
+            this.uiTableLayoutPanel18.BackColor = System.Drawing.Color.Transparent;
+            this.uiTableLayoutPanel18.ColumnCount = 3;
+            this.uiTableLayoutPanel18.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel18.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 100F));
+            this.uiTableLayoutPanel18.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel18.Controls.Add(this.zedGraphControl1, 1, 1);
+            this.uiTableLayoutPanel18.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTableLayoutPanel18.Location = new System.Drawing.Point(0, 32);
+            this.uiTableLayoutPanel18.Name = "uiTableLayoutPanel18";
+            this.uiTableLayoutPanel18.RowCount = 3;
+            this.uiTableLayoutPanel18.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 10F));
+            this.uiTableLayoutPanel18.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100F));
+            this.uiTableLayoutPanel18.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel18.Size = new System.Drawing.Size(627, 376);
+            this.uiTableLayoutPanel18.TabIndex = 36;
+            this.uiTableLayoutPanel18.TagString = null;
+            // 
+            // zedGraphControl1
+            // 
+            this.zedGraphControl1.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.zedGraphControl1.IsEnableHZoom = false;
+            this.zedGraphControl1.IsEnableVZoom = false;
+            this.zedGraphControl1.IsEnableWheelZoom = false;
+            this.zedGraphControl1.Location = new System.Drawing.Point(28, 18);
+            this.zedGraphControl1.Margin = new System.Windows.Forms.Padding(8);
+            this.zedGraphControl1.Name = "zedGraphControl1";
+            this.zedGraphControl1.ScrollGrace = 0D;
+            this.zedGraphControl1.ScrollMaxX = 0D;
+            this.zedGraphControl1.ScrollMaxY = 0D;
+            this.zedGraphControl1.ScrollMaxY2 = 0D;
+            this.zedGraphControl1.ScrollMinX = 0D;
+            this.zedGraphControl1.ScrollMinY = 0D;
+            this.zedGraphControl1.ScrollMinY2 = 0D;
+            this.zedGraphControl1.Size = new System.Drawing.Size(571, 330);
+            this.zedGraphControl1.TabIndex = 4;
+            this.zedGraphControl1.UseExtendedPrintDialog = true;
+            this.zedGraphControl1.ContextMenuBuilder += new ZedGraph.ZedGraphControl.ContextMenuBuilderEventHandler(this.zedGraphRealChart_ContextMenuBuilder);
+            // 
+            // uiGroupBox8
+            // 
+            this.uiGroupBox8.Controls.Add(this.uiTableLayoutPanel19);
+            this.uiGroupBox8.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiGroupBox8.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiGroupBox8.Location = new System.Drawing.Point(11, 11);
+            this.uiGroupBox8.Margin = new System.Windows.Forms.Padding(2);
+            this.uiGroupBox8.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiGroupBox8.Name = "uiGroupBox8";
+            this.uiGroupBox8.Padding = new System.Windows.Forms.Padding(0, 32, 0, 0);
+            this.uiTableLayoutPanelMain.SetRowSpan(this.uiGroupBox8, 4);
+            this.uiGroupBox8.Size = new System.Drawing.Size(367, 332);
+            this.uiGroupBox8.TabIndex = 2;
+            this.uiGroupBox8.Text = "试验设置";
+            this.uiGroupBox8.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
+            // 
+            // uiTableLayoutPanel19
+            // 
+            this.uiTableLayoutPanel19.BackColor = System.Drawing.Color.Transparent;
+            this.uiTableLayoutPanel19.ColumnCount = 8;
+            this.uiTableLayoutPanel19.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2.040816F));
+            this.uiTableLayoutPanel19.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 40.81633F));
+            this.uiTableLayoutPanel19.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 80F));
+            this.uiTableLayoutPanel19.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 30.61224F));
+            this.uiTableLayoutPanel19.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 80F));
+            this.uiTableLayoutPanel19.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 24.4898F));
+            this.uiTableLayoutPanel19.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 50F));
+            this.uiTableLayoutPanel19.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2.040816F));
+            this.uiTableLayoutPanel19.Controls.Add(this.uiTextBox3, 3, 7);
+            this.uiTableLayoutPanel19.Controls.Add(this.uiLabel29, 6, 9);
+            this.uiTableLayoutPanel19.Controls.Add(this.uiTextBox4, 3, 5);
+            this.uiTableLayoutPanel19.Controls.Add(this.uiLabel30, 1, 1);
+            this.uiTableLayoutPanel19.Controls.Add(this.uiLabel31, 1, 5);
+            this.uiTableLayoutPanel19.Controls.Add(this.uiLabel32, 1, 7);
+            this.uiTableLayoutPanel19.Controls.Add(this.uiTextBox1, 3, 1);
+            this.uiTableLayoutPanel19.Controls.Add(this.uiLabel33, 1, 3);
+            this.uiTableLayoutPanel19.Controls.Add(this.uiTextBox2, 3, 3);
+            this.uiTableLayoutPanel19.Controls.Add(this.uiLabel34, 4, 5);
+            this.uiTableLayoutPanel19.Controls.Add(this.ChkEmb1, 6, 1);
+            this.uiTableLayoutPanel19.Controls.Add(this.RadEmb1, 6, 3);
+            this.uiTableLayoutPanel19.Controls.Add(this.uiButton2, 1, 9);
+            this.uiTableLayoutPanel19.Controls.Add(this.uiButton1, 4, 9);
+            this.uiTableLayoutPanel19.Controls.Add(this.BtnSettingDetail, 3, 9);
+            this.uiTableLayoutPanel19.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTableLayoutPanel19.Location = new System.Drawing.Point(0, 32);
+            this.uiTableLayoutPanel19.Name = "uiTableLayoutPanel19";
+            this.uiTableLayoutPanel19.RowCount = 11;
+            this.uiTableLayoutPanel19.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 8.5F));
+            this.uiTableLayoutPanel19.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 12F));
+            this.uiTableLayoutPanel19.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
+            this.uiTableLayoutPanel19.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 12F));
+            this.uiTableLayoutPanel19.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
+            this.uiTableLayoutPanel19.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 12F));
+            this.uiTableLayoutPanel19.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
+            this.uiTableLayoutPanel19.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 12F));
+            this.uiTableLayoutPanel19.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 8F));
+            this.uiTableLayoutPanel19.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 12F));
+            this.uiTableLayoutPanel19.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 8.5F));
+            this.uiTableLayoutPanel19.Size = new System.Drawing.Size(367, 300);
+            this.uiTableLayoutPanel19.TabIndex = 1;
+            this.uiTableLayoutPanel19.TagString = null;
+            // 
+            // uiTextBox3
+            // 
+            this.uiTextBox3.Cursor = System.Windows.Forms.Cursors.IBeam;
+            this.uiTextBox3.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTextBox3.DoubleValue = 100000D;
+            this.uiTextBox3.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiTextBox3.IntValue = 100000;
+            this.uiTextBox3.Location = new System.Drawing.Point(151, 183);
+            this.uiTextBox3.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.uiTextBox3.MinimumSize = new System.Drawing.Size(1, 16);
+            this.uiTextBox3.Name = "uiTextBox3";
+            this.uiTextBox3.Padding = new System.Windows.Forms.Padding(5);
+            this.uiTextBox3.ShowText = false;
+            this.uiTextBox3.Size = new System.Drawing.Size(40, 26);
+            this.uiTextBox3.TabIndex = 44;
+            this.uiTextBox3.Text = "100000";
+            this.uiTextBox3.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
+            this.uiTextBox3.Watermark = "";
+            // 
+            // uiTextBox4
+            // 
+            this.uiTextBox4.Cursor = System.Windows.Forms.Cursors.IBeam;
+            this.uiTextBox4.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTextBox4.DoubleValue = 3D;
+            this.uiTextBox4.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiTextBox4.IntValue = 3;
+            this.uiTextBox4.Location = new System.Drawing.Point(151, 132);
+            this.uiTextBox4.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.uiTextBox4.MinimumSize = new System.Drawing.Size(1, 16);
+            this.uiTextBox4.Name = "uiTextBox4";
+            this.uiTextBox4.Padding = new System.Windows.Forms.Padding(5);
+            this.uiTextBox4.ShowText = false;
+            this.uiTextBox4.Size = new System.Drawing.Size(40, 26);
+            this.uiTextBox4.TabIndex = 44;
+            this.uiTextBox4.Text = "3";
+            this.uiTextBox4.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
+            this.uiTextBox4.Watermark = "";
+            // 
+            // uiLabel30
+            // 
+            this.uiTableLayoutPanel19.SetColumnSpan(this.uiLabel30, 2);
+            this.uiLabel30.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabel30.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiLabel30.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiLabel30.Location = new System.Drawing.Point(6, 25);
+            this.uiLabel30.Name = "uiLabel30";
+            this.uiLabel30.Size = new System.Drawing.Size(138, 36);
+            this.uiLabel30.TabIndex = 33;
+            this.uiLabel30.TagString = "试验名称";
+            this.uiLabel30.Text = "试验名称";
+            this.uiLabel30.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiLabel31
+            // 
+            this.uiTableLayoutPanel19.SetColumnSpan(this.uiLabel31, 2);
+            this.uiLabel31.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabel31.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiLabel31.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiLabel31.Location = new System.Drawing.Point(6, 127);
+            this.uiLabel31.Name = "uiLabel31";
+            this.uiLabel31.Size = new System.Drawing.Size(138, 36);
+            this.uiLabel31.TabIndex = 35;
+            this.uiLabel31.Text = "频   率";
+            this.uiLabel31.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiLabel32
+            // 
+            this.uiTableLayoutPanel19.SetColumnSpan(this.uiLabel32, 2);
+            this.uiLabel32.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabel32.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiLabel32.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiLabel32.Location = new System.Drawing.Point(6, 178);
+            this.uiLabel32.Name = "uiLabel32";
+            this.uiLabel32.Size = new System.Drawing.Size(138, 36);
+            this.uiLabel32.TabIndex = 36;
+            this.uiLabel32.Text = "目标次数";
+            this.uiLabel32.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiLabel33
+            // 
+            this.uiTableLayoutPanel19.SetColumnSpan(this.uiLabel33, 2);
+            this.uiLabel33.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabel33.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiLabel33.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiLabel33.Location = new System.Drawing.Point(6, 76);
+            this.uiLabel33.Name = "uiLabel33";
+            this.uiLabel33.Size = new System.Drawing.Size(138, 36);
+            this.uiLabel33.TabIndex = 45;
+            this.uiLabel33.Text = "试验标准";
+            this.uiLabel33.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiTextBox2
+            // 
+            this.uiTableLayoutPanel19.SetColumnSpan(this.uiTextBox2, 3);
+            this.uiTextBox2.Cursor = System.Windows.Forms.Cursors.IBeam;
+            this.uiTextBox2.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTextBox2.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiTextBox2.Location = new System.Drawing.Point(151, 81);
+            this.uiTextBox2.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.uiTextBox2.MinimumSize = new System.Drawing.Size(1, 16);
+            this.uiTextBox2.Name = "uiTextBox2";
+            this.uiTextBox2.Padding = new System.Windows.Forms.Padding(5);
+            this.uiTextBox2.ShowText = false;
+            this.uiTextBox2.Size = new System.Drawing.Size(158, 26);
+            this.uiTextBox2.TabIndex = 46;
+            this.uiTextBox2.Text = "QRYM-2022 ";
+            this.uiTextBox2.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
+            this.uiTextBox2.Watermark = "";
+            // 
+            // uiLabel34
+            // 
+            this.uiLabel34.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabel34.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiLabel34.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiLabel34.Location = new System.Drawing.Point(198, 127);
+            this.uiLabel34.Name = "uiLabel34";
+            this.uiLabel34.Size = new System.Drawing.Size(74, 36);
+            this.uiLabel34.TabIndex = 48;
+            this.uiLabel34.Text = "Hz";
+            this.uiLabel34.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
             // 
             // ChkEmb1
             // 
@@ -1634,112 +3192,2120 @@
             this.ChkEmb1.Cursor = System.Windows.Forms.Cursors.Hand;
             this.ChkEmb1.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.ChkEmb1.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.ChkEmb1.Location = new System.Drawing.Point(104, 132);
+            this.ChkEmb1.Location = new System.Drawing.Point(316, 28);
             this.ChkEmb1.MinimumSize = new System.Drawing.Size(1, 1);
             this.ChkEmb1.Name = "ChkEmb1";
-            this.ChkEmb1.Size = new System.Drawing.Size(166, 37);
-            this.ChkEmb1.TabIndex = 52;
+            this.ChkEmb1.Size = new System.Drawing.Size(44, 30);
+            this.ChkEmb1.TabIndex = 37;
             this.ChkEmb1.Text = "EMB1";
+            this.ChkEmb1.Visible = false;
+            // 
+            // RadEmb1
+            // 
+            this.RadEmb1.Checked = true;
+            this.RadEmb1.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.RadEmb1.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.RadEmb1.Location = new System.Drawing.Point(316, 79);
+            this.RadEmb1.MinimumSize = new System.Drawing.Size(1, 1);
+            this.RadEmb1.Name = "RadEmb1";
+            this.RadEmb1.RadioButtonSize = 32;
+            this.RadEmb1.Size = new System.Drawing.Size(44, 30);
+            this.RadEmb1.TabIndex = 10;
+            this.RadEmb1.Text = "EMB1";
+            this.RadEmb1.Visible = false;
+            // 
+            // uiButton2
+            // 
+            this.uiButton2.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.uiButton2.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiButton2.FillDisableColor = System.Drawing.Color.FromArgb(((int)(((byte)(115)))), ((int)(((byte)(179)))), ((int)(((byte)(255)))));
+            this.uiButton2.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiButton2.Location = new System.Drawing.Point(33, 241);
+            this.uiButton2.Margin = new System.Windows.Forms.Padding(30, 3, 3, 3);
+            this.uiButton2.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiButton2.Name = "uiButton2";
+            this.uiButton2.Radius = 1;
+            this.uiButton2.RectDisableColor = System.Drawing.Color.LightBlue;
+            this.uiButton2.Size = new System.Drawing.Size(31, 30);
+            this.uiButton2.TabIndex = 50;
+            this.uiButton2.Text = "取消";
+            this.uiButton2.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiButton2.Click += new System.EventHandler(this.BtnCancel_Click);
             // 
             // uiButton1
             // 
+            this.uiTableLayoutPanel19.SetColumnSpan(this.uiButton1, 2);
             this.uiButton1.Cursor = System.Windows.Forms.Cursors.Hand;
-            this.uiButton1.FillDisableColor = System.Drawing.Color.FromArgb(((int)(((byte)(115)))), ((int)(((byte)(179)))), ((int)(((byte)(255)))));
+            this.uiButton1.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiButton1.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.uiButton1.Location = new System.Drawing.Point(104, 24);
+            this.uiButton1.Location = new System.Drawing.Point(278, 241);
+            this.uiButton1.Margin = new System.Windows.Forms.Padding(3, 3, 30, 3);
             this.uiButton1.MinimumSize = new System.Drawing.Size(1, 1);
             this.uiButton1.Name = "uiButton1";
-            this.uiButton1.RectDisableColor = System.Drawing.Color.LightBlue;
-            this.uiButton1.Size = new System.Drawing.Size(234, 49);
-            this.uiButton1.TabIndex = 51;
-            this.uiButton1.Text = "取消";
+            this.uiButton1.Size = new System.Drawing.Size(55, 30);
+            this.uiButton1.TabIndex = 49;
+            this.uiButton1.Text = "确认";
             this.uiButton1.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiButton1.Click += new System.EventHandler(this.uiButton1_Click);
+            this.uiButton1.Click += new System.EventHandler(this.BtnApply_Click);
             // 
-            // uiGroupBox3
+            // BtnSettingDetail
             // 
-            this.uiGroupBox3.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiGroupBox3.Location = new System.Drawing.Point(1125, 23);
-            this.uiGroupBox3.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
-            this.uiGroupBox3.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiGroupBox3.Name = "uiGroupBox3";
-            this.uiGroupBox3.Padding = new System.Windows.Forms.Padding(0, 32, 0, 0);
-            this.uiGroupBox3.Size = new System.Drawing.Size(270, 180);
-            this.uiGroupBox3.TabIndex = 6;
-            this.uiGroupBox3.Text = "uiGroupBox3";
-            this.uiGroupBox3.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
+            this.uiTableLayoutPanel19.SetColumnSpan(this.BtnSettingDetail, 2);
+            this.BtnSettingDetail.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.BtnSettingDetail.FillDisableColor = System.Drawing.Color.FromArgb(((int)(((byte)(115)))), ((int)(((byte)(179)))), ((int)(((byte)(255)))));
+            this.BtnSettingDetail.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.BtnSettingDetail.Location = new System.Drawing.Point(150, 241);
+            this.BtnSettingDetail.MinimumSize = new System.Drawing.Size(1, 1);
+            this.BtnSettingDetail.Name = "BtnSettingDetail";
+            this.BtnSettingDetail.RectDisableColor = System.Drawing.Color.LightBlue;
+            this.BtnSettingDetail.Size = new System.Drawing.Size(122, 30);
+            this.BtnSettingDetail.TabIndex = 47;
+            this.BtnSettingDetail.Text = "详细";
+            this.BtnSettingDetail.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.BtnSettingDetail.Visible = false;
+            this.BtnSettingDetail.Click += new System.EventHandler(this.BtnSettingDetail_Click);
             // 
-            // uiTableLayoutPanel3
+            // uiGroupBox9
             // 
-            this.uiTableLayoutPanel3.ColumnCount = 2;
-            this.uiTableLayoutPanel3.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 50F));
-            this.uiTableLayoutPanel3.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 50F));
-            this.uiTableLayoutPanel3.Location = new System.Drawing.Point(1124, 631);
-            this.uiTableLayoutPanel3.Name = "uiTableLayoutPanel3";
-            this.uiTableLayoutPanel3.RowCount = 2;
-            this.uiTableLayoutPanel3.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 50F));
-            this.uiTableLayoutPanel3.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 50F));
-            this.uiTableLayoutPanel3.Size = new System.Drawing.Size(200, 100);
-            this.uiTableLayoutPanel3.TabIndex = 7;
-            this.uiTableLayoutPanel3.TagString = null;
+            this.uiGroupBox9.Controls.Add(this.uiTableLayoutPanel20);
+            this.uiGroupBox9.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiGroupBox9.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiGroupBox9.Location = new System.Drawing.Point(11, 347);
+            this.uiGroupBox9.Margin = new System.Windows.Forms.Padding(2);
+            this.uiGroupBox9.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiGroupBox9.Name = "uiGroupBox9";
+            this.uiGroupBox9.Padding = new System.Windows.Forms.Padding(0, 32, 0, 0);
+            this.uiTableLayoutPanelMain.SetRowSpan(this.uiGroupBox9, 10);
+            this.uiGroupBox9.Size = new System.Drawing.Size(367, 431);
+            this.uiGroupBox9.TabIndex = 7;
+            this.uiGroupBox9.Text = "信息";
+            this.uiGroupBox9.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
             // 
-            // uiPanel2
+            // uiTableLayoutPanel20
             // 
-            this.uiPanel2.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            this.uiPanel2.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiPanel2.FillColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            this.uiPanel2.FillColor2 = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            this.uiPanel2.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiPanel2.Location = new System.Drawing.Point(18, 274);
-            this.uiPanel2.Margin = new System.Windows.Forms.Padding(0);
-            this.uiPanel2.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiPanel2.Name = "uiPanel2";
-            this.uiPanel2.Radius = 1;
-            this.uiPanel2.Size = new System.Drawing.Size(520, 1);
-            this.uiPanel2.TabIndex = 55;
-            this.uiPanel2.TextAlignment = System.Drawing.ContentAlignment.MiddleCenter;
+            this.uiTableLayoutPanel20.BackColor = System.Drawing.Color.Transparent;
+            this.uiTableLayoutPanel20.ColumnCount = 5;
+            this.uiTableLayoutPanel20.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel20.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 30F));
+            this.uiTableLayoutPanel20.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 40F));
+            this.uiTableLayoutPanel20.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 30F));
+            this.uiTableLayoutPanel20.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel20.Controls.Add(this.uiButton3, 1, 3);
+            this.uiTableLayoutPanel20.Controls.Add(this.uiRichTextBox1, 1, 1);
+            this.uiTableLayoutPanel20.Controls.Add(this.uiButton4, 3, 3);
+            this.uiTableLayoutPanel20.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTableLayoutPanel20.Location = new System.Drawing.Point(0, 32);
+            this.uiTableLayoutPanel20.Name = "uiTableLayoutPanel20";
+            this.uiTableLayoutPanel20.RowCount = 5;
+            this.uiTableLayoutPanel20.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 10F));
+            this.uiTableLayoutPanel20.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 91F));
+            this.uiTableLayoutPanel20.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel20.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 9F));
+            this.uiTableLayoutPanel20.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel20.Size = new System.Drawing.Size(367, 399);
+            this.uiTableLayoutPanel20.TabIndex = 37;
+            this.uiTableLayoutPanel20.TagString = null;
             // 
-            // uiPanel3
+            // uiButton3
             // 
-            this.uiPanel3.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            this.uiPanel3.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiPanel3.FillColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            this.uiPanel3.FillColor2 = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            this.uiPanel3.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiPanel3.Location = new System.Drawing.Point(539, 274);
-            this.uiPanel3.Margin = new System.Windows.Forms.Padding(0);
-            this.uiPanel3.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiPanel3.Name = "uiPanel3";
-            this.uiPanel3.Radius = 1;
-            this.uiPanel3.Size = new System.Drawing.Size(520, 1);
-            this.uiPanel3.TabIndex = 55;
-            this.uiPanel3.TextAlignment = System.Drawing.ContentAlignment.MiddleCenter;
+            this.uiButton3.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.uiButton3.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiButton3.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiButton3.Location = new System.Drawing.Point(23, 350);
+            this.uiButton3.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiButton3.Name = "uiButton3";
+            this.uiButton3.Radius = 4;
+            this.uiButton3.Size = new System.Drawing.Size(92, 25);
+            this.uiButton3.TabIndex = 52;
+            this.uiButton3.Text = "运行日志";
+            this.uiButton3.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiButton3.Click += new System.EventHandler(this.BtnRunLog_Click);
             // 
-            // uiPanel4
+            // uiRichTextBox1
             // 
-            this.uiPanel4.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            this.uiPanel4.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiPanel4.FillColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            this.uiPanel4.FillColor2 = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            this.uiPanel4.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiPanel4.Location = new System.Drawing.Point(538, 18);
-            this.uiPanel4.Margin = new System.Windows.Forms.Padding(0);
-            this.uiPanel4.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiPanel4.Name = "uiPanel4";
-            this.uiPanel4.Radius = 1;
-            this.tableLayoutPanel1.SetRowSpan(this.uiPanel4, 3);
-            this.uiPanel4.Size = new System.Drawing.Size(1, 513);
-            this.uiPanel4.TabIndex = 55;
-            this.uiPanel4.TextAlignment = System.Drawing.ContentAlignment.MiddleCenter;
+            this.uiTableLayoutPanel20.SetColumnSpan(this.uiRichTextBox1, 3);
+            this.uiRichTextBox1.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiRichTextBox1.FillColor = System.Drawing.Color.White;
+            this.uiRichTextBox1.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiRichTextBox1.Location = new System.Drawing.Point(24, 15);
+            this.uiRichTextBox1.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.uiRichTextBox1.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiRichTextBox1.Name = "uiRichTextBox1";
+            this.uiRichTextBox1.Padding = new System.Windows.Forms.Padding(2);
+            this.uiRichTextBox1.Radius = 1;
+            this.uiRichTextBox1.ShowText = false;
+            this.uiRichTextBox1.Size = new System.Drawing.Size(318, 307);
+            this.uiRichTextBox1.TabIndex = 0;
+            this.uiRichTextBox1.TextAlignment = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiButton4
+            // 
+            this.uiButton4.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.uiButton4.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiButton4.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiButton4.Location = new System.Drawing.Point(251, 350);
+            this.uiButton4.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiButton4.Name = "uiButton4";
+            this.uiButton4.Radius = 4;
+            this.uiButton4.Size = new System.Drawing.Size(92, 25);
+            this.uiButton4.TabIndex = 53;
+            this.uiButton4.Text = "错误日志";
+            this.uiButton4.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiButton4.Click += new System.EventHandler(this.BtnErrorLog_Click);
+            // 
+            // uiTableLayoutPanel21
+            // 
+            this.uiTableLayoutPanel21.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiTableLayoutPanel21.ColumnCount = 3;
+            this.uiTableLayoutPanelMain.SetColumnSpan(this.uiTableLayoutPanel21, 2);
+            this.uiTableLayoutPanel21.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
+            this.uiTableLayoutPanel21.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 96F));
+            this.uiTableLayoutPanel21.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
+            this.uiTableLayoutPanel21.Controls.Add(this.LedRunTime, 1, 1);
+            this.uiTableLayoutPanel21.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTableLayoutPanel21.Location = new System.Drawing.Point(802, 423);
+            this.uiTableLayoutPanel21.Margin = new System.Windows.Forms.Padding(2);
+            this.uiTableLayoutPanel21.Name = "uiTableLayoutPanel21";
+            this.uiTableLayoutPanel21.RowCount = 3;
+            this.uiTableLayoutPanel21.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
+            this.uiTableLayoutPanel21.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 90F));
+            this.uiTableLayoutPanel21.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
+            this.uiTableLayoutPanel21.Size = new System.Drawing.Size(216, 49);
+            this.uiTableLayoutPanel21.TabIndex = 37;
+            this.uiTableLayoutPanel21.TagString = null;
+            // 
+            // LedRunTime
+            // 
+            this.LedRunTime.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.LedRunTime.BorderColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.LedRunTime.BorderInColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.LedRunTime.CharCount = 11;
+            this.LedRunTime.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.LedRunTime.Font = new System.Drawing.Font("微软雅黑", 10.5782F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.LedRunTime.ForeColor = System.Drawing.Color.Lime;
+            this.LedRunTime.ImeMode = System.Windows.Forms.ImeMode.NoControl;
+            this.LedRunTime.IntervalIn = 2;
+            this.LedRunTime.IntervalV = 2;
+            this.LedRunTime.LedBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.LedRunTime.Location = new System.Drawing.Point(6, 4);
+            this.LedRunTime.Margin = new System.Windows.Forms.Padding(2);
+            this.LedRunTime.Name = "LedRunTime";
+            this.LedRunTime.Size = new System.Drawing.Size(203, 40);
+            this.LedRunTime.TabIndex = 0;
+            this.LedRunTime.Text = "00D 00H 00M";
+            // 
+            // ProcBar
+            // 
+            this.uiTableLayoutPanelMain.SetColumnSpan(this.ProcBar, 3);
+            this.ProcBar.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.ProcBar.FillColor = System.Drawing.Color.FromArgb(((int)(((byte)(235)))), ((int)(((byte)(243)))), ((int)(((byte)(255)))));
+            this.ProcBar.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.ProcBar.Location = new System.Drawing.Point(391, 651);
+            this.ProcBar.Margin = new System.Windows.Forms.Padding(2);
+            this.ProcBar.MinimumSize = new System.Drawing.Size(2, 2);
+            this.ProcBar.Name = "ProcBar";
+            this.ProcBar.Size = new System.Drawing.Size(587, 42);
+            this.ProcBar.Style = Sunny.UI.UIStyle.Custom;
+            this.ProcBar.TabIndex = 41;
+            this.ProcBar.Text = "uiProcessBar1";
+            // 
+            // uiTableLayoutPanel22
+            // 
+            this.uiTableLayoutPanel22.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiTableLayoutPanel22.ColumnCount = 3;
+            this.uiTableLayoutPanelMain.SetColumnSpan(this.uiTableLayoutPanel22, 2);
+            this.uiTableLayoutPanel22.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
+            this.uiTableLayoutPanel22.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 96F));
+            this.uiTableLayoutPanel22.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
+            this.uiTableLayoutPanel22.Controls.Add(this.LedLastCycles, 1, 1);
+            this.uiTableLayoutPanel22.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTableLayoutPanel22.Location = new System.Drawing.Point(802, 573);
+            this.uiTableLayoutPanel22.Margin = new System.Windows.Forms.Padding(2);
+            this.uiTableLayoutPanel22.Name = "uiTableLayoutPanel22";
+            this.uiTableLayoutPanel22.RowCount = 3;
+            this.uiTableLayoutPanel22.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
+            this.uiTableLayoutPanel22.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 90F));
+            this.uiTableLayoutPanel22.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
+            this.uiTableLayoutPanel22.Size = new System.Drawing.Size(216, 51);
+            this.uiTableLayoutPanel22.TabIndex = 39;
+            this.uiTableLayoutPanel22.TagString = null;
+            // 
+            // LedLastCycles
+            // 
+            this.LedLastCycles.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.LedLastCycles.BorderColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.LedLastCycles.BorderInColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.LedLastCycles.CharCount = 8;
+            this.LedLastCycles.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.LedLastCycles.Font = new System.Drawing.Font("微软雅黑", 16.03791F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.LedLastCycles.ForeColor = System.Drawing.Color.Gold;
+            this.LedLastCycles.ImeMode = System.Windows.Forms.ImeMode.NoControl;
+            this.LedLastCycles.IntervalIn = 2;
+            this.LedLastCycles.IntervalV = 2;
+            this.LedLastCycles.LedBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.LedLastCycles.Location = new System.Drawing.Point(6, 4);
+            this.LedLastCycles.Margin = new System.Windows.Forms.Padding(2);
+            this.LedLastCycles.Name = "LedLastCycles";
+            this.LedLastCycles.Size = new System.Drawing.Size(203, 41);
+            this.LedLastCycles.TabIndex = 0;
+            this.LedLastCycles.Text = "1000000";
+            // 
+            // uiLabel35
+            // 
+            this.uiLabel35.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabel35.Font = new System.Drawing.Font("宋体", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLabel35.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiLabel35.Location = new System.Drawing.Point(742, 421);
+            this.uiLabel35.Margin = new System.Windows.Forms.Padding(2, 0, 2, 0);
+            this.uiLabel35.Name = "uiLabel35";
+            this.uiLabel35.Size = new System.Drawing.Size(56, 53);
+            this.uiLabel35.TabIndex = 42;
+            this.uiLabel35.Text = "运行时间";
+            this.uiLabel35.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiLabel36
+            // 
+            this.uiLabel36.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabel36.Font = new System.Drawing.Font("宋体", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLabel36.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiLabel36.Location = new System.Drawing.Point(742, 496);
+            this.uiLabel36.Margin = new System.Windows.Forms.Padding(2, 0, 2, 0);
+            this.uiLabel36.Name = "uiLabel36";
+            this.uiLabel36.Size = new System.Drawing.Size(56, 54);
+            this.uiLabel36.TabIndex = 43;
+            this.uiLabel36.Text = "完成次数";
+            this.uiLabel36.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiLabel37
+            // 
+            this.uiLabel37.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabel37.Font = new System.Drawing.Font("宋体", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLabel37.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiLabel37.Location = new System.Drawing.Point(742, 571);
+            this.uiLabel37.Margin = new System.Windows.Forms.Padding(2, 0, 2, 0);
+            this.uiLabel37.Name = "uiLabel37";
+            this.uiLabel37.Size = new System.Drawing.Size(56, 55);
+            this.uiLabel37.TabIndex = 44;
+            this.uiLabel37.Text = "剩余次数";
+            this.uiLabel37.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // AlertEmb1
+            // 
+            this.AlertEmb1.CenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
+            this.AlertEmb1.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.AlertEmb1.Font = new System.Drawing.Font("宋体", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.AlertEmb1.Interval = 2000;
+            this.AlertEmb1.Location = new System.Drawing.Point(986, 651);
+            this.AlertEmb1.Margin = new System.Windows.Forms.Padding(6, 2, 2, 2);
+            this.AlertEmb1.MinimumSize = new System.Drawing.Size(1, 1);
+            this.AlertEmb1.Name = "AlertEmb1";
+            this.AlertEmb1.OffCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(140)))), ((int)(((byte)(140)))), ((int)(((byte)(140)))));
+            this.AlertEmb1.OnCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
+            this.AlertEmb1.Radius = 0;
+            this.AlertEmb1.Shape = Sunny.UI.UIShape.Square;
+            this.AlertEmb1.Size = new System.Drawing.Size(32, 42);
+            this.AlertEmb1.State = Sunny.UI.UILightState.Off;
+            this.AlertEmb1.TabIndex = 12;
+            this.AlertEmb1.Text = "uiLight1";
+            this.AlertEmb1.Click += new System.EventHandler(this.AlertEmb1_Click);
+            // 
+            // uiTableLayoutPanel24
+            // 
+            this.uiTableLayoutPanel24.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiTableLayoutPanel24.ColumnCount = 3;
+            this.uiTableLayoutPanel25.SetColumnSpan(this.uiTableLayoutPanel24, 2);
+            this.uiTableLayoutPanel24.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
+            this.uiTableLayoutPanel24.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 96F));
+            this.uiTableLayoutPanel24.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
+            this.uiTableLayoutPanel24.Controls.Add(this.uiLedDisplay2, 1, 1);
+            this.uiTableLayoutPanel24.Location = new System.Drawing.Point(802, 423);
+            this.uiTableLayoutPanel24.Margin = new System.Windows.Forms.Padding(2);
+            this.uiTableLayoutPanel24.Name = "uiTableLayoutPanel24";
+            this.uiTableLayoutPanel24.RowCount = 3;
+            this.uiTableLayoutPanel24.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
+            this.uiTableLayoutPanel24.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 90F));
+            this.uiTableLayoutPanel24.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
+            this.uiTableLayoutPanel24.Size = new System.Drawing.Size(216, 49);
+            this.uiTableLayoutPanel24.TabIndex = 37;
+            this.uiTableLayoutPanel24.TagString = null;
+            // 
+            // uiLedDisplay2
+            // 
+            this.uiLedDisplay2.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiLedDisplay2.BorderColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiLedDisplay2.BorderInColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiLedDisplay2.CharCount = 11;
+            this.uiLedDisplay2.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLedDisplay2.Font = new System.Drawing.Font("微软雅黑", 10.5782F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLedDisplay2.ForeColor = System.Drawing.Color.Lime;
+            this.uiLedDisplay2.ImeMode = System.Windows.Forms.ImeMode.NoControl;
+            this.uiLedDisplay2.IntervalIn = 2;
+            this.uiLedDisplay2.IntervalV = 2;
+            this.uiLedDisplay2.LedBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiLedDisplay2.Location = new System.Drawing.Point(6, 4);
+            this.uiLedDisplay2.Margin = new System.Windows.Forms.Padding(2);
+            this.uiLedDisplay2.Name = "uiLedDisplay2";
+            this.uiLedDisplay2.Size = new System.Drawing.Size(203, 40);
+            this.uiLedDisplay2.TabIndex = 0;
+            this.uiLedDisplay2.Text = "00D 00H 00M";
+            // 
+            // uiTextBox5
+            // 
+            this.uiTableLayoutPanel28.SetColumnSpan(this.uiTextBox5, 3);
+            this.uiTextBox5.Cursor = System.Windows.Forms.Cursors.IBeam;
+            this.uiTextBox5.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTextBox5.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiTextBox5.Location = new System.Drawing.Point(151, 30);
+            this.uiTextBox5.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.uiTextBox5.MinimumSize = new System.Drawing.Size(1, 16);
+            this.uiTextBox5.Name = "uiTextBox5";
+            this.uiTextBox5.Padding = new System.Windows.Forms.Padding(5);
+            this.uiTextBox5.ShowText = false;
+            this.uiTextBox5.Size = new System.Drawing.Size(158, 26);
+            this.uiTextBox5.TabIndex = 43;
+            this.uiTextBox5.Text = "Long Time1";
+            this.uiTextBox5.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
+            this.uiTextBox5.Watermark = "";
+            // 
+            // uiTableLayoutPanel25
+            // 
+            this.uiTableLayoutPanel25.ColumnCount = 8;
+            this.uiTableLayoutPanel25.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 9F));
+            this.uiTableLayoutPanel25.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 37F));
+            this.uiTableLayoutPanel25.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 9F));
+            this.uiTableLayoutPanel25.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 35F));
+            this.uiTableLayoutPanel25.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 6F));
+            this.uiTableLayoutPanel25.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 18F));
+            this.uiTableLayoutPanel25.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 4F));
+            this.uiTableLayoutPanel25.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 9F));
+            this.uiTableLayoutPanel25.Controls.Add(this.uiDataGridView1, 3, 6);
+            this.uiTableLayoutPanel25.Controls.Add(this.uiGroupBox10, 3, 14);
+            this.uiTableLayoutPanel25.Controls.Add(this.uiGroupBox11, 3, 1);
+            this.uiTableLayoutPanel25.Controls.Add(this.uiGroupBox12, 1, 1);
+            this.uiTableLayoutPanel25.Controls.Add(this.uiGroupBox13, 1, 5);
+            this.uiTableLayoutPanel25.Controls.Add(this.uiTableLayoutPanel24, 5, 6);
+            this.uiTableLayoutPanel25.Controls.Add(this.uiProcessBar1, 3, 12);
+            this.uiTableLayoutPanel25.Controls.Add(this.uiTableLayoutPanel30, 5, 10);
+            this.uiTableLayoutPanel25.Controls.Add(this.uiLabel44, 4, 6);
+            this.uiTableLayoutPanel25.Controls.Add(this.uiLabel45, 4, 8);
+            this.uiTableLayoutPanel25.Controls.Add(this.uiLabel46, 4, 10);
+            this.uiTableLayoutPanel25.Controls.Add(this.uiLight1, 6, 12);
+            this.uiTableLayoutPanel25.Controls.Add(this.uiTableLayoutPanel31, 5, 8);
+            this.uiTableLayoutPanel25.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTableLayoutPanel25.Location = new System.Drawing.Point(0, 0);
+            this.uiTableLayoutPanel25.Margin = new System.Windows.Forms.Padding(2);
+            this.uiTableLayoutPanel25.Name = "uiTableLayoutPanel25";
+            this.uiTableLayoutPanel25.RowCount = 16;
+            this.uiTableLayoutPanel25.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 9F));
+            this.uiTableLayoutPanel25.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 11.01064F));
+            this.uiTableLayoutPanel25.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 11.01064F));
+            this.uiTableLayoutPanel25.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 11.01064F));
+            this.uiTableLayoutPanel25.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 11.01064F));
+            this.uiTableLayoutPanel25.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 10.00967F));
+            this.uiTableLayoutPanel25.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 7.00677F));
+            this.uiTableLayoutPanel25.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 2.901354F));
+            this.uiTableLayoutPanel25.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 7.059961F));
+            this.uiTableLayoutPanel25.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 2.804642F));
+            this.uiTableLayoutPanel25.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 7.156673F));
+            this.uiTableLayoutPanel25.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 3.002901F));
+            this.uiTableLayoutPanel25.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 6.005803F));
+            this.uiTableLayoutPanel25.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 9F));
+            this.uiTableLayoutPanel25.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 10.00967F));
+            this.uiTableLayoutPanel25.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 4F));
+            this.uiTableLayoutPanel25.Size = new System.Drawing.Size(1032, 791);
+            this.uiTableLayoutPanel25.TabIndex = 42;
+            this.uiTableLayoutPanel25.TagString = null;
+            // 
+            // uiDataGridView1
+            // 
+            this.uiDataGridView1.AllowUserToAddRows = false;
+            this.uiDataGridView1.AllowUserToDeleteRows = false;
+            dataGridViewCellStyle126.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+            dataGridViewCellStyle126.BackColor = System.Drawing.Color.WhiteSmoke;
+            dataGridViewCellStyle126.Font = new System.Drawing.Font("Arial Narrow", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiDataGridView1.AlternatingRowsDefaultCellStyle = dataGridViewCellStyle126;
+            this.uiDataGridView1.BackgroundColor = System.Drawing.Color.White;
+            this.uiDataGridView1.ColumnHeadersBorderStyle = System.Windows.Forms.DataGridViewHeaderBorderStyle.Single;
+            dataGridViewCellStyle127.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+            dataGridViewCellStyle127.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            dataGridViewCellStyle127.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            dataGridViewCellStyle127.ForeColor = System.Drawing.Color.White;
+            dataGridViewCellStyle127.SelectionBackColor = System.Drawing.SystemColors.Highlight;
+            dataGridViewCellStyle127.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
+            dataGridViewCellStyle127.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
+            this.uiDataGridView1.ColumnHeadersDefaultCellStyle = dataGridViewCellStyle127;
+            this.uiDataGridView1.ColumnHeadersHeight = 35;
+            dataGridViewCellStyle128.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleLeft;
+            dataGridViewCellStyle128.BackColor = System.Drawing.SystemColors.Window;
+            dataGridViewCellStyle128.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            dataGridViewCellStyle128.ForeColor = System.Drawing.SystemColors.ControlText;
+            dataGridViewCellStyle128.SelectionBackColor = System.Drawing.SystemColors.Highlight;
+            dataGridViewCellStyle128.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
+            dataGridViewCellStyle128.WrapMode = System.Windows.Forms.DataGridViewTriState.False;
+            this.uiDataGridView1.DefaultCellStyle = dataGridViewCellStyle128;
+            this.uiDataGridView1.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiDataGridView1.EnableHeadersVisualStyles = false;
+            this.uiDataGridView1.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiDataGridView1.GridColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.uiDataGridView1.Location = new System.Drawing.Point(391, 423);
+            this.uiDataGridView1.Margin = new System.Windows.Forms.Padding(2);
+            this.uiDataGridView1.Name = "uiDataGridView1";
+            dataGridViewCellStyle129.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+            dataGridViewCellStyle129.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(235)))), ((int)(((byte)(243)))), ((int)(((byte)(255)))));
+            dataGridViewCellStyle129.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            dataGridViewCellStyle129.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            dataGridViewCellStyle129.SelectionBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            dataGridViewCellStyle129.SelectionForeColor = System.Drawing.Color.White;
+            dataGridViewCellStyle129.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
+            this.uiDataGridView1.RowHeadersDefaultCellStyle = dataGridViewCellStyle129;
+            this.uiDataGridView1.RowHeadersWidth = 30;
+            dataGridViewCellStyle130.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+            dataGridViewCellStyle130.BackColor = System.Drawing.Color.Lavender;
+            dataGridViewCellStyle130.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiDataGridView1.RowsDefaultCellStyle = dataGridViewCellStyle130;
+            this.uiTableLayoutPanel25.SetRowSpan(this.uiDataGridView1, 5);
+            this.uiDataGridView1.RowTemplate.Height = 35;
+            this.uiDataGridView1.SelectedIndex = -1;
+            this.uiDataGridView1.Size = new System.Drawing.Size(347, 201);
+            this.uiDataGridView1.StripeEvenColor = System.Drawing.Color.Lavender;
+            this.uiDataGridView1.StripeOddColor = System.Drawing.Color.WhiteSmoke;
+            this.uiDataGridView1.TabIndex = 0;
+            this.uiDataGridView1.CellContentClick += new System.Windows.Forms.DataGridViewCellEventHandler(this.dgvRealData_CellContentClick);
+            // 
+            // uiGroupBox10
+            // 
+            this.uiTableLayoutPanel25.SetColumnSpan(this.uiGroupBox10, 4);
+            this.uiGroupBox10.Controls.Add(this.uiTableLayoutPanel26);
+            this.uiGroupBox10.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiGroupBox10.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiGroupBox10.Location = new System.Drawing.Point(391, 706);
+            this.uiGroupBox10.Margin = new System.Windows.Forms.Padding(2);
+            this.uiGroupBox10.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiGroupBox10.Name = "uiGroupBox10";
+            this.uiGroupBox10.Padding = new System.Windows.Forms.Padding(0, 32, 0, 0);
+            this.uiGroupBox10.Size = new System.Drawing.Size(627, 72);
+            this.uiGroupBox10.TabIndex = 6;
+            this.uiGroupBox10.Text = null;
+            this.uiGroupBox10.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
+            // 
+            // uiTableLayoutPanel26
+            // 
+            this.uiTableLayoutPanel26.BackColor = System.Drawing.Color.Transparent;
+            this.uiTableLayoutPanel26.ColumnCount = 7;
+            this.uiTableLayoutPanel26.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel26.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 16F));
+            this.uiTableLayoutPanel26.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 26F));
+            this.uiTableLayoutPanel26.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 16F));
+            this.uiTableLayoutPanel26.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 26F));
+            this.uiTableLayoutPanel26.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 16F));
+            this.uiTableLayoutPanel26.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel26.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel26.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel26.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel26.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel26.Controls.Add(this.uiButton5, 5, 1);
+            this.uiTableLayoutPanel26.Controls.Add(this.uiButton6, 3, 1);
+            this.uiTableLayoutPanel26.Controls.Add(this.uiButton7, 2, 1);
+            this.uiTableLayoutPanel26.Controls.Add(this.uiButton8, 1, 1);
+            this.uiTableLayoutPanel26.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTableLayoutPanel26.Location = new System.Drawing.Point(0, 32);
+            this.uiTableLayoutPanel26.Name = "uiTableLayoutPanel26";
+            this.uiTableLayoutPanel26.RowCount = 3;
+            this.uiTableLayoutPanel26.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 10F));
+            this.uiTableLayoutPanel26.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 75F));
+            this.uiTableLayoutPanel26.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 15F));
+            this.uiTableLayoutPanel26.Size = new System.Drawing.Size(627, 40);
+            this.uiTableLayoutPanel26.TabIndex = 35;
+            this.uiTableLayoutPanel26.TagString = null;
+            // 
+            // uiButton5
+            // 
+            this.uiButton5.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.uiButton5.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiButton5.FillColor = System.Drawing.Color.IndianRed;
+            this.uiButton5.FillHoverColor = System.Drawing.Color.Red;
+            this.uiButton5.FillPressColor = System.Drawing.Color.Red;
+            this.uiButton5.FillSelectedColor = System.Drawing.Color.Red;
+            this.uiButton5.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiButton5.Location = new System.Drawing.Point(513, 7);
+            this.uiButton5.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiButton5.Name = "uiButton5";
+            this.uiButton5.Radius = 3;
+            this.uiButton5.RectColor = System.Drawing.Color.Red;
+            this.uiButton5.RectHoverColor = System.Drawing.Color.Red;
+            this.uiButton5.RectPressColor = System.Drawing.Color.Red;
+            this.uiButton5.RectSelectedColor = System.Drawing.Color.Red;
+            this.uiButton5.Size = new System.Drawing.Size(87, 24);
+            this.uiButton5.TabIndex = 49;
+            this.uiButton5.Text = "停止试验";
+            this.uiButton5.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiButton5.Click += new System.EventHandler(this.BtnStop_Click);
+            // 
+            // uiButton6
+            // 
+            this.uiButton6.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.uiButton6.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiButton6.FillDisableColor = System.Drawing.Color.FromArgb(((int)(((byte)(115)))), ((int)(((byte)(179)))), ((int)(((byte)(255)))));
+            this.uiButton6.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiButton6.Location = new System.Drawing.Point(268, 7);
+            this.uiButton6.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiButton6.Name = "uiButton6";
+            this.uiButton6.Radius = 3;
+            this.uiButton6.RectDisableColor = System.Drawing.Color.LightBlue;
+            this.uiButton6.Size = new System.Drawing.Size(87, 24);
+            this.uiButton6.TabIndex = 50;
+            this.uiButton6.Text = "开始试验";
+            this.uiButton6.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiButton6.Click += new System.EventHandler(this.BtnStartTest_Click);
+            // 
+            // uiButton7
+            // 
+            this.uiButton7.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.uiButton7.FillDisableColor = System.Drawing.Color.FromArgb(((int)(((byte)(115)))), ((int)(((byte)(179)))), ((int)(((byte)(255)))));
+            this.uiButton7.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiButton7.Location = new System.Drawing.Point(116, 7);
+            this.uiButton7.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiButton7.Name = "uiButton7";
+            this.uiButton7.Radius = 1;
+            this.uiButton7.RectDisableColor = System.Drawing.Color.LightBlue;
+            this.uiButton7.Size = new System.Drawing.Size(146, 24);
+            this.uiButton7.TabIndex = 52;
+            this.uiButton7.Text = "自学习";
+            this.uiButton7.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiButton7.Visible = false;
+            this.uiButton7.Click += new System.EventHandler(this.BtnAutoLearn_Click);
+            // 
+            // uiButton8
+            // 
+            this.uiButton8.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.uiButton8.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiButton8.FillDisableColor = System.Drawing.Color.FromArgb(((int)(((byte)(115)))), ((int)(((byte)(179)))), ((int)(((byte)(255)))));
+            this.uiButton8.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiButton8.Location = new System.Drawing.Point(23, 7);
+            this.uiButton8.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiButton8.Name = "uiButton8";
+            this.uiButton8.Radius = 1;
+            this.uiButton8.RectDisableColor = System.Drawing.Color.LightBlue;
+            this.uiButton8.Size = new System.Drawing.Size(87, 24);
+            this.uiButton8.TabIndex = 53;
+            this.uiButton8.Text = "暂停";
+            this.uiButton8.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiButton8.Click += new System.EventHandler(this.BtnPause_Click);
+            // 
+            // uiGroupBox11
+            // 
+            this.uiTableLayoutPanel25.SetColumnSpan(this.uiGroupBox11, 4);
+            this.uiGroupBox11.Controls.Add(this.uiTableLayoutPanel27);
+            this.uiGroupBox11.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiGroupBox11.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiGroupBox11.Location = new System.Drawing.Point(391, 11);
+            this.uiGroupBox11.Margin = new System.Windows.Forms.Padding(2);
+            this.uiGroupBox11.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiGroupBox11.Name = "uiGroupBox11";
+            this.uiGroupBox11.Padding = new System.Windows.Forms.Padding(0, 32, 0, 0);
+            this.uiTableLayoutPanel25.SetRowSpan(this.uiGroupBox11, 5);
+            this.uiGroupBox11.Size = new System.Drawing.Size(627, 408);
+            this.uiGroupBox11.TabIndex = 36;
+            this.uiGroupBox11.Text = null;
+            this.uiGroupBox11.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
+            // 
+            // uiTableLayoutPanel27
+            // 
+            this.uiTableLayoutPanel27.BackColor = System.Drawing.Color.Transparent;
+            this.uiTableLayoutPanel27.ColumnCount = 3;
+            this.uiTableLayoutPanel27.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel27.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 100F));
+            this.uiTableLayoutPanel27.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel27.Controls.Add(this.zedGraphControl2, 1, 1);
+            this.uiTableLayoutPanel27.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTableLayoutPanel27.Location = new System.Drawing.Point(0, 32);
+            this.uiTableLayoutPanel27.Name = "uiTableLayoutPanel27";
+            this.uiTableLayoutPanel27.RowCount = 3;
+            this.uiTableLayoutPanel27.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 10F));
+            this.uiTableLayoutPanel27.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100F));
+            this.uiTableLayoutPanel27.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel27.Size = new System.Drawing.Size(627, 376);
+            this.uiTableLayoutPanel27.TabIndex = 36;
+            this.uiTableLayoutPanel27.TagString = null;
+            // 
+            // zedGraphControl2
+            // 
+            this.zedGraphControl2.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.zedGraphControl2.IsEnableHZoom = false;
+            this.zedGraphControl2.IsEnableVZoom = false;
+            this.zedGraphControl2.IsEnableWheelZoom = false;
+            this.zedGraphControl2.Location = new System.Drawing.Point(28, 18);
+            this.zedGraphControl2.Margin = new System.Windows.Forms.Padding(8);
+            this.zedGraphControl2.Name = "zedGraphControl2";
+            this.zedGraphControl2.ScrollGrace = 0D;
+            this.zedGraphControl2.ScrollMaxX = 0D;
+            this.zedGraphControl2.ScrollMaxY = 0D;
+            this.zedGraphControl2.ScrollMaxY2 = 0D;
+            this.zedGraphControl2.ScrollMinX = 0D;
+            this.zedGraphControl2.ScrollMinY = 0D;
+            this.zedGraphControl2.ScrollMinY2 = 0D;
+            this.zedGraphControl2.Size = new System.Drawing.Size(571, 330);
+            this.zedGraphControl2.TabIndex = 4;
+            this.zedGraphControl2.UseExtendedPrintDialog = true;
+            this.zedGraphControl2.ContextMenuBuilder += new ZedGraph.ZedGraphControl.ContextMenuBuilderEventHandler(this.zedGraphRealChart_ContextMenuBuilder);
+            // 
+            // uiGroupBox12
+            // 
+            this.uiGroupBox12.Controls.Add(this.uiTableLayoutPanel28);
+            this.uiGroupBox12.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiGroupBox12.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiGroupBox12.Location = new System.Drawing.Point(11, 11);
+            this.uiGroupBox12.Margin = new System.Windows.Forms.Padding(2);
+            this.uiGroupBox12.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiGroupBox12.Name = "uiGroupBox12";
+            this.uiGroupBox12.Padding = new System.Windows.Forms.Padding(0, 32, 0, 0);
+            this.uiTableLayoutPanel25.SetRowSpan(this.uiGroupBox12, 4);
+            this.uiGroupBox12.Size = new System.Drawing.Size(367, 332);
+            this.uiGroupBox12.TabIndex = 2;
+            this.uiGroupBox12.Text = "试验设置";
+            this.uiGroupBox12.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
+            // 
+            // uiTableLayoutPanel28
+            // 
+            this.uiTableLayoutPanel28.BackColor = System.Drawing.Color.Transparent;
+            this.uiTableLayoutPanel28.ColumnCount = 8;
+            this.uiTableLayoutPanel28.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2.040816F));
+            this.uiTableLayoutPanel28.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 40.81633F));
+            this.uiTableLayoutPanel28.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 80F));
+            this.uiTableLayoutPanel28.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 30.61224F));
+            this.uiTableLayoutPanel28.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 80F));
+            this.uiTableLayoutPanel28.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 24.4898F));
+            this.uiTableLayoutPanel28.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 50F));
+            this.uiTableLayoutPanel28.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2.040816F));
+            this.uiTableLayoutPanel28.Controls.Add(this.uiTextBox7, 3, 7);
+            this.uiTableLayoutPanel28.Controls.Add(this.uiLabel42, 6, 9);
+            this.uiTableLayoutPanel28.Controls.Add(this.uiTextBox8, 3, 5);
+            this.uiTableLayoutPanel28.Controls.Add(this.uiLabel38, 1, 1);
+            this.uiTableLayoutPanel28.Controls.Add(this.uiLabel39, 1, 5);
+            this.uiTableLayoutPanel28.Controls.Add(this.uiLabel40, 1, 7);
+            this.uiTableLayoutPanel28.Controls.Add(this.uiTextBox5, 3, 1);
+            this.uiTableLayoutPanel28.Controls.Add(this.uiLabel41, 1, 3);
+            this.uiTableLayoutPanel28.Controls.Add(this.uiTextBox6, 3, 3);
+            this.uiTableLayoutPanel28.Controls.Add(this.uiLabel43, 4, 5);
+            this.uiTableLayoutPanel28.Controls.Add(this.uiCheckBox1, 6, 1);
+            this.uiTableLayoutPanel28.Controls.Add(this.uiRadioButton1, 6, 3);
+            this.uiTableLayoutPanel28.Controls.Add(this.uiButton11, 1, 9);
+            this.uiTableLayoutPanel28.Controls.Add(this.uiButton9, 4, 9);
+            this.uiTableLayoutPanel28.Controls.Add(this.uiButton10, 3, 9);
+            this.uiTableLayoutPanel28.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTableLayoutPanel28.Location = new System.Drawing.Point(0, 32);
+            this.uiTableLayoutPanel28.Name = "uiTableLayoutPanel28";
+            this.uiTableLayoutPanel28.RowCount = 11;
+            this.uiTableLayoutPanel28.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 8.5F));
+            this.uiTableLayoutPanel28.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 12F));
+            this.uiTableLayoutPanel28.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
+            this.uiTableLayoutPanel28.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 12F));
+            this.uiTableLayoutPanel28.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
+            this.uiTableLayoutPanel28.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 12F));
+            this.uiTableLayoutPanel28.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
+            this.uiTableLayoutPanel28.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 12F));
+            this.uiTableLayoutPanel28.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 8F));
+            this.uiTableLayoutPanel28.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 12F));
+            this.uiTableLayoutPanel28.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 8.5F));
+            this.uiTableLayoutPanel28.Size = new System.Drawing.Size(367, 300);
+            this.uiTableLayoutPanel28.TabIndex = 1;
+            this.uiTableLayoutPanel28.TagString = null;
+            // 
+            // uiTextBox7
+            // 
+            this.uiTextBox7.Cursor = System.Windows.Forms.Cursors.IBeam;
+            this.uiTextBox7.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTextBox7.DoubleValue = 100000D;
+            this.uiTextBox7.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiTextBox7.IntValue = 100000;
+            this.uiTextBox7.Location = new System.Drawing.Point(151, 183);
+            this.uiTextBox7.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.uiTextBox7.MinimumSize = new System.Drawing.Size(1, 16);
+            this.uiTextBox7.Name = "uiTextBox7";
+            this.uiTextBox7.Padding = new System.Windows.Forms.Padding(5);
+            this.uiTextBox7.ShowText = false;
+            this.uiTextBox7.Size = new System.Drawing.Size(40, 26);
+            this.uiTextBox7.TabIndex = 44;
+            this.uiTextBox7.Text = "100000";
+            this.uiTextBox7.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
+            this.uiTextBox7.Watermark = "";
+            // 
+            // uiLabel42
+            // 
+            this.uiLabel42.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiLabel42.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiLabel42.Location = new System.Drawing.Point(366, 238);
+            this.uiLabel42.Name = "uiLabel42";
+            this.uiLabel42.Size = new System.Drawing.Size(1, 36);
+            this.uiLabel42.TabIndex = 11;
+            this.uiLabel42.Text = "0";
+            this.uiLabel42.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            this.uiLabel42.Visible = false;
+            // 
+            // uiTextBox8
+            // 
+            this.uiTextBox8.Cursor = System.Windows.Forms.Cursors.IBeam;
+            this.uiTextBox8.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTextBox8.DoubleValue = 3D;
+            this.uiTextBox8.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiTextBox8.IntValue = 3;
+            this.uiTextBox8.Location = new System.Drawing.Point(151, 132);
+            this.uiTextBox8.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.uiTextBox8.MinimumSize = new System.Drawing.Size(1, 16);
+            this.uiTextBox8.Name = "uiTextBox8";
+            this.uiTextBox8.Padding = new System.Windows.Forms.Padding(5);
+            this.uiTextBox8.ShowText = false;
+            this.uiTextBox8.Size = new System.Drawing.Size(40, 26);
+            this.uiTextBox8.TabIndex = 44;
+            this.uiTextBox8.Text = "3";
+            this.uiTextBox8.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
+            this.uiTextBox8.Watermark = "";
+            // 
+            // uiLabel38
+            // 
+            this.uiTableLayoutPanel28.SetColumnSpan(this.uiLabel38, 2);
+            this.uiLabel38.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabel38.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiLabel38.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiLabel38.Location = new System.Drawing.Point(6, 25);
+            this.uiLabel38.Name = "uiLabel38";
+            this.uiLabel38.Size = new System.Drawing.Size(138, 36);
+            this.uiLabel38.TabIndex = 33;
+            this.uiLabel38.TagString = "试验名称";
+            this.uiLabel38.Text = "试验名称";
+            this.uiLabel38.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiLabel39
+            // 
+            this.uiTableLayoutPanel28.SetColumnSpan(this.uiLabel39, 2);
+            this.uiLabel39.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabel39.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiLabel39.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiLabel39.Location = new System.Drawing.Point(6, 127);
+            this.uiLabel39.Name = "uiLabel39";
+            this.uiLabel39.Size = new System.Drawing.Size(138, 36);
+            this.uiLabel39.TabIndex = 35;
+            this.uiLabel39.Text = "频   率";
+            this.uiLabel39.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiLabel40
+            // 
+            this.uiTableLayoutPanel28.SetColumnSpan(this.uiLabel40, 2);
+            this.uiLabel40.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabel40.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiLabel40.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiLabel40.Location = new System.Drawing.Point(6, 178);
+            this.uiLabel40.Name = "uiLabel40";
+            this.uiLabel40.Size = new System.Drawing.Size(138, 36);
+            this.uiLabel40.TabIndex = 36;
+            this.uiLabel40.Text = "目标次数";
+            this.uiLabel40.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiLabel41
+            // 
+            this.uiTableLayoutPanel28.SetColumnSpan(this.uiLabel41, 2);
+            this.uiLabel41.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabel41.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiLabel41.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiLabel41.Location = new System.Drawing.Point(6, 76);
+            this.uiLabel41.Name = "uiLabel41";
+            this.uiLabel41.Size = new System.Drawing.Size(138, 36);
+            this.uiLabel41.TabIndex = 45;
+            this.uiLabel41.Text = "试验标准";
+            this.uiLabel41.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiTextBox6
+            // 
+            this.uiTableLayoutPanel28.SetColumnSpan(this.uiTextBox6, 3);
+            this.uiTextBox6.Cursor = System.Windows.Forms.Cursors.IBeam;
+            this.uiTextBox6.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTextBox6.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiTextBox6.Location = new System.Drawing.Point(151, 81);
+            this.uiTextBox6.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.uiTextBox6.MinimumSize = new System.Drawing.Size(1, 16);
+            this.uiTextBox6.Name = "uiTextBox6";
+            this.uiTextBox6.Padding = new System.Windows.Forms.Padding(5);
+            this.uiTextBox6.ShowText = false;
+            this.uiTextBox6.Size = new System.Drawing.Size(158, 26);
+            this.uiTextBox6.TabIndex = 46;
+            this.uiTextBox6.Text = "QRYM-2022 ";
+            this.uiTextBox6.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
+            this.uiTextBox6.Watermark = "";
+            // 
+            // uiLabel43
+            // 
+            this.uiLabel43.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabel43.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiLabel43.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiLabel43.Location = new System.Drawing.Point(198, 127);
+            this.uiLabel43.Name = "uiLabel43";
+            this.uiLabel43.Size = new System.Drawing.Size(74, 36);
+            this.uiLabel43.TabIndex = 48;
+            this.uiLabel43.Text = "Hz";
+            this.uiLabel43.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiCheckBox1
+            // 
+            this.uiCheckBox1.CheckBoxSize = 32;
+            this.uiCheckBox1.Checked = true;
+            this.uiCheckBox1.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.uiCheckBox1.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiCheckBox1.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiCheckBox1.Location = new System.Drawing.Point(316, 28);
+            this.uiCheckBox1.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiCheckBox1.Name = "uiCheckBox1";
+            this.uiCheckBox1.Size = new System.Drawing.Size(44, 30);
+            this.uiCheckBox1.TabIndex = 37;
+            this.uiCheckBox1.Text = "EMB1";
+            this.uiCheckBox1.Visible = false;
+            // 
+            // uiRadioButton1
+            // 
+            this.uiRadioButton1.Checked = true;
+            this.uiRadioButton1.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.uiRadioButton1.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiRadioButton1.Location = new System.Drawing.Point(316, 79);
+            this.uiRadioButton1.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiRadioButton1.Name = "uiRadioButton1";
+            this.uiRadioButton1.RadioButtonSize = 32;
+            this.uiRadioButton1.Size = new System.Drawing.Size(44, 30);
+            this.uiRadioButton1.TabIndex = 10;
+            this.uiRadioButton1.Text = "EMB1";
+            this.uiRadioButton1.Visible = false;
+            // 
+            // uiButton11
+            // 
+            this.uiButton11.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.uiButton11.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiButton11.FillDisableColor = System.Drawing.Color.FromArgb(((int)(((byte)(115)))), ((int)(((byte)(179)))), ((int)(((byte)(255)))));
+            this.uiButton11.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiButton11.Location = new System.Drawing.Point(33, 241);
+            this.uiButton11.Margin = new System.Windows.Forms.Padding(30, 3, 3, 3);
+            this.uiButton11.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiButton11.Name = "uiButton11";
+            this.uiButton11.Radius = 1;
+            this.uiButton11.RectDisableColor = System.Drawing.Color.LightBlue;
+            this.uiButton11.Size = new System.Drawing.Size(31, 30);
+            this.uiButton11.TabIndex = 50;
+            this.uiButton11.Text = "取消";
+            this.uiButton11.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiButton11.Click += new System.EventHandler(this.BtnCancel_Click);
+            // 
+            // uiButton9
+            // 
+            this.uiTableLayoutPanel28.SetColumnSpan(this.uiButton9, 2);
+            this.uiButton9.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.uiButton9.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiButton9.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiButton9.Location = new System.Drawing.Point(278, 241);
+            this.uiButton9.Margin = new System.Windows.Forms.Padding(3, 3, 30, 3);
+            this.uiButton9.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiButton9.Name = "uiButton9";
+            this.uiButton9.Size = new System.Drawing.Size(55, 30);
+            this.uiButton9.TabIndex = 49;
+            this.uiButton9.Text = "确认";
+            this.uiButton9.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiButton9.Click += new System.EventHandler(this.BtnApply_Click);
+            // 
+            // uiButton10
+            // 
+            this.uiTableLayoutPanel28.SetColumnSpan(this.uiButton10, 2);
+            this.uiButton10.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.uiButton10.FillDisableColor = System.Drawing.Color.FromArgb(((int)(((byte)(115)))), ((int)(((byte)(179)))), ((int)(((byte)(255)))));
+            this.uiButton10.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiButton10.Location = new System.Drawing.Point(150, 241);
+            this.uiButton10.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiButton10.Name = "uiButton10";
+            this.uiButton10.RectDisableColor = System.Drawing.Color.LightBlue;
+            this.uiButton10.Size = new System.Drawing.Size(122, 30);
+            this.uiButton10.TabIndex = 47;
+            this.uiButton10.Text = "详细";
+            this.uiButton10.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiButton10.Visible = false;
+            this.uiButton10.Click += new System.EventHandler(this.BtnSettingDetail_Click);
+            // 
+            // uiGroupBox13
+            // 
+            this.uiGroupBox13.Controls.Add(this.uiTableLayoutPanel29);
+            this.uiGroupBox13.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiGroupBox13.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiGroupBox13.Location = new System.Drawing.Point(11, 347);
+            this.uiGroupBox13.Margin = new System.Windows.Forms.Padding(2);
+            this.uiGroupBox13.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiGroupBox13.Name = "uiGroupBox13";
+            this.uiGroupBox13.Padding = new System.Windows.Forms.Padding(0, 32, 0, 0);
+            this.uiTableLayoutPanel25.SetRowSpan(this.uiGroupBox13, 10);
+            this.uiGroupBox13.Size = new System.Drawing.Size(367, 431);
+            this.uiGroupBox13.TabIndex = 7;
+            this.uiGroupBox13.Text = "信息";
+            this.uiGroupBox13.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
+            // 
+            // uiTableLayoutPanel29
+            // 
+            this.uiTableLayoutPanel29.BackColor = System.Drawing.Color.Transparent;
+            this.uiTableLayoutPanel29.ColumnCount = 5;
+            this.uiTableLayoutPanel29.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel29.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 30F));
+            this.uiTableLayoutPanel29.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 40F));
+            this.uiTableLayoutPanel29.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 30F));
+            this.uiTableLayoutPanel29.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel29.Controls.Add(this.uiButton12, 1, 3);
+            this.uiTableLayoutPanel29.Controls.Add(this.uiRichTextBox2, 1, 1);
+            this.uiTableLayoutPanel29.Controls.Add(this.uiButton13, 3, 3);
+            this.uiTableLayoutPanel29.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTableLayoutPanel29.Location = new System.Drawing.Point(0, 32);
+            this.uiTableLayoutPanel29.Name = "uiTableLayoutPanel29";
+            this.uiTableLayoutPanel29.RowCount = 5;
+            this.uiTableLayoutPanel29.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 10F));
+            this.uiTableLayoutPanel29.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 91F));
+            this.uiTableLayoutPanel29.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel29.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 9F));
+            this.uiTableLayoutPanel29.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel29.Size = new System.Drawing.Size(367, 399);
+            this.uiTableLayoutPanel29.TabIndex = 37;
+            this.uiTableLayoutPanel29.TagString = null;
+            // 
+            // uiButton12
+            // 
+            this.uiButton12.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.uiButton12.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiButton12.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiButton12.Location = new System.Drawing.Point(23, 350);
+            this.uiButton12.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiButton12.Name = "uiButton12";
+            this.uiButton12.Radius = 4;
+            this.uiButton12.Size = new System.Drawing.Size(92, 25);
+            this.uiButton12.TabIndex = 52;
+            this.uiButton12.Text = "运行日志";
+            this.uiButton12.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiButton12.Click += new System.EventHandler(this.BtnRunLog_Click);
+            // 
+            // uiRichTextBox2
+            // 
+            this.uiTableLayoutPanel29.SetColumnSpan(this.uiRichTextBox2, 3);
+            this.uiRichTextBox2.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiRichTextBox2.FillColor = System.Drawing.Color.White;
+            this.uiRichTextBox2.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiRichTextBox2.Location = new System.Drawing.Point(24, 15);
+            this.uiRichTextBox2.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.uiRichTextBox2.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiRichTextBox2.Name = "uiRichTextBox2";
+            this.uiRichTextBox2.Padding = new System.Windows.Forms.Padding(2);
+            this.uiRichTextBox2.Radius = 1;
+            this.uiRichTextBox2.ShowText = false;
+            this.uiRichTextBox2.Size = new System.Drawing.Size(318, 307);
+            this.uiRichTextBox2.TabIndex = 0;
+            this.uiRichTextBox2.TextAlignment = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiButton13
+            // 
+            this.uiButton13.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.uiButton13.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiButton13.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiButton13.Location = new System.Drawing.Point(251, 350);
+            this.uiButton13.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiButton13.Name = "uiButton13";
+            this.uiButton13.Radius = 4;
+            this.uiButton13.Size = new System.Drawing.Size(92, 25);
+            this.uiButton13.TabIndex = 53;
+            this.uiButton13.Text = "错误日志";
+            this.uiButton13.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiButton13.Click += new System.EventHandler(this.BtnErrorLog_Click);
+            // 
+            // uiProcessBar1
+            // 
+            this.uiTableLayoutPanel25.SetColumnSpan(this.uiProcessBar1, 3);
+            this.uiProcessBar1.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiProcessBar1.FillColor = System.Drawing.Color.FromArgb(((int)(((byte)(235)))), ((int)(((byte)(243)))), ((int)(((byte)(255)))));
+            this.uiProcessBar1.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiProcessBar1.Location = new System.Drawing.Point(391, 651);
+            this.uiProcessBar1.Margin = new System.Windows.Forms.Padding(2);
+            this.uiProcessBar1.MinimumSize = new System.Drawing.Size(2, 2);
+            this.uiProcessBar1.Name = "uiProcessBar1";
+            this.uiProcessBar1.Size = new System.Drawing.Size(587, 42);
+            this.uiProcessBar1.Style = Sunny.UI.UIStyle.Custom;
+            this.uiProcessBar1.TabIndex = 41;
+            this.uiProcessBar1.Text = "uiProcessBar1";
+            // 
+            // uiTableLayoutPanel30
+            // 
+            this.uiTableLayoutPanel30.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiTableLayoutPanel30.ColumnCount = 3;
+            this.uiTableLayoutPanel25.SetColumnSpan(this.uiTableLayoutPanel30, 2);
+            this.uiTableLayoutPanel30.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
+            this.uiTableLayoutPanel30.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 96F));
+            this.uiTableLayoutPanel30.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
+            this.uiTableLayoutPanel30.Controls.Add(this.uiLedDisplay3, 1, 1);
+            this.uiTableLayoutPanel30.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTableLayoutPanel30.Location = new System.Drawing.Point(802, 573);
+            this.uiTableLayoutPanel30.Margin = new System.Windows.Forms.Padding(2);
+            this.uiTableLayoutPanel30.Name = "uiTableLayoutPanel30";
+            this.uiTableLayoutPanel30.RowCount = 3;
+            this.uiTableLayoutPanel30.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
+            this.uiTableLayoutPanel30.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 90F));
+            this.uiTableLayoutPanel30.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
+            this.uiTableLayoutPanel30.Size = new System.Drawing.Size(216, 51);
+            this.uiTableLayoutPanel30.TabIndex = 39;
+            this.uiTableLayoutPanel30.TagString = null;
+            // 
+            // uiLedDisplay3
+            // 
+            this.uiLedDisplay3.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiLedDisplay3.BorderColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiLedDisplay3.BorderInColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiLedDisplay3.CharCount = 8;
+            this.uiLedDisplay3.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLedDisplay3.Font = new System.Drawing.Font("微软雅黑", 16.03791F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLedDisplay3.ForeColor = System.Drawing.Color.Gold;
+            this.uiLedDisplay3.ImeMode = System.Windows.Forms.ImeMode.NoControl;
+            this.uiLedDisplay3.IntervalIn = 2;
+            this.uiLedDisplay3.IntervalV = 2;
+            this.uiLedDisplay3.LedBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiLedDisplay3.Location = new System.Drawing.Point(6, 4);
+            this.uiLedDisplay3.Margin = new System.Windows.Forms.Padding(2);
+            this.uiLedDisplay3.Name = "uiLedDisplay3";
+            this.uiLedDisplay3.Size = new System.Drawing.Size(203, 41);
+            this.uiLedDisplay3.TabIndex = 0;
+            this.uiLedDisplay3.Text = "1000000";
+            // 
+            // uiLabel44
+            // 
+            this.uiLabel44.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabel44.Font = new System.Drawing.Font("宋体", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLabel44.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiLabel44.Location = new System.Drawing.Point(742, 421);
+            this.uiLabel44.Margin = new System.Windows.Forms.Padding(2, 0, 2, 0);
+            this.uiLabel44.Name = "uiLabel44";
+            this.uiLabel44.Size = new System.Drawing.Size(56, 53);
+            this.uiLabel44.TabIndex = 42;
+            this.uiLabel44.Text = "运行时间";
+            this.uiLabel44.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiLabel45
+            // 
+            this.uiLabel45.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabel45.Font = new System.Drawing.Font("宋体", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLabel45.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiLabel45.Location = new System.Drawing.Point(742, 496);
+            this.uiLabel45.Margin = new System.Windows.Forms.Padding(2, 0, 2, 0);
+            this.uiLabel45.Name = "uiLabel45";
+            this.uiLabel45.Size = new System.Drawing.Size(56, 54);
+            this.uiLabel45.TabIndex = 43;
+            this.uiLabel45.Text = "完成次数";
+            this.uiLabel45.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiLabel46
+            // 
+            this.uiLabel46.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabel46.Font = new System.Drawing.Font("宋体", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLabel46.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiLabel46.Location = new System.Drawing.Point(742, 571);
+            this.uiLabel46.Margin = new System.Windows.Forms.Padding(2, 0, 2, 0);
+            this.uiLabel46.Name = "uiLabel46";
+            this.uiLabel46.Size = new System.Drawing.Size(56, 55);
+            this.uiLabel46.TabIndex = 44;
+            this.uiLabel46.Text = "剩余次数";
+            this.uiLabel46.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiLight1
+            // 
+            this.uiLight1.CenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
+            this.uiLight1.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLight1.Font = new System.Drawing.Font("宋体", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLight1.Interval = 2000;
+            this.uiLight1.Location = new System.Drawing.Point(986, 651);
+            this.uiLight1.Margin = new System.Windows.Forms.Padding(6, 2, 2, 2);
+            this.uiLight1.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiLight1.Name = "uiLight1";
+            this.uiLight1.OffCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(140)))), ((int)(((byte)(140)))), ((int)(((byte)(140)))));
+            this.uiLight1.OnCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
+            this.uiLight1.Radius = 0;
+            this.uiLight1.Shape = Sunny.UI.UIShape.Square;
+            this.uiLight1.Size = new System.Drawing.Size(32, 42);
+            this.uiLight1.State = Sunny.UI.UILightState.Off;
+            this.uiLight1.TabIndex = 12;
+            this.uiLight1.Text = "uiLight1";
+            this.uiLight1.Click += new System.EventHandler(this.AlertEmb1_Click);
+            // 
+            // uiTableLayoutPanel31
+            // 
+            this.uiTableLayoutPanel31.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiTableLayoutPanel31.ColumnCount = 3;
+            this.uiTableLayoutPanel25.SetColumnSpan(this.uiTableLayoutPanel31, 2);
+            this.uiTableLayoutPanel31.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
+            this.uiTableLayoutPanel31.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 96F));
+            this.uiTableLayoutPanel31.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
+            this.uiTableLayoutPanel31.Controls.Add(this.uiLedDisplay4, 1, 1);
+            this.uiTableLayoutPanel31.Location = new System.Drawing.Point(802, 498);
+            this.uiTableLayoutPanel31.Margin = new System.Windows.Forms.Padding(2);
+            this.uiTableLayoutPanel31.Name = "uiTableLayoutPanel31";
+            this.uiTableLayoutPanel31.RowCount = 3;
+            this.uiTableLayoutPanel31.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
+            this.uiTableLayoutPanel31.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 90F));
+            this.uiTableLayoutPanel31.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
+            this.uiTableLayoutPanel31.Size = new System.Drawing.Size(216, 50);
+            this.uiTableLayoutPanel31.TabIndex = 38;
+            this.uiTableLayoutPanel31.TagString = null;
+            // 
+            // uiLedDisplay4
+            // 
+            this.uiLedDisplay4.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiLedDisplay4.BorderColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiLedDisplay4.BorderInColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiLedDisplay4.CharCount = 8;
+            this.uiLedDisplay4.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLedDisplay4.Font = new System.Drawing.Font("微软雅黑", 16.03791F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLedDisplay4.ForeColor = System.Drawing.Color.Lime;
+            this.uiLedDisplay4.ImeMode = System.Windows.Forms.ImeMode.NoControl;
+            this.uiLedDisplay4.IntervalIn = 2;
+            this.uiLedDisplay4.IntervalV = 2;
+            this.uiLedDisplay4.LedBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiLedDisplay4.Location = new System.Drawing.Point(6, 4);
+            this.uiLedDisplay4.Margin = new System.Windows.Forms.Padding(2);
+            this.uiLedDisplay4.Name = "uiLedDisplay4";
+            this.uiLedDisplay4.Size = new System.Drawing.Size(203, 41);
+            this.uiLedDisplay4.TabIndex = 0;
+            this.uiLedDisplay4.Text = "0";
+            // 
+            // uiTableLayoutPanel33
+            // 
+            this.uiTableLayoutPanel33.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiTableLayoutPanel33.ColumnCount = 3;
+            this.uiTableLayoutPanel34.SetColumnSpan(this.uiTableLayoutPanel33, 2);
+            this.uiTableLayoutPanel33.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
+            this.uiTableLayoutPanel33.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 96F));
+            this.uiTableLayoutPanel33.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
+            this.uiTableLayoutPanel33.Controls.Add(this.uiLedDisplay6, 1, 1);
+            this.uiTableLayoutPanel33.Location = new System.Drawing.Point(802, 573);
+            this.uiTableLayoutPanel33.Margin = new System.Windows.Forms.Padding(2);
+            this.uiTableLayoutPanel33.Name = "uiTableLayoutPanel33";
+            this.uiTableLayoutPanel33.RowCount = 3;
+            this.uiTableLayoutPanel33.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
+            this.uiTableLayoutPanel33.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 90F));
+            this.uiTableLayoutPanel33.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
+            this.uiTableLayoutPanel33.Size = new System.Drawing.Size(216, 51);
+            this.uiTableLayoutPanel33.TabIndex = 39;
+            this.uiTableLayoutPanel33.TagString = null;
+            // 
+            // uiLedDisplay6
+            // 
+            this.uiLedDisplay6.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiLedDisplay6.BorderColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiLedDisplay6.BorderInColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiLedDisplay6.CharCount = 8;
+            this.uiLedDisplay6.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLedDisplay6.Font = new System.Drawing.Font("微软雅黑", 16.03791F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLedDisplay6.ForeColor = System.Drawing.Color.Gold;
+            this.uiLedDisplay6.ImeMode = System.Windows.Forms.ImeMode.NoControl;
+            this.uiLedDisplay6.IntervalIn = 2;
+            this.uiLedDisplay6.IntervalV = 2;
+            this.uiLedDisplay6.LedBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiLedDisplay6.Location = new System.Drawing.Point(6, 4);
+            this.uiLedDisplay6.Margin = new System.Windows.Forms.Padding(2);
+            this.uiLedDisplay6.Name = "uiLedDisplay6";
+            this.uiLedDisplay6.Size = new System.Drawing.Size(203, 41);
+            this.uiLedDisplay6.TabIndex = 0;
+            this.uiLedDisplay6.Text = "1000000";
+            // 
+            // uiTextBox9
+            // 
+            this.uiTableLayoutPanel37.SetColumnSpan(this.uiTextBox9, 3);
+            this.uiTextBox9.Cursor = System.Windows.Forms.Cursors.IBeam;
+            this.uiTextBox9.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTextBox9.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiTextBox9.Location = new System.Drawing.Point(151, 30);
+            this.uiTextBox9.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.uiTextBox9.MinimumSize = new System.Drawing.Size(1, 16);
+            this.uiTextBox9.Name = "uiTextBox9";
+            this.uiTextBox9.Padding = new System.Windows.Forms.Padding(5);
+            this.uiTextBox9.ShowText = false;
+            this.uiTextBox9.Size = new System.Drawing.Size(158, 26);
+            this.uiTextBox9.TabIndex = 43;
+            this.uiTextBox9.Text = "Long Time1";
+            this.uiTextBox9.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
+            this.uiTextBox9.Watermark = "";
+            // 
+            // uiButton14
+            // 
+            this.uiTableLayoutPanel37.SetColumnSpan(this.uiButton14, 2);
+            this.uiButton14.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.uiButton14.FillDisableColor = System.Drawing.Color.FromArgb(((int)(((byte)(115)))), ((int)(((byte)(179)))), ((int)(((byte)(255)))));
+            this.uiButton14.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiButton14.Location = new System.Drawing.Point(150, 241);
+            this.uiButton14.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiButton14.Name = "uiButton14";
+            this.uiButton14.RectDisableColor = System.Drawing.Color.LightBlue;
+            this.uiButton14.Size = new System.Drawing.Size(122, 30);
+            this.uiButton14.TabIndex = 47;
+            this.uiButton14.Text = "详细";
+            this.uiButton14.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiButton14.Visible = false;
+            this.uiButton14.Click += new System.EventHandler(this.BtnSettingDetail_Click);
+            // 
+            // uiTableLayoutPanel34
+            // 
+            this.uiTableLayoutPanel34.ColumnCount = 8;
+            this.uiTableLayoutPanel34.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 9F));
+            this.uiTableLayoutPanel34.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 37F));
+            this.uiTableLayoutPanel34.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 9F));
+            this.uiTableLayoutPanel34.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 35F));
+            this.uiTableLayoutPanel34.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 6F));
+            this.uiTableLayoutPanel34.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 18F));
+            this.uiTableLayoutPanel34.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 4F));
+            this.uiTableLayoutPanel34.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 9F));
+            this.uiTableLayoutPanel34.Controls.Add(this.uiDataGridView2, 3, 6);
+            this.uiTableLayoutPanel34.Controls.Add(this.uiGroupBox14, 3, 14);
+            this.uiTableLayoutPanel34.Controls.Add(this.uiGroupBox15, 3, 1);
+            this.uiTableLayoutPanel34.Controls.Add(this.uiGroupBox16, 1, 1);
+            this.uiTableLayoutPanel34.Controls.Add(this.uiGroupBox17, 1, 5);
+            this.uiTableLayoutPanel34.Controls.Add(this.uiTableLayoutPanel39, 5, 6);
+            this.uiTableLayoutPanel34.Controls.Add(this.uiProcessBar2, 3, 12);
+            this.uiTableLayoutPanel34.Controls.Add(this.uiTableLayoutPanel33, 5, 10);
+            this.uiTableLayoutPanel34.Controls.Add(this.uiLabel53, 4, 6);
+            this.uiTableLayoutPanel34.Controls.Add(this.uiLabel54, 4, 8);
+            this.uiTableLayoutPanel34.Controls.Add(this.uiLabel55, 4, 10);
+            this.uiTableLayoutPanel34.Controls.Add(this.uiLight2, 6, 12);
+            this.uiTableLayoutPanel34.Controls.Add(this.uiTableLayoutPanel40, 5, 8);
+            this.uiTableLayoutPanel34.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTableLayoutPanel34.Location = new System.Drawing.Point(0, 0);
+            this.uiTableLayoutPanel34.Margin = new System.Windows.Forms.Padding(2);
+            this.uiTableLayoutPanel34.Name = "uiTableLayoutPanel34";
+            this.uiTableLayoutPanel34.RowCount = 16;
+            this.uiTableLayoutPanel34.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 9F));
+            this.uiTableLayoutPanel34.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 11.01064F));
+            this.uiTableLayoutPanel34.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 11.01064F));
+            this.uiTableLayoutPanel34.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 11.01064F));
+            this.uiTableLayoutPanel34.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 11.01064F));
+            this.uiTableLayoutPanel34.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 10.00967F));
+            this.uiTableLayoutPanel34.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 7.00677F));
+            this.uiTableLayoutPanel34.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 2.901354F));
+            this.uiTableLayoutPanel34.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 7.059961F));
+            this.uiTableLayoutPanel34.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 2.804642F));
+            this.uiTableLayoutPanel34.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 7.156673F));
+            this.uiTableLayoutPanel34.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 3.002901F));
+            this.uiTableLayoutPanel34.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 6.005803F));
+            this.uiTableLayoutPanel34.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 9F));
+            this.uiTableLayoutPanel34.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 10.00967F));
+            this.uiTableLayoutPanel34.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 4F));
+            this.uiTableLayoutPanel34.Size = new System.Drawing.Size(1032, 791);
+            this.uiTableLayoutPanel34.TabIndex = 42;
+            this.uiTableLayoutPanel34.TagString = null;
+            // 
+            // uiDataGridView2
+            // 
+            this.uiDataGridView2.AllowUserToAddRows = false;
+            this.uiDataGridView2.AllowUserToDeleteRows = false;
+            dataGridViewCellStyle131.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+            dataGridViewCellStyle131.BackColor = System.Drawing.Color.WhiteSmoke;
+            dataGridViewCellStyle131.Font = new System.Drawing.Font("Arial Narrow", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiDataGridView2.AlternatingRowsDefaultCellStyle = dataGridViewCellStyle131;
+            this.uiDataGridView2.BackgroundColor = System.Drawing.Color.White;
+            this.uiDataGridView2.ColumnHeadersBorderStyle = System.Windows.Forms.DataGridViewHeaderBorderStyle.Single;
+            dataGridViewCellStyle132.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+            dataGridViewCellStyle132.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            dataGridViewCellStyle132.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            dataGridViewCellStyle132.ForeColor = System.Drawing.Color.White;
+            dataGridViewCellStyle132.SelectionBackColor = System.Drawing.SystemColors.Highlight;
+            dataGridViewCellStyle132.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
+            dataGridViewCellStyle132.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
+            this.uiDataGridView2.ColumnHeadersDefaultCellStyle = dataGridViewCellStyle132;
+            this.uiDataGridView2.ColumnHeadersHeight = 35;
+            dataGridViewCellStyle133.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleLeft;
+            dataGridViewCellStyle133.BackColor = System.Drawing.SystemColors.Window;
+            dataGridViewCellStyle133.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            dataGridViewCellStyle133.ForeColor = System.Drawing.SystemColors.ControlText;
+            dataGridViewCellStyle133.SelectionBackColor = System.Drawing.SystemColors.Highlight;
+            dataGridViewCellStyle133.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
+            dataGridViewCellStyle133.WrapMode = System.Windows.Forms.DataGridViewTriState.False;
+            this.uiDataGridView2.DefaultCellStyle = dataGridViewCellStyle133;
+            this.uiDataGridView2.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiDataGridView2.EnableHeadersVisualStyles = false;
+            this.uiDataGridView2.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiDataGridView2.GridColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.uiDataGridView2.Location = new System.Drawing.Point(391, 423);
+            this.uiDataGridView2.Margin = new System.Windows.Forms.Padding(2);
+            this.uiDataGridView2.Name = "uiDataGridView2";
+            dataGridViewCellStyle134.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+            dataGridViewCellStyle134.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(235)))), ((int)(((byte)(243)))), ((int)(((byte)(255)))));
+            dataGridViewCellStyle134.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            dataGridViewCellStyle134.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            dataGridViewCellStyle134.SelectionBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            dataGridViewCellStyle134.SelectionForeColor = System.Drawing.Color.White;
+            dataGridViewCellStyle134.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
+            this.uiDataGridView2.RowHeadersDefaultCellStyle = dataGridViewCellStyle134;
+            this.uiDataGridView2.RowHeadersWidth = 30;
+            dataGridViewCellStyle135.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+            dataGridViewCellStyle135.BackColor = System.Drawing.Color.Lavender;
+            dataGridViewCellStyle135.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiDataGridView2.RowsDefaultCellStyle = dataGridViewCellStyle135;
+            this.uiTableLayoutPanel34.SetRowSpan(this.uiDataGridView2, 5);
+            this.uiDataGridView2.RowTemplate.Height = 35;
+            this.uiDataGridView2.SelectedIndex = -1;
+            this.uiDataGridView2.Size = new System.Drawing.Size(347, 201);
+            this.uiDataGridView2.StripeEvenColor = System.Drawing.Color.Lavender;
+            this.uiDataGridView2.StripeOddColor = System.Drawing.Color.WhiteSmoke;
+            this.uiDataGridView2.TabIndex = 0;
+            this.uiDataGridView2.CellContentClick += new System.Windows.Forms.DataGridViewCellEventHandler(this.dgvRealData_CellContentClick);
+            // 
+            // uiGroupBox14
+            // 
+            this.uiTableLayoutPanel34.SetColumnSpan(this.uiGroupBox14, 4);
+            this.uiGroupBox14.Controls.Add(this.uiTableLayoutPanel35);
+            this.uiGroupBox14.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiGroupBox14.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiGroupBox14.Location = new System.Drawing.Point(391, 706);
+            this.uiGroupBox14.Margin = new System.Windows.Forms.Padding(2);
+            this.uiGroupBox14.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiGroupBox14.Name = "uiGroupBox14";
+            this.uiGroupBox14.Padding = new System.Windows.Forms.Padding(0, 32, 0, 0);
+            this.uiGroupBox14.Size = new System.Drawing.Size(627, 72);
+            this.uiGroupBox14.TabIndex = 6;
+            this.uiGroupBox14.Text = null;
+            this.uiGroupBox14.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
+            // 
+            // uiTableLayoutPanel35
+            // 
+            this.uiTableLayoutPanel35.BackColor = System.Drawing.Color.Transparent;
+            this.uiTableLayoutPanel35.ColumnCount = 7;
+            this.uiTableLayoutPanel35.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel35.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 16F));
+            this.uiTableLayoutPanel35.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 26F));
+            this.uiTableLayoutPanel35.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 16F));
+            this.uiTableLayoutPanel35.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 26F));
+            this.uiTableLayoutPanel35.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 16F));
+            this.uiTableLayoutPanel35.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel35.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel35.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel35.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel35.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel35.Controls.Add(this.uiButton15, 5, 1);
+            this.uiTableLayoutPanel35.Controls.Add(this.uiButton16, 3, 1);
+            this.uiTableLayoutPanel35.Controls.Add(this.uiButton17, 2, 1);
+            this.uiTableLayoutPanel35.Controls.Add(this.uiButton18, 1, 1);
+            this.uiTableLayoutPanel35.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTableLayoutPanel35.Location = new System.Drawing.Point(0, 32);
+            this.uiTableLayoutPanel35.Name = "uiTableLayoutPanel35";
+            this.uiTableLayoutPanel35.RowCount = 3;
+            this.uiTableLayoutPanel35.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 10F));
+            this.uiTableLayoutPanel35.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 75F));
+            this.uiTableLayoutPanel35.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 15F));
+            this.uiTableLayoutPanel35.Size = new System.Drawing.Size(627, 40);
+            this.uiTableLayoutPanel35.TabIndex = 35;
+            this.uiTableLayoutPanel35.TagString = null;
+            // 
+            // uiButton15
+            // 
+            this.uiButton15.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.uiButton15.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiButton15.FillColor = System.Drawing.Color.IndianRed;
+            this.uiButton15.FillHoverColor = System.Drawing.Color.Red;
+            this.uiButton15.FillPressColor = System.Drawing.Color.Red;
+            this.uiButton15.FillSelectedColor = System.Drawing.Color.Red;
+            this.uiButton15.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiButton15.Location = new System.Drawing.Point(513, 7);
+            this.uiButton15.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiButton15.Name = "uiButton15";
+            this.uiButton15.Radius = 3;
+            this.uiButton15.RectColor = System.Drawing.Color.Red;
+            this.uiButton15.RectHoverColor = System.Drawing.Color.Red;
+            this.uiButton15.RectPressColor = System.Drawing.Color.Red;
+            this.uiButton15.RectSelectedColor = System.Drawing.Color.Red;
+            this.uiButton15.Size = new System.Drawing.Size(87, 24);
+            this.uiButton15.TabIndex = 49;
+            this.uiButton15.Text = "停止试验";
+            this.uiButton15.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiButton15.Click += new System.EventHandler(this.BtnStop_Click);
+            // 
+            // uiButton16
+            // 
+            this.uiButton16.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.uiButton16.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiButton16.FillDisableColor = System.Drawing.Color.FromArgb(((int)(((byte)(115)))), ((int)(((byte)(179)))), ((int)(((byte)(255)))));
+            this.uiButton16.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiButton16.Location = new System.Drawing.Point(268, 7);
+            this.uiButton16.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiButton16.Name = "uiButton16";
+            this.uiButton16.Radius = 3;
+            this.uiButton16.RectDisableColor = System.Drawing.Color.LightBlue;
+            this.uiButton16.Size = new System.Drawing.Size(87, 24);
+            this.uiButton16.TabIndex = 50;
+            this.uiButton16.Text = "开始试验";
+            this.uiButton16.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiButton16.Click += new System.EventHandler(this.BtnStartTest_Click);
+            // 
+            // uiButton17
+            // 
+            this.uiButton17.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.uiButton17.FillDisableColor = System.Drawing.Color.FromArgb(((int)(((byte)(115)))), ((int)(((byte)(179)))), ((int)(((byte)(255)))));
+            this.uiButton17.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiButton17.Location = new System.Drawing.Point(116, 7);
+            this.uiButton17.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiButton17.Name = "uiButton17";
+            this.uiButton17.Radius = 1;
+            this.uiButton17.RectDisableColor = System.Drawing.Color.LightBlue;
+            this.uiButton17.Size = new System.Drawing.Size(146, 24);
+            this.uiButton17.TabIndex = 52;
+            this.uiButton17.Text = "自学习";
+            this.uiButton17.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiButton17.Visible = false;
+            this.uiButton17.Click += new System.EventHandler(this.BtnAutoLearn_Click);
+            // 
+            // uiButton18
+            // 
+            this.uiButton18.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.uiButton18.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiButton18.FillDisableColor = System.Drawing.Color.FromArgb(((int)(((byte)(115)))), ((int)(((byte)(179)))), ((int)(((byte)(255)))));
+            this.uiButton18.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiButton18.Location = new System.Drawing.Point(23, 7);
+            this.uiButton18.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiButton18.Name = "uiButton18";
+            this.uiButton18.Radius = 1;
+            this.uiButton18.RectDisableColor = System.Drawing.Color.LightBlue;
+            this.uiButton18.Size = new System.Drawing.Size(87, 24);
+            this.uiButton18.TabIndex = 53;
+            this.uiButton18.Text = "暂停";
+            this.uiButton18.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiButton18.Click += new System.EventHandler(this.BtnPause_Click);
+            // 
+            // uiGroupBox15
+            // 
+            this.uiTableLayoutPanel34.SetColumnSpan(this.uiGroupBox15, 4);
+            this.uiGroupBox15.Controls.Add(this.uiTableLayoutPanel36);
+            this.uiGroupBox15.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiGroupBox15.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiGroupBox15.Location = new System.Drawing.Point(391, 11);
+            this.uiGroupBox15.Margin = new System.Windows.Forms.Padding(2);
+            this.uiGroupBox15.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiGroupBox15.Name = "uiGroupBox15";
+            this.uiGroupBox15.Padding = new System.Windows.Forms.Padding(0, 32, 0, 0);
+            this.uiTableLayoutPanel34.SetRowSpan(this.uiGroupBox15, 5);
+            this.uiGroupBox15.Size = new System.Drawing.Size(627, 408);
+            this.uiGroupBox15.TabIndex = 36;
+            this.uiGroupBox15.Text = null;
+            this.uiGroupBox15.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
+            // 
+            // uiTableLayoutPanel36
+            // 
+            this.uiTableLayoutPanel36.BackColor = System.Drawing.Color.Transparent;
+            this.uiTableLayoutPanel36.ColumnCount = 3;
+            this.uiTableLayoutPanel36.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel36.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 100F));
+            this.uiTableLayoutPanel36.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel36.Controls.Add(this.zedGraphControl3, 1, 1);
+            this.uiTableLayoutPanel36.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTableLayoutPanel36.Location = new System.Drawing.Point(0, 32);
+            this.uiTableLayoutPanel36.Name = "uiTableLayoutPanel36";
+            this.uiTableLayoutPanel36.RowCount = 3;
+            this.uiTableLayoutPanel36.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 10F));
+            this.uiTableLayoutPanel36.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100F));
+            this.uiTableLayoutPanel36.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel36.Size = new System.Drawing.Size(627, 376);
+            this.uiTableLayoutPanel36.TabIndex = 36;
+            this.uiTableLayoutPanel36.TagString = null;
+            // 
+            // zedGraphControl3
+            // 
+            this.zedGraphControl3.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.zedGraphControl3.IsEnableHZoom = false;
+            this.zedGraphControl3.IsEnableVZoom = false;
+            this.zedGraphControl3.IsEnableWheelZoom = false;
+            this.zedGraphControl3.Location = new System.Drawing.Point(28, 18);
+            this.zedGraphControl3.Margin = new System.Windows.Forms.Padding(8);
+            this.zedGraphControl3.Name = "zedGraphControl3";
+            this.zedGraphControl3.ScrollGrace = 0D;
+            this.zedGraphControl3.ScrollMaxX = 0D;
+            this.zedGraphControl3.ScrollMaxY = 0D;
+            this.zedGraphControl3.ScrollMaxY2 = 0D;
+            this.zedGraphControl3.ScrollMinX = 0D;
+            this.zedGraphControl3.ScrollMinY = 0D;
+            this.zedGraphControl3.ScrollMinY2 = 0D;
+            this.zedGraphControl3.Size = new System.Drawing.Size(571, 330);
+            this.zedGraphControl3.TabIndex = 4;
+            this.zedGraphControl3.UseExtendedPrintDialog = true;
+            this.zedGraphControl3.ContextMenuBuilder += new ZedGraph.ZedGraphControl.ContextMenuBuilderEventHandler(this.zedGraphRealChart_ContextMenuBuilder);
+            // 
+            // uiGroupBox16
+            // 
+            this.uiGroupBox16.Controls.Add(this.uiTableLayoutPanel37);
+            this.uiGroupBox16.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiGroupBox16.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiGroupBox16.Location = new System.Drawing.Point(11, 11);
+            this.uiGroupBox16.Margin = new System.Windows.Forms.Padding(2);
+            this.uiGroupBox16.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiGroupBox16.Name = "uiGroupBox16";
+            this.uiGroupBox16.Padding = new System.Windows.Forms.Padding(0, 32, 0, 0);
+            this.uiTableLayoutPanel34.SetRowSpan(this.uiGroupBox16, 4);
+            this.uiGroupBox16.Size = new System.Drawing.Size(367, 332);
+            this.uiGroupBox16.TabIndex = 2;
+            this.uiGroupBox16.Text = "试验设置";
+            this.uiGroupBox16.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
+            // 
+            // uiTableLayoutPanel37
+            // 
+            this.uiTableLayoutPanel37.BackColor = System.Drawing.Color.Transparent;
+            this.uiTableLayoutPanel37.ColumnCount = 8;
+            this.uiTableLayoutPanel37.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2.040816F));
+            this.uiTableLayoutPanel37.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 40.81633F));
+            this.uiTableLayoutPanel37.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 80F));
+            this.uiTableLayoutPanel37.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 30.61224F));
+            this.uiTableLayoutPanel37.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 80F));
+            this.uiTableLayoutPanel37.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 24.4898F));
+            this.uiTableLayoutPanel37.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 50F));
+            this.uiTableLayoutPanel37.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2.040816F));
+            this.uiTableLayoutPanel37.Controls.Add(this.uiTextBox11, 3, 7);
+            this.uiTableLayoutPanel37.Controls.Add(this.uiLabel51, 6, 9);
+            this.uiTableLayoutPanel37.Controls.Add(this.uiTextBox12, 3, 5);
+            this.uiTableLayoutPanel37.Controls.Add(this.uiLabel47, 1, 1);
+            this.uiTableLayoutPanel37.Controls.Add(this.uiLabel48, 1, 5);
+            this.uiTableLayoutPanel37.Controls.Add(this.uiLabel49, 1, 7);
+            this.uiTableLayoutPanel37.Controls.Add(this.uiTextBox9, 3, 1);
+            this.uiTableLayoutPanel37.Controls.Add(this.uiLabel50, 1, 3);
+            this.uiTableLayoutPanel37.Controls.Add(this.uiTextBox10, 3, 3);
+            this.uiTableLayoutPanel37.Controls.Add(this.uiLabel52, 4, 5);
+            this.uiTableLayoutPanel37.Controls.Add(this.uiCheckBox2, 6, 1);
+            this.uiTableLayoutPanel37.Controls.Add(this.uiRadioButton2, 6, 3);
+            this.uiTableLayoutPanel37.Controls.Add(this.uiButton20, 1, 9);
+            this.uiTableLayoutPanel37.Controls.Add(this.uiButton19, 4, 9);
+            this.uiTableLayoutPanel37.Controls.Add(this.uiButton14, 3, 9);
+            this.uiTableLayoutPanel37.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTableLayoutPanel37.Location = new System.Drawing.Point(0, 32);
+            this.uiTableLayoutPanel37.Name = "uiTableLayoutPanel37";
+            this.uiTableLayoutPanel37.RowCount = 11;
+            this.uiTableLayoutPanel37.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 8.5F));
+            this.uiTableLayoutPanel37.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 12F));
+            this.uiTableLayoutPanel37.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
+            this.uiTableLayoutPanel37.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 12F));
+            this.uiTableLayoutPanel37.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
+            this.uiTableLayoutPanel37.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 12F));
+            this.uiTableLayoutPanel37.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
+            this.uiTableLayoutPanel37.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 12F));
+            this.uiTableLayoutPanel37.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 8F));
+            this.uiTableLayoutPanel37.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 12F));
+            this.uiTableLayoutPanel37.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 8.5F));
+            this.uiTableLayoutPanel37.Size = new System.Drawing.Size(367, 300);
+            this.uiTableLayoutPanel37.TabIndex = 1;
+            this.uiTableLayoutPanel37.TagString = null;
+            // 
+            // uiTextBox11
+            // 
+            this.uiTextBox11.Cursor = System.Windows.Forms.Cursors.IBeam;
+            this.uiTextBox11.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTextBox11.DoubleValue = 100000D;
+            this.uiTextBox11.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiTextBox11.IntValue = 100000;
+            this.uiTextBox11.Location = new System.Drawing.Point(151, 183);
+            this.uiTextBox11.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.uiTextBox11.MinimumSize = new System.Drawing.Size(1, 16);
+            this.uiTextBox11.Name = "uiTextBox11";
+            this.uiTextBox11.Padding = new System.Windows.Forms.Padding(5);
+            this.uiTextBox11.ShowText = false;
+            this.uiTextBox11.Size = new System.Drawing.Size(40, 26);
+            this.uiTextBox11.TabIndex = 44;
+            this.uiTextBox11.Text = "100000";
+            this.uiTextBox11.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
+            this.uiTextBox11.Watermark = "";
+            // 
+            // uiLabel51
+            // 
+            this.uiLabel51.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiLabel51.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiLabel51.Location = new System.Drawing.Point(366, 238);
+            this.uiLabel51.Name = "uiLabel51";
+            this.uiLabel51.Size = new System.Drawing.Size(1, 36);
+            this.uiLabel51.TabIndex = 11;
+            this.uiLabel51.Text = "0";
+            this.uiLabel51.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            this.uiLabel51.Visible = false;
+            // 
+            // uiTextBox12
+            // 
+            this.uiTextBox12.Cursor = System.Windows.Forms.Cursors.IBeam;
+            this.uiTextBox12.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTextBox12.DoubleValue = 3D;
+            this.uiTextBox12.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiTextBox12.IntValue = 3;
+            this.uiTextBox12.Location = new System.Drawing.Point(151, 132);
+            this.uiTextBox12.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.uiTextBox12.MinimumSize = new System.Drawing.Size(1, 16);
+            this.uiTextBox12.Name = "uiTextBox12";
+            this.uiTextBox12.Padding = new System.Windows.Forms.Padding(5);
+            this.uiTextBox12.ShowText = false;
+            this.uiTextBox12.Size = new System.Drawing.Size(40, 26);
+            this.uiTextBox12.TabIndex = 44;
+            this.uiTextBox12.Text = "3";
+            this.uiTextBox12.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
+            this.uiTextBox12.Watermark = "";
+            // 
+            // uiLabel47
+            // 
+            this.uiTableLayoutPanel37.SetColumnSpan(this.uiLabel47, 2);
+            this.uiLabel47.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabel47.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiLabel47.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiLabel47.Location = new System.Drawing.Point(6, 25);
+            this.uiLabel47.Name = "uiLabel47";
+            this.uiLabel47.Size = new System.Drawing.Size(138, 36);
+            this.uiLabel47.TabIndex = 33;
+            this.uiLabel47.TagString = "试验名称";
+            this.uiLabel47.Text = "试验名称";
+            this.uiLabel47.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiLabel48
+            // 
+            this.uiTableLayoutPanel37.SetColumnSpan(this.uiLabel48, 2);
+            this.uiLabel48.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabel48.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiLabel48.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiLabel48.Location = new System.Drawing.Point(6, 127);
+            this.uiLabel48.Name = "uiLabel48";
+            this.uiLabel48.Size = new System.Drawing.Size(138, 36);
+            this.uiLabel48.TabIndex = 35;
+            this.uiLabel48.Text = "频   率";
+            this.uiLabel48.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiLabel49
+            // 
+            this.uiTableLayoutPanel37.SetColumnSpan(this.uiLabel49, 2);
+            this.uiLabel49.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabel49.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiLabel49.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiLabel49.Location = new System.Drawing.Point(6, 178);
+            this.uiLabel49.Name = "uiLabel49";
+            this.uiLabel49.Size = new System.Drawing.Size(138, 36);
+            this.uiLabel49.TabIndex = 36;
+            this.uiLabel49.Text = "目标次数";
+            this.uiLabel49.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiLabel50
+            // 
+            this.uiTableLayoutPanel37.SetColumnSpan(this.uiLabel50, 2);
+            this.uiLabel50.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabel50.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiLabel50.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiLabel50.Location = new System.Drawing.Point(6, 76);
+            this.uiLabel50.Name = "uiLabel50";
+            this.uiLabel50.Size = new System.Drawing.Size(138, 36);
+            this.uiLabel50.TabIndex = 45;
+            this.uiLabel50.Text = "试验标准";
+            this.uiLabel50.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiTextBox10
+            // 
+            this.uiTableLayoutPanel37.SetColumnSpan(this.uiTextBox10, 3);
+            this.uiTextBox10.Cursor = System.Windows.Forms.Cursors.IBeam;
+            this.uiTextBox10.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTextBox10.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiTextBox10.Location = new System.Drawing.Point(151, 81);
+            this.uiTextBox10.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.uiTextBox10.MinimumSize = new System.Drawing.Size(1, 16);
+            this.uiTextBox10.Name = "uiTextBox10";
+            this.uiTextBox10.Padding = new System.Windows.Forms.Padding(5);
+            this.uiTextBox10.ShowText = false;
+            this.uiTextBox10.Size = new System.Drawing.Size(158, 26);
+            this.uiTextBox10.TabIndex = 46;
+            this.uiTextBox10.Text = "QRYM-2022 ";
+            this.uiTextBox10.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
+            this.uiTextBox10.Watermark = "";
+            // 
+            // uiLabel52
+            // 
+            this.uiLabel52.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabel52.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiLabel52.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiLabel52.Location = new System.Drawing.Point(198, 127);
+            this.uiLabel52.Name = "uiLabel52";
+            this.uiLabel52.Size = new System.Drawing.Size(74, 36);
+            this.uiLabel52.TabIndex = 48;
+            this.uiLabel52.Text = "Hz";
+            this.uiLabel52.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiCheckBox2
+            // 
+            this.uiCheckBox2.CheckBoxSize = 32;
+            this.uiCheckBox2.Checked = true;
+            this.uiCheckBox2.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.uiCheckBox2.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiCheckBox2.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiCheckBox2.Location = new System.Drawing.Point(316, 28);
+            this.uiCheckBox2.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiCheckBox2.Name = "uiCheckBox2";
+            this.uiCheckBox2.Size = new System.Drawing.Size(44, 30);
+            this.uiCheckBox2.TabIndex = 37;
+            this.uiCheckBox2.Text = "EMB1";
+            this.uiCheckBox2.Visible = false;
+            // 
+            // uiRadioButton2
+            // 
+            this.uiRadioButton2.Checked = true;
+            this.uiRadioButton2.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.uiRadioButton2.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiRadioButton2.Location = new System.Drawing.Point(316, 79);
+            this.uiRadioButton2.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiRadioButton2.Name = "uiRadioButton2";
+            this.uiRadioButton2.RadioButtonSize = 32;
+            this.uiRadioButton2.Size = new System.Drawing.Size(44, 30);
+            this.uiRadioButton2.TabIndex = 10;
+            this.uiRadioButton2.Text = "EMB1";
+            this.uiRadioButton2.Visible = false;
+            // 
+            // uiButton20
+            // 
+            this.uiButton20.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.uiButton20.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiButton20.FillDisableColor = System.Drawing.Color.FromArgb(((int)(((byte)(115)))), ((int)(((byte)(179)))), ((int)(((byte)(255)))));
+            this.uiButton20.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiButton20.Location = new System.Drawing.Point(33, 241);
+            this.uiButton20.Margin = new System.Windows.Forms.Padding(30, 3, 3, 3);
+            this.uiButton20.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiButton20.Name = "uiButton20";
+            this.uiButton20.Radius = 1;
+            this.uiButton20.RectDisableColor = System.Drawing.Color.LightBlue;
+            this.uiButton20.Size = new System.Drawing.Size(31, 30);
+            this.uiButton20.TabIndex = 50;
+            this.uiButton20.Text = "取消";
+            this.uiButton20.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiButton20.Click += new System.EventHandler(this.BtnCancel_Click);
+            // 
+            // uiButton19
+            // 
+            this.uiTableLayoutPanel37.SetColumnSpan(this.uiButton19, 2);
+            this.uiButton19.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.uiButton19.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiButton19.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiButton19.Location = new System.Drawing.Point(278, 241);
+            this.uiButton19.Margin = new System.Windows.Forms.Padding(3, 3, 30, 3);
+            this.uiButton19.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiButton19.Name = "uiButton19";
+            this.uiButton19.Size = new System.Drawing.Size(55, 30);
+            this.uiButton19.TabIndex = 49;
+            this.uiButton19.Text = "确认";
+            this.uiButton19.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiButton19.Click += new System.EventHandler(this.BtnApply_Click);
+            // 
+            // uiGroupBox17
+            // 
+            this.uiGroupBox17.Controls.Add(this.uiTableLayoutPanel38);
+            this.uiGroupBox17.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiGroupBox17.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiGroupBox17.Location = new System.Drawing.Point(11, 347);
+            this.uiGroupBox17.Margin = new System.Windows.Forms.Padding(2);
+            this.uiGroupBox17.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiGroupBox17.Name = "uiGroupBox17";
+            this.uiGroupBox17.Padding = new System.Windows.Forms.Padding(0, 32, 0, 0);
+            this.uiTableLayoutPanel34.SetRowSpan(this.uiGroupBox17, 10);
+            this.uiGroupBox17.Size = new System.Drawing.Size(367, 431);
+            this.uiGroupBox17.TabIndex = 7;
+            this.uiGroupBox17.Text = "信息";
+            this.uiGroupBox17.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
+            // 
+            // uiTableLayoutPanel38
+            // 
+            this.uiTableLayoutPanel38.BackColor = System.Drawing.Color.Transparent;
+            this.uiTableLayoutPanel38.ColumnCount = 5;
+            this.uiTableLayoutPanel38.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel38.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 30F));
+            this.uiTableLayoutPanel38.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 40F));
+            this.uiTableLayoutPanel38.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 30F));
+            this.uiTableLayoutPanel38.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel38.Controls.Add(this.uiButton21, 1, 3);
+            this.uiTableLayoutPanel38.Controls.Add(this.uiRichTextBox3, 1, 1);
+            this.uiTableLayoutPanel38.Controls.Add(this.uiButton22, 3, 3);
+            this.uiTableLayoutPanel38.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTableLayoutPanel38.Location = new System.Drawing.Point(0, 32);
+            this.uiTableLayoutPanel38.Name = "uiTableLayoutPanel38";
+            this.uiTableLayoutPanel38.RowCount = 5;
+            this.uiTableLayoutPanel38.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 10F));
+            this.uiTableLayoutPanel38.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 91F));
+            this.uiTableLayoutPanel38.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel38.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 9F));
+            this.uiTableLayoutPanel38.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 20F));
+            this.uiTableLayoutPanel38.Size = new System.Drawing.Size(367, 399);
+            this.uiTableLayoutPanel38.TabIndex = 37;
+            this.uiTableLayoutPanel38.TagString = null;
+            // 
+            // uiButton21
+            // 
+            this.uiButton21.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.uiButton21.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiButton21.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiButton21.Location = new System.Drawing.Point(23, 350);
+            this.uiButton21.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiButton21.Name = "uiButton21";
+            this.uiButton21.Radius = 4;
+            this.uiButton21.Size = new System.Drawing.Size(92, 25);
+            this.uiButton21.TabIndex = 52;
+            this.uiButton21.Text = "运行日志";
+            this.uiButton21.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiButton21.Click += new System.EventHandler(this.BtnRunLog_Click);
+            // 
+            // uiRichTextBox3
+            // 
+            this.uiTableLayoutPanel38.SetColumnSpan(this.uiRichTextBox3, 3);
+            this.uiRichTextBox3.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiRichTextBox3.FillColor = System.Drawing.Color.White;
+            this.uiRichTextBox3.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiRichTextBox3.Location = new System.Drawing.Point(24, 15);
+            this.uiRichTextBox3.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.uiRichTextBox3.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiRichTextBox3.Name = "uiRichTextBox3";
+            this.uiRichTextBox3.Padding = new System.Windows.Forms.Padding(2);
+            this.uiRichTextBox3.Radius = 1;
+            this.uiRichTextBox3.ShowText = false;
+            this.uiRichTextBox3.Size = new System.Drawing.Size(318, 307);
+            this.uiRichTextBox3.TabIndex = 0;
+            this.uiRichTextBox3.TextAlignment = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiButton22
+            // 
+            this.uiButton22.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.uiButton22.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiButton22.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiButton22.Location = new System.Drawing.Point(251, 350);
+            this.uiButton22.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiButton22.Name = "uiButton22";
+            this.uiButton22.Radius = 4;
+            this.uiButton22.Size = new System.Drawing.Size(92, 25);
+            this.uiButton22.TabIndex = 53;
+            this.uiButton22.Text = "错误日志";
+            this.uiButton22.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiButton22.Click += new System.EventHandler(this.BtnErrorLog_Click);
+            // 
+            // uiTableLayoutPanel39
+            // 
+            this.uiTableLayoutPanel39.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiTableLayoutPanel39.ColumnCount = 3;
+            this.uiTableLayoutPanel34.SetColumnSpan(this.uiTableLayoutPanel39, 2);
+            this.uiTableLayoutPanel39.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
+            this.uiTableLayoutPanel39.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 96F));
+            this.uiTableLayoutPanel39.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
+            this.uiTableLayoutPanel39.Controls.Add(this.uiLedDisplay7, 1, 1);
+            this.uiTableLayoutPanel39.Location = new System.Drawing.Point(802, 423);
+            this.uiTableLayoutPanel39.Margin = new System.Windows.Forms.Padding(2);
+            this.uiTableLayoutPanel39.Name = "uiTableLayoutPanel39";
+            this.uiTableLayoutPanel39.RowCount = 3;
+            this.uiTableLayoutPanel39.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
+            this.uiTableLayoutPanel39.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 90F));
+            this.uiTableLayoutPanel39.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
+            this.uiTableLayoutPanel39.Size = new System.Drawing.Size(216, 49);
+            this.uiTableLayoutPanel39.TabIndex = 37;
+            this.uiTableLayoutPanel39.TagString = null;
+            // 
+            // uiLedDisplay7
+            // 
+            this.uiLedDisplay7.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiLedDisplay7.BorderColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiLedDisplay7.BorderInColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiLedDisplay7.CharCount = 11;
+            this.uiLedDisplay7.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLedDisplay7.Font = new System.Drawing.Font("微软雅黑", 10.5782F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLedDisplay7.ForeColor = System.Drawing.Color.Lime;
+            this.uiLedDisplay7.ImeMode = System.Windows.Forms.ImeMode.NoControl;
+            this.uiLedDisplay7.IntervalIn = 2;
+            this.uiLedDisplay7.IntervalV = 2;
+            this.uiLedDisplay7.LedBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiLedDisplay7.Location = new System.Drawing.Point(6, 4);
+            this.uiLedDisplay7.Margin = new System.Windows.Forms.Padding(2);
+            this.uiLedDisplay7.Name = "uiLedDisplay7";
+            this.uiLedDisplay7.Size = new System.Drawing.Size(203, 40);
+            this.uiLedDisplay7.TabIndex = 0;
+            this.uiLedDisplay7.Text = "00D 00H 00M";
+            // 
+            // uiProcessBar2
+            // 
+            this.uiTableLayoutPanel34.SetColumnSpan(this.uiProcessBar2, 3);
+            this.uiProcessBar2.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiProcessBar2.FillColor = System.Drawing.Color.FromArgb(((int)(((byte)(235)))), ((int)(((byte)(243)))), ((int)(((byte)(255)))));
+            this.uiProcessBar2.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiProcessBar2.Location = new System.Drawing.Point(391, 651);
+            this.uiProcessBar2.Margin = new System.Windows.Forms.Padding(2);
+            this.uiProcessBar2.MinimumSize = new System.Drawing.Size(2, 2);
+            this.uiProcessBar2.Name = "uiProcessBar2";
+            this.uiProcessBar2.Size = new System.Drawing.Size(587, 42);
+            this.uiProcessBar2.Style = Sunny.UI.UIStyle.Custom;
+            this.uiProcessBar2.TabIndex = 41;
+            this.uiProcessBar2.Text = "uiProcessBar1";
+            // 
+            // uiLabel53
+            // 
+            this.uiLabel53.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabel53.Font = new System.Drawing.Font("宋体", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLabel53.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiLabel53.Location = new System.Drawing.Point(742, 421);
+            this.uiLabel53.Margin = new System.Windows.Forms.Padding(2, 0, 2, 0);
+            this.uiLabel53.Name = "uiLabel53";
+            this.uiLabel53.Size = new System.Drawing.Size(56, 53);
+            this.uiLabel53.TabIndex = 42;
+            this.uiLabel53.Text = "运行时间";
+            this.uiLabel53.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiLabel54
+            // 
+            this.uiLabel54.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabel54.Font = new System.Drawing.Font("宋体", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLabel54.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiLabel54.Location = new System.Drawing.Point(742, 496);
+            this.uiLabel54.Margin = new System.Windows.Forms.Padding(2, 0, 2, 0);
+            this.uiLabel54.Name = "uiLabel54";
+            this.uiLabel54.Size = new System.Drawing.Size(56, 54);
+            this.uiLabel54.TabIndex = 43;
+            this.uiLabel54.Text = "完成次数";
+            this.uiLabel54.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiLabel55
+            // 
+            this.uiLabel55.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabel55.Font = new System.Drawing.Font("宋体", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLabel55.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiLabel55.Location = new System.Drawing.Point(742, 571);
+            this.uiLabel55.Margin = new System.Windows.Forms.Padding(2, 0, 2, 0);
+            this.uiLabel55.Name = "uiLabel55";
+            this.uiLabel55.Size = new System.Drawing.Size(56, 55);
+            this.uiLabel55.TabIndex = 44;
+            this.uiLabel55.Text = "剩余次数";
+            this.uiLabel55.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiLight2
+            // 
+            this.uiLight2.CenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
+            this.uiLight2.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLight2.Font = new System.Drawing.Font("宋体", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLight2.Interval = 2000;
+            this.uiLight2.Location = new System.Drawing.Point(986, 651);
+            this.uiLight2.Margin = new System.Windows.Forms.Padding(6, 2, 2, 2);
+            this.uiLight2.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiLight2.Name = "uiLight2";
+            this.uiLight2.OffCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(140)))), ((int)(((byte)(140)))), ((int)(((byte)(140)))));
+            this.uiLight2.OnCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
+            this.uiLight2.Radius = 0;
+            this.uiLight2.Shape = Sunny.UI.UIShape.Square;
+            this.uiLight2.Size = new System.Drawing.Size(32, 42);
+            this.uiLight2.State = Sunny.UI.UILightState.Off;
+            this.uiLight2.TabIndex = 12;
+            this.uiLight2.Text = "uiLight1";
+            this.uiLight2.Click += new System.EventHandler(this.AlertEmb1_Click);
+            // 
+            // uiTableLayoutPanel40
+            // 
+            this.uiTableLayoutPanel40.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiTableLayoutPanel40.ColumnCount = 3;
+            this.uiTableLayoutPanel34.SetColumnSpan(this.uiTableLayoutPanel40, 2);
+            this.uiTableLayoutPanel40.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
+            this.uiTableLayoutPanel40.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 96F));
+            this.uiTableLayoutPanel40.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
+            this.uiTableLayoutPanel40.Controls.Add(this.uiLedDisplay8, 1, 1);
+            this.uiTableLayoutPanel40.Location = new System.Drawing.Point(802, 498);
+            this.uiTableLayoutPanel40.Margin = new System.Windows.Forms.Padding(2);
+            this.uiTableLayoutPanel40.Name = "uiTableLayoutPanel40";
+            this.uiTableLayoutPanel40.RowCount = 3;
+            this.uiTableLayoutPanel40.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
+            this.uiTableLayoutPanel40.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 90F));
+            this.uiTableLayoutPanel40.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
+            this.uiTableLayoutPanel40.Size = new System.Drawing.Size(216, 50);
+            this.uiTableLayoutPanel40.TabIndex = 38;
+            this.uiTableLayoutPanel40.TagString = null;
+            // 
+            // uiLedDisplay8
+            // 
+            this.uiLedDisplay8.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiLedDisplay8.BorderColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiLedDisplay8.BorderInColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiLedDisplay8.CharCount = 8;
+            this.uiLedDisplay8.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLedDisplay8.Font = new System.Drawing.Font("微软雅黑", 16.03791F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLedDisplay8.ForeColor = System.Drawing.Color.Lime;
+            this.uiLedDisplay8.ImeMode = System.Windows.Forms.ImeMode.NoControl;
+            this.uiLedDisplay8.IntervalIn = 2;
+            this.uiLedDisplay8.IntervalV = 2;
+            this.uiLedDisplay8.LedBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
+            this.uiLedDisplay8.Location = new System.Drawing.Point(6, 4);
+            this.uiLedDisplay8.Margin = new System.Windows.Forms.Padding(2);
+            this.uiLedDisplay8.Name = "uiLedDisplay8";
+            this.uiLedDisplay8.Size = new System.Drawing.Size(203, 41);
+            this.uiLedDisplay8.TabIndex = 0;
+            this.uiLedDisplay8.Text = "0";
+            // 
+            // uiLabel56
+            // 
+            this.uiLabel56.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabel56.Font = new System.Drawing.Font("宋体", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLabel56.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiLabel56.Location = new System.Drawing.Point(2, 0);
+            this.uiLabel56.Margin = new System.Windows.Forms.Padding(2, 0, 2, 0);
+            this.uiLabel56.Name = "uiLabel56";
+            this.uiLabel56.Size = new System.Drawing.Size(182, 81);
+            this.uiLabel56.TabIndex = 43;
+            this.uiLabel56.Text = "运行时间";
+            this.uiLabel56.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiLabel57
+            // 
+            this.uiLabel57.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabel57.Font = new System.Drawing.Font("宋体", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLabel57.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiLabel57.Location = new System.Drawing.Point(2, 81);
+            this.uiLabel57.Margin = new System.Windows.Forms.Padding(2, 0, 2, 0);
+            this.uiLabel57.Name = "uiLabel57";
+            this.uiLabel57.Size = new System.Drawing.Size(182, 81);
+            this.uiLabel57.TabIndex = 44;
+            this.uiLabel57.Text = "完成次数";
+            this.uiLabel57.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiLabel58
+            // 
+            this.uiLabel58.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabel58.Font = new System.Drawing.Font("宋体", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLabel58.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiLabel58.Location = new System.Drawing.Point(2, 162);
+            this.uiLabel58.Margin = new System.Windows.Forms.Padding(2, 0, 2, 0);
+            this.uiLabel58.Name = "uiLabel58";
+            this.uiLabel58.Size = new System.Drawing.Size(182, 81);
+            this.uiLabel58.TabIndex = 45;
+            this.uiLabel58.Text = "剩余次数";
+            this.uiLabel58.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiLight3
+            // 
+            this.uiLight3.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.uiLight3.CenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
+            this.uiLight3.Font = new System.Drawing.Font("宋体", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLight3.Interval = 2000;
+            this.uiLight3.Location = new System.Drawing.Point(428, 258);
+            this.uiLight3.Margin = new System.Windows.Forms.Padding(6, 2, 2, 2);
+            this.uiLight3.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiLight3.Name = "uiLight3";
+            this.uiLight3.OffCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(140)))), ((int)(((byte)(140)))), ((int)(((byte)(140)))));
+            this.uiLight3.OnCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
+            this.uiLight3.Radius = 0;
+            this.uiLight3.Shape = Sunny.UI.UIShape.Square;
+            this.uiLight3.Size = new System.Drawing.Size(48, 50);
+            this.uiLight3.State = Sunny.UI.UILightState.Off;
+            this.uiLight3.TabIndex = 46;
+            this.uiLight3.Text = "uiLight1";
+            // 
+            // uiButton24
+            // 
+            this.uiButton24.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.uiButton24.FillDisableColor = System.Drawing.Color.FromArgb(((int)(((byte)(115)))), ((int)(((byte)(179)))), ((int)(((byte)(255)))));
+            this.uiButton24.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiButton24.Location = new System.Drawing.Point(23, 7);
+            this.uiButton24.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiButton24.Name = "uiButton24";
+            this.uiButton24.Radius = 3;
+            this.uiButton24.RectDisableColor = System.Drawing.Color.LightBlue;
+            this.uiButton24.Size = new System.Drawing.Size(130, 24);
+            this.uiButton24.TabIndex = 50;
+            this.uiButton24.Text = "开始试验";
+            this.uiButton24.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
             // 
             // FrmEpbMainMonitor
             // 
-            this.AutoScaleDimensions = new System.Drawing.SizeF(12F, 24F);
+            this.AutoScaleDimensions = new System.Drawing.SizeF(6F, 12F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
             this.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.ClientSize = new System.Drawing.Size(1975, 1239);
+            this.ClientSize = new System.Drawing.Size(1424, 861);
             this.ControlBox = false;
             this.Controls.Add(this.uiTableLayoutPanel1);
+            this.Margin = new System.Windows.Forms.Padding(2);
             this.Name = "FrmEpbMainMonitor";
             this.ShowIcon = false;
             this.Text = "实时监视";
@@ -1755,14 +5321,99 @@
             this.uiTableLayoutPanel4.ResumeLayout(false);
             this.uiGroupBox4.ResumeLayout(false);
             this.uiTableLayoutPanel5.ResumeLayout(false);
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit12.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit11.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit10.Properties)).EndInit();
             this.uiGroupBox5.ResumeLayout(false);
             this.uiTableLayoutPanel7.ResumeLayout(false);
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit1.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit3.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit2.Properties)).EndInit();
             this.uiGroupBox6.ResumeLayout(false);
             this.uiTableLayoutPanel8.ResumeLayout(false);
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit6.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit4.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit5.Properties)).EndInit();
             this.uiGroupBox7.ResumeLayout(false);
             this.uiTableLayoutPanel9.ResumeLayout(false);
-            this.uiPanel1.ResumeLayout(false);
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit9.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit8.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit7.Properties)).EndInit();
+            this.uiGroupBox3.ResumeLayout(false);
+            this.uiTableLayoutPanel3.ResumeLayout(false);
             this.uiTableLayoutPanel6.ResumeLayout(false);
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit13.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit14.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit15.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit16.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit17.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit18.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit19.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit20.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit21.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit22.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit23.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit24.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit1.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit2.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit3.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit4.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit5.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit6.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit7.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit8.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit9.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit10.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit11.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit12.Properties)).EndInit();
+            this.uiTableLayoutPanel14.ResumeLayout(false);
+            this.uiGroupInfo.ResumeLayout(false);
+            this.z.ResumeLayout(false);
+            this.uiTableLayoutPanel15.ResumeLayout(false);
+            this.uiTableLayoutPanel23.ResumeLayout(false);
+            this.uiTableLayoutPanel32.ResumeLayout(false);
+            this.uiTableLayoutPanel41.ResumeLayout(false);
+            this.uiGroupBox18.ResumeLayout(false);
+            this.uiTableLayoutPanel42.ResumeLayout(false);
+            this.uiTableLayoutPanel16.ResumeLayout(false);
+            this.uiTableLayoutPanelMain.ResumeLayout(false);
+            ((System.ComponentModel.ISupportInitialize)(this.dgvRealData)).EndInit();
+            this.uiGroupAllControl.ResumeLayout(false);
+            this.uiTableLayoutPanel17.ResumeLayout(false);
+            this.uiGroupCurve.ResumeLayout(false);
+            this.uiTableLayoutPanel18.ResumeLayout(false);
+            this.uiGroupBox8.ResumeLayout(false);
+            this.uiTableLayoutPanel19.ResumeLayout(false);
+            this.uiGroupBox9.ResumeLayout(false);
+            this.uiTableLayoutPanel20.ResumeLayout(false);
+            this.uiTableLayoutPanel21.ResumeLayout(false);
+            this.uiTableLayoutPanel22.ResumeLayout(false);
+            this.uiTableLayoutPanel24.ResumeLayout(false);
+            this.uiTableLayoutPanel25.ResumeLayout(false);
+            ((System.ComponentModel.ISupportInitialize)(this.uiDataGridView1)).EndInit();
+            this.uiGroupBox10.ResumeLayout(false);
+            this.uiTableLayoutPanel26.ResumeLayout(false);
+            this.uiGroupBox11.ResumeLayout(false);
+            this.uiTableLayoutPanel27.ResumeLayout(false);
+            this.uiGroupBox12.ResumeLayout(false);
+            this.uiTableLayoutPanel28.ResumeLayout(false);
+            this.uiGroupBox13.ResumeLayout(false);
+            this.uiTableLayoutPanel29.ResumeLayout(false);
+            this.uiTableLayoutPanel30.ResumeLayout(false);
+            this.uiTableLayoutPanel31.ResumeLayout(false);
+            this.uiTableLayoutPanel33.ResumeLayout(false);
+            this.uiTableLayoutPanel34.ResumeLayout(false);
+            ((System.ComponentModel.ISupportInitialize)(this.uiDataGridView2)).EndInit();
+            this.uiGroupBox14.ResumeLayout(false);
+            this.uiTableLayoutPanel35.ResumeLayout(false);
+            this.uiGroupBox15.ResumeLayout(false);
+            this.uiTableLayoutPanel36.ResumeLayout(false);
+            this.uiGroupBox16.ResumeLayout(false);
+            this.uiTableLayoutPanel37.ResumeLayout(false);
+            this.uiGroupBox17.ResumeLayout(false);
+            this.uiTableLayoutPanel38.ResumeLayout(false);
+            this.uiTableLayoutPanel39.ResumeLayout(false);
+            this.uiTableLayoutPanel40.ResumeLayout(false);
             this.ResumeLayout(false);
 
         }
@@ -1784,36 +5435,15 @@
         private Sunny.UI.UIButton BtnApply;
         private Sunny.UI.UIButton BtnCancel;
         private Sunny.UI.UIGroupBox uiGroupBox2;
-        private Sunny.UI.UIPanel uiPanel1;
-        private Sunny.UI.UIButton uiButton1;
-        private Sunny.UI.UICheckBox ChkEmb1;
-        private Sunny.UI.UIGroupBox uiGroupBox3;
         private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel4;
         private Sunny.UI.UIGroupBox uiGroupBox4;
         private Sunny.UI.UIGroupBox uiGroupBox5;
         private Sunny.UI.UIGroupBox uiGroupBox6;
         private Sunny.UI.UIGroupBox uiGroupBox7;
         private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel5;
-        private Sunny.UI.UICheckBox uiCheckBox2;
-        private Sunny.UI.UICheckBox uiCheckBox1;
-        private Sunny.UI.UICheckBox uiCheckBox3;
         private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel7;
-        private Sunny.UI.UICheckBox uiCheckBox7;
-        private Sunny.UI.UICheckBox uiCheckBox8;
-        private Sunny.UI.UICheckBox uiCheckBox9;
         private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel8;
-        private Sunny.UI.UICheckBox uiCheckBox10;
-        private Sunny.UI.UICheckBox uiCheckBox11;
-        private Sunny.UI.UICheckBox uiCheckBox12;
         private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel9;
-        private Sunny.UI.UICheckBox uiCheckBox13;
-        private Sunny.UI.UICheckBox uiCheckBox14;
-        private Sunny.UI.UICheckBox uiCheckBox15;
-        private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel6;
-        private Sunny.UI.UICheckBox uiCheckBox4;
-        private Sunny.UI.UICheckBox uiCheckBox5;
-        private Sunny.UI.UICheckBox uiCheckBox6;
-        private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel3;
         private System.Windows.Forms.TableLayoutPanel tableLayoutPanel1;
         private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel11;
         private Sunny.UI.UILabel uiLabel3;
@@ -1870,5 +5500,199 @@
         private Sunny.UI.UIPanel uiPanel2;
         private Sunny.UI.UIPanel uiPanel3;
         private Sunny.UI.UIPanel uiPanel4;
+        private DevExpress.XtraEditors.CheckEdit checkEdit1;
+        private DevExpress.XtraEditors.CheckEdit checkEdit12;
+        private DevExpress.XtraEditors.CheckEdit checkEdit11;
+        private DevExpress.XtraEditors.CheckEdit checkEdit10;
+        private DevExpress.XtraEditors.CheckEdit checkEdit3;
+        private DevExpress.XtraEditors.CheckEdit checkEdit2;
+        private DevExpress.XtraEditors.CheckEdit checkEdit6;
+        private DevExpress.XtraEditors.CheckEdit checkEdit4;
+        private DevExpress.XtraEditors.CheckEdit checkEdit5;
+        private DevExpress.XtraEditors.CheckEdit checkEdit9;
+        private DevExpress.XtraEditors.CheckEdit checkEdit8;
+        private DevExpress.XtraEditors.CheckEdit checkEdit7;
+        private Sunny.UI.UIGroupBox uiGroupBox3;
+        private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel3;
+        private ZedGraph.ZedGraphControl zedGraphRealChart;
+        private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel6;
+        private DevExpress.XtraEditors.CheckEdit checkEdit13;
+        private DevExpress.XtraEditors.CheckEdit checkEdit14;
+        private DevExpress.XtraEditors.CheckEdit checkEdit15;
+        private DevExpress.XtraEditors.CheckEdit checkEdit16;
+        private DevExpress.XtraEditors.CheckEdit checkEdit17;
+        private DevExpress.XtraEditors.CheckEdit checkEdit18;
+        private DevExpress.XtraEditors.CheckEdit checkEdit19;
+        private DevExpress.XtraEditors.CheckEdit checkEdit20;
+        private DevExpress.XtraEditors.CheckEdit checkEdit21;
+        private DevExpress.XtraEditors.CheckEdit checkEdit22;
+        private DevExpress.XtraEditors.CheckEdit checkEdit23;
+        private DevExpress.XtraEditors.CheckEdit checkEdit24;
+        private DevExpress.XtraEditors.TextEdit textEdit1;
+        private DevExpress.XtraEditors.TextEdit textEdit2;
+        private DevExpress.XtraEditors.TextEdit textEdit3;
+        private DevExpress.XtraEditors.TextEdit textEdit4;
+        private DevExpress.XtraEditors.TextEdit textEdit5;
+        private DevExpress.XtraEditors.TextEdit textEdit6;
+        private DevExpress.XtraEditors.TextEdit textEdit7;
+        private DevExpress.XtraEditors.TextEdit textEdit8;
+        private DevExpress.XtraEditors.TextEdit textEdit9;
+        private DevExpress.XtraEditors.TextEdit textEdit10;
+        private DevExpress.XtraEditors.TextEdit textEdit11;
+        private DevExpress.XtraEditors.TextEdit textEdit12;
+        private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel14;
+        private Sunny.UI.UIGroupBox uiGroupInfo;
+        private Sunny.UI.UITableLayoutPanel z;
+        private Sunny.UI.UIButton BtnRunLog;
+        private Sunny.UI.UIRichTextBox RtbInfo;
+        private Sunny.UI.UIButton BtnErrorLog;
+        private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel15;
+        private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel23;
+        private Sunny.UI.UILedDisplay uiLedDisplay1;
+        private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel16;
+        private Sunny.UI.UITableLayoutPanel uiTableLayoutPanelMain;
+        private Sunny.UI.UIDataGridView dgvRealData;
+        private Sunny.UI.UIGroupBox uiGroupAllControl;
+        private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel17;
+        private Sunny.UI.UIButton BtnStop;
+        private Sunny.UI.UIButton BtnStartTest;
+        private Sunny.UI.UIButton BtnAutoLearn;
+        private Sunny.UI.UIButton BtnPause;
+        private Sunny.UI.UIGroupBox uiGroupCurve;
+        private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel18;
+        private ZedGraph.ZedGraphControl zedGraphControl1;
+        private Sunny.UI.UIGroupBox uiGroupBox8;
+        private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel19;
+        private Sunny.UI.UITextBox uiTextBox3;
+        private Sunny.UI.UILabel uiLabel29;
+        private Sunny.UI.UITextBox uiTextBox4;
+        private Sunny.UI.UILabel uiLabel30;
+        private Sunny.UI.UILabel uiLabel31;
+        private Sunny.UI.UILabel uiLabel32;
+        private Sunny.UI.UITextBox uiTextBox1;
+        private Sunny.UI.UILabel uiLabel33;
+        private Sunny.UI.UITextBox uiTextBox2;
+        private Sunny.UI.UILabel uiLabel34;
+        private Sunny.UI.UICheckBox ChkEmb1;
+        private Sunny.UI.UIRadioButton RadEmb1;
+        private Sunny.UI.UIButton uiButton2;
+        private Sunny.UI.UIButton uiButton1;
+        private Sunny.UI.UIButton BtnSettingDetail;
+        private Sunny.UI.UIGroupBox uiGroupBox9;
+        private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel20;
+        private Sunny.UI.UIButton uiButton3;
+        private Sunny.UI.UIRichTextBox uiRichTextBox1;
+        private Sunny.UI.UIButton uiButton4;
+        private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel21;
+        private Sunny.UI.UILedDisplay LedRunTime;
+        private Sunny.UI.UIProcessBar ProcBar;
+        private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel22;
+        private Sunny.UI.UILedDisplay LedLastCycles;
+        private Sunny.UI.UILabel uiLabel35;
+        private Sunny.UI.UILabel uiLabel36;
+        private Sunny.UI.UILabel uiLabel37;
+        private Sunny.UI.UILight AlertEmb1;
+        private Sunny.UI.UILedDisplay LedRunCycles;
+        private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel32;
+        private Sunny.UI.UILedDisplay uiLedDisplay5;
+        private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel24;
+        private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel25;
+        private Sunny.UI.UIDataGridView uiDataGridView1;
+        private Sunny.UI.UIGroupBox uiGroupBox10;
+        private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel26;
+        private Sunny.UI.UIButton uiButton5;
+        private Sunny.UI.UIButton uiButton6;
+        private Sunny.UI.UIButton uiButton7;
+        private Sunny.UI.UIButton uiButton8;
+        private Sunny.UI.UIGroupBox uiGroupBox11;
+        private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel27;
+        private ZedGraph.ZedGraphControl zedGraphControl2;
+        private Sunny.UI.UIGroupBox uiGroupBox12;
+        private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel28;
+        private Sunny.UI.UITextBox uiTextBox7;
+        private Sunny.UI.UILabel uiLabel42;
+        private Sunny.UI.UITextBox uiTextBox8;
+        private Sunny.UI.UILabel uiLabel38;
+        private Sunny.UI.UILabel uiLabel39;
+        private Sunny.UI.UILabel uiLabel40;
+        private Sunny.UI.UITextBox uiTextBox5;
+        private Sunny.UI.UILabel uiLabel41;
+        private Sunny.UI.UITextBox uiTextBox6;
+        private Sunny.UI.UILabel uiLabel43;
+        private Sunny.UI.UICheckBox uiCheckBox1;
+        private Sunny.UI.UIRadioButton uiRadioButton1;
+        private Sunny.UI.UIButton uiButton11;
+        private Sunny.UI.UIButton uiButton9;
+        private Sunny.UI.UIButton uiButton10;
+        private Sunny.UI.UIGroupBox uiGroupBox13;
+        private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel29;
+        private Sunny.UI.UIButton uiButton12;
+        private Sunny.UI.UIRichTextBox uiRichTextBox2;
+        private Sunny.UI.UIButton uiButton13;
+        private Sunny.UI.UIProcessBar uiProcessBar1;
+        private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel30;
+        private Sunny.UI.UILedDisplay uiLedDisplay3;
+        private Sunny.UI.UILabel uiLabel44;
+        private Sunny.UI.UILabel uiLabel45;
+        private Sunny.UI.UILabel uiLabel46;
+        private Sunny.UI.UILight uiLight1;
+        private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel31;
+        private Sunny.UI.UILedDisplay uiLedDisplay4;
+        private Sunny.UI.UILedDisplay uiLedDisplay2;
+        private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel41;
+        private Sunny.UI.UILedDisplay uiLedDisplay9;
+        private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel33;
+        private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel34;
+        private Sunny.UI.UIDataGridView uiDataGridView2;
+        private Sunny.UI.UIGroupBox uiGroupBox14;
+        private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel35;
+        private Sunny.UI.UIButton uiButton15;
+        private Sunny.UI.UIButton uiButton16;
+        private Sunny.UI.UIButton uiButton17;
+        private Sunny.UI.UIButton uiButton18;
+        private Sunny.UI.UIGroupBox uiGroupBox15;
+        private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel36;
+        private ZedGraph.ZedGraphControl zedGraphControl3;
+        private Sunny.UI.UIGroupBox uiGroupBox16;
+        private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel37;
+        private Sunny.UI.UITextBox uiTextBox11;
+        private Sunny.UI.UILabel uiLabel51;
+        private Sunny.UI.UITextBox uiTextBox12;
+        private Sunny.UI.UILabel uiLabel47;
+        private Sunny.UI.UILabel uiLabel48;
+        private Sunny.UI.UILabel uiLabel49;
+        private Sunny.UI.UITextBox uiTextBox9;
+        private Sunny.UI.UILabel uiLabel50;
+        private Sunny.UI.UITextBox uiTextBox10;
+        private Sunny.UI.UILabel uiLabel52;
+        private Sunny.UI.UICheckBox uiCheckBox2;
+        private Sunny.UI.UIRadioButton uiRadioButton2;
+        private Sunny.UI.UIButton uiButton20;
+        private Sunny.UI.UIButton uiButton19;
+        private Sunny.UI.UIButton uiButton14;
+        private Sunny.UI.UIGroupBox uiGroupBox17;
+        private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel38;
+        private Sunny.UI.UIButton uiButton21;
+        private Sunny.UI.UIRichTextBox uiRichTextBox3;
+        private Sunny.UI.UIButton uiButton22;
+        private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel39;
+        private Sunny.UI.UILedDisplay uiLedDisplay7;
+        private Sunny.UI.UIProcessBar uiProcessBar2;
+        private Sunny.UI.UILabel uiLabel53;
+        private Sunny.UI.UILabel uiLabel54;
+        private Sunny.UI.UILabel uiLabel55;
+        private Sunny.UI.UILight uiLight2;
+        private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel40;
+        private Sunny.UI.UILedDisplay uiLedDisplay8;
+        private Sunny.UI.UILedDisplay uiLedDisplay6;
+        private Sunny.UI.UIProcessBar uiProcessBar3;
+        private Sunny.UI.UIGroupBox uiGroupBox18;
+        private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel42;
+        private Sunny.UI.UIButton uiButton23;
+        private Sunny.UI.UILabel uiLabel58;
+        private Sunny.UI.UILabel uiLabel57;
+        private Sunny.UI.UILabel uiLabel56;
+        private Sunny.UI.UILight uiLight3;
+        private Sunny.UI.UIButton uiButton24;
     }
 }

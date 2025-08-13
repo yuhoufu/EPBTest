@@ -66,5 +66,70 @@ namespace MTEmbTest
         {
 
         }
+
+        private void uiTableLayoutPanel1_Paint(object sender, PaintEventArgs e)
+        {
+
+        }
+
+        private void dgvRealData_CellContentClick(object sender, DataGridViewCellEventArgs e)
+        {
+
+        }
+
+        private void BtnStop_Click(object sender, EventArgs e)
+        {
+
+        }
+
+        private void BtnStartTest_Click(object sender, EventArgs e)
+        {
+
+        }
+
+        private void BtnAutoLearn_Click(object sender, EventArgs e)
+        {
+
+        }
+
+        private void BtnPause_Click(object sender, EventArgs e)
+        {
+
+        }
+
+        private void zedGraphRealChart_ContextMenuBuilder(ZedGraph.ZedGraphControl sender, ContextMenuStrip menuStrip, Point mousePt, ZedGraph.ZedGraphControl.ContextMenuObjectState objState)
+        {
+
+        }
+
+        private void BtnApply_Click(object sender, EventArgs e)
+        {
+
+        }
+
+        private void BtnSettingDetail_Click(object sender, EventArgs e)
+        {
+
+        }
+
+        private void BtnCancel_Click(object sender, EventArgs e)
+        {
+
+        }
+
+        private void BtnRunLog_Click(object sender, EventArgs e)
+        {
+
+        }
+
+        private void BtnErrorLog_Click(object sender, EventArgs e)
+        {
+
+        }
+
+        private void AlertEmb1_Click(object sender, EventArgs e)
+        {
+
+        }
     }
 }
