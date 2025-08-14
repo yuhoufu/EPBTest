@@ -4783,6 +4783,7 @@
             this.uiLabel6.TabIndex = 37;
             this.uiLabel6.Text = "EPB 03";
             this.uiLabel6.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
             // SwitchEmb2
             // 
             this.SwitchEmb2.ActiveText = "RUN";
@@ -4807,7 +4808,6 @@
             this.SwitchEmb3.Name = "SwitchEmb3";
             this.SwitchEmb3.Size = new System.Drawing.Size(53, 21);
             this.SwitchEmb3.TabIndex = 35;
-            // this.SwitchEmb3.Text = "uiSwitch2";
             // 
             // uiLabel17
             // 
@@ -4887,6 +4887,7 @@
             this.Name = "FrmEpbMainMonitor";
             this.ShowIcon = false;
             this.Text = "实时监视";
+            this.Load += new System.EventHandler(this.FrmEpbMainMonitor_Load);
             ((System.ComponentModel.ISupportInitialize)(this.dgvRealData)).EndInit();
             this.uiGroupCurve.ResumeLayout(false);
             this.uiTableLayoutPanel18.ResumeLayout(false);

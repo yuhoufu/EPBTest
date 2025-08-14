@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TestConfig xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <TestCycle>0.2</TestCycle>
+  <TestStandard>QC/T XXX-XXXX</TestStandard>
+  <TestName>MTTest</TestName>
+  <TestTarget>500000</TestTarget>
+  <StoreDir>D:\EPBTEST</StoreDir>
+  <TestMan>yu</TestMan>
+  <Description>测试使用</Description>
+  <AlertLimit>32000</AlertLimit>
+  <TestEnvir>磨合</TestEnvir>
+  <TestSpan>5</TestSpan>
+</TestConfig>

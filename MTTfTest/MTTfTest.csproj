@@ -179,6 +179,7 @@
   </ItemGroup>
   <ItemGroup>
     <Content Include="Config\AIConfig.xml" />
+    <Content Include="Config\TestConfig.xml" />
     <Content Include="License-LGPL.txt" />
     <None Include="Resources\P5.png" />
     <None Include="Resources\P4.png" />
