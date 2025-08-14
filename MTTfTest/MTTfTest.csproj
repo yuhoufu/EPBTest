@@ -99,23 +99,11 @@
     <Compile Include="FrmDAQCalibrate.Designer.cs">
       <DependentUpon>FrmDAQCalibrate.cs</DependentUpon>
     </Compile>
-    <Compile Include="FrmAdjustTorque.cs">
-      <SubType>Form</SubType>
-    </Compile>
-    <Compile Include="FrmAdjustTorque.Designer.cs">
-      <DependentUpon>FrmAdjustTorque.cs</DependentUpon>
-    </Compile>
     <Compile Include="FrmEpbMainMonitor.cs">
       <SubType>Form</SubType>
     </Compile>
     <Compile Include="FrmEpbMainMonitor.Designer.cs">
       <DependentUpon>FrmEpbMainMonitor.cs</DependentUpon>
-    </Compile>
-    <Compile Include="FrmMainMonitor.cs">
-      <SubType>Form</SubType>
-    </Compile>
-    <Compile Include="FrmMainMonitor.Designer.cs">
-      <DependentUpon>FrmMainMonitor.cs</DependentUpon>
     </Compile>
     <Compile Include="FrmRawPlayBack.cs">
       <SubType>Form</SubType>
@@ -149,14 +137,8 @@
     <EmbeddedResource Include="FrmDAQCalibrate.resx">
       <DependentUpon>FrmDAQCalibrate.cs</DependentUpon>
     </EmbeddedResource>
-    <EmbeddedResource Include="FrmAdjustTorque.resx">
-      <DependentUpon>FrmAdjustTorque.cs</DependentUpon>
-    </EmbeddedResource>
     <EmbeddedResource Include="FrmEpbMainMonitor.resx">
       <DependentUpon>FrmEpbMainMonitor.cs</DependentUpon>
-    </EmbeddedResource>
-    <EmbeddedResource Include="FrmMainMonitor.resx">
-      <DependentUpon>FrmMainMonitor.cs</DependentUpon>
     </EmbeddedResource>
     <EmbeddedResource Include="FrmRawPlayBack.resx">
       <DependentUpon>FrmRawPlayBack.cs</DependentUpon>
@@ -196,6 +178,7 @@
     <None Include="App.config" />
   </ItemGroup>
   <ItemGroup>
+    <Content Include="Config\AIConfig.xml" />
     <Content Include="License-LGPL.txt" />
     <None Include="Resources\P5.png" />
     <None Include="Resources\P4.png" />
@@ -210,5 +193,6 @@
       <Name>ZlgCanComm</Name>
     </ProjectReference>
   </ItemGroup>
+  <ItemGroup />
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>

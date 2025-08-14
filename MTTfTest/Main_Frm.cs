@@ -511,6 +511,7 @@ namespace MtEmbTest
             OpenChildForm(frmRealMonitor);
         }
 
+        /*
         private void TsmAdjustTorque_Click(object sender, EventArgs e)
         {
             foreach (Form childForm in this.MdiChildren)
@@ -533,6 +534,7 @@ namespace MtEmbTest
             frmRealMonitor.Name = "扭矩调节";
             OpenChildForm(frmRealMonitor);
         }
+        */
 
         private async void TsmPower_Click(object sender, EventArgs e)
         {

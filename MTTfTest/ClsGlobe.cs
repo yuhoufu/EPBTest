@@ -18,7 +18,7 @@ namespace MtEmbTest
         public static int MaxPower;
         public static int MinPower;
 
-        public static int[] PowerStatus = new int[1] { 0};
+        public static int[] PowerStatus = new int[1] { 0 };
         public static int ClampCount = 0;
         public static int ReleaseCount = 0;
 
@@ -52,11 +52,6 @@ namespace MtEmbTest
         public static double ReleaseAoVol;
 
 
-
-
-
-
-
         public static short ClampPosition;
         public static short ClampSpeed;
         public static byte ClampModReq;
@@ -77,7 +72,7 @@ namespace MtEmbTest
         public static int DRate;
         public static int ARate;
         public static int CardNo;
-    
+
         public static int MsgInterval;
         public static int ResistorEnabel;
         public static int Protocol;
@@ -90,9 +85,8 @@ namespace MtEmbTest
         public static short SendForceScale;
         public static double RecvForceScale;
         public static double RecvForceJudgeDelt;
-        public static double RecvMsgInterval;        //单位毫秒
+        public static double RecvMsgInterval; //单位毫秒
 
-     
 
         public static string SerialPort;
         public static int Baud;
@@ -132,15 +126,12 @@ namespace MtEmbTest
         public static int SerialSendIntervalSpan;
         public static int DevResetWaitSpan;
 
-        public static string[] PowerServerAdr = new string[1] { ""};
-        public static string[] PowerServerPort = new string[1] { ""};
-
-
+        public static string[] PowerServerAdr = new string[1] { "" };
+        public static string[] PowerServerPort = new string[1] { "" };
 
 
         static ClsGlobal()
         {
-
             Voltage = 0;
             MaxCurrent = 0;
             MinCurrent = 0;
@@ -149,17 +140,17 @@ namespace MtEmbTest
 
 
             ClampCount = 0;
-        ReleaseCount = 0;
-        ClampSpan = 0;
-        ReleaseSpan = 0;
-        ReleaseWaitSpan = 0;
-        IsPushFirst = 0;
-        IsLiner = 0;
-        PushSpan = 0;
-        PushCount = 0;
+            ReleaseCount = 0;
+            ClampSpan = 0;
+            ReleaseSpan = 0;
+            ReleaseWaitSpan = 0;
+            IsPushFirst = 0;
+            IsLiner = 0;
+            PushSpan = 0;
+            PushCount = 0;
 
 
-        Dbc = new DataTable();
+            Dbc = new DataTable();
             FL_Send = "";
             FL_Recv = "";
             FR_Send = "";
@@ -174,13 +165,13 @@ namespace MtEmbTest
             DaqFrequency = 0.0;
             SamplesPerChannel = 0;
 
-             SerialPort = "";
+            SerialPort = "";
             Baud = 0;
             Parity = 0;
             DataBits = 0;
             StopBit = 0;
 
-          
+
             ClampPosition = 0;
             ClampSpeed = 0;
             ClampModReq = 0;
@@ -201,7 +192,7 @@ namespace MtEmbTest
             DRate = 0;
             ARate = 0;
             CardNo = 0;
-           
+
             MsgInterval = 0;
             ResistorEnabel = 0;
             Protocol = 0;
@@ -210,17 +201,17 @@ namespace MtEmbTest
             FrameExpType = 0;
             FrameTimerNo = 0;
 
-            SendForceScale=1;
-            RecvForceScale=1.0;
+            SendForceScale = 1;
+            RecvForceScale = 1.0;
             RecvForceJudgeDelt = 0.0;
 
             DoChannel = "";
-            DIChannel  = "";
-           AOChannel = "";
-           StartPosDINo = 0;
-           EndPosDINo = 0;
-           ClampAoVol =0.0;
-           ReleaseAoVol =0.0;
+            DIChannel = "";
+            AOChannel = "";
+            StartPosDINo = 0;
+            EndPosDINo = 0;
+            ClampAoVol = 0.0;
+            ReleaseAoVol = 0.0;
 
             DirectionValveChannel = 0;
             PowerChannel = 0;
@@ -243,13 +234,6 @@ namespace MtEmbTest
             SerialSendIntervalSpan = 0;
             DevResetWaitSpan = 0;
             DaqTimeBias = 0.0;
-
         }
-
-
     }
-
 }
-
-
-
