@@ -93,6 +93,7 @@
     <Compile Include="ClsEMBControler.cs" />
     <Compile Include="ClsGlobe.cs" />
     <Compile Include="ConfigOperation.cs" />
+    <Compile Include="FormLoggerAdapter.cs" />
     <Compile Include="FrmDAQCalibrate.cs">
       <SubType>Form</SubType>
     </Compile>
@@ -129,6 +130,7 @@
     <Compile Include="Main_Frm.Designer.cs">
       <DependentUpon>Main_Frm.cs</DependentUpon>
     </Compile>
+    <Compile Include="Models\TestConfig.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <EmbeddedResource Include="AxisRangeDialog.resx">
@@ -179,6 +181,9 @@
   </ItemGroup>
   <ItemGroup>
     <Content Include="Config\AIConfig.xml" />
+    <Content Include="Config\DOConfig.xml">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
     <Content Include="Config\TestConfig.xml" />
     <Content Include="License-LGPL.txt" />
     <None Include="Resources\P5.png" />
@@ -188,6 +193,10 @@
     <ProjectReference Include="..\DataOperation\DataOperation.csproj">
       <Project>{fce7fd92-9529-40df-83ab-92b6b4dc469c}</Project>
       <Name>DataOperation</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\IO.NI\IO.NI.csproj">
+      <Project>{2EA523AD-1826-43C8-99BF-103CD5568250}</Project>
+      <Name>IO.NI</Name>
     </ProjectReference>
     <ProjectReference Include="..\ZlgCanComm\ZlgCanComm.csproj">
       <Project>{95cfcfba-a5a3-49b4-8143-ad2ab7e7e03f}</Project>

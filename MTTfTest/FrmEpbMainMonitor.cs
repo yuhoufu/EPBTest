@@ -21,6 +21,7 @@ using AsyncListener;
 using System.Diagnostics;
 using System.IO;
 using System.Xml.Serialization;
+using IO.NI;
 
 namespace MTEmbTest
 {
@@ -293,10 +294,14 @@ namespace MTEmbTest
 
         #endregion
 
+        public  FormLoggerAdapter logger;
+        public DoController doCtrl;
 
         public FrmEpbMainMonitor()
         {
             InitializeComponent();
+
+
 
             // 创建自定义标题栏
             var titleBar = new Panel
@@ -327,6 +332,10 @@ namespace MTEmbTest
                     //SendMessage(Handle, 0xA1, 0x2, 0);
                 }
             };
+            logger = new FormLoggerAdapter(MaxInfos, MaxErrors, LogInformation, LogError, this);
+            doCtrl = new DoController(logger);
+
+
         }
 
         private void FrmEpbMainMonitor_Load(object sender, EventArgs e)
