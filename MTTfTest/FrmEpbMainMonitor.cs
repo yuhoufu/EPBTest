@@ -17,7 +17,7 @@ using Sunny.UI;
 using System.Threading;
 using System.IO.Ports;
 using ZedGraph;
-using AsyncListener;
+//using AsyncListener;
 using System.Diagnostics;
 using System.IO;
 using System.Xml.Serialization;
@@ -332,8 +332,17 @@ namespace MTEmbTest
                     //SendMessage(Handle, 0xA1, 0x2, 0);
                 }
             };
+
+
             logger = new FormLoggerAdapter(MaxInfos, MaxErrors, LogInformation, LogError, this);
             doCtrl = new DoController(logger);
+            doCtrl.SetConfigPath($@"{Environment.CurrentDirectory}\Config\DOConfig.xml");
+            if (!doCtrl.Initialize())
+            {
+                // 初始化失败时的处理
+                //MessageBox.Show("DO控制器初始化失败，请检查配置文件或设备连接！", "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                SetInfoText("DO控制器初始化失败，请检查配置文件或设备连接");
+            }
 
 
         }
@@ -1550,5 +1559,62 @@ namespace MTEmbTest
         }
 
         #endregion
+
+        private void BtnTest_Click(object sender, EventArgs e)
+        {
+            doCtrl.SetEpb(channelNo: 1, directionIsForward: true);
+            doCtrl.SetEpb(channelNo: 9, directionIsForward: true);
+        }
+
+        /// <summary>
+        /// 按钮点击事件，查看运行日志
+        /// </summary>
+        /// <param name="sender"></param>
+        /// <param name="e"></param>
+        private void BtnRunLog_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                string OutFile = System.Environment.CurrentDirectory + @"\RunLog.txt";
+                ClsLogProcess.ViewLogData(ref LogInformation, OutFile);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message);
+            }
+
+        }
+
+        /// <summary>
+        /// 按钮点击事件，查看错误日志
+        /// </summary>
+        /// <param name="sender"></param>
+        /// <param name="e"></param>
+        private void BtnErrorLog_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                string OutFile = System.Environment.CurrentDirectory + @"\ErrorLog.txt";
+                ClsErrorProcess.ViewErrorData(ref LogError, OutFile);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message);
+            }
+
+        }
+
+        private void toggleSwitch1_Toggled(object sender, EventArgs e)
+        {
+
+             // 打开所有epb
+                for (int i = 0; i < 12; i++)
+                {
+                    doCtrl.SetEpb(channelNo:i+1, directionIsForward:this.toggleSwitch1.IsOn);
+                }
+                
+                
+           
+        }
     }
 }

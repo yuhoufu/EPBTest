@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
   <PropertyGroup>
@@ -82,6 +82,14 @@
     <Reference Include="ZedGraph, Version=5.1.7.430, Culture=neutral, PublicKeyToken=02a83cbd123fcd60, processorArchitecture=MSIL">
       <HintPath>..\packages\ZedGraph.5.1.7\lib\net35-Client\ZedGraph.dll</HintPath>
     </Reference>
+    <Reference Include="mscorlib" />
+    <Reference Include="DevExpress.XtraEditors.v24.2" />
+    <Reference Include="DevExpress.XtraGrid.v24.2" />
+    <Reference Include="DevExpress.XtraLayout.v24.2" />
+    <Reference Include="DevExpress.XtraBars.v24.2" />
+    <Reference Include="DevExpress.XtraTreeList.v24.2" />
+    <Reference Include="EntityFramework" />
+    <Reference Include="DevExpress.Mvvm.v24.2" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="AxisRangeDialog.cs">
@@ -175,6 +183,22 @@
       <DependentUpon>Settings.settings</DependentUpon>
       <DesignTimeSharedInput>True</DesignTimeSharedInput>
     </Compile>
+    <Compile Include="Editors\ToggleButton.cs">
+      <SubType>Component</SubType>
+    </Compile>
+    <Compile Include="Assets\Toolbox\Root.cs" />
+    <EmbeddedResource Include="Assets\Toolbox\ToggleButton.bmp" />
+    <Compile Include="Editors\Base\ButtonBase.cs">
+      <SubType>Component</SubType>
+    </Compile>
+    <Compile Include="Editors\Base\ButtonImageOptionsBase.cs" />
+    <Compile Include="Editors\Base\CheckButtonBase.cs">
+      <SubType>Component</SubType>
+    </Compile>
+    <Compile Include="Components\Base\CheckItemBase.cs" />
+    <EmbeddedResource Include="Assets\HTML\ToggleButton.html" />
+    <EmbeddedResource Include="Assets\CSS\ToggleButton.css" />
+    <Compile Include="Utilities\HtmlCssAsset.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="App.config" />
@@ -195,7 +219,7 @@
       <Name>DataOperation</Name>
     </ProjectReference>
     <ProjectReference Include="..\IO.NI\IO.NI.csproj">
-      <Project>{2EA523AD-1826-43C8-99BF-103CD5568250}</Project>
+      <Project>{1857b54c-ef87-4239-b3b0-1b1adf082a2d}</Project>
       <Name>IO.NI</Name>
     </ProjectReference>
     <ProjectReference Include="..\ZlgCanComm\ZlgCanComm.csproj">

@@ -1,0 +1,87 @@
+﻿.container {
+	color: @ControlText;
+	background-color: @Control;
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+}
+
+.toggle-button-item {
+	display: inline-block;
+	color: @ControlText;
+	background-color: @Control;
+	border: 1px solid @ControlBorder;
+}
+
+	.toggle-button-item:hover {
+		background-color: @Highlight/0.5;
+	}
+
+	.toggle-button-item:focus {
+		border: 1px solid @Blue;
+	}
+
+	.toggle-button-item:active {
+		background-color: @Highlight/0.75;
+	}
+
+	.toggle-button-item:--checked {
+		background-color: @Highlight;
+	}
+
+
+.content {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	min-width: 40px;
+}
+
+.thumb {
+	background-color: @Window;
+	border: 1px solid @ControlBorder;
+	border-radius: 13px;
+	height: 13px;
+	width: 13px;
+	margin-right: 4px;
+}
+
+.toggle-button-item:--checked .content {
+	flex-direction: row-reverse;
+}
+
+.inside-caption {
+	display: inline-block;
+	margin-right: 4px;
+}
+
+.outside-caption {
+	display: inline-block;
+	margin-left: 4px;
+}
+
+.icon {
+	width: 16px;
+	height: 16px;
+	min-width: 16px;
+	min-height: 16px;
+	margin-right: 4px;
+	border-radius: 4px;
+}
+
+.small {
+	font-size: 0.8em;
+	padding: 1px;
+	border-radius: 16px;
+}
+
+.default {
+	padding: 3px;
+	border-radius: 24px;
+}
+
+.large {
+	font-size: 1.2em;
+	padding: 6px;
+	border-radius: 32px;
+}
