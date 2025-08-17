@@ -1154,13 +1154,17 @@ namespace MTEmbTest
                     // EmbGroup[i].CtrlCurrentEmb.CheckedChanged += (sender, e) => CurrentEmbChanged(sender, e, index); // 界面上没有这个控件，暂时注释掉
 
 
-                    EmbGroup[i].CtrlRunning.ValueChanged += (sender, e) =>
+                    EmbGroup[i].CtrlRunning.CheckedChanged += (sender, e) =>
                     {
                         RuningStatusChanged(sender, ((UISwitch)sender).Active, index);
                     };
 
                     EmbGroup[i].CtrlRunning.Click += (sender, e) => RunningClick(sender, e, index);
                     EmbGroup[i].CtrlPower.Click += (sender, e) => PowerClick(sender, e, index);
+                    EmbGroup[i].CtrlPower.KeyPress += (sender, e) => CtrlPower_KeyHandler(sender, e, index);
+                    EmbGroup[i].CtrlPower.KeyDown += (sender, e) => CtrlPower_KeyHandler(sender, e, index);
+                    EmbGroup[i].CtrlPower.KeyUp += (sender, e) => CtrlPower_KeyHandler(sender, e, index);
+                    //EmbGroup[i].CtrlPower.CheckedChanged += (sender, e) => PowerClick(sender, e, index);
                 }
             }
             catch (Exception ex)
@@ -1169,137 +1173,167 @@ namespace MTEmbTest
             }
         }
 
+        private void CtrlPower_KeyHandler(object sender,EventArgs e, int index)
+        {
+               return;
+            //throw new NotImplementedException();
+        }
+
         private void RunningClick(object sender, EventArgs e, int index)
         {
-            if (!EmbGroup[index].CtrlPower.Active && EmbGroup[index].CtrlRunning.Active) //运行状态
+            if (!EmbGroup[index].CtrlPower.Checked && EmbGroup[index].CtrlRunning.Checked) //运行状态
             {
                 MessageBox.Show(@"请先打开电源！");
-                EmbGroup[index].CtrlRunning.Active = false;
+                EmbGroup[index].CtrlRunning.Checked = false;
                 return;
             }
         }
 
+        private bool _isCtrlPowerPressing = false;
 
         private async void PowerClick(object sender, EventArgs e, int index)
         {
-            if (!IsTestConfirm)
+            if (_isCtrlPowerPressing)
             {
-                MessageBox.Show(@"请先确认试验信息！");
-                EmbGroup[index].CtrlPower.Active = false;
                 return;
             }
-
-
-            if (!EmbGroup[index].CtrlPower.Active && EmbGroup[index].CtrlRunning.Active) //运行状态想关电源
+            _isCtrlPowerPressing = true;
+            EmbGroup[index].CtrlPower.Enabled = false; // 禁用按钮，防止重复点击
+            //EPBGroupBox.Enabled = false; // 禁用整个组框，防止其他操作
+            try
             {
-                MessageBox.Show(@"请先停止运行再关闭电源！");
-                EmbGroup[index].CtrlPower.Active = true;
-                return;
-            }
 
-            if (!EmbGroup[index].CtrlPower.Active && !EmbGroup[index].CtrlRunning.Active) //非运行状态想关电源
-            {
-                // MessageBox.Show("调用执行关闭分开关的函数！");
-                // var mainForm = this.MdiParent as Main_Frm;
-
-
-                //string powerMsg = mainForm.PowerClose(index / 2 + 1);
-                //if (powerMsg.IndexOf("OK") < 0)
-                //{
-                //    RtbInfo.Invoke(new SetTextCallback(SetInfoText), DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "关闭EMB" + (index + 1).ToString() + "电源失败!" + powerMsg);
-                //    ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "关闭EMB" + (index + 1).ToString() + "电源开关失败!", "电源开关操作");
-
-                //}
-                //else
-                //{
-                //    RtbInfo.Invoke(new SetTextCallback(SetInfoText), DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "关闭EMB" + (index + 1).ToString() + "电源!");
-                //    ClsLogProcess.AddToInfoList(MaxInfos, ref LogInformation, "关闭EMB" + (index + 1).ToString() + "电源开关!", "电源开关操作");
-
-                //}
-
-
-                var OpenSuccess = await ClosePowerChannel((byte)index, ClsGlobal.SerialPortRetrys);
-                if (!OpenSuccess)
+                if (!IsTestConfirm)
                 {
-                    RtbInfo.Invoke(new SetTextCallback(SetInfoText),
-                        DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "关闭EMB" + (index + 1).ToString() +
-                        "继电器开关失败!");
-                    ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError,
-                        "关闭EMB" + (index + 1).ToString() + "继电器开关失败!", "串口操作");
-                    ClsGlobal.PowerStatus[index] = 2;
+                    MessageBox.Show(@"请先确认试验信息！");
+                    EmbGroup[index].CtrlPower.Toggle();
+
+                    // EmbGroup[index].CtrlPower.Checked = false;
+                    //
+                    EmbGroup[index].CtrlPower.Refresh();
+                    return;
                 }
-                else
+
+
+                if (!EmbGroup[index].CtrlPower.Checked && EmbGroup[index].CtrlRunning.Checked) //运行状态想关电源
                 {
-                    RtbInfo.Invoke(new SetTextCallback(SetInfoText),
-                        DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "关闭EMB" + (index + 1).ToString() +
-                        "继电器开关!");
-                    ClsLogProcess.AddToInfoList(MaxInfos, ref LogInformation,
-                        "关闭EMB" + (index + 1).ToString() + "继电器开关!", "UI 操作");
-                    ClsGlobal.PowerStatus[index] = 1;
+                    MessageBox.Show(@"请先停止运行再关闭电源！");
+                    EmbGroup[index].CtrlPower.Checked = true;
+                    return;
+                }
+
+                if (!EmbGroup[index].CtrlPower.Checked && !EmbGroup[index].CtrlRunning.Checked) //非运行状态想关电源
+                {
+                    // MessageBox.Show("调用执行关闭分开关的函数！");
+                    // var mainForm = this.MdiParent as Main_Frm;
 
 
-                    /*if (EmbGroup[index].IsEnabel)
+                    //string powerMsg = mainForm.PowerClose(index / 2 + 1);
+                    //if (powerMsg.IndexOf("OK") < 0)
+                    //{
+                    //    RtbInfo.Invoke(new SetTextCallback(SetInfoText), DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "关闭EMB" + (index + 1).ToString() + "电源失败!" + powerMsg);
+                    //    ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "关闭EMB" + (index + 1).ToString() + "电源开关失败!", "电源开关操作");
+
+                    //}
+                    //else
+                    //{
+                    //    RtbInfo.Invoke(new SetTextCallback(SetInfoText), DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "关闭EMB" + (index + 1).ToString() + "电源!");
+                    //    ClsLogProcess.AddToInfoList(MaxInfos, ref LogInformation, "关闭EMB" + (index + 1).ToString() + "电源开关!", "电源开关操作");
+
+                    //}
+
+
+                    var OpenSuccess = await ClosePowerChannel((byte)index, ClsGlobal.SerialPortRetrys);
+                    if (!OpenSuccess)
+                    {
+                        RtbInfo.Invoke(new SetTextCallback(SetInfoText),
+                            DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "关闭EMB" + (index + 1).ToString() +
+                            "继电器开关失败!");
+                        ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError,
+                            "关闭EMB" + (index + 1).ToString() + "继电器开关失败!", "串口操作");
+                        ClsGlobal.PowerStatus[index] = 2;
+                    }
+                    else
+                    {
+                        RtbInfo.Invoke(new SetTextCallback(SetInfoText),
+                            DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "关闭EMB" + (index + 1).ToString() +
+                            "继电器开关!");
+                        ClsLogProcess.AddToInfoList(MaxInfos, ref LogInformation,
+                            "关闭EMB" + (index + 1).ToString() + "继电器开关!", "UI 操作");
+                        ClsGlobal.PowerStatus[index] = 1;
+
+
+                        /*if (EmbGroup[index].IsEnabel)
                     {
                         EmbGroup[index].CtrlAlert.State = UILightState.Off;
                         EmbGroup[index].CtrlAlert.OffCenterColor = Color.FromArgb(140, 140, 140);
                         EmbGroup[index].CtrlAlert.OffColor = Color.FromArgb(140, 140, 140);
                     }*/
+                    }
+
+
+                    return;
                 }
 
 
-                return;
-            }
-
-
-            if (EmbGroup[index].CtrlPower.Active)
-            {
-                // MessageBox.Show("调用执行打开分开关的函数！");
-
-                // var mainForm = this.MdiParent as Main_Frm;
-
-                //string powerMsg = mainForm.PowerOpen(index / 2 + 1);
-                //if (powerMsg.IndexOf("OK") < 0)
-                //{
-                //    RtbInfo.Invoke(new SetTextCallback(SetInfoText), DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "打开EMB" + (index + 1).ToString() + "电源失败!" + powerMsg);
-                //    ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "打开EMB" + (index + 1).ToString() + "电源开关失败!", "电源开关操作");
-
-                //}
-                //else
-                //{
-                //    RtbInfo.Invoke(new SetTextCallback(SetInfoText), DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "打开EMB" + (index + 1).ToString() + "电源!");
-                //    ClsLogProcess.AddToInfoList(MaxInfos, ref LogInformation, "打开EMB" + (index + 1).ToString() + "电源开关!", "电源开关操作");
-
-                //}
-
-
-                var OpenSuccess = await OpenPowerChannel((byte)index, ClsGlobal.SerialPortRetrys);
-                if (!OpenSuccess)
+                if (EmbGroup[index].CtrlPower.Checked)
                 {
-                    RtbInfo.Invoke(new SetTextCallback(SetInfoText),
-                        DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "打开EMB" + (index + 1).ToString() +
-                        "继电器开关失败!");
-                    ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError,
-                        "打开EMB" + (index + 1).ToString() + "继电器开关失败!", "串口操作");
-                    ClsGlobal.PowerStatus[index] = 1;
-                }
-                else
-                {
-                    RtbInfo.Invoke(new SetTextCallback(SetInfoText),
-                        DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "打开EMB" + (index + 1).ToString() +
-                        "继电器开关!");
-                    ClsLogProcess.AddToInfoList(MaxInfos, ref LogInformation,
-                        "打开EMB" + (index + 1).ToString() + "继电器开关!", "UI 操作");
-                    ClsGlobal.PowerStatus[index] = 2;
-                    /*if (EmbGroup[index].IsEnabel)
+                    // MessageBox.Show("调用执行打开分开关的函数！");
+
+                    // var mainForm = this.MdiParent as Main_Frm;
+
+                    //string powerMsg = mainForm.PowerOpen(index / 2 + 1);
+                    //if (powerMsg.IndexOf("OK") < 0)
+                    //{
+                    //    RtbInfo.Invoke(new SetTextCallback(SetInfoText), DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "打开EMB" + (index + 1).ToString() + "电源失败!" + powerMsg);
+                    //    ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "打开EMB" + (index + 1).ToString() + "电源开关失败!", "电源开关操作");
+
+                    //}
+                    //else
+                    //{
+                    //    RtbInfo.Invoke(new SetTextCallback(SetInfoText), DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "打开EMB" + (index + 1).ToString() + "电源!");
+                    //    ClsLogProcess.AddToInfoList(MaxInfos, ref LogInformation, "打开EMB" + (index + 1).ToString() + "电源开关!", "电源开关操作");
+
+                    //}
+
+
+                    var OpenSuccess = await OpenPowerChannel((byte)index, ClsGlobal.SerialPortRetrys);
+                    if (!OpenSuccess)
+                    {
+                        RtbInfo.Invoke(new SetTextCallback(SetInfoText),
+                            DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "打开EMB" + (index + 1).ToString() +
+                            "继电器开关失败!");
+                        ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError,
+                            "打开EMB" + (index + 1).ToString() + "继电器开关失败!", "串口操作");
+                        ClsGlobal.PowerStatus[index] = 1;
+                    }
+                    else
+                    {
+                        RtbInfo.Invoke(new SetTextCallback(SetInfoText),
+                            DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "打开EMB" + (index + 1).ToString() +
+                            "继电器开关!");
+                        ClsLogProcess.AddToInfoList(MaxInfos, ref LogInformation,
+                            "打开EMB" + (index + 1).ToString() + "继电器开关!", "UI 操作");
+                        ClsGlobal.PowerStatus[index] = 2;
+                        /*if (EmbGroup[index].IsEnabel)
                     {
                         EmbGroup[index].CtrlAlert.State = UILightState.On;
                         EmbGroup[index].CtrlAlert.OffCenterColor = Color.FromArgb(140, 140, 140);
                         EmbGroup[index].CtrlAlert.OffColor = Color.FromArgb(140, 140, 140);
                     }*/
+                    }
+
+
+                    return;
                 }
 
+            }
+            finally
+            {
+                _isCtrlPowerPressing = false;
 
-                return;
+                EmbGroup[index].CtrlPower.Enabled = true; // 重新启用按钮
+              //  EPBGroupBox.Enabled = true; // 重新启用整个组框
             }
         }
 

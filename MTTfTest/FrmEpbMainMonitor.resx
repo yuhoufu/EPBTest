@@ -117,7 +117,7 @@
   <resheader name="writer">
     <value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
   </resheader>
-  <data name="toggleButton2.HtmlTemplate.Styles" xml:space="preserve">
+  <data name="SwitchEpb4.HtmlTemplate.Styles" xml:space="preserve">
     <value>.container {
 	width: 100%;
 	height: 100%;
@@ -225,7 +225,7 @@ span{
 	border-radius: 32px;
 }</value>
   </data>
-  <data name="toggleButton1.HtmlTemplate.Styles" xml:space="preserve">
+  <data name="SwitchPower4.HtmlTemplate.Styles" xml:space="preserve">
     <value>.container {
 	width: 100%;
 	height: 100%;
@@ -317,6 +317,2294 @@ span{
 .default {
 	padding: 0px;
 	border-radius: 4px;
+}
+
+.large {
+	font-size: 1.2em;
+	padding: 6px;
+	border-radius: 32px;
+}</value>
+  </data>
+  <data name="SwitchPower5.HtmlTemplate.Styles" xml:space="preserve">
+    <value>.container {
+	width: 100%;
+	height: 100%;
+	color: White;
+	background-color: @Control;
+	display: flex;
+	flex-direction: row;       /* 子元素横向排列 */
+    justify-content: center;   /* 水平居中 */
+    align-items: center;       /* 垂直居中 */
+    background-color: rgb(243, 249, 255);   /* 固定背景色 */
+    
+}
+
+span{
+	color: White;
+}
+
+.toggle-button-item {
+    display: inline-block;
+    color: @ControlText;
+    border: 1px solid Gray;
+    background-color: Gray;
+}
+
+
+	.toggle-button-item:hover {
+		background-color: Gray/0.5;
+	}
+
+	.toggle-button-item:focus {
+		border: 1px solid Gray;
+	}
+
+	.toggle-button-item:active {
+		background-color: @Highlight/0.75;
+	}
+
+	.toggle-button-item:--checked {
+		background-color: LimeGreen;
+	}
+
+
+.content {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	min-width: 40px;
+}
+
+.thumb {
+	background-color: @Window;
+	border: 1px solid Gray;
+	border-radius: 4px;
+	height: 16px;
+	width: 16px;
+	margin-right: 4px;
+}
+
+.toggle-button-item:--checked .content {
+	flex-direction: row-reverse;
+	
+}
+
+.inside-caption {
+	display: inline-block;
+	margin-right: 4px;
+}
+
+.outside-caption {
+	display: inline-block;
+	margin-left: 4px;
+}
+
+.icon {
+	width: 16px;
+	height: 16px;
+	min-width: 16px;
+	min-height: 16px;
+	margin-right: 4px;
+	border-radius: 4px;
+}
+
+.small {
+	font-size: 0.8em;
+	padding: 1px;
+	border-radius: 16px;
+}
+
+.default {
+	padding: 0px;
+	border-radius: 4px;
+}
+
+.large {
+	font-size: 1.2em;
+	padding: 6px;
+	border-radius: 32px;
+}</value>
+  </data>
+  <data name="SwitchPower6.HtmlTemplate.Styles" xml:space="preserve">
+    <value>.container {
+	width: 100%;
+	height: 100%;
+	color: White;
+	background-color: @Control;
+	display: flex;
+	flex-direction: row;       /* 子元素横向排列 */
+    justify-content: center;   /* 水平居中 */
+    align-items: center;       /* 垂直居中 */
+    background-color: rgb(243, 249, 255);   /* 固定背景色 */
+    
+}
+
+span{
+	color: White;
+}
+
+.toggle-button-item {
+    display: inline-block;
+    color: @ControlText;
+    border: 1px solid Gray;
+    background-color: Gray;
+}
+
+
+	.toggle-button-item:hover {
+		background-color: Gray/0.5;
+	}
+
+	.toggle-button-item:focus {
+		border: 1px solid Gray;
+	}
+
+	.toggle-button-item:active {
+		background-color: @Highlight/0.75;
+	}
+
+	.toggle-button-item:--checked {
+		background-color: LimeGreen;
+	}
+
+
+.content {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	min-width: 40px;
+}
+
+.thumb {
+	background-color: @Window;
+	border: 1px solid Gray;
+	border-radius: 4px;
+	height: 16px;
+	width: 16px;
+	margin-right: 4px;
+}
+
+.toggle-button-item:--checked .content {
+	flex-direction: row-reverse;
+	
+}
+
+.inside-caption {
+	display: inline-block;
+	margin-right: 4px;
+}
+
+.outside-caption {
+	display: inline-block;
+	margin-left: 4px;
+}
+
+.icon {
+	width: 16px;
+	height: 16px;
+	min-width: 16px;
+	min-height: 16px;
+	margin-right: 4px;
+	border-radius: 4px;
+}
+
+.small {
+	font-size: 0.8em;
+	padding: 1px;
+	border-radius: 16px;
+}
+
+.default {
+	padding: 0px;
+	border-radius: 4px;
+}
+
+.large {
+	font-size: 1.2em;
+	padding: 6px;
+	border-radius: 32px;
+}</value>
+  </data>
+  <data name="SwitchEpb5.HtmlTemplate.Styles" xml:space="preserve">
+    <value>.container {
+	width: 100%;
+	height: 100%;
+	color: White;
+	background-color: @Control;
+	display: flex;
+	flex-direction: row;       /* 子元素横向排列 */
+    justify-content: center;   /* 水平居中 */
+    align-items: center;       /* 垂直居中 */
+    background-color: rgb(243, 249, 255);   /* 固定背景色 */
+    
+}
+
+span{
+	color: White;
+}
+
+.toggle-button-item {
+    display: inline-block;
+    color: @ControlText;
+    border: 1px solid Gray;
+    background-color: Gray;
+}
+
+
+	.toggle-button-item:hover {
+		background-color: Gray/0.5;
+	}
+
+	.toggle-button-item:focus {
+		border: 1px solid Gray;
+	}
+
+	.toggle-button-item:active {
+		background-color: @Highlight/0.75;
+	}
+
+	.toggle-button-item:--checked {
+		background-color: LimeGreen;
+	}
+
+
+.content {
+	width: 100%;
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	min-width: 40px;
+	margin-top: 2px;
+	margin-bottom: 2px;
+	margin-left: 2px;
+	margin-right: 3px;
+}
+
+.thumb {
+	background-color: @Window;
+	border: 1px solid Gray;
+	border-radius: 12px;
+	height: 12px;
+	width: 12px;
+	margin-right: 1px;
+}
+
+.toggle-button-item:--checked .content {
+	flex-direction: row-reverse;
+	
+	
+}
+
+.inside-caption {
+	display: inline-block;
+	
+}
+
+.outside-caption {
+	display: inline-block;
+	margin-left: 4px;
+}
+
+.icon {
+	width: 16px;
+	height: 16px;
+	min-width: 16px;
+	min-height: 16px;
+	margin-right: 4px;
+	border-radius: 4px;
+}
+
+.small {
+	font-size: 0.8em;
+	padding: 1px;
+	border-radius: 16px;
+}
+
+.default {
+	padding: 0px;
+	border-radius: 24px;
+	
+	padding-right: 2px;
+}
+
+.large {
+	font-size: 1.2em;
+	padding: 6px;
+	border-radius: 32px;
+}</value>
+  </data>
+  <data name="SwitchEpb6.HtmlTemplate.Styles" xml:space="preserve">
+    <value>.container {
+	width: 100%;
+	height: 100%;
+	color: White;
+	background-color: @Control;
+	display: flex;
+	flex-direction: row;       /* 子元素横向排列 */
+    justify-content: center;   /* 水平居中 */
+    align-items: center;       /* 垂直居中 */
+    background-color: rgb(243, 249, 255);   /* 固定背景色 */
+    
+}
+
+span{
+	color: White;
+}
+
+.toggle-button-item {
+    display: inline-block;
+    color: @ControlText;
+    border: 1px solid Gray;
+    background-color: Gray;
+}
+
+
+	.toggle-button-item:hover {
+		background-color: Gray/0.5;
+	}
+
+	.toggle-button-item:focus {
+		border: 1px solid Gray;
+	}
+
+	.toggle-button-item:active {
+		background-color: @Highlight/0.75;
+	}
+
+	.toggle-button-item:--checked {
+		background-color: LimeGreen;
+	}
+
+
+.content {
+	width: 100%;
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	min-width: 40px;
+	margin-top: 2px;
+	margin-bottom: 2px;
+	margin-left: 2px;
+	margin-right: 3px;
+}
+
+.thumb {
+	background-color: @Window;
+	border: 1px solid Gray;
+	border-radius: 12px;
+	height: 12px;
+	width: 12px;
+	margin-right: 1px;
+}
+
+.toggle-button-item:--checked .content {
+	flex-direction: row-reverse;
+	
+	
+}
+
+.inside-caption {
+	display: inline-block;
+	
+}
+
+.outside-caption {
+	display: inline-block;
+	margin-left: 4px;
+}
+
+.icon {
+	width: 16px;
+	height: 16px;
+	min-width: 16px;
+	min-height: 16px;
+	margin-right: 4px;
+	border-radius: 4px;
+}
+
+.small {
+	font-size: 0.8em;
+	padding: 1px;
+	border-radius: 16px;
+}
+
+.default {
+	padding: 0px;
+	border-radius: 24px;
+	
+	padding-right: 2px;
+}
+
+.large {
+	font-size: 1.2em;
+	padding: 6px;
+	border-radius: 32px;
+}</value>
+  </data>
+  <data name="SwitchEpb7.HtmlTemplate.Styles" xml:space="preserve">
+    <value>.container {
+	width: 100%;
+	height: 100%;
+	color: White;
+	background-color: @Control;
+	display: flex;
+	flex-direction: row;       /* 子元素横向排列 */
+    justify-content: center;   /* 水平居中 */
+    align-items: center;       /* 垂直居中 */
+    background-color: rgb(243, 249, 255);   /* 固定背景色 */
+    
+}
+
+span{
+	color: White;
+}
+
+.toggle-button-item {
+    display: inline-block;
+    color: @ControlText;
+    border: 1px solid Gray;
+    background-color: Gray;
+}
+
+
+	.toggle-button-item:hover {
+		background-color: Gray/0.5;
+	}
+
+	.toggle-button-item:focus {
+		border: 1px solid Gray;
+	}
+
+	.toggle-button-item:active {
+		background-color: @Highlight/0.75;
+	}
+
+	.toggle-button-item:--checked {
+		background-color: LimeGreen;
+	}
+
+
+.content {
+	width: 100%;
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	min-width: 40px;
+	margin-top: 2px;
+	margin-bottom: 2px;
+	margin-left: 2px;
+	margin-right: 3px;
+}
+
+.thumb {
+	background-color: @Window;
+	border: 1px solid Gray;
+	border-radius: 12px;
+	height: 12px;
+	width: 12px;
+	margin-right: 1px;
+}
+
+.toggle-button-item:--checked .content {
+	flex-direction: row-reverse;
+	
+	
+}
+
+.inside-caption {
+	display: inline-block;
+	
+}
+
+.outside-caption {
+	display: inline-block;
+	margin-left: 4px;
+}
+
+.icon {
+	width: 16px;
+	height: 16px;
+	min-width: 16px;
+	min-height: 16px;
+	margin-right: 4px;
+	border-radius: 4px;
+}
+
+.small {
+	font-size: 0.8em;
+	padding: 1px;
+	border-radius: 16px;
+}
+
+.default {
+	padding: 0px;
+	border-radius: 24px;
+	
+	padding-right: 2px;
+}
+
+.large {
+	font-size: 1.2em;
+	padding: 6px;
+	border-radius: 32px;
+}</value>
+  </data>
+  <data name="SwitchPower8.HtmlTemplate.Styles" xml:space="preserve">
+    <value>.container {
+	width: 100%;
+	height: 100%;
+	color: White;
+	background-color: @Control;
+	display: flex;
+	flex-direction: row;       /* 子元素横向排列 */
+    justify-content: center;   /* 水平居中 */
+    align-items: center;       /* 垂直居中 */
+    background-color: rgb(243, 249, 255);   /* 固定背景色 */
+    
+}
+
+span{
+	color: White;
+}
+
+.toggle-button-item {
+    display: inline-block;
+    color: @ControlText;
+    border: 1px solid Gray;
+    background-color: Gray;
+}
+
+
+	.toggle-button-item:hover {
+		background-color: Gray/0.5;
+	}
+
+	.toggle-button-item:focus {
+		border: 1px solid Gray;
+	}
+
+	.toggle-button-item:active {
+		background-color: @Highlight/0.75;
+	}
+
+	.toggle-button-item:--checked {
+		background-color: LimeGreen;
+	}
+
+
+.content {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	min-width: 40px;
+}
+
+.thumb {
+	background-color: @Window;
+	border: 1px solid Gray;
+	border-radius: 4px;
+	height: 16px;
+	width: 16px;
+	margin-right: 4px;
+}
+
+.toggle-button-item:--checked .content {
+	flex-direction: row-reverse;
+	
+}
+
+.inside-caption {
+	display: inline-block;
+	margin-right: 4px;
+}
+
+.outside-caption {
+	display: inline-block;
+	margin-left: 4px;
+}
+
+.icon {
+	width: 16px;
+	height: 16px;
+	min-width: 16px;
+	min-height: 16px;
+	margin-right: 4px;
+	border-radius: 4px;
+}
+
+.small {
+	font-size: 0.8em;
+	padding: 1px;
+	border-radius: 16px;
+}
+
+.default {
+	padding: 0px;
+	border-radius: 4px;
+}
+
+.large {
+	font-size: 1.2em;
+	padding: 6px;
+	border-radius: 32px;
+}</value>
+  </data>
+  <data name="SwitchPower7.HtmlTemplate.Styles" xml:space="preserve">
+    <value>.container {
+	width: 100%;
+	height: 100%;
+	color: White;
+	background-color: @Control;
+	display: flex;
+	flex-direction: row;       /* 子元素横向排列 */
+    justify-content: center;   /* 水平居中 */
+    align-items: center;       /* 垂直居中 */
+    background-color: rgb(243, 249, 255);   /* 固定背景色 */
+    
+}
+
+span{
+	color: White;
+}
+
+.toggle-button-item {
+    display: inline-block;
+    color: @ControlText;
+    border: 1px solid Gray;
+    background-color: Gray;
+}
+
+
+	.toggle-button-item:hover {
+		background-color: Gray/0.5;
+	}
+
+	.toggle-button-item:focus {
+		border: 1px solid Gray;
+	}
+
+	.toggle-button-item:active {
+		background-color: @Highlight/0.75;
+	}
+
+	.toggle-button-item:--checked {
+		background-color: LimeGreen;
+	}
+
+
+.content {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	min-width: 40px;
+}
+
+.thumb {
+	background-color: @Window;
+	border: 1px solid Gray;
+	border-radius: 4px;
+	height: 16px;
+	width: 16px;
+	margin-right: 4px;
+}
+
+.toggle-button-item:--checked .content {
+	flex-direction: row-reverse;
+	
+}
+
+.inside-caption {
+	display: inline-block;
+	margin-right: 4px;
+}
+
+.outside-caption {
+	display: inline-block;
+	margin-left: 4px;
+}
+
+.icon {
+	width: 16px;
+	height: 16px;
+	min-width: 16px;
+	min-height: 16px;
+	margin-right: 4px;
+	border-radius: 4px;
+}
+
+.small {
+	font-size: 0.8em;
+	padding: 1px;
+	border-radius: 16px;
+}
+
+.default {
+	padding: 0px;
+	border-radius: 4px;
+}
+
+.large {
+	font-size: 1.2em;
+	padding: 6px;
+	border-radius: 32px;
+}</value>
+  </data>
+  <data name="SwitchPower9.HtmlTemplate.Styles" xml:space="preserve">
+    <value>.container {
+	width: 100%;
+	height: 100%;
+	color: White;
+	background-color: @Control;
+	display: flex;
+	flex-direction: row;       /* 子元素横向排列 */
+    justify-content: center;   /* 水平居中 */
+    align-items: center;       /* 垂直居中 */
+    background-color: rgb(243, 249, 255);   /* 固定背景色 */
+    
+}
+
+span{
+	color: White;
+}
+
+.toggle-button-item {
+    display: inline-block;
+    color: @ControlText;
+    border: 1px solid Gray;
+    background-color: Gray;
+}
+
+
+	.toggle-button-item:hover {
+		background-color: Gray/0.5;
+	}
+
+	.toggle-button-item:focus {
+		border: 1px solid Gray;
+	}
+
+	.toggle-button-item:active {
+		background-color: @Highlight/0.75;
+	}
+
+	.toggle-button-item:--checked {
+		background-color: LimeGreen;
+	}
+
+
+.content {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	min-width: 40px;
+}
+
+.thumb {
+	background-color: @Window;
+	border: 1px solid Gray;
+	border-radius: 4px;
+	height: 16px;
+	width: 16px;
+	margin-right: 4px;
+}
+
+.toggle-button-item:--checked .content {
+	flex-direction: row-reverse;
+	
+}
+
+.inside-caption {
+	display: inline-block;
+	margin-right: 4px;
+}
+
+.outside-caption {
+	display: inline-block;
+	margin-left: 4px;
+}
+
+.icon {
+	width: 16px;
+	height: 16px;
+	min-width: 16px;
+	min-height: 16px;
+	margin-right: 4px;
+	border-radius: 4px;
+}
+
+.small {
+	font-size: 0.8em;
+	padding: 1px;
+	border-radius: 16px;
+}
+
+.default {
+	padding: 0px;
+	border-radius: 4px;
+}
+
+.large {
+	font-size: 1.2em;
+	padding: 6px;
+	border-radius: 32px;
+}</value>
+  </data>
+  <data name="tSwitchEpb9.HtmlTemplate.Styles" xml:space="preserve">
+    <value>.container {
+	width: 100%;
+	height: 100%;
+	color: White;
+	background-color: @Control;
+	display: flex;
+	flex-direction: row;       /* 子元素横向排列 */
+    justify-content: center;   /* 水平居中 */
+    align-items: center;       /* 垂直居中 */
+    background-color: rgb(243, 249, 255);   /* 固定背景色 */
+    
+}
+
+span{
+	color: White;
+}
+
+.toggle-button-item {
+    display: inline-block;
+    color: @ControlText;
+    border: 1px solid Gray;
+    background-color: Gray;
+}
+
+
+	.toggle-button-item:hover {
+		background-color: Gray/0.5;
+	}
+
+	.toggle-button-item:focus {
+		border: 1px solid Gray;
+	}
+
+	.toggle-button-item:active {
+		background-color: @Highlight/0.75;
+	}
+
+	.toggle-button-item:--checked {
+		background-color: LimeGreen;
+	}
+
+
+.content {
+	width: 100%;
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	min-width: 40px;
+	margin-top: 2px;
+	margin-bottom: 2px;
+	margin-left: 2px;
+	margin-right: 3px;
+}
+
+.thumb {
+	background-color: @Window;
+	border: 1px solid Gray;
+	border-radius: 12px;
+	height: 12px;
+	width: 12px;
+	margin-right: 1px;
+}
+
+.toggle-button-item:--checked .content {
+	flex-direction: row-reverse;
+	
+	
+}
+
+.inside-caption {
+	display: inline-block;
+	
+}
+
+.outside-caption {
+	display: inline-block;
+	margin-left: 4px;
+}
+
+.icon {
+	width: 16px;
+	height: 16px;
+	min-width: 16px;
+	min-height: 16px;
+	margin-right: 4px;
+	border-radius: 4px;
+}
+
+.small {
+	font-size: 0.8em;
+	padding: 1px;
+	border-radius: 16px;
+}
+
+.default {
+	padding: 0px;
+	border-radius: 24px;
+	
+	padding-right: 2px;
+}
+
+.large {
+	font-size: 1.2em;
+	padding: 6px;
+	border-radius: 32px;
+}</value>
+  </data>
+  <data name="SwitchEpb8.HtmlTemplate.Styles" xml:space="preserve">
+    <value>.container {
+	width: 100%;
+	height: 100%;
+	color: White;
+	background-color: @Control;
+	display: flex;
+	flex-direction: row;       /* 子元素横向排列 */
+    justify-content: center;   /* 水平居中 */
+    align-items: center;       /* 垂直居中 */
+    background-color: rgb(243, 249, 255);   /* 固定背景色 */
+    
+}
+
+span{
+	color: White;
+}
+
+.toggle-button-item {
+    display: inline-block;
+    color: @ControlText;
+    border: 1px solid Gray;
+    background-color: Gray;
+}
+
+
+	.toggle-button-item:hover {
+		background-color: Gray/0.5;
+	}
+
+	.toggle-button-item:focus {
+		border: 1px solid Gray;
+	}
+
+	.toggle-button-item:active {
+		background-color: @Highlight/0.75;
+	}
+
+	.toggle-button-item:--checked {
+		background-color: LimeGreen;
+	}
+
+
+.content {
+	width: 100%;
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	min-width: 40px;
+	margin-top: 2px;
+	margin-bottom: 2px;
+	margin-left: 2px;
+	margin-right: 3px;
+}
+
+.thumb {
+	background-color: @Window;
+	border: 1px solid Gray;
+	border-radius: 12px;
+	height: 12px;
+	width: 12px;
+	margin-right: 1px;
+}
+
+.toggle-button-item:--checked .content {
+	flex-direction: row-reverse;
+	
+	
+}
+
+.inside-caption {
+	display: inline-block;
+	
+}
+
+.outside-caption {
+	display: inline-block;
+	margin-left: 4px;
+}
+
+.icon {
+	width: 16px;
+	height: 16px;
+	min-width: 16px;
+	min-height: 16px;
+	margin-right: 4px;
+	border-radius: 4px;
+}
+
+.small {
+	font-size: 0.8em;
+	padding: 1px;
+	border-radius: 16px;
+}
+
+.default {
+	padding: 0px;
+	border-radius: 24px;
+	
+	padding-right: 2px;
+}
+
+.large {
+	font-size: 1.2em;
+	padding: 6px;
+	border-radius: 32px;
+}</value>
+  </data>
+  <data name="SwitchEpb11.HtmlTemplate.Styles" xml:space="preserve">
+    <value>.container {
+	width: 100%;
+	height: 100%;
+	color: White;
+	background-color: @Control;
+	display: flex;
+	flex-direction: row;       /* 子元素横向排列 */
+    justify-content: center;   /* 水平居中 */
+    align-items: center;       /* 垂直居中 */
+    background-color: rgb(243, 249, 255);   /* 固定背景色 */
+    
+}
+
+span{
+	color: White;
+}
+
+.toggle-button-item {
+    display: inline-block;
+    color: @ControlText;
+    border: 1px solid Gray;
+    background-color: Gray;
+}
+
+
+	.toggle-button-item:hover {
+		background-color: Gray/0.5;
+	}
+
+	.toggle-button-item:focus {
+		border: 1px solid Gray;
+	}
+
+	.toggle-button-item:active {
+		background-color: @Highlight/0.75;
+	}
+
+	.toggle-button-item:--checked {
+		background-color: LimeGreen;
+	}
+
+
+.content {
+	width: 100%;
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	min-width: 40px;
+	margin-top: 2px;
+	margin-bottom: 2px;
+	margin-left: 2px;
+	margin-right: 3px;
+}
+
+.thumb {
+	background-color: @Window;
+	border: 1px solid Gray;
+	border-radius: 12px;
+	height: 12px;
+	width: 12px;
+	margin-right: 1px;
+}
+
+.toggle-button-item:--checked .content {
+	flex-direction: row-reverse;
+	
+	
+}
+
+.inside-caption {
+	display: inline-block;
+	
+}
+
+.outside-caption {
+	display: inline-block;
+	margin-left: 4px;
+}
+
+.icon {
+	width: 16px;
+	height: 16px;
+	min-width: 16px;
+	min-height: 16px;
+	margin-right: 4px;
+	border-radius: 4px;
+}
+
+.small {
+	font-size: 0.8em;
+	padding: 1px;
+	border-radius: 16px;
+}
+
+.default {
+	padding: 0px;
+	border-radius: 24px;
+	
+	padding-right: 2px;
+}
+
+.large {
+	font-size: 1.2em;
+	padding: 6px;
+	border-radius: 32px;
+}</value>
+  </data>
+  <data name="SwitchPower10.HtmlTemplate.Styles" xml:space="preserve">
+    <value>.container {
+	width: 100%;
+	height: 100%;
+	color: White;
+	background-color: @Control;
+	display: flex;
+	flex-direction: row;       /* 子元素横向排列 */
+    justify-content: center;   /* 水平居中 */
+    align-items: center;       /* 垂直居中 */
+    background-color: rgb(243, 249, 255);   /* 固定背景色 */
+    
+}
+
+span{
+	color: White;
+}
+
+.toggle-button-item {
+    display: inline-block;
+    color: @ControlText;
+    border: 1px solid Gray;
+    background-color: Gray;
+}
+
+
+	.toggle-button-item:hover {
+		background-color: Gray/0.5;
+	}
+
+	.toggle-button-item:focus {
+		border: 1px solid Gray;
+	}
+
+	.toggle-button-item:active {
+		background-color: @Highlight/0.75;
+	}
+
+	.toggle-button-item:--checked {
+		background-color: LimeGreen;
+	}
+
+
+.content {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	min-width: 40px;
+}
+
+.thumb {
+	background-color: @Window;
+	border: 1px solid Gray;
+	border-radius: 4px;
+	height: 16px;
+	width: 16px;
+	margin-right: 4px;
+}
+
+.toggle-button-item:--checked .content {
+	flex-direction: row-reverse;
+	
+}
+
+.inside-caption {
+	display: inline-block;
+	margin-right: 4px;
+}
+
+.outside-caption {
+	display: inline-block;
+	margin-left: 4px;
+}
+
+.icon {
+	width: 16px;
+	height: 16px;
+	min-width: 16px;
+	min-height: 16px;
+	margin-right: 4px;
+	border-radius: 4px;
+}
+
+.small {
+	font-size: 0.8em;
+	padding: 1px;
+	border-radius: 16px;
+}
+
+.default {
+	padding: 0px;
+	border-radius: 4px;
+}
+
+.large {
+	font-size: 1.2em;
+	padding: 6px;
+	border-radius: 32px;
+}</value>
+  </data>
+  <data name="SwitchPower11.HtmlTemplate.Styles" xml:space="preserve">
+    <value>.container {
+	width: 100%;
+	height: 100%;
+	color: White;
+	background-color: @Control;
+	display: flex;
+	flex-direction: row;       /* 子元素横向排列 */
+    justify-content: center;   /* 水平居中 */
+    align-items: center;       /* 垂直居中 */
+    background-color: rgb(243, 249, 255);   /* 固定背景色 */
+    
+}
+
+span{
+	color: White;
+}
+
+.toggle-button-item {
+    display: inline-block;
+    color: @ControlText;
+    border: 1px solid Gray;
+    background-color: Gray;
+}
+
+
+	.toggle-button-item:hover {
+		background-color: Gray/0.5;
+	}
+
+	.toggle-button-item:focus {
+		border: 1px solid Gray;
+	}
+
+	.toggle-button-item:active {
+		background-color: @Highlight/0.75;
+	}
+
+	.toggle-button-item:--checked {
+		background-color: LimeGreen;
+	}
+
+
+.content {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	min-width: 40px;
+}
+
+.thumb {
+	background-color: @Window;
+	border: 1px solid Gray;
+	border-radius: 4px;
+	height: 16px;
+	width: 16px;
+	margin-right: 4px;
+}
+
+.toggle-button-item:--checked .content {
+	flex-direction: row-reverse;
+	
+}
+
+.inside-caption {
+	display: inline-block;
+	margin-right: 4px;
+}
+
+.outside-caption {
+	display: inline-block;
+	margin-left: 4px;
+}
+
+.icon {
+	width: 16px;
+	height: 16px;
+	min-width: 16px;
+	min-height: 16px;
+	margin-right: 4px;
+	border-radius: 4px;
+}
+
+.small {
+	font-size: 0.8em;
+	padding: 1px;
+	border-radius: 16px;
+}
+
+.default {
+	padding: 0px;
+	border-radius: 4px;
+}
+
+.large {
+	font-size: 1.2em;
+	padding: 6px;
+	border-radius: 32px;
+}</value>
+  </data>
+  <data name="SwitchPower12.HtmlTemplate.Styles" xml:space="preserve">
+    <value>.container {
+	width: 100%;
+	height: 100%;
+	color: White;
+	background-color: @Control;
+	display: flex;
+	flex-direction: row;       /* 子元素横向排列 */
+    justify-content: center;   /* 水平居中 */
+    align-items: center;       /* 垂直居中 */
+    background-color: rgb(243, 249, 255);   /* 固定背景色 */
+    
+}
+
+span{
+	color: White;
+}
+
+.toggle-button-item {
+    display: inline-block;
+    color: @ControlText;
+    border: 1px solid Gray;
+    background-color: Gray;
+}
+
+
+	.toggle-button-item:hover {
+		background-color: Gray/0.5;
+	}
+
+	.toggle-button-item:focus {
+		border: 1px solid Gray;
+	}
+
+	.toggle-button-item:active {
+		background-color: @Highlight/0.75;
+	}
+
+	.toggle-button-item:--checked {
+		background-color: LimeGreen;
+	}
+
+
+.content {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	min-width: 40px;
+}
+
+.thumb {
+	background-color: @Window;
+	border: 1px solid Gray;
+	border-radius: 4px;
+	height: 16px;
+	width: 16px;
+	margin-right: 4px;
+}
+
+.toggle-button-item:--checked .content {
+	flex-direction: row-reverse;
+	
+}
+
+.inside-caption {
+	display: inline-block;
+	margin-right: 4px;
+}
+
+.outside-caption {
+	display: inline-block;
+	margin-left: 4px;
+}
+
+.icon {
+	width: 16px;
+	height: 16px;
+	min-width: 16px;
+	min-height: 16px;
+	margin-right: 4px;
+	border-radius: 4px;
+}
+
+.small {
+	font-size: 0.8em;
+	padding: 1px;
+	border-radius: 16px;
+}
+
+.default {
+	padding: 0px;
+	border-radius: 4px;
+}
+
+.large {
+	font-size: 1.2em;
+	padding: 6px;
+	border-radius: 32px;
+}</value>
+  </data>
+  <data name="SwitchEpb12.HtmlTemplate.Styles" xml:space="preserve">
+    <value>.container {
+	width: 100%;
+	height: 100%;
+	color: White;
+	background-color: @Control;
+	display: flex;
+	flex-direction: row;       /* 子元素横向排列 */
+    justify-content: center;   /* 水平居中 */
+    align-items: center;       /* 垂直居中 */
+    background-color: rgb(243, 249, 255);   /* 固定背景色 */
+    
+}
+
+span{
+	color: White;
+}
+
+.toggle-button-item {
+    display: inline-block;
+    color: @ControlText;
+    border: 1px solid Gray;
+    background-color: Gray;
+}
+
+
+	.toggle-button-item:hover {
+		background-color: Gray/0.5;
+	}
+
+	.toggle-button-item:focus {
+		border: 1px solid Gray;
+	}
+
+	.toggle-button-item:active {
+		background-color: @Highlight/0.75;
+	}
+
+	.toggle-button-item:--checked {
+		background-color: LimeGreen;
+	}
+
+
+.content {
+	width: 100%;
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	min-width: 40px;
+	margin-top: 2px;
+	margin-bottom: 2px;
+	margin-left: 2px;
+	margin-right: 3px;
+}
+
+.thumb {
+	background-color: @Window;
+	border: 1px solid Gray;
+	border-radius: 12px;
+	height: 12px;
+	width: 12px;
+	margin-right: 1px;
+}
+
+.toggle-button-item:--checked .content {
+	flex-direction: row-reverse;
+	
+	
+}
+
+.inside-caption {
+	display: inline-block;
+	
+}
+
+.outside-caption {
+	display: inline-block;
+	margin-left: 4px;
+}
+
+.icon {
+	width: 16px;
+	height: 16px;
+	min-width: 16px;
+	min-height: 16px;
+	margin-right: 4px;
+	border-radius: 4px;
+}
+
+.small {
+	font-size: 0.8em;
+	padding: 1px;
+	border-radius: 16px;
+}
+
+.default {
+	padding: 0px;
+	border-radius: 24px;
+	
+	padding-right: 2px;
+}
+
+.large {
+	font-size: 1.2em;
+	padding: 6px;
+	border-radius: 32px;
+}</value>
+  </data>
+  <data name="SwitchEpb10.HtmlTemplate.Styles" xml:space="preserve">
+    <value>.container {
+	width: 100%;
+	height: 100%;
+	color: White;
+	background-color: @Control;
+	display: flex;
+	flex-direction: row;       /* 子元素横向排列 */
+    justify-content: center;   /* 水平居中 */
+    align-items: center;       /* 垂直居中 */
+    background-color: rgb(243, 249, 255);   /* 固定背景色 */
+    
+}
+
+span{
+	color: White;
+}
+
+.toggle-button-item {
+    display: inline-block;
+    color: @ControlText;
+    border: 1px solid Gray;
+    background-color: Gray;
+}
+
+
+	.toggle-button-item:hover {
+		background-color: Gray/0.5;
+	}
+
+	.toggle-button-item:focus {
+		border: 1px solid Gray;
+	}
+
+	.toggle-button-item:active {
+		background-color: @Highlight/0.75;
+	}
+
+	.toggle-button-item:--checked {
+		background-color: LimeGreen;
+	}
+
+
+.content {
+	width: 100%;
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	min-width: 40px;
+	margin-top: 2px;
+	margin-bottom: 2px;
+	margin-left: 2px;
+	margin-right: 3px;
+}
+
+.thumb {
+	background-color: @Window;
+	border: 1px solid Gray;
+	border-radius: 12px;
+	height: 12px;
+	width: 12px;
+	margin-right: 1px;
+}
+
+.toggle-button-item:--checked .content {
+	flex-direction: row-reverse;
+	
+	
+}
+
+.inside-caption {
+	display: inline-block;
+	
+}
+
+.outside-caption {
+	display: inline-block;
+	margin-left: 4px;
+}
+
+.icon {
+	width: 16px;
+	height: 16px;
+	min-width: 16px;
+	min-height: 16px;
+	margin-right: 4px;
+	border-radius: 4px;
+}
+
+.small {
+	font-size: 0.8em;
+	padding: 1px;
+	border-radius: 16px;
+}
+
+.default {
+	padding: 0px;
+	border-radius: 24px;
+	
+	padding-right: 2px;
+}
+
+.large {
+	font-size: 1.2em;
+	padding: 6px;
+	border-radius: 32px;
+}</value>
+  </data>
+  <data name="SwitchEpb1.HtmlTemplate.Styles" xml:space="preserve">
+    <value>.container {
+	width: 100%;
+	height: 100%;
+	color: White;
+	background-color: @Control;
+	display: flex;
+	flex-direction: row;       /* 子元素横向排列 */
+    justify-content: center;   /* 水平居中 */
+    align-items: center;       /* 垂直居中 */
+    background-color: rgb(243, 249, 255);   /* 固定背景色 */
+    
+}
+
+span{
+	color: White;
+}
+
+.toggle-button-item {
+    display: inline-block;
+    color: @ControlText;
+    border: 1px solid Gray;
+    background-color: Gray;
+}
+
+
+	.toggle-button-item:hover {
+		background-color: Gray/0.5;
+	}
+
+	.toggle-button-item:focus {
+		border: 1px solid Gray;
+	}
+
+	.toggle-button-item:active {
+		background-color: @Highlight/0.75;
+	}
+
+	.toggle-button-item:--checked {
+		background-color: LimeGreen;
+	}
+
+
+.content {
+	width: 100%;
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	min-width: 40px;
+	margin-top: 2px;
+	margin-bottom: 2px;
+	margin-left: 2px;
+	margin-right: 3px;
+}
+
+.thumb {
+	background-color: @Window;
+	border: 1px solid Gray;
+	border-radius: 12px;
+	height: 12px;
+	width: 12px;
+	margin-right: 1px;
+}
+
+.toggle-button-item:--checked .content {
+	flex-direction: row-reverse;
+	
+	
+}
+
+.inside-caption {
+	display: inline-block;
+	
+}
+
+.outside-caption {
+	display: inline-block;
+	margin-left: 4px;
+}
+
+.icon {
+	width: 16px;
+	height: 16px;
+	min-width: 16px;
+	min-height: 16px;
+	margin-right: 4px;
+	border-radius: 4px;
+}
+
+.small {
+	font-size: 0.8em;
+	padding: 1px;
+	border-radius: 16px;
+}
+
+.default {
+	padding: 0px;
+	border-radius: 24px;
+	
+	padding-right: 2px;
+}
+
+.large {
+	font-size: 1.2em;
+	padding: 6px;
+	border-radius: 32px;
+}</value>
+  </data>
+  <data name="SwitchPower1.HtmlTemplate.Styles" xml:space="preserve">
+    <value>.container {
+	width: 100%;
+	height: 100%;
+	color: White;
+	background-color: @Control;
+	display: flex;
+	flex-direction: row;       /* 子元素横向排列 */
+    justify-content: center;   /* 水平居中 */
+    align-items: center;       /* 垂直居中 */
+    background-color: rgb(243, 249, 255);   /* 固定背景色 */
+    
+}
+
+span{
+	color: White;
+}
+
+.toggle-button-item {
+    display: inline-block;
+    color: @ControlText;
+    border: 1px solid Gray;
+    background-color: Gray;
+}
+
+
+	.toggle-button-item:hover {
+		background-color: Gray/0.5;
+	}
+
+	.toggle-button-item:focus {
+		border: 1px solid Gray;
+	}
+
+	.toggle-button-item:active {
+		background-color: @Highlight/0.75;
+	}
+
+	.toggle-button-item:--checked {
+		background-color: LimeGreen;
+	}
+
+
+.content {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	min-width: 40px;
+}
+
+.thumb {
+	background-color: @Window;
+	border: 1px solid Gray;
+	border-radius: 4px;
+	height: 16px;
+	width: 16px;
+	margin-right: 4px;
+}
+
+.toggle-button-item:--checked .content {
+	flex-direction: row-reverse;
+	
+}
+
+.inside-caption {
+	display: inline-block;
+	margin-right: 4px;
+}
+
+.outside-caption {
+	display: inline-block;
+	margin-left: 4px;
+}
+
+.icon {
+	width: 16px;
+	height: 16px;
+	min-width: 16px;
+	min-height: 16px;
+	margin-right: 4px;
+	border-radius: 4px;
+}
+
+.small {
+	font-size: 0.8em;
+	padding: 1px;
+	border-radius: 16px;
+}
+
+.default {
+	padding: 0px;
+	border-radius: 4px;
+}
+
+.large {
+	font-size: 1.2em;
+	padding: 6px;
+	border-radius: 32px;
+}</value>
+  </data>
+  <data name="SwitchPower2.HtmlTemplate.Styles" xml:space="preserve">
+    <value>.container {
+	width: 100%;
+	height: 100%;
+	color: White;
+	background-color: @Control;
+	display: flex;
+	flex-direction: row;       /* 子元素横向排列 */
+    justify-content: center;   /* 水平居中 */
+    align-items: center;       /* 垂直居中 */
+    background-color: rgb(243, 249, 255);   /* 固定背景色 */
+    
+}
+
+span{
+	color: White;
+}
+
+.toggle-button-item {
+    display: inline-block;
+    color: @ControlText;
+    border: 1px solid Gray;
+    background-color: Gray;
+}
+
+
+	.toggle-button-item:hover {
+		background-color: Gray/0.5;
+	}
+
+	.toggle-button-item:focus {
+		border: 1px solid Gray;
+	}
+
+	.toggle-button-item:active {
+		background-color: @Highlight/0.75;
+	}
+
+	.toggle-button-item:--checked {
+		background-color: LimeGreen;
+	}
+
+
+.content {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	min-width: 40px;
+}
+
+.thumb {
+	background-color: @Window;
+	border: 1px solid Gray;
+	border-radius: 4px;
+	height: 16px;
+	width: 16px;
+	margin-right: 4px;
+}
+
+.toggle-button-item:--checked .content {
+	flex-direction: row-reverse;
+	
+}
+
+.inside-caption {
+	display: inline-block;
+	margin-right: 4px;
+}
+
+.outside-caption {
+	display: inline-block;
+	margin-left: 4px;
+}
+
+.icon {
+	width: 16px;
+	height: 16px;
+	min-width: 16px;
+	min-height: 16px;
+	margin-right: 4px;
+	border-radius: 4px;
+}
+
+.small {
+	font-size: 0.8em;
+	padding: 1px;
+	border-radius: 16px;
+}
+
+.default {
+	padding: 0px;
+	border-radius: 4px;
+}
+
+.large {
+	font-size: 1.2em;
+	padding: 6px;
+	border-radius: 32px;
+}</value>
+  </data>
+  <data name="SwitchPower3.HtmlTemplate.Styles" xml:space="preserve">
+    <value>.container {
+	width: 100%;
+	height: 100%;
+	color: White;
+	background-color: @Control;
+	display: flex;
+	flex-direction: row;       /* 子元素横向排列 */
+    justify-content: center;   /* 水平居中 */
+    align-items: center;       /* 垂直居中 */
+    background-color: rgb(243, 249, 255);   /* 固定背景色 */
+    
+}
+
+span{
+	color: White;
+}
+
+.toggle-button-item {
+    display: inline-block;
+    color: @ControlText;
+    border: 1px solid Gray;
+    background-color: Gray;
+}
+
+
+	.toggle-button-item:hover {
+		background-color: Gray/0.5;
+	}
+
+	.toggle-button-item:focus {
+		border: 1px solid Gray;
+	}
+
+	.toggle-button-item:active {
+		background-color: @Highlight/0.75;
+	}
+
+	.toggle-button-item:--checked {
+		background-color: LimeGreen;
+	}
+
+
+.content {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	min-width: 40px;
+}
+
+.thumb {
+	background-color: @Window;
+	border: 1px solid Gray;
+	border-radius: 4px;
+	height: 16px;
+	width: 16px;
+	margin-right: 4px;
+}
+
+.toggle-button-item:--checked .content {
+	flex-direction: row-reverse;
+	
+}
+
+.inside-caption {
+	display: inline-block;
+	margin-right: 4px;
+}
+
+.outside-caption {
+	display: inline-block;
+	margin-left: 4px;
+}
+
+.icon {
+	width: 16px;
+	height: 16px;
+	min-width: 16px;
+	min-height: 16px;
+	margin-right: 4px;
+	border-radius: 4px;
+}
+
+.small {
+	font-size: 0.8em;
+	padding: 1px;
+	border-radius: 16px;
+}
+
+.default {
+	padding: 0px;
+	border-radius: 4px;
+}
+
+.large {
+	font-size: 1.2em;
+	padding: 6px;
+	border-radius: 32px;
+}</value>
+  </data>
+  <data name="SwitchEpb2.HtmlTemplate.Styles" xml:space="preserve">
+    <value>.container {
+	width: 100%;
+	height: 100%;
+	color: White;
+	background-color: @Control;
+	display: flex;
+	flex-direction: row;       /* 子元素横向排列 */
+    justify-content: center;   /* 水平居中 */
+    align-items: center;       /* 垂直居中 */
+    background-color: rgb(243, 249, 255);   /* 固定背景色 */
+    
+}
+
+span{
+	color: White;
+}
+
+.toggle-button-item {
+    display: inline-block;
+    color: @ControlText;
+    border: 1px solid Gray;
+    background-color: Gray;
+}
+
+
+	.toggle-button-item:hover {
+		background-color: Gray/0.5;
+	}
+
+	.toggle-button-item:focus {
+		border: 1px solid Gray;
+	}
+
+	.toggle-button-item:active {
+		background-color: @Highlight/0.75;
+	}
+
+	.toggle-button-item:--checked {
+		background-color: LimeGreen;
+	}
+
+
+.content {
+	width: 100%;
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	min-width: 40px;
+	margin-top: 2px;
+	margin-bottom: 2px;
+	margin-left: 2px;
+	margin-right: 3px;
+}
+
+.thumb {
+	background-color: @Window;
+	border: 1px solid Gray;
+	border-radius: 12px;
+	height: 12px;
+	width: 12px;
+	margin-right: 1px;
+}
+
+.toggle-button-item:--checked .content {
+	flex-direction: row-reverse;
+	
+	
+}
+
+.inside-caption {
+	display: inline-block;
+	
+}
+
+.outside-caption {
+	display: inline-block;
+	margin-left: 4px;
+}
+
+.icon {
+	width: 16px;
+	height: 16px;
+	min-width: 16px;
+	min-height: 16px;
+	margin-right: 4px;
+	border-radius: 4px;
+}
+
+.small {
+	font-size: 0.8em;
+	padding: 1px;
+	border-radius: 16px;
+}
+
+.default {
+	padding: 0px;
+	border-radius: 24px;
+	
+	padding-right: 2px;
+}
+
+.large {
+	font-size: 1.2em;
+	padding: 6px;
+	border-radius: 32px;
+}</value>
+  </data>
+  <data name="SwitchEpb3.HtmlTemplate.Styles" xml:space="preserve">
+    <value>.container {
+	width: 100%;
+	height: 100%;
+	color: White;
+	background-color: @Control;
+	display: flex;
+	flex-direction: row;       /* 子元素横向排列 */
+    justify-content: center;   /* 水平居中 */
+    align-items: center;       /* 垂直居中 */
+    background-color: rgb(243, 249, 255);   /* 固定背景色 */
+    
+}
+
+span{
+	color: White;
+}
+
+.toggle-button-item {
+    display: inline-block;
+    color: @ControlText;
+    border: 1px solid Gray;
+    background-color: Gray;
+}
+
+
+	.toggle-button-item:hover {
+		background-color: Gray/0.5;
+	}
+
+	.toggle-button-item:focus {
+		border: 1px solid Gray;
+	}
+
+	.toggle-button-item:active {
+		background-color: @Highlight/0.75;
+	}
+
+	.toggle-button-item:--checked {
+		background-color: LimeGreen;
+	}
+
+
+.content {
+	width: 100%;
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	min-width: 40px;
+	margin-top: 2px;
+	margin-bottom: 2px;
+	margin-left: 2px;
+	margin-right: 3px;
+}
+
+.thumb {
+	background-color: @Window;
+	border: 1px solid Gray;
+	border-radius: 12px;
+	height: 12px;
+	width: 12px;
+	margin-right: 1px;
+}
+
+.toggle-button-item:--checked .content {
+	flex-direction: row-reverse;
+	
+	
+}
+
+.inside-caption {
+	display: inline-block;
+	
+}
+
+.outside-caption {
+	display: inline-block;
+	margin-left: 4px;
+}
+
+.icon {
+	width: 16px;
+	height: 16px;
+	min-width: 16px;
+	min-height: 16px;
+	margin-right: 4px;
+	border-radius: 4px;
+}
+
+.small {
+	font-size: 0.8em;
+	padding: 1px;
+	border-radius: 16px;
+}
+
+.default {
+	padding: 0px;
+	border-radius: 24px;
+	
+	padding-right: 2px;
 }
 
 .large {

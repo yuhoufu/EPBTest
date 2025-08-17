@@ -214,7 +214,9 @@
             this.TxtTargetCycles = new Sunny.UI.UITextBox();
             this.TxtTestCycleTime = new Sunny.UI.UITextBox();
             this.uiLabel7 = new Sunny.UI.UILabel();
+            this.SwitchEpb4 = new Sunny.UI.UISwitch();
             this.uiLabel9 = new Sunny.UI.UILabel();
+            this.SwitchPower4 = new Sunny.UI.UISwitch();
             this.uiLabel10 = new Sunny.UI.UILabel();
             this.TxtTestName = new Sunny.UI.UITextBox();
             this.uiLabel8 = new Sunny.UI.UILabel();
@@ -245,25 +247,41 @@
             this.BtnApply = new Sunny.UI.UIButton();
             this.BtnTest = new Sunny.UI.UIButton();
             this.toggleSwitch1 = new DevExpress.XtraEditors.ToggleSwitch();
-            this.EPBGroupBox = new Sunny.UI.UIGroupBox();
+            this.uiGroupBox2 = new Sunny.UI.UIGroupBox();
             this.tableLayoutPanel1 = new System.Windows.Forms.TableLayoutPanel();
             this.uiTableLayoutPanel11 = new Sunny.UI.UITableLayoutPanel();
             this.LabEpb4 = new Sunny.UI.UILabel();
+            this.SwitchPower5 = new Sunny.UI.UISwitch();
+            this.SwitchEpb5 = new Sunny.UI.UISwitch();
             this.LabEpb5 = new Sunny.UI.UILabel();
+            this.SwitchPower6 = new Sunny.UI.UISwitch();
+            this.SwitchEpb6 = new Sunny.UI.UISwitch();
             this.LabEpb6 = new Sunny.UI.UILabel();
             this.uiLabel23 = new Sunny.UI.UILabel();
             this.uiLabel24 = new Sunny.UI.UILabel();
             this.uiLabel25 = new Sunny.UI.UILabel();
             this.uiTableLayoutPanel12 = new Sunny.UI.UITableLayoutPanel();
             this.LabEpb7 = new Sunny.UI.UILabel();
+            this.SwitchPower8 = new Sunny.UI.UISwitch();
+            this.SwitchEpb8 = new Sunny.UI.UISwitch();
+            this.SwitchEpb7 = new Sunny.UI.UISwitch();
+            this.SwitchPower7 = new Sunny.UI.UISwitch();
             this.LabEpb8 = new Sunny.UI.UILabel();
+            this.SwitchEpb9 = new Sunny.UI.UISwitch();
             this.LabEpb9 = new Sunny.UI.UILabel();
+            this.SwitchPower9 = new Sunny.UI.UISwitch();
             this.uiLabel20 = new Sunny.UI.UILabel();
             this.uiLabel21 = new Sunny.UI.UILabel();
             this.uiLabel22 = new Sunny.UI.UILabel();
             this.uiTableLayoutPanel13 = new Sunny.UI.UITableLayoutPanel();
             this.LabEpb10 = new Sunny.UI.UILabel();
+            this.SwitchPower11 = new Sunny.UI.UISwitch();
+            this.SwitchEpb11 = new Sunny.UI.UISwitch();
+            this.SwitchEpb10 = new Sunny.UI.UISwitch();
+            this.SwitchPower10 = new Sunny.UI.UISwitch();
             this.LabEpb11 = new Sunny.UI.UILabel();
+            this.SwitchPower12 = new Sunny.UI.UISwitch();
+            this.SwitchEpb12 = new Sunny.UI.UISwitch();
             this.LabEpb12 = new Sunny.UI.UILabel();
             this.uiLabel26 = new Sunny.UI.UILabel();
             this.uiLabel27 = new Sunny.UI.UILabel();
@@ -273,8 +291,15 @@
             this.uiPanel4 = new Sunny.UI.UIPanel();
             this.uiTableLayoutPanel10 = new Sunny.UI.UITableLayoutPanel();
             this.LabEpb1 = new Sunny.UI.UILabel();
+            this.SwitchPower2 = new Sunny.UI.UISwitch();
+            this.SwitchEpb2 = new Sunny.UI.UISwitch();
+            this.SwitchEpb1 = new Sunny.UI.UISwitch();
+            this.SwitchPower1 = new Sunny.UI.UISwitch();
             this.LabEpb2 = new Sunny.UI.UILabel();
+            this.SwitchPower3 = new Sunny.UI.UISwitch();
+            this.SwitchEpb3 = new Sunny.UI.UISwitch();
             this.LabEpb3 = new Sunny.UI.UILabel();
+            this.uiLabel4 = new Sunny.UI.UILabel();
             this.uiLabel5 = new Sunny.UI.UILabel();
             this.uiLabel6 = new Sunny.UI.UILabel();
             this.SwitchEmb2 = new Sunny.UI.UISwitch();
@@ -283,31 +308,8 @@
             this.uiLabel18 = new Sunny.UI.UILabel();
             this.uiLabel19 = new Sunny.UI.UILabel();
             this.uiTableLayoutPanel1 = new Sunny.UI.UITableLayoutPanel();
-            this.uiLabel4 = new Sunny.UI.UILabel();
-            this.SwitchEpb4 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchPower4 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchPower5 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchPower6 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchEpb5 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchEpb6 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchEpb7 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchPower8 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchPower7 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchPower9 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.tSwitchEpb9 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchEpb8 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchEpb11 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchPower10 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchPower11 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchPower12 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchEpb12 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchEpb10 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchEpb1 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchPower1 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchPower2 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchPower3 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchEpb2 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchEpb3 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
+            this.toggleButton2 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
+            this.toggleButton1 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
             ((System.ComponentModel.ISupportInitialize)(this.dgvRealData)).BeginInit();
             this.uiGroupCurve.SuspendLayout();
             this.uiTableLayoutPanel18.SuspendLayout();
@@ -399,7 +401,7 @@
             ((System.ComponentModel.ISupportInitialize)(this.ChkEpb11.Properties)).BeginInit();
             ((System.ComponentModel.ISupportInitialize)(this.ChkEpb10.Properties)).BeginInit();
             ((System.ComponentModel.ISupportInitialize)(this.toggleSwitch1.Properties)).BeginInit();
-            this.EPBGroupBox.SuspendLayout();
+            this.uiGroupBox2.SuspendLayout();
             this.tableLayoutPanel1.SuspendLayout();
             this.uiTableLayoutPanel11.SuspendLayout();
             this.uiTableLayoutPanel12.SuspendLayout();
@@ -531,8 +533,8 @@
             this.zedGraphControl1.IsEnableHZoom = false;
             this.zedGraphControl1.IsEnableVZoom = false;
             this.zedGraphControl1.IsEnableWheelZoom = false;
-            this.zedGraphControl1.Location = new System.Drawing.Point(288, 383);
-            this.zedGraphControl1.Margin = new System.Windows.Forms.Padding(268, 373, 268, 373);
+            this.zedGraphControl1.Location = new System.Drawing.Point(28, 18);
+            this.zedGraphControl1.Margin = new System.Windows.Forms.Padding(8);
             this.zedGraphControl1.Name = "zedGraphControl1";
             this.zedGraphControl1.ScrollGrace = 0D;
             this.zedGraphControl1.ScrollMaxX = 0D;
@@ -541,7 +543,7 @@
             this.zedGraphControl1.ScrollMinX = 0D;
             this.zedGraphControl1.ScrollMinY = 0D;
             this.zedGraphControl1.ScrollMinY2 = 0D;
-            this.zedGraphControl1.Size = new System.Drawing.Size(51, 1);
+            this.zedGraphControl1.Size = new System.Drawing.Size(571, 330);
             this.zedGraphControl1.TabIndex = 4;
             this.zedGraphControl1.UseExtendedPrintDialog = true;
             // 
@@ -1165,8 +1167,8 @@
             this.zedGraphControl2.IsEnableHZoom = false;
             this.zedGraphControl2.IsEnableVZoom = false;
             this.zedGraphControl2.IsEnableWheelZoom = false;
-            this.zedGraphControl2.Location = new System.Drawing.Point(31, 21);
-            this.zedGraphControl2.Margin = new System.Windows.Forms.Padding(11, 11, 11, 11);
+            this.zedGraphControl2.Location = new System.Drawing.Point(28, 18);
+            this.zedGraphControl2.Margin = new System.Windows.Forms.Padding(8);
             this.zedGraphControl2.Name = "zedGraphControl2";
             this.zedGraphControl2.ScrollGrace = 0D;
             this.zedGraphControl2.ScrollMaxX = 0D;
@@ -1175,7 +1177,7 @@
             this.zedGraphControl2.ScrollMinX = 0D;
             this.zedGraphControl2.ScrollMinY = 0D;
             this.zedGraphControl2.ScrollMinY2 = 0D;
-            this.zedGraphControl2.Size = new System.Drawing.Size(565, 324);
+            this.zedGraphControl2.Size = new System.Drawing.Size(571, 330);
             this.zedGraphControl2.TabIndex = 4;
             this.zedGraphControl2.UseExtendedPrintDialog = true;
             // 
@@ -2027,8 +2029,8 @@
             this.zedGraphControl3.IsEnableHZoom = false;
             this.zedGraphControl3.IsEnableVZoom = false;
             this.zedGraphControl3.IsEnableWheelZoom = false;
-            this.zedGraphControl3.Location = new System.Drawing.Point(31, 21);
-            this.zedGraphControl3.Margin = new System.Windows.Forms.Padding(11, 11, 11, 11);
+            this.zedGraphControl3.Location = new System.Drawing.Point(28, 18);
+            this.zedGraphControl3.Margin = new System.Windows.Forms.Padding(8);
             this.zedGraphControl3.Name = "zedGraphControl3";
             this.zedGraphControl3.ScrollGrace = 0D;
             this.zedGraphControl3.ScrollMaxX = 0D;
@@ -2037,7 +2039,7 @@
             this.zedGraphControl3.ScrollMinX = 0D;
             this.zedGraphControl3.ScrollMinY = 0D;
             this.zedGraphControl3.ScrollMinY2 = 0D;
-            this.zedGraphControl3.Size = new System.Drawing.Size(565, 324);
+            this.zedGraphControl3.Size = new System.Drawing.Size(571, 330);
             this.zedGraphControl3.TabIndex = 4;
             this.zedGraphControl3.UseExtendedPrintDialog = true;
             // 
@@ -2545,7 +2547,7 @@
             this.uiTableLayoutPanel14.Controls.Add(this.uiTableLayoutPanel15, 1, 0);
             this.uiTableLayoutPanel14.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiTableLayoutPanel14.Location = new System.Drawing.Point(1126, 846);
-            this.uiTableLayoutPanel14.Margin = new System.Windows.Forms.Padding(6);
+            this.uiTableLayoutPanel14.Margin = new System.Windows.Forms.Padding(6, 6, 6, 6);
             this.uiTableLayoutPanel14.Name = "uiTableLayoutPanel14";
             this.uiTableLayoutPanel14.RowCount = 3;
             this.uiTableLayoutPanel1.SetRowSpan(this.uiTableLayoutPanel14, 3);
@@ -2562,7 +2564,7 @@
             this.uiGroupInfo.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiGroupInfo.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiGroupInfo.Location = new System.Drawing.Point(4, 4);
-            this.uiGroupInfo.Margin = new System.Windows.Forms.Padding(4);
+            this.uiGroupInfo.Margin = new System.Windows.Forms.Padding(4, 4, 4, 4);
             this.uiGroupInfo.MinimumSize = new System.Drawing.Size(2, 2);
             this.uiGroupInfo.Name = "uiGroupInfo";
             this.uiGroupInfo.Padding = new System.Windows.Forms.Padding(0, 64, 0, 0);
@@ -2580,7 +2582,7 @@
             this.z.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 30F));
             this.z.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 40F));
             this.z.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 30F));
-            this.z.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 24F));
+            this.z.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
             this.z.Controls.Add(this.BtnRunLog, 1, 3);
             this.z.Controls.Add(this.RtbInfo, 1, 1);
             this.z.Controls.Add(this.BtnErrorLog, 3, 3);
@@ -2606,7 +2608,7 @@
             this.BtnRunLog.MinimumSize = new System.Drawing.Size(1, 1);
             this.BtnRunLog.Name = "BtnRunLog";
             this.BtnRunLog.Radius = 1;
-            this.BtnRunLog.Size = new System.Drawing.Size(192, 58);
+            this.BtnRunLog.Size = new System.Drawing.Size(193, 58);
             this.BtnRunLog.TabIndex = 52;
             this.BtnRunLog.Text = "运行日志";
             this.BtnRunLog.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
@@ -2625,7 +2627,7 @@
             this.RtbInfo.Padding = new System.Windows.Forms.Padding(2);
             this.RtbInfo.Radius = 1;
             this.RtbInfo.ShowText = false;
-            this.RtbInfo.Size = new System.Drawing.Size(652, 642);
+            this.RtbInfo.Size = new System.Drawing.Size(655, 642);
             this.RtbInfo.TabIndex = 0;
             this.RtbInfo.TextAlignment = System.Drawing.ContentAlignment.MiddleCenter;
             // 
@@ -2634,11 +2636,11 @@
             this.BtnErrorLog.Cursor = System.Windows.Forms.Cursors.Hand;
             this.BtnErrorLog.Dock = System.Windows.Forms.DockStyle.Fill;
             this.BtnErrorLog.Font = new System.Drawing.Font("Arial", 9F);
-            this.BtnErrorLog.Location = new System.Drawing.Point(485, 667);
+            this.BtnErrorLog.Location = new System.Drawing.Point(487, 667);
             this.BtnErrorLog.MinimumSize = new System.Drawing.Size(1, 1);
             this.BtnErrorLog.Name = "BtnErrorLog";
             this.BtnErrorLog.Radius = 1;
-            this.BtnErrorLog.Size = new System.Drawing.Size(192, 58);
+            this.BtnErrorLog.Size = new System.Drawing.Size(193, 58);
             this.BtnErrorLog.TabIndex = 53;
             this.BtnErrorLog.Text = "错误日志";
             this.BtnErrorLog.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
@@ -2649,7 +2651,7 @@
             this.uiTableLayoutPanel15.ColumnCount = 3;
             this.uiTableLayoutPanel15.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 44.07583F));
             this.uiTableLayoutPanel15.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 55.92417F));
-            this.uiTableLayoutPanel15.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 139F));
+            this.uiTableLayoutPanel15.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 126F));
             this.uiTableLayoutPanel15.Controls.Add(this.uiLight3, 2, 3);
             this.uiTableLayoutPanel15.Controls.Add(this.uiLabel58, 0, 2);
             this.uiTableLayoutPanel15.Controls.Add(this.uiLabel57, 0, 1);
@@ -2680,7 +2682,7 @@
             this.uiLight3.CenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
             this.uiLight3.Font = new System.Drawing.Font("宋体", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
             this.uiLight3.Interval = 2000;
-            this.uiLight3.Location = new System.Drawing.Point(832, 524);
+            this.uiLight3.Location = new System.Drawing.Point(838, 524);
             this.uiLight3.Margin = new System.Windows.Forms.Padding(12, 4, 4, 4);
             this.uiLight3.MinimumSize = new System.Drawing.Size(2, 2);
             this.uiLight3.Name = "uiLight3";
@@ -2701,7 +2703,7 @@
             this.uiLabel58.Location = new System.Drawing.Point(4, 324);
             this.uiLabel58.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
             this.uiLabel58.Name = "uiLabel58";
-            this.uiLabel58.Size = new System.Drawing.Size(347, 162);
+            this.uiLabel58.Size = new System.Drawing.Size(353, 162);
             this.uiLabel58.TabIndex = 45;
             this.uiLabel58.Text = "剩余次数";
             this.uiLabel58.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -2714,7 +2716,7 @@
             this.uiLabel57.Location = new System.Drawing.Point(4, 162);
             this.uiLabel57.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
             this.uiLabel57.Name = "uiLabel57";
-            this.uiLabel57.Size = new System.Drawing.Size(347, 162);
+            this.uiLabel57.Size = new System.Drawing.Size(353, 162);
             this.uiLabel57.TabIndex = 44;
             this.uiLabel57.Text = "完成次数";
             this.uiLabel57.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -2727,7 +2729,7 @@
             this.uiLabel56.Location = new System.Drawing.Point(4, 0);
             this.uiLabel56.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
             this.uiLabel56.Name = "uiLabel56";
-            this.uiLabel56.Size = new System.Drawing.Size(347, 162);
+            this.uiLabel56.Size = new System.Drawing.Size(353, 162);
             this.uiLabel56.TabIndex = 43;
             this.uiLabel56.Text = "运行时间";
             this.uiLabel56.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -2742,14 +2744,14 @@
             this.uiTableLayoutPanel23.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
             this.uiTableLayoutPanel23.Controls.Add(this.LedRunCycles, 1, 1);
             this.uiTableLayoutPanel23.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel23.Location = new System.Drawing.Point(359, 166);
-            this.uiTableLayoutPanel23.Margin = new System.Windows.Forms.Padding(4);
+            this.uiTableLayoutPanel23.Location = new System.Drawing.Point(365, 166);
+            this.uiTableLayoutPanel23.Margin = new System.Windows.Forms.Padding(4, 4, 4, 4);
             this.uiTableLayoutPanel23.Name = "uiTableLayoutPanel23";
             this.uiTableLayoutPanel23.RowCount = 3;
             this.uiTableLayoutPanel23.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
             this.uiTableLayoutPanel23.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 90F));
             this.uiTableLayoutPanel23.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
-            this.uiTableLayoutPanel23.Size = new System.Drawing.Size(583, 154);
+            this.uiTableLayoutPanel23.Size = new System.Drawing.Size(577, 154);
             this.uiTableLayoutPanel23.TabIndex = 38;
             this.uiTableLayoutPanel23.TagString = null;
             // 
@@ -2767,9 +2769,9 @@
             this.LedRunCycles.IntervalV = 8;
             this.LedRunCycles.LedBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
             this.LedRunCycles.Location = new System.Drawing.Point(15, 11);
-            this.LedRunCycles.Margin = new System.Windows.Forms.Padding(4);
+            this.LedRunCycles.Margin = new System.Windows.Forms.Padding(4, 4, 4, 4);
             this.LedRunCycles.Name = "LedRunCycles";
-            this.LedRunCycles.Size = new System.Drawing.Size(551, 130);
+            this.LedRunCycles.Size = new System.Drawing.Size(545, 130);
             this.LedRunCycles.TabIndex = 0;
             this.LedRunCycles.Text = "0";
             // 
@@ -2783,14 +2785,14 @@
             this.uiTableLayoutPanel32.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
             this.uiTableLayoutPanel32.Controls.Add(this.LedRunTime, 1, 1);
             this.uiTableLayoutPanel32.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel32.Location = new System.Drawing.Point(359, 4);
-            this.uiTableLayoutPanel32.Margin = new System.Windows.Forms.Padding(4);
+            this.uiTableLayoutPanel32.Location = new System.Drawing.Point(365, 4);
+            this.uiTableLayoutPanel32.Margin = new System.Windows.Forms.Padding(4, 4, 4, 4);
             this.uiTableLayoutPanel32.Name = "uiTableLayoutPanel32";
             this.uiTableLayoutPanel32.RowCount = 3;
             this.uiTableLayoutPanel32.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
             this.uiTableLayoutPanel32.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 90F));
             this.uiTableLayoutPanel32.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
-            this.uiTableLayoutPanel32.Size = new System.Drawing.Size(583, 154);
+            this.uiTableLayoutPanel32.Size = new System.Drawing.Size(577, 154);
             this.uiTableLayoutPanel32.TabIndex = 37;
             this.uiTableLayoutPanel32.TagString = null;
             // 
@@ -2808,9 +2810,9 @@
             this.LedRunTime.IntervalV = 8;
             this.LedRunTime.LedBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
             this.LedRunTime.Location = new System.Drawing.Point(15, 11);
-            this.LedRunTime.Margin = new System.Windows.Forms.Padding(4);
+            this.LedRunTime.Margin = new System.Windows.Forms.Padding(4, 4, 4, 4);
             this.LedRunTime.Name = "LedRunTime";
-            this.LedRunTime.Size = new System.Drawing.Size(551, 130);
+            this.LedRunTime.Size = new System.Drawing.Size(545, 130);
             this.LedRunTime.TabIndex = 0;
             this.LedRunTime.Text = "00D 00H 00M";
             // 
@@ -2824,14 +2826,14 @@
             this.uiTableLayoutPanel41.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
             this.uiTableLayoutPanel41.Controls.Add(this.LedLastCycles, 1, 1);
             this.uiTableLayoutPanel41.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel41.Location = new System.Drawing.Point(359, 328);
-            this.uiTableLayoutPanel41.Margin = new System.Windows.Forms.Padding(4);
+            this.uiTableLayoutPanel41.Location = new System.Drawing.Point(365, 328);
+            this.uiTableLayoutPanel41.Margin = new System.Windows.Forms.Padding(4, 4, 4, 4);
             this.uiTableLayoutPanel41.Name = "uiTableLayoutPanel41";
             this.uiTableLayoutPanel41.RowCount = 3;
             this.uiTableLayoutPanel41.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
             this.uiTableLayoutPanel41.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 90F));
             this.uiTableLayoutPanel41.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
-            this.uiTableLayoutPanel41.Size = new System.Drawing.Size(583, 154);
+            this.uiTableLayoutPanel41.Size = new System.Drawing.Size(577, 154);
             this.uiTableLayoutPanel41.TabIndex = 39;
             this.uiTableLayoutPanel41.TagString = null;
             // 
@@ -2849,9 +2851,9 @@
             this.LedLastCycles.IntervalV = 8;
             this.LedLastCycles.LedBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
             this.LedLastCycles.Location = new System.Drawing.Point(15, 11);
-            this.LedLastCycles.Margin = new System.Windows.Forms.Padding(4);
+            this.LedLastCycles.Margin = new System.Windows.Forms.Padding(4, 4, 4, 4);
             this.LedLastCycles.Name = "LedLastCycles";
-            this.LedLastCycles.Size = new System.Drawing.Size(551, 130);
+            this.LedLastCycles.Size = new System.Drawing.Size(545, 130);
             this.LedLastCycles.TabIndex = 0;
             this.LedLastCycles.Text = "1000000";
             // 
@@ -2862,10 +2864,10 @@
             this.ProcBar.FillColor = System.Drawing.Color.FromArgb(((int)(((byte)(235)))), ((int)(((byte)(243)))), ((int)(((byte)(255)))));
             this.ProcBar.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.ProcBar.Location = new System.Drawing.Point(4, 490);
-            this.ProcBar.Margin = new System.Windows.Forms.Padding(4);
+            this.ProcBar.Margin = new System.Windows.Forms.Padding(4, 4, 4, 4);
             this.ProcBar.MinimumSize = new System.Drawing.Size(4, 4);
             this.ProcBar.Name = "ProcBar";
-            this.ProcBar.Size = new System.Drawing.Size(798, 154);
+            this.ProcBar.Size = new System.Drawing.Size(811, 154);
             this.ProcBar.Style = Sunny.UI.UIStyle.Custom;
             this.ProcBar.TabIndex = 41;
             this.ProcBar.Text = "uiProcessBar1";
@@ -2893,7 +2895,7 @@
             this.uiTableLayoutPanel42.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 50F));
             this.uiTableLayoutPanel42.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 47F));
             this.uiTableLayoutPanel42.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 50F));
-            this.uiTableLayoutPanel42.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 21F));
+            this.uiTableLayoutPanel42.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
             this.uiTableLayoutPanel42.Controls.Add(this.BtnStartTest, 1, 1);
             this.uiTableLayoutPanel42.Controls.Add(this.BtnStop, 3, 1);
             this.uiTableLayoutPanel42.Dock = System.Windows.Forms.DockStyle.Fill;
@@ -3372,7 +3374,7 @@
             this.uiGroupBox1.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiGroupBox1.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiGroupBox1.Location = new System.Drawing.Point(22, 4);
-            this.uiGroupBox1.Margin = new System.Windows.Forms.Padding(4);
+            this.uiGroupBox1.Margin = new System.Windows.Forms.Padding(4, 4, 4, 4);
             this.uiGroupBox1.MinimumSize = new System.Drawing.Size(2, 2);
             this.uiGroupBox1.Name = "uiGroupBox1";
             this.uiGroupBox1.Padding = new System.Windows.Forms.Padding(0, 64, 0, 0);
@@ -3399,7 +3401,9 @@
             this.uiTableLayoutPanel2.Controls.Add(this.TxtTargetCycles, 3, 7);
             this.uiTableLayoutPanel2.Controls.Add(this.TxtTestCycleTime, 3, 5);
             this.uiTableLayoutPanel2.Controls.Add(this.uiLabel7, 1, 1);
+            this.uiTableLayoutPanel2.Controls.Add(this.SwitchEpb4, 5, 14);
             this.uiTableLayoutPanel2.Controls.Add(this.uiLabel9, 1, 5);
+            this.uiTableLayoutPanel2.Controls.Add(this.SwitchPower4, 4, 14);
             this.uiTableLayoutPanel2.Controls.Add(this.uiLabel10, 1, 7);
             this.uiTableLayoutPanel2.Controls.Add(this.TxtTestName, 3, 1);
             this.uiTableLayoutPanel2.Controls.Add(this.uiLabel8, 1, 3);
@@ -3485,6 +3489,19 @@
             this.uiLabel7.Text = "试验名称";
             this.uiLabel7.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
             // 
+            // SwitchEpb4
+            // 
+            this.SwitchEpb4.ActiveText = "RUN";
+            this.SwitchEpb4.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.SwitchEpb4.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.SwitchEpb4.InActiveText = "STOP";
+            this.SwitchEpb4.Location = new System.Drawing.Point(821, 730);
+            this.SwitchEpb4.MinimumSize = new System.Drawing.Size(1, 1);
+            this.SwitchEpb4.Name = "SwitchEpb4";
+            this.SwitchEpb4.Size = new System.Drawing.Size(21, 13);
+            this.SwitchEpb4.TabIndex = 35;
+            this.SwitchEpb4.Text = "uiSwitch2";
+            // 
             // uiLabel9
             // 
             this.uiTableLayoutPanel2.SetColumnSpan(this.uiLabel9, 2);
@@ -3497,6 +3514,21 @@
             this.uiLabel9.TabIndex = 35;
             this.uiLabel9.Text = "频   率";
             this.uiLabel9.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // SwitchPower4
+            // 
+            this.SwitchPower4.ActiveColor = System.Drawing.Color.LimeGreen;
+            this.SwitchPower4.ActiveText = "ON";
+            this.SwitchPower4.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.SwitchPower4.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.SwitchPower4.InActiveText = "OFF";
+            this.SwitchPower4.Location = new System.Drawing.Point(729, 730);
+            this.SwitchPower4.MinimumSize = new System.Drawing.Size(1, 1);
+            this.SwitchPower4.Name = "SwitchPower4";
+            this.SwitchPower4.Size = new System.Drawing.Size(52, 13);
+            this.SwitchPower4.SwitchShape = Sunny.UI.UISwitch.UISwitchShape.Square;
+            this.SwitchPower4.TabIndex = 34;
+            this.SwitchPower4.Text = "uiSwitch2";
             // 
             // uiLabel10
             // 
@@ -3992,21 +4024,21 @@
             this.toggleSwitch1.TabIndex = 52;
             this.toggleSwitch1.Toggled += new System.EventHandler(this.toggleSwitch1_Toggled);
             // 
-            // EPBGroupBox
+            // uiGroupBox2
             // 
-            this.EPBGroupBox.Controls.Add(this.tableLayoutPanel1);
-            this.EPBGroupBox.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.EPBGroupBox.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.EPBGroupBox.Location = new System.Drawing.Point(22, 844);
-            this.EPBGroupBox.Margin = new System.Windows.Forms.Padding(4);
-            this.EPBGroupBox.MinimumSize = new System.Drawing.Size(2, 2);
-            this.EPBGroupBox.Name = "EPBGroupBox";
-            this.EPBGroupBox.Padding = new System.Windows.Forms.Padding(0, 64, 0, 0);
-            this.uiTableLayoutPanel1.SetRowSpan(this.EPBGroupBox, 3);
-            this.EPBGroupBox.Size = new System.Drawing.Size(1076, 814);
-            this.EPBGroupBox.TabIndex = 4;
-            this.EPBGroupBox.Text = "EPB 控制";
-            this.EPBGroupBox.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
+            this.uiGroupBox2.Controls.Add(this.tableLayoutPanel1);
+            this.uiGroupBox2.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiGroupBox2.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiGroupBox2.Location = new System.Drawing.Point(22, 844);
+            this.uiGroupBox2.Margin = new System.Windows.Forms.Padding(4, 4, 4, 4);
+            this.uiGroupBox2.MinimumSize = new System.Drawing.Size(2, 2);
+            this.uiGroupBox2.Name = "uiGroupBox2";
+            this.uiGroupBox2.Padding = new System.Windows.Forms.Padding(0, 64, 0, 0);
+            this.uiTableLayoutPanel1.SetRowSpan(this.uiGroupBox2, 3);
+            this.uiGroupBox2.Size = new System.Drawing.Size(1076, 814);
+            this.uiGroupBox2.TabIndex = 4;
+            this.uiGroupBox2.Text = "EPB 控制";
+            this.uiGroupBox2.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
             // 
             // tableLayoutPanel1
             // 
@@ -4016,7 +4048,7 @@
             this.tableLayoutPanel1.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 50F));
             this.tableLayoutPanel1.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 1F));
             this.tableLayoutPanel1.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 50F));
-            this.tableLayoutPanel1.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 19F));
+            this.tableLayoutPanel1.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 18F));
             this.tableLayoutPanel1.Controls.Add(this.uiTableLayoutPanel11, 3, 1);
             this.tableLayoutPanel1.Controls.Add(this.uiTableLayoutPanel12, 1, 3);
             this.tableLayoutPanel1.Controls.Add(this.uiTableLayoutPanel13, 3, 3);
@@ -4028,7 +4060,7 @@
             this.tableLayoutPanel1.Location = new System.Drawing.Point(0, 64);
             this.tableLayoutPanel1.Name = "tableLayoutPanel1";
             this.tableLayoutPanel1.RowCount = 5;
-            this.tableLayoutPanel1.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 15F));
+            this.tableLayoutPanel1.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 18F));
             this.tableLayoutPanel1.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 50F));
             this.tableLayoutPanel1.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 1F));
             this.tableLayoutPanel1.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 50F));
@@ -4044,25 +4076,25 @@
             this.uiTableLayoutPanel11.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 25.92593F));
             this.uiTableLayoutPanel11.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 24.75634F));
             this.uiTableLayoutPanel11.Controls.Add(this.LabEpb4, 3, 0);
+            this.uiTableLayoutPanel11.Controls.Add(this.SwitchPower5, 1, 1);
+            this.uiTableLayoutPanel11.Controls.Add(this.SwitchEpb5, 2, 1);
             this.uiTableLayoutPanel11.Controls.Add(this.LabEpb5, 3, 1);
+            this.uiTableLayoutPanel11.Controls.Add(this.SwitchPower6, 1, 2);
+            this.uiTableLayoutPanel11.Controls.Add(this.SwitchEpb6, 2, 2);
             this.uiTableLayoutPanel11.Controls.Add(this.LabEpb6, 3, 2);
             this.uiTableLayoutPanel11.Controls.Add(this.uiLabel23, 0, 0);
             this.uiTableLayoutPanel11.Controls.Add(this.uiLabel24, 0, 1);
             this.uiTableLayoutPanel11.Controls.Add(this.uiLabel25, 0, 2);
-            this.uiTableLayoutPanel11.Controls.Add(this.SwitchEpb4, 2, 0);
-            this.uiTableLayoutPanel11.Controls.Add(this.SwitchPower4, 1, 0);
-            this.uiTableLayoutPanel11.Controls.Add(this.SwitchPower5, 1, 1);
-            this.uiTableLayoutPanel11.Controls.Add(this.SwitchPower6, 1, 2);
-            this.uiTableLayoutPanel11.Controls.Add(this.SwitchEpb5, 2, 1);
-            this.uiTableLayoutPanel11.Controls.Add(this.SwitchEpb6, 2, 2);
+            this.uiTableLayoutPanel11.Controls.Add(this.toggleButton2, 2, 0);
+            this.uiTableLayoutPanel11.Controls.Add(this.toggleButton1, 1, 0);
             this.uiTableLayoutPanel11.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel11.Location = new System.Drawing.Point(541, 18);
+            this.uiTableLayoutPanel11.Location = new System.Drawing.Point(541, 21);
             this.uiTableLayoutPanel11.Name = "uiTableLayoutPanel11";
             this.uiTableLayoutPanel11.RowCount = 3;
             this.uiTableLayoutPanel11.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
             this.uiTableLayoutPanel11.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
             this.uiTableLayoutPanel11.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
-            this.uiTableLayoutPanel11.Size = new System.Drawing.Size(513, 352);
+            this.uiTableLayoutPanel11.Size = new System.Drawing.Size(513, 350);
             this.uiTableLayoutPanel11.TabIndex = 0;
             this.uiTableLayoutPanel11.TagString = null;
             // 
@@ -4073,31 +4105,87 @@
             this.LabEpb4.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
             this.LabEpb4.Location = new System.Drawing.Point(388, 0);
             this.LabEpb4.Name = "LabEpb4";
-            this.LabEpb4.Size = new System.Drawing.Size(122, 117);
+            this.LabEpb4.Size = new System.Drawing.Size(122, 116);
             this.LabEpb4.TabIndex = 36;
             this.LabEpb4.Text = "100000";
             this.LabEpb4.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
             // 
+            // SwitchPower5
+            // 
+            this.SwitchPower5.ActiveColor = System.Drawing.Color.LimeGreen;
+            this.SwitchPower5.ActiveText = "ON";
+            this.SwitchPower5.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.SwitchPower5.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.SwitchPower5.InActiveText = "OFF";
+            this.SwitchPower5.Location = new System.Drawing.Point(163, 164);
+            this.SwitchPower5.MinimumSize = new System.Drawing.Size(1, 1);
+            this.SwitchPower5.Name = "SwitchPower5";
+            this.SwitchPower5.Size = new System.Drawing.Size(52, 20);
+            this.SwitchPower5.SwitchShape = Sunny.UI.UISwitch.UISwitchShape.Square;
+            this.SwitchPower5.TabIndex = 34;
+            this.SwitchPower5.Text = "uiSwitch2";
+            // 
+            // SwitchEpb5
+            // 
+            this.SwitchEpb5.ActiveText = "RUN";
+            this.SwitchEpb5.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.SwitchEpb5.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.SwitchEpb5.InActiveText = "STOP";
+            this.SwitchEpb5.Location = new System.Drawing.Point(292, 164);
+            this.SwitchEpb5.MinimumSize = new System.Drawing.Size(1, 1);
+            this.SwitchEpb5.Name = "SwitchEpb5";
+            this.SwitchEpb5.Size = new System.Drawing.Size(53, 20);
+            this.SwitchEpb5.TabIndex = 35;
+            this.SwitchEpb5.Text = "uiSwitch2";
+            // 
             // LabEpb5
             // 
-            this.LabEpb5.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.LabEpb5.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.LabEpb5.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.LabEpb5.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.LabEpb5.Location = new System.Drawing.Point(388, 117);
+            this.LabEpb5.Location = new System.Drawing.Point(422, 161);
             this.LabEpb5.Name = "LabEpb5";
-            this.LabEpb5.Size = new System.Drawing.Size(122, 117);
+            this.LabEpb5.Size = new System.Drawing.Size(54, 26);
             this.LabEpb5.TabIndex = 36;
             this.LabEpb5.Text = "100000";
             this.LabEpb5.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
             // 
+            // SwitchPower6
+            // 
+            this.SwitchPower6.ActiveColor = System.Drawing.Color.LimeGreen;
+            this.SwitchPower6.ActiveText = "ON";
+            this.SwitchPower6.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.SwitchPower6.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.SwitchPower6.InActiveText = "OFF";
+            this.SwitchPower6.Location = new System.Drawing.Point(163, 280);
+            this.SwitchPower6.MinimumSize = new System.Drawing.Size(1, 1);
+            this.SwitchPower6.Name = "SwitchPower6";
+            this.SwitchPower6.Size = new System.Drawing.Size(52, 21);
+            this.SwitchPower6.SwitchShape = Sunny.UI.UISwitch.UISwitchShape.Square;
+            this.SwitchPower6.TabIndex = 34;
+            this.SwitchPower6.Text = "uiSwitch2";
+            // 
+            // SwitchEpb6
+            // 
+            this.SwitchEpb6.ActiveText = "RUN";
+            this.SwitchEpb6.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.SwitchEpb6.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.SwitchEpb6.InActiveText = "STOP";
+            this.SwitchEpb6.Location = new System.Drawing.Point(292, 280);
+            this.SwitchEpb6.MinimumSize = new System.Drawing.Size(1, 1);
+            this.SwitchEpb6.Name = "SwitchEpb6";
+            this.SwitchEpb6.Size = new System.Drawing.Size(53, 21);
+            this.SwitchEpb6.TabIndex = 35;
+            this.SwitchEpb6.Text = "uiSwitch2";
+            // 
             // LabEpb6
             // 
-            this.LabEpb6.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.LabEpb6.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.LabEpb6.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.LabEpb6.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.LabEpb6.Location = new System.Drawing.Point(388, 234);
+            this.LabEpb6.Location = new System.Drawing.Point(422, 277);
             this.LabEpb6.Name = "LabEpb6";
-            this.LabEpb6.Size = new System.Drawing.Size(122, 118);
+            this.LabEpb6.Size = new System.Drawing.Size(54, 28);
             this.LabEpb6.TabIndex = 36;
             this.LabEpb6.Text = "100000";
             this.LabEpb6.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -4109,31 +4197,31 @@
             this.uiLabel23.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
             this.uiLabel23.Location = new System.Drawing.Point(3, 0);
             this.uiLabel23.Name = "uiLabel23";
-            this.uiLabel23.Size = new System.Drawing.Size(120, 117);
+            this.uiLabel23.Size = new System.Drawing.Size(120, 116);
             this.uiLabel23.TabIndex = 37;
             this.uiLabel23.Text = "EPB 04";
             this.uiLabel23.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
             // 
             // uiLabel24
             // 
-            this.uiLabel24.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabel24.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiLabel24.Font = new System.Drawing.Font("Arial", 10F);
             this.uiLabel24.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel24.Location = new System.Drawing.Point(3, 117);
+            this.uiLabel24.Location = new System.Drawing.Point(33, 161);
             this.uiLabel24.Name = "uiLabel24";
-            this.uiLabel24.Size = new System.Drawing.Size(120, 117);
+            this.uiLabel24.Size = new System.Drawing.Size(60, 26);
             this.uiLabel24.TabIndex = 37;
             this.uiLabel24.Text = "EPB 05";
             this.uiLabel24.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
             // 
             // uiLabel25
             // 
-            this.uiLabel25.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabel25.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiLabel25.Font = new System.Drawing.Font("Arial", 10F);
             this.uiLabel25.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel25.Location = new System.Drawing.Point(3, 234);
+            this.uiLabel25.Location = new System.Drawing.Point(33, 277);
             this.uiLabel25.Name = "uiLabel25";
-            this.uiLabel25.Size = new System.Drawing.Size(120, 118);
+            this.uiLabel25.Size = new System.Drawing.Size(60, 28);
             this.uiLabel25.TabIndex = 37;
             this.uiLabel25.Text = "EPB 06";
             this.uiLabel25.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -4141,101 +4229,185 @@
             // uiTableLayoutPanel12
             // 
             this.uiTableLayoutPanel12.ColumnCount = 4;
-            this.uiTableLayoutPanel12.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 24.65385F));
-            this.uiTableLayoutPanel12.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 24.85307F));
-            this.uiTableLayoutPanel12.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 25.82926F));
-            this.uiTableLayoutPanel12.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 24.66381F));
+            this.uiTableLayoutPanel12.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 27.18447F));
+            this.uiTableLayoutPanel12.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 24.27184F));
+            this.uiTableLayoutPanel12.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 24.27184F));
+            this.uiTableLayoutPanel12.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 24.27184F));
             this.uiTableLayoutPanel12.Controls.Add(this.LabEpb7, 3, 0);
+            this.uiTableLayoutPanel12.Controls.Add(this.SwitchPower8, 1, 1);
+            this.uiTableLayoutPanel12.Controls.Add(this.SwitchEpb8, 2, 1);
+            this.uiTableLayoutPanel12.Controls.Add(this.SwitchEpb7, 2, 0);
+            this.uiTableLayoutPanel12.Controls.Add(this.SwitchPower7, 1, 0);
             this.uiTableLayoutPanel12.Controls.Add(this.LabEpb8, 3, 1);
+            this.uiTableLayoutPanel12.Controls.Add(this.SwitchEpb9, 2, 2);
             this.uiTableLayoutPanel12.Controls.Add(this.LabEpb9, 3, 2);
+            this.uiTableLayoutPanel12.Controls.Add(this.SwitchPower9, 1, 2);
             this.uiTableLayoutPanel12.Controls.Add(this.uiLabel20, 0, 0);
             this.uiTableLayoutPanel12.Controls.Add(this.uiLabel21, 0, 1);
             this.uiTableLayoutPanel12.Controls.Add(this.uiLabel22, 0, 2);
-            this.uiTableLayoutPanel12.Controls.Add(this.SwitchEpb7, 2, 0);
-            this.uiTableLayoutPanel12.Controls.Add(this.SwitchPower8, 1, 1);
-            this.uiTableLayoutPanel12.Controls.Add(this.SwitchPower7, 1, 0);
-            this.uiTableLayoutPanel12.Controls.Add(this.SwitchPower9, 1, 2);
-            this.uiTableLayoutPanel12.Controls.Add(this.tSwitchEpb9, 2, 2);
-            this.uiTableLayoutPanel12.Controls.Add(this.SwitchEpb8, 2, 1);
             this.uiTableLayoutPanel12.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel12.Location = new System.Drawing.Point(21, 377);
+            this.uiTableLayoutPanel12.Location = new System.Drawing.Point(21, 378);
             this.uiTableLayoutPanel12.Name = "uiTableLayoutPanel12";
             this.uiTableLayoutPanel12.RowCount = 3;
             this.uiTableLayoutPanel12.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
             this.uiTableLayoutPanel12.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
             this.uiTableLayoutPanel12.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
-            this.uiTableLayoutPanel12.Size = new System.Drawing.Size(513, 352);
+            this.uiTableLayoutPanel12.Size = new System.Drawing.Size(513, 350);
             this.uiTableLayoutPanel12.TabIndex = 0;
             this.uiTableLayoutPanel12.TagString = null;
             // 
             // LabEpb7
             // 
-            this.LabEpb7.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.LabEpb7.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.LabEpb7.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.LabEpb7.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.LabEpb7.Location = new System.Drawing.Point(388, 0);
+            this.LabEpb7.Location = new System.Drawing.Point(423, 45);
             this.LabEpb7.Name = "LabEpb7";
-            this.LabEpb7.Size = new System.Drawing.Size(122, 117);
+            this.LabEpb7.Size = new System.Drawing.Size(54, 26);
             this.LabEpb7.TabIndex = 36;
             this.LabEpb7.Text = "100000";
             this.LabEpb7.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
             // 
+            // SwitchPower8
+            // 
+            this.SwitchPower8.ActiveColor = System.Drawing.Color.LimeGreen;
+            this.SwitchPower8.ActiveText = "ON";
+            this.SwitchPower8.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.SwitchPower8.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.SwitchPower8.InActiveText = "OFF";
+            this.SwitchPower8.Location = new System.Drawing.Point(175, 164);
+            this.SwitchPower8.MinimumSize = new System.Drawing.Size(1, 1);
+            this.SwitchPower8.Name = "SwitchPower8";
+            this.SwitchPower8.Size = new System.Drawing.Size(52, 20);
+            this.SwitchPower8.SwitchShape = Sunny.UI.UISwitch.UISwitchShape.Square;
+            this.SwitchPower8.TabIndex = 34;
+            this.SwitchPower8.Text = "uiSwitch2";
+            // 
+            // SwitchEpb8
+            // 
+            this.SwitchEpb8.ActiveText = "RUN";
+            this.SwitchEpb8.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.SwitchEpb8.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.SwitchEpb8.InActiveText = "STOP";
+            this.SwitchEpb8.Location = new System.Drawing.Point(298, 164);
+            this.SwitchEpb8.MinimumSize = new System.Drawing.Size(1, 1);
+            this.SwitchEpb8.Name = "SwitchEpb8";
+            this.SwitchEpb8.Size = new System.Drawing.Size(53, 20);
+            this.SwitchEpb8.TabIndex = 35;
+            this.SwitchEpb8.Text = "uiSwitch2";
+            // 
+            // SwitchEpb7
+            // 
+            this.SwitchEpb7.ActiveText = "RUN";
+            this.SwitchEpb7.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.SwitchEpb7.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.SwitchEpb7.InActiveText = "STOP";
+            this.SwitchEpb7.Location = new System.Drawing.Point(298, 48);
+            this.SwitchEpb7.MinimumSize = new System.Drawing.Size(1, 1);
+            this.SwitchEpb7.Name = "SwitchEpb7";
+            this.SwitchEpb7.Size = new System.Drawing.Size(53, 20);
+            this.SwitchEpb7.TabIndex = 35;
+            this.SwitchEpb7.Text = "uiSwitch2";
+            // 
+            // SwitchPower7
+            // 
+            this.SwitchPower7.ActiveColor = System.Drawing.Color.LimeGreen;
+            this.SwitchPower7.ActiveText = "ON";
+            this.SwitchPower7.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.SwitchPower7.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.SwitchPower7.InActiveText = "OFF";
+            this.SwitchPower7.Location = new System.Drawing.Point(175, 48);
+            this.SwitchPower7.MinimumSize = new System.Drawing.Size(1, 1);
+            this.SwitchPower7.Name = "SwitchPower7";
+            this.SwitchPower7.Size = new System.Drawing.Size(52, 20);
+            this.SwitchPower7.SwitchShape = Sunny.UI.UISwitch.UISwitchShape.Square;
+            this.SwitchPower7.TabIndex = 34;
+            this.SwitchPower7.Text = "uiSwitch2";
+            // 
             // LabEpb8
             // 
-            this.LabEpb8.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.LabEpb8.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.LabEpb8.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.LabEpb8.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.LabEpb8.Location = new System.Drawing.Point(388, 117);
+            this.LabEpb8.Location = new System.Drawing.Point(423, 161);
             this.LabEpb8.Name = "LabEpb8";
-            this.LabEpb8.Size = new System.Drawing.Size(122, 117);
+            this.LabEpb8.Size = new System.Drawing.Size(54, 26);
             this.LabEpb8.TabIndex = 36;
             this.LabEpb8.Text = "100000";
             this.LabEpb8.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
             // 
+            // SwitchEpb9
+            // 
+            this.SwitchEpb9.ActiveText = "RUN";
+            this.SwitchEpb9.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.SwitchEpb9.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.SwitchEpb9.InActiveText = "STOP";
+            this.SwitchEpb9.Location = new System.Drawing.Point(298, 280);
+            this.SwitchEpb9.MinimumSize = new System.Drawing.Size(1, 1);
+            this.SwitchEpb9.Name = "SwitchEpb9";
+            this.SwitchEpb9.Size = new System.Drawing.Size(53, 21);
+            this.SwitchEpb9.TabIndex = 35;
+            this.SwitchEpb9.Text = "uiSwitch2";
+            // 
             // LabEpb9
             // 
-            this.LabEpb9.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.LabEpb9.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.LabEpb9.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.LabEpb9.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.LabEpb9.Location = new System.Drawing.Point(388, 234);
+            this.LabEpb9.Location = new System.Drawing.Point(423, 277);
             this.LabEpb9.Name = "LabEpb9";
-            this.LabEpb9.Size = new System.Drawing.Size(122, 118);
+            this.LabEpb9.Size = new System.Drawing.Size(54, 28);
             this.LabEpb9.TabIndex = 36;
             this.LabEpb9.Text = "100000";
             this.LabEpb9.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
             // 
+            // SwitchPower9
+            // 
+            this.SwitchPower9.ActiveColor = System.Drawing.Color.LimeGreen;
+            this.SwitchPower9.ActiveText = "ON";
+            this.SwitchPower9.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.SwitchPower9.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.SwitchPower9.InActiveText = "OFF";
+            this.SwitchPower9.Location = new System.Drawing.Point(175, 280);
+            this.SwitchPower9.MinimumSize = new System.Drawing.Size(1, 1);
+            this.SwitchPower9.Name = "SwitchPower9";
+            this.SwitchPower9.Size = new System.Drawing.Size(52, 21);
+            this.SwitchPower9.SwitchShape = Sunny.UI.UISwitch.UISwitchShape.Square;
+            this.SwitchPower9.TabIndex = 34;
+            this.SwitchPower9.Text = "uiSwitch2";
+            // 
             // uiLabel20
             // 
-            this.uiLabel20.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabel20.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiLabel20.Font = new System.Drawing.Font("Arial", 10F);
             this.uiLabel20.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel20.Location = new System.Drawing.Point(3, 0);
+            this.uiLabel20.Location = new System.Drawing.Point(39, 45);
             this.uiLabel20.Name = "uiLabel20";
-            this.uiLabel20.Size = new System.Drawing.Size(120, 117);
+            this.uiLabel20.Size = new System.Drawing.Size(60, 26);
             this.uiLabel20.TabIndex = 37;
             this.uiLabel20.Text = "EPB 07";
             this.uiLabel20.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
             // 
             // uiLabel21
             // 
-            this.uiLabel21.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabel21.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiLabel21.Font = new System.Drawing.Font("Arial", 10F);
             this.uiLabel21.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel21.Location = new System.Drawing.Point(3, 117);
+            this.uiLabel21.Location = new System.Drawing.Point(39, 161);
             this.uiLabel21.Name = "uiLabel21";
-            this.uiLabel21.Size = new System.Drawing.Size(120, 117);
+            this.uiLabel21.Size = new System.Drawing.Size(60, 26);
             this.uiLabel21.TabIndex = 37;
             this.uiLabel21.Text = "EPB 08";
             this.uiLabel21.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
             // 
             // uiLabel22
             // 
-            this.uiLabel22.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabel22.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiLabel22.Font = new System.Drawing.Font("Arial", 10F);
             this.uiLabel22.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel22.Location = new System.Drawing.Point(3, 234);
+            this.uiLabel22.Location = new System.Drawing.Point(39, 277);
             this.uiLabel22.Name = "uiLabel22";
-            this.uiLabel22.Size = new System.Drawing.Size(120, 118);
+            this.uiLabel22.Size = new System.Drawing.Size(60, 28);
             this.uiLabel22.TabIndex = 37;
             this.uiLabel22.Text = "EPB 09";
             this.uiLabel22.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -4243,101 +4415,185 @@
             // uiTableLayoutPanel13
             // 
             this.uiTableLayoutPanel13.ColumnCount = 4;
-            this.uiTableLayoutPanel13.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 24.65385F));
-            this.uiTableLayoutPanel13.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 24.85307F));
-            this.uiTableLayoutPanel13.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 25.82926F));
-            this.uiTableLayoutPanel13.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 24.66381F));
+            this.uiTableLayoutPanel13.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 27.18447F));
+            this.uiTableLayoutPanel13.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 24.27184F));
+            this.uiTableLayoutPanel13.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 24.27184F));
+            this.uiTableLayoutPanel13.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 24.27184F));
             this.uiTableLayoutPanel13.Controls.Add(this.LabEpb10, 3, 0);
+            this.uiTableLayoutPanel13.Controls.Add(this.SwitchPower11, 1, 1);
+            this.uiTableLayoutPanel13.Controls.Add(this.SwitchEpb11, 2, 1);
+            this.uiTableLayoutPanel13.Controls.Add(this.SwitchEpb10, 2, 0);
+            this.uiTableLayoutPanel13.Controls.Add(this.SwitchPower10, 1, 0);
             this.uiTableLayoutPanel13.Controls.Add(this.LabEpb11, 3, 1);
+            this.uiTableLayoutPanel13.Controls.Add(this.SwitchPower12, 1, 2);
+            this.uiTableLayoutPanel13.Controls.Add(this.SwitchEpb12, 2, 2);
             this.uiTableLayoutPanel13.Controls.Add(this.LabEpb12, 3, 2);
             this.uiTableLayoutPanel13.Controls.Add(this.uiLabel26, 0, 0);
             this.uiTableLayoutPanel13.Controls.Add(this.uiLabel27, 0, 1);
             this.uiTableLayoutPanel13.Controls.Add(this.uiLabel28, 0, 2);
-            this.uiTableLayoutPanel13.Controls.Add(this.SwitchEpb11, 2, 1);
-            this.uiTableLayoutPanel13.Controls.Add(this.SwitchPower10, 1, 0);
-            this.uiTableLayoutPanel13.Controls.Add(this.SwitchPower11, 1, 1);
-            this.uiTableLayoutPanel13.Controls.Add(this.SwitchPower12, 1, 2);
-            this.uiTableLayoutPanel13.Controls.Add(this.SwitchEpb12, 2, 2);
-            this.uiTableLayoutPanel13.Controls.Add(this.SwitchEpb10, 2, 0);
             this.uiTableLayoutPanel13.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel13.Location = new System.Drawing.Point(541, 377);
+            this.uiTableLayoutPanel13.Location = new System.Drawing.Point(541, 378);
             this.uiTableLayoutPanel13.Name = "uiTableLayoutPanel13";
             this.uiTableLayoutPanel13.RowCount = 3;
             this.uiTableLayoutPanel13.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
             this.uiTableLayoutPanel13.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
             this.uiTableLayoutPanel13.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
-            this.uiTableLayoutPanel13.Size = new System.Drawing.Size(513, 352);
+            this.uiTableLayoutPanel13.Size = new System.Drawing.Size(513, 350);
             this.uiTableLayoutPanel13.TabIndex = 0;
             this.uiTableLayoutPanel13.TagString = null;
             // 
             // LabEpb10
             // 
-            this.LabEpb10.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.LabEpb10.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.LabEpb10.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.LabEpb10.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.LabEpb10.Location = new System.Drawing.Point(388, 0);
+            this.LabEpb10.Location = new System.Drawing.Point(423, 45);
             this.LabEpb10.Name = "LabEpb10";
-            this.LabEpb10.Size = new System.Drawing.Size(122, 117);
+            this.LabEpb10.Size = new System.Drawing.Size(54, 26);
             this.LabEpb10.TabIndex = 36;
             this.LabEpb10.Text = "100000";
             this.LabEpb10.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
             // 
+            // SwitchPower11
+            // 
+            this.SwitchPower11.ActiveColor = System.Drawing.Color.LimeGreen;
+            this.SwitchPower11.ActiveText = "ON";
+            this.SwitchPower11.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.SwitchPower11.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.SwitchPower11.InActiveText = "OFF";
+            this.SwitchPower11.Location = new System.Drawing.Point(175, 164);
+            this.SwitchPower11.MinimumSize = new System.Drawing.Size(1, 1);
+            this.SwitchPower11.Name = "SwitchPower11";
+            this.SwitchPower11.Size = new System.Drawing.Size(52, 20);
+            this.SwitchPower11.SwitchShape = Sunny.UI.UISwitch.UISwitchShape.Square;
+            this.SwitchPower11.TabIndex = 34;
+            this.SwitchPower11.Text = "uiSwitch2";
+            // 
+            // SwitchEpb11
+            // 
+            this.SwitchEpb11.ActiveText = "RUN";
+            this.SwitchEpb11.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.SwitchEpb11.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.SwitchEpb11.InActiveText = "STOP";
+            this.SwitchEpb11.Location = new System.Drawing.Point(298, 164);
+            this.SwitchEpb11.MinimumSize = new System.Drawing.Size(1, 1);
+            this.SwitchEpb11.Name = "SwitchEpb11";
+            this.SwitchEpb11.Size = new System.Drawing.Size(53, 20);
+            this.SwitchEpb11.TabIndex = 35;
+            this.SwitchEpb11.Text = "uiSwitch2";
+            // 
+            // SwitchEpb10
+            // 
+            this.SwitchEpb10.ActiveText = "RUN";
+            this.SwitchEpb10.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.SwitchEpb10.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.SwitchEpb10.InActiveText = "STOP";
+            this.SwitchEpb10.Location = new System.Drawing.Point(298, 48);
+            this.SwitchEpb10.MinimumSize = new System.Drawing.Size(1, 1);
+            this.SwitchEpb10.Name = "SwitchEpb10";
+            this.SwitchEpb10.Size = new System.Drawing.Size(53, 20);
+            this.SwitchEpb10.TabIndex = 35;
+            this.SwitchEpb10.Text = "uiSwitch2";
+            // 
+            // SwitchPower10
+            // 
+            this.SwitchPower10.ActiveColor = System.Drawing.Color.LimeGreen;
+            this.SwitchPower10.ActiveText = "ON";
+            this.SwitchPower10.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.SwitchPower10.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.SwitchPower10.InActiveText = "OFF";
+            this.SwitchPower10.Location = new System.Drawing.Point(175, 48);
+            this.SwitchPower10.MinimumSize = new System.Drawing.Size(1, 1);
+            this.SwitchPower10.Name = "SwitchPower10";
+            this.SwitchPower10.Size = new System.Drawing.Size(52, 20);
+            this.SwitchPower10.SwitchShape = Sunny.UI.UISwitch.UISwitchShape.Square;
+            this.SwitchPower10.TabIndex = 34;
+            this.SwitchPower10.Text = "uiSwitch2";
+            // 
             // LabEpb11
             // 
-            this.LabEpb11.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.LabEpb11.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.LabEpb11.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.LabEpb11.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.LabEpb11.Location = new System.Drawing.Point(388, 117);
+            this.LabEpb11.Location = new System.Drawing.Point(423, 161);
             this.LabEpb11.Name = "LabEpb11";
-            this.LabEpb11.Size = new System.Drawing.Size(122, 117);
+            this.LabEpb11.Size = new System.Drawing.Size(54, 26);
             this.LabEpb11.TabIndex = 36;
             this.LabEpb11.Text = "100000";
             this.LabEpb11.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
             // 
+            // SwitchPower12
+            // 
+            this.SwitchPower12.ActiveColor = System.Drawing.Color.LimeGreen;
+            this.SwitchPower12.ActiveText = "ON";
+            this.SwitchPower12.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.SwitchPower12.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.SwitchPower12.InActiveText = "OFF";
+            this.SwitchPower12.Location = new System.Drawing.Point(175, 280);
+            this.SwitchPower12.MinimumSize = new System.Drawing.Size(1, 1);
+            this.SwitchPower12.Name = "SwitchPower12";
+            this.SwitchPower12.Size = new System.Drawing.Size(52, 21);
+            this.SwitchPower12.SwitchShape = Sunny.UI.UISwitch.UISwitchShape.Square;
+            this.SwitchPower12.TabIndex = 34;
+            this.SwitchPower12.Text = "uiSwitch2";
+            // 
+            // SwitchEpb12
+            // 
+            this.SwitchEpb12.ActiveText = "RUN";
+            this.SwitchEpb12.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.SwitchEpb12.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.SwitchEpb12.InActiveText = "STOP";
+            this.SwitchEpb12.Location = new System.Drawing.Point(298, 280);
+            this.SwitchEpb12.MinimumSize = new System.Drawing.Size(1, 1);
+            this.SwitchEpb12.Name = "SwitchEpb12";
+            this.SwitchEpb12.Size = new System.Drawing.Size(53, 21);
+            this.SwitchEpb12.TabIndex = 35;
+            this.SwitchEpb12.Text = "uiSwitch2";
+            // 
             // LabEpb12
             // 
-            this.LabEpb12.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.LabEpb12.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.LabEpb12.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.LabEpb12.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.LabEpb12.Location = new System.Drawing.Point(388, 234);
+            this.LabEpb12.Location = new System.Drawing.Point(423, 277);
             this.LabEpb12.Name = "LabEpb12";
-            this.LabEpb12.Size = new System.Drawing.Size(122, 118);
+            this.LabEpb12.Size = new System.Drawing.Size(54, 28);
             this.LabEpb12.TabIndex = 36;
             this.LabEpb12.Text = "100000";
             this.LabEpb12.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
             // 
             // uiLabel26
             // 
-            this.uiLabel26.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabel26.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiLabel26.Font = new System.Drawing.Font("Arial", 10F);
             this.uiLabel26.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel26.Location = new System.Drawing.Point(3, 0);
+            this.uiLabel26.Location = new System.Drawing.Point(39, 45);
             this.uiLabel26.Name = "uiLabel26";
-            this.uiLabel26.Size = new System.Drawing.Size(120, 117);
+            this.uiLabel26.Size = new System.Drawing.Size(60, 26);
             this.uiLabel26.TabIndex = 37;
             this.uiLabel26.Text = "EPB 10";
             this.uiLabel26.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
             // 
             // uiLabel27
             // 
-            this.uiLabel27.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabel27.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiLabel27.Font = new System.Drawing.Font("Arial", 10F);
             this.uiLabel27.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel27.Location = new System.Drawing.Point(3, 117);
+            this.uiLabel27.Location = new System.Drawing.Point(39, 161);
             this.uiLabel27.Name = "uiLabel27";
-            this.uiLabel27.Size = new System.Drawing.Size(120, 117);
+            this.uiLabel27.Size = new System.Drawing.Size(60, 26);
             this.uiLabel27.TabIndex = 37;
             this.uiLabel27.Text = "EPB 11";
             this.uiLabel27.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
             // 
             // uiLabel28
             // 
-            this.uiLabel28.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabel28.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiLabel28.Font = new System.Drawing.Font("Arial", 10F);
             this.uiLabel28.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel28.Location = new System.Drawing.Point(3, 234);
+            this.uiLabel28.Location = new System.Drawing.Point(39, 277);
             this.uiLabel28.Name = "uiLabel28";
-            this.uiLabel28.Size = new System.Drawing.Size(120, 118);
+            this.uiLabel28.Size = new System.Drawing.Size(60, 28);
             this.uiLabel28.TabIndex = 37;
             this.uiLabel28.Text = "EPB 12";
             this.uiLabel28.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -4349,7 +4605,7 @@
             this.uiPanel2.FillColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
             this.uiPanel2.FillColor2 = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
             this.uiPanel2.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiPanel2.Location = new System.Drawing.Point(18, 373);
+            this.uiPanel2.Location = new System.Drawing.Point(18, 374);
             this.uiPanel2.Margin = new System.Windows.Forms.Padding(0);
             this.uiPanel2.MinimumSize = new System.Drawing.Size(1, 1);
             this.uiPanel2.Name = "uiPanel2";
@@ -4366,7 +4622,7 @@
             this.uiPanel3.FillColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
             this.uiPanel3.FillColor2 = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
             this.uiPanel3.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiPanel3.Location = new System.Drawing.Point(538, 373);
+            this.uiPanel3.Location = new System.Drawing.Point(538, 374);
             this.uiPanel3.Margin = new System.Windows.Forms.Padding(0);
             this.uiPanel3.MinimumSize = new System.Drawing.Size(1, 1);
             this.uiPanel3.Name = "uiPanel3";
@@ -4383,13 +4639,13 @@
             this.uiPanel4.FillColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
             this.uiPanel4.FillColor2 = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
             this.uiPanel4.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiPanel4.Location = new System.Drawing.Point(537, 15);
+            this.uiPanel4.Location = new System.Drawing.Point(537, 18);
             this.uiPanel4.Margin = new System.Windows.Forms.Padding(0);
             this.uiPanel4.MinimumSize = new System.Drawing.Size(1, 1);
             this.uiPanel4.Name = "uiPanel4";
             this.uiPanel4.Radius = 1;
             this.tableLayoutPanel1.SetRowSpan(this.uiPanel4, 3);
-            this.uiPanel4.Size = new System.Drawing.Size(1, 717);
+            this.uiPanel4.Size = new System.Drawing.Size(1, 713);
             this.uiPanel4.TabIndex = 55;
             this.uiPanel4.Text = null;
             this.uiPanel4.TextAlignment = System.Drawing.ContentAlignment.MiddleCenter;
@@ -4397,89 +4653,185 @@
             // uiTableLayoutPanel10
             // 
             this.uiTableLayoutPanel10.ColumnCount = 4;
-            this.uiTableLayoutPanel10.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 24.65385F));
-            this.uiTableLayoutPanel10.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 24.85307F));
-            this.uiTableLayoutPanel10.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 25.82926F));
-            this.uiTableLayoutPanel10.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 24.66381F));
+            this.uiTableLayoutPanel10.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 27.18447F));
+            this.uiTableLayoutPanel10.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 24.27184F));
+            this.uiTableLayoutPanel10.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 24.27184F));
+            this.uiTableLayoutPanel10.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 24.27184F));
             this.uiTableLayoutPanel10.Controls.Add(this.LabEpb1, 3, 0);
+            this.uiTableLayoutPanel10.Controls.Add(this.SwitchPower2, 1, 1);
+            this.uiTableLayoutPanel10.Controls.Add(this.SwitchEpb2, 2, 1);
+            this.uiTableLayoutPanel10.Controls.Add(this.SwitchEpb1, 2, 0);
+            this.uiTableLayoutPanel10.Controls.Add(this.SwitchPower1, 1, 0);
             this.uiTableLayoutPanel10.Controls.Add(this.LabEpb2, 3, 1);
+            this.uiTableLayoutPanel10.Controls.Add(this.SwitchPower3, 1, 2);
+            this.uiTableLayoutPanel10.Controls.Add(this.SwitchEpb3, 2, 2);
             this.uiTableLayoutPanel10.Controls.Add(this.LabEpb3, 3, 2);
             this.uiTableLayoutPanel10.Controls.Add(this.uiLabel4, 0, 0);
             this.uiTableLayoutPanel10.Controls.Add(this.uiLabel5, 0, 1);
             this.uiTableLayoutPanel10.Controls.Add(this.uiLabel6, 0, 2);
-            this.uiTableLayoutPanel10.Controls.Add(this.SwitchEpb1, 2, 0);
-            this.uiTableLayoutPanel10.Controls.Add(this.SwitchPower1, 1, 0);
-            this.uiTableLayoutPanel10.Controls.Add(this.SwitchPower2, 1, 1);
-            this.uiTableLayoutPanel10.Controls.Add(this.SwitchPower3, 1, 2);
-            this.uiTableLayoutPanel10.Controls.Add(this.SwitchEpb2, 2, 1);
-            this.uiTableLayoutPanel10.Controls.Add(this.SwitchEpb3, 2, 2);
             this.uiTableLayoutPanel10.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel10.Location = new System.Drawing.Point(21, 18);
+            this.uiTableLayoutPanel10.Location = new System.Drawing.Point(21, 21);
             this.uiTableLayoutPanel10.Name = "uiTableLayoutPanel10";
             this.uiTableLayoutPanel10.RowCount = 3;
             this.uiTableLayoutPanel10.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
             this.uiTableLayoutPanel10.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
             this.uiTableLayoutPanel10.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
-            this.uiTableLayoutPanel10.Size = new System.Drawing.Size(513, 352);
+            this.uiTableLayoutPanel10.Size = new System.Drawing.Size(513, 350);
             this.uiTableLayoutPanel10.TabIndex = 0;
             this.uiTableLayoutPanel10.TagString = null;
             // 
             // LabEpb1
             // 
-            this.LabEpb1.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.LabEpb1.Dock = System.Windows.Forms.DockStyle.Top;
             this.LabEpb1.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.LabEpb1.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.LabEpb1.Location = new System.Drawing.Point(388, 0);
+            this.LabEpb1.Location = new System.Drawing.Point(390, 0);
             this.LabEpb1.Name = "LabEpb1";
-            this.LabEpb1.Size = new System.Drawing.Size(122, 117);
+            this.LabEpb1.Size = new System.Drawing.Size(120, 40);
             this.LabEpb1.TabIndex = 36;
             this.LabEpb1.Text = "100000";
             this.LabEpb1.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
             // 
+            // SwitchPower2
+            // 
+            this.SwitchPower2.ActiveColor = System.Drawing.Color.LimeGreen;
+            this.SwitchPower2.ActiveText = "ON";
+            this.SwitchPower2.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.SwitchPower2.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.SwitchPower2.InActiveText = "OFF";
+            this.SwitchPower2.Location = new System.Drawing.Point(175, 164);
+            this.SwitchPower2.MinimumSize = new System.Drawing.Size(1, 1);
+            this.SwitchPower2.Name = "SwitchPower2";
+            this.SwitchPower2.Size = new System.Drawing.Size(52, 20);
+            this.SwitchPower2.SwitchShape = Sunny.UI.UISwitch.UISwitchShape.Square;
+            this.SwitchPower2.TabIndex = 34;
+            this.SwitchPower2.Text = "uiSwitch2";
+            // 
+            // SwitchEpb2
+            // 
+            this.SwitchEpb2.ActiveText = "RUN";
+            this.SwitchEpb2.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.SwitchEpb2.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.SwitchEpb2.InActiveText = "STOP";
+            this.SwitchEpb2.Location = new System.Drawing.Point(298, 164);
+            this.SwitchEpb2.MinimumSize = new System.Drawing.Size(1, 1);
+            this.SwitchEpb2.Name = "SwitchEpb2";
+            this.SwitchEpb2.Size = new System.Drawing.Size(53, 20);
+            this.SwitchEpb2.TabIndex = 35;
+            this.SwitchEpb2.Text = "uiSwitch2";
+            // 
+            // SwitchEpb1
+            // 
+            this.SwitchEpb1.ActiveText = "RUN";
+            this.SwitchEpb1.Dock = System.Windows.Forms.DockStyle.Top;
+            this.SwitchEpb1.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.SwitchEpb1.InActiveText = "STOP";
+            this.SwitchEpb1.Location = new System.Drawing.Point(266, 3);
+            this.SwitchEpb1.MinimumSize = new System.Drawing.Size(1, 1);
+            this.SwitchEpb1.Name = "SwitchEpb1";
+            this.SwitchEpb1.Size = new System.Drawing.Size(118, 40);
+            this.SwitchEpb1.TabIndex = 35;
+            this.SwitchEpb1.Text = "uiSwitch2";
+            // 
+            // SwitchPower1
+            // 
+            this.SwitchPower1.ActiveColor = System.Drawing.Color.LimeGreen;
+            this.SwitchPower1.ActiveText = "ON";
+            this.SwitchPower1.Dock = System.Windows.Forms.DockStyle.Top;
+            this.SwitchPower1.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.SwitchPower1.InActiveText = "OFF";
+            this.SwitchPower1.Location = new System.Drawing.Point(142, 3);
+            this.SwitchPower1.MinimumSize = new System.Drawing.Size(1, 1);
+            this.SwitchPower1.Name = "SwitchPower1";
+            this.SwitchPower1.Size = new System.Drawing.Size(118, 40);
+            this.SwitchPower1.SwitchShape = Sunny.UI.UISwitch.UISwitchShape.Square;
+            this.SwitchPower1.TabIndex = 34;
+            this.SwitchPower1.Text = "uiSwitch2";
+            // 
             // LabEpb2
             // 
-            this.LabEpb2.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.LabEpb2.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.LabEpb2.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.LabEpb2.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.LabEpb2.Location = new System.Drawing.Point(388, 117);
+            this.LabEpb2.Location = new System.Drawing.Point(423, 161);
             this.LabEpb2.Name = "LabEpb2";
-            this.LabEpb2.Size = new System.Drawing.Size(122, 117);
+            this.LabEpb2.Size = new System.Drawing.Size(54, 26);
             this.LabEpb2.TabIndex = 36;
             this.LabEpb2.Text = "100000";
             this.LabEpb2.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
             // 
+            // SwitchPower3
+            // 
+            this.SwitchPower3.ActiveColor = System.Drawing.Color.LimeGreen;
+            this.SwitchPower3.ActiveText = "ON";
+            this.SwitchPower3.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.SwitchPower3.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.SwitchPower3.InActiveText = "OFF";
+            this.SwitchPower3.Location = new System.Drawing.Point(175, 280);
+            this.SwitchPower3.MinimumSize = new System.Drawing.Size(1, 1);
+            this.SwitchPower3.Name = "SwitchPower3";
+            this.SwitchPower3.Size = new System.Drawing.Size(52, 21);
+            this.SwitchPower3.SwitchShape = Sunny.UI.UISwitch.UISwitchShape.Square;
+            this.SwitchPower3.TabIndex = 34;
+            this.SwitchPower3.Text = "uiSwitch2";
+            // 
+            // SwitchEpb3
+            // 
+            this.SwitchEpb3.ActiveText = "RUN";
+            this.SwitchEpb3.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.SwitchEpb3.Font = new System.Drawing.Font("Arial", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.SwitchEpb3.InActiveText = "STOP";
+            this.SwitchEpb3.Location = new System.Drawing.Point(298, 280);
+            this.SwitchEpb3.MinimumSize = new System.Drawing.Size(1, 1);
+            this.SwitchEpb3.Name = "SwitchEpb3";
+            this.SwitchEpb3.Size = new System.Drawing.Size(53, 21);
+            this.SwitchEpb3.TabIndex = 35;
+            this.SwitchEpb3.Text = "uiSwitch2";
+            // 
             // LabEpb3
             // 
-            this.LabEpb3.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.LabEpb3.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.LabEpb3.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.LabEpb3.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.LabEpb3.Location = new System.Drawing.Point(388, 234);
+            this.LabEpb3.Location = new System.Drawing.Point(423, 277);
             this.LabEpb3.Name = "LabEpb3";
-            this.LabEpb3.Size = new System.Drawing.Size(122, 118);
+            this.LabEpb3.Size = new System.Drawing.Size(54, 28);
             this.LabEpb3.TabIndex = 36;
             this.LabEpb3.Text = "100000";
             this.LabEpb3.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
             // 
+            // uiLabel4
+            // 
+            this.uiLabel4.Dock = System.Windows.Forms.DockStyle.Top;
+            this.uiLabel4.Font = new System.Drawing.Font("Arial", 10F);
+            this.uiLabel4.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiLabel4.Location = new System.Drawing.Point(3, 0);
+            this.uiLabel4.Name = "uiLabel4";
+            this.uiLabel4.Size = new System.Drawing.Size(133, 40);
+            this.uiLabel4.TabIndex = 37;
+            this.uiLabel4.Text = "EPB 01";
+            this.uiLabel4.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
             // uiLabel5
             // 
-            this.uiLabel5.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabel5.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiLabel5.Font = new System.Drawing.Font("Arial", 10F);
             this.uiLabel5.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel5.Location = new System.Drawing.Point(3, 117);
+            this.uiLabel5.Location = new System.Drawing.Point(39, 161);
             this.uiLabel5.Name = "uiLabel5";
-            this.uiLabel5.Size = new System.Drawing.Size(120, 117);
+            this.uiLabel5.Size = new System.Drawing.Size(60, 26);
             this.uiLabel5.TabIndex = 37;
             this.uiLabel5.Text = "EPB 02";
             this.uiLabel5.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
             // 
             // uiLabel6
             // 
-            this.uiLabel6.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabel6.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.uiLabel6.Font = new System.Drawing.Font("Arial", 10F);
             this.uiLabel6.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel6.Location = new System.Drawing.Point(3, 234);
+            this.uiLabel6.Location = new System.Drawing.Point(39, 277);
             this.uiLabel6.Name = "uiLabel6";
-            this.uiLabel6.Size = new System.Drawing.Size(120, 118);
+            this.uiLabel6.Size = new System.Drawing.Size(60, 28);
             this.uiLabel6.TabIndex = 37;
             this.uiLabel6.Text = "EPB 03";
             this.uiLabel6.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -4553,13 +4905,13 @@
             this.uiTableLayoutPanel1.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 18F));
             this.uiTableLayoutPanel1.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 100F));
             this.uiTableLayoutPanel1.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 18F));
-            this.uiTableLayoutPanel1.Controls.Add(this.EPBGroupBox, 1, 5);
+            this.uiTableLayoutPanel1.Controls.Add(this.uiGroupBox2, 1, 5);
             this.uiTableLayoutPanel1.Controls.Add(this.uiGroupBox1, 1, 1);
             this.uiTableLayoutPanel1.Controls.Add(this.uiGroupBox3, 3, 1);
             this.uiTableLayoutPanel1.Controls.Add(this.uiTableLayoutPanel14, 3, 5);
             this.uiTableLayoutPanel1.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiTableLayoutPanel1.Location = new System.Drawing.Point(0, 0);
-            this.uiTableLayoutPanel1.Margin = new System.Windows.Forms.Padding(4);
+            this.uiTableLayoutPanel1.Margin = new System.Windows.Forms.Padding(4, 4, 4, 4);
             this.uiTableLayoutPanel1.Name = "uiTableLayoutPanel1";
             this.uiTableLayoutPanel1.RowCount = 9;
             this.uiTableLayoutPanel1.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 0F));
@@ -4575,401 +4927,37 @@
             this.uiTableLayoutPanel1.TabIndex = 0;
             this.uiTableLayoutPanel1.TagString = null;
             // 
-            // uiLabel4
+            // toggleButton2
             // 
-            this.uiLabel4.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiLabel4.Font = new System.Drawing.Font("Arial", 10F);
-            this.uiLabel4.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabel4.Location = new System.Drawing.Point(3, 0);
-            this.uiLabel4.Name = "uiLabel4";
-            this.uiLabel4.Size = new System.Drawing.Size(120, 117);
-            this.uiLabel4.TabIndex = 37;
-            this.uiLabel4.Text = "EPB 01";
-            this.uiLabel4.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            this.toggleButton2.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.toggleButton2.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.toggleButton2.Appearance.Options.UseBackColor = true;
+            this.toggleButton2.Appearance.Options.UseForeColor = true;
+            this.toggleButton2.CheckedText = "RUN";
+            this.toggleButton2.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.toggleButton2.HtmlTemplate.Styles = resources.GetString("toggleButton2.HtmlTemplate.Styles");
+            this.toggleButton2.Location = new System.Drawing.Point(256, 3);
+            this.toggleButton2.Name = "toggleButton2";
+            this.toggleButton2.Size = new System.Drawing.Size(126, 110);
+            this.toggleButton2.TabIndex = 38;
+            this.toggleButton2.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
+            this.toggleButton2.UncheckedText = "STOP";
             // 
-            // SwitchEpb4
+            // toggleButton1
             // 
-            this.SwitchEpb4.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb4.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb4.Appearance.Options.UseBackColor = true;
-            this.SwitchEpb4.Appearance.Options.UseForeColor = true;
-            this.SwitchEpb4.CheckedText = "RUN";
-            this.SwitchEpb4.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchEpb4.HtmlTemplate.Styles = resources.GetString("SwitchEpb4.HtmlTemplate.Styles");
-            this.SwitchEpb4.Location = new System.Drawing.Point(256, 3);
-            this.SwitchEpb4.Name = "SwitchEpb4";
-            this.SwitchEpb4.Size = new System.Drawing.Size(126, 111);
-            this.SwitchEpb4.TabIndex = 38;
-            this.SwitchEpb4.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchEpb4.UncheckedText = "STOP";
-            // 
-            // SwitchPower4
-            // 
-            this.SwitchPower4.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower4.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower4.Appearance.Options.UseBackColor = true;
-            this.SwitchPower4.Appearance.Options.UseForeColor = true;
-            this.SwitchPower4.CheckedText = "ON";
-            this.SwitchPower4.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchPower4.HtmlTemplate.Styles = resources.GetString("SwitchPower4.HtmlTemplate.Styles");
-            this.SwitchPower4.Location = new System.Drawing.Point(129, 3);
-            this.SwitchPower4.Name = "SwitchPower4";
-            this.SwitchPower4.Size = new System.Drawing.Size(121, 111);
-            this.SwitchPower4.TabIndex = 38;
-            this.SwitchPower4.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchPower4.UncheckedText = "OFF";
-            // 
-            // SwitchPower5
-            // 
-            this.SwitchPower5.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower5.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower5.Appearance.Options.UseBackColor = true;
-            this.SwitchPower5.Appearance.Options.UseForeColor = true;
-            this.SwitchPower5.CheckedText = "ON";
-            this.SwitchPower5.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchPower5.HtmlTemplate.Styles = resources.GetString("SwitchPower5.HtmlTemplate.Styles");
-            this.SwitchPower5.Location = new System.Drawing.Point(129, 120);
-            this.SwitchPower5.Name = "SwitchPower5";
-            this.SwitchPower5.Size = new System.Drawing.Size(121, 111);
-            this.SwitchPower5.TabIndex = 38;
-            this.SwitchPower5.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchPower5.UncheckedText = "OFF";
-            // 
-            // SwitchPower6
-            // 
-            this.SwitchPower6.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower6.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower6.Appearance.Options.UseBackColor = true;
-            this.SwitchPower6.Appearance.Options.UseForeColor = true;
-            this.SwitchPower6.CheckedText = "ON";
-            this.SwitchPower6.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchPower6.HtmlTemplate.Styles = resources.GetString("SwitchPower6.HtmlTemplate.Styles");
-            this.SwitchPower6.Location = new System.Drawing.Point(129, 237);
-            this.SwitchPower6.Name = "SwitchPower6";
-            this.SwitchPower6.Size = new System.Drawing.Size(121, 112);
-            this.SwitchPower6.TabIndex = 38;
-            this.SwitchPower6.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchPower6.UncheckedText = "OFF";
-            // 
-            // SwitchEpb5
-            // 
-            this.SwitchEpb5.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb5.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb5.Appearance.Options.UseBackColor = true;
-            this.SwitchEpb5.Appearance.Options.UseForeColor = true;
-            this.SwitchEpb5.CheckedText = "RUN";
-            this.SwitchEpb5.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchEpb5.HtmlTemplate.Styles = resources.GetString("SwitchEpb5.HtmlTemplate.Styles");
-            this.SwitchEpb5.Location = new System.Drawing.Point(256, 120);
-            this.SwitchEpb5.Name = "SwitchEpb5";
-            this.SwitchEpb5.Size = new System.Drawing.Size(126, 111);
-            this.SwitchEpb5.TabIndex = 38;
-            this.SwitchEpb5.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchEpb5.UncheckedText = "STOP";
-            // 
-            // SwitchEpb6
-            // 
-            this.SwitchEpb6.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb6.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb6.Appearance.Options.UseBackColor = true;
-            this.SwitchEpb6.Appearance.Options.UseForeColor = true;
-            this.SwitchEpb6.CheckedText = "RUN";
-            this.SwitchEpb6.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchEpb6.HtmlTemplate.Styles = resources.GetString("SwitchEpb6.HtmlTemplate.Styles");
-            this.SwitchEpb6.Location = new System.Drawing.Point(256, 237);
-            this.SwitchEpb6.Name = "SwitchEpb6";
-            this.SwitchEpb6.Size = new System.Drawing.Size(126, 112);
-            this.SwitchEpb6.TabIndex = 38;
-            this.SwitchEpb6.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchEpb6.UncheckedText = "STOP";
-            // 
-            // SwitchEpb7
-            // 
-            this.SwitchEpb7.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb7.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb7.Appearance.Options.UseBackColor = true;
-            this.SwitchEpb7.Appearance.Options.UseForeColor = true;
-            this.SwitchEpb7.CheckedText = "RUN";
-            this.SwitchEpb7.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchEpb7.HtmlTemplate.Styles = resources.GetString("SwitchEpb7.HtmlTemplate.Styles");
-            this.SwitchEpb7.Location = new System.Drawing.Point(256, 3);
-            this.SwitchEpb7.Name = "SwitchEpb7";
-            this.SwitchEpb7.Size = new System.Drawing.Size(126, 111);
-            this.SwitchEpb7.TabIndex = 38;
-            this.SwitchEpb7.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchEpb7.UncheckedText = "STOP";
-            // 
-            // SwitchPower8
-            // 
-            this.SwitchPower8.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower8.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower8.Appearance.Options.UseBackColor = true;
-            this.SwitchPower8.Appearance.Options.UseForeColor = true;
-            this.SwitchPower8.CheckedText = "ON";
-            this.SwitchPower8.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchPower8.HtmlTemplate.Styles = resources.GetString("SwitchPower8.HtmlTemplate.Styles");
-            this.SwitchPower8.Location = new System.Drawing.Point(129, 120);
-            this.SwitchPower8.Name = "SwitchPower8";
-            this.SwitchPower8.Size = new System.Drawing.Size(121, 111);
-            this.SwitchPower8.TabIndex = 38;
-            this.SwitchPower8.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchPower8.UncheckedText = "OFF";
-            // 
-            // SwitchPower7
-            // 
-            this.SwitchPower7.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower7.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower7.Appearance.Options.UseBackColor = true;
-            this.SwitchPower7.Appearance.Options.UseForeColor = true;
-            this.SwitchPower7.CheckedText = "ON";
-            this.SwitchPower7.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchPower7.HtmlTemplate.Styles = resources.GetString("SwitchPower7.HtmlTemplate.Styles");
-            this.SwitchPower7.Location = new System.Drawing.Point(129, 3);
-            this.SwitchPower7.Name = "SwitchPower7";
-            this.SwitchPower7.Size = new System.Drawing.Size(121, 111);
-            this.SwitchPower7.TabIndex = 38;
-            this.SwitchPower7.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchPower7.UncheckedText = "OFF";
-            // 
-            // SwitchPower9
-            // 
-            this.SwitchPower9.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower9.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower9.Appearance.Options.UseBackColor = true;
-            this.SwitchPower9.Appearance.Options.UseForeColor = true;
-            this.SwitchPower9.CheckedText = "ON";
-            this.SwitchPower9.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchPower9.HtmlTemplate.Styles = resources.GetString("SwitchPower9.HtmlTemplate.Styles");
-            this.SwitchPower9.Location = new System.Drawing.Point(129, 237);
-            this.SwitchPower9.Name = "SwitchPower9";
-            this.SwitchPower9.Size = new System.Drawing.Size(121, 112);
-            this.SwitchPower9.TabIndex = 38;
-            this.SwitchPower9.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchPower9.UncheckedText = "OFF";
-            // 
-            // tSwitchEpb9
-            // 
-            this.tSwitchEpb9.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.tSwitchEpb9.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.tSwitchEpb9.Appearance.Options.UseBackColor = true;
-            this.tSwitchEpb9.Appearance.Options.UseForeColor = true;
-            this.tSwitchEpb9.CheckedText = "RUN";
-            this.tSwitchEpb9.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.tSwitchEpb9.HtmlTemplate.Styles = resources.GetString("tSwitchEpb9.HtmlTemplate.Styles");
-            this.tSwitchEpb9.Location = new System.Drawing.Point(256, 237);
-            this.tSwitchEpb9.Name = "tSwitchEpb9";
-            this.tSwitchEpb9.Size = new System.Drawing.Size(126, 112);
-            this.tSwitchEpb9.TabIndex = 38;
-            this.tSwitchEpb9.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.tSwitchEpb9.UncheckedText = "STOP";
-            // 
-            // SwitchEpb8
-            // 
-            this.SwitchEpb8.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb8.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb8.Appearance.Options.UseBackColor = true;
-            this.SwitchEpb8.Appearance.Options.UseForeColor = true;
-            this.SwitchEpb8.CheckedText = "RUN";
-            this.SwitchEpb8.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchEpb8.HtmlTemplate.Styles = resources.GetString("SwitchEpb8.HtmlTemplate.Styles");
-            this.SwitchEpb8.Location = new System.Drawing.Point(256, 120);
-            this.SwitchEpb8.Name = "SwitchEpb8";
-            this.SwitchEpb8.Size = new System.Drawing.Size(126, 111);
-            this.SwitchEpb8.TabIndex = 38;
-            this.SwitchEpb8.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchEpb8.UncheckedText = "STOP";
-            // 
-            // SwitchEpb11
-            // 
-            this.SwitchEpb11.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb11.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb11.Appearance.Options.UseBackColor = true;
-            this.SwitchEpb11.Appearance.Options.UseForeColor = true;
-            this.SwitchEpb11.CheckedText = "RUN";
-            this.SwitchEpb11.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchEpb11.HtmlTemplate.Styles = resources.GetString("SwitchEpb11.HtmlTemplate.Styles");
-            this.SwitchEpb11.Location = new System.Drawing.Point(256, 120);
-            this.SwitchEpb11.Name = "SwitchEpb11";
-            this.SwitchEpb11.Size = new System.Drawing.Size(126, 111);
-            this.SwitchEpb11.TabIndex = 38;
-            this.SwitchEpb11.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchEpb11.UncheckedText = "STOP";
-            // 
-            // SwitchPower10
-            // 
-            this.SwitchPower10.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower10.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower10.Appearance.Options.UseBackColor = true;
-            this.SwitchPower10.Appearance.Options.UseForeColor = true;
-            this.SwitchPower10.CheckedText = "ON";
-            this.SwitchPower10.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchPower10.HtmlTemplate.Styles = resources.GetString("SwitchPower10.HtmlTemplate.Styles");
-            this.SwitchPower10.Location = new System.Drawing.Point(129, 3);
-            this.SwitchPower10.Name = "SwitchPower10";
-            this.SwitchPower10.Size = new System.Drawing.Size(121, 111);
-            this.SwitchPower10.TabIndex = 38;
-            this.SwitchPower10.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchPower10.UncheckedText = "OFF";
-            // 
-            // SwitchPower11
-            // 
-            this.SwitchPower11.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower11.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower11.Appearance.Options.UseBackColor = true;
-            this.SwitchPower11.Appearance.Options.UseForeColor = true;
-            this.SwitchPower11.CheckedText = "ON";
-            this.SwitchPower11.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchPower11.HtmlTemplate.Styles = resources.GetString("SwitchPower11.HtmlTemplate.Styles");
-            this.SwitchPower11.Location = new System.Drawing.Point(129, 120);
-            this.SwitchPower11.Name = "SwitchPower11";
-            this.SwitchPower11.Size = new System.Drawing.Size(121, 111);
-            this.SwitchPower11.TabIndex = 38;
-            this.SwitchPower11.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchPower11.UncheckedText = "OFF";
-            // 
-            // SwitchPower12
-            // 
-            this.SwitchPower12.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower12.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower12.Appearance.Options.UseBackColor = true;
-            this.SwitchPower12.Appearance.Options.UseForeColor = true;
-            this.SwitchPower12.CheckedText = "ON";
-            this.SwitchPower12.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchPower12.HtmlTemplate.Styles = resources.GetString("SwitchPower12.HtmlTemplate.Styles");
-            this.SwitchPower12.Location = new System.Drawing.Point(129, 237);
-            this.SwitchPower12.Name = "SwitchPower12";
-            this.SwitchPower12.Size = new System.Drawing.Size(121, 112);
-            this.SwitchPower12.TabIndex = 38;
-            this.SwitchPower12.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchPower12.UncheckedText = "OFF";
-            // 
-            // SwitchEpb12
-            // 
-            this.SwitchEpb12.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb12.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb12.Appearance.Options.UseBackColor = true;
-            this.SwitchEpb12.Appearance.Options.UseForeColor = true;
-            this.SwitchEpb12.CheckedText = "RUN";
-            this.SwitchEpb12.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchEpb12.HtmlTemplate.Styles = resources.GetString("SwitchEpb12.HtmlTemplate.Styles");
-            this.SwitchEpb12.Location = new System.Drawing.Point(256, 237);
-            this.SwitchEpb12.Name = "SwitchEpb12";
-            this.SwitchEpb12.Size = new System.Drawing.Size(126, 112);
-            this.SwitchEpb12.TabIndex = 38;
-            this.SwitchEpb12.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchEpb12.UncheckedText = "STOP";
-            // 
-            // SwitchEpb10
-            // 
-            this.SwitchEpb10.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb10.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb10.Appearance.Options.UseBackColor = true;
-            this.SwitchEpb10.Appearance.Options.UseForeColor = true;
-            this.SwitchEpb10.CheckedText = "RUN";
-            this.SwitchEpb10.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchEpb10.HtmlTemplate.Styles = resources.GetString("SwitchEpb10.HtmlTemplate.Styles");
-            this.SwitchEpb10.Location = new System.Drawing.Point(256, 3);
-            this.SwitchEpb10.Name = "SwitchEpb10";
-            this.SwitchEpb10.Size = new System.Drawing.Size(126, 111);
-            this.SwitchEpb10.TabIndex = 38;
-            this.SwitchEpb10.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchEpb10.UncheckedText = "STOP";
-            // 
-            // SwitchEpb1
-            // 
-            this.SwitchEpb1.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb1.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb1.Appearance.Options.UseBackColor = true;
-            this.SwitchEpb1.Appearance.Options.UseForeColor = true;
-            this.SwitchEpb1.CheckedText = "RUN";
-            this.SwitchEpb1.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchEpb1.HtmlTemplate.Styles = resources.GetString("SwitchEpb1.HtmlTemplate.Styles");
-            this.SwitchEpb1.Location = new System.Drawing.Point(256, 3);
-            this.SwitchEpb1.Name = "SwitchEpb1";
-            this.SwitchEpb1.Size = new System.Drawing.Size(126, 111);
-            this.SwitchEpb1.TabIndex = 38;
-            this.SwitchEpb1.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchEpb1.UncheckedText = "STOP";
-            // 
-            // SwitchPower1
-            // 
-            this.SwitchPower1.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower1.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower1.Appearance.Options.UseBackColor = true;
-            this.SwitchPower1.Appearance.Options.UseForeColor = true;
-            this.SwitchPower1.CheckedText = "ON";
-            this.SwitchPower1.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchPower1.HtmlTemplate.Styles = resources.GetString("SwitchPower1.HtmlTemplate.Styles");
-            this.SwitchPower1.Location = new System.Drawing.Point(129, 3);
-            this.SwitchPower1.Name = "SwitchPower1";
-            this.SwitchPower1.Size = new System.Drawing.Size(121, 111);
-            this.SwitchPower1.TabIndex = 38;
-            this.SwitchPower1.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchPower1.UncheckedText = "OFF";
-            // 
-            // SwitchPower2
-            // 
-            this.SwitchPower2.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower2.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower2.Appearance.Options.UseBackColor = true;
-            this.SwitchPower2.Appearance.Options.UseForeColor = true;
-            this.SwitchPower2.CheckedText = "ON";
-            this.SwitchPower2.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchPower2.HtmlTemplate.Styles = resources.GetString("SwitchPower2.HtmlTemplate.Styles");
-            this.SwitchPower2.Location = new System.Drawing.Point(129, 120);
-            this.SwitchPower2.Name = "SwitchPower2";
-            this.SwitchPower2.Size = new System.Drawing.Size(121, 111);
-            this.SwitchPower2.TabIndex = 38;
-            this.SwitchPower2.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchPower2.UncheckedText = "OFF";
-            // 
-            // SwitchPower3
-            // 
-            this.SwitchPower3.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower3.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower3.Appearance.Options.UseBackColor = true;
-            this.SwitchPower3.Appearance.Options.UseForeColor = true;
-            this.SwitchPower3.CheckedText = "ON";
-            this.SwitchPower3.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchPower3.HtmlTemplate.Styles = resources.GetString("SwitchPower3.HtmlTemplate.Styles");
-            this.SwitchPower3.Location = new System.Drawing.Point(129, 237);
-            this.SwitchPower3.Name = "SwitchPower3";
-            this.SwitchPower3.Size = new System.Drawing.Size(121, 112);
-            this.SwitchPower3.TabIndex = 38;
-            this.SwitchPower3.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchPower3.UncheckedText = "OFF";
-            // 
-            // SwitchEpb2
-            // 
-            this.SwitchEpb2.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb2.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb2.Appearance.Options.UseBackColor = true;
-            this.SwitchEpb2.Appearance.Options.UseForeColor = true;
-            this.SwitchEpb2.CheckedText = "RUN";
-            this.SwitchEpb2.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchEpb2.HtmlTemplate.Styles = resources.GetString("SwitchEpb2.HtmlTemplate.Styles");
-            this.SwitchEpb2.Location = new System.Drawing.Point(256, 120);
-            this.SwitchEpb2.Name = "SwitchEpb2";
-            this.SwitchEpb2.Size = new System.Drawing.Size(126, 111);
-            this.SwitchEpb2.TabIndex = 38;
-            this.SwitchEpb2.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchEpb2.UncheckedText = "STOP";
-            // 
-            // SwitchEpb3
-            // 
-            this.SwitchEpb3.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb3.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb3.Appearance.Options.UseBackColor = true;
-            this.SwitchEpb3.Appearance.Options.UseForeColor = true;
-            this.SwitchEpb3.CheckedText = "RUN";
-            this.SwitchEpb3.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchEpb3.HtmlTemplate.Styles = resources.GetString("SwitchEpb3.HtmlTemplate.Styles");
-            this.SwitchEpb3.Location = new System.Drawing.Point(256, 237);
-            this.SwitchEpb3.Name = "SwitchEpb3";
-            this.SwitchEpb3.Size = new System.Drawing.Size(126, 112);
-            this.SwitchEpb3.TabIndex = 38;
-            this.SwitchEpb3.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchEpb3.UncheckedText = "STOP";
+            this.toggleButton1.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.toggleButton1.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.toggleButton1.Appearance.Options.UseBackColor = true;
+            this.toggleButton1.Appearance.Options.UseForeColor = true;
+            this.toggleButton1.CheckedText = "ON";
+            this.toggleButton1.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.toggleButton1.HtmlTemplate.Styles = resources.GetString("toggleButton1.HtmlTemplate.Styles");
+            this.toggleButton1.Location = new System.Drawing.Point(129, 3);
+            this.toggleButton1.Name = "toggleButton1";
+            this.toggleButton1.Size = new System.Drawing.Size(121, 110);
+            this.toggleButton1.TabIndex = 38;
+            this.toggleButton1.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
+            this.toggleButton1.UncheckedText = "OFF";
             // 
             // FrmEpbMainMonitor
             // 
@@ -4979,7 +4967,7 @@
             this.ClientSize = new System.Drawing.Size(2808, 1682);
             this.ControlBox = false;
             this.Controls.Add(this.uiTableLayoutPanel1);
-            this.Margin = new System.Windows.Forms.Padding(4);
+            this.Margin = new System.Windows.Forms.Padding(4, 4, 4, 4);
             this.Name = "FrmEpbMainMonitor";
             this.ShowIcon = false;
             this.Text = "实时监视";
@@ -5075,7 +5063,7 @@
             ((System.ComponentModel.ISupportInitialize)(this.ChkEpb11.Properties)).EndInit();
             ((System.ComponentModel.ISupportInitialize)(this.ChkEpb10.Properties)).EndInit();
             ((System.ComponentModel.ISupportInitialize)(this.toggleSwitch1.Properties)).EndInit();
-            this.EPBGroupBox.ResumeLayout(false);
+            this.uiGroupBox2.ResumeLayout(false);
             this.tableLayoutPanel1.ResumeLayout(false);
             this.uiTableLayoutPanel11.ResumeLayout(false);
             this.uiTableLayoutPanel12.ResumeLayout(false);
@@ -5220,25 +5208,43 @@
         private Sunny.UI.UILedDisplay LedLastCycles;
         private Sunny.UI.UIProcessBar ProcBar;
         private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel1;
-        private Sunny.UI.UIGroupBox EPBGroupBox;
+        private Sunny.UI.UIGroupBox uiGroupBox2;
         private System.Windows.Forms.TableLayoutPanel tableLayoutPanel1;
         private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel11;
         private Sunny.UI.UILabel LabEpb4;
+        private Sunny.UI.UISwitch SwitchPower5;
+        private Sunny.UI.UISwitch SwitchEpb5;
+        private Sunny.UI.UISwitch SwitchEpb4;
+        private Sunny.UI.UISwitch SwitchPower4;
         private Sunny.UI.UILabel LabEpb5;
+        private Sunny.UI.UISwitch SwitchPower6;
+        private Sunny.UI.UISwitch SwitchEpb6;
         private Sunny.UI.UILabel LabEpb6;
         private Sunny.UI.UILabel uiLabel23;
         private Sunny.UI.UILabel uiLabel24;
         private Sunny.UI.UILabel uiLabel25;
         private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel12;
         private Sunny.UI.UILabel LabEpb7;
+        private Sunny.UI.UISwitch SwitchPower8;
+        private Sunny.UI.UISwitch SwitchEpb8;
+        private Sunny.UI.UISwitch SwitchEpb7;
+        private Sunny.UI.UISwitch SwitchPower7;
         private Sunny.UI.UILabel LabEpb8;
+        private Sunny.UI.UISwitch SwitchEpb9;
         private Sunny.UI.UILabel LabEpb9;
+        private Sunny.UI.UISwitch SwitchPower9;
         private Sunny.UI.UILabel uiLabel20;
         private Sunny.UI.UILabel uiLabel21;
         private Sunny.UI.UILabel uiLabel22;
         private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel13;
         private Sunny.UI.UILabel LabEpb10;
+        private Sunny.UI.UISwitch SwitchPower11;
+        private Sunny.UI.UISwitch SwitchEpb11;
+        private Sunny.UI.UISwitch SwitchEpb10;
+        private Sunny.UI.UISwitch SwitchPower10;
         private Sunny.UI.UILabel LabEpb11;
+        private Sunny.UI.UISwitch SwitchPower12;
+        private Sunny.UI.UISwitch SwitchEpb12;
         private Sunny.UI.UILabel LabEpb12;
         private Sunny.UI.UILabel uiLabel26;
         private Sunny.UI.UILabel uiLabel27;
@@ -5315,8 +5321,15 @@
         private DevExpress.XtraEditors.TextEdit textEdit12;
         private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel10;
         private Sunny.UI.UILabel LabEpb1;
+        private Sunny.UI.UISwitch SwitchPower2;
+        private Sunny.UI.UISwitch SwitchEpb2;
+        private Sunny.UI.UISwitch SwitchEpb1;
+        private Sunny.UI.UISwitch SwitchPower1;
         private Sunny.UI.UILabel LabEpb2;
+        private Sunny.UI.UISwitch SwitchPower3;
+        private Sunny.UI.UISwitch SwitchEpb3;
         private Sunny.UI.UILabel LabEpb3;
+        private Sunny.UI.UILabel uiLabel4;
         private Sunny.UI.UILabel uiLabel5;
         private Sunny.UI.UILabel uiLabel6;
         private Sunny.UI.UIButton BtnTest;
@@ -5325,30 +5338,7 @@
         private Sunny.UI.UIButton BtnStartTest;
         private Sunny.UI.UIButton BtnStop;
         private DevExpress.XtraEditors.ToggleSwitch toggleSwitch1;
-        private DevExpress.UITemplates.Collection.Editors.ToggleButton SwitchEpb4;
-        private DevExpress.UITemplates.Collection.Editors.ToggleButton SwitchPower4;
-        private Sunny.UI.UILabel uiLabel4;
-        private DevExpress.UITemplates.Collection.Editors.ToggleButton SwitchEpb1;
-        private DevExpress.UITemplates.Collection.Editors.ToggleButton SwitchPower1;
-        private DevExpress.UITemplates.Collection.Editors.ToggleButton SwitchPower5;
-        private DevExpress.UITemplates.Collection.Editors.ToggleButton SwitchPower6;
-        private DevExpress.UITemplates.Collection.Editors.ToggleButton SwitchEpb5;
-        private DevExpress.UITemplates.Collection.Editors.ToggleButton SwitchEpb6;
-        private DevExpress.UITemplates.Collection.Editors.ToggleButton SwitchEpb7;
-        private DevExpress.UITemplates.Collection.Editors.ToggleButton SwitchPower8;
-        private DevExpress.UITemplates.Collection.Editors.ToggleButton SwitchPower7;
-        private DevExpress.UITemplates.Collection.Editors.ToggleButton SwitchPower9;
-        private DevExpress.UITemplates.Collection.Editors.ToggleButton tSwitchEpb9;
-        private DevExpress.UITemplates.Collection.Editors.ToggleButton SwitchEpb8;
-        private DevExpress.UITemplates.Collection.Editors.ToggleButton SwitchEpb11;
-        private DevExpress.UITemplates.Collection.Editors.ToggleButton SwitchPower10;
-        private DevExpress.UITemplates.Collection.Editors.ToggleButton SwitchPower11;
-        private DevExpress.UITemplates.Collection.Editors.ToggleButton SwitchPower12;
-        private DevExpress.UITemplates.Collection.Editors.ToggleButton SwitchEpb12;
-        private DevExpress.UITemplates.Collection.Editors.ToggleButton SwitchEpb10;
-        private DevExpress.UITemplates.Collection.Editors.ToggleButton SwitchPower2;
-        private DevExpress.UITemplates.Collection.Editors.ToggleButton SwitchPower3;
-        private DevExpress.UITemplates.Collection.Editors.ToggleButton SwitchEpb2;
-        private DevExpress.UITemplates.Collection.Editors.ToggleButton SwitchEpb3;
+        private DevExpress.UITemplates.Collection.Editors.ToggleButton toggleButton2;
+        private DevExpress.UITemplates.Collection.Editors.ToggleButton toggleButton1;
     }
 }
