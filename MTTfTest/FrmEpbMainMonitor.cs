@@ -46,8 +46,10 @@ namespace MTEmbTest
 
         private ConcurrentQueue<string> LogError = new ConcurrentQueue<string>();
         private ConcurrentQueue<string> LogInformation = new ConcurrentQueue<string>();
+        private ConcurrentQueue<string> LogWarn = new ConcurrentQueue<string>();
         private const int MaxErrors = 100000;
         private const int MaxInfos = 100000;
+        private const int MaxWarns = 100000;
 
         #region 曲线处理相关变量
 
@@ -294,13 +296,14 @@ namespace MTEmbTest
 
         #endregion
 
-        public  FormLoggerAdapter logger;
-        public DoController doCtrl;
+        public FormLoggerAdapter logger;
+        private DoController _do;
+        private AOController _ao;
+
 
         public FrmEpbMainMonitor()
         {
             InitializeComponent();
-
 
 
             // 创建自定义标题栏
@@ -334,17 +337,25 @@ namespace MTEmbTest
             };
 
 
-            logger = new FormLoggerAdapter(MaxInfos, MaxErrors, LogInformation, LogError, this);
-            doCtrl = new DoController(logger);
-            doCtrl.SetConfigPath($@"{Environment.CurrentDirectory}\Config\DOConfig.xml");
-            if (!doCtrl.Initialize())
+            logger = new FormLoggerAdapter(maxInfos: MaxInfos, maxWarns: MaxWarns, maxErrors: MaxErrors,
+                logInfo: LogInformation, logWarn: LogError, logError: LogError, this);
+
+            _do = new DoController(logger);
+            _do.SetConfigPath($@"{Environment.CurrentDirectory}\Config\DOConfig.xml");
+            if (!_do.Initialize())
             {
                 // 初始化失败时的处理
                 //MessageBox.Show("DO控制器初始化失败，请检查配置文件或设备连接！", "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 SetInfoText("DO控制器初始化失败，请检查配置文件或设备连接");
             }
 
-
+            _ao = AOController.FromXml($@"{Environment.CurrentDirectory}\Config\AOConfig.xml",
+                logger: logger); // 传入你的 IAppLogger
+            if (!_ao.Initialize())
+            {
+                // 初始化失败时的处理
+                SetInfoText("AO控制器初始化失败，请检查配置文件或设备连接");
+            }
         }
 
         private void FrmEpbMainMonitor_Load(object sender, EventArgs e)
@@ -1173,9 +1184,9 @@ namespace MTEmbTest
             }
         }
 
-        private void CtrlPower_KeyHandler(object sender,EventArgs e, int index)
+        private void CtrlPower_KeyHandler(object sender, EventArgs e, int index)
         {
-               return;
+            return;
             //throw new NotImplementedException();
         }
 
@@ -1197,12 +1208,12 @@ namespace MTEmbTest
             {
                 return;
             }
+
             _isCtrlPowerPressing = true;
             EmbGroup[index].CtrlPower.Enabled = false; // 禁用按钮，防止重复点击
-            //EPBGroupBox.Enabled = false; // 禁用整个组框，防止其他操作
+            EPBGroupBox.Enabled = false; // 禁用整个组框，防止其他操作
             try
             {
-
                 if (!IsTestConfirm)
                 {
                     MessageBox.Show(@"请先确认试验信息！");
@@ -1326,14 +1337,13 @@ namespace MTEmbTest
 
                     return;
                 }
-
             }
             finally
             {
                 _isCtrlPowerPressing = false;
 
                 EmbGroup[index].CtrlPower.Enabled = true; // 重新启用按钮
-              //  EPBGroupBox.Enabled = true; // 重新启用整个组框
+                EPBGroupBox.Enabled = true; // 重新启用整个组框
             }
         }
 
@@ -1596,8 +1606,8 @@ namespace MTEmbTest
 
         private void BtnTest_Click(object sender, EventArgs e)
         {
-            doCtrl.SetEpb(channelNo: 1, directionIsForward: true);
-            doCtrl.SetEpb(channelNo: 9, directionIsForward: true);
+            _do.SetEpb(channelNo: 1, directionIsForward: true);
+            _do.SetEpb(channelNo: 9, directionIsForward: true);
         }
 
         /// <summary>
@@ -1616,7 +1626,6 @@ namespace MTEmbTest
             {
                 MessageBox.Show(ex.Message);
             }
-
         }
 
         /// <summary>
@@ -1635,20 +1644,37 @@ namespace MTEmbTest
             {
                 MessageBox.Show(ex.Message);
             }
-
         }
 
+        /// <summary>
+        /// 切换开关事件，测试代码，正式运行时请删除
+        /// </summary>
+        /// <param name="sender"></param>
+        /// <param name="e"></param>
         private void toggleSwitch1_Toggled(object sender, EventArgs e)
         {
+            // 打开所有epb
+            /*for (int i = 0; i < 12; i++)
+            {
+                _do.SetEpb(channelNo:i+1, directionIsForward:this.toggleSwitch1.IsOn);
+            }*/
 
-             // 打开所有epb
-                for (int i = 0; i < 12; i++)
-                {
-                    doCtrl.SetEpb(channelNo:i+1, directionIsForward:this.toggleSwitch1.IsOn);
-                }
-                
-                
-           
+            // 打开气缸测试
+            _ao.SetPercent("Cylinder1", 50); // => ~5V
+            _ao.SetPercent("Cylinder2", 50); // => ~5V
+        }
+
+
+        /// <summary>
+        /// 窗体关闭事件，释放资源
+        /// </summary>
+        /// <param name="sender"></param>
+        /// <param name="e"></param>
+        private void FrmEpbMainMonitor_FormClosed(object sender, FormClosedEventArgs e)
+        {
+            _do?.Dispose(); // 释放DO对象资源
+            _ao?.Dispose(); // 释放AO对象资源
+            //base.OnFormClosed(e);
         }
     }
 }

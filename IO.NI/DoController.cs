@@ -242,6 +242,45 @@ namespace IO.NI
             }
         }
 
+        /// <summary>
+        /// 关闭指定 EPB 通道（正/反全关）。
+        /// </summary>
+        public bool SetEpbOff(int channelNo)
+        {
+            lock (_doTaskLock)
+            {
+                try
+                {
+                    if (!EnsureReady()) return false;
+
+                    if (!_epbIndex.TryGetValue(channelNo, out var map))
+                    {
+                        LogError($"EPB 通道号未找到：{channelNo}", "DO操作");
+                        return false;
+                    }
+                    if (!_devices.TryGetValue(map.dev, out var dev))
+                    {
+                        LogError($"EPB[{channelNo}] 所属设备未就绪：{map.dev}", "DO操作");
+                        return false;
+                    }
+
+                    var toWrite = (bool[])dev.States.Clone();
+                    toWrite[map.posIdx] = false;
+                    toWrite[map.negIdx] = false;
+                    dev.Writer.WriteSingleSampleSingleLine(true, toWrite);
+                    dev.States = toWrite;
+
+                    LogInfo($"EPB[{channelNo}]@{map.dev} => 全关", "DO操作");
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    LogError("EPB 关闭失败：" + ex.Message, "DO操作", ex);
+                    return false;
+                }
+            }
+        }
+
         public bool SetPressure(int id, bool start)
         {
             lock (_doTaskLock)

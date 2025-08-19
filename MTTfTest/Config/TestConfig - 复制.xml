@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<TestConfig xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+	<TestCycle>0.2</TestCycle>
+	<TestStandard>QC/T XXX-XXXX</TestStandard>
+	<TestName>MTTest</TestName>
+	<TestTarget>500000</TestTarget>
+	<StoreDir>D:\EPBTEST</StoreDir>
+	<TestMan>yu</TestMan>
+	<Description>测试使用</Description>
+	<AlertLimit>32000</AlertLimit>
+	<TestEnvir>正式测试</TestEnvir>
+	<TestSpan>5</TestSpan>
+
+
+	<!-- 新增试验参数配置 -->
+	<TestParams>
+		<!-- EPB 电流限制 -->
+		<EPBCurrentLimits>
+			<EPB ID="1" ForwardLimit="10.0" ReverseLimit="8.0" />
+			<EPB ID="2" ForwardLimit="10.0" ReverseLimit="8.0" />
+			<EPB ID="3" ForwardLimit="10.0" ReverseLimit="8.0" />
+			<EPB ID="4" ForwardLimit="10.0" ReverseLimit="8.0" />
+			<EPB ID="5" ForwardLimit="10.0" ReverseLimit="8.0" />
+			<EPB ID="6" ForwardLimit="10.0" ReverseLimit="8.0" />
+			<EPB ID="7" ForwardLimit="10.0" ReverseLimit="8.0" />
+			<EPB ID="8" ForwardLimit="10.0" ReverseLimit="8.0" />
+			<EPB ID="9" ForwardLimit="10.0" ReverseLimit="8.0" />
+			<EPB ID="10" ForwardLimit="10.0" ReverseLimit="8.0" />
+			<EPB ID="11" ForwardLimit="10.0" ReverseLimit="8.0" />
+			<EPB ID="12" ForwardLimit="10.0" ReverseLimit="8.0" />
+		</EPBCurrentLimits>
+
+		<!-- 压力限制 -->
+		<PressureLimits>
+			<Pressure ID="1" Limit="250.0" />
+			<Pressure ID="2" Limit="200.0" />
+		</PressureLimits>
+
+		<!-- 气缸能力百分比 -->
+		<CylinderCapacity>
+			<Cylinder ID="1" Percent="80" />
+			<Cylinder ID="2" Percent="90" />
+		</CylinderCapacity>
+	</TestParams>
+
+
+</TestConfig>

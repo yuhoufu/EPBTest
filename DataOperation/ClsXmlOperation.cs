@@ -1,4 +1,5 @@
-﻿using System;
+﻿using DataOperation;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
@@ -8,13 +9,13 @@ using System.Text.RegularExpressions;
 using System.Xml;
 using System.Xml.Linq;
 
-
 namespace DataOperation
 {
-    public class ClsXmlOperation
+   public class ClsXmlOperation
     {
+
         public static string UpdateZeroDriftInXml(string xmlFilePath,
-            ConcurrentDictionary<string, double> paraNameToZeroValue)
+                                    ConcurrentDictionary<string, double> paraNameToZeroValue)
         {
             try
             {
@@ -58,14 +59,13 @@ namespace DataOperation
                 {
                     Indent = true,
                     Encoding = Encoding.UTF8,
-                    OmitXmlDeclaration = doc.Declaration == null // 保持与原始文件一致
+                    OmitXmlDeclaration = doc.Declaration == null  // 保持与原始文件一致
                 };
 
                 using (var writer = XmlWriter.Create(xmlFilePath, settings))
                 {
                     doc.Save(writer);
                 }
-
                 return "OK";
             }
             catch (Exception ex)
@@ -75,11 +75,13 @@ namespace DataOperation
         }
 
 
-        public static string ReadCanNameChannelToDictionary(string filePath,
-            out ConcurrentDictionary<string, int> NameToChannnel)
+      
+
+
+        public static string  ReadCanNameChannelToDictionary(string filePath,out ConcurrentDictionary<string,int> NameToChannnel)
         {
             NameToChannnel = new ConcurrentDictionary<string, int>();
-
+      
 
             try
             {
@@ -89,6 +91,7 @@ namespace DataOperation
                 XmlNodeList channelNodes = xmlDoc.SelectNodes("//Channel");
                 foreach (XmlNode channelNode in channelNodes)
                 {
+                   
                     XmlNode controlTargetNode = channelNode.SelectSingleNode("ControlTarget");
                     XmlNode channelNoNode = channelNode.SelectSingleNode("ChannelNo");
 
@@ -96,18 +99,18 @@ namespace DataOperation
                     {
                         int channelNo = int.Parse(channelNoNode.InnerText);
                         string controlTarget = controlTargetNode.InnerText.Trim();
-
+                    
 
                         if (!string.IsNullOrEmpty(controlTarget))
                         {
-                            NameToChannnel[controlTarget] = channelNo;
+                             NameToChannnel[controlTarget] = channelNo;
                         }
                     }
                 }
             }
             catch (FileNotFoundException)
             {
-                return filePath + " 文件未找到，请检查文件路径！";
+                return filePath+" 文件未找到，请检查文件路径！";
             }
             catch (XmlException)
             {
@@ -115,14 +118,13 @@ namespace DataOperation
             }
             catch (Exception ex)
             {
-                return filePath + "发生未知错误: " + ex.Message;
+                return filePath + "发生未知错误: "+ex.Message;
             }
-
+         
             return "OK";
         }
 
-        public static string ReadPhysicalChannelScaleToDictionary(string filePath,
-            out ConcurrentDictionary<string, double> PhysicalChannelToSlope)
+        public static string ReadPhysicalChannelScaleToDictionary(string filePath, out ConcurrentDictionary<string, double> PhysicalChannelToSlope)
         {
             PhysicalChannelToSlope = new ConcurrentDictionary<string, double>();
 
@@ -166,7 +168,7 @@ namespace DataOperation
             return "OK";
         }
 
-        public static string GetDaqAIUsedChannels(string filePath, string DevName, out string[] Channels)
+        public static string GetDaqAIUsedChannels(string filePath, string DevName,out string[] Channels)
         {
             Channels = null;
             try
@@ -196,7 +198,7 @@ namespace DataOperation
                     }
                 }
 
-                ChannelList.Sort(); //按照升序排列
+                ChannelList.Sort();          //按照升序排列
                 Channels = ChannelList.ToArray();
             }
             catch (FileNotFoundException)
@@ -216,8 +218,7 @@ namespace DataOperation
         }
 
 
-        public static string GetDaqAIChannelMapping(string filePath, string DevName, string[] UsedChannel,
-            out ConcurrentDictionary<string, int> channelMapping)
+        public static string GetDaqAIChannelMapping(string filePath, string DevName, string[] UsedChannel,out ConcurrentDictionary<string, int> channelMapping)
         {
             channelMapping = new ConcurrentDictionary<string, int>();
             try
@@ -275,9 +276,12 @@ namespace DataOperation
 
                 for (int i = 0; i < UsedChannel.Length; i++)
                 {
-                    string ParaName = recordList[UsedChannel[i]].Replace("_current", "");
+                    string ParaName = recordList[UsedChannel[i]].Replace("_current","");
                     channelMapping[ParaName] = i;
                 }
+
+
+
             }
             catch (FileNotFoundException)
             {
@@ -296,17 +300,18 @@ namespace DataOperation
         }
 
 
-        public static string GetDaqScaleMapping(string filePath, string DevName,
-            out ConcurrentDictionary<string, double> scaleMapping)
+
+        public static string GetDaqScaleMapping(string filePath, string DevName, out ConcurrentDictionary<string, double> scaleMapping)
         {
             scaleMapping = new ConcurrentDictionary<string, double>();
             try
             {
                 XDocument doc = XDocument.Load(filePath);
                 var enabledRecords = doc.Descendants("Records")
-                    .Where(r =>
-                        (string)r.Element("是否启用") == "1" && // 是否启用为1
-                        ((string)r.Element("物理通道") ?? "").Contains(DevName)) // 物理通道包含Dev1
+
+                      .Where(r =>
+                    (string)r.Element("是否启用") == "1" &&          // 是否启用为1
+                   ((string)r.Element("物理通道") ?? "").Contains(DevName)) // 物理通道包含Dev1
                     .Select(r => new
                     {
                         Param = (string)r.Element("参数名"),
@@ -317,14 +322,13 @@ namespace DataOperation
                 {
                     if (double.TryParse(record.Slope, out double slope))
                     {
-                        scaleMapping.TryAdd(record.Param.Replace("_current", ""), slope);
+                        scaleMapping.TryAdd(record.Param.Replace("_current",""), slope);
                     }
                     else
                     {
                         return $"无效斜率值: {record.Param.Replace("_current", "")}={record.Slope}";
                     }
                 }
-
                 return "OK";
             }
             catch (Exception ex)
@@ -333,17 +337,16 @@ namespace DataOperation
             }
         }
 
-        public static string GetDaqOffsetMapping(string filePath, string DevName,
-            out ConcurrentDictionary<string, double> offsetMapping)
+        public static string GetDaqOffsetMapping(string filePath, string DevName, out ConcurrentDictionary<string, double> offsetMapping)
         {
             offsetMapping = new ConcurrentDictionary<string, double>();
             try
             {
                 XDocument doc = XDocument.Load(filePath);
                 var enabledRecords = doc.Descendants("Records")
-                    .Where(r =>
-                        (string)r.Element("是否启用") == "1" && // 是否启用为1
-                        ((string)r.Element("物理通道") ?? "").Contains(DevName)) // 物理通道包含Dev1
+                      .Where(r =>
+                    (string)r.Element("是否启用") == "1" &&          // 是否启用为1
+                   ((string)r.Element("物理通道") ?? "").Contains(DevName)) // 物理通道包含Dev1
                     .Select(r => new
                     {
                         Param = (string)r.Element("参数名"),
@@ -361,7 +364,6 @@ namespace DataOperation
                         return $"无效截距值: {record.Param.Replace("_current", "")}={record.Offset}";
                     }
                 }
-
                 return "OK";
             }
             catch (Exception ex)
@@ -370,17 +372,16 @@ namespace DataOperation
             }
         }
 
-        public static string GetDaqZeroValueMapping(string filePath, string DevName,
-            out ConcurrentDictionary<string, double> zeroValueMapping)
+        public static string GetDaqZeroValueMapping(string filePath, string DevName, out ConcurrentDictionary<string, double> zeroValueMapping)
         {
             zeroValueMapping = new ConcurrentDictionary<string, double>();
             try
             {
                 XDocument doc = XDocument.Load(filePath);
                 var enabledRecords = doc.Descendants("Records")
-                    .Where(r =>
-                        (string)r.Element("是否启用") == "1" && // 是否启用为1
-                        ((string)r.Element("物理通道") ?? "").Contains(DevName)) // 物理通道包含Dev1
+                      .Where(r =>
+                    (string)r.Element("是否启用") == "1" &&          // 是否启用为1
+                   ((string)r.Element("物理通道") ?? "").Contains(DevName)) // 物理通道包含Dev1
                     .Select(r => new
                     {
                         Param = (string)r.Element("参数名"),
@@ -398,7 +399,6 @@ namespace DataOperation
                         return $"无效零位漂移值: {record.Param.Replace("_current", "")}={record.Offset}";
                     }
                 }
-
                 return "OK";
             }
             catch (Exception ex)
@@ -406,6 +406,13 @@ namespace DataOperation
                 return $"读取零位漂移配置失败: {ex.Message}";
             }
         }
+
+
+
+
+
+
+
 
 
         //public static string GetEmbScaleMapping(string filePath, string DevName, out ConcurrentDictionary<string, double> scaleMapping)
@@ -515,8 +522,7 @@ namespace DataOperation
         //}
 
 
-        public static string GetDaqPhyChanelToNameMapping(string filePath, string DevName,
-            out ConcurrentDictionary<string, string> phyChannelNameMapping)
+        public static string GetDaqPhyChanelToNameMapping(string filePath, string DevName, out ConcurrentDictionary<string, string> phyChannelNameMapping)
         {
             phyChannelNameMapping = new ConcurrentDictionary<string, string>();
             try
@@ -524,8 +530,8 @@ namespace DataOperation
                 XDocument doc = XDocument.Load(filePath);
                 var enabledRecords = doc.Descendants("Records")
                     .Where(r =>
-                        (string)r.Element("是否启用") == "1" && // 是否启用为1
-                        ((string)r.Element("物理通道") ?? "").Contains(DevName)) // 物理通道包含Dev1
+                    (string)r.Element("是否启用") == "1" &&          // 是否启用为1
+                   ((string)r.Element("物理通道") ?? "").Contains(DevName)) // 物理通道包含Dev1
                     .Select(r => new
                     {
                         Param = (string)r.Element("参数名"),
@@ -536,7 +542,6 @@ namespace DataOperation
                 {
                     phyChannelNameMapping.TryAdd(record.PhyChannel, record.Param);
                 }
-
                 return "OK";
             }
             catch (Exception ex)
@@ -544,5 +549,9 @@ namespace DataOperation
                 return $"参数通道和名称失败: {ex.Message}";
             }
         }
+
+
+
+
     }
 }

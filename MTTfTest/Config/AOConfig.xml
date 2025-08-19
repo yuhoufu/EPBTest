@@ -1,0 +1,46 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<AOConfig>
+	<!-- 全局电压与百分比边界，可按需要调整 -->
+	<MinVoltage>0</MinVoltage>
+	<MaxVoltage>10</MaxVoltage>
+	<MinPercent>0</MinPercent>
+	<MaxPercent>100</MaxPercent>
+
+	<Devices>
+		<Device>
+			<Name>Cylinder1</Name>
+			<PhysicalChannel>Dev1/ao0</PhysicalChannel>
+			<!-- 可选：校准与偏置（电压 = 线性映射 * ScaleK + Offset） -->
+			<ScaleK>1.0</ScaleK>
+			<Offset>0.0</Offset>
+			<!-- 新增：可选校准表，用于“百分比→压力(Bar)”估算（若 DAQ 有闭环则可不配）-->
+			<PercentToPressureTable>
+				<Point>
+					<Percent>0</Percent>
+					<Pressure>0.0</Pressure>
+				</Point>
+				<Point>
+					<Percent>100</Percent>
+					<Pressure>6</Pressure>
+				</Point>
+			</PercentToPressureTable>
+		</Device>
+		<Device>
+			<Name>Cylinder2</Name>
+			<PhysicalChannel>Dev2/ao0</PhysicalChannel>
+			<ScaleK>1.0</ScaleK>
+			<Offset>0.0</Offset>
+			<!-- 新增：可选校准表，用于“百分比→压力(Bar)”估算（若 DAQ 有闭环则可不配）-->
+			<PercentToPressureTable>
+				<Point>
+					<Percent>0</Percent>
+					<Pressure>0.0</Pressure>
+				</Point>
+				<Point>
+					<Percent>100</Percent>
+					<Pressure>6</Pressure>
+				</Point>
+			</PercentToPressureTable>
+		</Device>
+	</Devices>
+</AOConfig>

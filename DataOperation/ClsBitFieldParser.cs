@@ -6,7 +6,7 @@ using System.Threading.Tasks;
 
 namespace DataOperation
 {
-   public  class ClsBitFieldParser
+    public class ClsBitFieldParser
     {
         public static string ParseData(byte[] data,
                                 out int force,
@@ -24,7 +24,7 @@ namespace DataOperation
                 torque = GetSignedValue(data, startBit: 48, bitLength: 9, isLittleEndian: true);
                 return "OK";
             }
-            catch(Exception ex)
+            catch (Exception ex)
             {
                 force = 0;
                 faultflg = 0;
@@ -35,14 +35,14 @@ namespace DataOperation
         }
 
 
-        public static string ParseForce(byte[] data,out int force)                 
+        public static string ParseForce(byte[] data, out int force)
         {
             try
             {
                 force = GetSignedValue(data, startBit: 0, bitLength: 15, isLittleEndian: true);
                 return "OK";
             }
-            catch(Exception ex)
+            catch (Exception ex)
             {
                 force = 0;
                 return ex.Message;
@@ -82,7 +82,7 @@ namespace DataOperation
         {
             try
             {
-                faultFlg = GetUnsignedValue(data, startBit: 15, bitLength: 1); 
+                faultFlg = GetUnsignedValue(data, startBit: 15, bitLength: 1);
                 return "OK";
             }
             catch (Exception ex)
@@ -96,12 +96,12 @@ namespace DataOperation
 
         public static double GetClampForce(byte[] data, double forceScale)
         {
-           
-                byte[] ForceBytes = new byte[2];
-                ForceBytes[0] = data[0];
-                ForceBytes[1] = (byte)(data[1] & 0x7f);    // 0~14
 
-                return BitConverter.ToInt16(ForceBytes, 0) * forceScale;
+            byte[] ForceBytes = new byte[2];
+            ForceBytes[0] = data[0];
+            ForceBytes[1] = (byte)(data[1] & 0x7f);    // 0~14
+
+            return BitConverter.ToInt16(ForceBytes, 0) * forceScale;
         }
 
         public static byte GetFaultFlg(byte[] data)
@@ -111,7 +111,7 @@ namespace DataOperation
 
 
 
-        public static string ParseClampData(byte[] data,double forceScale,double torqueScale,double currentScale,
+        public static string ParseClampData(byte[] data, double forceScale, double torqueScale, double currentScale,
                                                                   out double force,
                                                                   out byte faultFlg,
                                                                   out double torque,
@@ -123,8 +123,8 @@ namespace DataOperation
                 ForceBytes[0] = data[0];
                 ForceBytes[1] = (byte)(data[1] & 0x7f);    // 0~14
 
-                force= BitConverter.ToInt16(ForceBytes, 0) * forceScale;
-                faultFlg = (byte)((data[1] & 0x80)/0x80);   //15    高位在先
+                force = BitConverter.ToInt16(ForceBytes, 0) * forceScale;
+                faultFlg = (byte)((data[1] & 0x80) / 0x80);   //15    高位在先
 
                 byte[] TorqueBytes = new byte[2];
                 TorqueBytes[0] = data[6];
@@ -135,7 +135,7 @@ namespace DataOperation
 
                 return "OK";
             }
-            catch(Exception ex)
+            catch (Exception ex)
             {
                 force = 0;
                 torque = 0;
@@ -147,7 +147,7 @@ namespace DataOperation
         }
 
 
-       
+
 
 
 
@@ -162,7 +162,7 @@ namespace DataOperation
         }
 
 
-       
+
         private static int GetUnsignedValue(byte[] data, int startBit, int bitLength)
         {
             return (int)ExtractBits(data, startBit, bitLength);

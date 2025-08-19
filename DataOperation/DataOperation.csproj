@@ -31,6 +31,9 @@
     <WarningLevel>4</WarningLevel>
   </PropertyGroup>
   <ItemGroup>
+    <Reference Include="AsyncTcpClient">
+      <HintPath>..\MTEmbTest\bin\Debug\AsyncTcpClient.dll</HintPath>
+    </Reference>
     <Reference Include="System" />
     <Reference Include="System.Core" />
     <Reference Include="System.Xml.Linq" />
@@ -41,7 +44,7 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="ClsAutoLearnDetector.cs" />
+    <Compile Include="ClsAutoLearnProc.cs" />
     <Compile Include="ClsBitFieldParser.cs" />
     <Compile Include="ClsDaqAIContext.cs" />
     <Compile Include="ClsDataFilter.cs" />
@@ -51,6 +54,7 @@
     <Compile Include="ClsErrorProcess.cs" />
     <Compile Include="ClsLogProcess.cs" />
     <Compile Include="ClsSerialCommandMaker.cs" />
+    <Compile Include="ClsTempControl.cs" />
     <Compile Include="ClsTestConfig.cs" />
     <Compile Include="ClsXmlOperation.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />

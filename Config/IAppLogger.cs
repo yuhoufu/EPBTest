@@ -4,7 +4,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace IO.NI
+namespace Config
 {
     /// <summary>
     /// 统一日志接口：信息 / 警告 / 错误。

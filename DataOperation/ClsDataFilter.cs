@@ -6,7 +6,7 @@ using System.Threading.Tasks;
 
 namespace DataOperation
 {
-   public class ClsDataFilter
+    public class ClsDataFilter
     {
         public static double[] MakeMedianFilterKeepPoint_V1(ref double[] inputArray, int MedianLens)
         {
