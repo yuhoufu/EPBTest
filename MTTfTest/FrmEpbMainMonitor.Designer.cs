@@ -165,6 +165,7 @@
             this.BtnRunLog = new Sunny.UI.UIButton();
             this.RtbInfo = new Sunny.UI.UIRichTextBox();
             this.BtnErrorLog = new Sunny.UI.UIButton();
+            this.BtnWarnLog = new Sunny.UI.UIButton();
             this.uiTableLayoutPanel15 = new Sunny.UI.UITableLayoutPanel();
             this.uiLight3 = new Sunny.UI.UILight();
             this.uiLabel58 = new Sunny.UI.UILabel();
@@ -197,7 +198,7 @@
             this.checkEdit22 = new DevExpress.XtraEditors.CheckEdit();
             this.checkEdit23 = new DevExpress.XtraEditors.CheckEdit();
             this.checkEdit24 = new DevExpress.XtraEditors.CheckEdit();
-            this.textEdit1 = new DevExpress.XtraEditors.TextEdit();
+            this.textEditCurrent1 = new DevExpress.XtraEditors.TextEdit();
             this.textEdit2 = new DevExpress.XtraEditors.TextEdit();
             this.textEdit3 = new DevExpress.XtraEditors.TextEdit();
             this.textEdit4 = new DevExpress.XtraEditors.TextEdit();
@@ -363,7 +364,7 @@
             ((System.ComponentModel.ISupportInitialize)(this.checkEdit22.Properties)).BeginInit();
             ((System.ComponentModel.ISupportInitialize)(this.checkEdit23.Properties)).BeginInit();
             ((System.ComponentModel.ISupportInitialize)(this.checkEdit24.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit1.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEditCurrent1.Properties)).BeginInit();
             ((System.ComponentModel.ISupportInitialize)(this.textEdit2.Properties)).BeginInit();
             ((System.ComponentModel.ISupportInitialize)(this.textEdit3.Properties)).BeginInit();
             ((System.ComponentModel.ISupportInitialize)(this.textEdit4.Properties)).BeginInit();
@@ -531,8 +532,8 @@
             this.zedGraphControl1.IsEnableHZoom = false;
             this.zedGraphControl1.IsEnableVZoom = false;
             this.zedGraphControl1.IsEnableWheelZoom = false;
-            this.zedGraphControl1.Location = new System.Drawing.Point(288, 383);
-            this.zedGraphControl1.Margin = new System.Windows.Forms.Padding(268, 373, 268, 373);
+            this.zedGraphControl1.Location = new System.Drawing.Point(655, 979);
+            this.zedGraphControl1.Margin = new System.Windows.Forms.Padding(635, 969, 635, 969);
             this.zedGraphControl1.Name = "zedGraphControl1";
             this.zedGraphControl1.ScrollGrace = 0D;
             this.zedGraphControl1.ScrollMaxX = 0D;
@@ -541,7 +542,7 @@
             this.zedGraphControl1.ScrollMinX = 0D;
             this.zedGraphControl1.ScrollMinY = 0D;
             this.zedGraphControl1.ScrollMinY2 = 0D;
-            this.zedGraphControl1.Size = new System.Drawing.Size(51, 1);
+            this.zedGraphControl1.Size = new System.Drawing.Size(1, 1);
             this.zedGraphControl1.TabIndex = 4;
             this.zedGraphControl1.UseExtendedPrintDialog = true;
             // 
@@ -1165,8 +1166,8 @@
             this.zedGraphControl2.IsEnableHZoom = false;
             this.zedGraphControl2.IsEnableVZoom = false;
             this.zedGraphControl2.IsEnableWheelZoom = false;
-            this.zedGraphControl2.Location = new System.Drawing.Point(31, 21);
-            this.zedGraphControl2.Margin = new System.Windows.Forms.Padding(11);
+            this.zedGraphControl2.Location = new System.Drawing.Point(40, 31);
+            this.zedGraphControl2.Margin = new System.Windows.Forms.Padding(20, 21, 20, 21);
             this.zedGraphControl2.Name = "zedGraphControl2";
             this.zedGraphControl2.ScrollGrace = 0D;
             this.zedGraphControl2.ScrollMaxX = 0D;
@@ -1175,7 +1176,7 @@
             this.zedGraphControl2.ScrollMinX = 0D;
             this.zedGraphControl2.ScrollMinY = 0D;
             this.zedGraphControl2.ScrollMinY2 = 0D;
-            this.zedGraphControl2.Size = new System.Drawing.Size(565, 324);
+            this.zedGraphControl2.Size = new System.Drawing.Size(547, 304);
             this.zedGraphControl2.TabIndex = 4;
             this.zedGraphControl2.UseExtendedPrintDialog = true;
             // 
@@ -2027,8 +2028,8 @@
             this.zedGraphControl3.IsEnableHZoom = false;
             this.zedGraphControl3.IsEnableVZoom = false;
             this.zedGraphControl3.IsEnableWheelZoom = false;
-            this.zedGraphControl3.Location = new System.Drawing.Point(31, 21);
-            this.zedGraphControl3.Margin = new System.Windows.Forms.Padding(11);
+            this.zedGraphControl3.Location = new System.Drawing.Point(40, 31);
+            this.zedGraphControl3.Margin = new System.Windows.Forms.Padding(20, 21, 20, 21);
             this.zedGraphControl3.Name = "zedGraphControl3";
             this.zedGraphControl3.ScrollGrace = 0D;
             this.zedGraphControl3.ScrollMaxX = 0D;
@@ -2037,7 +2038,7 @@
             this.zedGraphControl3.ScrollMinX = 0D;
             this.zedGraphControl3.ScrollMinY = 0D;
             this.zedGraphControl3.ScrollMinY2 = 0D;
-            this.zedGraphControl3.Size = new System.Drawing.Size(565, 324);
+            this.zedGraphControl3.Size = new System.Drawing.Size(547, 304);
             this.zedGraphControl3.TabIndex = 4;
             this.zedGraphControl3.UseExtendedPrintDialog = true;
             // 
@@ -2575,15 +2576,18 @@
             // z
             // 
             this.z.BackColor = System.Drawing.Color.Transparent;
-            this.z.ColumnCount = 5;
+            this.z.ColumnCount = 7;
             this.z.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
-            this.z.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 30F));
-            this.z.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 40F));
-            this.z.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 30F));
-            this.z.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 24F));
+            this.z.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
+            this.z.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 40F));
+            this.z.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
+            this.z.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 40F));
+            this.z.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
+            this.z.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 25F));
             this.z.Controls.Add(this.BtnRunLog, 1, 3);
             this.z.Controls.Add(this.RtbInfo, 1, 1);
-            this.z.Controls.Add(this.BtnErrorLog, 3, 3);
+            this.z.Controls.Add(this.BtnErrorLog, 5, 3);
+            this.z.Controls.Add(this.BtnWarnLog, 3, 3);
             this.z.Dock = System.Windows.Forms.DockStyle.Fill;
             this.z.Location = new System.Drawing.Point(0, 64);
             this.z.Name = "z";
@@ -2606,7 +2610,7 @@
             this.BtnRunLog.MinimumSize = new System.Drawing.Size(1, 1);
             this.BtnRunLog.Name = "BtnRunLog";
             this.BtnRunLog.Radius = 1;
-            this.BtnRunLog.Size = new System.Drawing.Size(192, 58);
+            this.BtnRunLog.Size = new System.Drawing.Size(186, 58);
             this.BtnRunLog.TabIndex = 52;
             this.BtnRunLog.Text = "运行日志";
             this.BtnRunLog.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
@@ -2614,7 +2618,7 @@
             // 
             // RtbInfo
             // 
-            this.z.SetColumnSpan(this.RtbInfo, 3);
+            this.z.SetColumnSpan(this.RtbInfo, 5);
             this.RtbInfo.Dock = System.Windows.Forms.DockStyle.Fill;
             this.RtbInfo.FillColor = System.Drawing.Color.White;
             this.RtbInfo.Font = new System.Drawing.Font("Arial Narrow", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
@@ -2625,7 +2629,7 @@
             this.RtbInfo.Padding = new System.Windows.Forms.Padding(2);
             this.RtbInfo.Radius = 1;
             this.RtbInfo.ShowText = false;
-            this.RtbInfo.Size = new System.Drawing.Size(652, 642);
+            this.RtbInfo.Size = new System.Drawing.Size(648, 642);
             this.RtbInfo.TabIndex = 0;
             this.RtbInfo.TextAlignment = System.Drawing.ContentAlignment.MiddleCenter;
             // 
@@ -2634,22 +2638,37 @@
             this.BtnErrorLog.Cursor = System.Windows.Forms.Cursors.Hand;
             this.BtnErrorLog.Dock = System.Windows.Forms.DockStyle.Fill;
             this.BtnErrorLog.Font = new System.Drawing.Font("Arial", 9F);
-            this.BtnErrorLog.Location = new System.Drawing.Point(485, 667);
+            this.BtnErrorLog.Location = new System.Drawing.Point(487, 667);
             this.BtnErrorLog.MinimumSize = new System.Drawing.Size(1, 1);
             this.BtnErrorLog.Name = "BtnErrorLog";
             this.BtnErrorLog.Radius = 1;
-            this.BtnErrorLog.Size = new System.Drawing.Size(192, 58);
+            this.BtnErrorLog.Size = new System.Drawing.Size(186, 58);
             this.BtnErrorLog.TabIndex = 53;
             this.BtnErrorLog.Text = "错误日志";
             this.BtnErrorLog.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
             this.BtnErrorLog.Click += new System.EventHandler(this.BtnErrorLog_Click);
+            // 
+            // BtnWarnLog
+            // 
+            this.BtnWarnLog.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.BtnWarnLog.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.BtnWarnLog.Font = new System.Drawing.Font("Arial", 9F);
+            this.BtnWarnLog.Location = new System.Drawing.Point(255, 667);
+            this.BtnWarnLog.MinimumSize = new System.Drawing.Size(1, 1);
+            this.BtnWarnLog.Name = "BtnWarnLog";
+            this.BtnWarnLog.Radius = 1;
+            this.BtnWarnLog.Size = new System.Drawing.Size(186, 58);
+            this.BtnWarnLog.TabIndex = 53;
+            this.BtnWarnLog.Text = "警告日志";
+            this.BtnWarnLog.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.BtnWarnLog.Click += new System.EventHandler(this.BtnWarnLog_Click);
             // 
             // uiTableLayoutPanel15
             // 
             this.uiTableLayoutPanel15.ColumnCount = 3;
             this.uiTableLayoutPanel15.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 44.07583F));
             this.uiTableLayoutPanel15.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 55.92417F));
-            this.uiTableLayoutPanel15.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 144F));
+            this.uiTableLayoutPanel15.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 151F));
             this.uiTableLayoutPanel15.Controls.Add(this.uiLight3, 2, 3);
             this.uiTableLayoutPanel15.Controls.Add(this.uiLabel58, 0, 2);
             this.uiTableLayoutPanel15.Controls.Add(this.uiLabel57, 0, 1);
@@ -2680,7 +2699,7 @@
             this.uiLight3.CenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
             this.uiLight3.Font = new System.Drawing.Font("宋体", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
             this.uiLight3.Interval = 2000;
-            this.uiLight3.Location = new System.Drawing.Point(829, 524);
+            this.uiLight3.Location = new System.Drawing.Point(826, 524);
             this.uiLight3.Margin = new System.Windows.Forms.Padding(12, 4, 4, 4);
             this.uiLight3.MinimumSize = new System.Drawing.Size(2, 2);
             this.uiLight3.Name = "uiLight3";
@@ -2701,7 +2720,7 @@
             this.uiLabel58.Location = new System.Drawing.Point(4, 324);
             this.uiLabel58.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
             this.uiLabel58.Name = "uiLabel58";
-            this.uiLabel58.Size = new System.Drawing.Size(345, 162);
+            this.uiLabel58.Size = new System.Drawing.Size(342, 162);
             this.uiLabel58.TabIndex = 45;
             this.uiLabel58.Text = "剩余次数";
             this.uiLabel58.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -2714,7 +2733,7 @@
             this.uiLabel57.Location = new System.Drawing.Point(4, 162);
             this.uiLabel57.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
             this.uiLabel57.Name = "uiLabel57";
-            this.uiLabel57.Size = new System.Drawing.Size(345, 162);
+            this.uiLabel57.Size = new System.Drawing.Size(342, 162);
             this.uiLabel57.TabIndex = 44;
             this.uiLabel57.Text = "完成次数";
             this.uiLabel57.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -2727,7 +2746,7 @@
             this.uiLabel56.Location = new System.Drawing.Point(4, 0);
             this.uiLabel56.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
             this.uiLabel56.Name = "uiLabel56";
-            this.uiLabel56.Size = new System.Drawing.Size(345, 162);
+            this.uiLabel56.Size = new System.Drawing.Size(342, 162);
             this.uiLabel56.TabIndex = 43;
             this.uiLabel56.Text = "运行时间";
             this.uiLabel56.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -2742,14 +2761,14 @@
             this.uiTableLayoutPanel23.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
             this.uiTableLayoutPanel23.Controls.Add(this.LedRunCycles, 1, 1);
             this.uiTableLayoutPanel23.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel23.Location = new System.Drawing.Point(357, 166);
+            this.uiTableLayoutPanel23.Location = new System.Drawing.Point(354, 166);
             this.uiTableLayoutPanel23.Margin = new System.Windows.Forms.Padding(4);
             this.uiTableLayoutPanel23.Name = "uiTableLayoutPanel23";
             this.uiTableLayoutPanel23.RowCount = 3;
             this.uiTableLayoutPanel23.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
             this.uiTableLayoutPanel23.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 90F));
             this.uiTableLayoutPanel23.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
-            this.uiTableLayoutPanel23.Size = new System.Drawing.Size(585, 154);
+            this.uiTableLayoutPanel23.Size = new System.Drawing.Size(588, 154);
             this.uiTableLayoutPanel23.TabIndex = 38;
             this.uiTableLayoutPanel23.TagString = null;
             // 
@@ -2769,7 +2788,7 @@
             this.LedRunCycles.Location = new System.Drawing.Point(15, 11);
             this.LedRunCycles.Margin = new System.Windows.Forms.Padding(4);
             this.LedRunCycles.Name = "LedRunCycles";
-            this.LedRunCycles.Size = new System.Drawing.Size(553, 130);
+            this.LedRunCycles.Size = new System.Drawing.Size(556, 130);
             this.LedRunCycles.TabIndex = 0;
             this.LedRunCycles.Text = "0";
             // 
@@ -2783,14 +2802,14 @@
             this.uiTableLayoutPanel32.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
             this.uiTableLayoutPanel32.Controls.Add(this.LedRunTime, 1, 1);
             this.uiTableLayoutPanel32.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel32.Location = new System.Drawing.Point(357, 4);
+            this.uiTableLayoutPanel32.Location = new System.Drawing.Point(354, 4);
             this.uiTableLayoutPanel32.Margin = new System.Windows.Forms.Padding(4);
             this.uiTableLayoutPanel32.Name = "uiTableLayoutPanel32";
             this.uiTableLayoutPanel32.RowCount = 3;
             this.uiTableLayoutPanel32.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
             this.uiTableLayoutPanel32.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 90F));
             this.uiTableLayoutPanel32.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
-            this.uiTableLayoutPanel32.Size = new System.Drawing.Size(585, 154);
+            this.uiTableLayoutPanel32.Size = new System.Drawing.Size(588, 154);
             this.uiTableLayoutPanel32.TabIndex = 37;
             this.uiTableLayoutPanel32.TagString = null;
             // 
@@ -2810,7 +2829,7 @@
             this.LedRunTime.Location = new System.Drawing.Point(15, 11);
             this.LedRunTime.Margin = new System.Windows.Forms.Padding(4);
             this.LedRunTime.Name = "LedRunTime";
-            this.LedRunTime.Size = new System.Drawing.Size(553, 130);
+            this.LedRunTime.Size = new System.Drawing.Size(556, 130);
             this.LedRunTime.TabIndex = 0;
             this.LedRunTime.Text = "00D 00H 00M";
             // 
@@ -2824,14 +2843,14 @@
             this.uiTableLayoutPanel41.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
             this.uiTableLayoutPanel41.Controls.Add(this.LedLastCycles, 1, 1);
             this.uiTableLayoutPanel41.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel41.Location = new System.Drawing.Point(357, 328);
+            this.uiTableLayoutPanel41.Location = new System.Drawing.Point(354, 328);
             this.uiTableLayoutPanel41.Margin = new System.Windows.Forms.Padding(4);
             this.uiTableLayoutPanel41.Name = "uiTableLayoutPanel41";
             this.uiTableLayoutPanel41.RowCount = 3;
             this.uiTableLayoutPanel41.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
             this.uiTableLayoutPanel41.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 90F));
             this.uiTableLayoutPanel41.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
-            this.uiTableLayoutPanel41.Size = new System.Drawing.Size(585, 154);
+            this.uiTableLayoutPanel41.Size = new System.Drawing.Size(588, 154);
             this.uiTableLayoutPanel41.TabIndex = 39;
             this.uiTableLayoutPanel41.TagString = null;
             // 
@@ -2851,7 +2870,7 @@
             this.LedLastCycles.Location = new System.Drawing.Point(15, 11);
             this.LedLastCycles.Margin = new System.Windows.Forms.Padding(4);
             this.LedLastCycles.Name = "LedLastCycles";
-            this.LedLastCycles.Size = new System.Drawing.Size(553, 130);
+            this.LedLastCycles.Size = new System.Drawing.Size(556, 130);
             this.LedLastCycles.TabIndex = 0;
             this.LedLastCycles.Text = "1000000";
             // 
@@ -2865,7 +2884,7 @@
             this.ProcBar.Margin = new System.Windows.Forms.Padding(4);
             this.ProcBar.MinimumSize = new System.Drawing.Size(4, 4);
             this.ProcBar.Name = "ProcBar";
-            this.ProcBar.Size = new System.Drawing.Size(793, 154);
+            this.ProcBar.Size = new System.Drawing.Size(786, 154);
             this.ProcBar.Style = Sunny.UI.UIStyle.Custom;
             this.ProcBar.TabIndex = 41;
             this.ProcBar.Text = "uiProcessBar1";
@@ -2923,6 +2942,7 @@
             this.BtnStartTest.TabIndex = 50;
             this.BtnStartTest.Text = "开始试验";
             this.BtnStartTest.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.BtnStartTest.Click += new System.EventHandler(this.BtnStartTest_Click);
             // 
             // BtnStop
             // 
@@ -3028,7 +3048,7 @@
             this.uiTableLayoutPanel6.Controls.Add(this.checkEdit22, 9, 0);
             this.uiTableLayoutPanel6.Controls.Add(this.checkEdit23, 10, 0);
             this.uiTableLayoutPanel6.Controls.Add(this.checkEdit24, 11, 0);
-            this.uiTableLayoutPanel6.Controls.Add(this.textEdit1, 0, 1);
+            this.uiTableLayoutPanel6.Controls.Add(this.textEditCurrent1, 0, 1);
             this.uiTableLayoutPanel6.Controls.Add(this.textEdit2, 1, 1);
             this.uiTableLayoutPanel6.Controls.Add(this.textEdit3, 2, 1);
             this.uiTableLayoutPanel6.Controls.Add(this.textEdit4, 3, 1);
@@ -3258,14 +3278,14 @@
             this.checkEdit24.Size = new System.Drawing.Size(114, 62);
             this.checkEdit24.TabIndex = 0;
             // 
-            // textEdit1
+            // textEditCurrent1
             // 
-            this.textEdit1.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.textEdit1.EditValue = "12.34";
-            this.textEdit1.Location = new System.Drawing.Point(3, 71);
-            this.textEdit1.Name = "textEdit1";
-            this.textEdit1.Size = new System.Drawing.Size(102, 44);
-            this.textEdit1.TabIndex = 1;
+            this.textEditCurrent1.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.textEditCurrent1.EditValue = "12.34";
+            this.textEditCurrent1.Location = new System.Drawing.Point(3, 71);
+            this.textEditCurrent1.Name = "textEditCurrent1";
+            this.textEditCurrent1.Size = new System.Drawing.Size(102, 44);
+            this.textEditCurrent1.TabIndex = 1;
             // 
             // textEdit2
             // 
@@ -5040,7 +5060,7 @@
             ((System.ComponentModel.ISupportInitialize)(this.checkEdit22.Properties)).EndInit();
             ((System.ComponentModel.ISupportInitialize)(this.checkEdit23.Properties)).EndInit();
             ((System.ComponentModel.ISupportInitialize)(this.checkEdit24.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit1.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEditCurrent1.Properties)).EndInit();
             ((System.ComponentModel.ISupportInitialize)(this.textEdit2.Properties)).EndInit();
             ((System.ComponentModel.ISupportInitialize)(this.textEdit3.Properties)).EndInit();
             ((System.ComponentModel.ISupportInitialize)(this.textEdit4.Properties)).EndInit();
@@ -5302,7 +5322,7 @@
         private DevExpress.XtraEditors.CheckEdit checkEdit22;
         private DevExpress.XtraEditors.CheckEdit checkEdit23;
         private DevExpress.XtraEditors.CheckEdit checkEdit24;
-        private DevExpress.XtraEditors.TextEdit textEdit1;
+        private DevExpress.XtraEditors.TextEdit textEditCurrent1;
         private DevExpress.XtraEditors.TextEdit textEdit2;
         private DevExpress.XtraEditors.TextEdit textEdit3;
         private DevExpress.XtraEditors.TextEdit textEdit4;
@@ -5351,5 +5371,6 @@
         private DevExpress.UITemplates.Collection.Editors.ToggleButton SwitchPower3;
         private DevExpress.UITemplates.Collection.Editors.ToggleButton SwitchEpb2;
         private DevExpress.UITemplates.Collection.Editors.ToggleButton SwitchEpb3;
+        private Sunny.UI.UIButton BtnWarnLog;
     }
 }

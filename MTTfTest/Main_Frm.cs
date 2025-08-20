@@ -33,16 +33,20 @@ namespace MtEmbTest
         {
             InitializeComponent();
             ConfigureMenuStrip();
+
+            // 放在程序启动早期（如 Form_Load / Main 里）
+            _ = typeof(Controller.EpbManager).FullName;   // 用 Controller 内真实存在的公开类型名替换
+
         }
 
-       
-       
-      
-       
-       
 
 
-       
+
+
+
+
+
+
 
 
         /// <summary>

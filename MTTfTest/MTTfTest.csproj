@@ -13,9 +13,24 @@
     <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
     <Deterministic>true</Deterministic>
     <TargetFrameworkProfile />
+    <PublishUrl>publish\</PublishUrl>
+    <Install>true</Install>
+    <InstallFrom>Disk</InstallFrom>
+    <UpdateEnabled>false</UpdateEnabled>
+    <UpdateMode>Foreground</UpdateMode>
+    <UpdateInterval>7</UpdateInterval>
+    <UpdateIntervalUnits>Days</UpdateIntervalUnits>
+    <UpdatePeriodically>false</UpdatePeriodically>
+    <UpdateRequired>false</UpdateRequired>
+    <MapFileExtensions>true</MapFileExtensions>
+    <ApplicationRevision>0</ApplicationRevision>
+    <ApplicationVersion>1.0.0.%2a</ApplicationVersion>
+    <IsWebBootstrapper>false</IsWebBootstrapper>
+    <UseApplicationTrust>false</UseApplicationTrust>
+    <BootstrapperEnabled>true</BootstrapperEnabled>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
-    <PlatformTarget>AnyCPU</PlatformTarget>
+    <PlatformTarget>x86</PlatformTarget>
     <DebugSymbols>true</DebugSymbols>
     <DebugType>full</DebugType>
     <Optimize>false</Optimize>
@@ -37,10 +52,6 @@
     <LangVersion>9</LangVersion>
   </PropertyGroup>
   <ItemGroup>
-    <Reference Include="AsyncListener, Version=1.0.0.0, Culture=neutral, processorArchitecture=MSIL">
-      <SpecificVersion>False</SpecificVersion>
-      <HintPath>bin\Debug\AsyncListener.dll</HintPath>
-    </Reference>
     <Reference Include="AsyncTcpClient">
       <HintPath>..\image\AsyncTcpClient.dll</HintPath>
     </Reference>
@@ -90,7 +101,6 @@
     <Reference Include="DevExpress.XtraLayout.v24.2" />
     <Reference Include="DevExpress.XtraBars.v24.2" />
     <Reference Include="DevExpress.XtraTreeList.v24.2" />
-    <Reference Include="EntityFramework" />
     <Reference Include="DevExpress.Mvvm.v24.2" />
   </ItemGroup>
   <ItemGroup>
@@ -206,7 +216,9 @@
     <None Include="App.config" />
   </ItemGroup>
   <ItemGroup>
-    <Content Include="Config\AIConfig.xml" />
+    <Content Include="Config\AIConfig.xml">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
     <Content Include="Config\AOConfig.xml">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
@@ -214,12 +226,22 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <Content Include="Config\TestConfig - 复制.xml" />
-    <Content Include="Config\TestConfig.xml" />
+    <Content Include="Config\TestConfig.xml">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
     <Content Include="License-LGPL.txt" />
     <None Include="Resources\P5.png" />
     <None Include="Resources\P4.png" />
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="..\Config\Config.csproj">
+      <Project>{7941D662-F680-489B-972D-F324CBB42A9D}</Project>
+      <Name>Config</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\Controller\Controller.csproj">
+      <Project>{3788aca5-1b32-414c-8678-637d8cad9b18}</Project>
+      <Name>Controller</Name>
+    </ProjectReference>
     <ProjectReference Include="..\DataOperation\DataOperation.csproj">
       <Project>{fce7fd92-9529-40df-83ab-92b6b4dc469c}</Project>
       <Name>DataOperation</Name>
@@ -228,11 +250,26 @@
       <Project>{1857b54c-ef87-4239-b3b0-1b1adf082a2d}</Project>
       <Name>IO.NI</Name>
     </ProjectReference>
+    <ProjectReference Include="..\Timing\Timing.csproj">
+      <Project>{3d810ee2-a0ef-4d1f-84cd-2ddcf63fb434}</Project>
+      <Name>Timing</Name>
+    </ProjectReference>
     <ProjectReference Include="..\ZlgCanComm\ZlgCanComm.csproj">
       <Project>{95cfcfba-a5a3-49b4-8143-ad2ab7e7e03f}</Project>
       <Name>ZlgCanComm</Name>
     </ProjectReference>
   </ItemGroup>
-  <ItemGroup />
+  <ItemGroup>
+    <BootstrapperPackage Include=".NETFramework,Version=v4.8">
+      <Visible>False</Visible>
+      <ProductName>Microsoft .NET Framework 4.8 %28x86 和 x64%29</ProductName>
+      <Install>true</Install>
+    </BootstrapperPackage>
+    <BootstrapperPackage Include="Microsoft.Net.Framework.3.5.SP1">
+      <Visible>False</Visible>
+      <ProductName>.NET Framework 3.5 SP1</ProductName>
+      <Install>false</Install>
+    </BootstrapperPackage>
+  </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>

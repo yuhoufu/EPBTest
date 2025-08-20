@@ -3,7 +3,7 @@
 <TestConfig>
 	<Basic>
 		<TestName>EPB_Fatigue</TestName>
-		<TestTarget>1000</TestTarget>
+		<TestTarget>10</TestTarget>
 		<!-- 周期次数 -->
 		<TestCycle>10</TestCycle>
 		<!-- 每周期 Hz，例：10 表示 100ms -->
@@ -19,7 +19,8 @@
 	<Hydraulics>
 		<Hydraulic>
 			<Id>1</Id>
-			<Enabled>true</Enabled>
+			<!-- <Enabled>true</Enabled> -->
+			<Enabled>false</Enabled>
 			<Mode>Either</Mode>
 			<!-- ByPressure / ByDuration / Either -->
 			<SetPercent>30</SetPercent>
@@ -34,7 +35,8 @@
 		</Hydraulic>
 		<Hydraulic>
 			<Id>2</Id>
-			<Enabled>true</Enabled>
+			<!-- <Enabled>true</Enabled> -->
+			<Enabled>false</Enabled>
 			<Mode>ByPressure</Mode>
 			<SetPercent>28</SetPercent>
 			<PressureThresholdBar>18.0</PressureThresholdBar>
@@ -48,11 +50,61 @@
 	<EpbCurrentLimits>
 		<Record>
 			<Channel>1</Channel>
+			<ForwardA>3</ForwardA>
+			<ReverseA>2</ReverseA>
+		</Record>
+		<Record>
+			<Channel>2</Channel>
 			<ForwardA>9.0</ForwardA>
 			<ReverseA>6.0</ReverseA>
 		</Record>
 		<Record>
-			<Channel>2</Channel>
+			<Channel>3</Channel>
+			<ForwardA>9.0</ForwardA>
+			<ReverseA>6.0</ReverseA>
+		</Record>
+		<Record>
+			<Channel>4</Channel>
+			<ForwardA>9.0</ForwardA>
+			<ReverseA>6.0</ReverseA>
+		</Record>
+		<Record>
+			<Channel>5</Channel>
+			<ForwardA>9.0</ForwardA>
+			<ReverseA>6.0</ReverseA>
+		</Record>
+		<Record>
+			<Channel>6</Channel>
+			<ForwardA>9.0</ForwardA>
+			<ReverseA>6.0</ReverseA>
+		</Record>
+		<Record>
+			<Channel>7</Channel>
+			<ForwardA>9.0</ForwardA>
+			<ReverseA>6.0</ReverseA>
+		</Record>
+		<Record>
+			<Channel>8</Channel>
+			<ForwardA>9.0</ForwardA>
+			<ReverseA>6.0</ReverseA>
+		</Record>
+		<Record>
+			<Channel>9</Channel>
+			<ForwardA>9.0</ForwardA>
+			<ReverseA>6.0</ReverseA>
+		</Record>
+		<Record>
+			<Channel>10</Channel>
+			<ForwardA>9.0</ForwardA>
+			<ReverseA>6.0</ReverseA>
+		</Record>
+		<Record>
+			<Channel>11</Channel>
+			<ForwardA>9.0</ForwardA>
+			<ReverseA>6.0</ReverseA>
+		</Record>
+		<Record>
+			<Channel>12</Channel>
 			<ForwardA>9.0</ForwardA>
 			<ReverseA>6.0</ReverseA>
 		</Record>

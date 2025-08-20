@@ -111,10 +111,10 @@ namespace Config
 
     public sealed class GlobalConfig
     {
-        public AoConfig AO { get; init; }
-        public DoConfig DO { get; init; }
+        public AoConfig AO { get; set; }
+        public DoConfig DO { get; set; }
 
-        public TestConfig Test { get; init; }
+        public TestConfig Test { get; set; }
         // AIConfig 在此不做强约束（你已有采集管线，按参数名取流即可）
     }
 

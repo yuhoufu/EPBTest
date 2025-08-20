@@ -54,8 +54,18 @@
     <Compile Include="DoController.cs" />
     <Compile Include="IAppLogger.cs" />
     <Compile Include="AoController.cs" />
-    <Compile Include="NiAnalogOutPercent.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="TwoDeviceAiAcquirer.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Config\Config.csproj">
+      <Project>{7941D662-F680-489B-972D-F324CBB42A9D}</Project>
+      <Name>Config</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\DataOperation\DataOperation.csproj">
+      <Project>{FCE7FD92-9529-40DF-83AB-92B6B4DC469C}</Project>
+      <Name>DataOperation</Name>
+    </ProjectReference>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>

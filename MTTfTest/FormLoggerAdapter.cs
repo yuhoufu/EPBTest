@@ -10,7 +10,7 @@ namespace MTEmbTest
     /// 面向 WinForm 的日志适配器：把 IAppLogger 的 Info/Warn/Error
     /// 分别写入 信息 / 警告 / 错误 队列；线程安全（UI Invoke）。
     /// </summary>
-    public class FormLoggerAdapter : IAppLogger
+    public class FormLoggerAdapter : Config.IAppLogger
     {
         private readonly Control _ui;           // 用于回主线程
         private readonly int _maxInfos, _maxWarns, _maxErrors;

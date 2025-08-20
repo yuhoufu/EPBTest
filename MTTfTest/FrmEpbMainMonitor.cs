@@ -21,7 +21,11 @@ using ZedGraph;
 using System.Diagnostics;
 using System.IO;
 using System.Xml.Serialization;
+using Config;
+using Controller;
 using IO.NI;
+using DevExpress.Xpo.Logger;
+using TestConfig = DataOperation.TestConfig;
 
 namespace MTEmbTest
 {
@@ -298,7 +302,9 @@ namespace MTEmbTest
 
         public FormLoggerAdapter logger;
         private DoController _do;
-        private AOController _ao;
+        private AoController _ao;
+        private Controller.EpbManager _epb;
+        private TwoDeviceAiAcquirer twoDeviceAiAcquirer;
 
 
         public FrmEpbMainMonitor()
@@ -338,28 +344,30 @@ namespace MTEmbTest
 
 
             logger = new FormLoggerAdapter(maxInfos: MaxInfos, maxWarns: MaxWarns, maxErrors: MaxErrors,
-                logInfo: LogInformation, logWarn: LogError, logError: LogError, this);
+                logInfo: LogInformation, logWarn: LogWarn, logError: LogError, this);
 
-            _do = new DoController(logger);
-            _do.SetConfigPath($@"{Environment.CurrentDirectory}\Config\DOConfig.xml");
-            if (!_do.Initialize())
-            {
-                // 初始化失败时的处理
-                //MessageBox.Show("DO控制器初始化失败，请检查配置文件或设备连接！", "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                SetInfoText("DO控制器初始化失败，请检查配置文件或设备连接");
-            }
-
-            _ao = AOController.FromXml($@"{Environment.CurrentDirectory}\Config\AOConfig.xml",
-                logger: logger); // 传入你的 IAppLogger
-            if (!_ao.Initialize())
-            {
-                // 初始化失败时的处理
-                SetInfoText("AO控制器初始化失败，请检查配置文件或设备连接");
-            }
+            // _do = new DoController(logger);
+            // _do.SetConfigPath($@"{Environment.CurrentDirectory}\Config\DOConfig.xml");
+            // if (!_do.Initialize())
+            // {
+            //     // 初始化失败时的处理
+            //     //MessageBox.Show("DO控制器初始化失败，请检查配置文件或设备连接！", "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            //     SetInfoText("DO控制器初始化失败，请检查配置文件或设备连接");
+            // }
+            //
+            // _ao = AOController.FromXml($@"{Environment.CurrentDirectory}\Config\AOConfig.xml",
+            //     logger: logger); // 传入你的 IAppLogger
+            // if (!_ao.Initialize())
+            // {
+            //     // 初始化失败时的处理
+            //     SetInfoText("AO控制器初始化失败，请检查配置文件或设备连接");
+            // }
         }
 
         private void FrmEpbMainMonitor_Load(object sender, EventArgs e)
         {
+            
+
             try
             {
                 DaqTimeSpanMilSeconds = 1000.0 / ClsGlobal.DaqFrequency;
@@ -465,7 +473,7 @@ namespace MTEmbTest
                 //StartListen();
                 MakeCurveMapping();
                 //MakeDirectionMapping();
-                LoadTestConfigFromXml();
+                //LoadTestConfigFromXml(); // 已更改，暂时注释 2025/08/20
                 //LoadEMBHandlerAndFrameNo();
 
                 RtbInfo.Invoke(new SetTextCallback(SetInfoText), "1. 编辑试验信息并确认");
@@ -474,16 +482,16 @@ namespace MTEmbTest
                 RtbInfo.Invoke(new SetTextCallback(SetInfoText), "2. 自学习/开始试验");
 
 
-                ClsDiskProc.MakeSubDir(testConfig.StoreDir);
-
-                var MainDrive = testConfig.StoreDir.Trim().Substring(0, 2);
-
-                var LastSpace = ClsDiskProc.GetHardDiskSpace(MainDrive);
-                if (LastSpace == 0) MessageBox.Show("指定磁盘不存在！");
-
-                if (LastSpace < 50)
-                {
-                }
+                // ClsDiskProc.MakeSubDir(testConfig.StoreDir);
+                //
+                // var MainDrive = testConfig.StoreDir.Trim().Substring(0, 2);
+                //
+                // var LastSpace = ClsDiskProc.GetHardDiskSpace(MainDrive);
+                // if (LastSpace == 0) MessageBox.Show("指定磁盘不存在！");
+                //
+                // if (LastSpace < 50)
+                // {
+                // } // 已更改，暂时注释 2025/08/20
             }
 
             catch (Exception ex)
@@ -652,19 +660,19 @@ namespace MTEmbTest
                 CanCurrentYAxis.MajorGrid.IsVisible = false;
                 CanCurrentYAxis.MajorGrid.IsZeroLine = false;
 
-
-                listForce = new PointPairList();
-                curveForce = pane.AddCurve("Act_F(N)", listForce, Color.FromArgb(80, 160, 255), SymbolType.None);
-                curveForce.Line.Width = 2;
-                curveForce.IsY2Axis = false;
-                curveForce.YAxisIndex = 0;
-
-
-                listCanCurrent = new PointPairList();
-                curveCanCurrent = pane.AddCurve("Act_I(A)", listCanCurrent, Color.Purple, SymbolType.None);
-                curveCanCurrent.Line.Width = 2;
-                curveCanCurrent.IsY2Axis = true;
-                curveCanCurrent.YAxisIndex = pane.Y2AxisList.Count - 1;
+                //
+                // listForce = new PointPairList();
+                // curveForce = pane.AddCurve("Act_F(N)", listForce, Color.FromArgb(80, 160, 255), SymbolType.None);
+                // curveForce.Line.Width = 2;
+                // curveForce.IsY2Axis = false;
+                // curveForce.YAxisIndex = 0;
+                //
+                //
+                // listCanCurrent = new PointPairList();
+                // curveCanCurrent = pane.AddCurve("Act_I(A)", listCanCurrent, Color.Purple, SymbolType.None);
+                // curveCanCurrent.Line.Width = 2;
+                // curveCanCurrent.IsY2Axis = true;
+                // curveCanCurrent.YAxisIndex = pane.Y2AxisList.Count - 1;
 
                 listDaqCurrent = new PointPairList();
                 curveDaqCurrent = pane.AddCurve("DAQ_I(A)", listDaqCurrent, Color.Lime, SymbolType.None);
@@ -1030,6 +1038,104 @@ namespace MTEmbTest
                 }
             }
         }
+
+
+        /// <summary>
+        /// 更新实时曲线（仅 DAQ_I 一条曲线）。
+        /// 传入的数据应为工程值（已做零点、比例、偏置与滤波），方法内部会按照采样率
+        /// 将样本映射到 X 轴（单位：秒），并维持 X 轴固定时窗（ClsGlobal.XDuration）。
+        /// </summary>
+        /// <param name="daqData">
+        /// 一次刷新的 DAQ_I 数据段（工程值）。允许为空或长度为 0（此时不做任何更新）。
+        /// </param>
+        public void UpdateGraphDisplay2(double[] daqData)
+        {
+            // 控件未初始化直接返回
+            if (zedGraphRealChart == null) return;
+
+            // 跨线程封送
+            if (zedGraphRealChart.InvokeRequired)
+            {
+                zedGraphRealChart.Invoke(new Action<double[]>(UpdateGraphDisplay2), daqData);
+                return;
+            }
+
+            try
+            {
+                if (daqData == null || daqData.Length == 0)
+                    return;
+
+                // ===== 只显示 DAQ_I，对应 Y2 轴；隐藏其他轴（若存在则隐藏）=====
+                // 如果你仍然使用 curveDictionary 来控制可见性，这里也把 DAQ_I 打开
+                if (curveDictionary != null && curveDictionary.TryGetValue("DAQ_I", out var op))
+                {
+                    op.IsActive = true;
+                    if (op.lineItem != null) op.lineItem.IsVisible = true;
+                }
+
+                var pane = zedGraphRealChart.GraphPane;
+                pane.YAxis.IsVisible = false;                    // 只画 DAQ_I，不用左侧 Y 轴
+                pane.Y2Axis.IsVisible = true;                    // 开启 Y2
+                if (pane.Y2AxisList.Count > 1)                   // 如果曾经加过第二个 Y2（Act_I），这里隐藏
+                    pane.Y2AxisList[1].IsVisible = false;
+
+                // ===== 把采样映射到时间轴 =====
+                // 采样周期（秒/点）
+                if (ClsGlobal.DaqFrequency <= 0)
+                    throw new InvalidOperationException("DaqFrequency 未正确设置。");
+
+                double dt = 1.0 / ClsGlobal.DaqFrequency;
+
+                // 本次追加的起始 X（秒）。
+                // 若已有点，则从最后一个点的下一步开始；否则从 0 开始。
+                double xStart;
+                if (listDaqCurrent != null && listDaqCurrent.Count > 0)
+                    xStart = listDaqCurrent[listDaqCurrent.Count - 1].X + dt;
+                else
+                    xStart = 0.0;
+
+                // 逐点追加（X 轴为相对时间，单位：秒）
+                for (int i = 0; i < daqData.Length; i++)
+                {
+                    listDaqCurrent.Add(xStart + i * dt, daqData[i]);
+                }
+
+                // ===== 维持固定时窗（滑动窗口）=====
+                if (listDaqCurrent != null && listDaqCurrent.Count > 0)
+                {
+                    double firstX = listDaqCurrent[0].X;
+                    double lastX = listDaqCurrent[listDaqCurrent.Count - 1].X;
+
+                    if (lastX - firstX > ClsGlobal.XDuration)
+                    {
+                        // 移除最旧的一半，避免频繁整体拷贝导致卡顿
+                        double mid = (firstX + lastX) / 2.0;
+                        listDaqCurrent.RemoveAll(p => p.X < mid);
+
+                        // 滑动 X 轴范围到最新窗口
+                        pane.XAxis.Scale.Min = listDaqCurrent[0].X;
+                        pane.XAxis.Scale.Max = listDaqCurrent[0].X + ClsGlobal.XDuration;
+                    }
+                }
+
+                // 刷新
+                zedGraphRealChart.AxisChange();
+                zedGraphRealChart.Invalidate();
+
+                // =====（可选）维护 lastGraphyTime，用于你其他地方的时间基准 =====
+                // 以样点数与采样率推前 lastGraphyTime，保持与旧代码兼容
+                if (daqData.Length > 0)
+                {
+                    double spanSec = daqData.Length * (1.0 / ClsGlobal.DaqFrequency);
+                    lastGraphyTime = lastGraphyTime.AddSeconds(spanSec);
+                }
+            }
+            catch (Exception ex)
+            {
+                ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "更新曲线显示出错: " + ex.Message, "曲线显示");
+            }
+        }
+
 
 
         public void SafeClearGraphData()
@@ -1606,8 +1712,8 @@ namespace MTEmbTest
 
         private void BtnTest_Click(object sender, EventArgs e)
         {
-            _do.SetEpb(channelNo: 1, directionIsForward: true);
-            _do.SetEpb(channelNo: 9, directionIsForward: true);
+            // _do.SetEpb(channelNo: 1, directionIsForward: true);
+            // _do.SetEpb(channelNo: 9, directionIsForward: true);
         }
 
         /// <summary>
@@ -1660,8 +1766,8 @@ namespace MTEmbTest
             }*/
 
             // 打开气缸测试
-            _ao.SetPercent("Cylinder1", 50); // => ~5V
-            _ao.SetPercent("Cylinder2", 50); // => ~5V
+            // _ao.SetPercent("Cylinder1", 50); // => ~5V
+            // _ao.SetPercent("Cylinder2", 50); // => ~5V
         }
 
 
@@ -1672,9 +1778,135 @@ namespace MTEmbTest
         /// <param name="e"></param>
         private void FrmEpbMainMonitor_FormClosed(object sender, FormClosedEventArgs e)
         {
-            _do?.Dispose(); // 释放DO对象资源
-            _ao?.Dispose(); // 释放AO对象资源
+            // _do?.Dispose(); // 释放DO对象资源
+            // _ao?.Dispose(); // 释放AO对象资源
             //base.OnFormClosed(e);
+        }
+
+        private void BtnStartTest_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                // 1) 加载全局配置（AO/DO/Test）
+                var _cfg = ConfigLoader.LoadAll($@"{Environment.CurrentDirectory}\Config", logger);
+
+
+                // 2) 初始化 DO 控制器
+                _do = new DoController(_cfg.DO, logger);
+
+                // 3) 初始化 AO 控制器
+                _ao = new AoController(_cfg.AO, logger);
+
+                AiConfigDetail aiConfigDetail =
+                    AiConfigLoader.Load($@"{Environment.CurrentDirectory}\Config\AIConfig.xml");
+
+                TwoDeviceAiAcquirer twoDeviceAiAcquirer = new TwoDeviceAiAcquirer(cfg: aiConfigDetail, sampleRate: 1000,samplesPerChannel:50,
+                    medianLens: 10, log: logger);
+
+                twoDeviceAiAcquirer.OnEngBatch += Acq_OnEngBatch; // 订阅工程值批次到达事件
+
+                twoDeviceAiAcquirer.Start();
+
+
+
+
+                // 4) 组装 EpbManager（把回调委托接进去）
+                _epb = new EpbManager(
+                    cfg: _cfg,
+                    doController: _do,
+                    aoController: _ao,
+                    acq: twoDeviceAiAcquirer,
+                    log: logger);
+
+                // 5) 启动“卡钳1”通道
+                //    StartChannel 内部会根据 Test.TestTarget 次数、PeriodMs 周期、Groups 错峰等自动循环
+                _epb.StartChannel(2);
+
+                // UI 提示
+                RtbInfo?.AppendText($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  > 卡钳1测试已启动\n");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"启动卡钳1测试失败：{ex.Message}", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+
+
+        // 工程值批次到达（dev="Dev1" 或 "Dev2"；eng 为 [通道, 样本]）
+        private void Acq_OnEngBatch(string dev, double[,] eng, DateTime current, DateTime last)
+        {
+            if (InvokeRequired)
+            {
+                // 切回 UI 线程，避免跨线程操作控件异常
+                BeginInvoke(new Action(() => Acq_OnEngBatch(dev, eng, current, last)));
+                return;
+            }
+
+            // ===== 示例1：读取指定通道的“最后一个样本”并显示到 SunnyUI 的 UILabel =====
+            // 你在 TwoDeviceAiAcquirer 里已把“最近值快照”维护好了，也暴露了 ReadCurrent/ReadPressure 简便查询接口：
+            //   ReadCurrent(int epbChannel), ReadPressure(int id)  —— 直接拿最近值用来显示 UI 即可。:contentReference[oaicite:6]{index=6}
+            //double p1 = _acq.ReadPressure(1);           // 压力1 (工程值)
+            
+            
+            
+            if (dev == "Dev1")
+            {
+                // 1) 取第0通道的一个点，顺便刷新数值显示（你原来就是取 [0,0]）
+                double epb1 = eng[1, 0];                 // EPB1 电流 (工程值)
+                textEditCurrent1.Text = $"{epb1:F2} A";   // 假设 textEditCurrent1 是显示 EPB1 电流的控件
+
+                // 2) 提取第0维（第0通道）的整段样本，准备绘制
+                int samples = eng.GetLength(1);           // 列数 = 样本数
+                if (samples > 0)
+                {
+                    // 建议用循环拷贝（最安全、与 .NET 4.8 兼容）
+                    var daqI = new double[samples];
+                    for (int i = 0; i < samples; i++)
+                        daqI[i] = eng[1, i];
+
+                    // 3) 调用你的单曲线绘制方法（内部已做 Invoke 封送，可直接调用）
+                    UpdateGraphDisplay2(daqI);
+                }
+
+
+            }
+
+            // uiLabelPressure1.Text = $"{p1:F2} bar";
+            // uiLabelEpb1.Text = $"{epb1:F2} A";
+
+
+
+
+
+            // // ===== 示例2：往 ZedGraph 追加点（以“最后一个样本”作为当前时刻值）=====
+            // // 假设 pane.CurveList[0] 是 Pressure 曲线，CurveList[1] 是 EPB1 电流曲线
+            // var pane = zedGraphControl1.GraphPane;
+            // var t = (current - DateTime.Today).TotalSeconds; // 简单用秒作横轴
+            //
+            // // 这里假设你已在别处创建了两条曲线，命名 "P1" 与 "I1"
+            // var pCurve = pane.CurveList["P1"] as ZedGraph.LineItem;
+            // var iCurve = pane.CurveList["I1"] as ZedGraph.LineItem;
+            //
+            // if (pCurve != null) pCurve.AddPoint(t, p1);
+            // if (iCurve != null) iCurve.AddPoint(t, epb1);
+            //
+            // zedGraphControl1.AxisChange();
+            // zedGraphControl1.Invalidate(); // 触发重绘
+        }
+
+
+        private void BtnWarnLog_Click(object sender, EventArgs e)
+        {
+
+            try
+            {
+                string OutFile = System.Environment.CurrentDirectory + @"\WarnLog.txt";
+                ClsLogProcess.ViewWarnData(ref LogWarn, OutFile);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message);
+            }
         }
     }
 }

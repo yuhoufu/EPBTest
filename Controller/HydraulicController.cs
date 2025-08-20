@@ -6,123 +6,131 @@ using IO.NI;
 using IAppLogger = Config.IAppLogger;
 using NullLogger = Config.NullLogger;
 
-// Hydraulic/HydraulicController.cs
-
-// 使用你的 DoController
-
 namespace Controller
 {
     /// <summary>
-    /// 液压控制器：三种控制模式（到压/到时/任一满足），支持“达阈保持时长再泄压”。
-    /// 按液压编号整体控制 6 个卡钳，是否启用在 TestConfig.Hydraulics 中统一开/关。
+    /// 液压控制器：
+    /// - 负责单路液压的启/停与到达判定；
+    /// - 支持三种模式：ByPressure / ByDuration / Either；
+    /// - 通过 AoController 输出“能力百分比”并由其内部转换为电压。
     /// </summary>
     public sealed class HydraulicController
     {
-        public delegate double ReadPressureDelegate(int hydraulicId); // 读取实时压力（Bar）
-        public delegate Task<bool> SetAoPercentDelegate(int hydraulicId, double percent); // 设置 AO 百分比
-
-        private readonly DoController _do;                       // 操作液压 DO 开/关
+        private readonly DoController _do;
         private readonly TestConfig _test;
+        private readonly Func<int, double> _readPressure;   // 读取压力：传入 hydId 返回 bar
+        private readonly AoController _ao;                  // AO 控制器（统一做限幅与电压换算）
         private readonly IAppLogger _log;
-        private readonly ReadPressureDelegate _readPressure;
-        private readonly SetAoPercentDelegate _setAo;
 
         public HydraulicController(DoController doController,
                                    TestConfig test,
-                                   ReadPressureDelegate readPressure,
-                                   SetAoPercentDelegate setAo,
+                                   Func<int, double> readPressure,
+                                   AoController aoController,
                                    IAppLogger log = null)
         {
-            _do = doController;
-            _test = test;
-            _readPressure = readPressure;
-            _setAo = setAo;
+            _do = doController ?? throw new ArgumentNullException(nameof(doController));
+            _test = test ?? throw new ArgumentNullException(nameof(test));
+            _readPressure = readPressure ?? throw new ArgumentNullException(nameof(readPressure));
+            _ao = aoController ?? throw new ArgumentNullException(nameof(aoController));
             _log = log ?? NullLogger.Instance;
         }
 
         /// <summary>
-        /// 执行一次液压循环（如果当前液压未启用，直接返回 true）。
+        /// 执行一次液压控制（按 TestConfig.Hydraulics 中的配置项）。
+        /// hydId: 1/2（两路液压）
         /// </summary>
-        /// <param name="hydraulicId">液压编号（1 控 1~6；2 控 7~12）</param>
-        /// <param name="token">取消令牌</param>
-        public async Task<bool> RunOnceAsync(int hydraulicId, CancellationToken token)
+        public async Task<bool> RunOnceAsync(int hydId, CancellationToken token)
         {
-            var cfg = _test.Hydraulics.Find(h => h.Id == hydraulicId);
-            if (cfg == null || !cfg.Enabled) return true;
-
-            // 1) AO 置百分比
-            if (!await _setAo(hydraulicId, cfg.SetPercent))
+            var item = _test.Hydraulics.Find(h => h.Id == hydId);
+            if (item == null || !item.Enabled)
             {
-                _log.Error($"液压{hydraulicId} AO 设置百分比失败：{cfg.SetPercent}%", "Hydraulic");
-                return false;
+                _log.Info($"液压[{hydId}] 跳过（未启用）。", "液压");
+                return true;
             }
-            _log.Info($"液压{hydraulicId} AO={cfg.SetPercent}%", "Hydraulic");
 
-            // 2) 打开 DO（上压）
-            if (!_do.SetPressure(cfg.PressureDoId, true))
+            // 选择 AO 设备名：如有配置项，可在此改为从配置读取
+            // 与 AoConfig.Devices 中的 Name 对应即可（例如 "Cylinder1" / "Cylinder2"）
+            string aoDevName = hydId == 1 ? "Cylinder1" : "Cylinder2";
+
+            try
             {
-                _log.Error($"液压{hydraulicId} 打开 DO 失败（Id={cfg.PressureDoId}）", "Hydraulic");
-                return false;
-            }
-            _log.Info($"液压{hydraulicId} DO 打开", "Hydraulic");
-
-            // 3) 监控达到条件（到压/到时/任一满足）
-            var t0 = DateTime.UtcNow;
-            bool byPressure = false, byDuration = false;
-
-            while (!token.IsCancellationRequested)
-            {
-                // 到压检测
-                if (cfg.Mode != HydraulicMode.ByDuration)
+                // Step 1: 打开压力 DO
+                if (!_do.SetPressure(hydId, true))
                 {
-                    var p = _readPressure(hydraulicId);
-                    if (p >= cfg.PressureThresholdBar)
-                    {
-                        byPressure = true;
-                        _log.Info($"液压{hydraulicId} 达到压力阈值 {p:F2} >= {cfg.PressureThresholdBar} Bar", "Hydraulic");
-                    }
+                    _log.Error($"液压[{hydId}] DO 打开失败。", "液压");
+                    return false;
                 }
 
-                // 到时检测
-                if (cfg.Mode != HydraulicMode.ByPressure)
+                _log.Info($"液压[{hydId}] 启动，设定={item.SetPercent:F1}% 模式={item.Mode}", "液压");
+
+                // Step 2: 输出 AO 百分比（由 AoController 内部做限幅与电压换算）
+                // 同步版：WritePercent；如需无阻塞可改用 await _ao.SetPercentAsync(...)
+                if (!_ao.WritePercent(aoDevName, item.SetPercent))
                 {
-                    var dur = (int)(DateTime.UtcNow - t0).TotalMilliseconds;
-                    if (dur >= cfg.DurationMs)
-                    {
-                        byDuration = true;
-                        _log.Info($"液压{hydraulicId} 达到时长阈值 {dur} >= {cfg.DurationMs} ms", "Hydraulic");
-                    }
+                    _log.Error($"液压[{hydId}] AO 输出失败（设备={aoDevName} 百分比={item.SetPercent:F1}%）。", "液压");
+                    return false;
                 }
 
-                bool shouldStop = cfg.Mode switch
+                var tStart = DateTime.Now;
+                bool reached = false;
+
+                // Step 3: 轮询判定：压力/时间/Either
+                while (!token.IsCancellationRequested)
                 {
-                    HydraulicMode.ByPressure => byPressure,
-                    HydraulicMode.ByDuration => byDuration,
-                    HydraulicMode.Either => byPressure || byDuration,
-                    _ => false
-                };
+                    double elapsedMs = (DateTime.Now - tStart).TotalMilliseconds;
+                    double pBar = _readPressure(hydId);
 
-                if (shouldStop) break;
-                await Task.Delay(5, token); // 5ms 轮询，保证“即时性”
+                    switch (item.Mode)
+                    {
+                        case HydraulicMode.ByPressure:
+                            if (pBar >= item.PressureThresholdBar) reached = true;
+                            break;
+
+                        case HydraulicMode.ByDuration:
+                            if (elapsedMs >= item.DurationMs) reached = true;
+                            break;
+
+                        case HydraulicMode.Either:
+                            if (pBar >= item.PressureThresholdBar || elapsedMs >= item.DurationMs) reached = true;
+                            break;
+                    }
+
+                    if (reached)
+                    {
+                        _log.Info($"液压[{hydId}] 达到条件：P={pBar:F2} bar, t={elapsedMs:F0} ms", "液压");
+                        break;
+                    }
+
+                    await Task.Delay(5, token); // 减少 CPU 忙等
+                }
+
+                // Step 4: 达到后保持
+                if (!token.IsCancellationRequested && item.HoldAfterReachedMs > 0)
+                {
+                    _log.Info($"液压[{hydId}] 延时保持 {item.HoldAfterReachedMs} ms", "液压");
+                    await Task.Delay(item.HoldAfterReachedMs, token);
+                }
+
+                return true;
             }
-
-            // 4) 达阈后的保持/延时
-            if (cfg.HoldAfterReachedMs > 0 && !token.IsCancellationRequested)
+            catch (OperationCanceledException)
             {
-                _log.Info($"液压{hydraulicId} 达阈后保持 {cfg.HoldAfterReachedMs}ms", "Hydraulic");
-                await Task.Delay(cfg.HoldAfterReachedMs, token);
-            }
-
-            // 5) 关闭 DO（泄压）
-            if (!_do.SetPressure(cfg.PressureDoId, false))
-            {
-                _log.Error($"液压{hydraulicId} 关闭 DO 失败（Id={cfg.PressureDoId}）", "Hydraulic");
+                _log.Warn($"液压[{hydId}] 被取消。", "液压");
                 return false;
             }
-            _log.Info($"液压{hydraulicId} DO 关闭（泄压）", "Hydraulic");
+            catch (Exception ex)
+            {
+                _log.Error($"液压[{hydId}] 异常：{ex.Message}", "液压", ex);
+                return false;
+            }
+            finally
+            {
+                // Step 5: 关闭压力 DO；AO 回零百分比（落位）
+                try { _do.SetPressure(hydId, false); } catch { /* 忽略落位异常 */ }
+                try { _ao.WritePercent(aoDevName, 0); } catch { /* 忽略落位异常 */ }
 
-            // 按你的需求：AO 不必置 0，试验结束统一置 0。
-            return true;
+                _log.Info($"液压[{hydId}] 停止并回零。", "液压");
+            }
         }
     }
 }

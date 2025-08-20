@@ -1,124 +1,129 @@
 ﻿using System;
 using System.Threading;
 using System.Threading.Tasks;
-using Config;
 using IO.NI;
-// Epb/EpbCycleRunner.cs
-using IAppLogger = Config.IAppLogger;
-using NullLogger = Config.NullLogger; // DoController
+using ILogger = Config.IAppLogger;
+using NLogger = Config.NullLogger;
 
 namespace Controller
 {
     /// <summary>
-    /// 单卡钳完整控制循环：先液压（可选、按液压编号整体控制），再电控。
-    /// 电控逻辑：DO 正向→监测电流≥正阈→DO 反向→监测电流≥反阈→双关。
+    /// 单卡钳完整控制循环：
+    /// 1) 可选先跑液压（按 hydId 维度整体控制，外部保证同 hydId 的通道同策略）；
+    /// 2) 然后执行电控：正向→等电流≥正阈→反向→等电流≥反阈→双关→保持。
     /// </summary>
     public sealed class EpbCycleRunner
     {
-        public delegate double ReadCurrentDelegate(int epbChannel); // 读取实时电流（A）
+        // —— 对接 AI 读取 —— //
+        public delegate double ReadCurrentDelegate(int epbChannel);
 
         private readonly int _channel;
-        private readonly int _hydraulicId; // 1: EPB 1-6；2: EPB 7-12
-        private readonly EpbLimit _limit;
+        private readonly int _hydId;
+        private readonly ReadCurrentDelegate _readCurrent;
         private readonly DoController _do;
         private readonly HydraulicController _hydraulic;
-        private readonly ReadCurrentDelegate _readCurrent;
-        private readonly IAppLogger _log;
+        private readonly ILogger _log;
 
-        public EpbCycleRunner(int epbChannel,
-            int hydraulicId,
-            EpbLimit limit,
+        // —— 参数化的阈值与时序 —— //
+        private readonly double _posThrA;
+        private readonly double _negThrA;
+        private readonly int _fwdTimeoutMs;
+        private readonly int _revTimeoutMs;
+        private readonly int _holdMs;
+
+        public EpbCycleRunner(
+            int channel,
+            int hydId,
+            ReadCurrentDelegate readCurrent,
             DoController doController,
             HydraulicController hydraulic,
-            ReadCurrentDelegate readCurrent,
-            IAppLogger log = null)
+            double posThresholdA,
+            double negThresholdA,
+            int forwardTimeoutMs,
+            int reverseTimeoutMs,
+            int holdMs,
+            ILogger log = null)
         {
-            _channel = epbChannel;
-            _hydraulicId = hydraulicId;
-            _limit = limit;
-            _do = doController;
-            _hydraulic = hydraulic;
-            _readCurrent = readCurrent;
-            _log = log ?? NullLogger.Instance;
+            _channel = channel;
+            _hydId = hydId;
+            _readCurrent = readCurrent ?? (_ => 0.0);
+            _do = doController ?? throw new ArgumentNullException(nameof(doController));
+            _hydraulic = hydraulic ?? throw new ArgumentNullException(nameof(hydraulic));
+            _posThrA = posThresholdA;
+            _negThrA = negThresholdA;
+            _fwdTimeoutMs = forwardTimeoutMs;
+            _revTimeoutMs = reverseTimeoutMs;
+            _holdMs = holdMs;
+            _log = log ?? NLogger.Instance;
         }
 
-        /// <summary>
-        /// 运行一次“先液压后电控”的完整循环。
-        /// </summary>
         public async Task<bool> RunOneAsync(CancellationToken token)
         {
             try
             {
-                // Step A) 液压（按编号整体开关；如果禁用则 RunOnceAsync 直接返回 true）
-                if (!await _hydraulic.RunOnceAsync(_hydraulicId, token))
+                // Step 0: 液压（由 HydraulicController 自己决定按压力/时长/择一）
+                var hydOk = await _hydraulic.RunOnceAsync(_hydId, token);
+                if (!hydOk)
                 {
-                    _log.Error($"EPB[{_channel}] 液压步骤失败。", "EPB");
+                    _log.Warn($"EPB[{_channel}] 液压阶段未达成，跳过电控本轮。", "EPB");
                     return false;
                 }
 
-                // Step B) 电控 - 正向
-                if (!_do.SetEpb(_channel, true))
+                // Step 1: 正向
+                _do.SetEpbForward(_channel);
+                _log.Info($"EPB[{_channel}] 正向开始，等待电流≥{_posThrA}A。", "EPB");
+                if (!await WaitCurrentAsync(_channel, _posThrA, _fwdTimeoutMs, token))
                 {
-                    _log.Error($"EPB[{_channel}] 正向 DO 写入失败。", "EPB");
+                    _log.Warn($"EPB[{_channel}] 正向未在 {_fwdTimeoutMs}ms 内达阈值。", "EPB");
+                    _do.SetEpbOff(_channel);
                     return false;
                 }
 
-                _log.Info($"EPB[{_channel}] 正向启动。阈值={_limit.ForwardA} A", "EPB");
-
-                // 即时监控电流到正向阈值
-                while (!token.IsCancellationRequested)
+                // Step 2: 反向
+                _do.SetEpbReverse(_channel);
+                _log.Info($"EPB[{_channel}] 反向开始，等待电流≥{_negThrA}A。", "EPB");
+                if (!await WaitCurrentAsync(_channel, _negThrA, _revTimeoutMs, token))
                 {
-                    var a = _readCurrent(_channel);
-                    if (a >= _limit.ForwardA)
-                    {
-                        _log.Info($"EPB[{_channel}] 正向到达阈值：{a:F2} A", "EPB");
-                        break;
-                    }
-
-                    await Task.Delay(1, token); // 尽量小的轮询间隔
-                }
-
-                // Step C) 电控 - 反向
-                if (!_do.SetEpb(_channel, false))
-                {
-                    _log.Error($"EPB[{_channel}] 反向 DO 写入失败。", "EPB");
+                    _log.Warn($"EPB[{_channel}] 反向未在 {_revTimeoutMs}ms 内达阈值。", "EPB");
+                    _do.SetEpbOff(_channel);
                     return false;
                 }
 
-                _log.Info($"EPB[{_channel}] 切换反向。阈值={_limit.ReverseA} A", "EPB");
-
-                while (!token.IsCancellationRequested)
+                // Step 3: 双关 → 保持
+                _do.SetEpbOff(_channel);
+                if (_holdMs > 0)
                 {
-                    var a = _readCurrent(_channel);
-                    if (a >= _limit.ReverseA)
-                    {
-                        _log.Info($"EPB[{_channel}] 反向到达阈值：{a:F2} A", "EPB");
-                        break;
-                    }
-
-                    await Task.Delay(1, token);
+                    _log.Info($"EPB[{_channel}] 进入保持 {_holdMs}ms。", "EPB");
+                    await Task.Delay(_holdMs, token);
                 }
-
-                // Step D) 关闭（正/反同时关闭）
-                if (!_do.SetEpbOff(_channel))
-                {
-                    _log.Error($"EPB[{_channel}] 关闭 DO 失败。", "EPB");
-                    return false;
-                }
-
-                _log.Info($"EPB[{_channel}] 单循环完成（正/反全关）。", "EPB");
 
                 return true;
             }
             catch (OperationCanceledException)
             {
                 _log.Warn($"EPB[{_channel}] 循环被取消。", "EPB");
+                _do.SetEpbOff(_channel);
                 return false;
             }
             catch (Exception ex)
             {
                 _log.Error($"EPB[{_channel}] 循环异常：{ex.Message}", "EPB", ex);
+                _do.SetEpbOff(_channel);
                 return false;
+            }
+        }
+
+        private async Task<bool> WaitCurrentAsync(int channel, double thrA, int timeoutMs, CancellationToken token)
+        {
+            var start = Environment.TickCount;
+            while (true)
+            {
+                token.ThrowIfCancellationRequested();
+                var i = _readCurrent(channel);
+                if (i >= thrA) return true;
+
+                if (Environment.TickCount - start > timeoutMs) return false;
+                await Task.Delay(2, token); // 2ms 轮询
             }
         }
     }

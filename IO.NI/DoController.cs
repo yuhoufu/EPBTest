@@ -1,6 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Xml;
+using Config;
 using NationalInstruments.DAQmx;
 
 // 避免与 System.Threading.Tasks.Task 混淆，做别名
@@ -8,26 +8,41 @@ using NIDaqTask = NationalInstruments.DAQmx.Task;
 using NIChannelLineGrouping = NationalInstruments.DAQmx.ChannelLineGrouping;
 using NITaskAction = NationalInstruments.DAQmx.TaskAction;
 
+
+using ILogger = Config.IAppLogger;
+using NLogger = Config.NullLogger;
+
+
 namespace IO.NI
 {
+    /// <summary>
+    /// DO 控制器：基于 <see cref="DoConfig"/>（EPB 与 Pressure）统一管理多个数字输出。
+    /// - 与 AoController 一致，按“配置对象”而非“读取XML”初始化。
+    /// - 支持 EPB 正/反互斥输出、Pressure 点位开/关。
+    /// - 线程安全：所有对 NI 任务的构建与写入均有锁保护。
+    /// </summary>
     public class DoController : IDisposable
     {
+        #region 内部类型与字段
+
+        /// <summary>每个 NI 设备的上下文。</summary>
         private sealed class DoDevice
         {
             public string Name;
             public NIDaqTask Task;
             public DigitalMultiChannelWriter Writer;
 
-            // ✅ 每个设备实例独立列表（不再共享 static）
+            // 每设备独立的通道与默认值表
             public readonly List<string> Lines = new List<string>();
             public readonly List<bool> DefaultStates = new List<bool>();
 
+            // 当前实际状态（与 Lines 一一对应）
             public bool[] States;
         }
 
         private readonly object _doTaskLock = new object();
 
-        // 每设备上下文
+        // 设备名 -> 设备上下文
         private readonly Dictionary<string, DoDevice> _devices =
             new Dictionary<string, DoDevice>(StringComparer.OrdinalIgnoreCase);
 
@@ -39,73 +54,82 @@ namespace IO.NI
         private readonly Dictionary<int, (string dev, int idx)> _pressureIndex
             = new Dictionary<int, (string, int)>();
 
+        // 兼容旧接口：不再使用，但保留以免外部调用报错
         private string _configPath;
-        private readonly IAppLogger _log;
 
-        public DoController(IAppLogger logger = null)
+        private readonly ILogger _log;
+
+        // 新增：保存配置对象（来源于外部的 cfgDo）
+        private readonly DoConfig _cfg;
+
+        #endregion
+
+        #region 构造与配置
+
+        /// <summary>
+        /// 构造 DO 控制器。
+        /// </summary>
+        /// <param name="cfgDo">数字输出配置（EPB 与 Pressure）。必填。</param>
+        /// <param name="logger">可选日志器。</param>
+        public DoController(DoConfig cfgDo, ILogger logger = null)
         {
-            _log = logger ?? NullLogger.Instance;
+            _cfg = cfgDo ?? throw new ArgumentNullException(nameof(cfgDo));
+            _log = logger ?? NLogger.Instance;
         }
 
+        /// <summary>
+        /// 兼容旧接口：设置 XML 路径（本实现不会再读取 XML，仅为保持方法签名不变）。
+        /// </summary>
+        /// <param name="xmlPath">历史遗留参数，忽略。</param>
         public void SetConfigPath(string xmlPath) => _configPath = xmlPath;
 
+        #endregion
+
         #region 初始化
+
+        /// <summary>
+        /// 初始化所有 DO 通道：根据 <see cref="DoConfig"/> 构建任务、创建通道、索引映射，并下发默认值。
+        /// </summary>
+        /// <returns>成功/失败。</returns>
         public bool Initialize()
         {
             lock (_doTaskLock)
             {
                 try
                 {
-                    if (string.IsNullOrWhiteSpace(_configPath))
-                    {
-                        LogError("DO 初始化失败：未设置配置路径", "DO初始化");
-                        return false;
-                    }
-
                     ResetAllDevices(clearMaps: true);
 
-                    var doc = new XmlDocument();
-                    doc.Load(_configPath);
-
-                    // ===== EPB =====
-                    var epbNodes = doc.SelectNodes("//DOConfig/EPB/Record");
-                    if (epbNodes != null)
+                    // ===== EPB：正/反两路，隶属同一设备且互斥 =====
+                    if (_cfg?.Epb != null)
                     {
-                        foreach (XmlNode n in epbNodes)
+                        foreach (var r in _cfg.Epb)
                         {
-                            string enabled = n.SelectSingleNode("是否启用")?.InnerText?.Trim() ?? "1";
-                            if (enabled != "1") continue;
+                            if (!(r?.Enabled ?? false)) continue;
+                            if (r.Channel <= 0) continue;
+                            if (string.IsNullOrWhiteSpace(r.Pos) || string.IsNullOrWhiteSpace(r.Neg)) continue;
 
-                            if (!int.TryParse(n.SelectSingleNode("通道号")?.InnerText?.Trim(), out int ch))
-                                continue;
-
-                            string posPhy = n.SelectSingleNode("正")?.InnerText?.Trim();
-                            string negPhy = n.SelectSingleNode("反")?.InnerText?.Trim();
-                            if (string.IsNullOrEmpty(posPhy) || string.IsNullOrEmpty(negPhy))
-                                continue;
-
-                            string devNamePos = GetDeviceName(posPhy);
-                            string devNameNeg = GetDeviceName(negPhy);
+                            string devNamePos = GetDeviceName(r.Pos);
+                            string devNameNeg = GetDeviceName(r.Neg);
                             if (!devNamePos.Equals(devNameNeg, StringComparison.OrdinalIgnoreCase))
                             {
-                                LogError($"EPB{ch} 的正/反分属不同设备（{devNamePos} / {devNameNeg}），不支持跨设备互斥，已跳过。", "DO初始化");
+                                LogError($"EPB{r.Channel} 的正/反分属不同设备（{devNamePos} / {devNameNeg}），不支持跨设备互斥，已跳过。", "DO初始化");
                                 continue;
                             }
 
                             var dev = EnsureDevice(devNamePos);
-                            string def = n.SelectSingleNode("默认")?.InnerText?.Trim() ?? "全关";
+                            string def = string.IsNullOrWhiteSpace(r.Default) ? "全关" : r.Default.Trim();
 
                             // 正
-                            dev.Task.DOChannels.CreateChannel(posPhy, $"EPB{ch}-正", NIChannelLineGrouping.OneChannelForEachLine);
-                            dev.Lines.Add(posPhy);
+                            dev.Task.DOChannels.CreateChannel(r.Pos, $"EPB{r.Channel}-正", NIChannelLineGrouping.OneChannelForEachLine);
+                            dev.Lines.Add(r.Pos);
                             dev.DefaultStates.Add(def == "正");
-                            int posIdx = dev.DefaultStates.Count - 1; // ✅ 刚插入的位置
+                            int posIdx = dev.DefaultStates.Count - 1;
 
                             // 反
-                            dev.Task.DOChannels.CreateChannel(negPhy, $"EPB{ch}-反", NIChannelLineGrouping.OneChannelForEachLine);
-                            dev.Lines.Add(negPhy);
+                            dev.Task.DOChannels.CreateChannel(r.Neg, $"EPB{r.Channel}-反", NIChannelLineGrouping.OneChannelForEachLine);
+                            dev.Lines.Add(r.Neg);
                             dev.DefaultStates.Add(def == "反");
-                            int negIdx = dev.DefaultStates.Count - 1; // ✅ 刚插入的位置
+                            int negIdx = dev.DefaultStates.Count - 1;
 
                             if (def == "全关")
                             {
@@ -113,37 +137,30 @@ namespace IO.NI
                                 dev.DefaultStates[negIdx] = false;
                             }
 
-                            _epbIndex[ch] = (devNamePos, posIdx, negIdx);
+                            _epbIndex[r.Channel] = (devNamePos, posIdx, negIdx);
                         }
                     }
 
-                    // ===== Pressure =====
-                    var pNodes = doc.SelectNodes("//DOConfig/Pressure/Record");
-                    if (pNodes != null)
+                    // ===== Pressure：单点 DO，开/关 =====
+                    if (_cfg?.Pressure != null)
                     {
-                        foreach (XmlNode n in pNodes)
+                        foreach (var p in _cfg.Pressure)
                         {
-                            string enabled = n.SelectSingleNode("是否启用")?.InnerText?.Trim() ?? "1";
-                            if (enabled != "1") continue;
+                            if (!(p?.Enabled ?? false)) continue;
+                            if (p.Id <= 0) continue;
+                            if (string.IsNullOrWhiteSpace(p.Physical)) continue;
 
-                            if (!int.TryParse(n.SelectSingleNode("编号")?.InnerText?.Trim(), out int id))
-                                continue;
-
-                            string phy = n.SelectSingleNode("物理通道")?.InnerText?.Trim();
-                            if (string.IsNullOrEmpty(phy)) continue;
-
-                            string devName = GetDeviceName(phy);
+                            string devName = GetDeviceName(p.Physical);
                             var dev = EnsureDevice(devName);
 
-                            string defStr = n.SelectSingleNode("默认值")?.InnerText?.Trim() ?? "0";
-                            bool defVal = defStr == "1";
+                            bool defVal = p.DefaultValue == 1;
 
-                            dev.Task.DOChannels.CreateChannel(phy, $"Pressure-{id}", NIChannelLineGrouping.OneChannelForEachLine);
-                            dev.Lines.Add(phy);
+                            dev.Task.DOChannels.CreateChannel(p.Physical, $"Pressure-{p.Id}", NIChannelLineGrouping.OneChannelForEachLine);
+                            dev.Lines.Add(p.Physical);
                             dev.DefaultStates.Add(defVal);
-                            int idx = dev.DefaultStates.Count - 1; // ✅ 刚插入的位置
+                            int idx = dev.DefaultStates.Count - 1;
 
-                            _pressureIndex[id] = (devName, idx);
+                            _pressureIndex[p.Id] = (devName, idx);
                         }
                     }
 
@@ -161,10 +178,10 @@ namespace IO.NI
                         if (dev.Lines.Count == 0) continue;
 
                         dev.Task.Control(NITaskAction.Verify);
-
                         dev.Writer = new DigitalMultiChannelWriter(dev.Task.Stream);
                         dev.States = dev.DefaultStates.ToArray();
 
+                        // 下发默认
                         dev.Writer.WriteSingleSampleSingleLine(true, dev.States);
                         totalLines += dev.Lines.Count;
                     }
@@ -186,9 +203,17 @@ namespace IO.NI
                 }
             }
         }
+
         #endregion
 
-        #region 写入：EPB 与 压力
+        #region 写入：EPB 与 Pressure（保持原有方法名/签名）
+
+        /// <summary>
+        /// 设置 EPB 通道的方向。
+        /// </summary>
+        /// <param name="channelNo">EPB 通道号。</param>
+        /// <param name="directionIsForward">true=正，false=反。</param>
+        /// <returns>成功/失败。</returns>
         public bool SetEpb(int channelNo, bool directionIsForward)
         {
             lock (_doTaskLock)
@@ -245,6 +270,8 @@ namespace IO.NI
         /// <summary>
         /// 关闭指定 EPB 通道（正/反全关）。
         /// </summary>
+        /// <param name="channelNo">EPB 通道号。</param>
+        /// <returns>成功/失败。</returns>
         public bool SetEpbOff(int channelNo)
         {
             lock (_doTaskLock)
@@ -281,6 +308,12 @@ namespace IO.NI
             }
         }
 
+        /// <summary>
+        /// 设置压力点位开/关。
+        /// </summary>
+        /// <param name="id">压力点位编号。</param>
+        /// <param name="start">true=启动；false=停止。</param>
+        /// <returns>成功/失败。</returns>
         public bool SetPressure(int id, bool start)
         {
             lock (_doTaskLock)
@@ -332,9 +365,12 @@ namespace IO.NI
                 return false;
             }
         }
+
         #endregion
 
-        #region 便捷方法
+        #region 便捷方法（保持原名）
+
+        /// <summary>将所有 DO 路线全部关闭（所有设备）。</summary>
         public bool AllOff()
         {
             lock (_doTaskLock)
@@ -360,9 +396,24 @@ namespace IO.NI
                 }
             }
         }
+
+        /// <summary>方向友好名称封装，兼容旧调用：设为正向。</summary>
+        public bool SetEpbForward(int channelNo) => SetEpb(channelNo, true);
+
+        /// <summary>方向友好名称封装，兼容旧调用：设为反向。</summary>
+        public bool SetEpbReverse(int channelNo) => SetEpb(channelNo, false);
+
+        /// <summary>压力友好名称封装：启动。</summary>
+        public bool PressureOn(int id) => SetPressure(id, true);
+
+        /// <summary>压力友好名称封装：停止。</summary>
+        public bool PressureOff(int id) => SetPressure(id, false);
+
         #endregion
 
-        #region 内部工具
+        #region 内部工具与清理
+
+        /// <summary>确保设备上下文存在，不存在则创建。</summary>
         private DoDevice EnsureDevice(string deviceName)
         {
             if (!_devices.TryGetValue(deviceName, out var dev))
@@ -377,6 +428,7 @@ namespace IO.NI
             return dev;
         }
 
+        /// <summary>从物理线名取设备名，如 "Dev1/port0/line0" -> "Dev1"。</summary>
         private static string GetDeviceName(string physicalLine)
         {
             if (string.IsNullOrWhiteSpace(physicalLine)) return "";
@@ -384,6 +436,7 @@ namespace IO.NI
             return slash > 0 ? physicalLine.Substring(0, slash) : physicalLine;
         }
 
+        /// <summary>确保当前对象已完成初始化，必要时调用 <see cref="Initialize"/>。</summary>
         private bool EnsureReady()
         {
             if (_devices.Count == 0) return Initialize();
@@ -396,6 +449,7 @@ namespace IO.NI
             return true;
         }
 
+        /// <summary>释放并清空所有设备任务、索引等。</summary>
         private void ResetAllDevices(bool clearMaps)
         {
             foreach (var dev in _devices.Values)
@@ -421,6 +475,7 @@ namespace IO.NI
         private void LogError(string message, string category = null, Exception ex = null)
             => _log?.Error(message, category ?? "DO", ex);
 
+        /// <summary>释放所有 NI 资源。</summary>
         public void Dispose()
         {
             lock (_doTaskLock)
@@ -429,6 +484,7 @@ namespace IO.NI
             }
             GC.SuppressFinalize(this);
         }
+
         #endregion
     }
 }
