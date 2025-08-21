@@ -67,10 +67,7 @@ namespace Controller
                 aoController,
                 _log);
         } 
-
         
-
-
         /// <summary>
         /// 启动指定 EPB 通道的高精度循环（按 TestTarget 次数）。
         /// </summary>

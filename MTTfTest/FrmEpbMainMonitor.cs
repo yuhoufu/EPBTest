@@ -1780,6 +1780,19 @@ namespace MTEmbTest
         {
             // _do?.Dispose(); // 释放DO对象资源
             // _ao?.Dispose(); // 释放AO对象资源
+            _do?.AllOff(); // 停止所有EPB操作
+            _do?.Dispose();
+            _ao?.ResetAll(); // 停止所有AO操作
+            _ao?.Dispose(); // 释放AO对象资源
+
+            twoDeviceAiAcquirer.Stop();
+
+            twoDeviceAiAcquirer?.Dispose(); 
+
+            
+
+
+
             //base.OnFormClosed(e);
         }
 
@@ -1800,7 +1813,7 @@ namespace MTEmbTest
                 AiConfigDetail aiConfigDetail =
                     AiConfigLoader.Load($@"{Environment.CurrentDirectory}\Config\AIConfig.xml");
 
-                TwoDeviceAiAcquirer twoDeviceAiAcquirer = new TwoDeviceAiAcquirer(cfg: aiConfigDetail, sampleRate: 1000,samplesPerChannel:50,
+                twoDeviceAiAcquirer = new TwoDeviceAiAcquirer(cfg: aiConfigDetail, sampleRate: 1000,samplesPerChannel:50,
                     medianLens: 10, log: logger);
 
                 twoDeviceAiAcquirer.OnEngBatch += Acq_OnEngBatch; // 订阅工程值批次到达事件
