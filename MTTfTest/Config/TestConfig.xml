@@ -135,4 +135,28 @@
 			<Members>10,11,12</Members>
 		</Group>
 	</ElectricalGroups>
+
+	<!--
+    ===== EPB 循环控制器（EpbCycleRunner） =====
+    参数意义与建议范围（来自2025-08-20 CSV 实测 + 经验）：
+      PeakIgnoreMs           : 上电涌流忽略时间；建议 80–150 ms，默认 100 ms
+      EmptyBandA             : 空行程电流稳定带宽；建议 0.15–0.30 A，默认 0.20 A
+      StableWinMs            : 判定“空行程稳定”的最小持续时间；建议 50–100 ms，默认 50 ms
+      EwmaAlpha              : EWMA 一阶低通的灵敏度；建议 0.15–0.30，默认 0.20
+      EmptyCurrentForwardA   : 正向空行程均值（本次实测 ~ +0.63 A）
+      EmptyCurrentReverseA   : 反向空行程均值（本次实测 ~ -0.70 A）
+    调参建议：
+      - 若现场噪声偏大：适度↑ EmptyBandA 或 ↑ StableWinMs
+      - 若峰值拖尾较长：适度↑ PeakIgnoreMs
+      - 若响应偏慢：适度↑ EwmaAlpha（同时注意抗噪能力降低）
+  -->
+	<EpbCycleRunnerConfig>
+		<PeakIgnoreMs>100</PeakIgnoreMs>
+		<EmptyBandA>0.20</EmptyBandA>
+		<StableWinMs>50</StableWinMs>
+		<EwmaAlpha>0.20</EwmaAlpha>
+		<EmptyCurrentForwardA>0.63</EmptyCurrentForwardA>
+		<EmptyCurrentReverseA>-0.70</EmptyCurrentReverseA>
+	</EpbCycleRunnerConfig>
+
 </TestConfig>

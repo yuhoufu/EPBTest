@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using System.Threading;
 using Config;
 using IO.NI;
@@ -11,7 +12,7 @@ using NullLogger = Config.NullLogger;
 namespace Controller
 {
     /// <summary>
-    /// 12 个卡钳统一编排：同组电控“首启”错峰（液压不延时），
+    /// 12个卡钳统一编排：同组电控“首启”错峰（液压不延时），
     /// 每通道独立高精度定时器，可单独暂停/恢复/结束。
     /// </summary>
     public sealed class EpbManager
@@ -22,9 +23,12 @@ namespace Controller
         private readonly Dictionary<int, HighPrecisionTimer> _timers = new();
         private readonly IAppLogger _log;
 
-        // —— 回调 —— //
+        // —— 回调（采样） —— //
         private readonly EpbCycleRunner.ReadCurrentDelegate _readCurrent;
 
+        /// <summary>
+        /// 基础构造：直接注入 HydraulicController 与读电流委托
+        /// </summary>
         public EpbManager(
             GlobalConfig cfg,
             DoController doController,
@@ -40,7 +44,7 @@ namespace Controller
         }
 
         /// <summary>
-        /// 便捷构造：直接把 TwoDeviceAiAcquirer 与 AoController 串起来。
+        /// 便捷构造：TwoDeviceAiAcquirer + AoController 联动构造 HydraulicController
         /// </summary>
         public EpbManager(
             GlobalConfig cfg,
@@ -59,18 +63,15 @@ namespace Controller
             _readCurrent = acq.ReadCurrent;
             _log = log ?? NullLogger.Instance;
 
-            // HydraulicController 需要：压力读取 + AO 百分比设置
             _hydraulic = new HydraulicController(
                 _do,
                 _cfg.Test,
                 acq.ReadPressure,
                 aoController,
                 _log);
-        } 
-        
-        /// <summary>
-        /// 启动指定 EPB 通道的高精度循环（按 TestTarget 次数）。
-        /// </summary>
+        }
+
+        /// <summary>启动指定 EPB 通道（跑 TestTarget 圈）</summary>
         public void StartChannel(int channel)
         {
             if (_timers.ContainsKey(channel))
@@ -79,22 +80,25 @@ namespace Controller
                 return;
             }
 
-            // 推断液压编号（1: 1..6；2: 7..12）
+            // 1) 液压编号（1:1..6；2:7..12）
             int hydId = channel <= 6 ? 1 : 2;
 
-            // 取电流阈值与时序（从 Test.EpbLimits 中找到对应 channel 的记录）
-            var limitRecord = _cfg.Test.EpbLimits.FirstOrDefault(x => GetProp<int>(x, "Channel") == channel);
-            if (limitRecord == null)
-                throw new InvalidOperationException($"未配置 EPB[{channel}] 电流阈值。");
+            // 2) 取 Runner 参数
+            var rcfg = _cfg.Test?.EpbCycleRunner ?? new EpbCycleRunnerConfig();
+            int periodMs = _cfg.Test.PeriodMs;
+            int sampleMs = 2; // 建议 2~5ms
 
-            // 兼容不同命名：尝试多种字段名
-            double posA = GetProp<double>(limitRecord, "PosCurrentA", "PosThresholdA", "ForwardCurrentA", "ForwardThresholdA");
-            double negA = GetProp<double>(limitRecord, "NegCurrentA", "NegThresholdA", "ReverseCurrentA", "ReverseThresholdA");
-            int fwdMs = GetProp<int>(limitRecord, "ForwardTimeoutMs", "ForwardMaxMs", "FwdMaxMs", "FwdTimeoutMs");
-            int revMs = GetProp<int>(limitRecord, "ReverseTimeoutMs", "ReverseMaxMs", "RevMaxMs", "RevTimeoutMs");
+            // 3) 取阈值/保持时间
+            var limitRecord = _cfg.Test.EpbLimits
+                .FirstOrDefault(x => GetProp<int>(x, "Channel") == channel);
+            if (limitRecord == null)
+                throw new InvalidOperationException($"未配置 EPB[{channel}] 电流限值。");
+
+            double forwardA = GetProp<double>(limitRecord, "ForwardA", "PosCurrentA", "PosThresholdA", "ForwardThresholdA");
+            double reverseA = GetProp<double>(limitRecord, "ReverseA", "NegCurrentA", "NegThresholdA", "ReverseThresholdA"); // 目前未直接使用，预留
             int holdMs = GetProp<int>(limitRecord, "HoldMs", "HoldTimeMs", "HoldDurationMs");
 
-            // 计算“首启”错峰（仅电控；液压不延时）
+            // 4) 组内首启错峰（只对电控生效；液压不延时）
             int staggerMs = 0;
             foreach (var g in _cfg.Test.Groups)
             {
@@ -107,41 +111,139 @@ namespace Controller
                 }
             }
 
-            var timer = new HighPrecisionTimer(_cfg.Test.PeriodMs, _cfg.Test.OverrunPolicy, _log);
+            // 5) 定时器
+            var timer = new HighPrecisionTimer(periodMs, _cfg.Test.OverrunPolicy, _log);
             _timers[channel] = timer;
 
-            // var runner = new EpbCycleRunner(
-            //     channel,
-            //     hydId,
-            //     _readCurrent,
-            //     _do,
-            //     _hydraulic,
-            //     posA, negA,
-            //     fwdMs, revMs,
-            //     holdMs,
-            //     _log);  // 暂时注释
-
-            // 调试使用
+            // 6) 构造 Runner
             var runner = new EpbCycleRunner(
                 channel,
                 hydId,
                 _readCurrent,
                 _do,
                 _hydraulic,
-                3, 1,
-                600000, 60000,
-                0,
-                _log);
+                posThresholdA: forwardA,
+                holdMs: holdMs,
+                sampleMs: sampleMs,
+                peakIgnoreMs: rcfg.PeakIgnoreMs,
+                ewmaAlpha: rcfg.EwmaAlpha,
+                emptyBandA: rcfg.EmptyBandA,
+                stableWinMs: rcfg.StableWinMs,
+                log: _log);
 
-            // 指定次数
+            // 6.5) 启动正式试验前，执行若干轮“自学习”（不计入 TestTarget）
+            int learnCycles = GetProp<int>(rcfg, "LearnCycles");
+            if (learnCycles <= 0) learnCycles = 3; // 默认 3
+            if (learnCycles > 0)
+            {
+                _log.Info($"EPB[{channel}] 启动前自学习 {learnCycles} 次。", "EPB");
+                try
+                {
+                    runner.LearnAsync(learnCycles, new System.Threading.CancellationToken())
+                          .GetAwaiter().GetResult();
+                    _log.Info($"EPB[{channel}] 自学习完成，进入正式试验。", "EPB");
+                }
+                catch (Exception ex)
+                {
+                    _log.Warn($"EPB[{channel}] 自学习异常：{ex.Message}，仍将尝试进入正式试验。", "EPB");
+                }
+            }
+
+            // 7) 高精度定时循环（按 TestTarget 次）
             timer.StartAsync(_cfg.Test.TestTarget, staggerMs, async (i, token) =>
             {
                 _log.Info($"EPB[{channel}] 周期 {i}/{_cfg.Test.TestTarget} 开始。", "EPB");
-                var ok = await runner.RunOneAsync(token);
+                var ok = await runner.RunOneAsync(periodMs, token);
                 _log.Info($"EPB[{channel}] 周期 {i}/{_cfg.Test.TestTarget} {(ok ? "完成" : "失败")}", "EPB");
                 return ok;
             });
         }
+
+        // 原 StartChannel 改名并改为 async
+        public async Task StartChannelAsync(int channel, CancellationToken uiToken = default)
+        {
+            if (_timers.ContainsKey(channel))
+            {
+                _log.Warn($"EPB[{channel}] 已在运行。", "EPB");
+                return;
+            }
+
+            int hydId = channel <= 6 ? 1 : 2;
+
+            var rcfg = _cfg.Test?.EpbCycleRunner ?? new EpbCycleRunnerConfig();
+            int periodMs = _cfg.Test.PeriodMs;
+            int sampleMs = 2;
+
+            var limitRecord = _cfg.Test.EpbLimits
+                .FirstOrDefault(x => GetProp<int>(x, "Channel") == channel);
+            if (limitRecord == null)
+                throw new InvalidOperationException($"未配置 EPB[{channel}] 电流限值。");
+
+            double forwardA = GetProp<double>(limitRecord, "ForwardA", "PosCurrentA", "PosThresholdA", "ForwardThresholdA");
+            int holdMs = GetProp<int>(limitRecord, "HoldMs", "HoldTimeMs", "HoldDurationMs");
+
+            int staggerMs = 0;
+            foreach (var g in _cfg.Test.Groups)
+            {
+                if (g.Members.Contains(channel))
+                {
+                    int indexInGroup = g.Members.OrderBy(x => x).ToList().IndexOf(channel);
+                    staggerMs = g.StaggerMs * Math.Max(0, indexInGroup);
+                    _log.Info($"EPB[{channel}] 归属组 {g.Id} 首启错峰 {staggerMs}ms（组内位置={indexInGroup}）", "EPB");
+                    break;
+                }
+            }
+
+            var timer = new HighPrecisionTimer(periodMs, _cfg.Test.OverrunPolicy, _log);
+            _timers[channel] = timer;
+
+            var runner = new EpbCycleRunner(
+                channel,
+                hydId,
+                _readCurrent,
+                _do,
+                _hydraulic,
+                posThresholdA: forwardA,
+                holdMs: holdMs,
+                sampleMs: sampleMs,
+                peakIgnoreMs: rcfg.PeakIgnoreMs,
+                ewmaAlpha: rcfg.EwmaAlpha,
+                emptyBandA: rcfg.EmptyBandA,
+                stableWinMs: rcfg.StableWinMs,
+                log: _log);
+
+            // —— 自学习放到后台 await，而不是 GetResult 阻塞 —— //
+            int learnCycles = GetProp<int>(rcfg, "LearnCycles");
+            if (learnCycles <= 0) learnCycles = 3; // 默认 3
+
+            if (learnCycles > 0)
+            {
+                _log.Info($"EPB[{channel}] 启动前自学习 {learnCycles} 次。", "EPB");
+                try
+                {
+                    // 不捕获UI上下文，避免层层 await 回到 UI 线程
+                    await runner.LearnAsync(learnCycles, uiToken).ConfigureAwait(false);
+                    _log.Info($"EPB[{channel}] 自学习完成，进入正式试验。", "EPB");
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
+                {
+                    _log.Warn($"EPB[{channel}] 自学习异常：{ex.Message}，仍将尝试进入正式试验。", "EPB");
+                }
+            }
+
+            // —— 定时循环：放到后台线程跑 —— //
+            // HighPrecisionTimer.StartAsync 内部也请确保不要 Post 回 UI 线程
+            timer.StartAsync(_cfg.Test.TestTarget, staggerMs, async (i, token) =>
+            {
+                _log.Info($"EPB[{channel}] 周期 {i}/{_cfg.Test.TestTarget} 开始。", "EPB");
+                var ok = await runner.RunOneAsync(periodMs, token).ConfigureAwait(false);
+                _log.Info($"EPB[{channel}] 周期 {i}/{_cfg.Test.TestTarget} {(ok ? "完成" : "失败")}", "EPB");
+                return ok;
+            });
+        }
+
+
 
         public void PauseChannel(int channel)
         {
@@ -165,7 +267,7 @@ namespace Controller
             foreach (var ch in _timers.Keys.ToArray()) StopChannel(ch);
         }
 
-        // —— 反射兜底读取配置字段 —— //
+        // —— 反射兜底读取配置字段（兼容不同旧配置命名）—— //
         private static T GetProp<T>(object obj, string name)
         {
             var p = obj.GetType().GetProperty(name);

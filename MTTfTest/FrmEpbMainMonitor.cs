@@ -25,6 +25,7 @@ using Config;
 using Controller;
 using IO.NI;
 using DevExpress.Xpo.Logger;
+using Task = System.Threading.Tasks.Task;
 using TestConfig = DataOperation.TestConfig;
 
 namespace MTEmbTest
@@ -305,6 +306,8 @@ namespace MTEmbTest
         private AoController _ao;
         private Controller.EpbManager _epb;
         private TwoDeviceAiAcquirer twoDeviceAiAcquirer;
+        private AiConfigDetail aiConfigDetail;
+
 
 
         public FrmEpbMainMonitor()
@@ -492,6 +495,28 @@ namespace MTEmbTest
                 // if (LastSpace < 50)
                 // {
                 // } // 已更改，暂时注释 2025/08/20
+
+
+                // 1) 加载全局配置（AO/DO/Test）
+                 _cfg = ConfigLoader.LoadAll($@"{Environment.CurrentDirectory}\Config", logger);
+
+
+                // 2) 初始化 DO 控制器
+                _do = new DoController(_cfg.DO, logger);
+
+                // 3) 初始化 AO 控制器
+                _ao = new AoController(_cfg.AO, logger);
+
+                aiConfigDetail =
+                    AiConfigLoader.Load($@"{Environment.CurrentDirectory}\Config\AIConfig.xml");
+
+                twoDeviceAiAcquirer = new TwoDeviceAiAcquirer(cfg: aiConfigDetail, sampleRate: 1000, samplesPerChannel: 50,
+                    medianLens: 10, log: logger);
+
+                twoDeviceAiAcquirer.OnEngBatch += Acq_OnEngBatch; // 订阅工程值批次到达事件
+
+
+
             }
 
             catch (Exception ex)
@@ -1307,6 +1332,7 @@ namespace MTEmbTest
         }
 
         private bool _isCtrlPowerPressing = false;
+        private GlobalConfig _cfg;
 
         private async void PowerClick(object sender, EventArgs e, int index)
         {
@@ -1760,10 +1786,10 @@ namespace MTEmbTest
         private void toggleSwitch1_Toggled(object sender, EventArgs e)
         {
             // 打开所有epb
-            /*for (int i = 0; i < 12; i++)
+            for (int i = 0; i < 12; i++)
             {
                 _do.SetEpb(channelNo:i+1, directionIsForward:this.toggleSwitch1.IsOn);
-            }*/
+            }
 
             // 打开气缸测试
             // _ao.SetPercent("Cylinder1", 50); // => ~5V
@@ -1796,27 +1822,11 @@ namespace MTEmbTest
             //base.OnFormClosed(e);
         }
 
-        private void BtnStartTest_Click(object sender, EventArgs e)
+        private async void BtnStartTest_Click(object sender, EventArgs e)
         {
             try
             {
-                // 1) 加载全局配置（AO/DO/Test）
-                var _cfg = ConfigLoader.LoadAll($@"{Environment.CurrentDirectory}\Config", logger);
-
-
-                // 2) 初始化 DO 控制器
-                _do = new DoController(_cfg.DO, logger);
-
-                // 3) 初始化 AO 控制器
-                _ao = new AoController(_cfg.AO, logger);
-
-                AiConfigDetail aiConfigDetail =
-                    AiConfigLoader.Load($@"{Environment.CurrentDirectory}\Config\AIConfig.xml");
-
-                twoDeviceAiAcquirer = new TwoDeviceAiAcquirer(cfg: aiConfigDetail, sampleRate: 1000,samplesPerChannel:50,
-                    medianLens: 10, log: logger);
-
-                twoDeviceAiAcquirer.OnEngBatch += Acq_OnEngBatch; // 订阅工程值批次到达事件
+                
 
                 twoDeviceAiAcquirer.Start();
 
@@ -1833,7 +1843,8 @@ namespace MTEmbTest
 
                 // 5) 启动“卡钳1”通道
                 //    StartChannel 内部会根据 Test.TestTarget 次数、PeriodMs 周期、Groups 错峰等自动循环
-                _epb.StartChannel(2);
+                // _epb.StartChannel(2); //界面卡顿，注释
+                await _epb.StartChannelAsync(2);
 
                 // UI 提示
                 RtbInfo?.AppendText($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  > 卡钳1测试已启动\n");
@@ -1919,6 +1930,18 @@ namespace MTEmbTest
             catch (Exception ex)
             {
                 MessageBox.Show(ex.Message);
+            }
+        }
+
+        private void BtnStop_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                _epb.StopChannel(2);
+            }
+            catch (Exception ex)
+            {
+                RtbInfo?.AppendText($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  > 停止卡钳2测试失败\n");
             }
         }
     }

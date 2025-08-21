@@ -60,6 +60,30 @@ namespace Config
         public double ReverseA { get; set; }
     }
 
+    public sealed class EpbCycleRunnerConfig
+    {
+        /// <summary>上电涌流忽略时间（ms）。建议：80–150，默认 100。</summary>
+        public int PeakIgnoreMs { get; set; } = 100;
+
+        /// <summary>空行程电流稳定带宽（A）。建议：0.15–0.30，默认 0.20。</summary>
+        public double EmptyBandA { get; set; } = 0.20;
+
+        /// <summary>判稳窗口（ms）。建议：50–100，默认 50。</summary>
+        public int StableWinMs { get; set; } = 50;
+
+        /// <summary>EWMA 灵敏度（0~1）。建议：0.15–0.30，默认 0.20。</summary>
+        public double EwmaAlpha { get; set; } = 0.20;
+
+        /// <summary>正向空行程均值（A）。默认 0.63。</summary>
+        public double EmptyCurrentForwardA { get; set; } = 0.63;
+
+        /// <summary>反向空行程均值（A）。默认 -0.70。</summary>
+        public double EmptyCurrentReverseA { get; set; } = -0.70;
+    }
+
+
+
+
     public enum OverrunPolicy
     {
         RunToCompletionSkipMissed,
@@ -82,6 +106,11 @@ namespace Config
 
         /// <summary>周期毫秒（由 TestCycleHz 推导），例如 10Hz => 100ms。</summary>
         public int PeriodMs => (int)Math.Round(1000.0 / Math.Max(TestCycleHz, 0.001));
+
+        public EpbCycleRunnerConfig EpbCycleRunner { get; set; } = new EpbCycleRunnerConfig();
+
+
+
     }
 
     public sealed class DoEpbRecord
@@ -263,6 +292,35 @@ namespace Config
                         g.Members.Add(ch);
                 if (g.Id > 0 && g.Members.Count > 0) cfg.Groups.Add(g);
             }
+
+            // EpbCycleRunner 配置 2025-08-21
+            // 读取 EpbCycleRunnerConfig
+            var epbNode = doc.SelectSingleNode("//TestConfig/EpbCycleRunnerConfig");
+            if (epbNode != null)
+            {
+                cfg.EpbCycleRunner = new EpbCycleRunnerConfig
+                {
+                    PeakIgnoreMs = GetInt(epbNode, "PeakIgnoreMs", 100),
+                    EmptyBandA = GetDouble(epbNode, "EmptyBandA", 0.20),
+                    StableWinMs = GetInt(epbNode, "StableWinMs", 50),
+                    EwmaAlpha = GetDouble(epbNode, "EwmaAlpha", 0.20),
+                    EmptyCurrentForwardA = GetDouble(epbNode, "EmptyCurrentForwardA", 0.63),
+                    EmptyCurrentReverseA = GetDouble(epbNode, "EmptyCurrentReverseA", -0.70)
+                };
+
+                // 软边界校验 & 归一化（友好防御）
+                cfg.EpbCycleRunner.PeakIgnoreMs = Math.Max(0, Math.Min(cfg.EpbCycleRunner.PeakIgnoreMs, 1000));
+                cfg.EpbCycleRunner.StableWinMs = Math.Max(10, Math.Min(cfg.EpbCycleRunner.StableWinMs, 1000));
+                cfg.EpbCycleRunner.EmptyBandA = Math.Max(0.0, Math.Min(cfg.EpbCycleRunner.EmptyBandA, 5.0));
+                cfg.EpbCycleRunner.EwmaAlpha = Math.Max(0.0, Math.Min(cfg.EpbCycleRunner.EwmaAlpha, 1.0));
+            }
+            else
+            {
+                // 未配置则使用默认（已在 POCO 默认值里给出）
+                cfg.EpbCycleRunner = new EpbCycleRunnerConfig();
+            }
+
+
 
             log?.Info(
                 $"Test 配置加载完成：周期={cfg.PeriodMs}ms，目标次数={cfg.TestTarget}，液压={cfg.Hydraulics.Count} 路，组数={cfg.Groups.Count}",
