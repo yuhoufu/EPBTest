@@ -3,10 +3,10 @@
 <TestConfig>
 	<Basic>
 		<TestName>EPB_Fatigue</TestName>
-		<TestTarget>10</TestTarget>
 		<!-- 周期次数 -->
-		<TestCycle>10</TestCycle>
-		<!-- 每周期 Hz，例：10 表示 100ms -->
+		<TestTarget>10</TestTarget>
+		<!-- 试验频率 Hz，例：10 表示 100ms -->
+		<TestCycle>0.2</TestCycle>
 		<StoreDir>D:\EPB_Data</StoreDir>
 	</Basic>
 
