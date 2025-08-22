@@ -26,9 +26,6 @@ namespace Controller
         // —— 回调（采样） —— //
         private readonly EpbCycleRunner.ReadCurrentDelegate _readCurrent;
 
-        /// <summary>
-        /// 基础构造：直接注入 HydraulicController 与读电流委托
-        /// </summary>
         public EpbManager(
             GlobalConfig cfg,
             DoController doController,
@@ -43,9 +40,6 @@ namespace Controller
             _log = log ?? NullLogger.Instance;
         }
 
-        /// <summary>
-        /// 便捷构造：TwoDeviceAiAcquirer + AoController 联动构造 HydraulicController
-        /// </summary>
         public EpbManager(
             GlobalConfig cfg,
             DoController doController,
@@ -95,8 +89,11 @@ namespace Controller
                 throw new InvalidOperationException($"未配置 EPB[{channel}] 电流限值。");
 
             double forwardA = GetProp<double>(limitRecord, "ForwardA", "PosCurrentA", "PosThresholdA", "ForwardThresholdA");
-            double reverseA = GetProp<double>(limitRecord, "ReverseA", "NegCurrentA", "NegThresholdA", "ReverseThresholdA"); // 目前未直接使用，预留
+            double reverseA = GetProp<double>(limitRecord, "ReverseA", "NegCurrentA", "NegThresholdA", "ReverseThresholdA"); // 预留
             int holdMs = GetProp<int>(limitRecord, "HoldMs", "HoldTimeMs", "HoldDurationMs");
+
+            holdMs = 1000; //设置为 1000ms（1秒），可根据实际需要调整，调试使用
+
 
             // 4) 组内首启错峰（只对电控生效；液压不延时）
             int staggerMs = 0;
@@ -115,7 +112,7 @@ namespace Controller
             var timer = new HighPrecisionTimer(periodMs, _cfg.Test.OverrunPolicy, _log);
             _timers[channel] = timer;
 
-            // 6) 构造 Runner
+            // 6) 构造 Runner（签名不变）
             var runner = new EpbCycleRunner(
                 channel,
                 hydId,
@@ -131,15 +128,15 @@ namespace Controller
                 stableWinMs: rcfg.StableWinMs,
                 log: _log);
 
-            // 6.5) 启动正式试验前，执行若干轮“自学习”（不计入 TestTarget）
+            // 6.5) 启动前自学习（保持异步，不阻塞 UI）
             int learnCycles = GetProp<int>(rcfg, "LearnCycles");
-            if (learnCycles <= 0) learnCycles = 3; // 默认 3
+            if (learnCycles <= 0) learnCycles = 5; // 默认 3
             if (learnCycles > 0)
             {
                 _log.Info($"EPB[{channel}] 启动前自学习 {learnCycles} 次。", "EPB");
                 try
                 {
-                    runner.LearnAsync(learnCycles, new System.Threading.CancellationToken())
+                    runner.LearnAsync(learnCycles, new CancellationToken())
                           .GetAwaiter().GetResult();
                     _log.Info($"EPB[{channel}] 自学习完成，进入正式试验。", "EPB");
                 }
@@ -149,7 +146,7 @@ namespace Controller
                 }
             }
 
-            // 7) 高精度定时循环（按 TestTarget 次）
+            // 7) 高精度定时循环
             timer.StartAsync(_cfg.Test.TestTarget, staggerMs, async (i, token) =>
             {
                 _log.Info($"EPB[{channel}] 周期 {i}/{_cfg.Test.TestTarget} 开始。", "EPB");
@@ -159,7 +156,7 @@ namespace Controller
             });
         }
 
-        // 原 StartChannel 改名并改为 async
+        // （保留你已有的 StartChannelAsync / Pause/Resume/Stop 等实现，不改对外签名）
         public async Task StartChannelAsync(int channel, CancellationToken uiToken = default)
         {
             if (_timers.ContainsKey(channel))
@@ -181,6 +178,7 @@ namespace Controller
 
             double forwardA = GetProp<double>(limitRecord, "ForwardA", "PosCurrentA", "PosThresholdA", "ForwardThresholdA");
             int holdMs = GetProp<int>(limitRecord, "HoldMs", "HoldTimeMs", "HoldDurationMs");
+            holdMs = 1000; // 设置为 1000ms（1秒），可根据实际需要调整，调试使用
 
             int staggerMs = 0;
             foreach (var g in _cfg.Test.Groups)
@@ -212,16 +210,14 @@ namespace Controller
                 stableWinMs: rcfg.StableWinMs,
                 log: _log);
 
-            // —— 自学习放到后台 await，而不是 GetResult 阻塞 —— //
             int learnCycles = GetProp<int>(rcfg, "LearnCycles");
-            if (learnCycles <= 0) learnCycles = 3; // 默认 3
+            if (learnCycles <= 0) learnCycles = 3;
 
             if (learnCycles > 0)
             {
                 _log.Info($"EPB[{channel}] 启动前自学习 {learnCycles} 次。", "EPB");
                 try
                 {
-                    // 不捕获UI上下文，避免层层 await 回到 UI 线程
                     await runner.LearnAsync(learnCycles, uiToken).ConfigureAwait(false);
                     _log.Info($"EPB[{channel}] 自学习完成，进入正式试验。", "EPB");
                 }
@@ -232,8 +228,6 @@ namespace Controller
                 }
             }
 
-            // —— 定时循环：放到后台线程跑 —— //
-            // HighPrecisionTimer.StartAsync 内部也请确保不要 Post 回 UI 线程
             timer.StartAsync(_cfg.Test.TestTarget, staggerMs, async (i, token) =>
             {
                 _log.Info($"EPB[{channel}] 周期 {i}/{_cfg.Test.TestTarget} 开始。", "EPB");
@@ -242,8 +236,6 @@ namespace Controller
                 return ok;
             });
         }
-
-
 
         public void PauseChannel(int channel)
         {
