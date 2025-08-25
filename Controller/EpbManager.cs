@@ -192,8 +192,12 @@ namespace Controller
                 }
             }
 
+            //日志记录周期
+            _log.Info($"高精度定时器，  EPB[{channel}] 周期 {periodMs}ms，采样 {sampleMs}ms，前进阈值 {forwardA}A，保持时间 {holdMs}ms", "EPB");
+
             var timer = new HighPrecisionTimer(periodMs, _cfg.Test.OverrunPolicy, _log);
             _timers[channel] = timer;
+
 
             var runner = new EpbCycleRunner(
                 channel,
@@ -211,7 +215,7 @@ namespace Controller
                 log: _log);
 
             int learnCycles = GetProp<int>(rcfg, "LearnCycles");
-            if (learnCycles <= 0) learnCycles = 3;
+            if (learnCycles <= 0) learnCycles = 5;
 
             if (learnCycles > 0)
             {
@@ -227,7 +231,8 @@ namespace Controller
                     _log.Warn($"EPB[{channel}] 自学习异常：{ex.Message}，仍将尝试进入正式试验。", "EPB");
                 }
             }
-
+            // 暂时注释掉正式运行
+            
             timer.StartAsync(_cfg.Test.TestTarget, staggerMs, async (i, token) =>
             {
                 _log.Info($"EPB[{channel}] 周期 {i}/{_cfg.Test.TestTarget} 开始。", "EPB");

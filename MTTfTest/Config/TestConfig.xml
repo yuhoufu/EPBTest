@@ -11,8 +11,8 @@
 	</Basic>
 
 	<Timer>
-		<OverrunPolicy>RunToCompletionSkipMissed</OverrunPolicy>
-		<!-- 其他可选：SkipNextIfOverrun / AlignToWallClock / Throw -->
+		<OverrunPolicy>AlignToWallClock</OverrunPolicy>
+		<!-- 其他可选：RunToCompletionSkipMissed/SkipNextIfOverrun / AlignToWallClock / Throw -->
 	</Timer>
 
 	<!-- 液压是否参与：开关按液压编号整体控制（1 控 1~6；2 控 7~12） -->
