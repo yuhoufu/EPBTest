@@ -17,11 +17,17 @@ namespace Controller
     /// </summary>
     public sealed class EpbManager
     {
+        // EpbManager 字段区
         private readonly GlobalConfig _cfg;
         private readonly DoController _do;
+        private readonly AoController _ao;
         private readonly HydraulicController _hydraulic;
         private readonly Dictionary<int, HighPrecisionTimer> _timers = new();
         private readonly IAppLogger _log;
+
+        private TwoDeviceAiAcquirer _acq; // ★ 新增：数据采集器
+        private HydraulicGroupCoordinator _hydCoordinator; // ★ 新增：液压组协调器
+
 
         // —— 回调（采样） —— //
         private readonly EpbCycleRunner.ReadCurrentDelegate _readCurrent;
@@ -38,6 +44,25 @@ namespace Controller
             _hydraulic = hydraulic ?? throw new ArgumentNullException(nameof(hydraulic));
             _readCurrent = readCurrent ?? (_ => 0.0);
             _log = log ?? NullLogger.Instance;
+
+            // ★ 尝试创建协调器（此构造器拿不到 AO 和读压委托；仅当你的 HydraulicController 内部提供 BeginHold / RequestRelease 时才可用）
+            //   若暂时拿不到 AO/读压，可先传 null；协调器将使用 HydraulicController 的保持/释放能力。
+            try
+            {
+                _hydCoordinator = new HydraulicGroupCoordinator(
+                    _cfg.Test,
+                    _cfg.DO,
+                    _do,
+                    readPressure: null, // 没有也没关系：协调器优先走 HydraulicController 的保持模式
+                    aoController: null, // 无 AO 也可：不会走 Fallback
+                    hydCtl: _hydraulic,
+                    log: _log);
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"液压组协调器初始化（构造器1）失败：{ex.Message}。将跳过“组内统一释压”增强逻辑。", "液压协调");
+                _hydCoordinator = null;
+            }
         }
 
         public EpbManager(
@@ -54,8 +79,10 @@ namespace Controller
 
             _cfg = cfg;
             _do = doController;
+            _ao = aoController;
             _readCurrent = acq.ReadCurrent;
             _log = log ?? NullLogger.Instance;
+            _acq = acq;
 
             _hydraulic = new HydraulicController(
                 _do,
@@ -63,6 +90,16 @@ namespace Controller
                 acq.ReadPressure,
                 aoController,
                 _log);
+
+            // ★ 创建协调器（具备 AO 与读压，可用 Fallback/保持两种实现）
+            _hydCoordinator = new HydraulicGroupCoordinator(
+                _cfg.Test,
+                _cfg.DO,
+                _do,
+                readPressure: acq.ReadPressure,
+                aoController: aoController,
+                hydCtl: _hydraulic,
+                log: _log);
         }
 
         /// <summary>启动指定 EPB 通道（跑 TestTarget 圈）</summary>
@@ -77,6 +114,17 @@ namespace Controller
             // 1) 液压编号（1:1..6；2:7..12）
             int hydId = channel <= 6 ? 1 : 2;
 
+            // ★ 接入点：创建液压组协调器（建议放在 TestConfig/DO/AO/NI 初始化之后）
+            _hydCoordinator = new HydraulicGroupCoordinator(
+                _cfg.Test,
+                _cfg.DO,
+                _do,
+                ReadPressure, // 你现有的读压委托/方法
+                _ao,
+                _hydraulic, // 你现有的 Controller.HydraulicController 实例；没有可传 null
+                _log);
+
+
             // 2) 取 Runner 参数
             var rcfg = _cfg.Test?.EpbCycleRunner ?? new EpbCycleRunnerConfig();
             int periodMs = _cfg.Test.PeriodMs;
@@ -88,8 +136,10 @@ namespace Controller
             if (limitRecord == null)
                 throw new InvalidOperationException($"未配置 EPB[{channel}] 电流限值。");
 
-            double forwardA = GetProp<double>(limitRecord, "ForwardA", "PosCurrentA", "PosThresholdA", "ForwardThresholdA");
-            double reverseA = GetProp<double>(limitRecord, "ReverseA", "NegCurrentA", "NegThresholdA", "ReverseThresholdA"); // 预留
+            double forwardA = GetProp<double>(limitRecord, "ForwardA", "PosCurrentA", "PosThresholdA",
+                "ForwardThresholdA");
+            double reverseA = GetProp<double>(limitRecord, "ReverseA", "NegCurrentA", "NegThresholdA",
+                "ReverseThresholdA"); // 预留
             int holdMs = GetProp<int>(limitRecord, "HoldMs", "HoldTimeMs", "HoldDurationMs");
 
             holdMs = 1000; //设置为 1000ms（1秒），可根据实际需要调整，调试使用
@@ -126,7 +176,10 @@ namespace Controller
                 ewmaAlpha: rcfg.EwmaAlpha,
                 emptyBandA: rcfg.EmptyBandA,
                 stableWinMs: rcfg.StableWinMs,
-                log: _log);
+                log: _log,
+                manager: this);
+
+            
 
             // 6.5) 启动前自学习（保持异步，不阻塞 UI）
             int learnCycles = GetProp<int>(rcfg, "LearnCycles");
@@ -137,7 +190,7 @@ namespace Controller
                 try
                 {
                     runner.LearnAsync(learnCycles, new CancellationToken())
-                          .GetAwaiter().GetResult();
+                        .GetAwaiter().GetResult();
                     _log.Info($"EPB[{channel}] 自学习完成，进入正式试验。", "EPB");
                 }
                 catch (Exception ex)
@@ -155,6 +208,24 @@ namespace Controller
                 return ok;
             });
         }
+
+        /// <summary>
+        /// 读取指定液压组的压力值（委托给 HydraulicController）
+        /// </summary>
+        /// <param name="hydId"></param>
+        /// <returns></returns>
+        private double ReadPressure(int hydId)
+        {
+            return _acq.ReadPressure(hydId);
+        }
+
+        // EpbManager.cs 里（EpbManager 类内）新增：
+        public Task HydraulicEnterAsync(int channel, CancellationToken token)
+            => _hydCoordinator?.EnterElectricalPhaseAsync(channel, token) ?? Task.CompletedTask;
+
+        public Task HydraulicMarkReleaseAsync(int channel)
+            => _hydCoordinator?.MarkVoltageReleaseAsync(channel) ?? Task.CompletedTask;
+
 
         // （保留你已有的 StartChannelAsync / Pause/Resume/Stop 等实现，不改对外签名）
         public async Task StartChannelAsync(int channel, CancellationToken uiToken = default)
@@ -176,7 +247,8 @@ namespace Controller
             if (limitRecord == null)
                 throw new InvalidOperationException($"未配置 EPB[{channel}] 电流限值。");
 
-            double forwardA = GetProp<double>(limitRecord, "ForwardA", "PosCurrentA", "PosThresholdA", "ForwardThresholdA");
+            double forwardA = GetProp<double>(limitRecord, "ForwardA", "PosCurrentA", "PosThresholdA",
+                "ForwardThresholdA");
             int holdMs = GetProp<int>(limitRecord, "HoldMs", "HoldTimeMs", "HoldDurationMs");
             holdMs = 1000; // 设置为 1000ms（1秒），可根据实际需要调整，调试使用
 
@@ -186,6 +258,7 @@ namespace Controller
                 if (g.Members.Contains(channel))
                 {
                     int indexInGroup = g.Members.OrderBy(x => x).ToList().IndexOf(channel);
+
                     staggerMs = g.StaggerMs * Math.Max(0, indexInGroup);
                     _log.Info($"EPB[{channel}] 归属组 {g.Id} 首启错峰 {staggerMs}ms（组内位置={indexInGroup}）", "EPB");
                     break;
@@ -193,7 +266,8 @@ namespace Controller
             }
 
             //日志记录周期
-            _log.Info($"高精度定时器，  EPB[{channel}] 周期 {periodMs}ms，采样 {sampleMs}ms，前进阈值 {forwardA}A，保持时间 {holdMs}ms", "EPB");
+            _log.Info($"高精度定时器，  EPB[{channel}] 周期 {periodMs}ms，采样 {sampleMs}ms，前进阈值 {forwardA}A，保持时间 {holdMs}ms",
+                "EPB");
 
             var timer = new HighPrecisionTimer(periodMs, _cfg.Test.OverrunPolicy, _log);
             _timers[channel] = timer;
@@ -212,7 +286,8 @@ namespace Controller
                 ewmaAlpha: rcfg.EwmaAlpha,
                 emptyBandA: rcfg.EmptyBandA,
                 stableWinMs: rcfg.StableWinMs,
-                log: _log);
+                log: _log,
+                manager:this);
 
             int learnCycles = GetProp<int>(rcfg, "LearnCycles");
             if (learnCycles <= 0) learnCycles = 5;
@@ -225,14 +300,17 @@ namespace Controller
                     await runner.LearnAsync(learnCycles, uiToken).ConfigureAwait(false);
                     _log.Info($"EPB[{channel}] 自学习完成，进入正式试验。", "EPB");
                 }
-                catch (OperationCanceledException) { throw; }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
                 catch (Exception ex)
                 {
                     _log.Warn($"EPB[{channel}] 自学习异常：{ex.Message}，仍将尝试进入正式试验。", "EPB");
                 }
             }
             // 暂时注释掉正式运行
-            
+
             timer.StartAsync(_cfg.Test.TestTarget, staggerMs, async (i, token) =>
             {
                 _log.Info($"EPB[{channel}] 周期 {i}/{_cfg.Test.TestTarget} 开始。", "EPB");
@@ -284,6 +362,7 @@ namespace Controller
                 if (v == null) continue;
                 return (T)Convert.ChangeType(v, typeof(T));
             }
+
             return default;
         }
     }

@@ -47,6 +47,8 @@
     <Compile Include="EpbCycleRunner.cs" />
     <Compile Include="EpbManager.cs" />
     <Compile Include="HydraulicController.cs" />
+    <Compile Include="HydraulicGroupCoordinator.cs" />
+    <Compile Include="HydraulicOrchestrator.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>

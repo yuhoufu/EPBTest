@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Threading;
 using System.Threading.Tasks;
 using Config;
@@ -18,15 +19,130 @@ namespace Controller
     {
         private readonly DoController _do;
         private readonly TestConfig _test;
-        private readonly Func<int, double> _readPressure;   // 读取压力：传入 hydId 返回 bar
-        private readonly AoController _ao;                  // AO 控制器（统一做限幅与电压换算）
+        private readonly Func<int, double> _readPressure; // 读取压力：传入 hydId 返回 bar
+        private readonly AoController _ao; // AO 控制器（统一做限幅与电压换算）
         private readonly IAppLogger _log;
 
+        //等待“释压”信号的表：key=hydId
+        private readonly ConcurrentDictionary<int, TaskCompletionSource<bool>> _releaseWaiters = new();
+
+        private readonly ConcurrentDictionary<int, TaskCompletionSource<bool>> _holdTcs
+            = new();
+
+
+        /// <summary>外部直接请求释压；返回 true 表示本次请求有效（成功触发）。</summary>
+        public bool RequestRelease(int hydId)
+        {
+            if (_releaseWaiters.TryGetValue(hydId, out var tcs))
+            {
+                var ok = tcs.TrySetResult(true);
+                if (ok) _log.Info($"液压[{hydId}] 收到外部释放请求。", "液压");
+                return ok;
+            }
+
+            return false; // 当前没有处于保持等待的会话
+        }
+
+        /// <summary>获取可供外部保存/传递的“释压委托”。</summary>
+        public bool TryGetReleaseDelegate(int hydId, out Func<Task> releaseAsync)
+        {
+            if (_releaseWaiters.TryGetValue(hydId, out var tcs))
+            {
+                releaseAsync = () =>
+                {
+                    if (tcs.TrySetResult(true))
+                        _log.Info($"液压[{hydId}] 通过委托触发释放。", "液压");
+                    return Task.CompletedTask;
+                };
+                return true;
+            }
+
+            releaseAsync = null;
+            return false;
+        }
+
+
+        /// <summary>建压并保持，直到调用 Release(hydId) 或 token 取消。</summary>
+        public async Task<bool> BuildAndHoldAsync(int hydId, CancellationToken token)
+        {
+            var item = _test.Hydraulics.Find(h => h.Id == hydId);
+            if (item == null || !item.Enabled) return true;
+
+            var aoDevName = hydId == 1 ? "Cylinder1" : "Cylinder2";
+            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            if (!_holdTcs.TryAdd(hydId, tcs)) // 已在保持，直接复用
+                return true;
+
+            try
+            {
+                if (!_do.SetPressure(hydId, true))
+                {
+                    _log.Error($"液压[{hydId}] DO 打开失败。", "液压");
+                    _holdTcs.TryRemove(hydId, out _);
+                    return false;
+                }
+
+                if (!_ao.WritePercent(aoDevName, item.SetPercent))
+                {
+                    _log.Error($"液压[{hydId}] AO 输出失败。", "液压");
+                    _do.SetPressure(hydId, false);
+                    _holdTcs.TryRemove(hydId, out _);
+                    return false;
+                }
+
+                _log.Info($"液压[{hydId}] 建压并保持：{item.SetPercent:F1}%（HoldUntilRelease）", "液压");
+
+                using var reg = token.Register(() => tcs.TrySetCanceled(token));
+                await tcs.Task; // 等待外部 Release()
+                return true;
+            }
+            catch (OperationCanceledException)
+            {
+                _log.Warn($"液压[{hydId}] 保持被取消。", "液压");
+                return false;
+            }
+            catch (Exception ex)
+            {
+                _log.Error($"液压[{hydId}] 保持异常：{ex.Message}", "液压", ex);
+                return false;
+            }
+            finally
+            {
+                // 统一落位
+                try
+                {
+                    _do.SetPressure(hydId, false);
+                }
+                catch
+                {
+                }
+
+                try
+                {
+                    _ao.WritePercent(aoDevName, 0);
+                }
+                catch
+                {
+                }
+
+                _holdTcs.TryRemove(hydId, out _);
+                _log.Info($"液压[{hydId}] 已释压回零。", "液压");
+            }
+        }
+
+        /// <summary>外部释放保持的液压。</summary>
+        public void Release(int hydId)
+        {
+            if (_holdTcs.TryGetValue(hydId, out var tcs))
+                tcs.TrySetResult(true);
+        }
+
+
         public HydraulicController(DoController doController,
-                                   TestConfig test,
-                                   Func<int, double> readPressure,
-                                   AoController aoController,
-                                   IAppLogger log = null)
+            TestConfig test,
+            Func<int, double> readPressure,
+            AoController aoController,
+            IAppLogger log = null)
         {
             _do = doController ?? throw new ArgumentNullException(nameof(doController));
             _test = test ?? throw new ArgumentNullException(nameof(test));
@@ -50,7 +166,7 @@ namespace Controller
 
             // 选择 AO 设备名：如有配置项，可在此改为从配置读取
             // 与 AoConfig.Devices 中的 Name 对应即可（例如 "Cylinder1" / "Cylinder2"）
-            string aoDevName = hydId == 1 ? "Cylinder1" : "Cylinder2";
+            var aoDevName = hydId == 1 ? "Cylinder1" : "Cylinder2";
 
             try
             {
@@ -72,13 +188,13 @@ namespace Controller
                 }
 
                 var tStart = DateTime.Now;
-                bool reached = false;
+                var reached = false;
 
                 // Step 3: 轮询判定：压力/时间/Either
                 while (!token.IsCancellationRequested)
                 {
-                    double elapsedMs = (DateTime.Now - tStart).TotalMilliseconds;
-                    double pBar = _readPressure(hydId);
+                    var elapsedMs = (DateTime.Now - tStart).TotalMilliseconds;
+                    var pBar = _readPressure(hydId);
 
                     switch (item.Mode)
                     {
@@ -93,6 +209,11 @@ namespace Controller
                         case HydraulicMode.Either:
                             if (pBar >= item.PressureThresholdBar || elapsedMs >= item.DurationMs) reached = true;
                             break;
+
+
+                        case HydraulicMode.HoldUntilRelease: // 新模式：建压判定仍然按阈值/时长逻辑
+                            if (pBar >= item.PressureThresholdBar || elapsedMs >= item.DurationMs) reached = true;
+                            break;
                     }
 
                     if (reached)
@@ -103,6 +224,35 @@ namespace Controller
 
                     await Task.Delay(5, token); // 减少 CPU 忙等
                 }
+
+                // === 新增：保持直到外部“释压” ===
+                if (!token.IsCancellationRequested && item.Mode == HydraulicMode.HoldUntilRelease)
+                {
+                    // 注册等待对象（允许外部通过 RequestRelease / 委托触发）
+                    var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    if (!_releaseWaiters.TryAdd(hydId, tcs)) _log.Warn($"液压[{hydId}] 已存在未释放的保持会话，避免重复进入保持。", "液压");
+
+                    _log.Info($"液压[{hydId}] 进入保持，等待外部释放（DO、AO 持续保持）。", "液压");
+
+                    try
+                    {
+                        // 等待：外部释放 或 取消
+                        var cancelTask = Task.Delay(Timeout.Infinite, token);
+                        var completed = await Task.WhenAny(tcs.Task, cancelTask);
+                        if (completed == cancelTask)
+                            token.ThrowIfCancellationRequested();
+                        else
+                            _log.Info($"液压[{hydId}] 已由外部触发释放。", "液压");
+                    }
+                    finally
+                    {
+                        _releaseWaiters.TryRemove(hydId, out _);
+                    }
+
+                    // 直接 return true 让 finally 去做落位
+                    return true;
+                }
+
 
                 // Step 4: 达到后保持
                 if (!token.IsCancellationRequested && item.HoldAfterReachedMs > 0)
@@ -126,8 +276,23 @@ namespace Controller
             finally
             {
                 // Step 5: 关闭压力 DO；AO 回零百分比（落位）
-                try { _do.SetPressure(hydId, false); } catch { /* 忽略落位异常 */ }
-                try { _ao.WritePercent(aoDevName, 0); } catch { /* 忽略落位异常 */ }
+                try
+                {
+                    _do.SetPressure(hydId, false);
+                }
+                catch
+                {
+                    /* 忽略落位异常 */
+                }
+
+                try
+                {
+                    _ao.WritePercent(aoDevName, 0);
+                }
+                catch
+                {
+                    /* 忽略落位异常 */
+                }
 
                 _log.Info($"液压[{hydId}] 停止并回零。", "液压");
             }

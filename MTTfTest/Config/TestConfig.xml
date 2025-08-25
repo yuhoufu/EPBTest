@@ -20,7 +20,7 @@
 		<Hydraulic>
 			<Id>1</Id>
 			<!-- <Enabled>true</Enabled> -->
-			<Enabled>false</Enabled>
+			<Enabled>true</Enabled>
 			<Mode>Either</Mode>
 			<!-- ByPressure / ByDuration / Either -->
 			<SetPercent>30</SetPercent>
@@ -32,6 +32,8 @@
 			<!-- 达阈后再保持多久再泄压 -->
 			<PressureDoId>1</PressureDoId>
 			<!-- 对应 DOConfig/Pressure/Record/编号 -->
+			<!-- 新增：该液压路控制的卡钳 -->
+			<Members>1,2,3,4,5,6</Members>
 		</Hydraulic>
 		<Hydraulic>
 			<Id>2</Id>
@@ -43,6 +45,7 @@
 			<DurationMs>0</DurationMs>
 			<HoldAfterReachedMs>200</HoldAfterReachedMs>
 			<PressureDoId>2</PressureDoId>
+			<Members>7,8,9,10,11,12</Members>
 		</Hydraulic>
 	</Hydraulics>
 

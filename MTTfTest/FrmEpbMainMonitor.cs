@@ -1944,5 +1944,10 @@ namespace MTEmbTest
                 RtbInfo?.AppendText($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  > 停止卡钳2测试失败\n");
             }
         }
+
+        private void uiLabel27_Click(object sender, EventArgs e)
+        {
+
+        }
     }
 }

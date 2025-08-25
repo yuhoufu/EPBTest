@@ -13,7 +13,8 @@ namespace Config
     {
         ByPressure,
         ByDuration,
-        Either
+        Either,
+        HoldUntilRelease // 新增：建压→保持，等待外部主动释放
     }
 
     public sealed class AoDevice
@@ -44,7 +45,14 @@ namespace Config
         public int DurationMs { get; set; }
         public int HoldAfterReachedMs { get; set; }
         public int PressureDoId { get; set; }
+
+        // 新增：该液压路所覆盖的卡钳通道（如 1..6 或 7..12）
+        public List<int> Members { get; } = new();
+
+        // 小工具：判断某通道是否在此液压管辖范围
+        public bool ContainsChannel(int ch) => Members?.Contains(ch) == true;
     }
+
 
     public sealed class ElectricalGroup
     {
@@ -82,8 +90,6 @@ namespace Config
     }
 
 
-
-
     public enum OverrunPolicy
     {
         RunToCompletionSkipMissed,
@@ -108,9 +114,6 @@ namespace Config
         public int PeriodMs => (int)Math.Round(1000.0 / Math.Max(TestCycleHz, 0.001));
 
         public EpbCycleRunnerConfig EpbCycleRunner { get; set; } = new EpbCycleRunnerConfig();
-
-
-
     }
 
     public sealed class DoEpbRecord
@@ -265,8 +268,14 @@ namespace Config
                     HoldAfterReachedMs = GetInt(n, "HoldAfterReachedMs", 0),
                     PressureDoId = GetInt(n, "PressureDoId", 1),
                 };
+
+                var membersText = GetString(n, "Members", "");
+                var members = ParseIntList(membersText);
+                if (members.Count > 0) h.Members.AddRange(members);
+
                 cfg.Hydraulics.Add(h);
             }
+
 
             foreach (XmlNode n in doc.SelectNodes(@"//TestConfig/EpbCurrentLimits/Record"))
             {
@@ -321,12 +330,27 @@ namespace Config
             }
 
 
-
             log?.Info(
                 $"Test 配置加载完成：周期={cfg.PeriodMs}ms，目标次数={cfg.TestTarget}，液压={cfg.Hydraulics.Count} 路，组数={cfg.Groups.Count}",
                 "配置");
             return cfg;
         }
+
+        private static List<int> ParseIntList(string text)
+        {
+            var list = new List<int>();
+            if (string.IsNullOrWhiteSpace(text)) return list;
+
+            foreach (var tok in text.Split(new[] { ',', '，', ';', '；', ' ' },
+                         StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (int.TryParse(tok.Trim(), out var v) && v > 0) list.Add(v);
+            }
+
+            // 去重 + 排序，确保稳定性
+            return list.Distinct().OrderBy(x => x).ToList();
+        }
+
 
         #region XML Helpers
 
@@ -364,6 +388,7 @@ namespace Config
                 "ByPressure" => HydraulicMode.ByPressure,
                 "ByDuration" => HydraulicMode.ByDuration,
                 "Either" => HydraulicMode.Either,
+                "HoldUntilRelease" => HydraulicMode.HoldUntilRelease,
                 _ => HydraulicMode.ByPressure
             };
         }
