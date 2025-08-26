@@ -27,6 +27,7 @@ using IO.NI;
 using DevExpress.Xpo.Logger;
 using Task = System.Threading.Tasks.Task;
 using TestConfig = DataOperation.TestConfig;
+using MTEmbTest.UIHelpers;
 
 namespace MTEmbTest
 {
@@ -314,6 +315,11 @@ namespace MTEmbTest
         {
             InitializeComponent();
 
+            // 窗口和父容器尺寸变化时都刷新一次
+            this.Resize += (_, __) => ResizeLedDisplaysUnified();
+            this.Shown += (_, __) => ResizeLedDisplaysUnified();
+
+
 
             // 创建自定义标题栏
             var titleBar = new Panel
@@ -366,6 +372,50 @@ namespace MTEmbTest
             //     SetInfoText("AO控制器初始化失败，请检查配置文件或设备连接");
             // }
         }
+
+
+        private void ResizeLedDisplaysUnified()
+        {
+            if (LedRunTime?.Parent == null) return;
+
+            // Step 1: 先计算基准控件（LedRunTime）
+            LedAutoSizer.ResizeLedToParentWidth(LedRunTime, LedRunTime.Parent, 0.95, g: 1, blocksPerChar: 5);
+
+            // Step 2: 取出基准的 IntervalOn / IntervalIn
+            int baseIntervalOn = LedRunTime.IntervalOn;
+            int baseIntervalIn = LedRunTime.IntervalIn;
+
+            // Step 3: 直接应用到其他两个控件
+            ApplySameInterval(LedRunCycles, baseIntervalOn, baseIntervalIn);
+            ApplySameInterval(LedLastCycles, baseIntervalOn, baseIntervalIn);
+        }
+
+        /// <summary>
+        /// 把 IntervalOn/IntervalIn 设置成一致，并根据 CharCount 重算宽度
+        /// </summary>
+        private void ApplySameInterval(Sunny.UI.UILedDisplay led, int intervalOn, int IntervalIn, int blocksPerChar = 5)
+        {
+            if (led == null) return;
+
+            led.IntervalOn = intervalOn;
+            led.IntervalIn = IntervalIn;
+
+            // 用公式算实际宽度
+            int C = led.CharCount;
+            int g = IntervalIn, s = intervalOn, B = blocksPerChar;
+            int K = C * (B + 1) - 1;
+            int W = g * (1 + K) + s * (2 + K) + 4;
+
+            led.Width = W;
+
+            // 可选：让控件居中
+            if (led.Parent != null)
+            {
+                led.Left = Math.Max(0, (led.Parent.ClientSize.Width - led.Width) / 2);
+            }
+        }
+
+
 
         private void FrmEpbMainMonitor_Load(object sender, EventArgs e)
         {
@@ -1917,7 +1967,7 @@ namespace MTEmbTest
             // zedGraphControl1.AxisChange();
             // zedGraphControl1.Invalidate(); // 触发重绘
         }
-
+        
 
         private void BtnWarnLog_Click(object sender, EventArgs e)
         {

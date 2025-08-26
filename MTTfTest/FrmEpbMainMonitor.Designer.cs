@@ -2678,7 +2678,7 @@
             this.uiTableLayoutPanel15.ColumnCount = 3;
             this.uiTableLayoutPanel15.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 44.07583F));
             this.uiTableLayoutPanel15.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 55.92417F));
-            this.uiTableLayoutPanel15.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 186F));
+            this.uiTableLayoutPanel15.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 187F));
             this.uiTableLayoutPanel15.Controls.Add(this.uiLight3, 2, 3);
             this.uiTableLayoutPanel15.Controls.Add(this.uiLabel58, 0, 2);
             this.uiTableLayoutPanel15.Controls.Add(this.uiLabel57, 0, 1);
@@ -2835,13 +2835,13 @@
             this.LedRunTime.ForeColor = System.Drawing.Color.Lime;
             this.LedRunTime.ImeMode = System.Windows.Forms.ImeMode.NoControl;
             this.LedRunTime.IntervalH = 0;
-            this.LedRunTime.IntervalOn = 6;
+            this.LedRunTime.IntervalOn = 1;
             this.LedRunTime.IntervalV = 0;
             this.LedRunTime.LedBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
-            this.LedRunTime.Location = new System.Drawing.Point(65, 50);
+            this.LedRunTime.Location = new System.Drawing.Point(233, 67);
             this.LedRunTime.Margin = new System.Windows.Forms.Padding(4);
             this.LedRunTime.Name = "LedRunTime";
-            this.LedRunTime.Size = new System.Drawing.Size(472, 52);
+            this.LedRunTime.Size = new System.Drawing.Size(137, 17);
             this.LedRunTime.TabIndex = 0;
             this.LedRunTime.Text = "00D 00H 00M";
             // 
@@ -2897,7 +2897,7 @@
             this.ProcBar.Margin = new System.Windows.Forms.Padding(4);
             this.ProcBar.MinimumSize = new System.Drawing.Size(4, 4);
             this.ProcBar.Name = "ProcBar";
-            this.ProcBar.Size = new System.Drawing.Size(751, 154);
+            this.ProcBar.Size = new System.Drawing.Size(750, 154);
             this.ProcBar.Style = Sunny.UI.UIStyle.Custom;
             this.ProcBar.TabIndex = 41;
             this.ProcBar.Text = "uiProcessBar1";

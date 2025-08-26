@@ -213,6 +213,7 @@
     <Compile Include="Components\Base\CheckItemBase.cs" />
     <EmbeddedResource Include="Assets\HTML\ToggleButton.html" />
     <EmbeddedResource Include="Assets\CSS\ToggleButton.css" />
+    <Compile Include="UIHelpers\LedAutoSizer.cs" />
     <Compile Include="Utilities\HtmlCssAsset.cs" />
   </ItemGroup>
   <ItemGroup>
@@ -274,5 +275,6 @@
       <Install>false</Install>
     </BootstrapperPackage>
   </ItemGroup>
+  <ItemGroup />
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>
