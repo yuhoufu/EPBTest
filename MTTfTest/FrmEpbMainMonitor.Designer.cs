@@ -29,21 +29,21 @@
         private void InitializeComponent()
         {
             this.components = new System.ComponentModel.Container();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle1 = new System.Windows.Forms.DataGridViewCellStyle();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle2 = new System.Windows.Forms.DataGridViewCellStyle();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle3 = new System.Windows.Forms.DataGridViewCellStyle();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle4 = new System.Windows.Forms.DataGridViewCellStyle();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle5 = new System.Windows.Forms.DataGridViewCellStyle();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle6 = new System.Windows.Forms.DataGridViewCellStyle();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle7 = new System.Windows.Forms.DataGridViewCellStyle();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle8 = new System.Windows.Forms.DataGridViewCellStyle();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle9 = new System.Windows.Forms.DataGridViewCellStyle();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle10 = new System.Windows.Forms.DataGridViewCellStyle();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle11 = new System.Windows.Forms.DataGridViewCellStyle();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle12 = new System.Windows.Forms.DataGridViewCellStyle();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle13 = new System.Windows.Forms.DataGridViewCellStyle();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle14 = new System.Windows.Forms.DataGridViewCellStyle();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle15 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle16 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle17 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle18 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle19 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle20 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle21 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle22 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle23 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle24 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle25 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle26 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle27 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle28 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle29 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle30 = new System.Windows.Forms.DataGridViewCellStyle();
             System.ComponentModel.ComponentResourceManager resources = new System.ComponentModel.ComponentResourceManager(typeof(FrmEpbMainMonitor));
             this.uiTextBox1 = new Sunny.UI.UITextBox();
             this.uiLabel29 = new Sunny.UI.UILabel();
@@ -182,7 +182,6 @@
             this.uiTableLayoutPanel42 = new Sunny.UI.UITableLayoutPanel();
             this.BtnStartTest = new Sunny.UI.UIButton();
             this.BtnStop = new Sunny.UI.UIButton();
-            this.uiGroupBox3 = new Sunny.UI.UIGroupBox();
             this.uiGroupBox1 = new Sunny.UI.UIGroupBox();
             this.uiTableLayoutPanel2 = new Sunny.UI.UITableLayoutPanel();
             this.TxtTargetCycles = new Sunny.UI.UITextBox();
@@ -282,33 +281,39 @@
             this.uiLabel18 = new Sunny.UI.UILabel();
             this.uiLabel19 = new Sunny.UI.UILabel();
             this.uiTableLayoutPanel1 = new Sunny.UI.UITableLayoutPanel();
-            this.uiTableLayoutPanel6 = new Sunny.UI.UITableLayoutPanel();
-            this.textEdit12 = new DevExpress.XtraEditors.TextEdit();
-            this.textEdit11 = new DevExpress.XtraEditors.TextEdit();
-            this.textEdit10 = new DevExpress.XtraEditors.TextEdit();
-            this.textEdit9 = new DevExpress.XtraEditors.TextEdit();
-            this.textEdit8 = new DevExpress.XtraEditors.TextEdit();
-            this.textEdit7 = new DevExpress.XtraEditors.TextEdit();
-            this.textEdit6 = new DevExpress.XtraEditors.TextEdit();
-            this.textEdit5 = new DevExpress.XtraEditors.TextEdit();
-            this.textEdit4 = new DevExpress.XtraEditors.TextEdit();
-            this.textEdit3 = new DevExpress.XtraEditors.TextEdit();
-            this.textEdit2 = new DevExpress.XtraEditors.TextEdit();
-            this.textEditCurrent1 = new DevExpress.XtraEditors.TextEdit();
-            this.checkEdit24 = new DevExpress.XtraEditors.CheckEdit();
-            this.checkEdit23 = new DevExpress.XtraEditors.CheckEdit();
-            this.checkEdit22 = new DevExpress.XtraEditors.CheckEdit();
-            this.checkEdit21 = new DevExpress.XtraEditors.CheckEdit();
-            this.checkEdit20 = new DevExpress.XtraEditors.CheckEdit();
-            this.checkEdit19 = new DevExpress.XtraEditors.CheckEdit();
-            this.checkEdit18 = new DevExpress.XtraEditors.CheckEdit();
-            this.checkEdit17 = new DevExpress.XtraEditors.CheckEdit();
-            this.checkEdit16 = new DevExpress.XtraEditors.CheckEdit();
-            this.checkEdit15 = new DevExpress.XtraEditors.CheckEdit();
-            this.checkEdit14 = new DevExpress.XtraEditors.CheckEdit();
-            this.checkEdit13 = new DevExpress.XtraEditors.CheckEdit();
-            this.zedGraphRealChart = new ZedGraph.ZedGraphControl();
+            this.uiPanel5 = new Sunny.UI.UIPanel();
             this.uiTableLayoutPanel3 = new Sunny.UI.UITableLayoutPanel();
+            this.zedGraphRealChart = new ZedGraph.ZedGraphControl();
+            this.uiTableLayoutPanel6 = new Sunny.UI.UITableLayoutPanel();
+            this.checkEdit13 = new DevExpress.XtraEditors.CheckEdit();
+            this.checkEdit14 = new DevExpress.XtraEditors.CheckEdit();
+            this.checkEdit15 = new DevExpress.XtraEditors.CheckEdit();
+            this.checkEdit16 = new DevExpress.XtraEditors.CheckEdit();
+            this.checkEdit17 = new DevExpress.XtraEditors.CheckEdit();
+            this.checkEdit18 = new DevExpress.XtraEditors.CheckEdit();
+            this.checkEdit19 = new DevExpress.XtraEditors.CheckEdit();
+            this.checkEdit20 = new DevExpress.XtraEditors.CheckEdit();
+            this.checkEdit21 = new DevExpress.XtraEditors.CheckEdit();
+            this.checkEdit22 = new DevExpress.XtraEditors.CheckEdit();
+            this.checkEdit23 = new DevExpress.XtraEditors.CheckEdit();
+            this.checkEdit24 = new DevExpress.XtraEditors.CheckEdit();
+            this.textEditCurrent1 = new DevExpress.XtraEditors.TextEdit();
+            this.textEdit2 = new DevExpress.XtraEditors.TextEdit();
+            this.textEdit3 = new DevExpress.XtraEditors.TextEdit();
+            this.textEdit4 = new DevExpress.XtraEditors.TextEdit();
+            this.textEdit5 = new DevExpress.XtraEditors.TextEdit();
+            this.textEdit6 = new DevExpress.XtraEditors.TextEdit();
+            this.textEdit7 = new DevExpress.XtraEditors.TextEdit();
+            this.textEdit8 = new DevExpress.XtraEditors.TextEdit();
+            this.textEdit9 = new DevExpress.XtraEditors.TextEdit();
+            this.textEdit10 = new DevExpress.XtraEditors.TextEdit();
+            this.textEdit11 = new DevExpress.XtraEditors.TextEdit();
+            this.textEdit12 = new DevExpress.XtraEditors.TextEdit();
+            this.uiTableLayoutPanel16 = new Sunny.UI.UITableLayoutPanel();
+            this.checkEdit1 = new DevExpress.XtraEditors.CheckEdit();
+            this.checkEdit2 = new DevExpress.XtraEditors.CheckEdit();
+            this.textEdit1 = new DevExpress.XtraEditors.TextEdit();
+            this.textEdit13 = new DevExpress.XtraEditors.TextEdit();
             ((System.ComponentModel.ISupportInitialize)(this.dgvRealData)).BeginInit();
             this.uiGroupCurve.SuspendLayout();
             this.uiTableLayoutPanel18.SuspendLayout();
@@ -349,7 +354,6 @@
             this.uiTableLayoutPanel41.SuspendLayout();
             this.uiPanel1.SuspendLayout();
             this.uiTableLayoutPanel42.SuspendLayout();
-            this.uiGroupBox3.SuspendLayout();
             this.uiGroupBox1.SuspendLayout();
             this.uiTableLayoutPanel2.SuspendLayout();
             this.uiTableLayoutPanel4.SuspendLayout();
@@ -381,32 +385,38 @@
             this.uiTableLayoutPanel13.SuspendLayout();
             this.uiTableLayoutPanel10.SuspendLayout();
             this.uiTableLayoutPanel1.SuspendLayout();
-            this.uiTableLayoutPanel6.SuspendLayout();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit12.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit11.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit10.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit9.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit8.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit7.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit6.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit5.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit4.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit3.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit2.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEditCurrent1.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit24.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit23.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit22.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit21.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit20.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit19.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit18.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit17.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit16.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit15.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit14.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit13.Properties)).BeginInit();
+            this.uiPanel5.SuspendLayout();
             this.uiTableLayoutPanel3.SuspendLayout();
+            this.uiTableLayoutPanel6.SuspendLayout();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit13.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit14.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit15.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit16.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit17.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit18.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit19.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit20.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit21.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit22.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit23.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit24.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEditCurrent1.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit2.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit3.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit4.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit5.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit6.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit7.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit8.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit9.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit10.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit11.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit12.Properties)).BeginInit();
+            this.uiTableLayoutPanel16.SuspendLayout();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit1.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit2.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit1.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit13.Properties)).BeginInit();
             this.SuspendLayout();
             // 
             // uiTextBox1
@@ -442,29 +452,29 @@
             // 
             this.dgvRealData.AllowUserToAddRows = false;
             this.dgvRealData.AllowUserToDeleteRows = false;
-            dataGridViewCellStyle1.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
-            dataGridViewCellStyle1.BackColor = System.Drawing.Color.WhiteSmoke;
-            dataGridViewCellStyle1.Font = new System.Drawing.Font("Arial Narrow", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.dgvRealData.AlternatingRowsDefaultCellStyle = dataGridViewCellStyle1;
+            dataGridViewCellStyle16.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+            dataGridViewCellStyle16.BackColor = System.Drawing.Color.WhiteSmoke;
+            dataGridViewCellStyle16.Font = new System.Drawing.Font("Arial Narrow", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.dgvRealData.AlternatingRowsDefaultCellStyle = dataGridViewCellStyle16;
             this.dgvRealData.BackgroundColor = System.Drawing.Color.White;
             this.dgvRealData.ColumnHeadersBorderStyle = System.Windows.Forms.DataGridViewHeaderBorderStyle.Single;
-            dataGridViewCellStyle2.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
-            dataGridViewCellStyle2.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            dataGridViewCellStyle2.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            dataGridViewCellStyle2.ForeColor = System.Drawing.Color.White;
-            dataGridViewCellStyle2.SelectionBackColor = System.Drawing.SystemColors.Highlight;
-            dataGridViewCellStyle2.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
-            dataGridViewCellStyle2.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
-            this.dgvRealData.ColumnHeadersDefaultCellStyle = dataGridViewCellStyle2;
+            dataGridViewCellStyle17.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+            dataGridViewCellStyle17.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            dataGridViewCellStyle17.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            dataGridViewCellStyle17.ForeColor = System.Drawing.Color.White;
+            dataGridViewCellStyle17.SelectionBackColor = System.Drawing.SystemColors.Highlight;
+            dataGridViewCellStyle17.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
+            dataGridViewCellStyle17.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
+            this.dgvRealData.ColumnHeadersDefaultCellStyle = dataGridViewCellStyle17;
             this.dgvRealData.ColumnHeadersHeight = 35;
-            dataGridViewCellStyle3.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleLeft;
-            dataGridViewCellStyle3.BackColor = System.Drawing.SystemColors.Window;
-            dataGridViewCellStyle3.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            dataGridViewCellStyle3.ForeColor = System.Drawing.SystemColors.ControlText;
-            dataGridViewCellStyle3.SelectionBackColor = System.Drawing.SystemColors.Highlight;
-            dataGridViewCellStyle3.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
-            dataGridViewCellStyle3.WrapMode = System.Windows.Forms.DataGridViewTriState.False;
-            this.dgvRealData.DefaultCellStyle = dataGridViewCellStyle3;
+            dataGridViewCellStyle18.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleLeft;
+            dataGridViewCellStyle18.BackColor = System.Drawing.SystemColors.Window;
+            dataGridViewCellStyle18.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            dataGridViewCellStyle18.ForeColor = System.Drawing.SystemColors.ControlText;
+            dataGridViewCellStyle18.SelectionBackColor = System.Drawing.SystemColors.Highlight;
+            dataGridViewCellStyle18.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
+            dataGridViewCellStyle18.WrapMode = System.Windows.Forms.DataGridViewTriState.False;
+            this.dgvRealData.DefaultCellStyle = dataGridViewCellStyle18;
             this.dgvRealData.Dock = System.Windows.Forms.DockStyle.Fill;
             this.dgvRealData.EnableHeadersVisualStyles = false;
             this.dgvRealData.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
@@ -472,19 +482,19 @@
             this.dgvRealData.Location = new System.Drawing.Point(391, 423);
             this.dgvRealData.Margin = new System.Windows.Forms.Padding(2);
             this.dgvRealData.Name = "dgvRealData";
-            dataGridViewCellStyle4.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
-            dataGridViewCellStyle4.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(235)))), ((int)(((byte)(243)))), ((int)(((byte)(255)))));
-            dataGridViewCellStyle4.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            dataGridViewCellStyle4.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            dataGridViewCellStyle4.SelectionBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            dataGridViewCellStyle4.SelectionForeColor = System.Drawing.Color.White;
-            dataGridViewCellStyle4.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
-            this.dgvRealData.RowHeadersDefaultCellStyle = dataGridViewCellStyle4;
+            dataGridViewCellStyle19.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+            dataGridViewCellStyle19.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(235)))), ((int)(((byte)(243)))), ((int)(((byte)(255)))));
+            dataGridViewCellStyle19.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            dataGridViewCellStyle19.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            dataGridViewCellStyle19.SelectionBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            dataGridViewCellStyle19.SelectionForeColor = System.Drawing.Color.White;
+            dataGridViewCellStyle19.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
+            this.dgvRealData.RowHeadersDefaultCellStyle = dataGridViewCellStyle19;
             this.dgvRealData.RowHeadersWidth = 30;
-            dataGridViewCellStyle5.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
-            dataGridViewCellStyle5.BackColor = System.Drawing.Color.Lavender;
-            dataGridViewCellStyle5.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.dgvRealData.RowsDefaultCellStyle = dataGridViewCellStyle5;
+            dataGridViewCellStyle20.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+            dataGridViewCellStyle20.BackColor = System.Drawing.Color.Lavender;
+            dataGridViewCellStyle20.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.dgvRealData.RowsDefaultCellStyle = dataGridViewCellStyle20;
             this.dgvRealData.RowTemplate.Height = 35;
             this.dgvRealData.SelectedIndex = -1;
             this.dgvRealData.Size = new System.Drawing.Size(347, 201);
@@ -533,7 +543,7 @@
             this.zedGraphControl1.IsEnableVZoom = false;
             this.zedGraphControl1.IsEnableWheelZoom = false;
             this.zedGraphControl1.Location = new System.Drawing.Point(32767, 32767);
-            this.zedGraphControl1.Margin = new System.Windows.Forms.Padding(355995, 1069071, 355995, 1069071);
+            this.zedGraphControl1.Margin = new System.Windows.Forms.Padding(474660, 1469973, 474660, 1469973);
             this.zedGraphControl1.Name = "zedGraphControl1";
             this.zedGraphControl1.ScrollGrace = 0D;
             this.zedGraphControl1.ScrollMaxX = 0D;
@@ -957,29 +967,29 @@
             // 
             this.uiDataGridView1.AllowUserToAddRows = false;
             this.uiDataGridView1.AllowUserToDeleteRows = false;
-            dataGridViewCellStyle6.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
-            dataGridViewCellStyle6.BackColor = System.Drawing.Color.WhiteSmoke;
-            dataGridViewCellStyle6.Font = new System.Drawing.Font("Arial Narrow", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.uiDataGridView1.AlternatingRowsDefaultCellStyle = dataGridViewCellStyle6;
+            dataGridViewCellStyle21.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+            dataGridViewCellStyle21.BackColor = System.Drawing.Color.WhiteSmoke;
+            dataGridViewCellStyle21.Font = new System.Drawing.Font("Arial Narrow", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiDataGridView1.AlternatingRowsDefaultCellStyle = dataGridViewCellStyle21;
             this.uiDataGridView1.BackgroundColor = System.Drawing.Color.White;
             this.uiDataGridView1.ColumnHeadersBorderStyle = System.Windows.Forms.DataGridViewHeaderBorderStyle.Single;
-            dataGridViewCellStyle7.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
-            dataGridViewCellStyle7.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            dataGridViewCellStyle7.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            dataGridViewCellStyle7.ForeColor = System.Drawing.Color.White;
-            dataGridViewCellStyle7.SelectionBackColor = System.Drawing.SystemColors.Highlight;
-            dataGridViewCellStyle7.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
-            dataGridViewCellStyle7.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
-            this.uiDataGridView1.ColumnHeadersDefaultCellStyle = dataGridViewCellStyle7;
+            dataGridViewCellStyle22.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+            dataGridViewCellStyle22.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            dataGridViewCellStyle22.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            dataGridViewCellStyle22.ForeColor = System.Drawing.Color.White;
+            dataGridViewCellStyle22.SelectionBackColor = System.Drawing.SystemColors.Highlight;
+            dataGridViewCellStyle22.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
+            dataGridViewCellStyle22.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
+            this.uiDataGridView1.ColumnHeadersDefaultCellStyle = dataGridViewCellStyle22;
             this.uiDataGridView1.ColumnHeadersHeight = 35;
-            dataGridViewCellStyle8.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleLeft;
-            dataGridViewCellStyle8.BackColor = System.Drawing.SystemColors.Window;
-            dataGridViewCellStyle8.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            dataGridViewCellStyle8.ForeColor = System.Drawing.SystemColors.ControlText;
-            dataGridViewCellStyle8.SelectionBackColor = System.Drawing.SystemColors.Highlight;
-            dataGridViewCellStyle8.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
-            dataGridViewCellStyle8.WrapMode = System.Windows.Forms.DataGridViewTriState.False;
-            this.uiDataGridView1.DefaultCellStyle = dataGridViewCellStyle8;
+            dataGridViewCellStyle23.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleLeft;
+            dataGridViewCellStyle23.BackColor = System.Drawing.SystemColors.Window;
+            dataGridViewCellStyle23.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            dataGridViewCellStyle23.ForeColor = System.Drawing.SystemColors.ControlText;
+            dataGridViewCellStyle23.SelectionBackColor = System.Drawing.SystemColors.Highlight;
+            dataGridViewCellStyle23.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
+            dataGridViewCellStyle23.WrapMode = System.Windows.Forms.DataGridViewTriState.False;
+            this.uiDataGridView1.DefaultCellStyle = dataGridViewCellStyle23;
             this.uiDataGridView1.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiDataGridView1.EnableHeadersVisualStyles = false;
             this.uiDataGridView1.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
@@ -987,19 +997,19 @@
             this.uiDataGridView1.Location = new System.Drawing.Point(391, 423);
             this.uiDataGridView1.Margin = new System.Windows.Forms.Padding(2);
             this.uiDataGridView1.Name = "uiDataGridView1";
-            dataGridViewCellStyle9.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
-            dataGridViewCellStyle9.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(235)))), ((int)(((byte)(243)))), ((int)(((byte)(255)))));
-            dataGridViewCellStyle9.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            dataGridViewCellStyle9.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            dataGridViewCellStyle9.SelectionBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            dataGridViewCellStyle9.SelectionForeColor = System.Drawing.Color.White;
-            dataGridViewCellStyle9.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
-            this.uiDataGridView1.RowHeadersDefaultCellStyle = dataGridViewCellStyle9;
+            dataGridViewCellStyle24.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+            dataGridViewCellStyle24.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(235)))), ((int)(((byte)(243)))), ((int)(((byte)(255)))));
+            dataGridViewCellStyle24.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            dataGridViewCellStyle24.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            dataGridViewCellStyle24.SelectionBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            dataGridViewCellStyle24.SelectionForeColor = System.Drawing.Color.White;
+            dataGridViewCellStyle24.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
+            this.uiDataGridView1.RowHeadersDefaultCellStyle = dataGridViewCellStyle24;
             this.uiDataGridView1.RowHeadersWidth = 30;
-            dataGridViewCellStyle10.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
-            dataGridViewCellStyle10.BackColor = System.Drawing.Color.Lavender;
-            dataGridViewCellStyle10.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.uiDataGridView1.RowsDefaultCellStyle = dataGridViewCellStyle10;
+            dataGridViewCellStyle25.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+            dataGridViewCellStyle25.BackColor = System.Drawing.Color.Lavender;
+            dataGridViewCellStyle25.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiDataGridView1.RowsDefaultCellStyle = dataGridViewCellStyle25;
             this.uiTableLayoutPanel25.SetRowSpan(this.uiDataGridView1, 5);
             this.uiDataGridView1.RowTemplate.Height = 35;
             this.uiDataGridView1.SelectedIndex = -1;
@@ -1166,8 +1176,8 @@
             this.zedGraphControl2.IsEnableHZoom = false;
             this.zedGraphControl2.IsEnableVZoom = false;
             this.zedGraphControl2.IsEnableWheelZoom = false;
-            this.zedGraphControl2.Location = new System.Drawing.Point(84, 86);
-            this.zedGraphControl2.Margin = new System.Windows.Forms.Padding(64, 76, 64, 76);
+            this.zedGraphControl2.Location = new System.Drawing.Point(105, 114);
+            this.zedGraphControl2.Margin = new System.Windows.Forms.Padding(85, 104, 85, 104);
             this.zedGraphControl2.Name = "zedGraphControl2";
             this.zedGraphControl2.ScrollGrace = 0D;
             this.zedGraphControl2.ScrollMaxX = 0D;
@@ -1176,7 +1186,7 @@
             this.zedGraphControl2.ScrollMinX = 0D;
             this.zedGraphControl2.ScrollMinY = 0D;
             this.zedGraphControl2.ScrollMinY2 = 0D;
-            this.zedGraphControl2.Size = new System.Drawing.Size(459, 194);
+            this.zedGraphControl2.Size = new System.Drawing.Size(417, 138);
             this.zedGraphControl2.TabIndex = 4;
             this.zedGraphControl2.UseExtendedPrintDialog = true;
             // 
@@ -1819,29 +1829,29 @@
             // 
             this.uiDataGridView2.AllowUserToAddRows = false;
             this.uiDataGridView2.AllowUserToDeleteRows = false;
-            dataGridViewCellStyle11.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
-            dataGridViewCellStyle11.BackColor = System.Drawing.Color.WhiteSmoke;
-            dataGridViewCellStyle11.Font = new System.Drawing.Font("Arial Narrow", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.uiDataGridView2.AlternatingRowsDefaultCellStyle = dataGridViewCellStyle11;
+            dataGridViewCellStyle26.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+            dataGridViewCellStyle26.BackColor = System.Drawing.Color.WhiteSmoke;
+            dataGridViewCellStyle26.Font = new System.Drawing.Font("Arial Narrow", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiDataGridView2.AlternatingRowsDefaultCellStyle = dataGridViewCellStyle26;
             this.uiDataGridView2.BackgroundColor = System.Drawing.Color.White;
             this.uiDataGridView2.ColumnHeadersBorderStyle = System.Windows.Forms.DataGridViewHeaderBorderStyle.Single;
-            dataGridViewCellStyle12.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
-            dataGridViewCellStyle12.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            dataGridViewCellStyle12.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            dataGridViewCellStyle12.ForeColor = System.Drawing.Color.White;
-            dataGridViewCellStyle12.SelectionBackColor = System.Drawing.SystemColors.Highlight;
-            dataGridViewCellStyle12.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
-            dataGridViewCellStyle12.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
-            this.uiDataGridView2.ColumnHeadersDefaultCellStyle = dataGridViewCellStyle12;
+            dataGridViewCellStyle27.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+            dataGridViewCellStyle27.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            dataGridViewCellStyle27.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            dataGridViewCellStyle27.ForeColor = System.Drawing.Color.White;
+            dataGridViewCellStyle27.SelectionBackColor = System.Drawing.SystemColors.Highlight;
+            dataGridViewCellStyle27.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
+            dataGridViewCellStyle27.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
+            this.uiDataGridView2.ColumnHeadersDefaultCellStyle = dataGridViewCellStyle27;
             this.uiDataGridView2.ColumnHeadersHeight = 35;
-            dataGridViewCellStyle13.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleLeft;
-            dataGridViewCellStyle13.BackColor = System.Drawing.SystemColors.Window;
-            dataGridViewCellStyle13.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            dataGridViewCellStyle13.ForeColor = System.Drawing.SystemColors.ControlText;
-            dataGridViewCellStyle13.SelectionBackColor = System.Drawing.SystemColors.Highlight;
-            dataGridViewCellStyle13.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
-            dataGridViewCellStyle13.WrapMode = System.Windows.Forms.DataGridViewTriState.False;
-            this.uiDataGridView2.DefaultCellStyle = dataGridViewCellStyle13;
+            dataGridViewCellStyle28.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleLeft;
+            dataGridViewCellStyle28.BackColor = System.Drawing.SystemColors.Window;
+            dataGridViewCellStyle28.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            dataGridViewCellStyle28.ForeColor = System.Drawing.SystemColors.ControlText;
+            dataGridViewCellStyle28.SelectionBackColor = System.Drawing.SystemColors.Highlight;
+            dataGridViewCellStyle28.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
+            dataGridViewCellStyle28.WrapMode = System.Windows.Forms.DataGridViewTriState.False;
+            this.uiDataGridView2.DefaultCellStyle = dataGridViewCellStyle28;
             this.uiDataGridView2.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiDataGridView2.EnableHeadersVisualStyles = false;
             this.uiDataGridView2.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
@@ -1849,19 +1859,19 @@
             this.uiDataGridView2.Location = new System.Drawing.Point(391, 423);
             this.uiDataGridView2.Margin = new System.Windows.Forms.Padding(2);
             this.uiDataGridView2.Name = "uiDataGridView2";
-            dataGridViewCellStyle14.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
-            dataGridViewCellStyle14.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(235)))), ((int)(((byte)(243)))), ((int)(((byte)(255)))));
-            dataGridViewCellStyle14.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            dataGridViewCellStyle14.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            dataGridViewCellStyle14.SelectionBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            dataGridViewCellStyle14.SelectionForeColor = System.Drawing.Color.White;
-            dataGridViewCellStyle14.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
-            this.uiDataGridView2.RowHeadersDefaultCellStyle = dataGridViewCellStyle14;
+            dataGridViewCellStyle29.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+            dataGridViewCellStyle29.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(235)))), ((int)(((byte)(243)))), ((int)(((byte)(255)))));
+            dataGridViewCellStyle29.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            dataGridViewCellStyle29.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            dataGridViewCellStyle29.SelectionBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            dataGridViewCellStyle29.SelectionForeColor = System.Drawing.Color.White;
+            dataGridViewCellStyle29.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
+            this.uiDataGridView2.RowHeadersDefaultCellStyle = dataGridViewCellStyle29;
             this.uiDataGridView2.RowHeadersWidth = 30;
-            dataGridViewCellStyle15.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
-            dataGridViewCellStyle15.BackColor = System.Drawing.Color.Lavender;
-            dataGridViewCellStyle15.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.uiDataGridView2.RowsDefaultCellStyle = dataGridViewCellStyle15;
+            dataGridViewCellStyle30.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+            dataGridViewCellStyle30.BackColor = System.Drawing.Color.Lavender;
+            dataGridViewCellStyle30.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiDataGridView2.RowsDefaultCellStyle = dataGridViewCellStyle30;
             this.uiTableLayoutPanel34.SetRowSpan(this.uiDataGridView2, 5);
             this.uiDataGridView2.RowTemplate.Height = 35;
             this.uiDataGridView2.SelectedIndex = -1;
@@ -2028,8 +2038,8 @@
             this.zedGraphControl3.IsEnableHZoom = false;
             this.zedGraphControl3.IsEnableVZoom = false;
             this.zedGraphControl3.IsEnableWheelZoom = false;
-            this.zedGraphControl3.Location = new System.Drawing.Point(84, 86);
-            this.zedGraphControl3.Margin = new System.Windows.Forms.Padding(64, 76, 64, 76);
+            this.zedGraphControl3.Location = new System.Drawing.Point(105, 114);
+            this.zedGraphControl3.Margin = new System.Windows.Forms.Padding(85, 104, 85, 104);
             this.zedGraphControl3.Name = "zedGraphControl3";
             this.zedGraphControl3.ScrollGrace = 0D;
             this.zedGraphControl3.ScrollMaxX = 0D;
@@ -2038,7 +2048,7 @@
             this.zedGraphControl3.ScrollMinX = 0D;
             this.zedGraphControl3.ScrollMinY = 0D;
             this.zedGraphControl3.ScrollMinY2 = 0D;
-            this.zedGraphControl3.Size = new System.Drawing.Size(459, 194);
+            this.zedGraphControl3.Size = new System.Drawing.Size(417, 138);
             this.zedGraphControl3.TabIndex = 4;
             this.zedGraphControl3.UseExtendedPrintDialog = true;
             // 
@@ -2668,7 +2678,7 @@
             this.uiTableLayoutPanel15.ColumnCount = 3;
             this.uiTableLayoutPanel15.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 44.07583F));
             this.uiTableLayoutPanel15.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 55.92417F));
-            this.uiTableLayoutPanel15.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 184F));
+            this.uiTableLayoutPanel15.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 186F));
             this.uiTableLayoutPanel15.Controls.Add(this.uiLight3, 2, 3);
             this.uiTableLayoutPanel15.Controls.Add(this.uiLabel58, 0, 2);
             this.uiTableLayoutPanel15.Controls.Add(this.uiLabel57, 0, 1);
@@ -2699,7 +2709,7 @@
             this.uiLight3.CenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
             this.uiLight3.Font = new System.Drawing.Font("宋体", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
             this.uiLight3.Interval = 2000;
-            this.uiLight3.Location = new System.Drawing.Point(809, 524);
+            this.uiLight3.Location = new System.Drawing.Point(808, 524);
             this.uiLight3.Margin = new System.Windows.Forms.Padding(12, 4, 4, 4);
             this.uiLight3.MinimumSize = new System.Drawing.Size(2, 2);
             this.uiLight3.Name = "uiLight3";
@@ -2720,7 +2730,7 @@
             this.uiLabel58.Location = new System.Drawing.Point(4, 324);
             this.uiLabel58.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
             this.uiLabel58.Name = "uiLabel58";
-            this.uiLabel58.Size = new System.Drawing.Size(327, 162);
+            this.uiLabel58.Size = new System.Drawing.Size(326, 162);
             this.uiLabel58.TabIndex = 45;
             this.uiLabel58.Text = "剩余次数";
             this.uiLabel58.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -2733,7 +2743,7 @@
             this.uiLabel57.Location = new System.Drawing.Point(4, 162);
             this.uiLabel57.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
             this.uiLabel57.Name = "uiLabel57";
-            this.uiLabel57.Size = new System.Drawing.Size(327, 162);
+            this.uiLabel57.Size = new System.Drawing.Size(326, 162);
             this.uiLabel57.TabIndex = 44;
             this.uiLabel57.Text = "完成次数";
             this.uiLabel57.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -2746,7 +2756,7 @@
             this.uiLabel56.Location = new System.Drawing.Point(4, 0);
             this.uiLabel56.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
             this.uiLabel56.Name = "uiLabel56";
-            this.uiLabel56.Size = new System.Drawing.Size(327, 162);
+            this.uiLabel56.Size = new System.Drawing.Size(326, 162);
             this.uiLabel56.TabIndex = 43;
             this.uiLabel56.Text = "运行时间";
             this.uiLabel56.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -2761,14 +2771,14 @@
             this.uiTableLayoutPanel23.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
             this.uiTableLayoutPanel23.Controls.Add(this.LedRunCycles, 1, 1);
             this.uiTableLayoutPanel23.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel23.Location = new System.Drawing.Point(339, 166);
+            this.uiTableLayoutPanel23.Location = new System.Drawing.Point(338, 166);
             this.uiTableLayoutPanel23.Margin = new System.Windows.Forms.Padding(4);
             this.uiTableLayoutPanel23.Name = "uiTableLayoutPanel23";
             this.uiTableLayoutPanel23.RowCount = 3;
             this.uiTableLayoutPanel23.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
             this.uiTableLayoutPanel23.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 90F));
             this.uiTableLayoutPanel23.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
-            this.uiTableLayoutPanel23.Size = new System.Drawing.Size(603, 154);
+            this.uiTableLayoutPanel23.Size = new System.Drawing.Size(604, 154);
             this.uiTableLayoutPanel23.TabIndex = 38;
             this.uiTableLayoutPanel23.TagString = null;
             // 
@@ -2782,15 +2792,14 @@
             this.LedRunCycles.Font = new System.Drawing.Font("微软雅黑", 16.03791F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
             this.LedRunCycles.ForeColor = System.Drawing.Color.Lime;
             this.LedRunCycles.ImeMode = System.Windows.Forms.ImeMode.NoControl;
-            this.LedRunCycles.IntervalH = 5;
-            this.LedRunCycles.IntervalIn = 2;
-            this.LedRunCycles.IntervalOn = 5;
+            this.LedRunCycles.IntervalH = 0;
+            this.LedRunCycles.IntervalOn = 6;
             this.LedRunCycles.IntervalV = 0;
             this.LedRunCycles.LedBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
-            this.LedRunCycles.Location = new System.Drawing.Point(123, 50);
+            this.LedRunCycles.Location = new System.Drawing.Point(128, 50);
             this.LedRunCycles.Margin = new System.Windows.Forms.Padding(4);
             this.LedRunCycles.Name = "LedRunCycles";
-            this.LedRunCycles.Size = new System.Drawing.Size(355, 51);
+            this.LedRunCycles.Size = new System.Drawing.Size(346, 52);
             this.LedRunCycles.TabIndex = 0;
             this.LedRunCycles.Text = "0";
             // 
@@ -2804,14 +2813,14 @@
             this.uiTableLayoutPanel32.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
             this.uiTableLayoutPanel32.Controls.Add(this.LedRunTime, 1, 1);
             this.uiTableLayoutPanel32.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel32.Location = new System.Drawing.Point(339, 4);
+            this.uiTableLayoutPanel32.Location = new System.Drawing.Point(338, 4);
             this.uiTableLayoutPanel32.Margin = new System.Windows.Forms.Padding(4);
             this.uiTableLayoutPanel32.Name = "uiTableLayoutPanel32";
             this.uiTableLayoutPanel32.RowCount = 3;
             this.uiTableLayoutPanel32.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
             this.uiTableLayoutPanel32.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 90F));
             this.uiTableLayoutPanel32.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
-            this.uiTableLayoutPanel32.Size = new System.Drawing.Size(603, 154);
+            this.uiTableLayoutPanel32.Size = new System.Drawing.Size(604, 154);
             this.uiTableLayoutPanel32.TabIndex = 37;
             this.uiTableLayoutPanel32.TagString = null;
             // 
@@ -2826,13 +2835,13 @@
             this.LedRunTime.ForeColor = System.Drawing.Color.Lime;
             this.LedRunTime.ImeMode = System.Windows.Forms.ImeMode.NoControl;
             this.LedRunTime.IntervalH = 0;
-            this.LedRunTime.IntervalOn = 5;
+            this.LedRunTime.IntervalOn = 6;
             this.LedRunTime.IntervalV = 0;
             this.LedRunTime.LedBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
-            this.LedRunTime.Location = new System.Drawing.Point(98, 53);
+            this.LedRunTime.Location = new System.Drawing.Point(65, 50);
             this.LedRunTime.Margin = new System.Windows.Forms.Padding(4);
             this.LedRunTime.Name = "LedRunTime";
-            this.LedRunTime.Size = new System.Drawing.Size(405, 45);
+            this.LedRunTime.Size = new System.Drawing.Size(472, 52);
             this.LedRunTime.TabIndex = 0;
             this.LedRunTime.Text = "00D 00H 00M";
             // 
@@ -2846,14 +2855,14 @@
             this.uiTableLayoutPanel41.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
             this.uiTableLayoutPanel41.Controls.Add(this.LedLastCycles, 1, 1);
             this.uiTableLayoutPanel41.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel41.Location = new System.Drawing.Point(339, 328);
+            this.uiTableLayoutPanel41.Location = new System.Drawing.Point(338, 328);
             this.uiTableLayoutPanel41.Margin = new System.Windows.Forms.Padding(4);
             this.uiTableLayoutPanel41.Name = "uiTableLayoutPanel41";
             this.uiTableLayoutPanel41.RowCount = 3;
             this.uiTableLayoutPanel41.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
             this.uiTableLayoutPanel41.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 90F));
             this.uiTableLayoutPanel41.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
-            this.uiTableLayoutPanel41.Size = new System.Drawing.Size(603, 154);
+            this.uiTableLayoutPanel41.Size = new System.Drawing.Size(604, 154);
             this.uiTableLayoutPanel41.TabIndex = 39;
             this.uiTableLayoutPanel41.TagString = null;
             // 
@@ -2867,15 +2876,14 @@
             this.LedLastCycles.Font = new System.Drawing.Font("微软雅黑", 16.03791F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
             this.LedLastCycles.ForeColor = System.Drawing.Color.Gold;
             this.LedLastCycles.ImeMode = System.Windows.Forms.ImeMode.NoControl;
-            this.LedLastCycles.IntervalH = 5;
-            this.LedLastCycles.IntervalIn = 2;
-            this.LedLastCycles.IntervalOn = 5;
+            this.LedLastCycles.IntervalH = 0;
+            this.LedLastCycles.IntervalOn = 6;
             this.LedLastCycles.IntervalV = 0;
             this.LedLastCycles.LedBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
-            this.LedLastCycles.Location = new System.Drawing.Point(123, 50);
+            this.LedLastCycles.Location = new System.Drawing.Point(128, 50);
             this.LedLastCycles.Margin = new System.Windows.Forms.Padding(4);
             this.LedLastCycles.Name = "LedLastCycles";
-            this.LedLastCycles.Size = new System.Drawing.Size(355, 51);
+            this.LedLastCycles.Size = new System.Drawing.Size(346, 52);
             this.LedLastCycles.TabIndex = 0;
             this.LedLastCycles.Text = "1000000";
             // 
@@ -2889,7 +2897,7 @@
             this.ProcBar.Margin = new System.Windows.Forms.Padding(4);
             this.ProcBar.MinimumSize = new System.Drawing.Size(4, 4);
             this.ProcBar.Name = "ProcBar";
-            this.ProcBar.Size = new System.Drawing.Size(753, 154);
+            this.ProcBar.Size = new System.Drawing.Size(751, 154);
             this.ProcBar.Style = Sunny.UI.UIStyle.Custom;
             this.ProcBar.TabIndex = 41;
             this.ProcBar.Text = "uiProcessBar1";
@@ -2971,22 +2979,6 @@
             this.BtnStop.Text = "停止试验";
             this.BtnStop.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
             this.BtnStop.Click += new System.EventHandler(this.BtnStop_Click);
-            // 
-            // uiGroupBox3
-            // 
-            this.uiGroupBox3.Controls.Add(this.uiTableLayoutPanel3);
-            this.uiGroupBox3.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiGroupBox3.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiGroupBox3.Location = new System.Drawing.Point(1128, 10);
-            this.uiGroupBox3.Margin = new System.Windows.Forms.Padding(8, 10, 8, 10);
-            this.uiGroupBox3.MinimumSize = new System.Drawing.Size(2, 2);
-            this.uiGroupBox3.Name = "uiGroupBox3";
-            this.uiGroupBox3.Padding = new System.Windows.Forms.Padding(0, 64, 0, 0);
-            this.uiTableLayoutPanel1.SetRowSpan(this.uiGroupBox3, 3);
-            this.uiGroupBox3.Size = new System.Drawing.Size(1654, 802);
-            this.uiGroupBox3.TabIndex = 5;
-            this.uiGroupBox3.Text = null;
-            this.uiGroupBox3.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
             // 
             // uiGroupBox1
             // 
@@ -4574,8 +4566,8 @@
             this.uiTableLayoutPanel1.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 18F));
             this.uiTableLayoutPanel1.Controls.Add(this.EPBGroupBox, 1, 5);
             this.uiTableLayoutPanel1.Controls.Add(this.uiGroupBox1, 1, 1);
-            this.uiTableLayoutPanel1.Controls.Add(this.uiGroupBox3, 3, 1);
             this.uiTableLayoutPanel1.Controls.Add(this.uiTableLayoutPanel14, 3, 5);
+            this.uiTableLayoutPanel1.Controls.Add(this.uiPanel5, 3, 1);
             this.uiTableLayoutPanel1.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiTableLayoutPanel1.Location = new System.Drawing.Point(0, 0);
             this.uiTableLayoutPanel1.Margin = new System.Windows.Forms.Padding(4);
@@ -4593,6 +4585,61 @@
             this.uiTableLayoutPanel1.Size = new System.Drawing.Size(2808, 1682);
             this.uiTableLayoutPanel1.TabIndex = 0;
             this.uiTableLayoutPanel1.TagString = null;
+            // 
+            // uiPanel5
+            // 
+            this.uiPanel5.Controls.Add(this.uiTableLayoutPanel3);
+            this.uiPanel5.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiPanel5.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiPanel5.Location = new System.Drawing.Point(1124, 5);
+            this.uiPanel5.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.uiPanel5.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiPanel5.Name = "uiPanel5";
+            this.uiTableLayoutPanel1.SetRowSpan(this.uiPanel5, 3);
+            this.uiPanel5.Size = new System.Drawing.Size(1662, 812);
+            this.uiPanel5.TabIndex = 7;
+            this.uiPanel5.Text = null;
+            this.uiPanel5.TextAlignment = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiTableLayoutPanel3
+            // 
+            this.uiTableLayoutPanel3.BackColor = System.Drawing.Color.Transparent;
+            this.uiTableLayoutPanel3.ColumnCount = 2;
+            this.uiTableLayoutPanel3.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 84.11552F));
+            this.uiTableLayoutPanel3.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 15.88448F));
+            this.uiTableLayoutPanel3.Controls.Add(this.zedGraphRealChart, 0, 0);
+            this.uiTableLayoutPanel3.Controls.Add(this.uiTableLayoutPanel6, 0, 1);
+            this.uiTableLayoutPanel3.Controls.Add(this.uiTableLayoutPanel16, 1, 1);
+            this.uiTableLayoutPanel3.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTableLayoutPanel3.Location = new System.Drawing.Point(0, 0);
+            this.uiTableLayoutPanel3.Name = "uiTableLayoutPanel3";
+            this.uiTableLayoutPanel3.RowCount = 3;
+            this.uiTableLayoutPanel3.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 88.62745F));
+            this.uiTableLayoutPanel3.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 11.37255F));
+            this.uiTableLayoutPanel3.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 46F));
+            this.uiTableLayoutPanel3.Size = new System.Drawing.Size(1662, 812);
+            this.uiTableLayoutPanel3.TabIndex = 1;
+            this.uiTableLayoutPanel3.TagString = null;
+            // 
+            // zedGraphRealChart
+            // 
+            this.zedGraphRealChart.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.zedGraphRealChart.IsEnableHZoom = false;
+            this.zedGraphRealChart.IsEnableVZoom = false;
+            this.zedGraphRealChart.IsEnableWheelZoom = false;
+            this.zedGraphRealChart.Location = new System.Drawing.Point(11, 11);
+            this.zedGraphRealChart.Margin = new System.Windows.Forms.Padding(11);
+            this.zedGraphRealChart.Name = "zedGraphRealChart";
+            this.zedGraphRealChart.ScrollGrace = 0D;
+            this.zedGraphRealChart.ScrollMaxX = 0D;
+            this.zedGraphRealChart.ScrollMaxY = 0D;
+            this.zedGraphRealChart.ScrollMaxY2 = 0D;
+            this.zedGraphRealChart.ScrollMinX = 0D;
+            this.zedGraphRealChart.ScrollMinY = 0D;
+            this.zedGraphRealChart.ScrollMinY2 = 0D;
+            this.zedGraphRealChart.Size = new System.Drawing.Size(1375, 656);
+            this.zedGraphRealChart.TabIndex = 5;
+            this.zedGraphRealChart.UseExtendedPrintDialog = true;
             // 
             // uiTableLayoutPanel6
             // 
@@ -4634,310 +4681,15 @@
             this.uiTableLayoutPanel6.Controls.Add(this.textEdit11, 10, 1);
             this.uiTableLayoutPanel6.Controls.Add(this.textEdit12, 11, 1);
             this.uiTableLayoutPanel6.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel6.Location = new System.Drawing.Point(3, 599);
+            this.uiTableLayoutPanel6.Location = new System.Drawing.Point(3, 681);
             this.uiTableLayoutPanel6.Name = "uiTableLayoutPanel6";
             this.uiTableLayoutPanel6.RowCount = 2;
             this.uiTableLayoutPanel3.SetRowSpan(this.uiTableLayoutPanel6, 2);
-            this.uiTableLayoutPanel6.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 50F));
-            this.uiTableLayoutPanel6.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 50F));
-            this.uiTableLayoutPanel6.Size = new System.Drawing.Size(1308, 136);
+            this.uiTableLayoutPanel6.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
+            this.uiTableLayoutPanel6.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
+            this.uiTableLayoutPanel6.Size = new System.Drawing.Size(1391, 128);
             this.uiTableLayoutPanel6.TabIndex = 6;
             this.uiTableLayoutPanel6.TagString = null;
-            // 
-            // textEdit12
-            // 
-            this.textEdit12.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.textEdit12.EditValue = "12.34";
-            this.textEdit12.Location = new System.Drawing.Point(1191, 71);
-            this.textEdit12.Name = "textEdit12";
-            this.textEdit12.Size = new System.Drawing.Size(114, 44);
-            this.textEdit12.TabIndex = 1;
-            // 
-            // textEdit11
-            // 
-            this.textEdit11.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.textEdit11.EditValue = "12.34";
-            this.textEdit11.Location = new System.Drawing.Point(1083, 71);
-            this.textEdit11.Name = "textEdit11";
-            this.textEdit11.Size = new System.Drawing.Size(102, 44);
-            this.textEdit11.TabIndex = 1;
-            // 
-            // textEdit10
-            // 
-            this.textEdit10.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.textEdit10.EditValue = "12.34";
-            this.textEdit10.Location = new System.Drawing.Point(975, 71);
-            this.textEdit10.Name = "textEdit10";
-            this.textEdit10.Size = new System.Drawing.Size(102, 44);
-            this.textEdit10.TabIndex = 1;
-            // 
-            // textEdit9
-            // 
-            this.textEdit9.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.textEdit9.EditValue = "12.34";
-            this.textEdit9.Location = new System.Drawing.Point(867, 71);
-            this.textEdit9.Name = "textEdit9";
-            this.textEdit9.Size = new System.Drawing.Size(102, 44);
-            this.textEdit9.TabIndex = 1;
-            // 
-            // textEdit8
-            // 
-            this.textEdit8.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.textEdit8.EditValue = "12.34";
-            this.textEdit8.Location = new System.Drawing.Point(759, 71);
-            this.textEdit8.Name = "textEdit8";
-            this.textEdit8.Size = new System.Drawing.Size(102, 44);
-            this.textEdit8.TabIndex = 1;
-            // 
-            // textEdit7
-            // 
-            this.textEdit7.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.textEdit7.EditValue = "12.34";
-            this.textEdit7.Location = new System.Drawing.Point(651, 71);
-            this.textEdit7.Name = "textEdit7";
-            this.textEdit7.Size = new System.Drawing.Size(102, 44);
-            this.textEdit7.TabIndex = 1;
-            // 
-            // textEdit6
-            // 
-            this.textEdit6.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.textEdit6.EditValue = "12.34";
-            this.textEdit6.Location = new System.Drawing.Point(543, 71);
-            this.textEdit6.Name = "textEdit6";
-            this.textEdit6.Size = new System.Drawing.Size(102, 44);
-            this.textEdit6.TabIndex = 1;
-            // 
-            // textEdit5
-            // 
-            this.textEdit5.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.textEdit5.EditValue = "12.34";
-            this.textEdit5.Location = new System.Drawing.Point(435, 71);
-            this.textEdit5.Name = "textEdit5";
-            this.textEdit5.Size = new System.Drawing.Size(102, 44);
-            this.textEdit5.TabIndex = 1;
-            // 
-            // textEdit4
-            // 
-            this.textEdit4.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.textEdit4.EditValue = "12.34";
-            this.textEdit4.Location = new System.Drawing.Point(327, 71);
-            this.textEdit4.Name = "textEdit4";
-            this.textEdit4.Size = new System.Drawing.Size(102, 44);
-            this.textEdit4.TabIndex = 1;
-            // 
-            // textEdit3
-            // 
-            this.textEdit3.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.textEdit3.EditValue = "12.34";
-            this.textEdit3.Location = new System.Drawing.Point(219, 71);
-            this.textEdit3.Name = "textEdit3";
-            this.textEdit3.Size = new System.Drawing.Size(102, 44);
-            this.textEdit3.TabIndex = 1;
-            // 
-            // textEdit2
-            // 
-            this.textEdit2.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.textEdit2.EditValue = "12.34";
-            this.textEdit2.Location = new System.Drawing.Point(111, 71);
-            this.textEdit2.Name = "textEdit2";
-            this.textEdit2.Size = new System.Drawing.Size(102, 44);
-            this.textEdit2.TabIndex = 1;
-            // 
-            // textEditCurrent1
-            // 
-            this.textEditCurrent1.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.textEditCurrent1.EditValue = "12.34";
-            this.textEditCurrent1.Location = new System.Drawing.Point(3, 71);
-            this.textEditCurrent1.Name = "textEditCurrent1";
-            this.textEditCurrent1.Size = new System.Drawing.Size(102, 44);
-            this.textEditCurrent1.TabIndex = 1;
-            // 
-            // checkEdit24
-            // 
-            this.checkEdit24.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.checkEdit24.Location = new System.Drawing.Point(1191, 3);
-            this.checkEdit24.Name = "checkEdit24";
-            this.checkEdit24.Properties.AllowFocused = false;
-            this.checkEdit24.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
-            this.checkEdit24.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.checkEdit24.Properties.Appearance.Options.UseBackColor = true;
-            this.checkEdit24.Properties.Appearance.Options.UseForeColor = true;
-            this.checkEdit24.Properties.Caption = "12";
-            this.checkEdit24.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
-            this.checkEdit24.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            this.checkEdit24.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.checkEdit24.Size = new System.Drawing.Size(114, 62);
-            this.checkEdit24.TabIndex = 0;
-            // 
-            // checkEdit23
-            // 
-            this.checkEdit23.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.checkEdit23.Location = new System.Drawing.Point(1083, 3);
-            this.checkEdit23.Name = "checkEdit23";
-            this.checkEdit23.Properties.AllowFocused = false;
-            this.checkEdit23.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
-            this.checkEdit23.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.checkEdit23.Properties.Appearance.Options.UseBackColor = true;
-            this.checkEdit23.Properties.Appearance.Options.UseForeColor = true;
-            this.checkEdit23.Properties.Caption = "11";
-            this.checkEdit23.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
-            this.checkEdit23.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            this.checkEdit23.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.checkEdit23.Size = new System.Drawing.Size(102, 62);
-            this.checkEdit23.TabIndex = 0;
-            // 
-            // checkEdit22
-            // 
-            this.checkEdit22.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.checkEdit22.Location = new System.Drawing.Point(975, 3);
-            this.checkEdit22.Name = "checkEdit22";
-            this.checkEdit22.Properties.AllowFocused = false;
-            this.checkEdit22.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
-            this.checkEdit22.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.checkEdit22.Properties.Appearance.Options.UseBackColor = true;
-            this.checkEdit22.Properties.Appearance.Options.UseForeColor = true;
-            this.checkEdit22.Properties.Caption = "10";
-            this.checkEdit22.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
-            this.checkEdit22.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            this.checkEdit22.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.checkEdit22.Size = new System.Drawing.Size(102, 62);
-            this.checkEdit22.TabIndex = 0;
-            // 
-            // checkEdit21
-            // 
-            this.checkEdit21.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.checkEdit21.Location = new System.Drawing.Point(867, 3);
-            this.checkEdit21.Name = "checkEdit21";
-            this.checkEdit21.Properties.AllowFocused = false;
-            this.checkEdit21.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
-            this.checkEdit21.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.checkEdit21.Properties.Appearance.Options.UseBackColor = true;
-            this.checkEdit21.Properties.Appearance.Options.UseForeColor = true;
-            this.checkEdit21.Properties.Caption = "9";
-            this.checkEdit21.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
-            this.checkEdit21.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            this.checkEdit21.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.checkEdit21.Size = new System.Drawing.Size(102, 62);
-            this.checkEdit21.TabIndex = 0;
-            // 
-            // checkEdit20
-            // 
-            this.checkEdit20.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.checkEdit20.Location = new System.Drawing.Point(759, 3);
-            this.checkEdit20.Name = "checkEdit20";
-            this.checkEdit20.Properties.AllowFocused = false;
-            this.checkEdit20.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
-            this.checkEdit20.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.checkEdit20.Properties.Appearance.Options.UseBackColor = true;
-            this.checkEdit20.Properties.Appearance.Options.UseForeColor = true;
-            this.checkEdit20.Properties.Caption = "8";
-            this.checkEdit20.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
-            this.checkEdit20.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            this.checkEdit20.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.checkEdit20.Size = new System.Drawing.Size(102, 62);
-            this.checkEdit20.TabIndex = 0;
-            // 
-            // checkEdit19
-            // 
-            this.checkEdit19.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.checkEdit19.Location = new System.Drawing.Point(651, 3);
-            this.checkEdit19.Name = "checkEdit19";
-            this.checkEdit19.Properties.AllowFocused = false;
-            this.checkEdit19.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
-            this.checkEdit19.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.checkEdit19.Properties.Appearance.Options.UseBackColor = true;
-            this.checkEdit19.Properties.Appearance.Options.UseForeColor = true;
-            this.checkEdit19.Properties.Caption = "7";
-            this.checkEdit19.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
-            this.checkEdit19.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            this.checkEdit19.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.checkEdit19.Size = new System.Drawing.Size(102, 62);
-            this.checkEdit19.TabIndex = 0;
-            // 
-            // checkEdit18
-            // 
-            this.checkEdit18.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.checkEdit18.Location = new System.Drawing.Point(543, 3);
-            this.checkEdit18.Name = "checkEdit18";
-            this.checkEdit18.Properties.AllowFocused = false;
-            this.checkEdit18.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
-            this.checkEdit18.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.checkEdit18.Properties.Appearance.Options.UseBackColor = true;
-            this.checkEdit18.Properties.Appearance.Options.UseForeColor = true;
-            this.checkEdit18.Properties.Caption = "6";
-            this.checkEdit18.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
-            this.checkEdit18.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            this.checkEdit18.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.checkEdit18.Size = new System.Drawing.Size(102, 62);
-            this.checkEdit18.TabIndex = 0;
-            // 
-            // checkEdit17
-            // 
-            this.checkEdit17.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.checkEdit17.Location = new System.Drawing.Point(435, 3);
-            this.checkEdit17.Name = "checkEdit17";
-            this.checkEdit17.Properties.AllowFocused = false;
-            this.checkEdit17.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
-            this.checkEdit17.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.checkEdit17.Properties.Appearance.Options.UseBackColor = true;
-            this.checkEdit17.Properties.Appearance.Options.UseForeColor = true;
-            this.checkEdit17.Properties.Caption = "5";
-            this.checkEdit17.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
-            this.checkEdit17.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            this.checkEdit17.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.checkEdit17.Size = new System.Drawing.Size(102, 62);
-            this.checkEdit17.TabIndex = 0;
-            // 
-            // checkEdit16
-            // 
-            this.checkEdit16.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.checkEdit16.Location = new System.Drawing.Point(327, 3);
-            this.checkEdit16.Name = "checkEdit16";
-            this.checkEdit16.Properties.AllowFocused = false;
-            this.checkEdit16.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
-            this.checkEdit16.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.checkEdit16.Properties.Appearance.Options.UseBackColor = true;
-            this.checkEdit16.Properties.Appearance.Options.UseForeColor = true;
-            this.checkEdit16.Properties.Caption = "4";
-            this.checkEdit16.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
-            this.checkEdit16.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            this.checkEdit16.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.checkEdit16.Size = new System.Drawing.Size(102, 62);
-            this.checkEdit16.TabIndex = 0;
-            // 
-            // checkEdit15
-            // 
-            this.checkEdit15.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.checkEdit15.Location = new System.Drawing.Point(219, 3);
-            this.checkEdit15.Name = "checkEdit15";
-            this.checkEdit15.Properties.AllowFocused = false;
-            this.checkEdit15.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
-            this.checkEdit15.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.checkEdit15.Properties.Appearance.Options.UseBackColor = true;
-            this.checkEdit15.Properties.Appearance.Options.UseForeColor = true;
-            this.checkEdit15.Properties.Caption = "3";
-            this.checkEdit15.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
-            this.checkEdit15.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            this.checkEdit15.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.checkEdit15.Size = new System.Drawing.Size(102, 62);
-            this.checkEdit15.TabIndex = 0;
-            // 
-            // checkEdit14
-            // 
-            this.checkEdit14.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.checkEdit14.Location = new System.Drawing.Point(111, 3);
-            this.checkEdit14.Name = "checkEdit14";
-            this.checkEdit14.Properties.AllowFocused = false;
-            this.checkEdit14.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
-            this.checkEdit14.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.checkEdit14.Properties.Appearance.Options.UseBackColor = true;
-            this.checkEdit14.Properties.Appearance.Options.UseForeColor = true;
-            this.checkEdit14.Properties.Caption = "2";
-            this.checkEdit14.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
-            this.checkEdit14.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            this.checkEdit14.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.checkEdit14.Size = new System.Drawing.Size(102, 62);
-            this.checkEdit14.TabIndex = 0;
             // 
             // checkEdit13
             // 
@@ -4956,47 +4708,370 @@
             this.checkEdit13.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
             this.checkEdit13.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
             this.checkEdit13.Properties.GlyphVerticalAlignment = DevExpress.Utils.VertAlignment.Center;
-            this.checkEdit13.Size = new System.Drawing.Size(102, 62);
+            this.checkEdit13.Size = new System.Drawing.Size(109, 58);
             this.checkEdit13.TabIndex = 0;
             // 
-            // zedGraphRealChart
+            // checkEdit14
             // 
-            this.zedGraphRealChart.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.zedGraphRealChart.IsEnableHZoom = false;
-            this.zedGraphRealChart.IsEnableVZoom = false;
-            this.zedGraphRealChart.IsEnableWheelZoom = false;
-            this.zedGraphRealChart.Location = new System.Drawing.Point(11, 11);
-            this.zedGraphRealChart.Margin = new System.Windows.Forms.Padding(11);
-            this.zedGraphRealChart.Name = "zedGraphRealChart";
-            this.zedGraphRealChart.ScrollGrace = 0D;
-            this.zedGraphRealChart.ScrollMaxX = 0D;
-            this.zedGraphRealChart.ScrollMaxY = 0D;
-            this.zedGraphRealChart.ScrollMaxY2 = 0D;
-            this.zedGraphRealChart.ScrollMinX = 0D;
-            this.zedGraphRealChart.ScrollMinY = 0D;
-            this.zedGraphRealChart.ScrollMinY2 = 0D;
-            this.zedGraphRealChart.Size = new System.Drawing.Size(1292, 574);
-            this.zedGraphRealChart.TabIndex = 5;
-            this.zedGraphRealChart.UseExtendedPrintDialog = true;
+            this.checkEdit14.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.checkEdit14.Location = new System.Drawing.Point(118, 3);
+            this.checkEdit14.Name = "checkEdit14";
+            this.checkEdit14.Properties.AllowFocused = false;
+            this.checkEdit14.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.checkEdit14.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.checkEdit14.Properties.Appearance.Options.UseBackColor = true;
+            this.checkEdit14.Properties.Appearance.Options.UseForeColor = true;
+            this.checkEdit14.Properties.Caption = "2";
+            this.checkEdit14.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.checkEdit14.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.checkEdit14.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.checkEdit14.Size = new System.Drawing.Size(109, 58);
+            this.checkEdit14.TabIndex = 0;
             // 
-            // uiTableLayoutPanel3
+            // checkEdit15
             // 
-            this.uiTableLayoutPanel3.BackColor = System.Drawing.Color.Transparent;
-            this.uiTableLayoutPanel3.ColumnCount = 2;
-            this.uiTableLayoutPanel3.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 79.45691F));
-            this.uiTableLayoutPanel3.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 20.54309F));
-            this.uiTableLayoutPanel3.Controls.Add(this.zedGraphRealChart, 0, 0);
-            this.uiTableLayoutPanel3.Controls.Add(this.uiTableLayoutPanel6, 0, 1);
-            this.uiTableLayoutPanel3.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel3.Location = new System.Drawing.Point(0, 64);
-            this.uiTableLayoutPanel3.Name = "uiTableLayoutPanel3";
-            this.uiTableLayoutPanel3.RowCount = 3;
-            this.uiTableLayoutPanel3.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 86.26761F));
-            this.uiTableLayoutPanel3.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 13.73239F));
-            this.uiTableLayoutPanel3.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 46F));
-            this.uiTableLayoutPanel3.Size = new System.Drawing.Size(1654, 738);
-            this.uiTableLayoutPanel3.TabIndex = 0;
-            this.uiTableLayoutPanel3.TagString = null;
+            this.checkEdit15.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.checkEdit15.Location = new System.Drawing.Point(233, 3);
+            this.checkEdit15.Name = "checkEdit15";
+            this.checkEdit15.Properties.AllowFocused = false;
+            this.checkEdit15.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.checkEdit15.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.checkEdit15.Properties.Appearance.Options.UseBackColor = true;
+            this.checkEdit15.Properties.Appearance.Options.UseForeColor = true;
+            this.checkEdit15.Properties.Caption = "3";
+            this.checkEdit15.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.checkEdit15.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.checkEdit15.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.checkEdit15.Size = new System.Drawing.Size(109, 58);
+            this.checkEdit15.TabIndex = 0;
+            // 
+            // checkEdit16
+            // 
+            this.checkEdit16.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.checkEdit16.Location = new System.Drawing.Point(348, 3);
+            this.checkEdit16.Name = "checkEdit16";
+            this.checkEdit16.Properties.AllowFocused = false;
+            this.checkEdit16.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.checkEdit16.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.checkEdit16.Properties.Appearance.Options.UseBackColor = true;
+            this.checkEdit16.Properties.Appearance.Options.UseForeColor = true;
+            this.checkEdit16.Properties.Caption = "4";
+            this.checkEdit16.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.checkEdit16.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.checkEdit16.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.checkEdit16.Size = new System.Drawing.Size(109, 58);
+            this.checkEdit16.TabIndex = 0;
+            // 
+            // checkEdit17
+            // 
+            this.checkEdit17.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.checkEdit17.Location = new System.Drawing.Point(463, 3);
+            this.checkEdit17.Name = "checkEdit17";
+            this.checkEdit17.Properties.AllowFocused = false;
+            this.checkEdit17.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.checkEdit17.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.checkEdit17.Properties.Appearance.Options.UseBackColor = true;
+            this.checkEdit17.Properties.Appearance.Options.UseForeColor = true;
+            this.checkEdit17.Properties.Caption = "5";
+            this.checkEdit17.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.checkEdit17.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.checkEdit17.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.checkEdit17.Size = new System.Drawing.Size(109, 58);
+            this.checkEdit17.TabIndex = 0;
+            // 
+            // checkEdit18
+            // 
+            this.checkEdit18.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.checkEdit18.Location = new System.Drawing.Point(578, 3);
+            this.checkEdit18.Name = "checkEdit18";
+            this.checkEdit18.Properties.AllowFocused = false;
+            this.checkEdit18.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.checkEdit18.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.checkEdit18.Properties.Appearance.Options.UseBackColor = true;
+            this.checkEdit18.Properties.Appearance.Options.UseForeColor = true;
+            this.checkEdit18.Properties.Caption = "6";
+            this.checkEdit18.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.checkEdit18.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.checkEdit18.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.checkEdit18.Size = new System.Drawing.Size(109, 58);
+            this.checkEdit18.TabIndex = 0;
+            // 
+            // checkEdit19
+            // 
+            this.checkEdit19.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.checkEdit19.Location = new System.Drawing.Point(693, 3);
+            this.checkEdit19.Name = "checkEdit19";
+            this.checkEdit19.Properties.AllowFocused = false;
+            this.checkEdit19.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.checkEdit19.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.checkEdit19.Properties.Appearance.Options.UseBackColor = true;
+            this.checkEdit19.Properties.Appearance.Options.UseForeColor = true;
+            this.checkEdit19.Properties.Caption = "7";
+            this.checkEdit19.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.checkEdit19.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.checkEdit19.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.checkEdit19.Size = new System.Drawing.Size(109, 58);
+            this.checkEdit19.TabIndex = 0;
+            // 
+            // checkEdit20
+            // 
+            this.checkEdit20.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.checkEdit20.Location = new System.Drawing.Point(808, 3);
+            this.checkEdit20.Name = "checkEdit20";
+            this.checkEdit20.Properties.AllowFocused = false;
+            this.checkEdit20.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.checkEdit20.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.checkEdit20.Properties.Appearance.Options.UseBackColor = true;
+            this.checkEdit20.Properties.Appearance.Options.UseForeColor = true;
+            this.checkEdit20.Properties.Caption = "8";
+            this.checkEdit20.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.checkEdit20.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.checkEdit20.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.checkEdit20.Size = new System.Drawing.Size(109, 58);
+            this.checkEdit20.TabIndex = 0;
+            // 
+            // checkEdit21
+            // 
+            this.checkEdit21.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.checkEdit21.Location = new System.Drawing.Point(923, 3);
+            this.checkEdit21.Name = "checkEdit21";
+            this.checkEdit21.Properties.AllowFocused = false;
+            this.checkEdit21.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.checkEdit21.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.checkEdit21.Properties.Appearance.Options.UseBackColor = true;
+            this.checkEdit21.Properties.Appearance.Options.UseForeColor = true;
+            this.checkEdit21.Properties.Caption = "9";
+            this.checkEdit21.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.checkEdit21.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.checkEdit21.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.checkEdit21.Size = new System.Drawing.Size(109, 58);
+            this.checkEdit21.TabIndex = 0;
+            // 
+            // checkEdit22
+            // 
+            this.checkEdit22.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.checkEdit22.Location = new System.Drawing.Point(1038, 3);
+            this.checkEdit22.Name = "checkEdit22";
+            this.checkEdit22.Properties.AllowFocused = false;
+            this.checkEdit22.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.checkEdit22.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.checkEdit22.Properties.Appearance.Options.UseBackColor = true;
+            this.checkEdit22.Properties.Appearance.Options.UseForeColor = true;
+            this.checkEdit22.Properties.Caption = "10";
+            this.checkEdit22.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.checkEdit22.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.checkEdit22.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.checkEdit22.Size = new System.Drawing.Size(109, 58);
+            this.checkEdit22.TabIndex = 0;
+            // 
+            // checkEdit23
+            // 
+            this.checkEdit23.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.checkEdit23.Location = new System.Drawing.Point(1153, 3);
+            this.checkEdit23.Name = "checkEdit23";
+            this.checkEdit23.Properties.AllowFocused = false;
+            this.checkEdit23.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.checkEdit23.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.checkEdit23.Properties.Appearance.Options.UseBackColor = true;
+            this.checkEdit23.Properties.Appearance.Options.UseForeColor = true;
+            this.checkEdit23.Properties.Caption = "11";
+            this.checkEdit23.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.checkEdit23.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.checkEdit23.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.checkEdit23.Size = new System.Drawing.Size(109, 58);
+            this.checkEdit23.TabIndex = 0;
+            // 
+            // checkEdit24
+            // 
+            this.checkEdit24.Location = new System.Drawing.Point(1268, 3);
+            this.checkEdit24.Name = "checkEdit24";
+            this.checkEdit24.Properties.AllowFocused = false;
+            this.checkEdit24.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.checkEdit24.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.checkEdit24.Properties.Appearance.Options.UseBackColor = true;
+            this.checkEdit24.Properties.Appearance.Options.UseForeColor = true;
+            this.checkEdit24.Properties.Caption = "12";
+            this.checkEdit24.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.checkEdit24.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.checkEdit24.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.checkEdit24.Size = new System.Drawing.Size(110, 44);
+            this.checkEdit24.TabIndex = 0;
+            // 
+            // textEditCurrent1
+            // 
+            this.textEditCurrent1.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.textEditCurrent1.EditValue = "12.34";
+            this.textEditCurrent1.Location = new System.Drawing.Point(3, 67);
+            this.textEditCurrent1.Name = "textEditCurrent1";
+            this.textEditCurrent1.Size = new System.Drawing.Size(109, 44);
+            this.textEditCurrent1.TabIndex = 1;
+            // 
+            // textEdit2
+            // 
+            this.textEdit2.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.textEdit2.EditValue = "12.34";
+            this.textEdit2.Location = new System.Drawing.Point(118, 67);
+            this.textEdit2.Name = "textEdit2";
+            this.textEdit2.Size = new System.Drawing.Size(109, 44);
+            this.textEdit2.TabIndex = 1;
+            // 
+            // textEdit3
+            // 
+            this.textEdit3.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.textEdit3.EditValue = "12.34";
+            this.textEdit3.Location = new System.Drawing.Point(233, 67);
+            this.textEdit3.Name = "textEdit3";
+            this.textEdit3.Size = new System.Drawing.Size(109, 44);
+            this.textEdit3.TabIndex = 1;
+            // 
+            // textEdit4
+            // 
+            this.textEdit4.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.textEdit4.EditValue = "12.34";
+            this.textEdit4.Location = new System.Drawing.Point(348, 67);
+            this.textEdit4.Name = "textEdit4";
+            this.textEdit4.Size = new System.Drawing.Size(109, 44);
+            this.textEdit4.TabIndex = 1;
+            // 
+            // textEdit5
+            // 
+            this.textEdit5.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.textEdit5.EditValue = "12.34";
+            this.textEdit5.Location = new System.Drawing.Point(463, 67);
+            this.textEdit5.Name = "textEdit5";
+            this.textEdit5.Size = new System.Drawing.Size(109, 44);
+            this.textEdit5.TabIndex = 1;
+            // 
+            // textEdit6
+            // 
+            this.textEdit6.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.textEdit6.EditValue = "12.34";
+            this.textEdit6.Location = new System.Drawing.Point(578, 67);
+            this.textEdit6.Name = "textEdit6";
+            this.textEdit6.Size = new System.Drawing.Size(109, 44);
+            this.textEdit6.TabIndex = 1;
+            // 
+            // textEdit7
+            // 
+            this.textEdit7.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.textEdit7.EditValue = "12.34";
+            this.textEdit7.Location = new System.Drawing.Point(693, 67);
+            this.textEdit7.Name = "textEdit7";
+            this.textEdit7.Size = new System.Drawing.Size(109, 44);
+            this.textEdit7.TabIndex = 1;
+            // 
+            // textEdit8
+            // 
+            this.textEdit8.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.textEdit8.EditValue = "12.34";
+            this.textEdit8.Location = new System.Drawing.Point(808, 67);
+            this.textEdit8.Name = "textEdit8";
+            this.textEdit8.Size = new System.Drawing.Size(109, 44);
+            this.textEdit8.TabIndex = 1;
+            // 
+            // textEdit9
+            // 
+            this.textEdit9.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.textEdit9.EditValue = "12.34";
+            this.textEdit9.Location = new System.Drawing.Point(923, 67);
+            this.textEdit9.Name = "textEdit9";
+            this.textEdit9.Size = new System.Drawing.Size(109, 44);
+            this.textEdit9.TabIndex = 1;
+            // 
+            // textEdit10
+            // 
+            this.textEdit10.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.textEdit10.EditValue = "12.34";
+            this.textEdit10.Location = new System.Drawing.Point(1038, 67);
+            this.textEdit10.Name = "textEdit10";
+            this.textEdit10.Size = new System.Drawing.Size(109, 44);
+            this.textEdit10.TabIndex = 1;
+            // 
+            // textEdit11
+            // 
+            this.textEdit11.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.textEdit11.EditValue = "12.34";
+            this.textEdit11.Location = new System.Drawing.Point(1153, 67);
+            this.textEdit11.Name = "textEdit11";
+            this.textEdit11.Size = new System.Drawing.Size(109, 44);
+            this.textEdit11.TabIndex = 1;
+            // 
+            // textEdit12
+            // 
+            this.textEdit12.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.textEdit12.EditValue = "12.34";
+            this.textEdit12.Location = new System.Drawing.Point(1268, 67);
+            this.textEdit12.Name = "textEdit12";
+            this.textEdit12.Size = new System.Drawing.Size(120, 44);
+            this.textEdit12.TabIndex = 1;
+            // 
+            // uiTableLayoutPanel16
+            // 
+            this.uiTableLayoutPanel16.ColumnCount = 2;
+            this.uiTableLayoutPanel16.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 50F));
+            this.uiTableLayoutPanel16.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 50F));
+            this.uiTableLayoutPanel16.Controls.Add(this.checkEdit1, 0, 0);
+            this.uiTableLayoutPanel16.Controls.Add(this.checkEdit2, 1, 0);
+            this.uiTableLayoutPanel16.Controls.Add(this.textEdit1, 0, 1);
+            this.uiTableLayoutPanel16.Controls.Add(this.textEdit13, 1, 1);
+            this.uiTableLayoutPanel16.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTableLayoutPanel16.Location = new System.Drawing.Point(1400, 681);
+            this.uiTableLayoutPanel16.Name = "uiTableLayoutPanel16";
+            this.uiTableLayoutPanel16.RowCount = 2;
+            this.uiTableLayoutPanel3.SetRowSpan(this.uiTableLayoutPanel16, 2);
+            this.uiTableLayoutPanel16.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 50F));
+            this.uiTableLayoutPanel16.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 50F));
+            this.uiTableLayoutPanel16.Size = new System.Drawing.Size(259, 128);
+            this.uiTableLayoutPanel16.TabIndex = 7;
+            this.uiTableLayoutPanel16.TagString = null;
+            // 
+            // checkEdit1
+            // 
+            this.checkEdit1.Location = new System.Drawing.Point(3, 3);
+            this.checkEdit1.Name = "checkEdit1";
+            this.checkEdit1.Properties.AllowFocused = false;
+            this.checkEdit1.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.checkEdit1.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.checkEdit1.Properties.Appearance.Options.UseBackColor = true;
+            this.checkEdit1.Properties.Appearance.Options.UseForeColor = true;
+            this.checkEdit1.Properties.Caption = "P1";
+            this.checkEdit1.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.checkEdit1.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.checkEdit1.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.checkEdit1.Size = new System.Drawing.Size(110, 44);
+            this.checkEdit1.TabIndex = 0;
+            // 
+            // checkEdit2
+            // 
+            this.checkEdit2.Location = new System.Drawing.Point(132, 3);
+            this.checkEdit2.Name = "checkEdit2";
+            this.checkEdit2.Properties.AllowFocused = false;
+            this.checkEdit2.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.checkEdit2.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.checkEdit2.Properties.Appearance.Options.UseBackColor = true;
+            this.checkEdit2.Properties.Appearance.Options.UseForeColor = true;
+            this.checkEdit2.Properties.Caption = "P2";
+            this.checkEdit2.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.checkEdit2.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.checkEdit2.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.checkEdit2.Size = new System.Drawing.Size(110, 44);
+            this.checkEdit2.TabIndex = 0;
+            // 
+            // textEdit1
+            // 
+            this.textEdit1.EditValue = "12.34";
+            this.textEdit1.Location = new System.Drawing.Point(3, 67);
+            this.textEdit1.Name = "textEdit1";
+            this.textEdit1.Size = new System.Drawing.Size(110, 44);
+            this.textEdit1.TabIndex = 1;
+            // 
+            // textEdit13
+            // 
+            this.textEdit13.EditValue = "12.34";
+            this.textEdit13.Location = new System.Drawing.Point(132, 67);
+            this.textEdit13.Name = "textEdit13";
+            this.textEdit13.Size = new System.Drawing.Size(110, 44);
+            this.textEdit13.TabIndex = 1;
             // 
             // FrmEpbMainMonitor
             // 
@@ -5052,7 +5127,6 @@
             this.uiTableLayoutPanel41.ResumeLayout(false);
             this.uiPanel1.ResumeLayout(false);
             this.uiTableLayoutPanel42.ResumeLayout(false);
-            this.uiGroupBox3.ResumeLayout(false);
             this.uiGroupBox1.ResumeLayout(false);
             this.uiTableLayoutPanel2.ResumeLayout(false);
             this.uiTableLayoutPanel4.ResumeLayout(false);
@@ -5084,32 +5158,38 @@
             this.uiTableLayoutPanel13.ResumeLayout(false);
             this.uiTableLayoutPanel10.ResumeLayout(false);
             this.uiTableLayoutPanel1.ResumeLayout(false);
-            this.uiTableLayoutPanel6.ResumeLayout(false);
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit12.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit11.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit10.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit9.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit8.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit7.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit6.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit5.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit4.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit3.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit2.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEditCurrent1.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit24.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit23.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit22.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit21.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit20.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit19.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit18.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit17.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit16.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit15.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit14.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit13.Properties)).EndInit();
+            this.uiPanel5.ResumeLayout(false);
             this.uiTableLayoutPanel3.ResumeLayout(false);
+            this.uiTableLayoutPanel6.ResumeLayout(false);
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit13.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit14.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit15.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit16.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit17.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit18.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit19.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit20.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit21.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit22.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit23.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit24.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEditCurrent1.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit2.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit3.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit4.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit5.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit6.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit7.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit8.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit9.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit10.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit11.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit12.Properties)).EndInit();
+            this.uiTableLayoutPanel16.ResumeLayout(false);
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit1.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEdit2.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit1.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEdit13.Properties)).EndInit();
             this.ResumeLayout(false);
 
         }
@@ -5313,7 +5393,6 @@
         private DevExpress.XtraEditors.CheckEdit ChkEpb10;
         private Sunny.UI.UIButton BtnCancel;
         private Sunny.UI.UIButton BtnApply;
-        private Sunny.UI.UIGroupBox uiGroupBox3;
         private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel10;
         private Sunny.UI.UILabel LabEpb1;
         private Sunny.UI.UILabel LabEpb2;
@@ -5352,6 +5431,7 @@
         private DevExpress.UITemplates.Collection.Editors.ToggleButton SwitchEpb2;
         private DevExpress.UITemplates.Collection.Editors.ToggleButton SwitchEpb3;
         private Sunny.UI.UIButton BtnWarnLog;
+        private Sunny.UI.UIPanel uiPanel5;
         private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel3;
         private ZedGraph.ZedGraphControl zedGraphRealChart;
         private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel6;
@@ -5379,5 +5459,10 @@
         private DevExpress.XtraEditors.TextEdit textEdit10;
         private DevExpress.XtraEditors.TextEdit textEdit11;
         private DevExpress.XtraEditors.TextEdit textEdit12;
+        private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel16;
+        private DevExpress.XtraEditors.CheckEdit checkEdit1;
+        private DevExpress.XtraEditors.CheckEdit checkEdit2;
+        private DevExpress.XtraEditors.TextEdit textEdit1;
+        private DevExpress.XtraEditors.TextEdit textEdit13;
     }
 }
