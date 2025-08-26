@@ -23,7 +23,7 @@
 			<Enabled>true</Enabled>
 			<Mode>Either</Mode>
 			<!-- ByPressure / ByDuration / Either -->
-			<SetPercent>30</SetPercent>
+			<SetPercent>20</SetPercent>
 			<!-- AO 百分比 -->
 			<PressureThresholdBar>20.0</PressureThresholdBar>
 			<DurationMs>800</DurationMs>
