@@ -285,35 +285,35 @@
             this.uiTableLayoutPanel3 = new Sunny.UI.UITableLayoutPanel();
             this.zedGraphRealChart = new ZedGraph.ZedGraphControl();
             this.uiTableLayoutPanel6 = new Sunny.UI.UITableLayoutPanel();
-            this.checkEdit13 = new DevExpress.XtraEditors.CheckEdit();
-            this.checkEdit14 = new DevExpress.XtraEditors.CheckEdit();
-            this.checkEdit15 = new DevExpress.XtraEditors.CheckEdit();
-            this.checkEdit16 = new DevExpress.XtraEditors.CheckEdit();
-            this.checkEdit17 = new DevExpress.XtraEditors.CheckEdit();
-            this.checkEdit18 = new DevExpress.XtraEditors.CheckEdit();
-            this.checkEdit19 = new DevExpress.XtraEditors.CheckEdit();
-            this.checkEdit20 = new DevExpress.XtraEditors.CheckEdit();
-            this.checkEdit21 = new DevExpress.XtraEditors.CheckEdit();
-            this.checkEdit22 = new DevExpress.XtraEditors.CheckEdit();
-            this.checkEdit23 = new DevExpress.XtraEditors.CheckEdit();
-            this.checkEdit24 = new DevExpress.XtraEditors.CheckEdit();
+            this.CheckEpbA1 = new DevExpress.XtraEditors.CheckEdit();
+            this.CheckEpbA2 = new DevExpress.XtraEditors.CheckEdit();
+            this.CheckEpbA3 = new DevExpress.XtraEditors.CheckEdit();
+            this.CheckEpbA4 = new DevExpress.XtraEditors.CheckEdit();
+            this.CheckEpbA5 = new DevExpress.XtraEditors.CheckEdit();
+            this.CheckEpbA6 = new DevExpress.XtraEditors.CheckEdit();
+            this.CheckEpbA7 = new DevExpress.XtraEditors.CheckEdit();
+            this.CheckEpbA8 = new DevExpress.XtraEditors.CheckEdit();
+            this.CheckEpbA9 = new DevExpress.XtraEditors.CheckEdit();
+            this.CheckEpbA10 = new DevExpress.XtraEditors.CheckEdit();
+            this.CheckEpbA11 = new DevExpress.XtraEditors.CheckEdit();
+            this.CheckEpbA12 = new DevExpress.XtraEditors.CheckEdit();
             this.textEditCurrent1 = new DevExpress.XtraEditors.TextEdit();
-            this.textEdit2 = new DevExpress.XtraEditors.TextEdit();
-            this.textEdit3 = new DevExpress.XtraEditors.TextEdit();
-            this.textEdit4 = new DevExpress.XtraEditors.TextEdit();
-            this.textEdit5 = new DevExpress.XtraEditors.TextEdit();
-            this.textEdit6 = new DevExpress.XtraEditors.TextEdit();
-            this.textEdit7 = new DevExpress.XtraEditors.TextEdit();
-            this.textEdit8 = new DevExpress.XtraEditors.TextEdit();
-            this.textEdit9 = new DevExpress.XtraEditors.TextEdit();
-            this.textEdit10 = new DevExpress.XtraEditors.TextEdit();
-            this.textEdit11 = new DevExpress.XtraEditors.TextEdit();
-            this.textEdit12 = new DevExpress.XtraEditors.TextEdit();
+            this.textEditCurrent2 = new DevExpress.XtraEditors.TextEdit();
+            this.textEditCurrent3 = new DevExpress.XtraEditors.TextEdit();
+            this.textEditCurrent4 = new DevExpress.XtraEditors.TextEdit();
+            this.textEditCurrent5 = new DevExpress.XtraEditors.TextEdit();
+            this.textEditCurrent6 = new DevExpress.XtraEditors.TextEdit();
+            this.textEditCurrent7 = new DevExpress.XtraEditors.TextEdit();
+            this.textEditCurrent8 = new DevExpress.XtraEditors.TextEdit();
+            this.textEditCurrent9 = new DevExpress.XtraEditors.TextEdit();
+            this.textEditCurrent10 = new DevExpress.XtraEditors.TextEdit();
+            this.textEditCurrent11 = new DevExpress.XtraEditors.TextEdit();
+            this.textEditCurrent12 = new DevExpress.XtraEditors.TextEdit();
             this.uiTableLayoutPanel16 = new Sunny.UI.UITableLayoutPanel();
-            this.checkEdit1 = new DevExpress.XtraEditors.CheckEdit();
-            this.checkEdit2 = new DevExpress.XtraEditors.CheckEdit();
-            this.textEdit1 = new DevExpress.XtraEditors.TextEdit();
-            this.textEdit13 = new DevExpress.XtraEditors.TextEdit();
+            this.CheckP1 = new DevExpress.XtraEditors.CheckEdit();
+            this.CheckP2 = new DevExpress.XtraEditors.CheckEdit();
+            this.textEditP1 = new DevExpress.XtraEditors.TextEdit();
+            this.textEditP2 = new DevExpress.XtraEditors.TextEdit();
             ((System.ComponentModel.ISupportInitialize)(this.dgvRealData)).BeginInit();
             this.uiGroupCurve.SuspendLayout();
             this.uiTableLayoutPanel18.SuspendLayout();
@@ -388,35 +388,35 @@
             this.uiPanel5.SuspendLayout();
             this.uiTableLayoutPanel3.SuspendLayout();
             this.uiTableLayoutPanel6.SuspendLayout();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit13.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit14.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit15.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit16.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit17.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit18.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit19.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit20.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit21.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit22.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit23.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit24.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.CheckEpbA1.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.CheckEpbA2.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.CheckEpbA3.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.CheckEpbA4.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.CheckEpbA5.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.CheckEpbA6.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.CheckEpbA7.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.CheckEpbA8.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.CheckEpbA9.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.CheckEpbA10.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.CheckEpbA11.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.CheckEpbA12.Properties)).BeginInit();
             ((System.ComponentModel.ISupportInitialize)(this.textEditCurrent1.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit2.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit3.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit4.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit5.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit6.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit7.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit8.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit9.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit10.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit11.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit12.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEditCurrent2.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEditCurrent3.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEditCurrent4.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEditCurrent5.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEditCurrent6.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEditCurrent7.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEditCurrent8.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEditCurrent9.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEditCurrent10.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEditCurrent11.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEditCurrent12.Properties)).BeginInit();
             this.uiTableLayoutPanel16.SuspendLayout();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit1.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit2.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit1.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit13.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.CheckP1.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.CheckP2.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEditP1.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEditP2.Properties)).BeginInit();
             this.SuspendLayout();
             // 
             // uiTextBox1
@@ -2678,7 +2678,7 @@
             this.uiTableLayoutPanel15.ColumnCount = 3;
             this.uiTableLayoutPanel15.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 44.07583F));
             this.uiTableLayoutPanel15.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 55.92417F));
-            this.uiTableLayoutPanel15.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 187F));
+            this.uiTableLayoutPanel15.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 189F));
             this.uiTableLayoutPanel15.Controls.Add(this.uiLight3, 2, 3);
             this.uiTableLayoutPanel15.Controls.Add(this.uiLabel58, 0, 2);
             this.uiTableLayoutPanel15.Controls.Add(this.uiLabel57, 0, 1);
@@ -2709,7 +2709,7 @@
             this.uiLight3.CenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
             this.uiLight3.Font = new System.Drawing.Font("宋体", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
             this.uiLight3.Interval = 2000;
-            this.uiLight3.Location = new System.Drawing.Point(808, 524);
+            this.uiLight3.Location = new System.Drawing.Point(807, 524);
             this.uiLight3.Margin = new System.Windows.Forms.Padding(12, 4, 4, 4);
             this.uiLight3.MinimumSize = new System.Drawing.Size(2, 2);
             this.uiLight3.Name = "uiLight3";
@@ -2730,7 +2730,7 @@
             this.uiLabel58.Location = new System.Drawing.Point(4, 324);
             this.uiLabel58.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
             this.uiLabel58.Name = "uiLabel58";
-            this.uiLabel58.Size = new System.Drawing.Size(326, 162);
+            this.uiLabel58.Size = new System.Drawing.Size(325, 162);
             this.uiLabel58.TabIndex = 45;
             this.uiLabel58.Text = "剩余次数";
             this.uiLabel58.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -2743,7 +2743,7 @@
             this.uiLabel57.Location = new System.Drawing.Point(4, 162);
             this.uiLabel57.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
             this.uiLabel57.Name = "uiLabel57";
-            this.uiLabel57.Size = new System.Drawing.Size(326, 162);
+            this.uiLabel57.Size = new System.Drawing.Size(325, 162);
             this.uiLabel57.TabIndex = 44;
             this.uiLabel57.Text = "完成次数";
             this.uiLabel57.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -2756,7 +2756,7 @@
             this.uiLabel56.Location = new System.Drawing.Point(4, 0);
             this.uiLabel56.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
             this.uiLabel56.Name = "uiLabel56";
-            this.uiLabel56.Size = new System.Drawing.Size(326, 162);
+            this.uiLabel56.Size = new System.Drawing.Size(325, 162);
             this.uiLabel56.TabIndex = 43;
             this.uiLabel56.Text = "运行时间";
             this.uiLabel56.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -2771,14 +2771,14 @@
             this.uiTableLayoutPanel23.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
             this.uiTableLayoutPanel23.Controls.Add(this.LedRunCycles, 1, 1);
             this.uiTableLayoutPanel23.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel23.Location = new System.Drawing.Point(338, 166);
+            this.uiTableLayoutPanel23.Location = new System.Drawing.Point(337, 166);
             this.uiTableLayoutPanel23.Margin = new System.Windows.Forms.Padding(4);
             this.uiTableLayoutPanel23.Name = "uiTableLayoutPanel23";
             this.uiTableLayoutPanel23.RowCount = 3;
             this.uiTableLayoutPanel23.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
             this.uiTableLayoutPanel23.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 90F));
             this.uiTableLayoutPanel23.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
-            this.uiTableLayoutPanel23.Size = new System.Drawing.Size(604, 154);
+            this.uiTableLayoutPanel23.Size = new System.Drawing.Size(605, 154);
             this.uiTableLayoutPanel23.TabIndex = 38;
             this.uiTableLayoutPanel23.TagString = null;
             // 
@@ -2796,7 +2796,7 @@
             this.LedRunCycles.IntervalOn = 6;
             this.LedRunCycles.IntervalV = 0;
             this.LedRunCycles.LedBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
-            this.LedRunCycles.Location = new System.Drawing.Point(128, 50);
+            this.LedRunCycles.Location = new System.Drawing.Point(129, 50);
             this.LedRunCycles.Margin = new System.Windows.Forms.Padding(4);
             this.LedRunCycles.Name = "LedRunCycles";
             this.LedRunCycles.Size = new System.Drawing.Size(346, 52);
@@ -2813,14 +2813,14 @@
             this.uiTableLayoutPanel32.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
             this.uiTableLayoutPanel32.Controls.Add(this.LedRunTime, 1, 1);
             this.uiTableLayoutPanel32.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel32.Location = new System.Drawing.Point(338, 4);
+            this.uiTableLayoutPanel32.Location = new System.Drawing.Point(337, 4);
             this.uiTableLayoutPanel32.Margin = new System.Windows.Forms.Padding(4);
             this.uiTableLayoutPanel32.Name = "uiTableLayoutPanel32";
             this.uiTableLayoutPanel32.RowCount = 3;
             this.uiTableLayoutPanel32.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
             this.uiTableLayoutPanel32.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 90F));
             this.uiTableLayoutPanel32.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
-            this.uiTableLayoutPanel32.Size = new System.Drawing.Size(604, 154);
+            this.uiTableLayoutPanel32.Size = new System.Drawing.Size(605, 154);
             this.uiTableLayoutPanel32.TabIndex = 37;
             this.uiTableLayoutPanel32.TagString = null;
             // 
@@ -2855,14 +2855,14 @@
             this.uiTableLayoutPanel41.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
             this.uiTableLayoutPanel41.Controls.Add(this.LedLastCycles, 1, 1);
             this.uiTableLayoutPanel41.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel41.Location = new System.Drawing.Point(338, 328);
+            this.uiTableLayoutPanel41.Location = new System.Drawing.Point(337, 328);
             this.uiTableLayoutPanel41.Margin = new System.Windows.Forms.Padding(4);
             this.uiTableLayoutPanel41.Name = "uiTableLayoutPanel41";
             this.uiTableLayoutPanel41.RowCount = 3;
             this.uiTableLayoutPanel41.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
             this.uiTableLayoutPanel41.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 90F));
             this.uiTableLayoutPanel41.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
-            this.uiTableLayoutPanel41.Size = new System.Drawing.Size(604, 154);
+            this.uiTableLayoutPanel41.Size = new System.Drawing.Size(605, 154);
             this.uiTableLayoutPanel41.TabIndex = 39;
             this.uiTableLayoutPanel41.TagString = null;
             // 
@@ -2880,7 +2880,7 @@
             this.LedLastCycles.IntervalOn = 6;
             this.LedLastCycles.IntervalV = 0;
             this.LedLastCycles.LedBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
-            this.LedLastCycles.Location = new System.Drawing.Point(128, 50);
+            this.LedLastCycles.Location = new System.Drawing.Point(129, 50);
             this.LedLastCycles.Margin = new System.Windows.Forms.Padding(4);
             this.LedLastCycles.Name = "LedLastCycles";
             this.LedLastCycles.Size = new System.Drawing.Size(346, 52);
@@ -2897,7 +2897,7 @@
             this.ProcBar.Margin = new System.Windows.Forms.Padding(4);
             this.ProcBar.MinimumSize = new System.Drawing.Size(4, 4);
             this.ProcBar.Name = "ProcBar";
-            this.ProcBar.Size = new System.Drawing.Size(750, 154);
+            this.ProcBar.Size = new System.Drawing.Size(748, 154);
             this.ProcBar.Style = Sunny.UI.UIStyle.Custom;
             this.ProcBar.TabIndex = 41;
             this.ProcBar.Text = "uiProcessBar1";
@@ -4656,30 +4656,30 @@
             this.uiTableLayoutPanel6.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 8.333333F));
             this.uiTableLayoutPanel6.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 8.333333F));
             this.uiTableLayoutPanel6.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 8.333333F));
-            this.uiTableLayoutPanel6.Controls.Add(this.checkEdit13, 0, 0);
-            this.uiTableLayoutPanel6.Controls.Add(this.checkEdit14, 1, 0);
-            this.uiTableLayoutPanel6.Controls.Add(this.checkEdit15, 2, 0);
-            this.uiTableLayoutPanel6.Controls.Add(this.checkEdit16, 3, 0);
-            this.uiTableLayoutPanel6.Controls.Add(this.checkEdit17, 4, 0);
-            this.uiTableLayoutPanel6.Controls.Add(this.checkEdit18, 5, 0);
-            this.uiTableLayoutPanel6.Controls.Add(this.checkEdit19, 6, 0);
-            this.uiTableLayoutPanel6.Controls.Add(this.checkEdit20, 7, 0);
-            this.uiTableLayoutPanel6.Controls.Add(this.checkEdit21, 8, 0);
-            this.uiTableLayoutPanel6.Controls.Add(this.checkEdit22, 9, 0);
-            this.uiTableLayoutPanel6.Controls.Add(this.checkEdit23, 10, 0);
-            this.uiTableLayoutPanel6.Controls.Add(this.checkEdit24, 11, 0);
+            this.uiTableLayoutPanel6.Controls.Add(this.CheckEpbA1, 0, 0);
+            this.uiTableLayoutPanel6.Controls.Add(this.CheckEpbA2, 1, 0);
+            this.uiTableLayoutPanel6.Controls.Add(this.CheckEpbA3, 2, 0);
+            this.uiTableLayoutPanel6.Controls.Add(this.CheckEpbA4, 3, 0);
+            this.uiTableLayoutPanel6.Controls.Add(this.CheckEpbA5, 4, 0);
+            this.uiTableLayoutPanel6.Controls.Add(this.CheckEpbA6, 5, 0);
+            this.uiTableLayoutPanel6.Controls.Add(this.CheckEpbA7, 6, 0);
+            this.uiTableLayoutPanel6.Controls.Add(this.CheckEpbA8, 7, 0);
+            this.uiTableLayoutPanel6.Controls.Add(this.CheckEpbA9, 8, 0);
+            this.uiTableLayoutPanel6.Controls.Add(this.CheckEpbA10, 9, 0);
+            this.uiTableLayoutPanel6.Controls.Add(this.CheckEpbA11, 10, 0);
+            this.uiTableLayoutPanel6.Controls.Add(this.CheckEpbA12, 11, 0);
             this.uiTableLayoutPanel6.Controls.Add(this.textEditCurrent1, 0, 1);
-            this.uiTableLayoutPanel6.Controls.Add(this.textEdit2, 1, 1);
-            this.uiTableLayoutPanel6.Controls.Add(this.textEdit3, 2, 1);
-            this.uiTableLayoutPanel6.Controls.Add(this.textEdit4, 3, 1);
-            this.uiTableLayoutPanel6.Controls.Add(this.textEdit5, 4, 1);
-            this.uiTableLayoutPanel6.Controls.Add(this.textEdit6, 5, 1);
-            this.uiTableLayoutPanel6.Controls.Add(this.textEdit7, 6, 1);
-            this.uiTableLayoutPanel6.Controls.Add(this.textEdit8, 7, 1);
-            this.uiTableLayoutPanel6.Controls.Add(this.textEdit9, 8, 1);
-            this.uiTableLayoutPanel6.Controls.Add(this.textEdit10, 9, 1);
-            this.uiTableLayoutPanel6.Controls.Add(this.textEdit11, 10, 1);
-            this.uiTableLayoutPanel6.Controls.Add(this.textEdit12, 11, 1);
+            this.uiTableLayoutPanel6.Controls.Add(this.textEditCurrent2, 1, 1);
+            this.uiTableLayoutPanel6.Controls.Add(this.textEditCurrent3, 2, 1);
+            this.uiTableLayoutPanel6.Controls.Add(this.textEditCurrent4, 3, 1);
+            this.uiTableLayoutPanel6.Controls.Add(this.textEditCurrent5, 4, 1);
+            this.uiTableLayoutPanel6.Controls.Add(this.textEditCurrent6, 5, 1);
+            this.uiTableLayoutPanel6.Controls.Add(this.textEditCurrent7, 6, 1);
+            this.uiTableLayoutPanel6.Controls.Add(this.textEditCurrent8, 7, 1);
+            this.uiTableLayoutPanel6.Controls.Add(this.textEditCurrent9, 8, 1);
+            this.uiTableLayoutPanel6.Controls.Add(this.textEditCurrent10, 9, 1);
+            this.uiTableLayoutPanel6.Controls.Add(this.textEditCurrent11, 10, 1);
+            this.uiTableLayoutPanel6.Controls.Add(this.textEditCurrent12, 11, 1);
             this.uiTableLayoutPanel6.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiTableLayoutPanel6.Location = new System.Drawing.Point(3, 681);
             this.uiTableLayoutPanel6.Name = "uiTableLayoutPanel6";
@@ -4691,211 +4691,212 @@
             this.uiTableLayoutPanel6.TabIndex = 6;
             this.uiTableLayoutPanel6.TagString = null;
             // 
-            // checkEdit13
+            // CheckEpbA1
             // 
-            this.checkEdit13.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.checkEdit13.Location = new System.Drawing.Point(3, 3);
-            this.checkEdit13.Name = "checkEdit13";
-            this.checkEdit13.Properties.AllowFocused = false;
-            this.checkEdit13.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
-            this.checkEdit13.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.checkEdit13.Properties.Appearance.Options.UseBackColor = true;
-            this.checkEdit13.Properties.Appearance.Options.UseForeColor = true;
-            this.checkEdit13.Properties.Appearance.Options.UseTextOptions = true;
-            this.checkEdit13.Properties.Appearance.TextOptions.VAlignment = DevExpress.Utils.VertAlignment.Center;
-            this.checkEdit13.Properties.Caption = "1";
-            this.checkEdit13.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
-            this.checkEdit13.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            this.checkEdit13.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.checkEdit13.Properties.GlyphVerticalAlignment = DevExpress.Utils.VertAlignment.Center;
-            this.checkEdit13.Size = new System.Drawing.Size(109, 58);
-            this.checkEdit13.TabIndex = 0;
+            this.CheckEpbA1.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.CheckEpbA1.Location = new System.Drawing.Point(3, 3);
+            this.CheckEpbA1.Name = "CheckEpbA1";
+            this.CheckEpbA1.Properties.AllowFocused = false;
+            this.CheckEpbA1.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.CheckEpbA1.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.CheckEpbA1.Properties.Appearance.Options.UseBackColor = true;
+            this.CheckEpbA1.Properties.Appearance.Options.UseForeColor = true;
+            this.CheckEpbA1.Properties.Appearance.Options.UseTextOptions = true;
+            this.CheckEpbA1.Properties.Appearance.TextOptions.VAlignment = DevExpress.Utils.VertAlignment.Center;
+            this.CheckEpbA1.Properties.Caption = "1";
+            this.CheckEpbA1.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.CheckEpbA1.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.CheckEpbA1.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.CheckEpbA1.Properties.GlyphVerticalAlignment = DevExpress.Utils.VertAlignment.Center;
+            this.CheckEpbA1.Size = new System.Drawing.Size(109, 58);
+            this.CheckEpbA1.TabIndex = 0;
             // 
-            // checkEdit14
+            // CheckEpbA2
             // 
-            this.checkEdit14.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.checkEdit14.Location = new System.Drawing.Point(118, 3);
-            this.checkEdit14.Name = "checkEdit14";
-            this.checkEdit14.Properties.AllowFocused = false;
-            this.checkEdit14.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
-            this.checkEdit14.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.checkEdit14.Properties.Appearance.Options.UseBackColor = true;
-            this.checkEdit14.Properties.Appearance.Options.UseForeColor = true;
-            this.checkEdit14.Properties.Caption = "2";
-            this.checkEdit14.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
-            this.checkEdit14.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            this.checkEdit14.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.checkEdit14.Size = new System.Drawing.Size(109, 58);
-            this.checkEdit14.TabIndex = 0;
+            this.CheckEpbA2.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.CheckEpbA2.Location = new System.Drawing.Point(118, 3);
+            this.CheckEpbA2.Name = "CheckEpbA2";
+            this.CheckEpbA2.Properties.AllowFocused = false;
+            this.CheckEpbA2.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.CheckEpbA2.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.CheckEpbA2.Properties.Appearance.Options.UseBackColor = true;
+            this.CheckEpbA2.Properties.Appearance.Options.UseForeColor = true;
+            this.CheckEpbA2.Properties.Caption = "2";
+            this.CheckEpbA2.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.CheckEpbA2.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.CheckEpbA2.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.CheckEpbA2.Size = new System.Drawing.Size(109, 58);
+            this.CheckEpbA2.TabIndex = 0;
             // 
-            // checkEdit15
+            // CheckEpbA3
             // 
-            this.checkEdit15.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.checkEdit15.Location = new System.Drawing.Point(233, 3);
-            this.checkEdit15.Name = "checkEdit15";
-            this.checkEdit15.Properties.AllowFocused = false;
-            this.checkEdit15.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
-            this.checkEdit15.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.checkEdit15.Properties.Appearance.Options.UseBackColor = true;
-            this.checkEdit15.Properties.Appearance.Options.UseForeColor = true;
-            this.checkEdit15.Properties.Caption = "3";
-            this.checkEdit15.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
-            this.checkEdit15.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            this.checkEdit15.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.checkEdit15.Size = new System.Drawing.Size(109, 58);
-            this.checkEdit15.TabIndex = 0;
+            this.CheckEpbA3.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.CheckEpbA3.Location = new System.Drawing.Point(233, 3);
+            this.CheckEpbA3.Name = "CheckEpbA3";
+            this.CheckEpbA3.Properties.AllowFocused = false;
+            this.CheckEpbA3.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.CheckEpbA3.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.CheckEpbA3.Properties.Appearance.Options.UseBackColor = true;
+            this.CheckEpbA3.Properties.Appearance.Options.UseForeColor = true;
+            this.CheckEpbA3.Properties.Caption = "3";
+            this.CheckEpbA3.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.CheckEpbA3.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.CheckEpbA3.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.CheckEpbA3.Size = new System.Drawing.Size(109, 58);
+            this.CheckEpbA3.TabIndex = 0;
             // 
-            // checkEdit16
+            // CheckEpbA4
             // 
-            this.checkEdit16.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.checkEdit16.Location = new System.Drawing.Point(348, 3);
-            this.checkEdit16.Name = "checkEdit16";
-            this.checkEdit16.Properties.AllowFocused = false;
-            this.checkEdit16.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
-            this.checkEdit16.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.checkEdit16.Properties.Appearance.Options.UseBackColor = true;
-            this.checkEdit16.Properties.Appearance.Options.UseForeColor = true;
-            this.checkEdit16.Properties.Caption = "4";
-            this.checkEdit16.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
-            this.checkEdit16.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            this.checkEdit16.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.checkEdit16.Size = new System.Drawing.Size(109, 58);
-            this.checkEdit16.TabIndex = 0;
+            this.CheckEpbA4.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.CheckEpbA4.Location = new System.Drawing.Point(348, 3);
+            this.CheckEpbA4.Name = "CheckEpbA4";
+            this.CheckEpbA4.Properties.AllowFocused = false;
+            this.CheckEpbA4.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.CheckEpbA4.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.CheckEpbA4.Properties.Appearance.Options.UseBackColor = true;
+            this.CheckEpbA4.Properties.Appearance.Options.UseForeColor = true;
+            this.CheckEpbA4.Properties.Caption = "4";
+            this.CheckEpbA4.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.CheckEpbA4.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.CheckEpbA4.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.CheckEpbA4.Size = new System.Drawing.Size(109, 58);
+            this.CheckEpbA4.TabIndex = 0;
             // 
-            // checkEdit17
+            // CheckEpbA5
             // 
-            this.checkEdit17.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.checkEdit17.Location = new System.Drawing.Point(463, 3);
-            this.checkEdit17.Name = "checkEdit17";
-            this.checkEdit17.Properties.AllowFocused = false;
-            this.checkEdit17.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
-            this.checkEdit17.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.checkEdit17.Properties.Appearance.Options.UseBackColor = true;
-            this.checkEdit17.Properties.Appearance.Options.UseForeColor = true;
-            this.checkEdit17.Properties.Caption = "5";
-            this.checkEdit17.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
-            this.checkEdit17.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            this.checkEdit17.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.checkEdit17.Size = new System.Drawing.Size(109, 58);
-            this.checkEdit17.TabIndex = 0;
+            this.CheckEpbA5.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.CheckEpbA5.Location = new System.Drawing.Point(463, 3);
+            this.CheckEpbA5.Name = "CheckEpbA5";
+            this.CheckEpbA5.Properties.AllowFocused = false;
+            this.CheckEpbA5.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.CheckEpbA5.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.CheckEpbA5.Properties.Appearance.Options.UseBackColor = true;
+            this.CheckEpbA5.Properties.Appearance.Options.UseForeColor = true;
+            this.CheckEpbA5.Properties.Caption = "5";
+            this.CheckEpbA5.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.CheckEpbA5.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.CheckEpbA5.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.CheckEpbA5.Size = new System.Drawing.Size(109, 58);
+            this.CheckEpbA5.TabIndex = 0;
             // 
-            // checkEdit18
+            // CheckEpbA6
             // 
-            this.checkEdit18.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.checkEdit18.Location = new System.Drawing.Point(578, 3);
-            this.checkEdit18.Name = "checkEdit18";
-            this.checkEdit18.Properties.AllowFocused = false;
-            this.checkEdit18.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
-            this.checkEdit18.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.checkEdit18.Properties.Appearance.Options.UseBackColor = true;
-            this.checkEdit18.Properties.Appearance.Options.UseForeColor = true;
-            this.checkEdit18.Properties.Caption = "6";
-            this.checkEdit18.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
-            this.checkEdit18.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            this.checkEdit18.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.checkEdit18.Size = new System.Drawing.Size(109, 58);
-            this.checkEdit18.TabIndex = 0;
+            this.CheckEpbA6.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.CheckEpbA6.Location = new System.Drawing.Point(578, 3);
+            this.CheckEpbA6.Name = "CheckEpbA6";
+            this.CheckEpbA6.Properties.AllowFocused = false;
+            this.CheckEpbA6.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.CheckEpbA6.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.CheckEpbA6.Properties.Appearance.Options.UseBackColor = true;
+            this.CheckEpbA6.Properties.Appearance.Options.UseForeColor = true;
+            this.CheckEpbA6.Properties.Caption = "6";
+            this.CheckEpbA6.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.CheckEpbA6.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.CheckEpbA6.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.CheckEpbA6.Size = new System.Drawing.Size(109, 58);
+            this.CheckEpbA6.TabIndex = 0;
             // 
-            // checkEdit19
+            // CheckEpbA7
             // 
-            this.checkEdit19.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.checkEdit19.Location = new System.Drawing.Point(693, 3);
-            this.checkEdit19.Name = "checkEdit19";
-            this.checkEdit19.Properties.AllowFocused = false;
-            this.checkEdit19.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
-            this.checkEdit19.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.checkEdit19.Properties.Appearance.Options.UseBackColor = true;
-            this.checkEdit19.Properties.Appearance.Options.UseForeColor = true;
-            this.checkEdit19.Properties.Caption = "7";
-            this.checkEdit19.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
-            this.checkEdit19.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            this.checkEdit19.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.checkEdit19.Size = new System.Drawing.Size(109, 58);
-            this.checkEdit19.TabIndex = 0;
+            this.CheckEpbA7.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.CheckEpbA7.Location = new System.Drawing.Point(693, 3);
+            this.CheckEpbA7.Name = "CheckEpbA7";
+            this.CheckEpbA7.Properties.AllowFocused = false;
+            this.CheckEpbA7.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.CheckEpbA7.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.CheckEpbA7.Properties.Appearance.Options.UseBackColor = true;
+            this.CheckEpbA7.Properties.Appearance.Options.UseForeColor = true;
+            this.CheckEpbA7.Properties.Caption = "7";
+            this.CheckEpbA7.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.CheckEpbA7.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.CheckEpbA7.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.CheckEpbA7.Size = new System.Drawing.Size(109, 58);
+            this.CheckEpbA7.TabIndex = 0;
             // 
-            // checkEdit20
+            // CheckEpbA8
             // 
-            this.checkEdit20.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.checkEdit20.Location = new System.Drawing.Point(808, 3);
-            this.checkEdit20.Name = "checkEdit20";
-            this.checkEdit20.Properties.AllowFocused = false;
-            this.checkEdit20.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
-            this.checkEdit20.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.checkEdit20.Properties.Appearance.Options.UseBackColor = true;
-            this.checkEdit20.Properties.Appearance.Options.UseForeColor = true;
-            this.checkEdit20.Properties.Caption = "8";
-            this.checkEdit20.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
-            this.checkEdit20.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            this.checkEdit20.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.checkEdit20.Size = new System.Drawing.Size(109, 58);
-            this.checkEdit20.TabIndex = 0;
+            this.CheckEpbA8.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.CheckEpbA8.Location = new System.Drawing.Point(808, 3);
+            this.CheckEpbA8.Name = "CheckEpbA8";
+            this.CheckEpbA8.Properties.AllowFocused = false;
+            this.CheckEpbA8.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.CheckEpbA8.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.CheckEpbA8.Properties.Appearance.Options.UseBackColor = true;
+            this.CheckEpbA8.Properties.Appearance.Options.UseForeColor = true;
+            this.CheckEpbA8.Properties.Caption = "8";
+            this.CheckEpbA8.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.CheckEpbA8.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.CheckEpbA8.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.CheckEpbA8.Size = new System.Drawing.Size(109, 58);
+            this.CheckEpbA8.TabIndex = 0;
             // 
-            // checkEdit21
+            // CheckEpbA9
             // 
-            this.checkEdit21.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.checkEdit21.Location = new System.Drawing.Point(923, 3);
-            this.checkEdit21.Name = "checkEdit21";
-            this.checkEdit21.Properties.AllowFocused = false;
-            this.checkEdit21.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
-            this.checkEdit21.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.checkEdit21.Properties.Appearance.Options.UseBackColor = true;
-            this.checkEdit21.Properties.Appearance.Options.UseForeColor = true;
-            this.checkEdit21.Properties.Caption = "9";
-            this.checkEdit21.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
-            this.checkEdit21.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            this.checkEdit21.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.checkEdit21.Size = new System.Drawing.Size(109, 58);
-            this.checkEdit21.TabIndex = 0;
+            this.CheckEpbA9.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.CheckEpbA9.Location = new System.Drawing.Point(923, 3);
+            this.CheckEpbA9.Name = "CheckEpbA9";
+            this.CheckEpbA9.Properties.AllowFocused = false;
+            this.CheckEpbA9.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.CheckEpbA9.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.CheckEpbA9.Properties.Appearance.Options.UseBackColor = true;
+            this.CheckEpbA9.Properties.Appearance.Options.UseForeColor = true;
+            this.CheckEpbA9.Properties.Caption = "9";
+            this.CheckEpbA9.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.CheckEpbA9.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.CheckEpbA9.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.CheckEpbA9.Size = new System.Drawing.Size(109, 58);
+            this.CheckEpbA9.TabIndex = 0;
             // 
-            // checkEdit22
+            // CheckEpbA10
             // 
-            this.checkEdit22.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.checkEdit22.Location = new System.Drawing.Point(1038, 3);
-            this.checkEdit22.Name = "checkEdit22";
-            this.checkEdit22.Properties.AllowFocused = false;
-            this.checkEdit22.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
-            this.checkEdit22.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.checkEdit22.Properties.Appearance.Options.UseBackColor = true;
-            this.checkEdit22.Properties.Appearance.Options.UseForeColor = true;
-            this.checkEdit22.Properties.Caption = "10";
-            this.checkEdit22.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
-            this.checkEdit22.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            this.checkEdit22.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.checkEdit22.Size = new System.Drawing.Size(109, 58);
-            this.checkEdit22.TabIndex = 0;
+            this.CheckEpbA10.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.CheckEpbA10.Location = new System.Drawing.Point(1038, 3);
+            this.CheckEpbA10.Name = "CheckEpbA10";
+            this.CheckEpbA10.Properties.AllowFocused = false;
+            this.CheckEpbA10.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.CheckEpbA10.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.CheckEpbA10.Properties.Appearance.Options.UseBackColor = true;
+            this.CheckEpbA10.Properties.Appearance.Options.UseForeColor = true;
+            this.CheckEpbA10.Properties.Caption = "10";
+            this.CheckEpbA10.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.CheckEpbA10.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.CheckEpbA10.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.CheckEpbA10.Size = new System.Drawing.Size(109, 58);
+            this.CheckEpbA10.TabIndex = 0;
             // 
-            // checkEdit23
+            // CheckEpbA11
             // 
-            this.checkEdit23.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.checkEdit23.Location = new System.Drawing.Point(1153, 3);
-            this.checkEdit23.Name = "checkEdit23";
-            this.checkEdit23.Properties.AllowFocused = false;
-            this.checkEdit23.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
-            this.checkEdit23.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.checkEdit23.Properties.Appearance.Options.UseBackColor = true;
-            this.checkEdit23.Properties.Appearance.Options.UseForeColor = true;
-            this.checkEdit23.Properties.Caption = "11";
-            this.checkEdit23.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
-            this.checkEdit23.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            this.checkEdit23.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.checkEdit23.Size = new System.Drawing.Size(109, 58);
-            this.checkEdit23.TabIndex = 0;
+            this.CheckEpbA11.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.CheckEpbA11.Location = new System.Drawing.Point(1153, 3);
+            this.CheckEpbA11.Name = "CheckEpbA11";
+            this.CheckEpbA11.Properties.AllowFocused = false;
+            this.CheckEpbA11.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.CheckEpbA11.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.CheckEpbA11.Properties.Appearance.Options.UseBackColor = true;
+            this.CheckEpbA11.Properties.Appearance.Options.UseForeColor = true;
+            this.CheckEpbA11.Properties.Caption = "11";
+            this.CheckEpbA11.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.CheckEpbA11.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.CheckEpbA11.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.CheckEpbA11.Size = new System.Drawing.Size(109, 58);
+            this.CheckEpbA11.TabIndex = 0;
             // 
-            // checkEdit24
+            // CheckEpbA12
             // 
-            this.checkEdit24.Location = new System.Drawing.Point(1268, 3);
-            this.checkEdit24.Name = "checkEdit24";
-            this.checkEdit24.Properties.AllowFocused = false;
-            this.checkEdit24.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
-            this.checkEdit24.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.checkEdit24.Properties.Appearance.Options.UseBackColor = true;
-            this.checkEdit24.Properties.Appearance.Options.UseForeColor = true;
-            this.checkEdit24.Properties.Caption = "12";
-            this.checkEdit24.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
-            this.checkEdit24.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            this.checkEdit24.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.checkEdit24.Size = new System.Drawing.Size(110, 44);
-            this.checkEdit24.TabIndex = 0;
+            this.CheckEpbA12.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.CheckEpbA12.Location = new System.Drawing.Point(1268, 3);
+            this.CheckEpbA12.Name = "CheckEpbA12";
+            this.CheckEpbA12.Properties.AllowFocused = false;
+            this.CheckEpbA12.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.CheckEpbA12.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.CheckEpbA12.Properties.Appearance.Options.UseBackColor = true;
+            this.CheckEpbA12.Properties.Appearance.Options.UseForeColor = true;
+            this.CheckEpbA12.Properties.Caption = "12";
+            this.CheckEpbA12.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.CheckEpbA12.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.CheckEpbA12.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.CheckEpbA12.Size = new System.Drawing.Size(120, 58);
+            this.CheckEpbA12.TabIndex = 0;
             // 
             // textEditCurrent1
             // 
@@ -4903,117 +4904,141 @@
             this.textEditCurrent1.EditValue = "12.34";
             this.textEditCurrent1.Location = new System.Drawing.Point(3, 67);
             this.textEditCurrent1.Name = "textEditCurrent1";
+            this.textEditCurrent1.Properties.Appearance.Options.UseTextOptions = true;
+            this.textEditCurrent1.Properties.Appearance.TextOptions.HAlignment = DevExpress.Utils.HorzAlignment.Center;
             this.textEditCurrent1.Size = new System.Drawing.Size(109, 44);
             this.textEditCurrent1.TabIndex = 1;
             // 
-            // textEdit2
+            // textEditCurrent2
             // 
-            this.textEdit2.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.textEdit2.EditValue = "12.34";
-            this.textEdit2.Location = new System.Drawing.Point(118, 67);
-            this.textEdit2.Name = "textEdit2";
-            this.textEdit2.Size = new System.Drawing.Size(109, 44);
-            this.textEdit2.TabIndex = 1;
+            this.textEditCurrent2.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.textEditCurrent2.EditValue = "12.34";
+            this.textEditCurrent2.Location = new System.Drawing.Point(118, 67);
+            this.textEditCurrent2.Name = "textEditCurrent2";
+            this.textEditCurrent2.Properties.Appearance.Options.UseTextOptions = true;
+            this.textEditCurrent2.Properties.Appearance.TextOptions.HAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.textEditCurrent2.Size = new System.Drawing.Size(109, 44);
+            this.textEditCurrent2.TabIndex = 1;
             // 
-            // textEdit3
+            // textEditCurrent3
             // 
-            this.textEdit3.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.textEdit3.EditValue = "12.34";
-            this.textEdit3.Location = new System.Drawing.Point(233, 67);
-            this.textEdit3.Name = "textEdit3";
-            this.textEdit3.Size = new System.Drawing.Size(109, 44);
-            this.textEdit3.TabIndex = 1;
+            this.textEditCurrent3.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.textEditCurrent3.EditValue = "12.34";
+            this.textEditCurrent3.Location = new System.Drawing.Point(233, 67);
+            this.textEditCurrent3.Name = "textEditCurrent3";
+            this.textEditCurrent3.Properties.Appearance.Options.UseTextOptions = true;
+            this.textEditCurrent3.Properties.Appearance.TextOptions.HAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.textEditCurrent3.Size = new System.Drawing.Size(109, 44);
+            this.textEditCurrent3.TabIndex = 1;
             // 
-            // textEdit4
+            // textEditCurrent4
             // 
-            this.textEdit4.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.textEdit4.EditValue = "12.34";
-            this.textEdit4.Location = new System.Drawing.Point(348, 67);
-            this.textEdit4.Name = "textEdit4";
-            this.textEdit4.Size = new System.Drawing.Size(109, 44);
-            this.textEdit4.TabIndex = 1;
+            this.textEditCurrent4.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.textEditCurrent4.EditValue = "12.34";
+            this.textEditCurrent4.Location = new System.Drawing.Point(348, 67);
+            this.textEditCurrent4.Name = "textEditCurrent4";
+            this.textEditCurrent4.Properties.Appearance.Options.UseTextOptions = true;
+            this.textEditCurrent4.Properties.Appearance.TextOptions.HAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.textEditCurrent4.Size = new System.Drawing.Size(109, 44);
+            this.textEditCurrent4.TabIndex = 1;
             // 
-            // textEdit5
+            // textEditCurrent5
             // 
-            this.textEdit5.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.textEdit5.EditValue = "12.34";
-            this.textEdit5.Location = new System.Drawing.Point(463, 67);
-            this.textEdit5.Name = "textEdit5";
-            this.textEdit5.Size = new System.Drawing.Size(109, 44);
-            this.textEdit5.TabIndex = 1;
+            this.textEditCurrent5.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.textEditCurrent5.EditValue = "12.34";
+            this.textEditCurrent5.Location = new System.Drawing.Point(463, 67);
+            this.textEditCurrent5.Name = "textEditCurrent5";
+            this.textEditCurrent5.Properties.Appearance.Options.UseTextOptions = true;
+            this.textEditCurrent5.Properties.Appearance.TextOptions.HAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.textEditCurrent5.Size = new System.Drawing.Size(109, 44);
+            this.textEditCurrent5.TabIndex = 1;
             // 
-            // textEdit6
+            // textEditCurrent6
             // 
-            this.textEdit6.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.textEdit6.EditValue = "12.34";
-            this.textEdit6.Location = new System.Drawing.Point(578, 67);
-            this.textEdit6.Name = "textEdit6";
-            this.textEdit6.Size = new System.Drawing.Size(109, 44);
-            this.textEdit6.TabIndex = 1;
+            this.textEditCurrent6.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.textEditCurrent6.EditValue = "12.34";
+            this.textEditCurrent6.Location = new System.Drawing.Point(578, 67);
+            this.textEditCurrent6.Name = "textEditCurrent6";
+            this.textEditCurrent6.Properties.Appearance.Options.UseTextOptions = true;
+            this.textEditCurrent6.Properties.Appearance.TextOptions.HAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.textEditCurrent6.Size = new System.Drawing.Size(109, 44);
+            this.textEditCurrent6.TabIndex = 1;
             // 
-            // textEdit7
+            // textEditCurrent7
             // 
-            this.textEdit7.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.textEdit7.EditValue = "12.34";
-            this.textEdit7.Location = new System.Drawing.Point(693, 67);
-            this.textEdit7.Name = "textEdit7";
-            this.textEdit7.Size = new System.Drawing.Size(109, 44);
-            this.textEdit7.TabIndex = 1;
+            this.textEditCurrent7.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.textEditCurrent7.EditValue = "12.34";
+            this.textEditCurrent7.Location = new System.Drawing.Point(693, 67);
+            this.textEditCurrent7.Name = "textEditCurrent7";
+            this.textEditCurrent7.Properties.Appearance.Options.UseTextOptions = true;
+            this.textEditCurrent7.Properties.Appearance.TextOptions.HAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.textEditCurrent7.Size = new System.Drawing.Size(109, 44);
+            this.textEditCurrent7.TabIndex = 1;
             // 
-            // textEdit8
+            // textEditCurrent8
             // 
-            this.textEdit8.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.textEdit8.EditValue = "12.34";
-            this.textEdit8.Location = new System.Drawing.Point(808, 67);
-            this.textEdit8.Name = "textEdit8";
-            this.textEdit8.Size = new System.Drawing.Size(109, 44);
-            this.textEdit8.TabIndex = 1;
+            this.textEditCurrent8.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.textEditCurrent8.EditValue = "12.34";
+            this.textEditCurrent8.Location = new System.Drawing.Point(808, 67);
+            this.textEditCurrent8.Name = "textEditCurrent8";
+            this.textEditCurrent8.Properties.Appearance.Options.UseTextOptions = true;
+            this.textEditCurrent8.Properties.Appearance.TextOptions.HAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.textEditCurrent8.Size = new System.Drawing.Size(109, 44);
+            this.textEditCurrent8.TabIndex = 1;
             // 
-            // textEdit9
+            // textEditCurrent9
             // 
-            this.textEdit9.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.textEdit9.EditValue = "12.34";
-            this.textEdit9.Location = new System.Drawing.Point(923, 67);
-            this.textEdit9.Name = "textEdit9";
-            this.textEdit9.Size = new System.Drawing.Size(109, 44);
-            this.textEdit9.TabIndex = 1;
+            this.textEditCurrent9.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.textEditCurrent9.EditValue = "12.34";
+            this.textEditCurrent9.Location = new System.Drawing.Point(923, 67);
+            this.textEditCurrent9.Name = "textEditCurrent9";
+            this.textEditCurrent9.Properties.Appearance.Options.UseTextOptions = true;
+            this.textEditCurrent9.Properties.Appearance.TextOptions.HAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.textEditCurrent9.Size = new System.Drawing.Size(109, 44);
+            this.textEditCurrent9.TabIndex = 1;
             // 
-            // textEdit10
+            // textEditCurrent10
             // 
-            this.textEdit10.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.textEdit10.EditValue = "12.34";
-            this.textEdit10.Location = new System.Drawing.Point(1038, 67);
-            this.textEdit10.Name = "textEdit10";
-            this.textEdit10.Size = new System.Drawing.Size(109, 44);
-            this.textEdit10.TabIndex = 1;
+            this.textEditCurrent10.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.textEditCurrent10.EditValue = "12.34";
+            this.textEditCurrent10.Location = new System.Drawing.Point(1038, 67);
+            this.textEditCurrent10.Name = "textEditCurrent10";
+            this.textEditCurrent10.Properties.Appearance.Options.UseTextOptions = true;
+            this.textEditCurrent10.Properties.Appearance.TextOptions.HAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.textEditCurrent10.Size = new System.Drawing.Size(109, 44);
+            this.textEditCurrent10.TabIndex = 1;
             // 
-            // textEdit11
+            // textEditCurrent11
             // 
-            this.textEdit11.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.textEdit11.EditValue = "12.34";
-            this.textEdit11.Location = new System.Drawing.Point(1153, 67);
-            this.textEdit11.Name = "textEdit11";
-            this.textEdit11.Size = new System.Drawing.Size(109, 44);
-            this.textEdit11.TabIndex = 1;
+            this.textEditCurrent11.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.textEditCurrent11.EditValue = "12.34";
+            this.textEditCurrent11.Location = new System.Drawing.Point(1153, 67);
+            this.textEditCurrent11.Name = "textEditCurrent11";
+            this.textEditCurrent11.Properties.Appearance.Options.UseTextOptions = true;
+            this.textEditCurrent11.Properties.Appearance.TextOptions.HAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.textEditCurrent11.Size = new System.Drawing.Size(109, 44);
+            this.textEditCurrent11.TabIndex = 1;
             // 
-            // textEdit12
+            // textEditCurrent12
             // 
-            this.textEdit12.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.textEdit12.EditValue = "12.34";
-            this.textEdit12.Location = new System.Drawing.Point(1268, 67);
-            this.textEdit12.Name = "textEdit12";
-            this.textEdit12.Size = new System.Drawing.Size(120, 44);
-            this.textEdit12.TabIndex = 1;
+            this.textEditCurrent12.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.textEditCurrent12.EditValue = "12.34";
+            this.textEditCurrent12.Location = new System.Drawing.Point(1268, 67);
+            this.textEditCurrent12.Name = "textEditCurrent12";
+            this.textEditCurrent12.Properties.Appearance.Options.UseTextOptions = true;
+            this.textEditCurrent12.Properties.Appearance.TextOptions.HAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.textEditCurrent12.Size = new System.Drawing.Size(120, 44);
+            this.textEditCurrent12.TabIndex = 1;
             // 
             // uiTableLayoutPanel16
             // 
             this.uiTableLayoutPanel16.ColumnCount = 2;
             this.uiTableLayoutPanel16.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 50F));
             this.uiTableLayoutPanel16.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 50F));
-            this.uiTableLayoutPanel16.Controls.Add(this.checkEdit1, 0, 0);
-            this.uiTableLayoutPanel16.Controls.Add(this.checkEdit2, 1, 0);
-            this.uiTableLayoutPanel16.Controls.Add(this.textEdit1, 0, 1);
-            this.uiTableLayoutPanel16.Controls.Add(this.textEdit13, 1, 1);
+            this.uiTableLayoutPanel16.Controls.Add(this.CheckP1, 0, 0);
+            this.uiTableLayoutPanel16.Controls.Add(this.CheckP2, 1, 0);
+            this.uiTableLayoutPanel16.Controls.Add(this.textEditP1, 0, 1);
+            this.uiTableLayoutPanel16.Controls.Add(this.textEditP2, 1, 1);
             this.uiTableLayoutPanel16.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiTableLayoutPanel16.Location = new System.Drawing.Point(1400, 681);
             this.uiTableLayoutPanel16.Name = "uiTableLayoutPanel16";
@@ -5025,53 +5050,59 @@
             this.uiTableLayoutPanel16.TabIndex = 7;
             this.uiTableLayoutPanel16.TagString = null;
             // 
-            // checkEdit1
+            // CheckP1
             // 
-            this.checkEdit1.Location = new System.Drawing.Point(3, 3);
-            this.checkEdit1.Name = "checkEdit1";
-            this.checkEdit1.Properties.AllowFocused = false;
-            this.checkEdit1.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
-            this.checkEdit1.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.checkEdit1.Properties.Appearance.Options.UseBackColor = true;
-            this.checkEdit1.Properties.Appearance.Options.UseForeColor = true;
-            this.checkEdit1.Properties.Caption = "P1";
-            this.checkEdit1.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
-            this.checkEdit1.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            this.checkEdit1.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.checkEdit1.Size = new System.Drawing.Size(110, 44);
-            this.checkEdit1.TabIndex = 0;
+            this.CheckP1.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.CheckP1.Location = new System.Drawing.Point(3, 3);
+            this.CheckP1.Name = "CheckP1";
+            this.CheckP1.Properties.AllowFocused = false;
+            this.CheckP1.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.CheckP1.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.CheckP1.Properties.Appearance.Options.UseBackColor = true;
+            this.CheckP1.Properties.Appearance.Options.UseForeColor = true;
+            this.CheckP1.Properties.Caption = "P1";
+            this.CheckP1.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.CheckP1.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.CheckP1.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.CheckP1.Size = new System.Drawing.Size(123, 58);
+            this.CheckP1.TabIndex = 0;
             // 
-            // checkEdit2
+            // CheckP2
             // 
-            this.checkEdit2.Location = new System.Drawing.Point(132, 3);
-            this.checkEdit2.Name = "checkEdit2";
-            this.checkEdit2.Properties.AllowFocused = false;
-            this.checkEdit2.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
-            this.checkEdit2.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.checkEdit2.Properties.Appearance.Options.UseBackColor = true;
-            this.checkEdit2.Properties.Appearance.Options.UseForeColor = true;
-            this.checkEdit2.Properties.Caption = "P2";
-            this.checkEdit2.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
-            this.checkEdit2.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            this.checkEdit2.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.checkEdit2.Size = new System.Drawing.Size(110, 44);
-            this.checkEdit2.TabIndex = 0;
+            this.CheckP2.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.CheckP2.Location = new System.Drawing.Point(132, 3);
+            this.CheckP2.Name = "CheckP2";
+            this.CheckP2.Properties.AllowFocused = false;
+            this.CheckP2.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.CheckP2.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.CheckP2.Properties.Appearance.Options.UseBackColor = true;
+            this.CheckP2.Properties.Appearance.Options.UseForeColor = true;
+            this.CheckP2.Properties.Caption = "P2";
+            this.CheckP2.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.CheckP2.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.CheckP2.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.CheckP2.Size = new System.Drawing.Size(124, 58);
+            this.CheckP2.TabIndex = 0;
             // 
-            // textEdit1
+            // textEditP1
             // 
-            this.textEdit1.EditValue = "12.34";
-            this.textEdit1.Location = new System.Drawing.Point(3, 67);
-            this.textEdit1.Name = "textEdit1";
-            this.textEdit1.Size = new System.Drawing.Size(110, 44);
-            this.textEdit1.TabIndex = 1;
+            this.textEditP1.EditValue = "12.34";
+            this.textEditP1.Location = new System.Drawing.Point(3, 67);
+            this.textEditP1.Name = "textEditP1";
+            this.textEditP1.Properties.Appearance.Options.UseTextOptions = true;
+            this.textEditP1.Properties.Appearance.TextOptions.HAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.textEditP1.Size = new System.Drawing.Size(110, 44);
+            this.textEditP1.TabIndex = 1;
             // 
-            // textEdit13
+            // textEditP2
             // 
-            this.textEdit13.EditValue = "12.34";
-            this.textEdit13.Location = new System.Drawing.Point(132, 67);
-            this.textEdit13.Name = "textEdit13";
-            this.textEdit13.Size = new System.Drawing.Size(110, 44);
-            this.textEdit13.TabIndex = 1;
+            this.textEditP2.EditValue = "12.34";
+            this.textEditP2.Location = new System.Drawing.Point(132, 67);
+            this.textEditP2.Name = "textEditP2";
+            this.textEditP2.Properties.Appearance.Options.UseTextOptions = true;
+            this.textEditP2.Properties.Appearance.TextOptions.HAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.textEditP2.Size = new System.Drawing.Size(110, 44);
+            this.textEditP2.TabIndex = 1;
             // 
             // FrmEpbMainMonitor
             // 
@@ -5161,35 +5192,35 @@
             this.uiPanel5.ResumeLayout(false);
             this.uiTableLayoutPanel3.ResumeLayout(false);
             this.uiTableLayoutPanel6.ResumeLayout(false);
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit13.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit14.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit15.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit16.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit17.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit18.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit19.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit20.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit21.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit22.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit23.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit24.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.CheckEpbA1.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.CheckEpbA2.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.CheckEpbA3.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.CheckEpbA4.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.CheckEpbA5.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.CheckEpbA6.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.CheckEpbA7.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.CheckEpbA8.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.CheckEpbA9.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.CheckEpbA10.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.CheckEpbA11.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.CheckEpbA12.Properties)).EndInit();
             ((System.ComponentModel.ISupportInitialize)(this.textEditCurrent1.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit2.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit3.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit4.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit5.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit6.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit7.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit8.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit9.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit10.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit11.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit12.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEditCurrent2.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEditCurrent3.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEditCurrent4.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEditCurrent5.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEditCurrent6.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEditCurrent7.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEditCurrent8.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEditCurrent9.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEditCurrent10.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEditCurrent11.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEditCurrent12.Properties)).EndInit();
             this.uiTableLayoutPanel16.ResumeLayout(false);
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit1.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit2.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit1.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit13.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.CheckP1.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.CheckP2.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEditP1.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEditP2.Properties)).EndInit();
             this.ResumeLayout(false);
 
         }
@@ -5435,34 +5466,34 @@
         private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel3;
         private ZedGraph.ZedGraphControl zedGraphRealChart;
         private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel6;
-        private DevExpress.XtraEditors.CheckEdit checkEdit13;
-        private DevExpress.XtraEditors.CheckEdit checkEdit14;
-        private DevExpress.XtraEditors.CheckEdit checkEdit15;
-        private DevExpress.XtraEditors.CheckEdit checkEdit16;
-        private DevExpress.XtraEditors.CheckEdit checkEdit17;
-        private DevExpress.XtraEditors.CheckEdit checkEdit18;
-        private DevExpress.XtraEditors.CheckEdit checkEdit19;
-        private DevExpress.XtraEditors.CheckEdit checkEdit20;
-        private DevExpress.XtraEditors.CheckEdit checkEdit21;
-        private DevExpress.XtraEditors.CheckEdit checkEdit22;
-        private DevExpress.XtraEditors.CheckEdit checkEdit23;
-        private DevExpress.XtraEditors.CheckEdit checkEdit24;
+        private DevExpress.XtraEditors.CheckEdit CheckEpbA1;
+        private DevExpress.XtraEditors.CheckEdit CheckEpbA2;
+        private DevExpress.XtraEditors.CheckEdit CheckEpbA3;
+        private DevExpress.XtraEditors.CheckEdit CheckEpbA4;
+        private DevExpress.XtraEditors.CheckEdit CheckEpbA5;
+        private DevExpress.XtraEditors.CheckEdit CheckEpbA6;
+        private DevExpress.XtraEditors.CheckEdit CheckEpbA7;
+        private DevExpress.XtraEditors.CheckEdit CheckEpbA8;
+        private DevExpress.XtraEditors.CheckEdit CheckEpbA9;
+        private DevExpress.XtraEditors.CheckEdit CheckEpbA10;
+        private DevExpress.XtraEditors.CheckEdit CheckEpbA11;
+        private DevExpress.XtraEditors.CheckEdit CheckEpbA12;
         private DevExpress.XtraEditors.TextEdit textEditCurrent1;
-        private DevExpress.XtraEditors.TextEdit textEdit2;
-        private DevExpress.XtraEditors.TextEdit textEdit3;
-        private DevExpress.XtraEditors.TextEdit textEdit4;
-        private DevExpress.XtraEditors.TextEdit textEdit5;
-        private DevExpress.XtraEditors.TextEdit textEdit6;
-        private DevExpress.XtraEditors.TextEdit textEdit7;
-        private DevExpress.XtraEditors.TextEdit textEdit8;
-        private DevExpress.XtraEditors.TextEdit textEdit9;
-        private DevExpress.XtraEditors.TextEdit textEdit10;
-        private DevExpress.XtraEditors.TextEdit textEdit11;
-        private DevExpress.XtraEditors.TextEdit textEdit12;
+        private DevExpress.XtraEditors.TextEdit textEditCurrent2;
+        private DevExpress.XtraEditors.TextEdit textEditCurrent3;
+        private DevExpress.XtraEditors.TextEdit textEditCurrent4;
+        private DevExpress.XtraEditors.TextEdit textEditCurrent5;
+        private DevExpress.XtraEditors.TextEdit textEditCurrent6;
+        private DevExpress.XtraEditors.TextEdit textEditCurrent7;
+        private DevExpress.XtraEditors.TextEdit textEditCurrent8;
+        private DevExpress.XtraEditors.TextEdit textEditCurrent9;
+        private DevExpress.XtraEditors.TextEdit textEditCurrent10;
+        private DevExpress.XtraEditors.TextEdit textEditCurrent11;
+        private DevExpress.XtraEditors.TextEdit textEditCurrent12;
         private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel16;
-        private DevExpress.XtraEditors.CheckEdit checkEdit1;
-        private DevExpress.XtraEditors.CheckEdit checkEdit2;
-        private DevExpress.XtraEditors.TextEdit textEdit1;
-        private DevExpress.XtraEditors.TextEdit textEdit13;
+        private DevExpress.XtraEditors.CheckEdit CheckP1;
+        private DevExpress.XtraEditors.CheckEdit CheckP2;
+        private DevExpress.XtraEditors.TextEdit textEditP1;
+        private DevExpress.XtraEditors.TextEdit textEditP2;
     }
 }
