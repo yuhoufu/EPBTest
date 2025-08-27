@@ -233,6 +233,9 @@
     <Content Include="Config\TestConfig.xml">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <Content Include="Config\UIConfig.xml">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
     <Content Include="License-LGPL.txt" />
     <None Include="Resources\P5.png" />
     <None Include="Resources\P4.png" />

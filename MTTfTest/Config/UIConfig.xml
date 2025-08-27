@@ -1,0 +1,25 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<UiConfig>
+	<FrmEpbMainMonitor>
+		<Controls>
+			<!-- 1~12 通道 -->
+			<Control Name="CheckEpbA1"  Checked="true" Enabled="true"  DefaultChecked="true"/>
+			<Control Name="CheckEpbA2"  Checked="true" Enabled="true"  DefaultChecked="true"/>
+			<Control Name="CheckEpbA3"  Checked="true" Enabled="true"  DefaultChecked="true"/>
+			<Control Name="CheckEpbA4"  Checked="true" Enabled="true"  DefaultChecked="true"/>
+			<Control Name="CheckEpbA5"  Checked="true" Enabled="true"  DefaultChecked="true"/>
+			<Control Name="CheckEpbA6"  Checked="true" Enabled="true"  DefaultChecked="true"/>
+			<Control Name="CheckEpbA7"  Checked="true" Enabled="true"  DefaultChecked="true"/>
+			<Control Name="CheckEpbA8"  Checked="true" Enabled="true"  DefaultChecked="true"/>
+			<Control Name="CheckEpbA9"  Checked="true" Enabled="true"  DefaultChecked="true"/>
+			<Control Name="CheckEpbA10" Checked="true" Enabled="true"  DefaultChecked="true"/>
+			<Control Name="CheckEpbA11" Checked="true" Enabled="true"  DefaultChecked="true"/>
+			<Control Name="CheckEpbA12" Checked="true" Enabled="true"  DefaultChecked="true"/>
+
+			<!-- P1、P2、F -->
+			<Control Name="CheckP1" Checked="true" Enabled="true" DefaultChecked="true"/>
+			<Control Name="CheckP2" Checked="true" Enabled="true" DefaultChecked="true"/>
+			<Control Name="CheckF"  Checked="true"  Enabled="true" DefaultChecked="true"/>
+		</Controls>
+	</FrmEpbMainMonitor>
+</UiConfig>

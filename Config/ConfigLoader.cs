@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
@@ -148,6 +149,9 @@ namespace Config
 
         public TestConfig Test { get; set; }
         // AIConfig 在此不做强约束（你已有采集管线，按参数名取流即可）
+
+
+        public UiConfig UI { get; set; } // UI配置
     }
 
     #endregion
@@ -157,6 +161,10 @@ namespace Config
     /// </summary>
     public static class ConfigLoader
     {
+        // 1) 在 ConfigLoader 类里补这个字段（线程安全用）
+        private static readonly object _uiFileLock = new object();
+
+
         /// <summary>加载 AO/DO/Test 三类配置并组合成 <see cref="GlobalConfig"/>。</summary>
         /// <param name="configDir">配置目录（包含 AOConfig.xml/DOConfig.xml/TestConfig.xml）</param>
         /// <param name="log">日志器</param>
@@ -166,10 +174,15 @@ namespace Config
             var ao = LoadAO(System.IO.Path.Combine(configDir, "AOConfig.xml"), log);
             var dO = LoadDO(System.IO.Path.Combine(configDir, "DOConfig.xml"), log);
             var test = LoadTest(System.IO.Path.Combine(configDir, "TestConfig.xml"), log);
-            return new GlobalConfig { AO = ao, DO = dO, Test = test };
+
+
+            var uiPath = System.IO.Path.Combine(configDir, "UiConfig.xml");
+            var ui = LoadUI(uiPath, log);
+            return new GlobalConfig { AO = ao, DO = dO, Test = test , UI = ui};
         }
 
         /// <summary>读取 AOConfig.xml。</summary>
+        // ReSharper disable once InconsistentNaming
         public static AoConfig LoadAO(string path, IAppLogger log)
         {
             var cfg = new AoConfig();
@@ -203,6 +216,7 @@ namespace Config
         }
 
         /// <summary>读取 DOConfig.xml（EPB 与 Pressure）。</summary>
+        // ReSharper disable once InconsistentNaming
         public static DoConfig LoadDO(string path, IAppLogger log)
         {
             var cfg = new DoConfig();
@@ -335,6 +349,156 @@ namespace Config
                 "配置");
             return cfg;
         }
+        
+        #region UIConfig 相关方法
+
+        // <summary>
+        /// 获取最终路径。如果传 null/空，就返回默认路径：程序当前目录\Config\UiConfig.xml
+        /// </summary>
+        private static string ResolveUiPath(string path = null)
+        {
+            if (!string.IsNullOrWhiteSpace(path))
+                return path;
+
+            string cfgDir = Path.Combine(Environment.CurrentDirectory, "Config");
+            if (!Directory.Exists(cfgDir))
+                Directory.CreateDirectory(cfgDir);
+            return Path.Combine(cfgDir, "UiConfig.xml");
+        }
+
+        // ========== Load ==========
+        public static UiConfig LoadUI(string path, IAppLogger log = null)
+        {
+            path = ResolveUiPath(path);
+
+            var cfg = new UiConfig();
+            if (!File.Exists(path))
+                return cfg;
+
+            var doc = new XmlDocument();
+            doc.Load(path);
+
+            foreach (XmlNode formNode in doc.SelectNodes("/UiConfig/*"))
+            {
+                var form = cfg.GetOrAddForm(formNode.Name);
+                foreach (XmlNode n in formNode.SelectNodes("./Controls/Control"))
+                {
+                    var name = n.Attributes?["Name"]?.Value?.Trim();
+                    if (string.IsNullOrEmpty(name)) continue;
+
+                    bool TryAttr(string key, bool dft)
+                    {
+                        var v = n.Attributes?[key]?.Value?.Trim();
+                        if (string.IsNullOrEmpty(v)) return dft;
+                        if (v == "1" || v.Equals("true", StringComparison.OrdinalIgnoreCase)) return true;
+                        if (v == "0" || v.Equals("false", StringComparison.OrdinalIgnoreCase)) return false;
+                        return dft;
+                    }
+
+                    var c = new UiControlState
+                    {
+                        Name = name,
+                        Checked = TryAttr("Checked", false),
+                        Enabled = TryAttr("Enabled", true),
+                        DefaultChecked = TryAttr("DefaultChecked", false),
+                    };
+                    form.Controls[name] = c;
+                }
+            }
+
+            log?.Info($"UI 配置加载完成：表单数={cfg.Forms.Count}", "配置");
+            return cfg;
+        }
+
+        // 不带 path 的重载
+        public static UiConfig LoadUI(IAppLogger log = null) => LoadUI(null, log);
+
+
+        // ========== Save ==========
+        public static void SaveUI(string path, UiConfig cfg)
+        {
+            path = ResolveUiPath(path);
+
+            lock (_uiFileLock)
+            {
+                var doc = new XmlDocument();
+                var decl = doc.CreateXmlDeclaration("1.0", "utf-8", null);
+                doc.AppendChild(decl);
+
+                var root = doc.CreateElement("UiConfig");
+                doc.AppendChild(root);
+
+                foreach (var kv in cfg.Forms.OrderBy(k => k.Key, StringComparer.OrdinalIgnoreCase))
+                {
+                    var formNode = doc.CreateElement(kv.Key);
+                    var ctrl = doc.CreateElement("Controls");
+                    formNode.AppendChild(ctrl);
+
+                    foreach (var c in kv.Value.Controls.Values.OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase))
+                    {
+                        var n = doc.CreateElement("Control");
+
+                        var attr = doc.CreateAttribute("Name");
+                        attr.Value = c.Name; n.Attributes.Append(attr);
+
+                        attr = doc.CreateAttribute("Checked");
+                        attr.Value = c.Checked ? "true" : "false"; n.Attributes.Append(attr);
+
+                        attr = doc.CreateAttribute("Enabled");
+                        attr.Value = c.Enabled ? "true" : "false"; n.Attributes.Append(attr);
+
+                        attr = doc.CreateAttribute("DefaultChecked");
+                        attr.Value = c.DefaultChecked ? "true" : "false"; n.Attributes.Append(attr);
+
+                        ctrl.AppendChild(n);
+                    }
+
+                    root.AppendChild(formNode);
+                }
+
+                var tmp = path + ".tmp";
+                doc.Save(tmp);
+                if (File.Exists(path)) File.Replace(tmp, path, null);
+                else File.Move(tmp, path);
+            }
+        }
+
+        // 不带 path 的重载
+        public static void SaveUI(UiConfig cfg) => SaveUI(null, cfg);
+
+
+        // ========== Update ==========
+        public static void UpdateUIChecked(string path, UiConfig cfg, string formName, string ctrlName, bool isChecked, bool? enabled = null)
+        {
+            path = ResolveUiPath(path);
+
+            var form = cfg.GetOrAddForm(formName);
+            var c = form.GetOrAdd(ctrlName);
+            c.Checked = isChecked;
+            if (enabled.HasValue) c.Enabled = enabled.Value;
+            SaveUI(path, cfg);
+        }
+
+        // 不带 path 的重载
+        public static void UpdateUIChecked(UiConfig cfg, string formName, string ctrlName, bool isChecked, bool? enabled = null)
+            => UpdateUIChecked(null, cfg, formName, ctrlName, isChecked, enabled);
+
+
+        public static void UpdateUIDefaultChecked(string path, UiConfig cfg, string formName, string ctrlName, bool defaultChecked)
+        {
+            path = ResolveUiPath(path);
+
+            var form = cfg.GetOrAddForm(formName);
+            var c = form.GetOrAdd(ctrlName);
+            c.DefaultChecked = defaultChecked;
+            SaveUI(path, cfg);
+        }
+
+        // 不带 path 的重载
+        public static void UpdateUIDefaultChecked(UiConfig cfg, string formName, string ctrlName, bool defaultChecked)
+            => UpdateUIDefaultChecked(null, cfg, formName, ctrlName, defaultChecked);
+
+        #endregion
 
         private static List<int> ParseIntList(string text)
         {

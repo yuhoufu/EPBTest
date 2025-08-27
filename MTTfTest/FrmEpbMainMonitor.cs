@@ -68,6 +68,32 @@ namespace MTEmbTest
         private LineItem curveCanCurrent;
         private PointPairList listCanCurrent;
 
+        // 高对比度深色系调色板（至少 15 种，便于区分不同曲线）
+        private readonly Color[] _curveColors = new Color[]
+        {
+            Color.Blue,
+            Color.Red,
+            Color.Green,
+            Color.Orange,
+            Color.Purple,
+            Color.Brown,
+            Color.DarkCyan,
+            Color.Magenta,
+            Color.DarkOliveGreen,
+            Color.Maroon,
+            Color.Teal,
+            Color.Goldenrod,
+            Color.DarkBlue,
+            Color.DarkRed,
+            Color.DarkGreen
+        };
+
+        // 曲线对象集合（ZedGraph 的 LineItem 列表）
+        private readonly List<LineItem> _curveItems = new List<LineItem>();
+
+        // 曲线数据源集合（ZedGraph 的 PointPairList 列表）
+        private readonly List<PointPairList> _curveDataLists = new List<PointPairList>();
+        
         #endregion
 
 
@@ -521,7 +547,7 @@ namespace MTEmbTest
 
                 LoadEmbControler();
 
-
+                // 初始化曲线
                 InitializeCurve();
                 //StartListen();
                 MakeCurveMapping();
@@ -565,6 +591,42 @@ namespace MTEmbTest
 
                 twoDeviceAiAcquirer.OnEngBatch += Acq_OnEngBatch; // 订阅工程值批次到达事件
 
+                #region 曲线勾选控件相关
+
+                // 1) 载入 UI 配置
+                _uiCfg = _cfg.UI; 
+
+                // 2) 获取/创建该表单的配置容器
+                var formState = _uiCfg.GetOrAddForm(FormKey);
+
+                // 3) 应用各控件状态 & 绑定事件（只绑一次）
+                foreach (var name in _persistNames)
+                {
+                    var ctl = this.Controls.Find(name, true).FirstOrDefault();
+                    if (ctl is not CheckEdit cb) continue;    // 若是 SunnyUI.UICheckBox，同样有 Checked/CheckedChanged
+
+                    var st = formState.GetOrAdd(name);       // 若 xml 中还没有，会新建节点（Checked=false/Enabled=true/DefaultChecked=false）
+
+                    // 应用状态
+                    cb.Checked = st.Checked;
+                    cb.Enabled = st.Enabled;
+
+                    // 防重复绑定
+                    cb.CheckedChanged -= Cb_CheckedChanged_Save;
+                    cb.EnabledChanged -= Cb_EnabledChanged_Save;
+
+                    // 即时保存
+                    cb.CheckedChanged += Cb_CheckedChanged_Save;
+                    cb.EnabledChanged += Cb_EnabledChanged_Save;
+                }
+
+                // 4) 如果文件里缺少某些控件项，第一次加载会补齐；这里统一保存一次，保证文件完整
+                ConfigLoader.SaveUI(_uiCfg);
+
+                #endregion
+
+                //twoDeviceAiAcquirer.Start();  // 开始采集
+
 
 
             }
@@ -574,6 +636,51 @@ namespace MTEmbTest
                 MessageBox.Show("初始化错误 : " + ex.Message);
             }
         }
+
+        #region 曲线的勾选控件相关
+
+        // —— 勾选变更：立即保存 —— //
+        private void Cb_CheckedChanged_Save(object sender, EventArgs e)
+        {
+            if (sender is CheckBox cb)
+                ConfigLoader.UpdateUIChecked(_uiCfg, FormKey, cb.Name, cb.Checked);
+        }
+
+        // —— 启用状态变更：立即保存 —— //
+        private void Cb_EnabledChanged_Save(object sender, EventArgs e)
+        {
+            if (sender is CheckBox cb)
+                ConfigLoader.UpdateUIChecked(_uiCfg, FormKey, cb.Name, cb.Checked, enabled: cb.Enabled);
+        }
+
+        // —— 可选：恢复默认按钮（把所有勾选恢复为 DefaultChecked，并触发保存） —— //
+        private void BtnRestoreDefault_Click(object sender, EventArgs e)
+        {
+            var formState = _uiCfg.GetOrAddForm(FormKey);
+            foreach (var name in _persistNames)
+            {
+                var ctl = this.Controls.Find(name, true).FirstOrDefault();
+                if (ctl is CheckBox cb)
+                {
+                    var st = formState.GetOrAdd(name);
+                    cb.Checked = st.DefaultChecked;  // 触发 CheckedChanged → 自动保存
+                }
+            }
+        }
+
+        // —— 可选：将“当前状态”写为默认值，并保存到文件 —— //
+        private void BtnSetCurrentAsDefault_Click(object sender, EventArgs e)
+        {
+            foreach (var name in _persistNames)
+            {
+                var ctl = this.Controls.Find(name, true).FirstOrDefault();
+                if (ctl is CheckBox cb)
+                    ConfigLoader.UpdateUIDefaultChecked(_uiCfg, FormKey, name, cb.Checked);
+            }
+            MessageBox.Show(@"已将当前勾选状态保存为默认值。");
+        }
+
+        #endregion
 
         public void LoadTestConfigFromXml()
         {
@@ -639,6 +746,9 @@ namespace MTEmbTest
 
         #region 曲线处理
 
+        /// <summary>
+        /// 曲线初始化
+        /// </summary>
         private void InitializeCurve()
         {
             try
@@ -724,36 +834,60 @@ namespace MTEmbTest
                 pane.Y2Axis.MajorGrid.IsZeroLine = false;
 
 
-                var CanCurrentYAxis = new Y2Axis("");
-                pane.Y2AxisList.Add(CanCurrentYAxis);
-                CanCurrentYAxis.IsVisible = true;
-                CanCurrentYAxis.Title.FontSpec.FontColor = Color.Purple;
-                CanCurrentYAxis.Color = Color.Purple;
-                CanCurrentYAxis.Scale.FontSpec.FontColor = Color.Purple;
-                CanCurrentYAxis.Title.FontSpec.Size = fontSize;
-                CanCurrentYAxis.Scale.FontSpec.Size = fontSize;
-                CanCurrentYAxis.MajorGrid.IsVisible = false;
-                CanCurrentYAxis.MajorGrid.IsZeroLine = false;
+                var forceYAxis = new Y2Axis("");
+                pane.Y2AxisList.Add(forceYAxis);
+                forceYAxis.IsVisible = true;
+                forceYAxis.Title.FontSpec.FontColor = Color.Purple;
+                forceYAxis.Color = Color.Purple;
+                forceYAxis.Scale.FontSpec.FontColor = Color.Purple;
+                forceYAxis.Title.FontSpec.Size = fontSize;
+                forceYAxis.Scale.FontSpec.Size = fontSize;
+                forceYAxis.MajorGrid.IsVisible = false;
+                forceYAxis.MajorGrid.IsZeroLine = false;
 
-                //
-                // listForce = new PointPairList();
-                // curveForce = pane.AddCurve("Act_F(N)", listForce, Color.FromArgb(80, 160, 255), SymbolType.None);
-                // curveForce.Line.Width = 2;
-                // curveForce.IsY2Axis = false;
-                // curveForce.YAxisIndex = 0;
-                //
-                //
-                // listCanCurrent = new PointPairList();
-                // curveCanCurrent = pane.AddCurve("Act_I(A)", listCanCurrent, Color.Purple, SymbolType.None);
-                // curveCanCurrent.Line.Width = 2;
-                // curveCanCurrent.IsY2Axis = true;
-                // curveCanCurrent.YAxisIndex = pane.Y2AxisList.Count - 1;
+                
 
-                listDaqCurrent = new PointPairList();
-                curveDaqCurrent = pane.AddCurve("DAQ_I(A)", listDaqCurrent, Color.Lime, SymbolType.None);
+                // 添加 12 根电流曲线
+                for (int i = 1; i <= 12; i++)
+                {
+                    var dataList = new PointPairList();
+                    _curveDataLists.Add(dataList);
+
+                    string curveName = $"DAQ_{i}_I(A)";
+                    var curve = pane.AddCurve(curveName, dataList, _curveColors[(i - 1) % _curveColors.Length], SymbolType.None);
+
+                    curve.Line.Width = 2;
+                    curve.IsY2Axis = true;
+                    curve.YAxisIndex = 1;
+
+                    _curveItems.Add(curve);
+                }
+
+                // 添加 P1 / P2 / F
+                string[] extraNames = { "DAQ_P1_(bar)", "DAQ_P2_(bar)"  };
+                for (int i = 0; i < extraNames.Length; i++)
+                {
+                    var dataList = new PointPairList();
+                    _curveDataLists.Add(dataList);
+
+                    var curve = pane.AddCurve(extraNames[i], dataList, _curveColors[12 + i], SymbolType.None);
+
+                    curve.Line.Width = 2;
+                    curve.IsY2Axis = true;
+                    curve.YAxisIndex = 1;
+
+                    _curveItems.Add(curve);
+                }
+
+
+
+                var forceDataList = new PointPairList();
+                curveDaqCurrent = pane.AddCurve("DAQ_F_(N)", forceDataList, _curveColors[_curveColors.Length-1], SymbolType.None);
                 curveDaqCurrent.Line.Width = 2;
-                curveDaqCurrent.IsY2Axis = true;
-                curveDaqCurrent.YAxisIndex = 0;
+                curveDaqCurrent.IsY2Axis = false;
+                curveDaqCurrent.YAxisIndex = 1;
+
+
 
 
                 zedGraphRealChart.GraphPane.XAxis.Scale.Max = ClsGlobal.XDuration;
@@ -770,8 +904,8 @@ namespace MTEmbTest
                 zedGraphRealChart.GraphPane.Y2Axis.Scale.MagAuto = false;
                 zedGraphRealChart.GraphPane.Y2Axis.Scale.FormatAuto = false;
 
-                CanCurrentYAxis.Scale.MagAuto = false;
-                CanCurrentYAxis.Scale.FormatAuto = false;
+                forceYAxis.Scale.MagAuto = false;
+                forceYAxis.Scale.FormatAuto = false;
 
 
                 zedGraphRealChart.AxisChange();
@@ -1164,32 +1298,32 @@ namespace MTEmbTest
                 // 本次追加的起始 X（秒）。
                 // 若已有点，则从最后一个点的下一步开始；否则从 0 开始。
                 double xStart;
-                if (listDaqCurrent != null && listDaqCurrent.Count > 0)
-                    xStart = listDaqCurrent[listDaqCurrent.Count - 1].X + dt;
+                if (_curveDataLists[0] != null && _curveDataLists[0].Count > 0)
+                    xStart = _curveDataLists[0][_curveDataLists[0].Count - 1].X + dt;
                 else
                     xStart = 0.0;
 
                 // 逐点追加（X 轴为相对时间，单位：秒）
                 for (int i = 0; i < daqData.Length; i++)
                 {
-                    listDaqCurrent.Add(xStart + i * dt, daqData[i]);
+                    _curveDataLists[0].Add(xStart + i * dt, daqData[i]);
                 }
 
                 // ===== 维持固定时窗（滑动窗口）=====
-                if (listDaqCurrent != null && listDaqCurrent.Count > 0)
+                if (_curveDataLists[0] != null && _curveDataLists[0].Count > 0)
                 {
-                    double firstX = listDaqCurrent[0].X;
-                    double lastX = listDaqCurrent[listDaqCurrent.Count - 1].X;
+                    double firstX = _curveDataLists[0][0].X;
+                    double lastX = _curveDataLists[0][_curveDataLists[0].Count - 1].X;
 
                     if (lastX - firstX > ClsGlobal.XDuration)
                     {
                         // 移除最旧的一半，避免频繁整体拷贝导致卡顿
                         double mid = (firstX + lastX) / 2.0;
-                        listDaqCurrent.RemoveAll(p => p.X < mid);
+                        _curveDataLists[0].RemoveAll(p => p.X < mid);
 
                         // 滑动 X 轴范围到最新窗口
-                        pane.XAxis.Scale.Min = listDaqCurrent[0].X;
-                        pane.XAxis.Scale.Max = listDaqCurrent[0].X + ClsGlobal.XDuration;
+                        pane.XAxis.Scale.Min = _curveDataLists[0][0].X;
+                        pane.XAxis.Scale.Max = _curveDataLists[0][0].X + ClsGlobal.XDuration;
                     }
                 }
 
@@ -1244,8 +1378,7 @@ namespace MTEmbTest
                 }
             }
         }
-
-
+        
         private double[] ProcessDaqCurrentData()
         {
             var RecCount = DaqAiDispData.Count;
@@ -1383,6 +1516,16 @@ namespace MTEmbTest
 
         private bool _isCtrlPowerPressing = false;
         private GlobalConfig _cfg;
+        private const string FormKey = "FrmEpbMainMonitor";
+
+        // 控制曲线显示的check控件名
+        private readonly string[] _persistNames =
+            Enumerable.Range(1, 12).Select(i => $"CheckEpbA{i}")
+                .Concat(new[] { "CheckP1", "CheckP2", "CheckF" })
+                .ToArray();
+
+        private UiConfig _uiCfg;
+
 
         private async void PowerClick(object sender, EventArgs e, int index)
         {
@@ -1792,6 +1935,8 @@ namespace MTEmbTest
             // _do.SetEpb(channelNo: 9, directionIsForward: true);
         }
 
+        #region 日志相关
+
         /// <summary>
         /// 按钮点击事件，查看运行日志
         /// </summary>
@@ -1801,7 +1946,7 @@ namespace MTEmbTest
         {
             try
             {
-                string OutFile = System.Environment.CurrentDirectory + @"\RunLog.txt";
+                string OutFile = Environment.CurrentDirectory + @"\RunLog.txt";
                 ClsLogProcess.ViewLogData(ref LogInformation, OutFile);
             }
             catch (Exception ex)
@@ -1811,6 +1956,25 @@ namespace MTEmbTest
         }
 
         /// <summary>
+        /// 警告日志按钮点击事件
+        /// </summary>
+        /// <param name="sender"></param>
+        /// <param name="e"></param>
+        private void BtnWarnLog_Click(object sender, EventArgs e)
+        {
+
+            try
+            {
+                string OutFile = Environment.CurrentDirectory + @"\WarnLog.txt";
+                ClsLogProcess.ViewWarnData(ref LogWarn, OutFile);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message);
+            }
+        }
+        
+        /// <summary>
         /// 按钮点击事件，查看错误日志
         /// </summary>
         /// <param name="sender"></param>
@@ -1819,7 +1983,7 @@ namespace MTEmbTest
         {
             try
             {
-                string OutFile = System.Environment.CurrentDirectory + @"\ErrorLog.txt";
+                string OutFile = Environment.CurrentDirectory + @"\ErrorLog.txt";
                 ClsErrorProcess.ViewErrorData(ref LogError, OutFile);
             }
             catch (Exception ex)
@@ -1827,6 +1991,10 @@ namespace MTEmbTest
                 MessageBox.Show(ex.Message);
             }
         }
+
+        #endregion
+
+        #region 测试相关代码 - 正式运行删除
 
         /// <summary>
         /// 切换开关事件，测试代码，正式运行时请删除
@@ -1845,6 +2013,11 @@ namespace MTEmbTest
             // _ao.SetPercent("Cylinder1", 50); // => ~5V
             // _ao.SetPercent("Cylinder2", 50); // => ~5V
         }
+        
+
+        #endregion
+
+
 
 
         /// <summary>
@@ -1872,13 +2045,52 @@ namespace MTEmbTest
             //base.OnFormClosed(e);
         }
 
+        // 工程值批次到达（dev="Dev1" 或 "Dev2"；eng 为 [通道, 样本]）
+        private void Acq_OnEngBatch(string dev, double[,] eng, DateTime current, DateTime last)
+        {
+            if (InvokeRequired)
+            {
+                // 切回 UI 线程，避免跨线程操作控件异常
+                BeginInvoke(new Action(() => Acq_OnEngBatch(dev, eng, current, last)));
+                return;
+            }
+
+            // ===== 示例1：读取指定通道的“最后一个样本”并显示到 SunnyUI 的 UILabel =====
+            // 你在 TwoDeviceAiAcquirer 里已把“最近值快照”维护好了，也暴露了 ReadCurrent/ReadPressure 简便查询接口：
+            //   ReadCurrent(int epbChannel), ReadPressure(int id)  —— 直接拿最近值用来显示 UI 即可。:contentReference[oaicite:6]{index=6}
+            //double p1 = _acq.ReadPressure(1);           // 压力1 (工程值)
+            
+            if (dev == "Dev1")
+            {
+                // 1) 取第0通道的一个点，顺便刷新数值显示（你原来就是取 [0,0]）
+                double epb1 = eng[1, 0];                 // EPB1 电流 (工程值)
+                textEditCurrent1.Text = $"{epb1:F2} A";   // 假设 textEditCurrent1 是显示 EPB1 电流的控件
+
+                // 2) 提取第0维（第0通道）的整段样本，准备绘制
+                int samples = eng.GetLength(1);           // 列数 = 样本数
+                if (samples > 0)
+                {
+                    // 建议用循环拷贝（最安全、与 .NET 4.8 兼容）
+                    var daqI = new double[samples];
+                    for (int i = 0; i < samples; i++)
+                        daqI[i] = eng[1, i];
+
+                    // 3) 调用你的单曲线绘制方法（内部已做 Invoke 封送，可直接调用）
+                    UpdateGraphDisplay2(daqI);
+                }
+
+
+            }
+            
+        }
+        
         private async void BtnStartTest_Click(object sender, EventArgs e)
         {
             try
             {
                 
 
-                twoDeviceAiAcquirer.Start();
+                
 
 
 
@@ -1905,84 +2117,11 @@ namespace MTEmbTest
             }
         }
 
-
-        // 工程值批次到达（dev="Dev1" 或 "Dev2"；eng 为 [通道, 样本]）
-        private void Acq_OnEngBatch(string dev, double[,] eng, DateTime current, DateTime last)
-        {
-            if (InvokeRequired)
-            {
-                // 切回 UI 线程，避免跨线程操作控件异常
-                BeginInvoke(new Action(() => Acq_OnEngBatch(dev, eng, current, last)));
-                return;
-            }
-
-            // ===== 示例1：读取指定通道的“最后一个样本”并显示到 SunnyUI 的 UILabel =====
-            // 你在 TwoDeviceAiAcquirer 里已把“最近值快照”维护好了，也暴露了 ReadCurrent/ReadPressure 简便查询接口：
-            //   ReadCurrent(int epbChannel), ReadPressure(int id)  —— 直接拿最近值用来显示 UI 即可。:contentReference[oaicite:6]{index=6}
-            //double p1 = _acq.ReadPressure(1);           // 压力1 (工程值)
-            
-            
-            
-            if (dev == "Dev1")
-            {
-                // 1) 取第0通道的一个点，顺便刷新数值显示（你原来就是取 [0,0]）
-                double epb1 = eng[1, 0];                 // EPB1 电流 (工程值)
-                textEditCurrent1.Text = $"{epb1:F2} A";   // 假设 textEditCurrent1 是显示 EPB1 电流的控件
-
-                // 2) 提取第0维（第0通道）的整段样本，准备绘制
-                int samples = eng.GetLength(1);           // 列数 = 样本数
-                if (samples > 0)
-                {
-                    // 建议用循环拷贝（最安全、与 .NET 4.8 兼容）
-                    var daqI = new double[samples];
-                    for (int i = 0; i < samples; i++)
-                        daqI[i] = eng[1, i];
-
-                    // 3) 调用你的单曲线绘制方法（内部已做 Invoke 封送，可直接调用）
-                    UpdateGraphDisplay2(daqI);
-                }
-
-
-            }
-
-            // uiLabelPressure1.Text = $"{p1:F2} bar";
-            // uiLabelEpb1.Text = $"{epb1:F2} A";
-
-
-
-
-
-            // // ===== 示例2：往 ZedGraph 追加点（以“最后一个样本”作为当前时刻值）=====
-            // // 假设 pane.CurveList[0] 是 Pressure 曲线，CurveList[1] 是 EPB1 电流曲线
-            // var pane = zedGraphControl1.GraphPane;
-            // var t = (current - DateTime.Today).TotalSeconds; // 简单用秒作横轴
-            //
-            // // 这里假设你已在别处创建了两条曲线，命名 "P1" 与 "I1"
-            // var pCurve = pane.CurveList["P1"] as ZedGraph.LineItem;
-            // var iCurve = pane.CurveList["I1"] as ZedGraph.LineItem;
-            //
-            // if (pCurve != null) pCurve.AddPoint(t, p1);
-            // if (iCurve != null) iCurve.AddPoint(t, epb1);
-            //
-            // zedGraphControl1.AxisChange();
-            // zedGraphControl1.Invalidate(); // 触发重绘
-        }
-        
-
-        private void BtnWarnLog_Click(object sender, EventArgs e)
-        {
-
-            try
-            {
-                string OutFile = System.Environment.CurrentDirectory + @"\WarnLog.txt";
-                ClsLogProcess.ViewWarnData(ref LogWarn, OutFile);
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show(ex.Message);
-            }
-        }
-
+        /// <summary>
+        /// 停止试验按钮
+        /// </summary>
+        /// <param name="sender"></param>
+        /// <param name="e"></param>
         private void BtnStop_Click(object sender, EventArgs e)
         {
             try
@@ -1995,9 +2134,14 @@ namespace MTEmbTest
             }
         }
 
-        private void uiLabel27_Click(object sender, EventArgs e)
+        private void CheckEpbA7_CheckedChanged(object sender, EventArgs e)
         {
+            Console.WriteLine(@"CheckEpbA7_CheckedChanged");
+        }
 
+        private void CheckEpbA7_CheckStateChanged(object sender, EventArgs e)
+        {
+            Console.WriteLine(@"CheckEpbA7_CheckStateChanged");
         }
     }
 }

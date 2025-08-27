@@ -227,12 +227,6 @@
             this.uiLabel23 = new Sunny.UI.UILabel();
             this.uiLabel24 = new Sunny.UI.UILabel();
             this.uiLabel25 = new Sunny.UI.UILabel();
-            this.SwitchEpb4 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchPower4 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchPower5 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchPower6 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchEpb5 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchEpb6 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
             this.uiTableLayoutPanel12 = new Sunny.UI.UITableLayoutPanel();
             this.LabEpb7 = new Sunny.UI.UILabel();
             this.LabEpb8 = new Sunny.UI.UILabel();
@@ -240,12 +234,6 @@
             this.uiLabel20 = new Sunny.UI.UILabel();
             this.uiLabel21 = new Sunny.UI.UILabel();
             this.uiLabel22 = new Sunny.UI.UILabel();
-            this.SwitchEpb7 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchPower8 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchPower7 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchPower9 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.tSwitchEpb9 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchEpb8 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
             this.uiTableLayoutPanel13 = new Sunny.UI.UITableLayoutPanel();
             this.LabEpb10 = new Sunny.UI.UILabel();
             this.LabEpb11 = new Sunny.UI.UILabel();
@@ -253,12 +241,6 @@
             this.uiLabel26 = new Sunny.UI.UILabel();
             this.uiLabel27 = new Sunny.UI.UILabel();
             this.uiLabel28 = new Sunny.UI.UILabel();
-            this.SwitchEpb11 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchPower10 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchPower11 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchPower12 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchEpb12 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchEpb10 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
             this.uiPanel2 = new Sunny.UI.UIPanel();
             this.uiPanel3 = new Sunny.UI.UIPanel();
             this.uiPanel4 = new Sunny.UI.UIPanel();
@@ -269,12 +251,6 @@
             this.uiLabel4 = new Sunny.UI.UILabel();
             this.uiLabel5 = new Sunny.UI.UILabel();
             this.uiLabel6 = new Sunny.UI.UILabel();
-            this.SwitchEpb1 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchPower1 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchPower2 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchPower3 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchEpb2 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchEpb3 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
             this.SwitchEmb2 = new Sunny.UI.UISwitch();
             this.SwitchEmb3 = new Sunny.UI.UISwitch();
             this.uiLabel17 = new Sunny.UI.UILabel();
@@ -314,6 +290,32 @@
             this.CheckP2 = new DevExpress.XtraEditors.CheckEdit();
             this.textEditP1 = new DevExpress.XtraEditors.TextEdit();
             this.textEditP2 = new DevExpress.XtraEditors.TextEdit();
+            this.CheckF = new DevExpress.XtraEditors.CheckEdit();
+            this.textEditF = new DevExpress.XtraEditors.TextEdit();
+            this.SwitchEpb4 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
+            this.SwitchPower4 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
+            this.SwitchPower5 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
+            this.SwitchPower6 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
+            this.SwitchEpb5 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
+            this.SwitchEpb6 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
+            this.SwitchEpb7 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
+            this.SwitchPower8 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
+            this.SwitchPower7 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
+            this.SwitchPower9 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
+            this.tSwitchEpb9 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
+            this.SwitchEpb8 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
+            this.SwitchEpb11 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
+            this.SwitchPower10 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
+            this.SwitchPower11 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
+            this.SwitchPower12 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
+            this.SwitchEpb12 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
+            this.SwitchEpb10 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
+            this.SwitchEpb1 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
+            this.SwitchPower1 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
+            this.SwitchPower2 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
+            this.SwitchPower3 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
+            this.SwitchEpb2 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
+            this.SwitchEpb3 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
             ((System.ComponentModel.ISupportInitialize)(this.dgvRealData)).BeginInit();
             this.uiGroupCurve.SuspendLayout();
             this.uiTableLayoutPanel18.SuspendLayout();
@@ -417,6 +419,8 @@
             ((System.ComponentModel.ISupportInitialize)(this.CheckP2.Properties)).BeginInit();
             ((System.ComponentModel.ISupportInitialize)(this.textEditP1.Properties)).BeginInit();
             ((System.ComponentModel.ISupportInitialize)(this.textEditP2.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.CheckF.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEditF.Properties)).BeginInit();
             this.SuspendLayout();
             // 
             // uiTextBox1
@@ -543,7 +547,7 @@
             this.zedGraphControl1.IsEnableVZoom = false;
             this.zedGraphControl1.IsEnableWheelZoom = false;
             this.zedGraphControl1.Location = new System.Drawing.Point(32767, 32767);
-            this.zedGraphControl1.Margin = new System.Windows.Forms.Padding(474660, 1469973, 474660, 1469973);
+            this.zedGraphControl1.Margin = new System.Windows.Forms.Padding(1125120, 3821356, 1125120, 3821356);
             this.zedGraphControl1.Name = "zedGraphControl1";
             this.zedGraphControl1.ScrollGrace = 0D;
             this.zedGraphControl1.ScrollMaxX = 0D;
@@ -1176,8 +1180,8 @@
             this.zedGraphControl2.IsEnableHZoom = false;
             this.zedGraphControl2.IsEnableVZoom = false;
             this.zedGraphControl2.IsEnableWheelZoom = false;
-            this.zedGraphControl2.Location = new System.Drawing.Point(105, 114);
-            this.zedGraphControl2.Margin = new System.Windows.Forms.Padding(85, 104, 85, 104);
+            this.zedGraphControl2.Location = new System.Drawing.Point(171, 207);
+            this.zedGraphControl2.Margin = new System.Windows.Forms.Padding(151, 197, 151, 197);
             this.zedGraphControl2.Name = "zedGraphControl2";
             this.zedGraphControl2.ScrollGrace = 0D;
             this.zedGraphControl2.ScrollMaxX = 0D;
@@ -1186,7 +1190,7 @@
             this.zedGraphControl2.ScrollMinX = 0D;
             this.zedGraphControl2.ScrollMinY = 0D;
             this.zedGraphControl2.ScrollMinY2 = 0D;
-            this.zedGraphControl2.Size = new System.Drawing.Size(417, 138);
+            this.zedGraphControl2.Size = new System.Drawing.Size(285, 1);
             this.zedGraphControl2.TabIndex = 4;
             this.zedGraphControl2.UseExtendedPrintDialog = true;
             // 
@@ -2038,8 +2042,8 @@
             this.zedGraphControl3.IsEnableHZoom = false;
             this.zedGraphControl3.IsEnableVZoom = false;
             this.zedGraphControl3.IsEnableWheelZoom = false;
-            this.zedGraphControl3.Location = new System.Drawing.Point(105, 114);
-            this.zedGraphControl3.Margin = new System.Windows.Forms.Padding(85, 104, 85, 104);
+            this.zedGraphControl3.Location = new System.Drawing.Point(171, 207);
+            this.zedGraphControl3.Margin = new System.Windows.Forms.Padding(151, 197, 151, 197);
             this.zedGraphControl3.Name = "zedGraphControl3";
             this.zedGraphControl3.ScrollGrace = 0D;
             this.zedGraphControl3.ScrollMaxX = 0D;
@@ -2048,7 +2052,7 @@
             this.zedGraphControl3.ScrollMinX = 0D;
             this.zedGraphControl3.ScrollMinY = 0D;
             this.zedGraphControl3.ScrollMinY2 = 0D;
-            this.zedGraphControl3.Size = new System.Drawing.Size(417, 138);
+            this.zedGraphControl3.Size = new System.Drawing.Size(285, 1);
             this.zedGraphControl3.TabIndex = 4;
             this.zedGraphControl3.UseExtendedPrintDialog = true;
             // 
@@ -2678,7 +2682,7 @@
             this.uiTableLayoutPanel15.ColumnCount = 3;
             this.uiTableLayoutPanel15.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 44.07583F));
             this.uiTableLayoutPanel15.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 55.92417F));
-            this.uiTableLayoutPanel15.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 189F));
+            this.uiTableLayoutPanel15.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 195F));
             this.uiTableLayoutPanel15.Controls.Add(this.uiLight3, 2, 3);
             this.uiTableLayoutPanel15.Controls.Add(this.uiLabel58, 0, 2);
             this.uiTableLayoutPanel15.Controls.Add(this.uiLabel57, 0, 1);
@@ -2709,7 +2713,7 @@
             this.uiLight3.CenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
             this.uiLight3.Font = new System.Drawing.Font("宋体", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
             this.uiLight3.Interval = 2000;
-            this.uiLight3.Location = new System.Drawing.Point(807, 524);
+            this.uiLight3.Location = new System.Drawing.Point(804, 524);
             this.uiLight3.Margin = new System.Windows.Forms.Padding(12, 4, 4, 4);
             this.uiLight3.MinimumSize = new System.Drawing.Size(2, 2);
             this.uiLight3.Name = "uiLight3";
@@ -2730,7 +2734,7 @@
             this.uiLabel58.Location = new System.Drawing.Point(4, 324);
             this.uiLabel58.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
             this.uiLabel58.Name = "uiLabel58";
-            this.uiLabel58.Size = new System.Drawing.Size(325, 162);
+            this.uiLabel58.Size = new System.Drawing.Size(323, 162);
             this.uiLabel58.TabIndex = 45;
             this.uiLabel58.Text = "剩余次数";
             this.uiLabel58.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -2743,7 +2747,7 @@
             this.uiLabel57.Location = new System.Drawing.Point(4, 162);
             this.uiLabel57.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
             this.uiLabel57.Name = "uiLabel57";
-            this.uiLabel57.Size = new System.Drawing.Size(325, 162);
+            this.uiLabel57.Size = new System.Drawing.Size(323, 162);
             this.uiLabel57.TabIndex = 44;
             this.uiLabel57.Text = "完成次数";
             this.uiLabel57.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -2756,7 +2760,7 @@
             this.uiLabel56.Location = new System.Drawing.Point(4, 0);
             this.uiLabel56.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
             this.uiLabel56.Name = "uiLabel56";
-            this.uiLabel56.Size = new System.Drawing.Size(325, 162);
+            this.uiLabel56.Size = new System.Drawing.Size(323, 162);
             this.uiLabel56.TabIndex = 43;
             this.uiLabel56.Text = "运行时间";
             this.uiLabel56.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -2771,14 +2775,14 @@
             this.uiTableLayoutPanel23.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
             this.uiTableLayoutPanel23.Controls.Add(this.LedRunCycles, 1, 1);
             this.uiTableLayoutPanel23.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel23.Location = new System.Drawing.Point(337, 166);
+            this.uiTableLayoutPanel23.Location = new System.Drawing.Point(335, 166);
             this.uiTableLayoutPanel23.Margin = new System.Windows.Forms.Padding(4);
             this.uiTableLayoutPanel23.Name = "uiTableLayoutPanel23";
             this.uiTableLayoutPanel23.RowCount = 3;
             this.uiTableLayoutPanel23.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
             this.uiTableLayoutPanel23.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 90F));
             this.uiTableLayoutPanel23.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
-            this.uiTableLayoutPanel23.Size = new System.Drawing.Size(605, 154);
+            this.uiTableLayoutPanel23.Size = new System.Drawing.Size(607, 154);
             this.uiTableLayoutPanel23.TabIndex = 38;
             this.uiTableLayoutPanel23.TagString = null;
             // 
@@ -2796,7 +2800,7 @@
             this.LedRunCycles.IntervalOn = 6;
             this.LedRunCycles.IntervalV = 0;
             this.LedRunCycles.LedBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
-            this.LedRunCycles.Location = new System.Drawing.Point(129, 50);
+            this.LedRunCycles.Location = new System.Drawing.Point(130, 50);
             this.LedRunCycles.Margin = new System.Windows.Forms.Padding(4);
             this.LedRunCycles.Name = "LedRunCycles";
             this.LedRunCycles.Size = new System.Drawing.Size(346, 52);
@@ -2813,14 +2817,14 @@
             this.uiTableLayoutPanel32.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
             this.uiTableLayoutPanel32.Controls.Add(this.LedRunTime, 1, 1);
             this.uiTableLayoutPanel32.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel32.Location = new System.Drawing.Point(337, 4);
+            this.uiTableLayoutPanel32.Location = new System.Drawing.Point(335, 4);
             this.uiTableLayoutPanel32.Margin = new System.Windows.Forms.Padding(4);
             this.uiTableLayoutPanel32.Name = "uiTableLayoutPanel32";
             this.uiTableLayoutPanel32.RowCount = 3;
             this.uiTableLayoutPanel32.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
             this.uiTableLayoutPanel32.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 90F));
             this.uiTableLayoutPanel32.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
-            this.uiTableLayoutPanel32.Size = new System.Drawing.Size(605, 154);
+            this.uiTableLayoutPanel32.Size = new System.Drawing.Size(607, 154);
             this.uiTableLayoutPanel32.TabIndex = 37;
             this.uiTableLayoutPanel32.TagString = null;
             // 
@@ -2838,7 +2842,7 @@
             this.LedRunTime.IntervalOn = 1;
             this.LedRunTime.IntervalV = 0;
             this.LedRunTime.LedBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
-            this.LedRunTime.Location = new System.Drawing.Point(233, 67);
+            this.LedRunTime.Location = new System.Drawing.Point(234, 67);
             this.LedRunTime.Margin = new System.Windows.Forms.Padding(4);
             this.LedRunTime.Name = "LedRunTime";
             this.LedRunTime.Size = new System.Drawing.Size(137, 17);
@@ -2855,14 +2859,14 @@
             this.uiTableLayoutPanel41.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
             this.uiTableLayoutPanel41.Controls.Add(this.LedLastCycles, 1, 1);
             this.uiTableLayoutPanel41.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel41.Location = new System.Drawing.Point(337, 328);
+            this.uiTableLayoutPanel41.Location = new System.Drawing.Point(335, 328);
             this.uiTableLayoutPanel41.Margin = new System.Windows.Forms.Padding(4);
             this.uiTableLayoutPanel41.Name = "uiTableLayoutPanel41";
             this.uiTableLayoutPanel41.RowCount = 3;
             this.uiTableLayoutPanel41.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
             this.uiTableLayoutPanel41.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 90F));
             this.uiTableLayoutPanel41.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
-            this.uiTableLayoutPanel41.Size = new System.Drawing.Size(605, 154);
+            this.uiTableLayoutPanel41.Size = new System.Drawing.Size(607, 154);
             this.uiTableLayoutPanel41.TabIndex = 39;
             this.uiTableLayoutPanel41.TagString = null;
             // 
@@ -2880,7 +2884,7 @@
             this.LedLastCycles.IntervalOn = 6;
             this.LedLastCycles.IntervalV = 0;
             this.LedLastCycles.LedBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
-            this.LedLastCycles.Location = new System.Drawing.Point(129, 50);
+            this.LedLastCycles.Location = new System.Drawing.Point(130, 50);
             this.LedLastCycles.Margin = new System.Windows.Forms.Padding(4);
             this.LedLastCycles.Name = "LedLastCycles";
             this.LedLastCycles.Size = new System.Drawing.Size(346, 52);
@@ -2897,7 +2901,7 @@
             this.ProcBar.Margin = new System.Windows.Forms.Padding(4);
             this.ProcBar.MinimumSize = new System.Drawing.Size(4, 4);
             this.ProcBar.Name = "ProcBar";
-            this.ProcBar.Size = new System.Drawing.Size(748, 154);
+            this.ProcBar.Size = new System.Drawing.Size(742, 154);
             this.ProcBar.Style = Sunny.UI.UIStyle.Custom;
             this.ProcBar.TabIndex = 41;
             this.ProcBar.Text = "uiProcessBar1";
@@ -3752,102 +3756,6 @@
             this.uiLabel25.Text = "EPB 06";
             this.uiLabel25.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
             // 
-            // SwitchEpb4
-            // 
-            this.SwitchEpb4.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb4.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb4.Appearance.Options.UseBackColor = true;
-            this.SwitchEpb4.Appearance.Options.UseForeColor = true;
-            this.SwitchEpb4.CheckedText = "RUN";
-            this.SwitchEpb4.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchEpb4.HtmlTemplate.Styles = resources.GetString("SwitchEpb4.HtmlTemplate.Styles");
-            this.SwitchEpb4.Location = new System.Drawing.Point(257, 3);
-            this.SwitchEpb4.Name = "SwitchEpb4";
-            this.SwitchEpb4.Size = new System.Drawing.Size(126, 111);
-            this.SwitchEpb4.TabIndex = 38;
-            this.SwitchEpb4.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchEpb4.UncheckedText = "STOP";
-            // 
-            // SwitchPower4
-            // 
-            this.SwitchPower4.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower4.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower4.Appearance.Options.UseBackColor = true;
-            this.SwitchPower4.Appearance.Options.UseForeColor = true;
-            this.SwitchPower4.CheckedText = "ON";
-            this.SwitchPower4.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchPower4.HtmlTemplate.Styles = resources.GetString("SwitchPower4.HtmlTemplate.Styles");
-            this.SwitchPower4.Location = new System.Drawing.Point(130, 3);
-            this.SwitchPower4.Name = "SwitchPower4";
-            this.SwitchPower4.Size = new System.Drawing.Size(121, 111);
-            this.SwitchPower4.TabIndex = 38;
-            this.SwitchPower4.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchPower4.UncheckedText = "OFF";
-            // 
-            // SwitchPower5
-            // 
-            this.SwitchPower5.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower5.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower5.Appearance.Options.UseBackColor = true;
-            this.SwitchPower5.Appearance.Options.UseForeColor = true;
-            this.SwitchPower5.CheckedText = "ON";
-            this.SwitchPower5.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchPower5.HtmlTemplate.Styles = resources.GetString("SwitchPower5.HtmlTemplate.Styles");
-            this.SwitchPower5.Location = new System.Drawing.Point(130, 120);
-            this.SwitchPower5.Name = "SwitchPower5";
-            this.SwitchPower5.Size = new System.Drawing.Size(121, 111);
-            this.SwitchPower5.TabIndex = 38;
-            this.SwitchPower5.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchPower5.UncheckedText = "OFF";
-            // 
-            // SwitchPower6
-            // 
-            this.SwitchPower6.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower6.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower6.Appearance.Options.UseBackColor = true;
-            this.SwitchPower6.Appearance.Options.UseForeColor = true;
-            this.SwitchPower6.CheckedText = "ON";
-            this.SwitchPower6.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchPower6.HtmlTemplate.Styles = resources.GetString("SwitchPower6.HtmlTemplate.Styles");
-            this.SwitchPower6.Location = new System.Drawing.Point(130, 237);
-            this.SwitchPower6.Name = "SwitchPower6";
-            this.SwitchPower6.Size = new System.Drawing.Size(121, 112);
-            this.SwitchPower6.TabIndex = 38;
-            this.SwitchPower6.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchPower6.UncheckedText = "OFF";
-            // 
-            // SwitchEpb5
-            // 
-            this.SwitchEpb5.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb5.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb5.Appearance.Options.UseBackColor = true;
-            this.SwitchEpb5.Appearance.Options.UseForeColor = true;
-            this.SwitchEpb5.CheckedText = "RUN";
-            this.SwitchEpb5.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchEpb5.HtmlTemplate.Styles = resources.GetString("SwitchEpb5.HtmlTemplate.Styles");
-            this.SwitchEpb5.Location = new System.Drawing.Point(257, 120);
-            this.SwitchEpb5.Name = "SwitchEpb5";
-            this.SwitchEpb5.Size = new System.Drawing.Size(126, 111);
-            this.SwitchEpb5.TabIndex = 38;
-            this.SwitchEpb5.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchEpb5.UncheckedText = "STOP";
-            // 
-            // SwitchEpb6
-            // 
-            this.SwitchEpb6.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb6.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb6.Appearance.Options.UseBackColor = true;
-            this.SwitchEpb6.Appearance.Options.UseForeColor = true;
-            this.SwitchEpb6.CheckedText = "RUN";
-            this.SwitchEpb6.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchEpb6.HtmlTemplate.Styles = resources.GetString("SwitchEpb6.HtmlTemplate.Styles");
-            this.SwitchEpb6.Location = new System.Drawing.Point(257, 237);
-            this.SwitchEpb6.Name = "SwitchEpb6";
-            this.SwitchEpb6.Size = new System.Drawing.Size(126, 112);
-            this.SwitchEpb6.TabIndex = 38;
-            this.SwitchEpb6.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchEpb6.UncheckedText = "STOP";
-            // 
             // uiTableLayoutPanel12
             // 
             this.uiTableLayoutPanel12.ColumnCount = 4;
@@ -3950,102 +3858,6 @@
             this.uiLabel22.Text = "EPB 09";
             this.uiLabel22.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
             // 
-            // SwitchEpb7
-            // 
-            this.SwitchEpb7.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb7.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb7.Appearance.Options.UseBackColor = true;
-            this.SwitchEpb7.Appearance.Options.UseForeColor = true;
-            this.SwitchEpb7.CheckedText = "RUN";
-            this.SwitchEpb7.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchEpb7.HtmlTemplate.Styles = resources.GetString("SwitchEpb7.HtmlTemplate.Styles");
-            this.SwitchEpb7.Location = new System.Drawing.Point(257, 3);
-            this.SwitchEpb7.Name = "SwitchEpb7";
-            this.SwitchEpb7.Size = new System.Drawing.Size(126, 111);
-            this.SwitchEpb7.TabIndex = 38;
-            this.SwitchEpb7.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchEpb7.UncheckedText = "STOP";
-            // 
-            // SwitchPower8
-            // 
-            this.SwitchPower8.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower8.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower8.Appearance.Options.UseBackColor = true;
-            this.SwitchPower8.Appearance.Options.UseForeColor = true;
-            this.SwitchPower8.CheckedText = "ON";
-            this.SwitchPower8.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchPower8.HtmlTemplate.Styles = resources.GetString("SwitchPower8.HtmlTemplate.Styles");
-            this.SwitchPower8.Location = new System.Drawing.Point(130, 120);
-            this.SwitchPower8.Name = "SwitchPower8";
-            this.SwitchPower8.Size = new System.Drawing.Size(121, 111);
-            this.SwitchPower8.TabIndex = 38;
-            this.SwitchPower8.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchPower8.UncheckedText = "OFF";
-            // 
-            // SwitchPower7
-            // 
-            this.SwitchPower7.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower7.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower7.Appearance.Options.UseBackColor = true;
-            this.SwitchPower7.Appearance.Options.UseForeColor = true;
-            this.SwitchPower7.CheckedText = "ON";
-            this.SwitchPower7.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchPower7.HtmlTemplate.Styles = resources.GetString("SwitchPower7.HtmlTemplate.Styles");
-            this.SwitchPower7.Location = new System.Drawing.Point(130, 3);
-            this.SwitchPower7.Name = "SwitchPower7";
-            this.SwitchPower7.Size = new System.Drawing.Size(121, 111);
-            this.SwitchPower7.TabIndex = 38;
-            this.SwitchPower7.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchPower7.UncheckedText = "OFF";
-            // 
-            // SwitchPower9
-            // 
-            this.SwitchPower9.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower9.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower9.Appearance.Options.UseBackColor = true;
-            this.SwitchPower9.Appearance.Options.UseForeColor = true;
-            this.SwitchPower9.CheckedText = "ON";
-            this.SwitchPower9.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchPower9.HtmlTemplate.Styles = resources.GetString("SwitchPower9.HtmlTemplate.Styles");
-            this.SwitchPower9.Location = new System.Drawing.Point(130, 237);
-            this.SwitchPower9.Name = "SwitchPower9";
-            this.SwitchPower9.Size = new System.Drawing.Size(121, 112);
-            this.SwitchPower9.TabIndex = 38;
-            this.SwitchPower9.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchPower9.UncheckedText = "OFF";
-            // 
-            // tSwitchEpb9
-            // 
-            this.tSwitchEpb9.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.tSwitchEpb9.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.tSwitchEpb9.Appearance.Options.UseBackColor = true;
-            this.tSwitchEpb9.Appearance.Options.UseForeColor = true;
-            this.tSwitchEpb9.CheckedText = "RUN";
-            this.tSwitchEpb9.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.tSwitchEpb9.HtmlTemplate.Styles = resources.GetString("tSwitchEpb9.HtmlTemplate.Styles");
-            this.tSwitchEpb9.Location = new System.Drawing.Point(257, 237);
-            this.tSwitchEpb9.Name = "tSwitchEpb9";
-            this.tSwitchEpb9.Size = new System.Drawing.Size(126, 112);
-            this.tSwitchEpb9.TabIndex = 38;
-            this.tSwitchEpb9.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.tSwitchEpb9.UncheckedText = "STOP";
-            // 
-            // SwitchEpb8
-            // 
-            this.SwitchEpb8.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb8.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb8.Appearance.Options.UseBackColor = true;
-            this.SwitchEpb8.Appearance.Options.UseForeColor = true;
-            this.SwitchEpb8.CheckedText = "RUN";
-            this.SwitchEpb8.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchEpb8.HtmlTemplate.Styles = resources.GetString("SwitchEpb8.HtmlTemplate.Styles");
-            this.SwitchEpb8.Location = new System.Drawing.Point(257, 120);
-            this.SwitchEpb8.Name = "SwitchEpb8";
-            this.SwitchEpb8.Size = new System.Drawing.Size(126, 111);
-            this.SwitchEpb8.TabIndex = 38;
-            this.SwitchEpb8.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchEpb8.UncheckedText = "STOP";
-            // 
             // uiTableLayoutPanel13
             // 
             this.uiTableLayoutPanel13.ColumnCount = 4;
@@ -4135,7 +3947,6 @@
             this.uiLabel27.TabIndex = 37;
             this.uiLabel27.Text = "EPB 11";
             this.uiLabel27.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
-            this.uiLabel27.Click += new System.EventHandler(this.uiLabel27_Click);
             // 
             // uiLabel28
             // 
@@ -4148,102 +3959,6 @@
             this.uiLabel28.TabIndex = 37;
             this.uiLabel28.Text = "EPB 12";
             this.uiLabel28.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
-            // 
-            // SwitchEpb11
-            // 
-            this.SwitchEpb11.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb11.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb11.Appearance.Options.UseBackColor = true;
-            this.SwitchEpb11.Appearance.Options.UseForeColor = true;
-            this.SwitchEpb11.CheckedText = "RUN";
-            this.SwitchEpb11.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchEpb11.HtmlTemplate.Styles = resources.GetString("SwitchEpb11.HtmlTemplate.Styles");
-            this.SwitchEpb11.Location = new System.Drawing.Point(257, 120);
-            this.SwitchEpb11.Name = "SwitchEpb11";
-            this.SwitchEpb11.Size = new System.Drawing.Size(126, 111);
-            this.SwitchEpb11.TabIndex = 38;
-            this.SwitchEpb11.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchEpb11.UncheckedText = "STOP";
-            // 
-            // SwitchPower10
-            // 
-            this.SwitchPower10.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower10.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower10.Appearance.Options.UseBackColor = true;
-            this.SwitchPower10.Appearance.Options.UseForeColor = true;
-            this.SwitchPower10.CheckedText = "ON";
-            this.SwitchPower10.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchPower10.HtmlTemplate.Styles = resources.GetString("SwitchPower10.HtmlTemplate.Styles");
-            this.SwitchPower10.Location = new System.Drawing.Point(130, 3);
-            this.SwitchPower10.Name = "SwitchPower10";
-            this.SwitchPower10.Size = new System.Drawing.Size(121, 111);
-            this.SwitchPower10.TabIndex = 38;
-            this.SwitchPower10.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchPower10.UncheckedText = "OFF";
-            // 
-            // SwitchPower11
-            // 
-            this.SwitchPower11.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower11.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower11.Appearance.Options.UseBackColor = true;
-            this.SwitchPower11.Appearance.Options.UseForeColor = true;
-            this.SwitchPower11.CheckedText = "ON";
-            this.SwitchPower11.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchPower11.HtmlTemplate.Styles = resources.GetString("SwitchPower11.HtmlTemplate.Styles");
-            this.SwitchPower11.Location = new System.Drawing.Point(130, 120);
-            this.SwitchPower11.Name = "SwitchPower11";
-            this.SwitchPower11.Size = new System.Drawing.Size(121, 111);
-            this.SwitchPower11.TabIndex = 38;
-            this.SwitchPower11.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchPower11.UncheckedText = "OFF";
-            // 
-            // SwitchPower12
-            // 
-            this.SwitchPower12.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower12.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower12.Appearance.Options.UseBackColor = true;
-            this.SwitchPower12.Appearance.Options.UseForeColor = true;
-            this.SwitchPower12.CheckedText = "ON";
-            this.SwitchPower12.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchPower12.HtmlTemplate.Styles = resources.GetString("SwitchPower12.HtmlTemplate.Styles");
-            this.SwitchPower12.Location = new System.Drawing.Point(130, 237);
-            this.SwitchPower12.Name = "SwitchPower12";
-            this.SwitchPower12.Size = new System.Drawing.Size(121, 112);
-            this.SwitchPower12.TabIndex = 38;
-            this.SwitchPower12.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchPower12.UncheckedText = "OFF";
-            // 
-            // SwitchEpb12
-            // 
-            this.SwitchEpb12.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb12.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb12.Appearance.Options.UseBackColor = true;
-            this.SwitchEpb12.Appearance.Options.UseForeColor = true;
-            this.SwitchEpb12.CheckedText = "RUN";
-            this.SwitchEpb12.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchEpb12.HtmlTemplate.Styles = resources.GetString("SwitchEpb12.HtmlTemplate.Styles");
-            this.SwitchEpb12.Location = new System.Drawing.Point(257, 237);
-            this.SwitchEpb12.Name = "SwitchEpb12";
-            this.SwitchEpb12.Size = new System.Drawing.Size(126, 112);
-            this.SwitchEpb12.TabIndex = 38;
-            this.SwitchEpb12.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchEpb12.UncheckedText = "STOP";
-            // 
-            // SwitchEpb10
-            // 
-            this.SwitchEpb10.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb10.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb10.Appearance.Options.UseBackColor = true;
-            this.SwitchEpb10.Appearance.Options.UseForeColor = true;
-            this.SwitchEpb10.CheckedText = "RUN";
-            this.SwitchEpb10.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchEpb10.HtmlTemplate.Styles = resources.GetString("SwitchEpb10.HtmlTemplate.Styles");
-            this.SwitchEpb10.Location = new System.Drawing.Point(257, 3);
-            this.SwitchEpb10.Name = "SwitchEpb10";
-            this.SwitchEpb10.Size = new System.Drawing.Size(126, 111);
-            this.SwitchEpb10.TabIndex = 38;
-            this.SwitchEpb10.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchEpb10.UncheckedText = "STOP";
             // 
             // uiPanel2
             // 
@@ -4399,102 +4114,6 @@
             this.uiLabel6.Text = "EPB 03";
             this.uiLabel6.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
             // 
-            // SwitchEpb1
-            // 
-            this.SwitchEpb1.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb1.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb1.Appearance.Options.UseBackColor = true;
-            this.SwitchEpb1.Appearance.Options.UseForeColor = true;
-            this.SwitchEpb1.CheckedText = "RUN";
-            this.SwitchEpb1.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchEpb1.HtmlTemplate.Styles = resources.GetString("SwitchEpb1.HtmlTemplate.Styles");
-            this.SwitchEpb1.Location = new System.Drawing.Point(257, 3);
-            this.SwitchEpb1.Name = "SwitchEpb1";
-            this.SwitchEpb1.Size = new System.Drawing.Size(126, 111);
-            this.SwitchEpb1.TabIndex = 38;
-            this.SwitchEpb1.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchEpb1.UncheckedText = "STOP";
-            // 
-            // SwitchPower1
-            // 
-            this.SwitchPower1.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower1.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower1.Appearance.Options.UseBackColor = true;
-            this.SwitchPower1.Appearance.Options.UseForeColor = true;
-            this.SwitchPower1.CheckedText = "ON";
-            this.SwitchPower1.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchPower1.HtmlTemplate.Styles = resources.GetString("SwitchPower1.HtmlTemplate.Styles");
-            this.SwitchPower1.Location = new System.Drawing.Point(130, 3);
-            this.SwitchPower1.Name = "SwitchPower1";
-            this.SwitchPower1.Size = new System.Drawing.Size(121, 111);
-            this.SwitchPower1.TabIndex = 38;
-            this.SwitchPower1.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchPower1.UncheckedText = "OFF";
-            // 
-            // SwitchPower2
-            // 
-            this.SwitchPower2.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower2.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower2.Appearance.Options.UseBackColor = true;
-            this.SwitchPower2.Appearance.Options.UseForeColor = true;
-            this.SwitchPower2.CheckedText = "ON";
-            this.SwitchPower2.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchPower2.HtmlTemplate.Styles = resources.GetString("SwitchPower2.HtmlTemplate.Styles");
-            this.SwitchPower2.Location = new System.Drawing.Point(130, 120);
-            this.SwitchPower2.Name = "SwitchPower2";
-            this.SwitchPower2.Size = new System.Drawing.Size(121, 111);
-            this.SwitchPower2.TabIndex = 38;
-            this.SwitchPower2.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchPower2.UncheckedText = "OFF";
-            // 
-            // SwitchPower3
-            // 
-            this.SwitchPower3.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower3.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchPower3.Appearance.Options.UseBackColor = true;
-            this.SwitchPower3.Appearance.Options.UseForeColor = true;
-            this.SwitchPower3.CheckedText = "ON";
-            this.SwitchPower3.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchPower3.HtmlTemplate.Styles = resources.GetString("SwitchPower3.HtmlTemplate.Styles");
-            this.SwitchPower3.Location = new System.Drawing.Point(130, 237);
-            this.SwitchPower3.Name = "SwitchPower3";
-            this.SwitchPower3.Size = new System.Drawing.Size(121, 112);
-            this.SwitchPower3.TabIndex = 38;
-            this.SwitchPower3.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchPower3.UncheckedText = "OFF";
-            // 
-            // SwitchEpb2
-            // 
-            this.SwitchEpb2.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb2.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb2.Appearance.Options.UseBackColor = true;
-            this.SwitchEpb2.Appearance.Options.UseForeColor = true;
-            this.SwitchEpb2.CheckedText = "RUN";
-            this.SwitchEpb2.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchEpb2.HtmlTemplate.Styles = resources.GetString("SwitchEpb2.HtmlTemplate.Styles");
-            this.SwitchEpb2.Location = new System.Drawing.Point(257, 120);
-            this.SwitchEpb2.Name = "SwitchEpb2";
-            this.SwitchEpb2.Size = new System.Drawing.Size(126, 111);
-            this.SwitchEpb2.TabIndex = 38;
-            this.SwitchEpb2.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchEpb2.UncheckedText = "STOP";
-            // 
-            // SwitchEpb3
-            // 
-            this.SwitchEpb3.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb3.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb3.Appearance.Options.UseBackColor = true;
-            this.SwitchEpb3.Appearance.Options.UseForeColor = true;
-            this.SwitchEpb3.CheckedText = "RUN";
-            this.SwitchEpb3.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchEpb3.HtmlTemplate.Styles = resources.GetString("SwitchEpb3.HtmlTemplate.Styles");
-            this.SwitchEpb3.Location = new System.Drawing.Point(257, 237);
-            this.SwitchEpb3.Name = "SwitchEpb3";
-            this.SwitchEpb3.Size = new System.Drawing.Size(126, 112);
-            this.SwitchEpb3.TabIndex = 38;
-            this.SwitchEpb3.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchEpb3.UncheckedText = "STOP";
-            // 
             // SwitchEmb2
             // 
             this.SwitchEmb2.ActiveText = "RUN";
@@ -4605,8 +4224,8 @@
             // 
             this.uiTableLayoutPanel3.BackColor = System.Drawing.Color.Transparent;
             this.uiTableLayoutPanel3.ColumnCount = 2;
-            this.uiTableLayoutPanel3.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 84.11552F));
-            this.uiTableLayoutPanel3.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 15.88448F));
+            this.uiTableLayoutPanel3.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 81.82912F));
+            this.uiTableLayoutPanel3.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 18.17088F));
             this.uiTableLayoutPanel3.Controls.Add(this.zedGraphRealChart, 0, 0);
             this.uiTableLayoutPanel3.Controls.Add(this.uiTableLayoutPanel6, 0, 1);
             this.uiTableLayoutPanel3.Controls.Add(this.uiTableLayoutPanel16, 1, 1);
@@ -4637,7 +4256,7 @@
             this.zedGraphRealChart.ScrollMinX = 0D;
             this.zedGraphRealChart.ScrollMinY = 0D;
             this.zedGraphRealChart.ScrollMinY2 = 0D;
-            this.zedGraphRealChart.Size = new System.Drawing.Size(1375, 656);
+            this.zedGraphRealChart.Size = new System.Drawing.Size(1338, 656);
             this.zedGraphRealChart.TabIndex = 5;
             this.zedGraphRealChart.UseExtendedPrintDialog = true;
             // 
@@ -4687,7 +4306,7 @@
             this.uiTableLayoutPanel3.SetRowSpan(this.uiTableLayoutPanel6, 2);
             this.uiTableLayoutPanel6.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
             this.uiTableLayoutPanel6.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
-            this.uiTableLayoutPanel6.Size = new System.Drawing.Size(1391, 128);
+            this.uiTableLayoutPanel6.Size = new System.Drawing.Size(1354, 128);
             this.uiTableLayoutPanel6.TabIndex = 6;
             this.uiTableLayoutPanel6.TagString = null;
             // 
@@ -4708,13 +4327,13 @@
             this.CheckEpbA1.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
             this.CheckEpbA1.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
             this.CheckEpbA1.Properties.GlyphVerticalAlignment = DevExpress.Utils.VertAlignment.Center;
-            this.CheckEpbA1.Size = new System.Drawing.Size(109, 58);
+            this.CheckEpbA1.Size = new System.Drawing.Size(106, 58);
             this.CheckEpbA1.TabIndex = 0;
             // 
             // CheckEpbA2
             // 
             this.CheckEpbA2.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.CheckEpbA2.Location = new System.Drawing.Point(118, 3);
+            this.CheckEpbA2.Location = new System.Drawing.Point(115, 3);
             this.CheckEpbA2.Name = "CheckEpbA2";
             this.CheckEpbA2.Properties.AllowFocused = false;
             this.CheckEpbA2.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
@@ -4725,13 +4344,13 @@
             this.CheckEpbA2.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
             this.CheckEpbA2.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
             this.CheckEpbA2.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.CheckEpbA2.Size = new System.Drawing.Size(109, 58);
+            this.CheckEpbA2.Size = new System.Drawing.Size(106, 58);
             this.CheckEpbA2.TabIndex = 0;
             // 
             // CheckEpbA3
             // 
             this.CheckEpbA3.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.CheckEpbA3.Location = new System.Drawing.Point(233, 3);
+            this.CheckEpbA3.Location = new System.Drawing.Point(227, 3);
             this.CheckEpbA3.Name = "CheckEpbA3";
             this.CheckEpbA3.Properties.AllowFocused = false;
             this.CheckEpbA3.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
@@ -4742,13 +4361,13 @@
             this.CheckEpbA3.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
             this.CheckEpbA3.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
             this.CheckEpbA3.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.CheckEpbA3.Size = new System.Drawing.Size(109, 58);
+            this.CheckEpbA3.Size = new System.Drawing.Size(106, 58);
             this.CheckEpbA3.TabIndex = 0;
             // 
             // CheckEpbA4
             // 
             this.CheckEpbA4.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.CheckEpbA4.Location = new System.Drawing.Point(348, 3);
+            this.CheckEpbA4.Location = new System.Drawing.Point(339, 3);
             this.CheckEpbA4.Name = "CheckEpbA4";
             this.CheckEpbA4.Properties.AllowFocused = false;
             this.CheckEpbA4.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
@@ -4759,13 +4378,13 @@
             this.CheckEpbA4.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
             this.CheckEpbA4.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
             this.CheckEpbA4.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.CheckEpbA4.Size = new System.Drawing.Size(109, 58);
+            this.CheckEpbA4.Size = new System.Drawing.Size(106, 58);
             this.CheckEpbA4.TabIndex = 0;
             // 
             // CheckEpbA5
             // 
             this.CheckEpbA5.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.CheckEpbA5.Location = new System.Drawing.Point(463, 3);
+            this.CheckEpbA5.Location = new System.Drawing.Point(451, 3);
             this.CheckEpbA5.Name = "CheckEpbA5";
             this.CheckEpbA5.Properties.AllowFocused = false;
             this.CheckEpbA5.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
@@ -4776,13 +4395,13 @@
             this.CheckEpbA5.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
             this.CheckEpbA5.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
             this.CheckEpbA5.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.CheckEpbA5.Size = new System.Drawing.Size(109, 58);
+            this.CheckEpbA5.Size = new System.Drawing.Size(106, 58);
             this.CheckEpbA5.TabIndex = 0;
             // 
             // CheckEpbA6
             // 
             this.CheckEpbA6.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.CheckEpbA6.Location = new System.Drawing.Point(578, 3);
+            this.CheckEpbA6.Location = new System.Drawing.Point(563, 3);
             this.CheckEpbA6.Name = "CheckEpbA6";
             this.CheckEpbA6.Properties.AllowFocused = false;
             this.CheckEpbA6.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
@@ -4793,13 +4412,13 @@
             this.CheckEpbA6.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
             this.CheckEpbA6.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
             this.CheckEpbA6.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.CheckEpbA6.Size = new System.Drawing.Size(109, 58);
+            this.CheckEpbA6.Size = new System.Drawing.Size(106, 58);
             this.CheckEpbA6.TabIndex = 0;
             // 
             // CheckEpbA7
             // 
             this.CheckEpbA7.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.CheckEpbA7.Location = new System.Drawing.Point(693, 3);
+            this.CheckEpbA7.Location = new System.Drawing.Point(675, 3);
             this.CheckEpbA7.Name = "CheckEpbA7";
             this.CheckEpbA7.Properties.AllowFocused = false;
             this.CheckEpbA7.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
@@ -4810,13 +4429,15 @@
             this.CheckEpbA7.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
             this.CheckEpbA7.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
             this.CheckEpbA7.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.CheckEpbA7.Size = new System.Drawing.Size(109, 58);
+            this.CheckEpbA7.Size = new System.Drawing.Size(106, 58);
             this.CheckEpbA7.TabIndex = 0;
+            this.CheckEpbA7.CheckedChanged += new System.EventHandler(this.CheckEpbA7_CheckedChanged);
+            this.CheckEpbA7.CheckStateChanged += new System.EventHandler(this.CheckEpbA7_CheckStateChanged);
             // 
             // CheckEpbA8
             // 
             this.CheckEpbA8.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.CheckEpbA8.Location = new System.Drawing.Point(808, 3);
+            this.CheckEpbA8.Location = new System.Drawing.Point(787, 3);
             this.CheckEpbA8.Name = "CheckEpbA8";
             this.CheckEpbA8.Properties.AllowFocused = false;
             this.CheckEpbA8.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
@@ -4827,13 +4448,13 @@
             this.CheckEpbA8.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
             this.CheckEpbA8.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
             this.CheckEpbA8.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.CheckEpbA8.Size = new System.Drawing.Size(109, 58);
+            this.CheckEpbA8.Size = new System.Drawing.Size(106, 58);
             this.CheckEpbA8.TabIndex = 0;
             // 
             // CheckEpbA9
             // 
             this.CheckEpbA9.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.CheckEpbA9.Location = new System.Drawing.Point(923, 3);
+            this.CheckEpbA9.Location = new System.Drawing.Point(899, 3);
             this.CheckEpbA9.Name = "CheckEpbA9";
             this.CheckEpbA9.Properties.AllowFocused = false;
             this.CheckEpbA9.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
@@ -4844,13 +4465,13 @@
             this.CheckEpbA9.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
             this.CheckEpbA9.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
             this.CheckEpbA9.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.CheckEpbA9.Size = new System.Drawing.Size(109, 58);
+            this.CheckEpbA9.Size = new System.Drawing.Size(106, 58);
             this.CheckEpbA9.TabIndex = 0;
             // 
             // CheckEpbA10
             // 
             this.CheckEpbA10.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.CheckEpbA10.Location = new System.Drawing.Point(1038, 3);
+            this.CheckEpbA10.Location = new System.Drawing.Point(1011, 3);
             this.CheckEpbA10.Name = "CheckEpbA10";
             this.CheckEpbA10.Properties.AllowFocused = false;
             this.CheckEpbA10.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
@@ -4861,13 +4482,13 @@
             this.CheckEpbA10.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
             this.CheckEpbA10.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
             this.CheckEpbA10.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.CheckEpbA10.Size = new System.Drawing.Size(109, 58);
+            this.CheckEpbA10.Size = new System.Drawing.Size(106, 58);
             this.CheckEpbA10.TabIndex = 0;
             // 
             // CheckEpbA11
             // 
             this.CheckEpbA11.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.CheckEpbA11.Location = new System.Drawing.Point(1153, 3);
+            this.CheckEpbA11.Location = new System.Drawing.Point(1123, 3);
             this.CheckEpbA11.Name = "CheckEpbA11";
             this.CheckEpbA11.Properties.AllowFocused = false;
             this.CheckEpbA11.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
@@ -4878,13 +4499,13 @@
             this.CheckEpbA11.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
             this.CheckEpbA11.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
             this.CheckEpbA11.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.CheckEpbA11.Size = new System.Drawing.Size(109, 58);
+            this.CheckEpbA11.Size = new System.Drawing.Size(106, 58);
             this.CheckEpbA11.TabIndex = 0;
             // 
             // CheckEpbA12
             // 
             this.CheckEpbA12.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.CheckEpbA12.Location = new System.Drawing.Point(1268, 3);
+            this.CheckEpbA12.Location = new System.Drawing.Point(1235, 3);
             this.CheckEpbA12.Name = "CheckEpbA12";
             this.CheckEpbA12.Properties.AllowFocused = false;
             this.CheckEpbA12.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
@@ -4895,7 +4516,7 @@
             this.CheckEpbA12.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
             this.CheckEpbA12.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
             this.CheckEpbA12.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.CheckEpbA12.Size = new System.Drawing.Size(120, 58);
+            this.CheckEpbA12.Size = new System.Drawing.Size(116, 58);
             this.CheckEpbA12.TabIndex = 0;
             // 
             // textEditCurrent1
@@ -4906,147 +4527,150 @@
             this.textEditCurrent1.Name = "textEditCurrent1";
             this.textEditCurrent1.Properties.Appearance.Options.UseTextOptions = true;
             this.textEditCurrent1.Properties.Appearance.TextOptions.HAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.textEditCurrent1.Size = new System.Drawing.Size(109, 44);
+            this.textEditCurrent1.Size = new System.Drawing.Size(106, 44);
             this.textEditCurrent1.TabIndex = 1;
             // 
             // textEditCurrent2
             // 
             this.textEditCurrent2.Dock = System.Windows.Forms.DockStyle.Fill;
             this.textEditCurrent2.EditValue = "12.34";
-            this.textEditCurrent2.Location = new System.Drawing.Point(118, 67);
+            this.textEditCurrent2.Location = new System.Drawing.Point(115, 67);
             this.textEditCurrent2.Name = "textEditCurrent2";
             this.textEditCurrent2.Properties.Appearance.Options.UseTextOptions = true;
             this.textEditCurrent2.Properties.Appearance.TextOptions.HAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.textEditCurrent2.Size = new System.Drawing.Size(109, 44);
+            this.textEditCurrent2.Size = new System.Drawing.Size(106, 44);
             this.textEditCurrent2.TabIndex = 1;
             // 
             // textEditCurrent3
             // 
             this.textEditCurrent3.Dock = System.Windows.Forms.DockStyle.Fill;
             this.textEditCurrent3.EditValue = "12.34";
-            this.textEditCurrent3.Location = new System.Drawing.Point(233, 67);
+            this.textEditCurrent3.Location = new System.Drawing.Point(227, 67);
             this.textEditCurrent3.Name = "textEditCurrent3";
             this.textEditCurrent3.Properties.Appearance.Options.UseTextOptions = true;
             this.textEditCurrent3.Properties.Appearance.TextOptions.HAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.textEditCurrent3.Size = new System.Drawing.Size(109, 44);
+            this.textEditCurrent3.Size = new System.Drawing.Size(106, 44);
             this.textEditCurrent3.TabIndex = 1;
             // 
             // textEditCurrent4
             // 
             this.textEditCurrent4.Dock = System.Windows.Forms.DockStyle.Fill;
             this.textEditCurrent4.EditValue = "12.34";
-            this.textEditCurrent4.Location = new System.Drawing.Point(348, 67);
+            this.textEditCurrent4.Location = new System.Drawing.Point(339, 67);
             this.textEditCurrent4.Name = "textEditCurrent4";
             this.textEditCurrent4.Properties.Appearance.Options.UseTextOptions = true;
             this.textEditCurrent4.Properties.Appearance.TextOptions.HAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.textEditCurrent4.Size = new System.Drawing.Size(109, 44);
+            this.textEditCurrent4.Size = new System.Drawing.Size(106, 44);
             this.textEditCurrent4.TabIndex = 1;
             // 
             // textEditCurrent5
             // 
             this.textEditCurrent5.Dock = System.Windows.Forms.DockStyle.Fill;
             this.textEditCurrent5.EditValue = "12.34";
-            this.textEditCurrent5.Location = new System.Drawing.Point(463, 67);
+            this.textEditCurrent5.Location = new System.Drawing.Point(451, 67);
             this.textEditCurrent5.Name = "textEditCurrent5";
             this.textEditCurrent5.Properties.Appearance.Options.UseTextOptions = true;
             this.textEditCurrent5.Properties.Appearance.TextOptions.HAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.textEditCurrent5.Size = new System.Drawing.Size(109, 44);
+            this.textEditCurrent5.Size = new System.Drawing.Size(106, 44);
             this.textEditCurrent5.TabIndex = 1;
             // 
             // textEditCurrent6
             // 
             this.textEditCurrent6.Dock = System.Windows.Forms.DockStyle.Fill;
             this.textEditCurrent6.EditValue = "12.34";
-            this.textEditCurrent6.Location = new System.Drawing.Point(578, 67);
+            this.textEditCurrent6.Location = new System.Drawing.Point(563, 67);
             this.textEditCurrent6.Name = "textEditCurrent6";
             this.textEditCurrent6.Properties.Appearance.Options.UseTextOptions = true;
             this.textEditCurrent6.Properties.Appearance.TextOptions.HAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.textEditCurrent6.Size = new System.Drawing.Size(109, 44);
+            this.textEditCurrent6.Size = new System.Drawing.Size(106, 44);
             this.textEditCurrent6.TabIndex = 1;
             // 
             // textEditCurrent7
             // 
             this.textEditCurrent7.Dock = System.Windows.Forms.DockStyle.Fill;
             this.textEditCurrent7.EditValue = "12.34";
-            this.textEditCurrent7.Location = new System.Drawing.Point(693, 67);
+            this.textEditCurrent7.Location = new System.Drawing.Point(675, 67);
             this.textEditCurrent7.Name = "textEditCurrent7";
             this.textEditCurrent7.Properties.Appearance.Options.UseTextOptions = true;
             this.textEditCurrent7.Properties.Appearance.TextOptions.HAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.textEditCurrent7.Size = new System.Drawing.Size(109, 44);
+            this.textEditCurrent7.Size = new System.Drawing.Size(106, 44);
             this.textEditCurrent7.TabIndex = 1;
             // 
             // textEditCurrent8
             // 
             this.textEditCurrent8.Dock = System.Windows.Forms.DockStyle.Fill;
             this.textEditCurrent8.EditValue = "12.34";
-            this.textEditCurrent8.Location = new System.Drawing.Point(808, 67);
+            this.textEditCurrent8.Location = new System.Drawing.Point(787, 67);
             this.textEditCurrent8.Name = "textEditCurrent8";
             this.textEditCurrent8.Properties.Appearance.Options.UseTextOptions = true;
             this.textEditCurrent8.Properties.Appearance.TextOptions.HAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.textEditCurrent8.Size = new System.Drawing.Size(109, 44);
+            this.textEditCurrent8.Size = new System.Drawing.Size(106, 44);
             this.textEditCurrent8.TabIndex = 1;
             // 
             // textEditCurrent9
             // 
             this.textEditCurrent9.Dock = System.Windows.Forms.DockStyle.Fill;
             this.textEditCurrent9.EditValue = "12.34";
-            this.textEditCurrent9.Location = new System.Drawing.Point(923, 67);
+            this.textEditCurrent9.Location = new System.Drawing.Point(899, 67);
             this.textEditCurrent9.Name = "textEditCurrent9";
             this.textEditCurrent9.Properties.Appearance.Options.UseTextOptions = true;
             this.textEditCurrent9.Properties.Appearance.TextOptions.HAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.textEditCurrent9.Size = new System.Drawing.Size(109, 44);
+            this.textEditCurrent9.Size = new System.Drawing.Size(106, 44);
             this.textEditCurrent9.TabIndex = 1;
             // 
             // textEditCurrent10
             // 
             this.textEditCurrent10.Dock = System.Windows.Forms.DockStyle.Fill;
             this.textEditCurrent10.EditValue = "12.34";
-            this.textEditCurrent10.Location = new System.Drawing.Point(1038, 67);
+            this.textEditCurrent10.Location = new System.Drawing.Point(1011, 67);
             this.textEditCurrent10.Name = "textEditCurrent10";
             this.textEditCurrent10.Properties.Appearance.Options.UseTextOptions = true;
             this.textEditCurrent10.Properties.Appearance.TextOptions.HAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.textEditCurrent10.Size = new System.Drawing.Size(109, 44);
+            this.textEditCurrent10.Size = new System.Drawing.Size(106, 44);
             this.textEditCurrent10.TabIndex = 1;
             // 
             // textEditCurrent11
             // 
             this.textEditCurrent11.Dock = System.Windows.Forms.DockStyle.Fill;
             this.textEditCurrent11.EditValue = "12.34";
-            this.textEditCurrent11.Location = new System.Drawing.Point(1153, 67);
+            this.textEditCurrent11.Location = new System.Drawing.Point(1123, 67);
             this.textEditCurrent11.Name = "textEditCurrent11";
             this.textEditCurrent11.Properties.Appearance.Options.UseTextOptions = true;
             this.textEditCurrent11.Properties.Appearance.TextOptions.HAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.textEditCurrent11.Size = new System.Drawing.Size(109, 44);
+            this.textEditCurrent11.Size = new System.Drawing.Size(106, 44);
             this.textEditCurrent11.TabIndex = 1;
             // 
             // textEditCurrent12
             // 
             this.textEditCurrent12.Dock = System.Windows.Forms.DockStyle.Fill;
             this.textEditCurrent12.EditValue = "12.34";
-            this.textEditCurrent12.Location = new System.Drawing.Point(1268, 67);
+            this.textEditCurrent12.Location = new System.Drawing.Point(1235, 67);
             this.textEditCurrent12.Name = "textEditCurrent12";
             this.textEditCurrent12.Properties.Appearance.Options.UseTextOptions = true;
             this.textEditCurrent12.Properties.Appearance.TextOptions.HAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.textEditCurrent12.Size = new System.Drawing.Size(120, 44);
+            this.textEditCurrent12.Size = new System.Drawing.Size(116, 44);
             this.textEditCurrent12.TabIndex = 1;
             // 
             // uiTableLayoutPanel16
             // 
-            this.uiTableLayoutPanel16.ColumnCount = 2;
-            this.uiTableLayoutPanel16.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 50F));
-            this.uiTableLayoutPanel16.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 50F));
+            this.uiTableLayoutPanel16.ColumnCount = 3;
+            this.uiTableLayoutPanel16.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
+            this.uiTableLayoutPanel16.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
+            this.uiTableLayoutPanel16.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 33.33333F));
             this.uiTableLayoutPanel16.Controls.Add(this.CheckP1, 0, 0);
             this.uiTableLayoutPanel16.Controls.Add(this.CheckP2, 1, 0);
             this.uiTableLayoutPanel16.Controls.Add(this.textEditP1, 0, 1);
             this.uiTableLayoutPanel16.Controls.Add(this.textEditP2, 1, 1);
+            this.uiTableLayoutPanel16.Controls.Add(this.CheckF, 2, 0);
+            this.uiTableLayoutPanel16.Controls.Add(this.textEditF, 2, 1);
             this.uiTableLayoutPanel16.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel16.Location = new System.Drawing.Point(1400, 681);
+            this.uiTableLayoutPanel16.Location = new System.Drawing.Point(1363, 681);
             this.uiTableLayoutPanel16.Name = "uiTableLayoutPanel16";
             this.uiTableLayoutPanel16.RowCount = 2;
             this.uiTableLayoutPanel3.SetRowSpan(this.uiTableLayoutPanel16, 2);
             this.uiTableLayoutPanel16.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 50F));
             this.uiTableLayoutPanel16.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 50F));
-            this.uiTableLayoutPanel16.Size = new System.Drawing.Size(259, 128);
+            this.uiTableLayoutPanel16.Size = new System.Drawing.Size(296, 128);
             this.uiTableLayoutPanel16.TabIndex = 7;
             this.uiTableLayoutPanel16.TagString = null;
             // 
@@ -5064,13 +4688,13 @@
             this.CheckP1.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
             this.CheckP1.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
             this.CheckP1.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.CheckP1.Size = new System.Drawing.Size(123, 58);
+            this.CheckP1.Size = new System.Drawing.Size(92, 58);
             this.CheckP1.TabIndex = 0;
             // 
             // CheckP2
             // 
             this.CheckP2.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.CheckP2.Location = new System.Drawing.Point(132, 3);
+            this.CheckP2.Location = new System.Drawing.Point(101, 3);
             this.CheckP2.Name = "CheckP2";
             this.CheckP2.Properties.AllowFocused = false;
             this.CheckP2.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
@@ -5081,28 +4705,442 @@
             this.CheckP2.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
             this.CheckP2.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
             this.CheckP2.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.CheckP2.Size = new System.Drawing.Size(124, 58);
+            this.CheckP2.Size = new System.Drawing.Size(92, 58);
             this.CheckP2.TabIndex = 0;
             // 
             // textEditP1
             // 
-            this.textEditP1.EditValue = "12.34";
+            this.textEditP1.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.textEditP1.EditValue = "999.99";
             this.textEditP1.Location = new System.Drawing.Point(3, 67);
             this.textEditP1.Name = "textEditP1";
             this.textEditP1.Properties.Appearance.Options.UseTextOptions = true;
             this.textEditP1.Properties.Appearance.TextOptions.HAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.textEditP1.Size = new System.Drawing.Size(110, 44);
+            this.textEditP1.Size = new System.Drawing.Size(92, 44);
             this.textEditP1.TabIndex = 1;
             // 
             // textEditP2
             // 
-            this.textEditP2.EditValue = "12.34";
-            this.textEditP2.Location = new System.Drawing.Point(132, 67);
+            this.textEditP2.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.textEditP2.EditValue = "999.99";
+            this.textEditP2.Location = new System.Drawing.Point(101, 67);
             this.textEditP2.Name = "textEditP2";
             this.textEditP2.Properties.Appearance.Options.UseTextOptions = true;
             this.textEditP2.Properties.Appearance.TextOptions.HAlignment = DevExpress.Utils.HorzAlignment.Center;
-            this.textEditP2.Size = new System.Drawing.Size(110, 44);
+            this.textEditP2.Size = new System.Drawing.Size(92, 44);
             this.textEditP2.TabIndex = 1;
+            // 
+            // CheckF
+            // 
+            this.CheckF.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.CheckF.Location = new System.Drawing.Point(199, 3);
+            this.CheckF.Name = "CheckF";
+            this.CheckF.Properties.AllowFocused = false;
+            this.CheckF.Properties.Appearance.BackColor = System.Drawing.Color.Transparent;
+            this.CheckF.Properties.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.CheckF.Properties.Appearance.Options.UseBackColor = true;
+            this.CheckF.Properties.Appearance.Options.UseForeColor = true;
+            this.CheckF.Properties.Caption = "F";
+            this.CheckF.Properties.CheckBoxOptions.Style = DevExpress.XtraEditors.Controls.CheckBoxStyle.SvgCheckBox1;
+            this.CheckF.Properties.CheckBoxOptions.SvgColorChecked = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.CheckF.Properties.ContentAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.CheckF.Size = new System.Drawing.Size(94, 58);
+            this.CheckF.TabIndex = 0;
+            // 
+            // textEditF
+            // 
+            this.textEditF.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.textEditF.EditValue = "25000";
+            this.textEditF.Location = new System.Drawing.Point(199, 67);
+            this.textEditF.Name = "textEditF";
+            this.textEditF.Properties.Appearance.Options.UseTextOptions = true;
+            this.textEditF.Properties.Appearance.TextOptions.HAlignment = DevExpress.Utils.HorzAlignment.Center;
+            this.textEditF.Size = new System.Drawing.Size(94, 44);
+            this.textEditF.TabIndex = 1;
+            // 
+            // SwitchEpb4
+            // 
+            this.SwitchEpb4.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb4.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb4.Appearance.Options.UseBackColor = true;
+            this.SwitchEpb4.Appearance.Options.UseForeColor = true;
+            this.SwitchEpb4.CheckedText = "RUN";
+            this.SwitchEpb4.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.SwitchEpb4.HtmlTemplate.Styles = resources.GetString("SwitchEpb4.HtmlTemplate.Styles");
+            this.SwitchEpb4.Location = new System.Drawing.Point(257, 3);
+            this.SwitchEpb4.Name = "SwitchEpb4";
+            this.SwitchEpb4.Size = new System.Drawing.Size(126, 111);
+            this.SwitchEpb4.TabIndex = 38;
+            this.SwitchEpb4.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
+            this.SwitchEpb4.UncheckedText = "STOP";
+            // 
+            // SwitchPower4
+            // 
+            this.SwitchPower4.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchPower4.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchPower4.Appearance.Options.UseBackColor = true;
+            this.SwitchPower4.Appearance.Options.UseForeColor = true;
+            this.SwitchPower4.CheckedText = "ON";
+            this.SwitchPower4.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.SwitchPower4.HtmlTemplate.Styles = resources.GetString("SwitchPower4.HtmlTemplate.Styles");
+            this.SwitchPower4.Location = new System.Drawing.Point(130, 3);
+            this.SwitchPower4.Name = "SwitchPower4";
+            this.SwitchPower4.Size = new System.Drawing.Size(121, 111);
+            this.SwitchPower4.TabIndex = 38;
+            this.SwitchPower4.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
+            this.SwitchPower4.UncheckedText = "OFF";
+            // 
+            // SwitchPower5
+            // 
+            this.SwitchPower5.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchPower5.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchPower5.Appearance.Options.UseBackColor = true;
+            this.SwitchPower5.Appearance.Options.UseForeColor = true;
+            this.SwitchPower5.CheckedText = "ON";
+            this.SwitchPower5.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.SwitchPower5.HtmlTemplate.Styles = resources.GetString("SwitchPower5.HtmlTemplate.Styles");
+            this.SwitchPower5.Location = new System.Drawing.Point(130, 120);
+            this.SwitchPower5.Name = "SwitchPower5";
+            this.SwitchPower5.Size = new System.Drawing.Size(121, 111);
+            this.SwitchPower5.TabIndex = 38;
+            this.SwitchPower5.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
+            this.SwitchPower5.UncheckedText = "OFF";
+            // 
+            // SwitchPower6
+            // 
+            this.SwitchPower6.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchPower6.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchPower6.Appearance.Options.UseBackColor = true;
+            this.SwitchPower6.Appearance.Options.UseForeColor = true;
+            this.SwitchPower6.CheckedText = "ON";
+            this.SwitchPower6.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.SwitchPower6.HtmlTemplate.Styles = resources.GetString("SwitchPower6.HtmlTemplate.Styles");
+            this.SwitchPower6.Location = new System.Drawing.Point(130, 237);
+            this.SwitchPower6.Name = "SwitchPower6";
+            this.SwitchPower6.Size = new System.Drawing.Size(121, 112);
+            this.SwitchPower6.TabIndex = 38;
+            this.SwitchPower6.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
+            this.SwitchPower6.UncheckedText = "OFF";
+            // 
+            // SwitchEpb5
+            // 
+            this.SwitchEpb5.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb5.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb5.Appearance.Options.UseBackColor = true;
+            this.SwitchEpb5.Appearance.Options.UseForeColor = true;
+            this.SwitchEpb5.CheckedText = "RUN";
+            this.SwitchEpb5.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.SwitchEpb5.HtmlTemplate.Styles = resources.GetString("SwitchEpb5.HtmlTemplate.Styles");
+            this.SwitchEpb5.Location = new System.Drawing.Point(257, 120);
+            this.SwitchEpb5.Name = "SwitchEpb5";
+            this.SwitchEpb5.Size = new System.Drawing.Size(126, 111);
+            this.SwitchEpb5.TabIndex = 38;
+            this.SwitchEpb5.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
+            this.SwitchEpb5.UncheckedText = "STOP";
+            // 
+            // SwitchEpb6
+            // 
+            this.SwitchEpb6.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb6.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb6.Appearance.Options.UseBackColor = true;
+            this.SwitchEpb6.Appearance.Options.UseForeColor = true;
+            this.SwitchEpb6.CheckedText = "RUN";
+            this.SwitchEpb6.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.SwitchEpb6.HtmlTemplate.Styles = resources.GetString("SwitchEpb6.HtmlTemplate.Styles");
+            this.SwitchEpb6.Location = new System.Drawing.Point(257, 237);
+            this.SwitchEpb6.Name = "SwitchEpb6";
+            this.SwitchEpb6.Size = new System.Drawing.Size(126, 112);
+            this.SwitchEpb6.TabIndex = 38;
+            this.SwitchEpb6.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
+            this.SwitchEpb6.UncheckedText = "STOP";
+            // 
+            // SwitchEpb7
+            // 
+            this.SwitchEpb7.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb7.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb7.Appearance.Options.UseBackColor = true;
+            this.SwitchEpb7.Appearance.Options.UseForeColor = true;
+            this.SwitchEpb7.CheckedText = "RUN";
+            this.SwitchEpb7.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.SwitchEpb7.HtmlTemplate.Styles = resources.GetString("SwitchEpb7.HtmlTemplate.Styles");
+            this.SwitchEpb7.Location = new System.Drawing.Point(257, 3);
+            this.SwitchEpb7.Name = "SwitchEpb7";
+            this.SwitchEpb7.Size = new System.Drawing.Size(126, 111);
+            this.SwitchEpb7.TabIndex = 38;
+            this.SwitchEpb7.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
+            this.SwitchEpb7.UncheckedText = "STOP";
+            // 
+            // SwitchPower8
+            // 
+            this.SwitchPower8.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchPower8.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchPower8.Appearance.Options.UseBackColor = true;
+            this.SwitchPower8.Appearance.Options.UseForeColor = true;
+            this.SwitchPower8.CheckedText = "ON";
+            this.SwitchPower8.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.SwitchPower8.HtmlTemplate.Styles = resources.GetString("SwitchPower8.HtmlTemplate.Styles");
+            this.SwitchPower8.Location = new System.Drawing.Point(130, 120);
+            this.SwitchPower8.Name = "SwitchPower8";
+            this.SwitchPower8.Size = new System.Drawing.Size(121, 111);
+            this.SwitchPower8.TabIndex = 38;
+            this.SwitchPower8.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
+            this.SwitchPower8.UncheckedText = "OFF";
+            // 
+            // SwitchPower7
+            // 
+            this.SwitchPower7.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchPower7.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchPower7.Appearance.Options.UseBackColor = true;
+            this.SwitchPower7.Appearance.Options.UseForeColor = true;
+            this.SwitchPower7.CheckedText = "ON";
+            this.SwitchPower7.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.SwitchPower7.HtmlTemplate.Styles = resources.GetString("SwitchPower7.HtmlTemplate.Styles");
+            this.SwitchPower7.Location = new System.Drawing.Point(130, 3);
+            this.SwitchPower7.Name = "SwitchPower7";
+            this.SwitchPower7.Size = new System.Drawing.Size(121, 111);
+            this.SwitchPower7.TabIndex = 38;
+            this.SwitchPower7.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
+            this.SwitchPower7.UncheckedText = "OFF";
+            // 
+            // SwitchPower9
+            // 
+            this.SwitchPower9.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchPower9.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchPower9.Appearance.Options.UseBackColor = true;
+            this.SwitchPower9.Appearance.Options.UseForeColor = true;
+            this.SwitchPower9.CheckedText = "ON";
+            this.SwitchPower9.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.SwitchPower9.HtmlTemplate.Styles = resources.GetString("SwitchPower9.HtmlTemplate.Styles");
+            this.SwitchPower9.Location = new System.Drawing.Point(130, 237);
+            this.SwitchPower9.Name = "SwitchPower9";
+            this.SwitchPower9.Size = new System.Drawing.Size(121, 112);
+            this.SwitchPower9.TabIndex = 38;
+            this.SwitchPower9.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
+            this.SwitchPower9.UncheckedText = "OFF";
+            // 
+            // tSwitchEpb9
+            // 
+            this.tSwitchEpb9.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.tSwitchEpb9.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.tSwitchEpb9.Appearance.Options.UseBackColor = true;
+            this.tSwitchEpb9.Appearance.Options.UseForeColor = true;
+            this.tSwitchEpb9.CheckedText = "RUN";
+            this.tSwitchEpb9.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.tSwitchEpb9.HtmlTemplate.Styles = resources.GetString("tSwitchEpb9.HtmlTemplate.Styles");
+            this.tSwitchEpb9.Location = new System.Drawing.Point(257, 237);
+            this.tSwitchEpb9.Name = "tSwitchEpb9";
+            this.tSwitchEpb9.Size = new System.Drawing.Size(126, 112);
+            this.tSwitchEpb9.TabIndex = 38;
+            this.tSwitchEpb9.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
+            this.tSwitchEpb9.UncheckedText = "STOP";
+            // 
+            // SwitchEpb8
+            // 
+            this.SwitchEpb8.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb8.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb8.Appearance.Options.UseBackColor = true;
+            this.SwitchEpb8.Appearance.Options.UseForeColor = true;
+            this.SwitchEpb8.CheckedText = "RUN";
+            this.SwitchEpb8.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.SwitchEpb8.HtmlTemplate.Styles = resources.GetString("SwitchEpb8.HtmlTemplate.Styles");
+            this.SwitchEpb8.Location = new System.Drawing.Point(257, 120);
+            this.SwitchEpb8.Name = "SwitchEpb8";
+            this.SwitchEpb8.Size = new System.Drawing.Size(126, 111);
+            this.SwitchEpb8.TabIndex = 38;
+            this.SwitchEpb8.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
+            this.SwitchEpb8.UncheckedText = "STOP";
+            // 
+            // SwitchEpb11
+            // 
+            this.SwitchEpb11.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb11.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb11.Appearance.Options.UseBackColor = true;
+            this.SwitchEpb11.Appearance.Options.UseForeColor = true;
+            this.SwitchEpb11.CheckedText = "RUN";
+            this.SwitchEpb11.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.SwitchEpb11.HtmlTemplate.Styles = resources.GetString("SwitchEpb11.HtmlTemplate.Styles");
+            this.SwitchEpb11.Location = new System.Drawing.Point(257, 120);
+            this.SwitchEpb11.Name = "SwitchEpb11";
+            this.SwitchEpb11.Size = new System.Drawing.Size(126, 111);
+            this.SwitchEpb11.TabIndex = 38;
+            this.SwitchEpb11.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
+            this.SwitchEpb11.UncheckedText = "STOP";
+            // 
+            // SwitchPower10
+            // 
+            this.SwitchPower10.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchPower10.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchPower10.Appearance.Options.UseBackColor = true;
+            this.SwitchPower10.Appearance.Options.UseForeColor = true;
+            this.SwitchPower10.CheckedText = "ON";
+            this.SwitchPower10.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.SwitchPower10.HtmlTemplate.Styles = resources.GetString("SwitchPower10.HtmlTemplate.Styles");
+            this.SwitchPower10.Location = new System.Drawing.Point(130, 3);
+            this.SwitchPower10.Name = "SwitchPower10";
+            this.SwitchPower10.Size = new System.Drawing.Size(121, 111);
+            this.SwitchPower10.TabIndex = 38;
+            this.SwitchPower10.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
+            this.SwitchPower10.UncheckedText = "OFF";
+            // 
+            // SwitchPower11
+            // 
+            this.SwitchPower11.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchPower11.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchPower11.Appearance.Options.UseBackColor = true;
+            this.SwitchPower11.Appearance.Options.UseForeColor = true;
+            this.SwitchPower11.CheckedText = "ON";
+            this.SwitchPower11.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.SwitchPower11.HtmlTemplate.Styles = resources.GetString("SwitchPower11.HtmlTemplate.Styles");
+            this.SwitchPower11.Location = new System.Drawing.Point(130, 120);
+            this.SwitchPower11.Name = "SwitchPower11";
+            this.SwitchPower11.Size = new System.Drawing.Size(121, 111);
+            this.SwitchPower11.TabIndex = 38;
+            this.SwitchPower11.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
+            this.SwitchPower11.UncheckedText = "OFF";
+            // 
+            // SwitchPower12
+            // 
+            this.SwitchPower12.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchPower12.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchPower12.Appearance.Options.UseBackColor = true;
+            this.SwitchPower12.Appearance.Options.UseForeColor = true;
+            this.SwitchPower12.CheckedText = "ON";
+            this.SwitchPower12.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.SwitchPower12.HtmlTemplate.Styles = resources.GetString("SwitchPower12.HtmlTemplate.Styles");
+            this.SwitchPower12.Location = new System.Drawing.Point(130, 237);
+            this.SwitchPower12.Name = "SwitchPower12";
+            this.SwitchPower12.Size = new System.Drawing.Size(121, 112);
+            this.SwitchPower12.TabIndex = 38;
+            this.SwitchPower12.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
+            this.SwitchPower12.UncheckedText = "OFF";
+            // 
+            // SwitchEpb12
+            // 
+            this.SwitchEpb12.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb12.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb12.Appearance.Options.UseBackColor = true;
+            this.SwitchEpb12.Appearance.Options.UseForeColor = true;
+            this.SwitchEpb12.CheckedText = "RUN";
+            this.SwitchEpb12.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.SwitchEpb12.HtmlTemplate.Styles = resources.GetString("SwitchEpb12.HtmlTemplate.Styles");
+            this.SwitchEpb12.Location = new System.Drawing.Point(257, 237);
+            this.SwitchEpb12.Name = "SwitchEpb12";
+            this.SwitchEpb12.Size = new System.Drawing.Size(126, 112);
+            this.SwitchEpb12.TabIndex = 38;
+            this.SwitchEpb12.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
+            this.SwitchEpb12.UncheckedText = "STOP";
+            // 
+            // SwitchEpb10
+            // 
+            this.SwitchEpb10.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb10.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb10.Appearance.Options.UseBackColor = true;
+            this.SwitchEpb10.Appearance.Options.UseForeColor = true;
+            this.SwitchEpb10.CheckedText = "RUN";
+            this.SwitchEpb10.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.SwitchEpb10.HtmlTemplate.Styles = resources.GetString("SwitchEpb10.HtmlTemplate.Styles");
+            this.SwitchEpb10.Location = new System.Drawing.Point(257, 3);
+            this.SwitchEpb10.Name = "SwitchEpb10";
+            this.SwitchEpb10.Size = new System.Drawing.Size(126, 111);
+            this.SwitchEpb10.TabIndex = 38;
+            this.SwitchEpb10.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
+            this.SwitchEpb10.UncheckedText = "STOP";
+            // 
+            // SwitchEpb1
+            // 
+            this.SwitchEpb1.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb1.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb1.Appearance.Options.UseBackColor = true;
+            this.SwitchEpb1.Appearance.Options.UseForeColor = true;
+            this.SwitchEpb1.CheckedText = "RUN";
+            this.SwitchEpb1.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.SwitchEpb1.HtmlTemplate.Styles = resources.GetString("SwitchEpb1.HtmlTemplate.Styles");
+            this.SwitchEpb1.Location = new System.Drawing.Point(257, 3);
+            this.SwitchEpb1.Name = "SwitchEpb1";
+            this.SwitchEpb1.Size = new System.Drawing.Size(126, 111);
+            this.SwitchEpb1.TabIndex = 38;
+            this.SwitchEpb1.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
+            this.SwitchEpb1.UncheckedText = "STOP";
+            // 
+            // SwitchPower1
+            // 
+            this.SwitchPower1.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchPower1.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchPower1.Appearance.Options.UseBackColor = true;
+            this.SwitchPower1.Appearance.Options.UseForeColor = true;
+            this.SwitchPower1.CheckedText = "ON";
+            this.SwitchPower1.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.SwitchPower1.HtmlTemplate.Styles = resources.GetString("SwitchPower1.HtmlTemplate.Styles");
+            this.SwitchPower1.Location = new System.Drawing.Point(130, 3);
+            this.SwitchPower1.Name = "SwitchPower1";
+            this.SwitchPower1.Size = new System.Drawing.Size(121, 111);
+            this.SwitchPower1.TabIndex = 38;
+            this.SwitchPower1.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
+            this.SwitchPower1.UncheckedText = "OFF";
+            // 
+            // SwitchPower2
+            // 
+            this.SwitchPower2.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchPower2.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchPower2.Appearance.Options.UseBackColor = true;
+            this.SwitchPower2.Appearance.Options.UseForeColor = true;
+            this.SwitchPower2.CheckedText = "ON";
+            this.SwitchPower2.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.SwitchPower2.HtmlTemplate.Styles = resources.GetString("SwitchPower2.HtmlTemplate.Styles");
+            this.SwitchPower2.Location = new System.Drawing.Point(130, 120);
+            this.SwitchPower2.Name = "SwitchPower2";
+            this.SwitchPower2.Size = new System.Drawing.Size(121, 111);
+            this.SwitchPower2.TabIndex = 38;
+            this.SwitchPower2.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
+            this.SwitchPower2.UncheckedText = "OFF";
+            // 
+            // SwitchPower3
+            // 
+            this.SwitchPower3.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchPower3.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchPower3.Appearance.Options.UseBackColor = true;
+            this.SwitchPower3.Appearance.Options.UseForeColor = true;
+            this.SwitchPower3.CheckedText = "ON";
+            this.SwitchPower3.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.SwitchPower3.HtmlTemplate.Styles = resources.GetString("SwitchPower3.HtmlTemplate.Styles");
+            this.SwitchPower3.Location = new System.Drawing.Point(130, 237);
+            this.SwitchPower3.Name = "SwitchPower3";
+            this.SwitchPower3.Size = new System.Drawing.Size(121, 112);
+            this.SwitchPower3.TabIndex = 38;
+            this.SwitchPower3.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
+            this.SwitchPower3.UncheckedText = "OFF";
+            // 
+            // SwitchEpb2
+            // 
+            this.SwitchEpb2.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb2.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb2.Appearance.Options.UseBackColor = true;
+            this.SwitchEpb2.Appearance.Options.UseForeColor = true;
+            this.SwitchEpb2.CheckedText = "RUN";
+            this.SwitchEpb2.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.SwitchEpb2.HtmlTemplate.Styles = resources.GetString("SwitchEpb2.HtmlTemplate.Styles");
+            this.SwitchEpb2.Location = new System.Drawing.Point(257, 120);
+            this.SwitchEpb2.Name = "SwitchEpb2";
+            this.SwitchEpb2.Size = new System.Drawing.Size(126, 111);
+            this.SwitchEpb2.TabIndex = 38;
+            this.SwitchEpb2.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
+            this.SwitchEpb2.UncheckedText = "STOP";
+            // 
+            // SwitchEpb3
+            // 
+            this.SwitchEpb3.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb3.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb3.Appearance.Options.UseBackColor = true;
+            this.SwitchEpb3.Appearance.Options.UseForeColor = true;
+            this.SwitchEpb3.CheckedText = "RUN";
+            this.SwitchEpb3.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.SwitchEpb3.HtmlTemplate.Styles = resources.GetString("SwitchEpb3.HtmlTemplate.Styles");
+            this.SwitchEpb3.Location = new System.Drawing.Point(257, 237);
+            this.SwitchEpb3.Name = "SwitchEpb3";
+            this.SwitchEpb3.Size = new System.Drawing.Size(126, 112);
+            this.SwitchEpb3.TabIndex = 38;
+            this.SwitchEpb3.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
+            this.SwitchEpb3.UncheckedText = "STOP";
             // 
             // FrmEpbMainMonitor
             // 
@@ -5221,6 +5259,8 @@
             ((System.ComponentModel.ISupportInitialize)(this.CheckP2.Properties)).EndInit();
             ((System.ComponentModel.ISupportInitialize)(this.textEditP1.Properties)).EndInit();
             ((System.ComponentModel.ISupportInitialize)(this.textEditP2.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.CheckF.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEditF.Properties)).EndInit();
             this.ResumeLayout(false);
 
         }
@@ -5495,5 +5535,7 @@
         private DevExpress.XtraEditors.CheckEdit CheckP2;
         private DevExpress.XtraEditors.TextEdit textEditP1;
         private DevExpress.XtraEditors.TextEdit textEditP2;
+        private DevExpress.XtraEditors.CheckEdit CheckF;
+        private DevExpress.XtraEditors.TextEdit textEditF;
     }
 }
