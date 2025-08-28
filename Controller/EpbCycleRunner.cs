@@ -27,7 +27,7 @@ namespace Controller
         private readonly HydraulicController _hydraulic;
         private readonly ILogger _log;
 
-        // 字段区 —— 加在现有字段后
+        // 字段区 
         // ★ 新增：便于调用 EpbManager 暴露的液压钩子
         private readonly EpbManager _manager;
         private readonly int _peakIgnoreMs;
@@ -40,7 +40,7 @@ namespace Controller
         private readonly int _sampleMs;
         private readonly int _stableWinMs;
 
-        private HydraulicOrchestrator _hydCoordinator; // 可选的液压协调器
+        //private HydraulicOrchestrator _hydCoordinator; // 可选的液压协调器 - 已弃用
         private double _iEmptyFwdA;
         private double _iEmptyRevA;
         private double _tClampRampMs;
@@ -459,7 +459,6 @@ namespace Controller
 
             return true;
         }
-
         public async Task<bool> RunOneAsync(int targetPeriodMs, CancellationToken token, bool? preRelease = false)
         {
             try
@@ -771,27 +770,7 @@ namespace Controller
                     return (false, 0, 0);
             }
         }
-
-
-        /*
-        private async Task<bool> WaitCurrentAboveAsync(double thrA, CancellationToken token)
-        {
-            var ewma = ReadEwma(_readCurrent(_channel), _readCurrent(_channel));
-            var tBegin = Stopwatch.GetTimestamp();
-
-            while (true)
-            {
-                token.ThrowIfCancellationRequested();
-                await Task.Delay(_sampleMs, token);
-                var raw = _readCurrent(_channel);
-                ewma = ReadEwma(ewma, raw);
-
-                if (ewma >= thrA) return true;
-
-                if (ElapsedMs(tBegin) > 10_000) return false;
-            }
-        }*/
-
+        
         private async Task<bool> WaitCurrentAboveAsync(double thrA, CancellationToken token)
         {
             var ewma = ReadEwma(_readCurrent(_channel), _readCurrent(_channel));
