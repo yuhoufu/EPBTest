@@ -227,8 +227,7 @@ namespace Controller
         {
             return _hydCoordinator?.MarkVoltageReleaseAsync(channel) ?? Task.CompletedTask;
         }
-
-
+        
         // （保留你已有的 StartChannelAsync / Pause/Resume/Stop 等实现，不改对外签名）
         public async Task StartChannelAsync(int channel, CancellationToken uiToken = default)
         {
@@ -309,8 +308,7 @@ namespace Controller
                     _log.Warn($"EPB[{channel}] 自学习异常：{ex.Message}，仍将尝试进入正式试验。", "EPB");
                 }
             }
-            // 暂时注释掉正式运行
-
+           
             timer.StartAsync(_cfg.Test.TestTarget, staggerMs, async (i, token) =>
             {
                 _log.Info($"EPB[{channel}] 周期 {i}/{_cfg.Test.TestTarget} 开始。", "EPB");
