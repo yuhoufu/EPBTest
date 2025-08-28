@@ -57,7 +57,19 @@ namespace MTEmbTest
 
         private const int DeviceCount = 6; // 共6个设备
         private const string FormKey = "FrmEpbMainMonitor";
+        private const int UI_TARGET_FPS = 25; // 目标帧率
+
+        // —— 15 路全局定义 —— //
+        private static readonly ChannelDef[] _allChs = BuildChannels();
+        private readonly LineItem[] _chCurve = new LineItem[15];
+
+        // —— 15 条曲线/数据/时间缓存 —— //
+        private readonly PointPairList[] _chData = new PointPairList[15];
+
+        // —— CheckEdit 映射（全局索引 -> 控件），用于实时控制可见性 —— //
+        private readonly Dictionary<int, CheckEdit> _checkByGlobal = new(16);
         private readonly DeviceContext[] _deviceContexts = new DeviceContext[DeviceCount];
+        private readonly double[] _lastX = Enumerable.Repeat(0.0, 15).ToArray();
 
         // 控制曲线显示的check控件名
         private readonly string[] _persistNames =
@@ -65,72 +77,10 @@ namespace MTEmbTest
                 .Concat(new[] { "CheckP1", "CheckP2", "CheckF" })
                 .ToArray();
 
-        /// <summary>信号类型（用于决定放哪根轴与命名等）。</summary>
-        private enum SignalType { Current, Pressure, Force }
-
-        /// <summary>全局通道定义（把设备 + AI 行号，映射到 15 路全局曲线）。</summary>
-        private sealed class ChannelDef
-        {
-            /// <summary>全局索引：EPB1..12 -> 0..11；P1->12；P2->13；F->14。</summary>
-            public int GlobalIndex;
-            /// <summary>曲线显示名。</summary>
-            public string DisplayName;
-            /// <summary>所属设备（"Dev1"/"Dev2"）。</summary>
-            public string Device;
-            /// <summary>设备内 AI 行号（0-based）。</summary>
-            public int AiIndex;
-            /// <summary>信号类型。</summary>
-            public SignalType Type;
-        }
-
-        // —— 15 路全局定义 —— //
-        private static ChannelDef[] _allChs = BuildChannels();
-        private static ChannelDef[] BuildChannels()
-        {
-            var list = new List<ChannelDef>();
-
-            // Dev1: EPB1..EPB8 -> ai0..ai7
-            for (int i = 0; i < 8; i++)
-                list.Add(new ChannelDef
-                {
-                    GlobalIndex = i,
-                    DisplayName = $"DAQ_A{i + 1}_I(A)",
-                    Device = "Dev1",
-                    AiIndex = i,
-                    Type = SignalType.Current
-                });
-
-            // Dev2: EPB9..EPB12 -> ai0..ai3
-            for (int i = 0; i < 4; i++)
-                list.Add(new ChannelDef
-                {
-                    GlobalIndex = 8 + i,
-                    DisplayName = $"DAQ_A{9 + i}_I(A)",
-                    Device = "Dev2",
-                    AiIndex = i,
-                    Type = SignalType.Current
-                });
-
-            // Dev2: P1, P2, F -> ai4, ai5, ai6
-            list.Add(new ChannelDef { GlobalIndex = 12, DisplayName = "DAQ_P1_(bar)", Device = "Dev2", AiIndex = 4, Type = SignalType.Pressure });
-            list.Add(new ChannelDef { GlobalIndex = 13, DisplayName = "DAQ_P2_(bar)", Device = "Dev2", AiIndex = 5, Type = SignalType.Pressure });
-            list.Add(new ChannelDef { GlobalIndex = 14, DisplayName = "DAQ_F_(N)", Device = "Dev2", AiIndex = 6, Type = SignalType.Force });
-
-            return list.ToArray();
-        }
-
         // —— 快速路由（"Dev#ai" -> 全局索引） —— //
-        private readonly Dictionary<string, int> _route = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        private static string RouteKey(string dev, int ai) => $"{dev}#{ai}";
-
-        // —— 15 条曲线/数据/时间缓存 —— //
-        private readonly PointPairList[] _chData = new PointPairList[15];
-        private readonly LineItem[] _chCurve = new LineItem[15];
-        private readonly double[] _lastX = Enumerable.Repeat(0.0, 15).ToArray();
-
-        // —— CheckEdit 映射（全局索引 -> 控件），用于实时控制可见性 —— //
-        private readonly Dictionary<int, CheckEdit> _checkByGlobal = new Dictionary<int, CheckEdit>(16);
-
+        private readonly Dictionary<string, int> _route = new(StringComparer.OrdinalIgnoreCase);
+        private readonly ConcurrentQueue<byte[]> bufferA = new();
+        private readonly ConcurrentQueue<byte[]> bufferB = new();
 
 
         private readonly object bufferLock = new(); //实时曲线缓存数据锁
@@ -140,25 +90,51 @@ namespace MTEmbTest
 
 
         private readonly object currentDevLock = new();
+
+        private readonly ConcurrentDictionary<string, LineItemOperation> curveDictionary = new();
+        private readonly long DispinitialTimestamp = 0;
+
+
+        private readonly Stopwatch Dispstopwatch = new();
+
+
+        private readonly ClsEMBControler[] EmbGroup = new ClsEMBControler[12];
         private readonly object graphLock = new(); //曲线更新锁
+        private readonly bool IsTestConfirm = false;
         private AoController _ao;
         private GlobalConfig _cfg;
+
+        /// <summary>防止 OnFormClosing 重入执行。</summary>
+        private int _closingReentry = 0;
+
         private string _currentDev = "EMB1"; // 添加私有字段
+        private volatile bool _dirtyForRedraw; // 有新数据，需要重绘
         private DoController _do;
         private EpbManager _epb;
 
+        /// <summary>固定的 X 轴窗口宽度（秒）。缺省沿用 ClsGlobal.XDuration。</summary>
+        private double _fixedXWindowSec;
+
+
+        private int _formClosedFlag; // 页面关闭 0=运行中；1=已开始关闭
+
+
+        /// <summary>窗体是否已进入关闭流程（重入/回调统一短路）。</summary>
+        private volatile bool _isClosing;
+
         private bool _isCtrlPowerPressing;
+        private double _latestGlobalX; // 所有通道里最新的 X（秒）
         private Timer[] _logtimers = new Timer[DeviceCount * 2];
 
         private UiConfig _uiCfg;
+
+
+        // —— UI 刷新节流相关 —— //
+        private System.Windows.Forms.Timer _uiTimer;
         private ConcurrentQueue<byte[]> activeWriteBuffer;
         private AiConfigDetail aiConfigDetail;
 
         private ConcurrentDictionary<int, int> AlertStatus = new();
-        private readonly ConcurrentQueue<byte[]> bufferA = new();
-        private readonly ConcurrentQueue<byte[]> bufferB = new();
-
-        private readonly ConcurrentDictionary<string, LineItemOperation> curveDictionary = new();
 
 
         //private double ActForceTimeOffset = 0;
@@ -168,17 +144,9 @@ namespace MTEmbTest
         private volatile double[] daqSnapshot = Array.Empty<double>();
         private int dataLogSpan = 0;
         private DateTime DispinitialDateTime = DateTime.Now;
-        private readonly long DispinitialTimestamp = 0;
-
-
-        private readonly Stopwatch Dispstopwatch = new();
-
-
-        private readonly ClsEMBControler[] EmbGroup = new ClsEMBControler[12];
         private volatile List<byte[]> forceSnapshot = new();
         private bool IsAutoLearn = false;
         private bool IsRunning = false;
-        private readonly bool IsTestConfirm = false;
 
 
         private DateTime lastGraphyTime = DateTime.Now;
@@ -198,41 +166,6 @@ namespace MTEmbTest
 
         private TestConfig testConfig;
         private TwoDeviceAiAcquirer twoDeviceAiAcquirer;
-
-
-        // —— UI 刷新节流相关 —— //
-        private System.Windows.Forms.Timer _uiTimer;
-        private const int UI_TARGET_FPS = 25;       // 目标帧率
-        private volatile bool _dirtyForRedraw = false;  // 有新数据，需要重绘
-        private double _latestGlobalX = 0;              // 所有通道里最新的 X（秒）
-        /// <summary>固定的 X 轴窗口宽度（秒）。缺省沿用 ClsGlobal.XDuration。</summary>
-        private double _fixedXWindowSec = 0;
-
-        /// <summary>
-        /// 设置固定的 X 轴显示窗口（秒）。调用后立即应用到图表。
-        /// 例如：SetXWindowSeconds(25);
-        /// </summary>
-        /// <param name="seconds">窗口宽度（秒，大于 0）。</param>
-        public void SetXWindowSeconds(double seconds)
-        {
-            if (seconds <= 0) return;
-            _fixedXWindowSec = seconds;
-
-            if (zedGraphRealChart != null)
-            {
-                var pane = zedGraphRealChart.GraphPane;
-
-                // 起步阶段始终显示 [0, 宽度]，这样只有最初才会看到左侧空白
-                pane.XAxis.Scale.Min = 0;
-                pane.XAxis.Scale.Max = _fixedXWindowSec;
-                pane.XAxis.Scale.MinAuto = false;
-                pane.XAxis.Scale.MaxAuto = false;
-
-                zedGraphRealChart.AxisChange();
-                zedGraphRealChart.Invalidate();
-            }
-        }
-
 
 
         public FrmEpbMainMonitor()
@@ -294,6 +227,77 @@ namespace MTEmbTest
             //     // 初始化失败时的处理
             //     SetInfoText("AO控制器初始化失败，请检查配置文件或设备连接");
             // }
+        }
+
+        private static ChannelDef[] BuildChannels()
+        {
+            var list = new List<ChannelDef>();
+
+            // Dev1: EPB1..EPB8 -> ai0..ai7
+            for (var i = 0; i < 8; i++)
+                list.Add(new ChannelDef
+                {
+                    GlobalIndex = i,
+                    DisplayName = $"DAQ_A{i + 1}_I(A)",
+                    Device = "Dev1",
+                    AiIndex = i,
+                    Type = SignalType.Current
+                });
+
+            // Dev2: EPB9..EPB12 -> ai0..ai3
+            for (var i = 0; i < 4; i++)
+                list.Add(new ChannelDef
+                {
+                    GlobalIndex = 8 + i,
+                    DisplayName = $"DAQ_A{9 + i}_I(A)",
+                    Device = "Dev2",
+                    AiIndex = i,
+                    Type = SignalType.Current
+                });
+
+            // Dev2: P1, P2, F -> ai4, ai5, ai6
+            list.Add(new ChannelDef
+            {
+                GlobalIndex = 12, DisplayName = "DAQ_P1_(bar)", Device = "Dev2", AiIndex = 4, Type = SignalType.Pressure
+            });
+            list.Add(new ChannelDef
+            {
+                GlobalIndex = 13, DisplayName = "DAQ_P2_(bar)", Device = "Dev2", AiIndex = 5, Type = SignalType.Pressure
+            });
+            list.Add(new ChannelDef
+                { GlobalIndex = 14, DisplayName = "DAQ_F_(N)", Device = "Dev2", AiIndex = 6, Type = SignalType.Force });
+
+            return list.ToArray();
+        }
+
+        private static string RouteKey(string dev, int ai)
+        {
+            return $"{dev}#{ai}";
+        }
+
+        /// <summary>
+        ///     设置固定的 X 轴显示窗口（秒）。调用后立即应用到图表。
+        ///     例如：SetXWindowSeconds(25);
+        /// </summary>
+        /// <param name="seconds">窗口宽度（秒，大于 0）。</param>
+        public void SetXWindowSeconds(double seconds)
+        {
+            if (seconds <= 0) return;
+            _fixedXWindowSec = seconds;
+
+            if (zedGraphRealChart != null)
+            {
+                var pane = zedGraphRealChart.GraphPane;
+
+                // 起步阶段始终显示 [0, 宽度]，这样只有最初才会看到左侧空白
+                pane.XAxis.Scale.Min = 0;
+                pane.XAxis.Scale.Max = _fixedXWindowSec;
+                pane.XAxis.Scale.MinAuto = false;
+                pane.XAxis.Scale.MaxAuto = false;
+
+                zedGraphRealChart.AxisChange();
+                zedGraphRealChart.Invalidate();
+            }
         }
 
 
@@ -517,7 +521,7 @@ namespace MTEmbTest
 
                 #endregion
 
-                twoDeviceAiAcquirer.Start();  // 开始采集
+                twoDeviceAiAcquirer.Start(); // 开始采集
             }
 
             catch (Exception ex)
@@ -922,63 +926,47 @@ namespace MTEmbTest
             _ao?.ResetAll(); // 停止所有AO操作
             _ao?.Dispose(); // 释放AO对象资源
 
-            twoDeviceAiAcquirer.Stop();
-
-            twoDeviceAiAcquirer?.Dispose();
+            // twoDeviceAiAcquirer.Stop();
+            //
+            // twoDeviceAiAcquirer?.Dispose();
 
 
             //base.OnFormClosed(e);
         }
 
-        // 工程值批次到达（dev="Dev1" 或 "Dev2"；eng 为 [通道, 样本]）
-        private void Acq_OnEngBatch_Old(string dev, double[,] eng, DateTime current, DateTime last)
-        {
-            if (InvokeRequired)
-            {
-                // 切回 UI 线程，避免跨线程操作控件异常
-                BeginInvoke(new Action(() => Acq_OnEngBatch_Old(dev, eng, current, last)));
-                return;
-            }
+        #region 1) 批次回调：只做“路由 + 追加点”
 
-            // ===== 示例1：读取指定通道的“最后一个样本”并显示到 SunnyUI 的 UILabel =====
-            // 你在 TwoDeviceAiAcquirer 里已把“最近值快照”维护好了，也暴露了 ReadCurrent/ReadPressure 简便查询接口：
-            //   ReadCurrent(int epbChannel), ReadPressure(int id)  —— 直接拿最近值用来显示 UI 即可。:contentReference[oaicite:6]{index=6}
-            //double p1 = _acq.ReadPressure(1);           // 压力1 (工程值)
-
-            if (dev == "Dev1")
-            {
-                // 1) 取第0通道的一个点，顺便刷新数值显示（你原来就是取 [0,0]）
-                var epb1 = eng[1, 0]; // EPB1 电流 (工程值)
-                textEditCurrent1.Text = $"{epb1:F2} A"; // 假设 textEditCurrent1 是显示 EPB1 电流的控件
-
-                // 2) 提取第0维（第0通道）的整段样本，准备绘制
-                var samples = eng.GetLength(1); // 列数 = 样本数
-                if (samples > 0)
-                {
-                    // 建议用循环拷贝（最安全、与 .NET 4.8 兼容）
-                    var daqI = new double[samples];
-                    for (var i = 0; i < samples; i++)
-                        daqI[i] = eng[1, i];
-
-                    // 3) 调用你的单曲线绘制方法（内部已做 Invoke 封送，可直接调用）
-                    UpdateGraphDisplay2(daqI);
-                }
-            }
-        }
-
-        // 工程值批次到达（dev="Dev1"/"Dev2"；eng[通道,样本]）
+        /// <summary>
+        ///     工程值批次到达（dev = "Dev1"/"Dev2"，<paramref name="eng" />: 行=通道、列=样本）。
+        ///     仅负责路由每一行到全局曲线，并把数据批量追加；
+        ///     不做删除/改轴/刷新 —— 这些都由 UI 定时器统一完成。
+        /// </summary>
         private void Acq_OnEngBatch(string dev, double[,] eng, DateTime current, DateTime last)
         {
+            // —— 已进入关闭流程或窗体已销毁：直接返回 —— //
+            if (_isClosing || Volatile.Read(ref _formClosedFlag) == 1 || IsDisposed || !IsHandleCreated)
+                return;
+
+            // —— 跨线程封送到 UI 线程 —— //
             if (InvokeRequired)
             {
-                BeginInvoke(new Action(() => Acq_OnEngBatch(dev, eng, current, last)));
+                try
+                {
+                    BeginInvoke(new Action<string, double[,], DateTime, DateTime>(Acq_OnEngBatch),
+                        dev, eng, current, last);
+                }
+                catch
+                {
+                    /* 窗口已销毁/句柄无效，忽略 */
+                }
+
                 return;
             }
 
+            // —— 参数与采样率检查 —— //
             if (eng == null) return;
-
-            int rows = eng.GetLength(0);
-            int cols = eng.GetLength(1);
+            var rows = eng.GetLength(0);
+            var cols = eng.GetLength(1);
             if (rows <= 0 || cols <= 0) return;
 
             if (ClsGlobal.DaqFrequency <= 0)
@@ -987,32 +975,30 @@ namespace MTEmbTest
                 return;
             }
 
-            double dt = 1.0 / ClsGlobal.DaqFrequency;
+            var dt = 1.0 / ClsGlobal.DaqFrequency;
 
             try
             {
-                for (int r = 0; r < rows; r++)
+                // —— 逐行路由并追加 —— //
+                for (var r = 0; r < rows; r++)
                 {
-                    // 查全局索引
-                    if (!_route.TryGetValue(RouteKey(dev, r), out int g)) continue;
+                    if (!_route.TryGetValue(RouteKey(dev, r), out var g))
+                        continue; // 非我们关心的通道
 
-                    // 勾选状态决定是否绘制
-                    bool draw = _checkByGlobal.TryGetValue(g, out var cb) ? cb.Checked : true;
+                    var draw = _checkByGlobal.TryGetValue(g, out var cb) ? cb.Checked : true;
 
-                    // 拷贝整行
+                    // 拷贝该行样本到一维缓冲
                     var buf = new double[cols];
-                    for (int i = 0; i < cols; i++)
-                        buf[i] = eng[r, i];
+                    for (var i = 0; i < cols; i++) buf[i] = eng[r, i];
 
-                    // 追加到对应全局曲线
                     AppendChannelBatch(g, buf, dt, draw);
                 }
 
-                // 示例：顺便把 EPB1 的最后值显示到文本框（按需可扩展）
-                var epb1Ch = _allChs.FirstOrDefault(c => c.Device == "Dev1" && c.AiIndex == 0);
-                if (epb1Ch != null && _chData[epb1Ch.GlobalIndex].Count > 0)
+                // —— 示例：刷新 EPB1 瞬时显示 —— //
+                var epb1 = _allChs.FirstOrDefault(c => c.Device == "Dev1" && c.AiIndex == 0);
+                if (epb1 != null && _chData[epb1.GlobalIndex].Count > 0)
                 {
-                    double v = _chData[epb1Ch.GlobalIndex][_chData[epb1Ch.GlobalIndex].Count - 1].Y;
+                    var v = _chData[epb1.GlobalIndex][_chData[epb1.GlobalIndex].Count - 1].Y;
                     textEditCurrent1.Text = $"{v:F2} A";
                 }
 
@@ -1024,93 +1010,37 @@ namespace MTEmbTest
             }
         }
 
+        #endregion
+
+        #region 2) 追加样本：只加点 + 标记重绘（不删点/不刷新）
+
         /// <summary>
-        /// 向指定“全局通道”追加一批样本，并按 XDuration 维护滑动窗口；
-        /// 会根据 <paramref name="draw"/> 决定是否显示曲线（但仍保留数据）。
+        ///     向指定“全局通道”追加一批样本；
+        ///     仅负责把点追加到对应 <see cref="_chData" />，并更新全局最新时间；
+        ///     不做 AxisChange/Invalidate，不裁剪数据、不改坐标轴。
         /// </summary>
         /// <param name="globalIndex">全局通道索引（0..14）。</param>
         /// <param name="daqData">工程值样本数组。</param>
-        /// <param name="dt">点间隔（秒/点）。</param>
-        /// <param name="draw">是否显示（由 CheckEdit 控制）。</param>
-        private void AppendChannelBatch_Old(int globalIndex, double[] daqData, double dt, bool draw)
-        {
-            if (zedGraphRealChart == null) return;
-
-            if (zedGraphRealChart.InvokeRequired)
-            {
-                zedGraphRealChart.Invoke(new Action<int, double[], double, bool>(AppendChannelBatch),
-                    globalIndex, daqData, dt, draw);
-                return;
-            }
-
-            if (globalIndex < 0 || globalIndex >= _allChs.Length) return;
-            if (daqData == null || daqData.Length == 0) return;
-
-            var pane = zedGraphRealChart.GraphPane;
-            var list = _chData[globalIndex];
-            var line = _chCurve[globalIndex];
-
-            // 同步可见性
-            if (line != null) line.IsVisible = draw;
-
-            // 计算起点 X（连续拼接）
-            double x = _lastX[globalIndex];
-            if (list.Count == 0 && x == 0.0) x = 0.0; // 首次
-            else x += dt;
-
-            // 追加
-            for (int i = 0; i < daqData.Length; i++)
-            {
-                list.Add(x, daqData[i]);
-                x += dt;
-            }
-            _lastX[globalIndex] = x - dt;
-
-            // 维护全局 X 窗口（以当前通道为参考）
-            if (list.Count > 0 && ClsGlobal.XDuration > 0)
-            {
-                double last = list[list.Count - 1].X;
-                double min = last - ClsGlobal.XDuration;
-
-                // 为减少 RemoveAll 开销，采用“半窗清理”
-                double threshold = (last + min) / 2.0;
-                if (list[0].X < min)
-                {
-                    list.RemoveAll(p => p.X < threshold);
-                    pane.XAxis.Scale.Min = list[0].X;
-                    pane.XAxis.Scale.Max = list[0].X + ClsGlobal.XDuration;
-                }
-            }
-
-            // zedGraphRealChart.AxisChange();
-            // zedGraphRealChart.Invalidate();
-
-            // 记录全局最新 X，用于 UI 定时器设置显示窗口
-            _latestGlobalX = Math.Max(_latestGlobalX, _lastX[globalIndex]);
-
-            // 标记“需要重绘”，由 UI 定时器统一处理
-            _dirtyForRedraw = true;
-        }
-
-
-        /// <summary>
-        /// 向指定“全局通道”追加一批样本；
-        /// 注意：这里只做“加点 + 标记重绘”，不做任何删除与轴范围调整！
-        /// 清理旧点与 AxisChange/Invalidate 都在 UI 定时器里统一完成。
-        /// </summary>
-        /// <param name="globalIndex">全局通道索引（0..14）。</param>
-        /// <param name="daqData">工程值样本数组。</param>
-        /// <param name="dt">点间隔（秒/点）。</param>
-        /// <param name="draw">是否显示（由 CheckEdit 控制）。</param>
+        /// <param name="dt">相邻样本的时间间隔（秒/点）。</param>
+        /// <param name="draw">是否显示该通道（由 CheckEdit 控制）。</param>
         private void AppendChannelBatch(int globalIndex, double[] daqData, double dt, bool draw)
         {
-            if (zedGraphRealChart == null) return;
+            if (_isClosing || Volatile.Read(ref _formClosedFlag) == 1) return;
+            if (zedGraphRealChart == null || zedGraphRealChart.IsDisposed) return;
 
             if (zedGraphRealChart.InvokeRequired)
             {
-                zedGraphRealChart.Invoke(
-                    new Action<int, double[], double, bool>(AppendChannelBatch),
-                    globalIndex, daqData, dt, draw);
+                try
+                {
+                    zedGraphRealChart.Invoke(
+                        new Action<int, double[], double, bool>(AppendChannelBatch),
+                        globalIndex, daqData, dt, draw);
+                }
+                catch
+                {
+                    /* 窗口已销毁/句柄无效，忽略 */
+                }
+
                 return;
             }
 
@@ -1121,23 +1051,25 @@ namespace MTEmbTest
             var line = _chCurve[globalIndex];
             if (line != null) line.IsVisible = draw;
 
-            // ——— 仅追加点（连续 X）———
-            double x = _lastX[globalIndex];
-            if (list.Count == 0 && x == 0.0) x = 0.0; else x += dt;
+            // —— 连续时间轴追加 —— //
+            var x = _lastX[globalIndex];
+            if (list.Count == 0 && x == 0.0) x = 0.0;
+            else x += dt;
 
-            for (int i = 0; i < daqData.Length; i++)
+            for (var i = 0; i < daqData.Length; i++)
             {
                 list.Add(x, daqData[i]);
                 x += dt;
             }
+
             _lastX[globalIndex] = x - dt;
 
-            // ——— 不要在这里 AxisChange/Invalidate/删点/改轴 ———
-            // 只记录最新 X，并标记 UI 需要重绘
+            // —— 只更新全局最新 X 并请求 UI 定时器刷新 —— //
             _latestGlobalX = Math.Max(_latestGlobalX, _lastX[globalIndex]);
             _dirtyForRedraw = true;
         }
 
+        #endregion
 
 
         private async void BtnStartTest_Click(object sender, EventArgs e)
@@ -1191,6 +1123,112 @@ namespace MTEmbTest
         private void CheckEpbA7_CheckStateChanged(object sender, EventArgs e)
         {
             Console.WriteLine(@"CheckEpbA7_CheckStateChanged");
+        }
+
+        #region 3) 窗体关闭：一次性解绑/停止/释放
+
+        /// <summary>
+        ///     窗体关闭：标记关闭状态，解绑事件，停止 UI 定时器与采集，避免回调打到已销毁的 UI。
+        /// </summary>
+        private void FrmEpbMainMonitor_FormClosing(object sender, FormClosingEventArgs e)
+        {
+            // 只执行一次
+            if (Interlocked.Exchange(ref _formClosedFlag, 1) != 0) return;
+            _isClosing = true;
+
+            // 1) 解绑曲线可见性事件（避免关闭过程中再次触发）
+            try
+            {
+                foreach (var kv in _checkByGlobal)
+                    if (kv.Value != null)
+                        kv.Value.CheckedChanged -= OnCurveCheckChanged;
+            }
+            catch
+            {
+                /* 忽略个别控件异常 */
+            }
+
+            // 2) 停止并释放 UI 定时器（重绘交由定时器统一完成，关闭时必须先停）
+            try
+            {
+                if (_uiTimer != null)
+                {
+                    _uiTimer.Stop();
+                    _uiTimer.Dispose();
+                    _uiTimer = null;
+                }
+            }
+            catch
+            {
+            }
+
+            // 3) 解绑采集事件并停止采集（按你的实例名/事件名修改）
+            try
+            {
+                // 如果事件名不同，请改为你的实际事件名
+                if (twoDeviceAiAcquirer != null)
+                {
+                    try
+                    {
+                        twoDeviceAiAcquirer.OnEngBatch -= Acq_OnEngBatch;
+                    }
+                    catch
+                    {
+                    }
+
+                    try
+                    {
+                        twoDeviceAiAcquirer.Stop();
+                    }
+                    catch
+                    {
+                    }
+
+                    try
+                    {
+                        twoDeviceAiAcquirer?.Dispose();
+                    }
+                    catch
+                    {
+                    }
+
+                    twoDeviceAiAcquirer = null;
+                }
+            }
+            catch
+            {
+            }
+
+            base.OnFormClosing(e);
+        }
+
+        #endregion
+
+        /// <summary>信号类型（用于决定放哪根轴与命名等）。</summary>
+        private enum SignalType
+        {
+            Current,
+            Pressure,
+            Force
+        }
+
+        /// <summary>全局通道定义（把设备 + AI 行号，映射到 15 路全局曲线）。</summary>
+        private sealed class ChannelDef
+        {
+            /// <summary>设备内 AI 行号（0-based）。</summary>
+            public int AiIndex;
+
+            /// <summary>所属设备（"Dev1"/"Dev2"）。</summary>
+            public string Device;
+
+            /// <summary>曲线显示名。</summary>
+            public string DisplayName;
+
+            /// <summary>全局索引：EPB1..12 -> 0..11；P1->12；P2->13；F->14。</summary>
+            public int GlobalIndex;
+
+            /// <summary>信号类型。</summary>
+            public SignalType Type;
         }
 
 
@@ -1398,7 +1436,7 @@ namespace MTEmbTest
         private void Cb_EnabledChanged_Save(object sender, EventArgs e)
         {
             if (sender is CheckEdit cb)
-                ConfigLoader.UpdateUIChecked(_uiCfg, FormKey, cb.Name, cb.Checked, enabled: cb.Enabled);
+                ConfigLoader.UpdateUIChecked(_uiCfg, FormKey, cb.Name, cb.Checked, cb.Enabled);
         }
 
         // —— 可选：恢复默认按钮（把所有勾选恢复为 DefaultChecked，并触发保存） —— //
@@ -1610,15 +1648,15 @@ namespace MTEmbTest
 
 
         /// <summary>
-        /// 曲线初始化：创建 15 条曲线（EPB 电流 12 路 + P1 + P2 + F），
-        /// 勾选控件（CheckEdit）实时控制可见性；X 轴为时间（秒）。
+        ///     曲线初始化：创建 15 条曲线（EPB 电流 12 路 + P1 + P2 + F），
+        ///     勾选控件（CheckEdit）实时控制可见性；X 轴为时间（秒）。
         /// </summary>
         private void InitializeCurve()
         {
             try
             {
                 var pane = zedGraphRealChart.GraphPane;
-                int fontSize = 12;
+                var fontSize = 12;
 
                 // —— 基础外观（沿用你原有设置）——
                 pane.CurveList.Clear();
@@ -1668,21 +1706,21 @@ namespace MTEmbTest
 
                 // —— 绑定/缓存 15 个 CheckEdit —— //
                 _checkByGlobal.Clear();
-                int n = Math.Min(_allChs.Length, _persistNames.Length);
-                for (int g = 0; g < n; g++)
+                var n = Math.Min(_allChs.Length, _persistNames.Length);
+                for (var g = 0; g < n; g++)
                 {
-                    string name = _persistNames[g];
-                    var ctl = this.Controls.Find(name, true).FirstOrDefault() as DevExpress.XtraEditors.CheckEdit;
+                    var name = _persistNames[g];
+                    var ctl = Controls.Find(name, true).FirstOrDefault() as CheckEdit;
                     if (ctl == null) continue;
 
                     _checkByGlobal[g] = ctl;
-                    ctl.Tag = g;                                  // 保存全局曲线索引
-                    ctl.CheckedChanged -= OnCurveCheckChanged;    // 防止重复绑定
+                    ctl.Tag = g; // 保存全局曲线索引
+                    ctl.CheckedChanged -= OnCurveCheckChanged; // 防止重复绑定
                     ctl.CheckedChanged += OnCurveCheckChanged;
                 }
 
                 // —— 创建 15 条曲线 —— //
-                for (int g = 0; g < _allChs.Length; g++)
+                for (var g = 0; g < _allChs.Length; g++)
                 {
                     _chData[g] = new PointPairList();
                     var color = _curveColors[g % _curveColors.Length];
@@ -1691,10 +1729,10 @@ namespace MTEmbTest
                     curve.Line.Width = 2f;
 
                     // 电流 -> Y2；压力/夹紧力 -> 左轴
-                    curve.IsY2Axis = (_allChs[g].Type == SignalType.Current);
+                    curve.IsY2Axis = _allChs[g].Type == SignalType.Current;
 
                     // 初始可见性 = 复选框状态（若未找到控件则默认可见）
-                    bool visible = _checkByGlobal.TryGetValue(g, out var cb) ? cb.Checked : true;
+                    var visible = _checkByGlobal.TryGetValue(g, out var cb) ? cb.Checked : true;
                     curve.IsVisible = visible;
 
                     _chCurve[g] = curve;
@@ -1732,8 +1770,6 @@ namespace MTEmbTest
 
                 // —— 启动 UI 定时器（25FPS），统一 AxisChange + Invalidate —— //
                 StartUiRedrawTimer();
-
-
             }
             catch (Exception ex)
             {
@@ -1745,8 +1781,8 @@ namespace MTEmbTest
         }
 
         /// <summary>
-        /// 启动 UI 重绘定时器：统一在该定时器里进行 AxisChange / Invalidate，
-        /// 并批量删除旧点，避免在采集回调里高频重绘导致卡顿。
+        ///     启动 UI 重绘定时器：统一在该定时器里进行 AxisChange / Invalidate，
+        ///     并批量删除旧点，避免在采集回调里高频重绘导致卡顿。
         /// </summary>
         private void StartUiRedrawTimer()
         {
@@ -1757,149 +1793,34 @@ namespace MTEmbTest
                 Interval = Math.Max(10, 1000 / UI_TARGET_FPS) // 约 25 FPS
             };
 
-            /*
             _uiTimer.Tick += (_, __) =>
             {
-                if (!_dirtyForRedraw || zedGraphRealChart == null) return;
+                if (Volatile.Read(ref _formClosedFlag) == 1) return;
+                if (zedGraphRealChart == null || zedGraphRealChart.IsDisposed) return;
 
-                var pane = zedGraphRealChart.GraphPane;
-
-                if (ClsGlobal.XDuration > 0)
-                {
-                    double maxX = _latestGlobalX;
-
-                    // —— 只显示 [minX, maxX]；minX 不小于 0 —— //
-                    double minX = Math.Max(0.0, maxX - ClsGlobal.XDuration);
-                    pane.XAxis.Scale.Min = minX;
-                    pane.XAxis.Scale.Max = maxX;
-
-                    // —— 只删除“窗口之外”的数据（X < minX），不再使用 threshold —— //
-                    for (int g = 0; g < _chData.Length; g++)
-                    {
-                        var list = _chData[g];
-                        if (list == null || list.Count == 0) continue;
-
-                        // 如果最早的点仍在窗口内，什么也不做（不会出现左侧空白）
-                        if (list[0].X >= minX) continue;
-
-                        // 线性寻界（也可改成二分），找到第一个 >= minX 的索引
-                        int cut = 0;
-                        int cnt = list.Count;
-                        while (cut < cnt && list[cut].X < minX) cut++;
-
-                        if (cut > 0)
-                        {
-                            // 一次性拷贝保留段，避免 O(n^2) 的逐点删除
-                            int keep = cnt - cut;
-                            if (keep > 0)
-                            {
-                                var tmp = new PointPair[keep];
-                                for (int i = 0; i < keep; i++)
-                                    tmp[i] = list[cut + i];
-
-                                list.Clear();
-                                for (int i = 0; i < keep; i++)
-                                    list.Add(tmp[i].X, tmp[i].Y);
-                            }
-                            else
-                            {
-                                list.Clear();
-                            }
-                        }
-                    }
-                }
-
-                // 统一重算与刷新
-                zedGraphRealChart.AxisChange();
-                zedGraphRealChart.Invalidate();
-
-                _dirtyForRedraw = false;
-            };
-            */
-
-            /*
-            _uiTimer.Tick += (_, __) =>
-            {
-                if (!_dirtyForRedraw || zedGraphRealChart == null) return;
-
-                var pane = zedGraphRealChart.GraphPane;
-
-                // 固定窗口宽度：优先取手动设置，其次取 ClsGlobal.XDuration
-                double width = _fixedXWindowSec > 0 ? _fixedXWindowSec : Math.Max(1.0, ClsGlobal.XDuration);
-
-                // 统一设置显示窗口：
-                // 1) 起步阶段（latest < width）：显示 [0, width] —— 只有这时左侧会空；
-                // 2) 之后：滚动显示 [latest - width, latest]，不再出现空白。
-                double maxX = Math.Max(0.0, _latestGlobalX);
-                double minX = (maxX < width) ? 0.0 : (maxX - width);
-
-                // 应用到坐标轴
-                pane.XAxis.Scale.Min = minX;
-                pane.XAxis.Scale.Max = (maxX < width) ? width : maxX;
-
-                // —— 仅删除窗口之外的数据（X < minX），窗口内一律保留 —— //
-                for (int g = 0; g < _chData.Length; g++)
-                {
-                    var list = _chData[g];
-                    if (list == null || list.Count == 0) continue;
-
-                    if (list[0].X >= minX) continue; // 最早点已在窗口内，无需处理
-
-                    // 线性寻界（也可替换为二分查找）
-                    int cut = 0, cnt = list.Count;
-                    while (cut < cnt && list[cut].X < minX) cut++;
-
-                    if (cut > 0)
-                    {
-                        int keep = cnt - cut;
-                        if (keep > 0)
-                        {
-                            var tmp = new PointPair[keep];
-                            for (int i = 0; i < keep; i++) tmp[i] = list[cut + i];
-
-                            list.Clear();
-                            for (int i = 0; i < keep; i++) list.Add(tmp[i].X, tmp[i].Y);
-                        }
-                        else
-                        {
-                            list.Clear();
-                        }
-                    }
-                }
-
-                // 统一重算与刷新
-                zedGraphRealChart.AxisChange();
-                zedGraphRealChart.Invalidate();
-
-                _dirtyForRedraw = false;
-            };
-            */
-
-            _uiTimer.Tick += (_, __) =>
-            {
                 if (!_dirtyForRedraw || zedGraphRealChart == null) return;
 
                 var pane = zedGraphRealChart.GraphPane;
 
                 // ① 固定窗口宽度（秒）
-                double width = _fixedXWindowSec > 0 ? _fixedXWindowSec : Math.Max(1.0, ClsGlobal.XDuration);
+                var width = _fixedXWindowSec > 0 ? _fixedXWindowSec : Math.Max(1.0, ClsGlobal.XDuration);
 
                 // ② 计算显示窗口 [minX, maxX]
-                double maxX = Math.Max(0.0, _latestGlobalX);
-                double minX = (maxX < width) ? 0.0 : (maxX - width);
+                var maxX = Math.Max(0.0, _latestGlobalX);
+                var minX = maxX < width ? 0.0 : maxX - width;
 
                 // ③ 应用到坐标轴：起步阶段只显示 [0, width]；之后滚动 [maxX - width, maxX]
                 pane.XAxis.Scale.Min = minX;
-                pane.XAxis.Scale.Max = (maxX < width) ? width : maxX;
+                pane.XAxis.Scale.Max = maxX < width ? width : maxX;
 
                 // ④ 仅删除“窗口之外”的点，但留出一个安全边距（padding），
                 //    防止由于各通道时间轴微抖动/抽稀/不同批次导致的“窗口内被删”。
                 //    建议 padding 为窗口宽度的 1%～5%，且不小于 0.2s。
-                double padding = Math.Max(0.2, width * 0.02);
-                double purgeBefore = Math.Max(0.0, minX - padding);
+                var padding = Math.Max(0.2, width * 0.02);
+                var purgeBefore = Math.Max(0.0, minX - padding);
 
                 // —— 按通道批量清理 —— //
-                for (int g = 0; g < _chData.Length; g++)
+                for (var g = 0; g < _chData.Length; g++)
                 {
                     var list = _chData[g];
                     if (list == null || list.Count == 0) continue;
@@ -1914,14 +1835,14 @@ namespace MTEmbTest
                     if (cut > 0)
                     {
                         // 一次性拷贝保留段，避免 O(n^2) 的头删
-                        int keep = cnt - cut;
+                        var keep = cnt - cut;
                         if (keep > 0)
                         {
                             var tmp = new PointPair[keep];
-                            for (int i = 0; i < keep; i++) tmp[i] = list[cut + i];
+                            for (var i = 0; i < keep; i++) tmp[i] = list[cut + i];
 
                             list.Clear();
-                            for (int i = 0; i < keep; i++) list.Add(tmp[i].X, tmp[i].Y);
+                            for (var i = 0; i < keep; i++) list.Add(tmp[i].X, tmp[i].Y);
                         }
                         else
                         {
@@ -1931,20 +1852,22 @@ namespace MTEmbTest
 
                     // ——（可选更强保护）按通道自身“最后 X”再留一层余量：
                     //     保证每条曲线自身至少保留 width + padding 的跨度
-                    double lastX = (_lastX != null && g < _lastX.Length) ? _lastX[g] : (list.Count > 0 ? list[list.Count - 1].X : 0.0);
-                    double ownKeepMin = Math.Max(0.0, lastX - (width + padding));
+                    var lastX = _lastX != null && g < _lastX.Length ? _lastX[g] :
+                        list.Count > 0 ? list[list.Count - 1].X : 0.0;
+                    var ownKeepMin = Math.Max(0.0, lastX - (width + padding));
                     if (list.Count > 0 && list[0].X < ownKeepMin)
                     {
-                        int cut2 = 0; int cnt2 = list.Count;
+                        var cut2 = 0;
+                        var cnt2 = list.Count;
                         while (cut2 < cnt2 && list[cut2].X < ownKeepMin) cut2++;
                         if (cut2 > 0)
                         {
-                            int keep2 = cnt2 - cut2;
+                            var keep2 = cnt2 - cut2;
                             var tmp2 = new PointPair[keep2];
-                            for (int i = 0; i < keep2; i++) tmp2[i] = list[cut2 + i];
+                            for (var i = 0; i < keep2; i++) tmp2[i] = list[cut2 + i];
 
                             list.Clear();
-                            for (int i = 0; i < keep2; i++) list.Add(tmp2[i].X, tmp2[i].Y);
+                            for (var i = 0; i < keep2; i++) list.Add(tmp2[i].X, tmp2[i].Y);
                         }
                     }
                 }
@@ -1962,12 +1885,12 @@ namespace MTEmbTest
 
 
         /// <summary>
-        /// CheckEdit 勾选变化 -> 显隐对应曲线。
-        /// 使用控件的 Tag 作为全局曲线索引，避免闭包问题。
+        ///     CheckEdit 勾选变化 -> 显隐对应曲线。
+        ///     使用控件的 Tag 作为全局曲线索引，避免闭包问题。
         /// </summary>
         private void OnCurveCheckChanged(object sender, EventArgs e)
         {
-            if (sender is DevExpress.XtraEditors.CheckEdit cb &&
+            if (sender is CheckEdit cb &&
                 cb.Tag is int gi &&
                 gi >= 0 && gi < _chCurve.Length)
             {
@@ -2293,8 +2216,6 @@ namespace MTEmbTest
                     //
                     // zedGraphRealChart.AxisChange();
                     // zedGraphRealChart.Invalidate();
-
-                    
                 }
                 catch (Exception ex)
                 {
