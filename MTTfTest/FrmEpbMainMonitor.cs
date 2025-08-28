@@ -200,6 +200,41 @@ namespace MTEmbTest
         private TwoDeviceAiAcquirer twoDeviceAiAcquirer;
 
 
+        // —— UI 刷新节流相关 —— //
+        private System.Windows.Forms.Timer _uiTimer;
+        private const int UI_TARGET_FPS = 25;       // 目标帧率
+        private volatile bool _dirtyForRedraw = false;  // 有新数据，需要重绘
+        private double _latestGlobalX = 0;              // 所有通道里最新的 X（秒）
+        /// <summary>固定的 X 轴窗口宽度（秒）。缺省沿用 ClsGlobal.XDuration。</summary>
+        private double _fixedXWindowSec = 0;
+
+        /// <summary>
+        /// 设置固定的 X 轴显示窗口（秒）。调用后立即应用到图表。
+        /// 例如：SetXWindowSeconds(25);
+        /// </summary>
+        /// <param name="seconds">窗口宽度（秒，大于 0）。</param>
+        public void SetXWindowSeconds(double seconds)
+        {
+            if (seconds <= 0) return;
+            _fixedXWindowSec = seconds;
+
+            if (zedGraphRealChart != null)
+            {
+                var pane = zedGraphRealChart.GraphPane;
+
+                // 起步阶段始终显示 [0, 宽度]，这样只有最初才会看到左侧空白
+                pane.XAxis.Scale.Min = 0;
+                pane.XAxis.Scale.Max = _fixedXWindowSec;
+                pane.XAxis.Scale.MinAuto = false;
+                pane.XAxis.Scale.MaxAuto = false;
+
+                zedGraphRealChart.AxisChange();
+                zedGraphRealChart.Invalidate();
+            }
+        }
+
+
+
         public FrmEpbMainMonitor()
         {
             InitializeComponent();
@@ -482,7 +517,7 @@ namespace MTEmbTest
 
                 #endregion
 
-                //twoDeviceAiAcquirer.Start();  // 开始采集
+                twoDeviceAiAcquirer.Start();  // 开始采集
             }
 
             catch (Exception ex)
@@ -997,7 +1032,7 @@ namespace MTEmbTest
         /// <param name="daqData">工程值样本数组。</param>
         /// <param name="dt">点间隔（秒/点）。</param>
         /// <param name="draw">是否显示（由 CheckEdit 控制）。</param>
-        private void AppendChannelBatch(int globalIndex, double[] daqData, double dt, bool draw)
+        private void AppendChannelBatch_Old(int globalIndex, double[] daqData, double dt, bool draw)
         {
             if (zedGraphRealChart == null) return;
 
@@ -1047,10 +1082,61 @@ namespace MTEmbTest
                 }
             }
 
-            zedGraphRealChart.AxisChange();
-            zedGraphRealChart.Invalidate();
+            // zedGraphRealChart.AxisChange();
+            // zedGraphRealChart.Invalidate();
+
+            // 记录全局最新 X，用于 UI 定时器设置显示窗口
+            _latestGlobalX = Math.Max(_latestGlobalX, _lastX[globalIndex]);
+
+            // 标记“需要重绘”，由 UI 定时器统一处理
+            _dirtyForRedraw = true;
         }
 
+
+        /// <summary>
+        /// 向指定“全局通道”追加一批样本；
+        /// 注意：这里只做“加点 + 标记重绘”，不做任何删除与轴范围调整！
+        /// 清理旧点与 AxisChange/Invalidate 都在 UI 定时器里统一完成。
+        /// </summary>
+        /// <param name="globalIndex">全局通道索引（0..14）。</param>
+        /// <param name="daqData">工程值样本数组。</param>
+        /// <param name="dt">点间隔（秒/点）。</param>
+        /// <param name="draw">是否显示（由 CheckEdit 控制）。</param>
+        private void AppendChannelBatch(int globalIndex, double[] daqData, double dt, bool draw)
+        {
+            if (zedGraphRealChart == null) return;
+
+            if (zedGraphRealChart.InvokeRequired)
+            {
+                zedGraphRealChart.Invoke(
+                    new Action<int, double[], double, bool>(AppendChannelBatch),
+                    globalIndex, daqData, dt, draw);
+                return;
+            }
+
+            if (globalIndex < 0 || globalIndex >= _allChs.Length) return;
+            if (daqData == null || daqData.Length == 0) return;
+
+            var list = _chData[globalIndex];
+            var line = _chCurve[globalIndex];
+            if (line != null) line.IsVisible = draw;
+
+            // ——— 仅追加点（连续 X）———
+            double x = _lastX[globalIndex];
+            if (list.Count == 0 && x == 0.0) x = 0.0; else x += dt;
+
+            for (int i = 0; i < daqData.Length; i++)
+            {
+                list.Add(x, daqData[i]);
+                x += dt;
+            }
+            _lastX[globalIndex] = x - dt;
+
+            // ——— 不要在这里 AxisChange/Invalidate/删点/改轴 ———
+            // 只记录最新 X，并标记 UI 需要重绘
+            _latestGlobalX = Math.Max(_latestGlobalX, _lastX[globalIndex]);
+            _dirtyForRedraw = true;
+        }
 
 
 
@@ -1635,6 +1721,19 @@ namespace MTEmbTest
                 zedGraphRealChart.AxisChange();
                 zedGraphRealChart.Invalidate();
                 zedGraphRealChart.Refresh();
+
+                // —— 关掉抗锯齿，减少 CPU 消耗 —— //
+                zedGraphRealChart.IsAntiAlias = false;
+
+
+                // 曲线应用固定宽度（若未显式设置，则用 ClsGlobal.XDuration）
+                SetXWindowSeconds(_fixedXWindowSec > 0 ? _fixedXWindowSec : ClsGlobal.XDuration);
+
+
+                // —— 启动 UI 定时器（25FPS），统一 AxisChange + Invalidate —— //
+                StartUiRedrawTimer();
+
+
             }
             catch (Exception ex)
             {
@@ -1644,6 +1743,223 @@ namespace MTEmbTest
                     "初始化曲线显示失败！" + ex.Message, "初始化");
             }
         }
+
+        /// <summary>
+        /// 启动 UI 重绘定时器：统一在该定时器里进行 AxisChange / Invalidate，
+        /// 并批量删除旧点，避免在采集回调里高频重绘导致卡顿。
+        /// </summary>
+        private void StartUiRedrawTimer()
+        {
+            if (_uiTimer != null) return;
+
+            _uiTimer = new System.Windows.Forms.Timer
+            {
+                Interval = Math.Max(10, 1000 / UI_TARGET_FPS) // 约 25 FPS
+            };
+
+            /*
+            _uiTimer.Tick += (_, __) =>
+            {
+                if (!_dirtyForRedraw || zedGraphRealChart == null) return;
+
+                var pane = zedGraphRealChart.GraphPane;
+
+                if (ClsGlobal.XDuration > 0)
+                {
+                    double maxX = _latestGlobalX;
+
+                    // —— 只显示 [minX, maxX]；minX 不小于 0 —— //
+                    double minX = Math.Max(0.0, maxX - ClsGlobal.XDuration);
+                    pane.XAxis.Scale.Min = minX;
+                    pane.XAxis.Scale.Max = maxX;
+
+                    // —— 只删除“窗口之外”的数据（X < minX），不再使用 threshold —— //
+                    for (int g = 0; g < _chData.Length; g++)
+                    {
+                        var list = _chData[g];
+                        if (list == null || list.Count == 0) continue;
+
+                        // 如果最早的点仍在窗口内，什么也不做（不会出现左侧空白）
+                        if (list[0].X >= minX) continue;
+
+                        // 线性寻界（也可改成二分），找到第一个 >= minX 的索引
+                        int cut = 0;
+                        int cnt = list.Count;
+                        while (cut < cnt && list[cut].X < minX) cut++;
+
+                        if (cut > 0)
+                        {
+                            // 一次性拷贝保留段，避免 O(n^2) 的逐点删除
+                            int keep = cnt - cut;
+                            if (keep > 0)
+                            {
+                                var tmp = new PointPair[keep];
+                                for (int i = 0; i < keep; i++)
+                                    tmp[i] = list[cut + i];
+
+                                list.Clear();
+                                for (int i = 0; i < keep; i++)
+                                    list.Add(tmp[i].X, tmp[i].Y);
+                            }
+                            else
+                            {
+                                list.Clear();
+                            }
+                        }
+                    }
+                }
+
+                // 统一重算与刷新
+                zedGraphRealChart.AxisChange();
+                zedGraphRealChart.Invalidate();
+
+                _dirtyForRedraw = false;
+            };
+            */
+
+            /*
+            _uiTimer.Tick += (_, __) =>
+            {
+                if (!_dirtyForRedraw || zedGraphRealChart == null) return;
+
+                var pane = zedGraphRealChart.GraphPane;
+
+                // 固定窗口宽度：优先取手动设置，其次取 ClsGlobal.XDuration
+                double width = _fixedXWindowSec > 0 ? _fixedXWindowSec : Math.Max(1.0, ClsGlobal.XDuration);
+
+                // 统一设置显示窗口：
+                // 1) 起步阶段（latest < width）：显示 [0, width] —— 只有这时左侧会空；
+                // 2) 之后：滚动显示 [latest - width, latest]，不再出现空白。
+                double maxX = Math.Max(0.0, _latestGlobalX);
+                double minX = (maxX < width) ? 0.0 : (maxX - width);
+
+                // 应用到坐标轴
+                pane.XAxis.Scale.Min = minX;
+                pane.XAxis.Scale.Max = (maxX < width) ? width : maxX;
+
+                // —— 仅删除窗口之外的数据（X < minX），窗口内一律保留 —— //
+                for (int g = 0; g < _chData.Length; g++)
+                {
+                    var list = _chData[g];
+                    if (list == null || list.Count == 0) continue;
+
+                    if (list[0].X >= minX) continue; // 最早点已在窗口内，无需处理
+
+                    // 线性寻界（也可替换为二分查找）
+                    int cut = 0, cnt = list.Count;
+                    while (cut < cnt && list[cut].X < minX) cut++;
+
+                    if (cut > 0)
+                    {
+                        int keep = cnt - cut;
+                        if (keep > 0)
+                        {
+                            var tmp = new PointPair[keep];
+                            for (int i = 0; i < keep; i++) tmp[i] = list[cut + i];
+
+                            list.Clear();
+                            for (int i = 0; i < keep; i++) list.Add(tmp[i].X, tmp[i].Y);
+                        }
+                        else
+                        {
+                            list.Clear();
+                        }
+                    }
+                }
+
+                // 统一重算与刷新
+                zedGraphRealChart.AxisChange();
+                zedGraphRealChart.Invalidate();
+
+                _dirtyForRedraw = false;
+            };
+            */
+
+            _uiTimer.Tick += (_, __) =>
+            {
+                if (!_dirtyForRedraw || zedGraphRealChart == null) return;
+
+                var pane = zedGraphRealChart.GraphPane;
+
+                // ① 固定窗口宽度（秒）
+                double width = _fixedXWindowSec > 0 ? _fixedXWindowSec : Math.Max(1.0, ClsGlobal.XDuration);
+
+                // ② 计算显示窗口 [minX, maxX]
+                double maxX = Math.Max(0.0, _latestGlobalX);
+                double minX = (maxX < width) ? 0.0 : (maxX - width);
+
+                // ③ 应用到坐标轴：起步阶段只显示 [0, width]；之后滚动 [maxX - width, maxX]
+                pane.XAxis.Scale.Min = minX;
+                pane.XAxis.Scale.Max = (maxX < width) ? width : maxX;
+
+                // ④ 仅删除“窗口之外”的点，但留出一个安全边距（padding），
+                //    防止由于各通道时间轴微抖动/抽稀/不同批次导致的“窗口内被删”。
+                //    建议 padding 为窗口宽度的 1%～5%，且不小于 0.2s。
+                double padding = Math.Max(0.2, width * 0.02);
+                double purgeBefore = Math.Max(0.0, minX - padding);
+
+                // —— 按通道批量清理 —— //
+                for (int g = 0; g < _chData.Length; g++)
+                {
+                    var list = _chData[g];
+                    if (list == null || list.Count == 0) continue;
+
+                    // 最早的点仍在“保留区”(>= purgeBefore)，无需清理
+                    if (list[0].X >= purgeBefore) continue;
+
+                    // 线性寻界（点数很多时可改成二分搜索）
+                    int cut = 0, cnt = list.Count;
+                    while (cut < cnt && list[cut].X < purgeBefore) cut++;
+
+                    if (cut > 0)
+                    {
+                        // 一次性拷贝保留段，避免 O(n^2) 的头删
+                        int keep = cnt - cut;
+                        if (keep > 0)
+                        {
+                            var tmp = new PointPair[keep];
+                            for (int i = 0; i < keep; i++) tmp[i] = list[cut + i];
+
+                            list.Clear();
+                            for (int i = 0; i < keep; i++) list.Add(tmp[i].X, tmp[i].Y);
+                        }
+                        else
+                        {
+                            list.Clear();
+                        }
+                    }
+
+                    // ——（可选更强保护）按通道自身“最后 X”再留一层余量：
+                    //     保证每条曲线自身至少保留 width + padding 的跨度
+                    double lastX = (_lastX != null && g < _lastX.Length) ? _lastX[g] : (list.Count > 0 ? list[list.Count - 1].X : 0.0);
+                    double ownKeepMin = Math.Max(0.0, lastX - (width + padding));
+                    if (list.Count > 0 && list[0].X < ownKeepMin)
+                    {
+                        int cut2 = 0; int cnt2 = list.Count;
+                        while (cut2 < cnt2 && list[cut2].X < ownKeepMin) cut2++;
+                        if (cut2 > 0)
+                        {
+                            int keep2 = cnt2 - cut2;
+                            var tmp2 = new PointPair[keep2];
+                            for (int i = 0; i < keep2; i++) tmp2[i] = list[cut2 + i];
+
+                            list.Clear();
+                            for (int i = 0; i < keep2; i++) list.Add(tmp2[i].X, tmp2[i].Y);
+                        }
+                    }
+                }
+
+                // 统一重算与刷新
+                zedGraphRealChart.AxisChange();
+                zedGraphRealChart.Invalidate();
+
+                _dirtyForRedraw = false;
+            };
+
+
+            _uiTimer.Start();
+        }
+
 
         /// <summary>
         /// CheckEdit 勾选变化 -> 显隐对应曲线。
@@ -1974,9 +2290,11 @@ namespace MTEmbTest
                         }
                     }
 
+                    //
+                    // zedGraphRealChart.AxisChange();
+                    // zedGraphRealChart.Invalidate();
 
-                    zedGraphRealChart.AxisChange();
-                    zedGraphRealChart.Invalidate();
+                    
                 }
                 catch (Exception ex)
                 {
