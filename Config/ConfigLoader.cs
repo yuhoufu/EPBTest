@@ -2,8 +2,6 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using System.Xml;
 
 namespace Config
@@ -23,15 +21,15 @@ namespace Config
         public string Name { get; set; }
         public string PhysicalChannel { get; set; }
         public double ScaleK { get; set; } = 1.0;
-        public double Offset { get; set; } = 0.0;
-        public List<(double Percent, double Pressure)> PercentToPressure { get; } = new List<(double, double)>();
+        public double Offset { get; set; }
+        public List<(double Percent, double Pressure)> PercentToPressure { get; } = new();
     }
 
     public sealed class AoConfig
     {
-        public double MinVoltage { get; set; } = 0;
+        public double MinVoltage { get; set; }
         public double MaxVoltage { get; set; } = 10;
-        public double MinPercent { get; set; } = 0;
+        public double MinPercent { get; set; }
         public double MaxPercent { get; set; } = 100;
         public Dictionary<string, AoDevice> Devices { get; } = new(StringComparer.OrdinalIgnoreCase);
     }
@@ -51,7 +49,10 @@ namespace Config
         public List<int> Members { get; } = new();
 
         // 小工具：判断某通道是否在此液压管辖范围
-        public bool ContainsChannel(int ch) => Members?.Contains(ch) == true;
+        public bool ContainsChannel(int ch)
+        {
+            return Members?.Contains(ch) == true;
+        }
     }
 
 
@@ -114,7 +115,7 @@ namespace Config
         /// <summary>周期毫秒（由 TestCycleHz 推导），例如 10Hz => 100ms。</summary>
         public int PeriodMs => (int)Math.Round(1000.0 / Math.Max(TestCycleHz, 0.001));
 
-        public EpbCycleRunnerConfig EpbCycleRunner { get; set; } = new EpbCycleRunnerConfig();
+        public EpbCycleRunnerConfig EpbCycleRunner { get; set; } = new();
     }
 
     public sealed class DoEpbRecord
@@ -157,28 +158,28 @@ namespace Config
     #endregion
 
     /// <summary>
-    /// 统一配置加载器：从四个 XML 文件读取控制所需的全部参数。
+    ///     统一配置加载器：从四个 XML 文件读取控制所需的全部参数。
     /// </summary>
     public static class ConfigLoader
     {
         // 1) 在 ConfigLoader 类里补这个字段（线程安全用）
-        private static readonly object _uiFileLock = new object();
+        private static readonly object _uiFileLock = new();
 
 
-        /// <summary>加载 AO/DO/Test 三类配置并组合成 <see cref="GlobalConfig"/>。</summary>
+        /// <summary>加载 AO/DO/Test 三类配置并组合成 <see cref="GlobalConfig" />。</summary>
         /// <param name="configDir">配置目录（包含 AOConfig.xml/DOConfig.xml/TestConfig.xml）</param>
         /// <param name="log">日志器</param>
         public static GlobalConfig LoadAll(string configDir, IAppLogger log = null)
         {
             log ??= NullLogger.Instance;
-            var ao = LoadAO(System.IO.Path.Combine(configDir, "AOConfig.xml"), log);
-            var dO = LoadDO(System.IO.Path.Combine(configDir, "DOConfig.xml"), log);
-            var test = LoadTest(System.IO.Path.Combine(configDir, "TestConfig.xml"), log);
+            var ao = LoadAO(Path.Combine(configDir, "AOConfig.xml"), log);
+            var dO = LoadDO(Path.Combine(configDir, "DOConfig.xml"), log);
+            var test = LoadTest(Path.Combine(configDir, "TestConfig.xml"), log);
 
 
-            var uiPath = System.IO.Path.Combine(configDir, "UiConfig.xml");
+            var uiPath = Path.Combine(configDir, "UiConfig.xml");
             var ui = LoadUI(uiPath, log);
-            return new GlobalConfig { AO = ao, DO = dO, Test = test , UI = ui};
+            return new GlobalConfig { AO = ao, DO = dO, Test = test, UI = ui };
         }
 
         /// <summary>读取 AOConfig.xml。</summary>
@@ -201,12 +202,10 @@ namespace Config
                     Name = n.SelectSingleNode("Name")?.InnerText?.Trim(),
                     PhysicalChannel = n.SelectSingleNode("PhysicalChannel")?.InnerText?.Trim(),
                     ScaleK = GetDouble(n, "ScaleK", 1.0),
-                    Offset = GetDouble(n, "Offset", 0.0),
+                    Offset = GetDouble(n, "Offset", 0.0)
                 };
                 foreach (XmlNode p in n.SelectNodes("PercentToPressureTable/Point"))
-                {
                     d.PercentToPressure.Add((GetDouble(p, "Percent", 0), GetDouble(p, "Pressure", 0)));
-                }
 
                 if (!string.IsNullOrEmpty(d.Name)) cfg.Devices[d.Name] = d;
             }
@@ -231,7 +230,7 @@ namespace Config
                     Channel = GetInt(n, "通道号", -1),
                     Pos = n.SelectSingleNode("正")?.InnerText?.Trim(),
                     Neg = n.SelectSingleNode("反")?.InnerText?.Trim(),
-                    Default = n.SelectSingleNode("默认")?.InnerText?.Trim(),
+                    Default = n.SelectSingleNode("默认")?.InnerText?.Trim()
                 };
                 if (int.TryParse(n.SelectSingleNode("电源组")?.InnerText, out var g)) r.PowerGroup = g;
                 if (int.TryParse(n.SelectSingleNode("液压编号")?.InnerText, out var h)) r.HydraulicId = h;
@@ -280,7 +279,7 @@ namespace Config
                     PressureThresholdBar = GetDouble(n, "PressureThresholdBar", 20),
                     DurationMs = GetInt(n, "DurationMs", 0),
                     HoldAfterReachedMs = GetInt(n, "HoldAfterReachedMs", 0),
-                    PressureDoId = GetInt(n, "PressureDoId", 1),
+                    PressureDoId = GetInt(n, "PressureDoId", 1)
                 };
 
                 var membersText = GetString(n, "Members", "");
@@ -292,21 +291,19 @@ namespace Config
 
 
             foreach (XmlNode n in doc.SelectNodes(@"//TestConfig/EpbCurrentLimits/Record"))
-            {
                 cfg.EpbLimits.Add(new EpbLimit
                 {
                     Channel = GetInt(n, "Channel", -1),
                     ForwardA = GetDouble(n, "ForwardA", 0),
-                    ReverseA = GetDouble(n, "ReverseA", 0),
+                    ReverseA = GetDouble(n, "ReverseA", 0)
                 });
-            }
 
             foreach (XmlNode n in doc.SelectNodes("//TestConfig/ElectricalGroups/Group"))
             {
                 var g = new ElectricalGroup
                 {
                     Id = GetInt(n, "Id", -1),
-                    StaggerMs = GetInt(n, "StaggerMs", 0),
+                    StaggerMs = GetInt(n, "StaggerMs", 0)
                 };
                 var membersText = GetString(n, "Members", "");
                 foreach (var s in membersText.Split(new[] { ',', '，', ';', '；', ' ' },
@@ -349,7 +346,21 @@ namespace Config
                 "配置");
             return cfg;
         }
-        
+
+        private static List<int> ParseIntList(string text)
+        {
+            var list = new List<int>();
+            if (string.IsNullOrWhiteSpace(text)) return list;
+
+            foreach (var tok in text.Split(new[] { ',', '，', ';', '；', ' ' },
+                         StringSplitOptions.RemoveEmptyEntries))
+                if (int.TryParse(tok.Trim(), out var v) && v > 0)
+                    list.Add(v);
+
+            // 去重 + 排序，确保稳定性
+            return list.Distinct().OrderBy(x => x).ToList();
+        }
+
         #region UIConfig 相关方法
 
         // <summary>
@@ -360,7 +371,7 @@ namespace Config
             if (!string.IsNullOrWhiteSpace(path))
                 return path;
 
-            string cfgDir = Path.Combine(Environment.CurrentDirectory, "Config");
+            var cfgDir = Path.Combine(Environment.CurrentDirectory, "Config");
             if (!Directory.Exists(cfgDir))
                 Directory.CreateDirectory(cfgDir);
             return Path.Combine(cfgDir, "UiConfig.xml");
@@ -400,7 +411,7 @@ namespace Config
                         Name = name,
                         Checked = TryAttr("Checked", false),
                         Enabled = TryAttr("Enabled", true),
-                        DefaultChecked = TryAttr("DefaultChecked", false),
+                        DefaultChecked = TryAttr("DefaultChecked", false)
                     };
                     form.Controls[name] = c;
                 }
@@ -411,7 +422,10 @@ namespace Config
         }
 
         // 不带 path 的重载
-        public static UiConfig LoadUI(IAppLogger log = null) => LoadUI(null, log);
+        public static UiConfig LoadUI(IAppLogger log = null)
+        {
+            return LoadUI(null, log);
+        }
 
 
         // ========== Save ==========
@@ -439,16 +453,20 @@ namespace Config
                         var n = doc.CreateElement("Control");
 
                         var attr = doc.CreateAttribute("Name");
-                        attr.Value = c.Name; n.Attributes.Append(attr);
+                        attr.Value = c.Name;
+                        n.Attributes.Append(attr);
 
                         attr = doc.CreateAttribute("Checked");
-                        attr.Value = c.Checked ? "true" : "false"; n.Attributes.Append(attr);
+                        attr.Value = c.Checked ? "true" : "false";
+                        n.Attributes.Append(attr);
 
                         attr = doc.CreateAttribute("Enabled");
-                        attr.Value = c.Enabled ? "true" : "false"; n.Attributes.Append(attr);
+                        attr.Value = c.Enabled ? "true" : "false";
+                        n.Attributes.Append(attr);
 
                         attr = doc.CreateAttribute("DefaultChecked");
-                        attr.Value = c.DefaultChecked ? "true" : "false"; n.Attributes.Append(attr);
+                        attr.Value = c.DefaultChecked ? "true" : "false";
+                        n.Attributes.Append(attr);
 
                         ctrl.AppendChild(n);
                     }
@@ -464,11 +482,15 @@ namespace Config
         }
 
         // 不带 path 的重载
-        public static void SaveUI(UiConfig cfg) => SaveUI(null, cfg);
+        public static void SaveUI(UiConfig cfg)
+        {
+            SaveUI(null, cfg);
+        }
 
 
         // ========== Update ==========
-        public static void UpdateUIChecked(string path, UiConfig cfg, string formName, string ctrlName, bool isChecked, bool? enabled = null)
+        public static void UpdateUIChecked(string path, UiConfig cfg, string formName, string ctrlName, bool isChecked,
+            bool? enabled = null)
         {
             path = ResolveUiPath(path);
 
@@ -480,11 +502,15 @@ namespace Config
         }
 
         // 不带 path 的重载
-        public static void UpdateUIChecked(UiConfig cfg, string formName, string ctrlName, bool isChecked, bool? enabled = null)
-            => UpdateUIChecked(null, cfg, formName, ctrlName, isChecked, enabled);
+        public static void UpdateUIChecked(UiConfig cfg, string formName, string ctrlName, bool isChecked,
+            bool? enabled = null)
+        {
+            UpdateUIChecked(null, cfg, formName, ctrlName, isChecked, enabled);
+        }
 
 
-        public static void UpdateUIDefaultChecked(string path, UiConfig cfg, string formName, string ctrlName, bool defaultChecked)
+        public static void UpdateUIDefaultChecked(string path, UiConfig cfg, string formName, string ctrlName,
+            bool defaultChecked)
         {
             path = ResolveUiPath(path);
 
@@ -496,24 +522,11 @@ namespace Config
 
         // 不带 path 的重载
         public static void UpdateUIDefaultChecked(UiConfig cfg, string formName, string ctrlName, bool defaultChecked)
-            => UpdateUIDefaultChecked(null, cfg, formName, ctrlName, defaultChecked);
+        {
+            UpdateUIDefaultChecked(null, cfg, formName, ctrlName, defaultChecked);
+        }
 
         #endregion
-
-        private static List<int> ParseIntList(string text)
-        {
-            var list = new List<int>();
-            if (string.IsNullOrWhiteSpace(text)) return list;
-
-            foreach (var tok in text.Split(new[] { ',', '，', ';', '；', ' ' },
-                         StringSplitOptions.RemoveEmptyEntries))
-            {
-                if (int.TryParse(tok.Trim(), out var v) && v > 0) list.Add(v);
-            }
-
-            // 去重 + 排序，确保稳定性
-            return list.Distinct().OrderBy(x => x).ToList();
-        }
 
 
         #region XML Helpers
