@@ -1274,7 +1274,7 @@ namespace MTEmbTest
                 if (daqData == null || daqData.Length == 0)
                     return;
 
-                /*// ===== 只显示 DAQ_I，对应 Y2 轴；隐藏其他轴（若存在则隐藏）=====
+                // ===== 只显示 DAQ_I，对应 Y2 轴；隐藏其他轴（若存在则隐藏）=====
                 // 如果你仍然使用 curveDictionary 来控制可见性，这里也把 DAQ_I 打开
                 if (curveDictionary != null && curveDictionary.TryGetValue("DAQ_I", out var op))
                 {
@@ -1286,7 +1286,7 @@ namespace MTEmbTest
                 pane.YAxis.IsVisible = false;                    // 只画 DAQ_I，不用左侧 Y 轴
                 pane.Y2Axis.IsVisible = true;                    // 开启 Y2
                 if (pane.Y2AxisList.Count > 1)                   // 如果曾经加过第二个 Y2（Act_I），这里隐藏
-                    pane.Y2AxisList[1].IsVisible = false;*/
+                    pane.Y2AxisList[1].IsVisible = false;
 
                 // ===== 把采样映射到时间轴 =====
                 // 采样周期（秒/点）
@@ -1298,32 +1298,32 @@ namespace MTEmbTest
                 // 本次追加的起始 X（秒）。
                 // 若已有点，则从最后一个点的下一步开始；否则从 0 开始。
                 double xStart;
-                if (_curveDataLists[0] != null && _curveDataLists[0].Count > 0)
-                    xStart = _curveDataLists[0][_curveDataLists[0].Count - 1].X + dt;
+                if (listDaqCurrent != null && listDaqCurrent.Count > 0)
+                    xStart = listDaqCurrent[listDaqCurrent.Count - 1].X + dt;
                 else
                     xStart = 0.0;
 
                 // 逐点追加（X 轴为相对时间，单位：秒）
                 for (int i = 0; i < daqData.Length; i++)
                 {
-                    _curveDataLists[0].Add(xStart + i * dt, daqData[i]);
+                    listDaqCurrent.Add(xStart + i * dt, daqData[i]);
                 }
 
                 // ===== 维持固定时窗（滑动窗口）=====
-                if (_curveDataLists[0] != null && _curveDataLists[0].Count > 0)
+                if (listDaqCurrent != null && listDaqCurrent.Count > 0)
                 {
-                    double firstX = _curveDataLists[0][0].X;
-                    double lastX = _curveDataLists[0][_curveDataLists[0].Count - 1].X;
+                    double firstX = listDaqCurrent[0].X;
+                    double lastX = listDaqCurrent[listDaqCurrent.Count - 1].X;
 
                     if (lastX - firstX > ClsGlobal.XDuration)
                     {
                         // 移除最旧的一半，避免频繁整体拷贝导致卡顿
                         double mid = (firstX + lastX) / 2.0;
-                        _curveDataLists[0].RemoveAll(p => p.X < mid);
+                        listDaqCurrent.RemoveAll(p => p.X < mid);
 
                         // 滑动 X 轴范围到最新窗口
-                        pane.XAxis.Scale.Min = _curveDataLists[0][0].X;
-                        pane.XAxis.Scale.Max = _curveDataLists[0][0].X + ClsGlobal.XDuration;
+                        pane.XAxis.Scale.Min = listDaqCurrent[0].X;
+                        pane.XAxis.Scale.Max = listDaqCurrent[0].X + ClsGlobal.XDuration;
                     }
                 }
 
