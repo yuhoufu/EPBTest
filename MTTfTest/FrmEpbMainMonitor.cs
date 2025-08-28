@@ -1274,7 +1274,7 @@ namespace MTEmbTest
                 if (daqData == null || daqData.Length == 0)
                     return;
 
-                // ===== 只显示 DAQ_I，对应 Y2 轴；隐藏其他轴（若存在则隐藏）=====
+                /*// ===== 只显示 DAQ_I，对应 Y2 轴；隐藏其他轴（若存在则隐藏）=====
                 // 如果你仍然使用 curveDictionary 来控制可见性，这里也把 DAQ_I 打开
                 if (curveDictionary != null && curveDictionary.TryGetValue("DAQ_I", out var op))
                 {
@@ -1286,7 +1286,7 @@ namespace MTEmbTest
                 pane.YAxis.IsVisible = false;                    // 只画 DAQ_I，不用左侧 Y 轴
                 pane.Y2Axis.IsVisible = true;                    // 开启 Y2
                 if (pane.Y2AxisList.Count > 1)                   // 如果曾经加过第二个 Y2（Act_I），这里隐藏
-                    pane.Y2AxisList[1].IsVisible = false;
+                    pane.Y2AxisList[1].IsVisible = false;*/
 
                 // ===== 把采样映射到时间轴 =====
                 // 采样周期（秒/点）
