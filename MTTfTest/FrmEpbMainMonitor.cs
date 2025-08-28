@@ -1,126 +1,34 @@
-﻿using DataOperation;
-using MtEmbTest;
-using NationalInstruments.DAQmx;
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.ComponentModel;
-using System.Data;
+using System.Diagnostics;
 using System.Drawing;
+using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
-using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
-using DevExpress.XtraEditors;
-using Sunny.UI;
-using System.Threading;
-using System.IO.Ports;
-using ZedGraph;
-//using AsyncListener;
-using System.Diagnostics;
-using System.IO;
 using System.Xml.Serialization;
 using Config;
 using Controller;
+using DataOperation;
+using DevExpress.XtraEditors;
 using IO.NI;
-using DevExpress.Xpo.Logger;
-using Task = System.Threading.Tasks.Task;
-using TestConfig = DataOperation.TestConfig;
+using MtEmbTest;
 using MTEmbTest.UIHelpers;
+using NationalInstruments.DAQmx;
+using Sunny.UI;
+using ZedGraph;
+using Task = NationalInstruments.DAQmx.Task;
+//using AsyncListener;
+using TestConfig = DataOperation.TestConfig;
+using Timer = System.Threading.Timer;
 
 namespace MTEmbTest
 {
     public partial class FrmEpbMainMonitor : Form
     {
-        private ConcurrentQueue<byte[]> bufferA = new ConcurrentQueue<byte[]>();
-        private ConcurrentQueue<byte[]> bufferB = new ConcurrentQueue<byte[]>();
-        private ConcurrentQueue<byte[]> activeWriteBuffer;
-        private ConcurrentQueue<byte[]> readyReadBuffer;
-
-
-        private TestConfig testConfig;
-        private bool IsAutoLearn = false;
-        private bool IsTestConfirm = false;
-        private bool IsRunning = false;
-
-
-        private ClsEMBControler[] EmbGroup = new ClsEMBControler[12];
-
-        private DateTime runBegin;
-
-
-        private ConcurrentQueue<string> LogError = new ConcurrentQueue<string>();
-        private ConcurrentQueue<string> LogInformation = new ConcurrentQueue<string>();
-        private ConcurrentQueue<string> LogWarn = new ConcurrentQueue<string>();
-        private const int MaxErrors = 100000;
-        private const int MaxInfos = 100000;
-        private const int MaxWarns = 100000;
-
-        #region 曲线处理相关变量
-
-        private LineItem curveForce;
-        private PointPairList listForce;
-
-        private LineItem curveDaqCurrent;
-        private PointPairList listDaqCurrent;
-
-        private LineItem curveCanCurrent;
-        private PointPairList listCanCurrent;
-
-        // 高对比度深色系调色板（至少 15 种，便于区分不同曲线）
-        private readonly Color[] _curveColors = new Color[]
-        {
-            Color.Blue,
-            Color.Red,
-            Color.Green,
-            Color.Orange,
-            Color.Purple,
-            Color.Brown,
-            Color.DarkCyan,
-            Color.Magenta,
-            Color.DarkOliveGreen,
-            Color.Maroon,
-            Color.Teal,
-            Color.Goldenrod,
-            Color.DarkBlue,
-            Color.DarkRed,
-            Color.DarkGreen
-        };
-
-        // 曲线对象集合（ZedGraph 的 LineItem 列表）
-        private readonly List<LineItem> _curveItems = new List<LineItem>();
-
-        // 曲线数据源集合（ZedGraph 的 PointPairList 列表）
-        private readonly List<PointPairList> _curveDataLists = new List<PointPairList>();
-        
-        #endregion
-
-
-        private Stopwatch Dispstopwatch = new Stopwatch();
-        private DateTime DispinitialDateTime = DateTime.Now;
-        private long DispinitialTimestamp = 0;
-        private volatile List<byte[]> forceSnapshot = new List<byte[]>();
-        private volatile double[] daqSnapshot = Array.Empty<double>();
-
-
-        private DateTime lastGraphyTime = DateTime.Now;
-        private int curveDispSpan = 0;
-        private int dataLogSpan = 0;
-
-
-        private readonly object bufferLock = new object(); //实时曲线缓存数据锁
-        private readonly object graphLock = new object(); //曲线更新锁
-
-        private readonly object[]
-            clampCounterLocks = Enumerable.Range(0, 6).Select(_ => new object()).ToArray(); //指令发送计数锁
-
-        private int[] releaseFailureCounters = new int[6]; //松开失败计数，发送时加1，松开清零，此数超过预设值说明连续加紧，要告警并松开卡钳
-
-
-        private readonly object currentDevLock = new object();
-        private string _currentDev = "EMB1"; // 添加私有字段
-
         public string CurrentDev
         {
             get
@@ -139,202 +47,157 @@ namespace MTEmbTest
             }
         }
 
-
-        //private double ActForceTimeOffset = 0;
-        //private double DaqCurrentTimeOffset = 0;
-        private System.Threading.Timer curveDisplayTimer;
-
-
-        public class LineItemOperation
-        {
-            public LineItem lineItem { get; set; }
-            public bool IsActive { get; set; }
-        }
-
-        private ConcurrentDictionary<string, LineItemOperation> curveDictionary =
-            new ConcurrentDictionary<string, LineItemOperation>();
+        private const int MaxErrors = 100000;
+        private const int MaxInfos = 100000;
+        private const int MaxWarns = 100000;
 
         // private ConcurrentQueue<CanData> dataQueue = new ConcurrentQueue<CanData>();
         private const int CacheLens = 6000; //每秒100帧，3秒处理一次，最多缓存6秒
 
 
         private const int DeviceCount = 6; // 共6个设备
+        private const string FormKey = "FrmEpbMainMonitor";
         private readonly DeviceContext[] _deviceContexts = new DeviceContext[DeviceCount];
-        private System.Threading.Timer[] _logtimers = new System.Threading.Timer[DeviceCount * 2];
 
-        private ConcurrentDictionary<int, int> AlertStatus = new ConcurrentDictionary<int, int>();
-        //AlertStatus  0 正常  1 值太小，连续夹紧   2 值太高  3 FaultMode 报警
+        // 控制曲线显示的check控件名
+        private readonly string[] _persistNames =
+            Enumerable.Range(1, 12).Select(i => $"CheckEpbA{i}")
+                .Concat(new[] { "CheckP1", "CheckP2", "CheckF" })
+                .ToArray();
 
+        /// <summary>信号类型（用于决定放哪根轴与命名等）。</summary>
+        private enum SignalType { Current, Pressure, Force }
 
-        #region DAQ_AI变量
-
-        private ConcurrentDictionary<string, double> ParaNameToScale = new ConcurrentDictionary<string, double>();
-        private ConcurrentDictionary<string, double> ParaNameToOffset = new ConcurrentDictionary<string, double>();
-        private ConcurrentDictionary<string, double> ParaNameToZeroValue = new ConcurrentDictionary<string, double>();
-
-
-        private static string[] Dev1UsedDaqAIChannels;
-        private NationalInstruments.DAQmx.Task Dev1analogTask;
-        private AnalogMultiChannelReader Dev1analogReader;
-        private AsyncCallback Dev1analogCallback;
-        private NationalInstruments.DAQmx.Task Dev1runningAnalogTask;
-
-
-        private static string[] Dev2UsedDaqAIChannels;
-        private NationalInstruments.DAQmx.Task Dev2analogTask;
-        private AnalogMultiChannelReader Dev2analogReader;
-        private AsyncCallback Dev2analogCallback;
-        private NationalInstruments.DAQmx.Task Dev2runningAnalogTask;
-
-        private static ConcurrentDictionary<string, int> EMBToDaqCurrentChannel =
-            new ConcurrentDictionary<string, int>();
-
-        private static ConcurrentDictionary<string, uint> DirectionToSendFrame =
-            new ConcurrentDictionary<string, uint>();
-
-        private static ConcurrentDictionary<string, uint> DirectionToRecvFrame =
-            new ConcurrentDictionary<string, uint>();
-
-        private static ConcurrentDictionary<string, string> EMBToDirection = new ConcurrentDictionary<string, string>();
-        private static ConcurrentDictionary<int, uint> EMBHandlerToSendFrame = new ConcurrentDictionary<int, uint>();
-        private static ConcurrentDictionary<int, uint> EMBHandlerToRecvFrame = new ConcurrentDictionary<int, uint>();
-        private static ConcurrentDictionary<string, uint> EMBNameToSendFrame = new ConcurrentDictionary<string, uint>();
-        private static ConcurrentDictionary<string, uint> EMBNameToRecvFrame = new ConcurrentDictionary<string, uint>();
-
-        private static ConcurrentDictionary<int, double> EMBHandlerToSendCanForceScale =
-            new ConcurrentDictionary<int, double>();
-
-        private static ConcurrentDictionary<int, double> EMBHandlerToSendCanForceOffset =
-            new ConcurrentDictionary<int, double>();
-
-        private static ConcurrentDictionary<int, double> EMBHandlerToRecvCanForceScale =
-            new ConcurrentDictionary<int, double>();
-
-        private static ConcurrentDictionary<int, double> EMBHandlerToRecvCanForceOffset =
-            new ConcurrentDictionary<int, double>();
-
-        private static ConcurrentDictionary<int, double> EMBHandlerToRecvCanCurrentScale =
-            new ConcurrentDictionary<int, double>();
-
-        private static ConcurrentDictionary<int, double> EMBHandlerToRecvCanCurrentOffset =
-            new ConcurrentDictionary<int, double>();
-
-        private static ConcurrentDictionary<int, double> EMBHandlerToRecvCanTorqueScale =
-            new ConcurrentDictionary<int, double>();
-
-        private static ConcurrentDictionary<int, double> EMBHandlerToRecvCanTorqueOffset =
-            new ConcurrentDictionary<int, double>();
-
-
-        private static ConcurrentDictionary<string, double> EMBNameToRecvCanForceScale =
-            new ConcurrentDictionary<string, double>();
-
-        private static ConcurrentDictionary<string, double> EMBNameToRecvCanForceOffset =
-            new ConcurrentDictionary<string, double>();
-
-        private static ConcurrentDictionary<string, double> EMBNameToRecvCanCurrentScale =
-            new ConcurrentDictionary<string, double>();
-
-        private static ConcurrentDictionary<string, double> EMBNameToRecvCanCurrentOffset =
-            new ConcurrentDictionary<string, double>();
-
-        private static ConcurrentDictionary<string, double> EMBNameToRecvCanTorqueScale =
-            new ConcurrentDictionary<string, double>();
-
-        private static ConcurrentDictionary<string, double> EMBNameToRecvCanTorqueOffset =
-            new ConcurrentDictionary<string, double>();
-
-
-        private double AiMaxVoltage = 10.0;
-        private double AiMinVoltage = -10.0;
-
-
-        private double DaqTimeSpanMilSeconds = 10.0;
-
-
-        private ConcurrentQueue<double[]> DaqAiDispData = new ConcurrentQueue<double[]>();
-
-        private const int DaqAiDispDataLens = 100;
-
-        private DaqAIContext DaqContext1;
-
-        // private DaqAIContext DaqContext2;
-        private System.Threading.Timer DaqLogtimer1;
-        private System.Threading.Timer DaqLogtimer2;
-
-        private System.Threading.Timer TempTimer;
-
-        #endregion
-
-
-        #region 定时处理变量
-
-        [DllImport("winmm.dll")]
-        private static extern uint timeSetEvent(uint msDelay, uint msResolution, TimerProc handler, UIntPtr dwUser,
-            uint eventType);
-
-        [DllImport("winmm.dll")]
-        private static extern uint timeKillEvent(uint uTimerId);
-
-        [DllImport("winmm.dll")]
-        private static extern uint timeBeginPeriod(uint uPeriod);
-
-        [DllImport("winmm.dll")]
-        private static extern uint timeEndPeriod(uint uPeriod);
-
-        // 定时器回调委托
-        private delegate void TimerProc(
-            UIntPtr uTimerID,
-            uint uMsg,
-            UIntPtr dwUser,
-            UIntPtr dw1,
-            UIntPtr dw2);
-
-        // 定时器状态类
-        private class TimerState
+        /// <summary>全局通道定义（把设备 + AI 行号，映射到 15 路全局曲线）。</summary>
+        private sealed class ChannelDef
         {
-            public uint TimerId { get; set; }
-            public TimerProc Handler { get; set; }
-            public bool IsRunning { get; set; }
-            public int Index { get; set; }
-            public uint Interval { get; set; }
-
-            public ConcurrentDictionary<int, int> CycleCounter = new ConcurrentDictionary<int, int>();
+            /// <summary>全局索引：EPB1..12 -> 0..11；P1->12；P2->13；F->14。</summary>
+            public int GlobalIndex;
+            /// <summary>曲线显示名。</summary>
+            public string DisplayName;
+            /// <summary>所属设备（"Dev1"/"Dev2"）。</summary>
+            public string Device;
+            /// <summary>设备内 AI 行号（0-based）。</summary>
+            public int AiIndex;
+            /// <summary>信号类型。</summary>
+            public SignalType Type;
         }
 
+        // —— 15 路全局定义 —— //
+        private static ChannelDef[] _allChs = BuildChannels();
+        private static ChannelDef[] BuildChannels()
+        {
+            var list = new List<ChannelDef>();
 
-        private static ConcurrentDictionary<string, int> EmbToChannel = new ConcurrentDictionary<string, int>();
+            // Dev1: EPB1..EPB8 -> ai0..ai7
+            for (int i = 0; i < 8; i++)
+                list.Add(new ChannelDef
+                {
+                    GlobalIndex = i,
+                    DisplayName = $"DAQ_A{i + 1}_I(A)",
+                    Device = "Dev1",
+                    AiIndex = i,
+                    Type = SignalType.Current
+                });
 
-        private static ConcurrentDictionary<int, int> EmbNoToChannel = new ConcurrentDictionary<int, int>();
+            // Dev2: EPB9..EPB12 -> ai0..ai3
+            for (int i = 0; i < 4; i++)
+                list.Add(new ChannelDef
+                {
+                    GlobalIndex = 8 + i,
+                    DisplayName = $"DAQ_A{9 + i}_I(A)",
+                    Device = "Dev2",
+                    AiIndex = i,
+                    Type = SignalType.Current
+                });
 
-        private static ConcurrentDictionary<int, string> EmbNoToName = new ConcurrentDictionary<int, string>();
+            // Dev2: P1, P2, F -> ai4, ai5, ai6
+            list.Add(new ChannelDef { GlobalIndex = 12, DisplayName = "DAQ_P1_(bar)", Device = "Dev2", AiIndex = 4, Type = SignalType.Pressure });
+            list.Add(new ChannelDef { GlobalIndex = 13, DisplayName = "DAQ_P2_(bar)", Device = "Dev2", AiIndex = 5, Type = SignalType.Pressure });
+            list.Add(new ChannelDef { GlobalIndex = 14, DisplayName = "DAQ_F_(N)", Device = "Dev2", AiIndex = 6, Type = SignalType.Force });
 
-        private static ConcurrentDictionary<string, string> EmbToAutoSendPath =
-            new ConcurrentDictionary<string, string>();
+            return list.ToArray();
+        }
 
-        private static ConcurrentDictionary<string, IntPtr> EmbToAutoSendPtr =
-            new ConcurrentDictionary<string, IntPtr>();
+        // —— 快速路由（"Dev#ai" -> 全局索引） —— //
+        private readonly Dictionary<string, int> _route = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        private static string RouteKey(string dev, int ai) => $"{dev}#{ai}";
 
-        private static ConcurrentDictionary<string, string>
-            EmbToCancelPath = new ConcurrentDictionary<string, string>();
+        // —— 15 条曲线/数据/时间缓存 —— //
+        private readonly PointPairList[] _chData = new PointPairList[15];
+        private readonly LineItem[] _chCurve = new LineItem[15];
+        private readonly double[] _lastX = Enumerable.Repeat(0.0, 15).ToArray();
 
-        private static ConcurrentDictionary<string, IntPtr> EmbToCancelPtr = new ConcurrentDictionary<string, IntPtr>();
+        // —— CheckEdit 映射（全局索引 -> 控件），用于实时控制可见性 —— //
+        private readonly Dictionary<int, CheckEdit> _checkByGlobal = new Dictionary<int, CheckEdit>(16);
 
 
-        private const uint TIMER_PERIODIC = 1;
-        private const uint DEFAULT_RESOLUTION = 1;
-        private readonly List<TimerState> EmbControlTimers = new List<TimerState>(6);
-        private int activeTimersCount = 0;
 
-        #endregion
+        private readonly object bufferLock = new(); //实时曲线缓存数据锁
 
-        public FormLoggerAdapter logger;
-        private DoController _do;
+        private readonly object[]
+            clampCounterLocks = Enumerable.Range(0, 6).Select(_ => new object()).ToArray(); //指令发送计数锁
+
+
+        private readonly object currentDevLock = new();
+        private readonly object graphLock = new(); //曲线更新锁
         private AoController _ao;
-        private Controller.EpbManager _epb;
-        private TwoDeviceAiAcquirer twoDeviceAiAcquirer;
+        private GlobalConfig _cfg;
+        private string _currentDev = "EMB1"; // 添加私有字段
+        private DoController _do;
+        private EpbManager _epb;
+
+        private bool _isCtrlPowerPressing;
+        private Timer[] _logtimers = new Timer[DeviceCount * 2];
+
+        private UiConfig _uiCfg;
+        private ConcurrentQueue<byte[]> activeWriteBuffer;
         private AiConfigDetail aiConfigDetail;
 
+        private ConcurrentDictionary<int, int> AlertStatus = new();
+        private readonly ConcurrentQueue<byte[]> bufferA = new();
+        private readonly ConcurrentQueue<byte[]> bufferB = new();
+
+        private readonly ConcurrentDictionary<string, LineItemOperation> curveDictionary = new();
+
+
+        //private double ActForceTimeOffset = 0;
+        //private double DaqCurrentTimeOffset = 0;
+        private Timer curveDisplayTimer;
+        private int curveDispSpan = 0;
+        private volatile double[] daqSnapshot = Array.Empty<double>();
+        private int dataLogSpan = 0;
+        private DateTime DispinitialDateTime = DateTime.Now;
+        private readonly long DispinitialTimestamp = 0;
+
+
+        private readonly Stopwatch Dispstopwatch = new();
+
+
+        private readonly ClsEMBControler[] EmbGroup = new ClsEMBControler[12];
+        private volatile List<byte[]> forceSnapshot = new();
+        private bool IsAutoLearn = false;
+        private bool IsRunning = false;
+        private readonly bool IsTestConfirm = false;
+
+
+        private DateTime lastGraphyTime = DateTime.Now;
+
+
+        private ConcurrentQueue<string> LogError = new();
+
+        public FormLoggerAdapter logger;
+        private ConcurrentQueue<string> LogInformation = new();
+        private ConcurrentQueue<string> LogWarn = new();
+        private ConcurrentQueue<byte[]> readyReadBuffer;
+
+        private int[] releaseFailureCounters = new int[6]; //松开失败计数，发送时加1，松开清零，此数超过预设值说明连续加紧，要告警并松开卡钳
+
+        private DateTime runBegin;
+
+
+        private TestConfig testConfig;
+        private TwoDeviceAiAcquirer twoDeviceAiAcquirer;
 
 
         public FrmEpbMainMonitor()
@@ -342,9 +205,8 @@ namespace MTEmbTest
             InitializeComponent();
 
             // 窗口和父容器尺寸变化时都刷新一次
-            this.Resize += (_, __) => ResizeLedDisplaysUnified();
-            this.Shown += (_, __) => ResizeLedDisplaysUnified();
-
+            Resize += (_, __) => ResizeLedDisplaysUnified();
+            Shown += (_, __) => ResizeLedDisplaysUnified();
 
 
             // 创建自定义标题栏
@@ -378,8 +240,8 @@ namespace MTEmbTest
             };
 
 
-            logger = new FormLoggerAdapter(maxInfos: MaxInfos, maxWarns: MaxWarns, maxErrors: MaxErrors,
-                logInfo: LogInformation, logWarn: LogWarn, logError: LogError, this);
+            logger = new FormLoggerAdapter(MaxInfos, MaxWarns, MaxErrors,
+                LogInformation, LogWarn, LogError, this);
 
             // _do = new DoController(logger);
             // _do.SetConfigPath($@"{Environment.CurrentDirectory}\Config\DOConfig.xml");
@@ -405,11 +267,11 @@ namespace MTEmbTest
             if (LedRunTime?.Parent == null) return;
 
             // Step 1: 先计算基准控件（LedRunTime）
-            LedAutoSizer.ResizeLedToParentWidth(LedRunTime, LedRunTime.Parent, 0.95, g: 1, blocksPerChar: 5);
+            LedAutoSizer.ResizeLedToParentWidth(LedRunTime, LedRunTime.Parent);
 
             // Step 2: 取出基准的 IntervalOn / IntervalIn
-            int baseIntervalOn = LedRunTime.IntervalOn;
-            int baseIntervalIn = LedRunTime.IntervalIn;
+            var baseIntervalOn = LedRunTime.IntervalOn;
+            var baseIntervalIn = LedRunTime.IntervalIn;
 
             // Step 3: 直接应用到其他两个控件
             ApplySameInterval(LedRunCycles, baseIntervalOn, baseIntervalIn);
@@ -417,9 +279,9 @@ namespace MTEmbTest
         }
 
         /// <summary>
-        /// 把 IntervalOn/IntervalIn 设置成一致，并根据 CharCount 重算宽度
+        ///     把 IntervalOn/IntervalIn 设置成一致，并根据 CharCount 重算宽度
         /// </summary>
-        private void ApplySameInterval(Sunny.UI.UILedDisplay led, int intervalOn, int IntervalIn, int blocksPerChar = 5)
+        private void ApplySameInterval(UILedDisplay led, int intervalOn, int IntervalIn, int blocksPerChar = 5)
         {
             if (led == null) return;
 
@@ -427,26 +289,20 @@ namespace MTEmbTest
             led.IntervalIn = IntervalIn;
 
             // 用公式算实际宽度
-            int C = led.CharCount;
+            var C = led.CharCount;
             int g = IntervalIn, s = intervalOn, B = blocksPerChar;
-            int K = C * (B + 1) - 1;
-            int W = g * (1 + K) + s * (2 + K) + 4;
+            var K = C * (B + 1) - 1;
+            var W = g * (1 + K) + s * (2 + K) + 4;
 
             led.Width = W;
 
             // 可选：让控件居中
-            if (led.Parent != null)
-            {
-                led.Left = Math.Max(0, (led.Parent.ClientSize.Width - led.Width) / 2);
-            }
+            if (led.Parent != null) led.Left = Math.Max(0, (led.Parent.ClientSize.Width - led.Width) / 2);
         }
-
 
 
         private void FrmEpbMainMonitor_Load(object sender, EventArgs e)
         {
-            
-
             try
             {
                 DaqTimeSpanMilSeconds = 1000.0 / ClsGlobal.DaqFrequency;
@@ -574,7 +430,7 @@ namespace MTEmbTest
 
 
                 // 1) 加载全局配置（AO/DO/Test）
-                 _cfg = ConfigLoader.LoadAll($@"{Environment.CurrentDirectory}\Config", logger);
+                _cfg = ConfigLoader.LoadAll($@"{Environment.CurrentDirectory}\Config", logger);
 
 
                 // 2) 初始化 DO 控制器
@@ -586,15 +442,15 @@ namespace MTEmbTest
                 aiConfigDetail =
                     AiConfigLoader.Load($@"{Environment.CurrentDirectory}\Config\AIConfig.xml");
 
-                twoDeviceAiAcquirer = new TwoDeviceAiAcquirer(cfg: aiConfigDetail, sampleRate: 1000, samplesPerChannel: 50,
-                    medianLens: 10, log: logger);
+                twoDeviceAiAcquirer = new TwoDeviceAiAcquirer(aiConfigDetail, 1000, 50,
+                    10, logger);
 
                 twoDeviceAiAcquirer.OnEngBatch += Acq_OnEngBatch; // 订阅工程值批次到达事件
 
                 #region 曲线勾选控件相关
 
                 // 1) 载入 UI 配置
-                _uiCfg = _cfg.UI; 
+                _uiCfg = _cfg.UI;
 
                 // 2) 获取/创建该表单的配置容器
                 var formState = _uiCfg.GetOrAddForm(FormKey);
@@ -602,10 +458,11 @@ namespace MTEmbTest
                 // 3) 应用各控件状态 & 绑定事件（只绑一次）
                 foreach (var name in _persistNames)
                 {
-                    var ctl = this.Controls.Find(name, true).FirstOrDefault();
-                    if (ctl is not CheckEdit cb) continue;    // 若是 SunnyUI.UICheckBox，同样有 Checked/CheckedChanged
+                    var ctl = Controls.Find(name, true).FirstOrDefault();
+                    if (ctl is not CheckEdit cb) continue; // 若是 SunnyUI.UICheckBox，同样有 Checked/CheckedChanged
 
-                    var st = formState.GetOrAdd(name);       // 若 xml 中还没有，会新建节点（Checked=false/Enabled=true/DefaultChecked=false）
+                    var st = formState
+                        .GetOrAdd(name); // 若 xml 中还没有，会新建节点（Checked=false/Enabled=true/DefaultChecked=false）
 
                     // 应用状态
                     cb.Checked = st.Checked;
@@ -626,9 +483,6 @@ namespace MTEmbTest
                 #endregion
 
                 //twoDeviceAiAcquirer.Start();  // 开始采集
-
-
-
             }
 
             catch (Exception ex)
@@ -636,51 +490,6 @@ namespace MTEmbTest
                 MessageBox.Show("初始化错误 : " + ex.Message);
             }
         }
-
-        #region 曲线的勾选控件相关
-
-        // —— 勾选变更：立即保存 —— //
-        private void Cb_CheckedChanged_Save(object sender, EventArgs e)
-        {
-            if (sender is CheckBox cb)
-                ConfigLoader.UpdateUIChecked(_uiCfg, FormKey, cb.Name, cb.Checked);
-        }
-
-        // —— 启用状态变更：立即保存 —— //
-        private void Cb_EnabledChanged_Save(object sender, EventArgs e)
-        {
-            if (sender is CheckBox cb)
-                ConfigLoader.UpdateUIChecked(_uiCfg, FormKey, cb.Name, cb.Checked, enabled: cb.Enabled);
-        }
-
-        // —— 可选：恢复默认按钮（把所有勾选恢复为 DefaultChecked，并触发保存） —— //
-        private void BtnRestoreDefault_Click(object sender, EventArgs e)
-        {
-            var formState = _uiCfg.GetOrAddForm(FormKey);
-            foreach (var name in _persistNames)
-            {
-                var ctl = this.Controls.Find(name, true).FirstOrDefault();
-                if (ctl is CheckBox cb)
-                {
-                    var st = formState.GetOrAdd(name);
-                    cb.Checked = st.DefaultChecked;  // 触发 CheckedChanged → 自动保存
-                }
-            }
-        }
-
-        // —— 可选：将“当前状态”写为默认值，并保存到文件 —— //
-        private void BtnSetCurrentAsDefault_Click(object sender, EventArgs e)
-        {
-            foreach (var name in _persistNames)
-            {
-                var ctl = this.Controls.Find(name, true).FirstOrDefault();
-                if (ctl is CheckBox cb)
-                    ConfigLoader.UpdateUIDefaultChecked(_uiCfg, FormKey, name, cb.Checked);
-            }
-            MessageBox.Show(@"已将当前勾选状态保存为默认值。");
-        }
-
-        #endregion
 
         public void LoadTestConfigFromXml()
         {
@@ -744,12 +553,805 @@ namespace MTEmbTest
         }
 
 
+        private void LoadEmbControler()
+        {
+            try
+            {
+                for (var i = 0; i < 6; i++)
+                {
+                    EmbGroup[i] = new ClsEMBControler();
+                    EmbGroup[i].EmbNo = i + 1;
+                    EmbGroup[i].EmbName = "EPB" + (i + 1);
+                    //  EmbGroup[i].Cycles = 0;
+                    EmbGroup[i].IsEnabel = true;
+                }
+
+                EmbGroup[0].CtrlJoinTest = ChkEpb1;
+                EmbGroup[1].CtrlJoinTest = ChkEpb2;
+                EmbGroup[2].CtrlJoinTest = ChkEpb3;
+                EmbGroup[3].CtrlJoinTest = ChkEpb4;
+                EmbGroup[4].CtrlJoinTest = ChkEpb5;
+                EmbGroup[5].CtrlJoinTest = ChkEpb6;
+
+
+                /*
+                EmbGroup[0].CtrlCurrentEmb = RadEmb1;
+                EmbGroup[1].CtrlCurrentEmb = RadEmb2;
+                EmbGroup[2].CtrlCurrentEmb = RadEmb3;
+                EmbGroup[3].CtrlCurrentEmb = RadEmb4;
+                EmbGroup[4].CtrlCurrentEmb = RadEmb5;
+                EmbGroup[5].CtrlCurrentEmb = RadEmb6; */
+
+                EmbGroup[0].CtrlRunning = SwitchEpb1;
+                EmbGroup[1].CtrlRunning = SwitchEpb2;
+                EmbGroup[2].CtrlRunning = SwitchEpb3;
+                EmbGroup[3].CtrlRunning = SwitchEpb4;
+                EmbGroup[4].CtrlRunning = SwitchEpb5;
+                EmbGroup[5].CtrlRunning = SwitchEpb6;
+
+
+                EmbGroup[0].CtrlCycles = LabEpb1;
+                EmbGroup[1].CtrlCycles = LabEpb2;
+                EmbGroup[2].CtrlCycles = LabEpb3;
+                EmbGroup[3].CtrlCycles = LabEpb4;
+                EmbGroup[4].CtrlCycles = LabEpb5;
+                EmbGroup[5].CtrlCycles = LabEpb6;
+
+                /*
+                EmbGroup[0].CtrlAlert = AlertEmb1;
+                EmbGroup[1].CtrlAlert = AlertEmb2;
+                EmbGroup[2].CtrlAlert = AlertEmb3;
+                EmbGroup[3].CtrlAlert = AlertEmb4;
+                EmbGroup[4].CtrlAlert = AlertEmb5;
+                EmbGroup[5].CtrlAlert = AlertEmb6;   // 界面上没有这些控件，暂时注释掉
+                */
+
+
+                EmbGroup[0].CtrlPower = SwitchPower1;
+                EmbGroup[1].CtrlPower = SwitchPower2;
+                EmbGroup[2].CtrlPower = SwitchPower3;
+                EmbGroup[3].CtrlPower = SwitchPower4;
+                EmbGroup[4].CtrlPower = SwitchPower5;
+                EmbGroup[5].CtrlPower = SwitchPower6;
+
+
+                for (var i = 0; i < 6; i++)
+                {
+                    EmbGroup[i].CtrlRunning.Enabled = false; //单个启动按钮设为不允许，启动之后才允许
+                    var index = i;
+                    EmbGroup[i].CtrlJoinTest.CheckedChanged += (sender, e) => JoinEmbChanged(sender, e, index);
+
+                    // EmbGroup[i].CtrlCurrentEmb.CheckedChanged += (sender, e) => CurrentEmbChanged(sender, e, index); // 界面上没有这个控件，暂时注释掉
+
+
+                    EmbGroup[i].CtrlRunning.CheckedChanged += (sender, e) =>
+                    {
+                        RuningStatusChanged(sender, ((UISwitch)sender).Active, index);
+                    };
+
+                    EmbGroup[i].CtrlRunning.Click += (sender, e) => RunningClick(sender, e, index);
+                    EmbGroup[i].CtrlPower.Click += (sender, e) => PowerClick(sender, e, index);
+                    EmbGroup[i].CtrlPower.KeyPress += (sender, e) => CtrlPower_KeyHandler(sender, e, index);
+                    EmbGroup[i].CtrlPower.KeyDown += (sender, e) => CtrlPower_KeyHandler(sender, e, index);
+                    EmbGroup[i].CtrlPower.KeyUp += (sender, e) => CtrlPower_KeyHandler(sender, e, index);
+                    //EmbGroup[i].CtrlPower.CheckedChanged += (sender, e) => PowerClick(sender, e, index);
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(@"初始化组件失败！" + ex.Message);
+            }
+        }
+
+        private void CtrlPower_KeyHandler(object sender, EventArgs e, int index)
+        {
+            //throw new NotImplementedException();
+        }
+
+        private void RunningClick(object sender, EventArgs e, int index)
+        {
+            if (!EmbGroup[index].CtrlPower.Checked && EmbGroup[index].CtrlRunning.Checked) //运行状态
+            {
+                MessageBox.Show(@"请先打开电源！");
+                EmbGroup[index].CtrlRunning.Checked = false;
+            }
+        }
+
+
+        private async void PowerClick(object sender, EventArgs e, int index)
+        {
+            if (_isCtrlPowerPressing) return;
+
+            _isCtrlPowerPressing = true;
+            EmbGroup[index].CtrlPower.Enabled = false; // 禁用按钮，防止重复点击
+            EPBGroupBox.Enabled = false; // 禁用整个组框，防止其他操作
+            try
+            {
+                if (!IsTestConfirm)
+                {
+                    MessageBox.Show(@"请先确认试验信息！");
+                    EmbGroup[index].CtrlPower.Toggle();
+
+                    // EmbGroup[index].CtrlPower.Checked = false;
+                    //
+                    EmbGroup[index].CtrlPower.Refresh();
+                    return;
+                }
+
+
+                if (!EmbGroup[index].CtrlPower.Checked && EmbGroup[index].CtrlRunning.Checked) //运行状态想关电源
+                {
+                    MessageBox.Show(@"请先停止运行再关闭电源！");
+                    EmbGroup[index].CtrlPower.Checked = true;
+                    return;
+                }
+
+                if (!EmbGroup[index].CtrlPower.Checked && !EmbGroup[index].CtrlRunning.Checked) //非运行状态想关电源
+                {
+                    // MessageBox.Show("调用执行关闭分开关的函数！");
+                    // var mainForm = this.MdiParent as Main_Frm;
+
+
+                    //string powerMsg = mainForm.PowerClose(index / 2 + 1);
+                    //if (powerMsg.IndexOf("OK") < 0)
+                    //{
+                    //    RtbInfo.Invoke(new SetTextCallback(SetInfoText), DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "关闭EMB" + (index + 1).ToString() + "电源失败!" + powerMsg);
+                    //    ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "关闭EMB" + (index + 1).ToString() + "电源开关失败!", "电源开关操作");
+
+                    //}
+                    //else
+                    //{
+                    //    RtbInfo.Invoke(new SetTextCallback(SetInfoText), DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "关闭EMB" + (index + 1).ToString() + "电源!");
+                    //    ClsLogProcess.AddToInfoList(MaxInfos, ref LogInformation, "关闭EMB" + (index + 1).ToString() + "电源开关!", "电源开关操作");
+
+                    //}
+
+
+                    var OpenSuccess = await ClosePowerChannel((byte)index, ClsGlobal.SerialPortRetrys);
+                    if (!OpenSuccess)
+                    {
+                        RtbInfo.Invoke(new SetTextCallback(SetInfoText),
+                            DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "关闭EMB" + (index + 1) +
+                            "继电器开关失败!");
+                        ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError,
+                            "关闭EMB" + (index + 1) + "继电器开关失败!", "串口操作");
+                        ClsGlobal.PowerStatus[index] = 2;
+                    }
+                    else
+                    {
+                        RtbInfo.Invoke(new SetTextCallback(SetInfoText),
+                            DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "关闭EMB" + (index + 1) +
+                            "继电器开关!");
+                        ClsLogProcess.AddToInfoList(MaxInfos, ref LogInformation,
+                            "关闭EMB" + (index + 1) + "继电器开关!", "UI 操作");
+                        ClsGlobal.PowerStatus[index] = 1;
+
+
+                        /*if (EmbGroup[index].IsEnabel)
+                    {
+                        EmbGroup[index].CtrlAlert.State = UILightState.Off;
+                        EmbGroup[index].CtrlAlert.OffCenterColor = Color.FromArgb(140, 140, 140);
+                        EmbGroup[index].CtrlAlert.OffColor = Color.FromArgb(140, 140, 140);
+                    }*/
+                    }
+
+
+                    return;
+                }
+
+
+                if (EmbGroup[index].CtrlPower.Checked)
+                {
+                    // MessageBox.Show("调用执行打开分开关的函数！");
+
+                    // var mainForm = this.MdiParent as Main_Frm;
+
+                    //string powerMsg = mainForm.PowerOpen(index / 2 + 1);
+                    //if (powerMsg.IndexOf("OK") < 0)
+                    //{
+                    //    RtbInfo.Invoke(new SetTextCallback(SetInfoText), DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "打开EMB" + (index + 1).ToString() + "电源失败!" + powerMsg);
+                    //    ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "打开EMB" + (index + 1).ToString() + "电源开关失败!", "电源开关操作");
+
+                    //}
+                    //else
+                    //{
+                    //    RtbInfo.Invoke(new SetTextCallback(SetInfoText), DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "打开EMB" + (index + 1).ToString() + "电源!");
+                    //    ClsLogProcess.AddToInfoList(MaxInfos, ref LogInformation, "打开EMB" + (index + 1).ToString() + "电源开关!", "电源开关操作");
+
+                    //}
+
+
+                    var OpenSuccess = await OpenPowerChannel((byte)index, ClsGlobal.SerialPortRetrys);
+                    if (!OpenSuccess)
+                    {
+                        RtbInfo.Invoke(new SetTextCallback(SetInfoText),
+                            DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "打开EMB" + (index + 1) +
+                            "继电器开关失败!");
+                        ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError,
+                            "打开EMB" + (index + 1) + "继电器开关失败!", "串口操作");
+                        ClsGlobal.PowerStatus[index] = 1;
+                    }
+                    else
+                    {
+                        RtbInfo.Invoke(new SetTextCallback(SetInfoText),
+                            DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "打开EMB" + (index + 1) +
+                            "继电器开关!");
+                        ClsLogProcess.AddToInfoList(MaxInfos, ref LogInformation,
+                            "打开EMB" + (index + 1) + "继电器开关!", "UI 操作");
+                        ClsGlobal.PowerStatus[index] = 2;
+                        /*if (EmbGroup[index].IsEnabel)
+                    {
+                        EmbGroup[index].CtrlAlert.State = UILightState.On;
+                        EmbGroup[index].CtrlAlert.OffCenterColor = Color.FromArgb(140, 140, 140);
+                        EmbGroup[index].CtrlAlert.OffColor = Color.FromArgb(140, 140, 140);
+                    }*/
+                    }
+                }
+            }
+            finally
+            {
+                _isCtrlPowerPressing = false;
+
+                EmbGroup[index].CtrlPower.Enabled = true; // 重新启用按钮
+                EPBGroupBox.Enabled = true; // 重新启用整个组框
+            }
+        }
+
+
+        // 关掉电源通道，目前操作为空
+        private async Task<bool> ClosePowerChannel(byte ChannelNo, int maxRetries)
+        {
+            return false;
+        }
+
+
+        private async Task<bool> OpenPowerChannel(byte ChannelNo, int maxRetries)
+        {
+            return false;
+        }
+
+
+        private void JoinEmbChanged(object sender, EventArgs e, int index)
+        {
+            var checkBox = (CheckEdit)sender;
+            if (checkBox.Checked)
+            {
+                // EmbGroup[index].CtrlCurrentEmb.Enabled = true; // 界面上没有这个控件，暂时注释掉
+                EmbGroup[index].CtrlPower.Enabled = true;
+                // EmbGroup[index].CtrlAlert.Enabled = true; // 界面上没有这个控件，暂时注释掉
+                EmbGroup[index].CtrlCycles.Enabled = true;
+                EmbGroup[index].IsEnabel = true;
+            }
+            else
+            {
+                // EmbGroup[index].CtrlCurrentEmb.Enabled = false; // 界面上没有这个控件，暂时注释掉
+                EmbGroup[index].CtrlPower.Enabled = false;
+                // EmbGroup[index].CtrlAlert.Enabled = false; // 界面上没有这个控件，暂时注释掉
+                EmbGroup[index].CtrlCycles.Enabled = false;
+                // EmbGroup[index].CtrlCurrentEmb.Checked = false; // 界面上没有这个控件，暂时注释掉
+                EmbGroup[index].IsEnabel = false;
+            }
+        }
+
+        private void RuningStatusChanged(object sender, bool value, int index)
+        {
+            if (value)
+                StartEmbControlTimer(index);
+            // EmbGroup[index].CtrlAlert.OffCenterColor = Color.FromArgb(140, 140, 140);
+            // EmbGroup[index].CtrlAlert.OffColor = Color.FromArgb(140, 140, 140);
+            // EmbGroup[index].CtrlAlert.OnCenterColor = Color.Lime;
+            // EmbGroup[index].CtrlAlert.OnColor = Color.Lime;
+            // EmbGroup[index].CtrlAlert.State = UILightState.Blink;
+            else
+                StopEmbControlTimer(index);
+            // EmbGroup[index].CtrlAlert.State = UILightState.On;
+        }
+
+        private void BtnTest_Click(object sender, EventArgs e)
+        {
+            // _do.SetEpb(channelNo: 1, directionIsForward: true);
+            // _do.SetEpb(channelNo: 9, directionIsForward: true);
+        }
+
+        #region 测试相关代码 - 正式运行删除
+
+        /// <summary>
+        ///     切换开关事件，测试代码，正式运行时请删除
+        /// </summary>
+        /// <param name="sender"></param>
+        /// <param name="e"></param>
+        private void toggleSwitch1_Toggled(object sender, EventArgs e)
+        {
+            // 打开所有epb
+            for (var i = 0; i < 12; i++) _do.SetEpb(i + 1, toggleSwitch1.IsOn);
+
+            // 打开气缸测试
+            // _ao.SetPercent("Cylinder1", 50); // => ~5V
+            // _ao.SetPercent("Cylinder2", 50); // => ~5V
+        }
+
+        #endregion
+
+
+        /// <summary>
+        ///     窗体关闭事件，释放资源
+        /// </summary>
+        /// <param name="sender"></param>
+        /// <param name="e"></param>
+        private void FrmEpbMainMonitor_FormClosed(object sender, FormClosedEventArgs e)
+        {
+            // _do?.Dispose(); // 释放DO对象资源
+            // _ao?.Dispose(); // 释放AO对象资源
+            _do?.AllOff(); // 停止所有EPB操作
+            _do?.Dispose();
+            _ao?.ResetAll(); // 停止所有AO操作
+            _ao?.Dispose(); // 释放AO对象资源
+
+            twoDeviceAiAcquirer.Stop();
+
+            twoDeviceAiAcquirer?.Dispose();
+
+
+            //base.OnFormClosed(e);
+        }
+
+        // 工程值批次到达（dev="Dev1" 或 "Dev2"；eng 为 [通道, 样本]）
+        private void Acq_OnEngBatch_Old(string dev, double[,] eng, DateTime current, DateTime last)
+        {
+            if (InvokeRequired)
+            {
+                // 切回 UI 线程，避免跨线程操作控件异常
+                BeginInvoke(new Action(() => Acq_OnEngBatch_Old(dev, eng, current, last)));
+                return;
+            }
+
+            // ===== 示例1：读取指定通道的“最后一个样本”并显示到 SunnyUI 的 UILabel =====
+            // 你在 TwoDeviceAiAcquirer 里已把“最近值快照”维护好了，也暴露了 ReadCurrent/ReadPressure 简便查询接口：
+            //   ReadCurrent(int epbChannel), ReadPressure(int id)  —— 直接拿最近值用来显示 UI 即可。:contentReference[oaicite:6]{index=6}
+            //double p1 = _acq.ReadPressure(1);           // 压力1 (工程值)
+
+            if (dev == "Dev1")
+            {
+                // 1) 取第0通道的一个点，顺便刷新数值显示（你原来就是取 [0,0]）
+                var epb1 = eng[1, 0]; // EPB1 电流 (工程值)
+                textEditCurrent1.Text = $"{epb1:F2} A"; // 假设 textEditCurrent1 是显示 EPB1 电流的控件
+
+                // 2) 提取第0维（第0通道）的整段样本，准备绘制
+                var samples = eng.GetLength(1); // 列数 = 样本数
+                if (samples > 0)
+                {
+                    // 建议用循环拷贝（最安全、与 .NET 4.8 兼容）
+                    var daqI = new double[samples];
+                    for (var i = 0; i < samples; i++)
+                        daqI[i] = eng[1, i];
+
+                    // 3) 调用你的单曲线绘制方法（内部已做 Invoke 封送，可直接调用）
+                    UpdateGraphDisplay2(daqI);
+                }
+            }
+        }
+
+        // 工程值批次到达（dev="Dev1"/"Dev2"；eng[通道,样本]）
+        private void Acq_OnEngBatch(string dev, double[,] eng, DateTime current, DateTime last)
+        {
+            if (InvokeRequired)
+            {
+                BeginInvoke(new Action(() => Acq_OnEngBatch(dev, eng, current, last)));
+                return;
+            }
+
+            if (eng == null) return;
+
+            int rows = eng.GetLength(0);
+            int cols = eng.GetLength(1);
+            if (rows <= 0 || cols <= 0) return;
+
+            if (ClsGlobal.DaqFrequency <= 0)
+            {
+                ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "DaqFrequency 未正确设置", "曲线显示");
+                return;
+            }
+
+            double dt = 1.0 / ClsGlobal.DaqFrequency;
+
+            try
+            {
+                for (int r = 0; r < rows; r++)
+                {
+                    // 查全局索引
+                    if (!_route.TryGetValue(RouteKey(dev, r), out int g)) continue;
+
+                    // 勾选状态决定是否绘制
+                    bool draw = _checkByGlobal.TryGetValue(g, out var cb) ? cb.Checked : true;
+
+                    // 拷贝整行
+                    var buf = new double[cols];
+                    for (int i = 0; i < cols; i++)
+                        buf[i] = eng[r, i];
+
+                    // 追加到对应全局曲线
+                    AppendChannelBatch(g, buf, dt, draw);
+                }
+
+                // 示例：顺便把 EPB1 的最后值显示到文本框（按需可扩展）
+                var epb1Ch = _allChs.FirstOrDefault(c => c.Device == "Dev1" && c.AiIndex == 0);
+                if (epb1Ch != null && _chData[epb1Ch.GlobalIndex].Count > 0)
+                {
+                    double v = _chData[epb1Ch.GlobalIndex][_chData[epb1Ch.GlobalIndex].Count - 1].Y;
+                    textEditCurrent1.Text = $"{v:F2} A";
+                }
+
+                lastGraphyTime = current;
+            }
+            catch (Exception ex)
+            {
+                ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "批次绘制出错: " + ex.Message, "曲线显示");
+            }
+        }
+
+        /// <summary>
+        /// 向指定“全局通道”追加一批样本，并按 XDuration 维护滑动窗口；
+        /// 会根据 <paramref name="draw"/> 决定是否显示曲线（但仍保留数据）。
+        /// </summary>
+        /// <param name="globalIndex">全局通道索引（0..14）。</param>
+        /// <param name="daqData">工程值样本数组。</param>
+        /// <param name="dt">点间隔（秒/点）。</param>
+        /// <param name="draw">是否显示（由 CheckEdit 控制）。</param>
+        private void AppendChannelBatch(int globalIndex, double[] daqData, double dt, bool draw)
+        {
+            if (zedGraphRealChart == null) return;
+
+            if (zedGraphRealChart.InvokeRequired)
+            {
+                zedGraphRealChart.Invoke(new Action<int, double[], double, bool>(AppendChannelBatch),
+                    globalIndex, daqData, dt, draw);
+                return;
+            }
+
+            if (globalIndex < 0 || globalIndex >= _allChs.Length) return;
+            if (daqData == null || daqData.Length == 0) return;
+
+            var pane = zedGraphRealChart.GraphPane;
+            var list = _chData[globalIndex];
+            var line = _chCurve[globalIndex];
+
+            // 同步可见性
+            if (line != null) line.IsVisible = draw;
+
+            // 计算起点 X（连续拼接）
+            double x = _lastX[globalIndex];
+            if (list.Count == 0 && x == 0.0) x = 0.0; // 首次
+            else x += dt;
+
+            // 追加
+            for (int i = 0; i < daqData.Length; i++)
+            {
+                list.Add(x, daqData[i]);
+                x += dt;
+            }
+            _lastX[globalIndex] = x - dt;
+
+            // 维护全局 X 窗口（以当前通道为参考）
+            if (list.Count > 0 && ClsGlobal.XDuration > 0)
+            {
+                double last = list[list.Count - 1].X;
+                double min = last - ClsGlobal.XDuration;
+
+                // 为减少 RemoveAll 开销，采用“半窗清理”
+                double threshold = (last + min) / 2.0;
+                if (list[0].X < min)
+                {
+                    list.RemoveAll(p => p.X < threshold);
+                    pane.XAxis.Scale.Min = list[0].X;
+                    pane.XAxis.Scale.Max = list[0].X + ClsGlobal.XDuration;
+                }
+            }
+
+            zedGraphRealChart.AxisChange();
+            zedGraphRealChart.Invalidate();
+        }
+
+
+
+
+        private async void BtnStartTest_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                // 4) 组装 EpbManager（把回调委托接进去）
+                _epb = new EpbManager(
+                    _cfg,
+                    _do,
+                    _ao,
+                    twoDeviceAiAcquirer,
+                    logger);
+
+                // 5) 启动“卡钳1”通道
+                //    StartChannel 内部会根据 Test.TestTarget 次数、PeriodMs 周期、Groups 错峰等自动循环
+                // _epb.StartChannel(2); //界面卡顿，注释
+                await _epb.StartChannelAsync(2);
+
+                // UI 提示
+                RtbInfo?.AppendText($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  > 卡钳1测试已启动\n");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"启动卡钳1测试失败：{ex.Message}", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+
+        /// <summary>
+        ///     停止试验按钮
+        /// </summary>
+        /// <param name="sender"></param>
+        /// <param name="e"></param>
+        private void BtnStop_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                _epb.StopChannel(2);
+            }
+            catch (Exception ex)
+            {
+                RtbInfo?.AppendText($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  > 停止卡钳2测试失败\n");
+            }
+        }
+
+        private void CheckEpbA7_CheckedChanged(object sender, EventArgs e)
+        {
+            Console.WriteLine(@"CheckEpbA7_CheckedChanged");
+        }
+
+        private void CheckEpbA7_CheckStateChanged(object sender, EventArgs e)
+        {
+            Console.WriteLine(@"CheckEpbA7_CheckStateChanged");
+        }
+
+
+        public class LineItemOperation
+        {
+            public LineItem lineItem { get; set; }
+            public bool IsActive { get; set; }
+        }
+
+        #region 曲线处理相关变量
+
+        private LineItem curveForce;
+        private PointPairList listForce;
+
+        private LineItem curveDaqCurrent;
+        private PointPairList listDaqCurrent;
+
+        private LineItem curveCanCurrent;
+        private PointPairList listCanCurrent;
+
+        // 高对比度深色系调色板（至少 15 种，便于区分不同曲线）
+        private readonly Color[] _curveColors =
+        {
+            Color.Blue,
+            Color.Red,
+            Color.Green,
+            Color.Orange,
+            Color.Purple,
+            Color.Brown,
+            Color.DarkCyan,
+            Color.Magenta,
+            Color.DarkOliveGreen,
+            Color.Maroon,
+            Color.Teal,
+            Color.Goldenrod,
+            Color.DarkBlue,
+            Color.DarkRed,
+            Color.DarkGreen
+        };
+
+        // 曲线对象集合（ZedGraph 的 LineItem 列表）
+        private readonly List<LineItem> _curveItems = new();
+
+        // 曲线数据源集合（ZedGraph 的 PointPairList 列表）
+        private readonly List<PointPairList> _curveDataLists = new();
+
+        #endregion
+
+        //AlertStatus  0 正常  1 值太小，连续夹紧   2 值太高  3 FaultMode 报警
+
+
+        #region DAQ_AI变量
+
+        private ConcurrentDictionary<string, double> ParaNameToScale = new();
+        private ConcurrentDictionary<string, double> ParaNameToOffset = new();
+        private ConcurrentDictionary<string, double> ParaNameToZeroValue = new();
+
+
+        private static string[] Dev1UsedDaqAIChannels;
+        private Task Dev1analogTask;
+        private AnalogMultiChannelReader Dev1analogReader;
+        private AsyncCallback Dev1analogCallback;
+        private Task Dev1runningAnalogTask;
+
+
+        private static string[] Dev2UsedDaqAIChannels;
+        private Task Dev2analogTask;
+        private AnalogMultiChannelReader Dev2analogReader;
+        private AsyncCallback Dev2analogCallback;
+        private Task Dev2runningAnalogTask;
+
+        private static ConcurrentDictionary<string, int> EMBToDaqCurrentChannel = new();
+
+        private static ConcurrentDictionary<string, uint> DirectionToSendFrame = new();
+
+        private static ConcurrentDictionary<string, uint> DirectionToRecvFrame = new();
+
+        private static ConcurrentDictionary<string, string> EMBToDirection = new();
+        private static ConcurrentDictionary<int, uint> EMBHandlerToSendFrame = new();
+        private static ConcurrentDictionary<int, uint> EMBHandlerToRecvFrame = new();
+        private static ConcurrentDictionary<string, uint> EMBNameToSendFrame = new();
+        private static ConcurrentDictionary<string, uint> EMBNameToRecvFrame = new();
+
+        private static ConcurrentDictionary<int, double> EMBHandlerToSendCanForceScale = new();
+
+        private static ConcurrentDictionary<int, double> EMBHandlerToSendCanForceOffset = new();
+
+        private static ConcurrentDictionary<int, double> EMBHandlerToRecvCanForceScale = new();
+
+        private static ConcurrentDictionary<int, double> EMBHandlerToRecvCanForceOffset = new();
+
+        private static ConcurrentDictionary<int, double> EMBHandlerToRecvCanCurrentScale = new();
+
+        private static ConcurrentDictionary<int, double> EMBHandlerToRecvCanCurrentOffset = new();
+
+        private static ConcurrentDictionary<int, double> EMBHandlerToRecvCanTorqueScale = new();
+
+        private static ConcurrentDictionary<int, double> EMBHandlerToRecvCanTorqueOffset = new();
+
+
+        private static readonly ConcurrentDictionary<string, double> EMBNameToRecvCanForceScale = new();
+
+        private static ConcurrentDictionary<string, double> EMBNameToRecvCanForceOffset = new();
+
+        private static readonly ConcurrentDictionary<string, double> EMBNameToRecvCanCurrentScale = new();
+
+        private static ConcurrentDictionary<string, double> EMBNameToRecvCanCurrentOffset = new();
+
+        private static readonly ConcurrentDictionary<string, double> EMBNameToRecvCanTorqueScale = new();
+
+        private static ConcurrentDictionary<string, double> EMBNameToRecvCanTorqueOffset = new();
+
+
+        private double AiMaxVoltage = 10.0;
+        private double AiMinVoltage = -10.0;
+
+
+        private double DaqTimeSpanMilSeconds = 10.0;
+
+
+        private readonly ConcurrentQueue<double[]> DaqAiDispData = new();
+
+        private const int DaqAiDispDataLens = 100;
+
+        private DaqAIContext DaqContext1;
+
+        // private DaqAIContext DaqContext2;
+        private Timer DaqLogtimer1;
+        private Timer DaqLogtimer2;
+
+        private Timer TempTimer;
+
+        #endregion
+
+
+        #region 定时处理变量
+
+        [DllImport("winmm.dll")]
+        private static extern uint timeSetEvent(uint msDelay, uint msResolution, TimerProc handler, UIntPtr dwUser,
+            uint eventType);
+
+        [DllImport("winmm.dll")]
+        private static extern uint timeKillEvent(uint uTimerId);
+
+        [DllImport("winmm.dll")]
+        private static extern uint timeBeginPeriod(uint uPeriod);
+
+        [DllImport("winmm.dll")]
+        private static extern uint timeEndPeriod(uint uPeriod);
+
+        // 定时器回调委托
+        private delegate void TimerProc(
+            UIntPtr uTimerID,
+            uint uMsg,
+            UIntPtr dwUser,
+            UIntPtr dw1,
+            UIntPtr dw2);
+
+        // 定时器状态类
+        private class TimerState
+        {
+            public uint TimerId { get; set; }
+            public TimerProc Handler { get; set; }
+            public bool IsRunning { get; set; }
+            public int Index { get; set; }
+            public uint Interval { get; set; }
+
+            public readonly ConcurrentDictionary<int, int> CycleCounter = new();
+        }
+
+
+        private static readonly ConcurrentDictionary<string, int> EmbToChannel = new();
+
+        private static readonly ConcurrentDictionary<int, int> EmbNoToChannel = new();
+
+        private static readonly ConcurrentDictionary<int, string> EmbNoToName = new();
+
+        private static ConcurrentDictionary<string, string> EmbToAutoSendPath = new();
+
+        private static ConcurrentDictionary<string, IntPtr> EmbToAutoSendPtr = new();
+
+        private static ConcurrentDictionary<string, string>
+            EmbToCancelPath = new();
+
+        private static ConcurrentDictionary<string, IntPtr> EmbToCancelPtr = new();
+
+
+        private const uint TIMER_PERIODIC = 1;
+        private const uint DEFAULT_RESOLUTION = 1;
+        private readonly List<TimerState> EmbControlTimers = new(6);
+        private int activeTimersCount;
+
+        #endregion
+
+        #region 曲线的勾选控件相关
+
+        // —— 勾选变更：立即保存 —— //
+        private void Cb_CheckedChanged_Save(object sender, EventArgs e)
+        {
+            if (sender is CheckEdit cb)
+                ConfigLoader.UpdateUIChecked(_uiCfg, FormKey, cb.Name, cb.Checked);
+        }
+
+        // —— 启用状态变更：立即保存 —— //
+        private void Cb_EnabledChanged_Save(object sender, EventArgs e)
+        {
+            if (sender is CheckEdit cb)
+                ConfigLoader.UpdateUIChecked(_uiCfg, FormKey, cb.Name, cb.Checked, enabled: cb.Enabled);
+        }
+
+        // —— 可选：恢复默认按钮（把所有勾选恢复为 DefaultChecked，并触发保存） —— //
+        private void BtnRestoreDefault_Click(object sender, EventArgs e)
+        {
+            var formState = _uiCfg.GetOrAddForm(FormKey);
+            foreach (var name in _persistNames)
+            {
+                var ctl = Controls.Find(name, true).FirstOrDefault();
+                if (ctl is CheckBox cb)
+                {
+                    var st = formState.GetOrAdd(name);
+                    cb.Checked = st.DefaultChecked; // 触发 CheckedChanged → 自动保存
+                }
+            }
+        }
+
+        // —— 可选：将“当前状态”写为默认值，并保存到文件 —— //
+        private void BtnSetCurrentAsDefault_Click(object sender, EventArgs e)
+        {
+            foreach (var name in _persistNames)
+            {
+                var ctl = Controls.Find(name, true).FirstOrDefault();
+                if (ctl is CheckBox cb)
+                    ConfigLoader.UpdateUIDefaultChecked(_uiCfg, FormKey, name, cb.Checked);
+            }
+
+            MessageBox.Show(@"已将当前勾选状态保存为默认值。");
+        }
+
+        #endregion
+
+
         #region 曲线处理
 
         /// <summary>
-        /// 曲线初始化
+        ///     曲线初始化
         /// </summary>
-        private void InitializeCurve()
+        private void InitializeCurve_Old()
         {
             try
             {
@@ -845,16 +1447,16 @@ namespace MTEmbTest
                 forceYAxis.MajorGrid.IsVisible = false;
                 forceYAxis.MajorGrid.IsZeroLine = false;
 
-                
 
                 // 添加 12 根电流曲线
-                for (int i = 1; i <= 12; i++)
+                for (var i = 1; i <= 12; i++)
                 {
                     var dataList = new PointPairList();
                     _curveDataLists.Add(dataList);
 
-                    string curveName = $"DAQ_{i}_I(A)";
-                    var curve = pane.AddCurve(curveName, dataList, _curveColors[(i - 1) % _curveColors.Length], SymbolType.None);
+                    var curveName = $"DAQ_{i}_I(A)";
+                    var curve = pane.AddCurve(curveName, dataList, _curveColors[(i - 1) % _curveColors.Length],
+                        SymbolType.None);
 
                     curve.Line.Width = 2;
                     curve.IsY2Axis = true;
@@ -864,8 +1466,8 @@ namespace MTEmbTest
                 }
 
                 // 添加 P1 / P2 / F
-                string[] extraNames = { "DAQ_P1_(bar)", "DAQ_P2_(bar)"  };
-                for (int i = 0; i < extraNames.Length; i++)
+                string[] extraNames = { "DAQ_P1_(bar)", "DAQ_P2_(bar)" };
+                for (var i = 0; i < extraNames.Length; i++)
                 {
                     var dataList = new PointPairList();
                     _curveDataLists.Add(dataList);
@@ -880,14 +1482,12 @@ namespace MTEmbTest
                 }
 
 
-
                 var forceDataList = new PointPairList();
-                curveDaqCurrent = pane.AddCurve("DAQ_F_(N)", forceDataList, _curveColors[_curveColors.Length-1], SymbolType.None);
+                curveDaqCurrent = pane.AddCurve("DAQ_F_(N)", forceDataList, _curveColors[_curveColors.Length - 1],
+                    SymbolType.None);
                 curveDaqCurrent.Line.Width = 2;
                 curveDaqCurrent.IsY2Axis = false;
                 curveDaqCurrent.YAxisIndex = 1;
-
-
 
 
                 zedGraphRealChart.GraphPane.XAxis.Scale.Max = ClsGlobal.XDuration;
@@ -919,6 +1519,148 @@ namespace MTEmbTest
             {
                 MessageBox.Show(@"初始化曲线显示失败！" + ex.Message, @"提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "初始化曲线显示失败！" + ex.Message, "初始化");
+            }
+        }
+
+
+        /// <summary>
+        /// 曲线初始化：创建 15 条曲线（EPB 电流 12 路 + P1 + P2 + F），
+        /// 勾选控件（CheckEdit）实时控制可见性；X 轴为时间（秒）。
+        /// </summary>
+        private void InitializeCurve()
+        {
+            try
+            {
+                var pane = zedGraphRealChart.GraphPane;
+                int fontSize = 12;
+
+                // —— 基础外观（沿用你原有设置）——
+                pane.CurveList.Clear();
+                _curveItems.Clear();
+                _curveDataLists.Clear();
+
+                pane.Title.IsVisible = false;
+                pane.XAxis.Type = AxisType.Linear;
+                pane.XAxis.Title.IsVisible = false;
+                pane.YAxis.Title.IsVisible = false;
+
+                pane.Chart.Border.IsVisible = false;
+                pane.Fill = new Fill(Color.FromArgb(255, 255, 255));
+                pane.Chart.Fill = new Fill(Color.FromArgb(248, 248, 248));
+
+                pane.XAxis.Color = Color.Gray;
+                pane.XAxis.MajorTic.Color = Color.Gray;
+                pane.XAxis.MinorTic.Size = 0.0f;
+                pane.XAxis.MajorGrid.IsVisible = true;
+                pane.XAxis.MajorGrid.Color = Color.Gray;
+                pane.XAxis.MajorGrid.DashOn = float.MaxValue;
+                pane.XAxis.MajorGrid.DashOff = 0;
+                pane.XAxis.Title.FontSpec.Size = fontSize;
+                pane.XAxis.Scale.FontSpec.Size = fontSize;
+
+                pane.YAxis.Color = Color.Gray;
+                pane.YAxis.MajorTic.Color = Color.Gray;
+                pane.YAxis.MinorTic.Size = 0.0f;
+                pane.YAxis.MajorGrid.IsVisible = true;
+                pane.YAxis.MajorGrid.Color = Color.FromArgb(80, 160, 255);
+                pane.YAxis.MajorGrid.DashOn = float.MaxValue;
+                pane.YAxis.MajorGrid.DashOff = 0;
+                pane.YAxis.Title.FontSpec.Size = fontSize;
+                pane.YAxis.Scale.FontSpec.Size = fontSize;
+
+                pane.Y2Axis.IsVisible = true;
+                pane.Y2Axis.MajorGrid.IsVisible = false;
+                pane.Y2Axis.MajorTic.Color = Color.Gray;
+                pane.Y2Axis.MinorTic.Size = 0.0f;
+                pane.Y2Axis.Title.FontSpec.Size = fontSize;
+                pane.Y2Axis.Scale.FontSpec.Size = fontSize;
+
+                // —— 路由表重建 —— //
+                _route.Clear();
+                foreach (var c in _allChs)
+                    _route[RouteKey(c.Device, c.AiIndex)] = c.GlobalIndex;
+
+                // —— 绑定/缓存 15 个 CheckEdit —— //
+                _checkByGlobal.Clear();
+                int n = Math.Min(_allChs.Length, _persistNames.Length);
+                for (int g = 0; g < n; g++)
+                {
+                    string name = _persistNames[g];
+                    var ctl = this.Controls.Find(name, true).FirstOrDefault() as DevExpress.XtraEditors.CheckEdit;
+                    if (ctl == null) continue;
+
+                    _checkByGlobal[g] = ctl;
+                    ctl.Tag = g;                                  // 保存全局曲线索引
+                    ctl.CheckedChanged -= OnCurveCheckChanged;    // 防止重复绑定
+                    ctl.CheckedChanged += OnCurveCheckChanged;
+                }
+
+                // —— 创建 15 条曲线 —— //
+                for (int g = 0; g < _allChs.Length; g++)
+                {
+                    _chData[g] = new PointPairList();
+                    var color = _curveColors[g % _curveColors.Length];
+
+                    var curve = pane.AddCurve(_allChs[g].DisplayName, _chData[g], color, SymbolType.None);
+                    curve.Line.Width = 2f;
+
+                    // 电流 -> Y2；压力/夹紧力 -> 左轴
+                    curve.IsY2Axis = (_allChs[g].Type == SignalType.Current);
+
+                    // 初始可见性 = 复选框状态（若未找到控件则默认可见）
+                    bool visible = _checkByGlobal.TryGetValue(g, out var cb) ? cb.Checked : true;
+                    curve.IsVisible = visible;
+
+                    _chCurve[g] = curve;
+
+                    // 为兼容你旧逻辑保留的集合（有人可能还在用）
+                    _curveItems.Add(curve);
+                    _curveDataLists.Add(_chData[g]);
+                }
+
+                // 兼容旧字段：让 listForce 指向 F 的数据，避免 ResetDisplaySystem() 空引用
+                listForce = _chData[14];
+
+                // 初始 X 轴窗口
+                pane.XAxis.Scale.Min = 0;
+                pane.XAxis.Scale.Max = ClsGlobal.XDuration;
+
+                pane.XAxis.Scale.MagAuto = false;
+                pane.XAxis.Scale.FormatAuto = false;
+                pane.YAxis.Scale.MagAuto = false;
+                pane.YAxis.Scale.FormatAuto = false;
+                pane.Y2Axis.Scale.MagAuto = false;
+                pane.Y2Axis.Scale.FormatAuto = false;
+
+                zedGraphRealChart.AxisChange();
+                zedGraphRealChart.Invalidate();
+                zedGraphRealChart.Refresh();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(@"初始化曲线显示失败！" + ex.Message, @"提示",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError,
+                    "初始化曲线显示失败！" + ex.Message, "初始化");
+            }
+        }
+
+        /// <summary>
+        /// CheckEdit 勾选变化 -> 显隐对应曲线。
+        /// 使用控件的 Tag 作为全局曲线索引，避免闭包问题。
+        /// </summary>
+        private void OnCurveCheckChanged(object sender, EventArgs e)
+        {
+            if (sender is DevExpress.XtraEditors.CheckEdit cb &&
+                cb.Tag is int gi &&
+                gi >= 0 && gi < _chCurve.Length)
+            {
+                var line = _chCurve[gi];
+                if (line != null)
+                {
+                    line.IsVisible = cb.Checked;
+                    zedGraphRealChart.Invalidate();
+                }
             }
         }
 
@@ -1032,7 +1774,7 @@ namespace MTEmbTest
                             minCurrent = Math.Min(minCurrent, currentValue);
 
 
-                            FaultMode = (byte)faultflg;
+                            FaultMode = faultflg;
                         }
 
                     if (maxForce == double.MinValue) maxForce = 0.0;
@@ -1162,12 +1904,12 @@ namespace MTEmbTest
 
                     var DaqLens = DaqData.Length;
 
-                    if (DaqLens > 0) DaqDeltTime = recvSpan / (double)DaqLens;
+                    if (DaqLens > 0) DaqDeltTime = recvSpan / DaqLens;
 
                     var IsAxisChanged = false;
 
                     for (var i = 0; i < DaqLens; i++)
-                        listDaqCurrent.Add(graphyHeadertime + (double)i * DaqDeltTime, DaqData[i]);
+                        listDaqCurrent.Add(graphyHeadertime + i * DaqDeltTime, DaqData[i]);
 
                     if (listDaqCurrent != null && listDaqCurrent.Count > 0 &&
                         listDaqCurrent[listDaqCurrent.Count - 1].X - listDaqCurrent[0].X > ClsGlobal.XDuration)
@@ -1184,7 +1926,7 @@ namespace MTEmbTest
                         IsAxisChanged = true;
                     }
 
-                    if (dataQueue.Count > 0) CanDeltTime = recvSpan / (double)dataQueue.Count;
+                    if (dataQueue.Count > 0) CanDeltTime = recvSpan / dataQueue.Count;
                     var j = 0;
 
 
@@ -1207,8 +1949,8 @@ namespace MTEmbTest
                                 ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "CAN数据解析出错: " + parseMsg,
                                     "CAN数据解析");
 
-                            listForce.Add(graphyHeadertime + (double)j * CanDeltTime, forceValue);
-                            listCanCurrent.Add(graphyHeadertime + (double)j * CanDeltTime, currentValue);
+                            listForce.Add(graphyHeadertime + j * CanDeltTime, forceValue);
+                            listCanCurrent.Add(graphyHeadertime + j * CanDeltTime, currentValue);
 
                             j++;
                         }
@@ -1250,12 +1992,12 @@ namespace MTEmbTest
 
 
         /// <summary>
-        /// 更新实时曲线（仅 DAQ_I 一条曲线）。
-        /// 传入的数据应为工程值（已做零点、比例、偏置与滤波），方法内部会按照采样率
-        /// 将样本映射到 X 轴（单位：秒），并维持 X 轴固定时窗（ClsGlobal.XDuration）。
+        ///     更新实时曲线（仅 DAQ_I 一条曲线）。
+        ///     传入的数据应为工程值（已做零点、比例、偏置与滤波），方法内部会按照采样率
+        ///     将样本映射到 X 轴（单位：秒），并维持 X 轴固定时窗（ClsGlobal.XDuration）。
         /// </summary>
         /// <param name="daqData">
-        /// 一次刷新的 DAQ_I 数据段（工程值）。允许为空或长度为 0（此时不做任何更新）。
+        ///     一次刷新的 DAQ_I 数据段（工程值）。允许为空或长度为 0（此时不做任何更新）。
         /// </param>
         public void UpdateGraphDisplay2(double[] daqData)
         {
@@ -1283,9 +2025,9 @@ namespace MTEmbTest
                 }
 
                 var pane = zedGraphRealChart.GraphPane;
-                pane.YAxis.IsVisible = false;                    // 只画 DAQ_I，不用左侧 Y 轴
-                pane.Y2Axis.IsVisible = true;                    // 开启 Y2
-                if (pane.Y2AxisList.Count > 1)                   // 如果曾经加过第二个 Y2（Act_I），这里隐藏
+                pane.YAxis.IsVisible = false; // 只画 DAQ_I，不用左侧 Y 轴
+                pane.Y2Axis.IsVisible = true; // 开启 Y2
+                if (pane.Y2AxisList.Count > 1) // 如果曾经加过第二个 Y2（Act_I），这里隐藏
                     pane.Y2AxisList[1].IsVisible = false;
 
                 // ===== 把采样映射到时间轴 =====
@@ -1293,7 +2035,7 @@ namespace MTEmbTest
                 if (ClsGlobal.DaqFrequency <= 0)
                     throw new InvalidOperationException("DaqFrequency 未正确设置。");
 
-                double dt = 1.0 / ClsGlobal.DaqFrequency;
+                var dt = 1.0 / ClsGlobal.DaqFrequency;
 
                 // 本次追加的起始 X（秒）。
                 // 若已有点，则从最后一个点的下一步开始；否则从 0 开始。
@@ -1304,21 +2046,18 @@ namespace MTEmbTest
                     xStart = 0.0;
 
                 // 逐点追加（X 轴为相对时间，单位：秒）
-                for (int i = 0; i < daqData.Length; i++)
-                {
-                    listDaqCurrent.Add(xStart + i * dt, daqData[i]);
-                }
+                for (var i = 0; i < daqData.Length; i++) listDaqCurrent.Add(xStart + i * dt, daqData[i]);
 
                 // ===== 维持固定时窗（滑动窗口）=====
                 if (listDaqCurrent != null && listDaqCurrent.Count > 0)
                 {
-                    double firstX = listDaqCurrent[0].X;
-                    double lastX = listDaqCurrent[listDaqCurrent.Count - 1].X;
+                    var firstX = listDaqCurrent[0].X;
+                    var lastX = listDaqCurrent[listDaqCurrent.Count - 1].X;
 
                     if (lastX - firstX > ClsGlobal.XDuration)
                     {
                         // 移除最旧的一半，避免频繁整体拷贝导致卡顿
-                        double mid = (firstX + lastX) / 2.0;
+                        var mid = (firstX + lastX) / 2.0;
                         listDaqCurrent.RemoveAll(p => p.X < mid);
 
                         // 滑动 X 轴范围到最新窗口
@@ -1335,7 +2074,7 @@ namespace MTEmbTest
                 // 以样点数与采样率推前 lastGraphyTime，保持与旧代码兼容
                 if (daqData.Length > 0)
                 {
-                    double spanSec = daqData.Length * (1.0 / ClsGlobal.DaqFrequency);
+                    var spanSec = daqData.Length * (1.0 / ClsGlobal.DaqFrequency);
                     lastGraphyTime = lastGraphyTime.AddSeconds(spanSec);
                 }
             }
@@ -1344,7 +2083,6 @@ namespace MTEmbTest
                 ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "更新曲线显示出错: " + ex.Message, "曲线显示");
             }
         }
-
 
 
         public void SafeClearGraphData()
@@ -1378,7 +2116,7 @@ namespace MTEmbTest
                 }
             }
         }
-        
+
         private double[] ProcessDaqCurrentData()
         {
             var RecCount = DaqAiDispData.Count;
@@ -1406,321 +2144,6 @@ namespace MTEmbTest
         }
 
         #endregion
-
-
-        private void LoadEmbControler()
-        {
-            try
-            {
-                for (var i = 0; i < 6; i++)
-                {
-                    EmbGroup[i] = new ClsEMBControler();
-                    EmbGroup[i].EmbNo = i + 1;
-                    EmbGroup[i].EmbName = "EPB" + (i + 1).ToString();
-                    //  EmbGroup[i].Cycles = 0;
-                    EmbGroup[i].IsEnabel = true;
-                }
-
-                EmbGroup[0].CtrlJoinTest = ChkEpb1;
-                EmbGroup[1].CtrlJoinTest = ChkEpb2;
-                EmbGroup[2].CtrlJoinTest = ChkEpb3;
-                EmbGroup[3].CtrlJoinTest = ChkEpb4;
-                EmbGroup[4].CtrlJoinTest = ChkEpb5;
-                EmbGroup[5].CtrlJoinTest = ChkEpb6;
-
-
-                /*
-                EmbGroup[0].CtrlCurrentEmb = RadEmb1;
-                EmbGroup[1].CtrlCurrentEmb = RadEmb2;
-                EmbGroup[2].CtrlCurrentEmb = RadEmb3;
-                EmbGroup[3].CtrlCurrentEmb = RadEmb4;
-                EmbGroup[4].CtrlCurrentEmb = RadEmb5;
-                EmbGroup[5].CtrlCurrentEmb = RadEmb6; */
-
-                EmbGroup[0].CtrlRunning = SwitchEpb1;
-                EmbGroup[1].CtrlRunning = SwitchEpb2;
-                EmbGroup[2].CtrlRunning = SwitchEpb3;
-                EmbGroup[3].CtrlRunning = SwitchEpb4;
-                EmbGroup[4].CtrlRunning = SwitchEpb5;
-                EmbGroup[5].CtrlRunning = SwitchEpb6;
-
-
-                EmbGroup[0].CtrlCycles = LabEpb1;
-                EmbGroup[1].CtrlCycles = LabEpb2;
-                EmbGroup[2].CtrlCycles = LabEpb3;
-                EmbGroup[3].CtrlCycles = LabEpb4;
-                EmbGroup[4].CtrlCycles = LabEpb5;
-                EmbGroup[5].CtrlCycles = LabEpb6;
-
-                /*
-                EmbGroup[0].CtrlAlert = AlertEmb1;
-                EmbGroup[1].CtrlAlert = AlertEmb2;
-                EmbGroup[2].CtrlAlert = AlertEmb3;
-                EmbGroup[3].CtrlAlert = AlertEmb4;
-                EmbGroup[4].CtrlAlert = AlertEmb5;
-                EmbGroup[5].CtrlAlert = AlertEmb6;   // 界面上没有这些控件，暂时注释掉
-                */
-
-
-                EmbGroup[0].CtrlPower = SwitchPower1;
-                EmbGroup[1].CtrlPower = SwitchPower2;
-                EmbGroup[2].CtrlPower = SwitchPower3;
-                EmbGroup[3].CtrlPower = SwitchPower4;
-                EmbGroup[4].CtrlPower = SwitchPower5;
-                EmbGroup[5].CtrlPower = SwitchPower6;
-
-
-                for (var i = 0; i < 6; i++)
-                {
-                    EmbGroup[i].CtrlRunning.Enabled = false; //单个启动按钮设为不允许，启动之后才允许
-                    var index = i;
-                    EmbGroup[i].CtrlJoinTest.CheckedChanged += (sender, e) => JoinEmbChanged(sender, e, index);
-
-                    // EmbGroup[i].CtrlCurrentEmb.CheckedChanged += (sender, e) => CurrentEmbChanged(sender, e, index); // 界面上没有这个控件，暂时注释掉
-
-
-                    EmbGroup[i].CtrlRunning.CheckedChanged += (sender, e) =>
-                    {
-                        RuningStatusChanged(sender, ((UISwitch)sender).Active, index);
-                    };
-
-                    EmbGroup[i].CtrlRunning.Click += (sender, e) => RunningClick(sender, e, index);
-                    EmbGroup[i].CtrlPower.Click += (sender, e) => PowerClick(sender, e, index);
-                    EmbGroup[i].CtrlPower.KeyPress += (sender, e) => CtrlPower_KeyHandler(sender, e, index);
-                    EmbGroup[i].CtrlPower.KeyDown += (sender, e) => CtrlPower_KeyHandler(sender, e, index);
-                    EmbGroup[i].CtrlPower.KeyUp += (sender, e) => CtrlPower_KeyHandler(sender, e, index);
-                    //EmbGroup[i].CtrlPower.CheckedChanged += (sender, e) => PowerClick(sender, e, index);
-                }
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show(@"初始化组件失败！" + ex.Message);
-            }
-        }
-
-        private void CtrlPower_KeyHandler(object sender, EventArgs e, int index)
-        {
-            return;
-            //throw new NotImplementedException();
-        }
-
-        private void RunningClick(object sender, EventArgs e, int index)
-        {
-            if (!EmbGroup[index].CtrlPower.Checked && EmbGroup[index].CtrlRunning.Checked) //运行状态
-            {
-                MessageBox.Show(@"请先打开电源！");
-                EmbGroup[index].CtrlRunning.Checked = false;
-                return;
-            }
-        }
-
-        private bool _isCtrlPowerPressing = false;
-        private GlobalConfig _cfg;
-        private const string FormKey = "FrmEpbMainMonitor";
-
-        // 控制曲线显示的check控件名
-        private readonly string[] _persistNames =
-            Enumerable.Range(1, 12).Select(i => $"CheckEpbA{i}")
-                .Concat(new[] { "CheckP1", "CheckP2", "CheckF" })
-                .ToArray();
-
-        private UiConfig _uiCfg;
-
-
-        private async void PowerClick(object sender, EventArgs e, int index)
-        {
-            if (_isCtrlPowerPressing)
-            {
-                return;
-            }
-
-            _isCtrlPowerPressing = true;
-            EmbGroup[index].CtrlPower.Enabled = false; // 禁用按钮，防止重复点击
-            EPBGroupBox.Enabled = false; // 禁用整个组框，防止其他操作
-            try
-            {
-                if (!IsTestConfirm)
-                {
-                    MessageBox.Show(@"请先确认试验信息！");
-                    EmbGroup[index].CtrlPower.Toggle();
-
-                    // EmbGroup[index].CtrlPower.Checked = false;
-                    //
-                    EmbGroup[index].CtrlPower.Refresh();
-                    return;
-                }
-
-
-                if (!EmbGroup[index].CtrlPower.Checked && EmbGroup[index].CtrlRunning.Checked) //运行状态想关电源
-                {
-                    MessageBox.Show(@"请先停止运行再关闭电源！");
-                    EmbGroup[index].CtrlPower.Checked = true;
-                    return;
-                }
-
-                if (!EmbGroup[index].CtrlPower.Checked && !EmbGroup[index].CtrlRunning.Checked) //非运行状态想关电源
-                {
-                    // MessageBox.Show("调用执行关闭分开关的函数！");
-                    // var mainForm = this.MdiParent as Main_Frm;
-
-
-                    //string powerMsg = mainForm.PowerClose(index / 2 + 1);
-                    //if (powerMsg.IndexOf("OK") < 0)
-                    //{
-                    //    RtbInfo.Invoke(new SetTextCallback(SetInfoText), DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "关闭EMB" + (index + 1).ToString() + "电源失败!" + powerMsg);
-                    //    ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "关闭EMB" + (index + 1).ToString() + "电源开关失败!", "电源开关操作");
-
-                    //}
-                    //else
-                    //{
-                    //    RtbInfo.Invoke(new SetTextCallback(SetInfoText), DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "关闭EMB" + (index + 1).ToString() + "电源!");
-                    //    ClsLogProcess.AddToInfoList(MaxInfos, ref LogInformation, "关闭EMB" + (index + 1).ToString() + "电源开关!", "电源开关操作");
-
-                    //}
-
-
-                    var OpenSuccess = await ClosePowerChannel((byte)index, ClsGlobal.SerialPortRetrys);
-                    if (!OpenSuccess)
-                    {
-                        RtbInfo.Invoke(new SetTextCallback(SetInfoText),
-                            DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "关闭EMB" + (index + 1).ToString() +
-                            "继电器开关失败!");
-                        ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError,
-                            "关闭EMB" + (index + 1).ToString() + "继电器开关失败!", "串口操作");
-                        ClsGlobal.PowerStatus[index] = 2;
-                    }
-                    else
-                    {
-                        RtbInfo.Invoke(new SetTextCallback(SetInfoText),
-                            DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "关闭EMB" + (index + 1).ToString() +
-                            "继电器开关!");
-                        ClsLogProcess.AddToInfoList(MaxInfos, ref LogInformation,
-                            "关闭EMB" + (index + 1).ToString() + "继电器开关!", "UI 操作");
-                        ClsGlobal.PowerStatus[index] = 1;
-
-
-                        /*if (EmbGroup[index].IsEnabel)
-                    {
-                        EmbGroup[index].CtrlAlert.State = UILightState.Off;
-                        EmbGroup[index].CtrlAlert.OffCenterColor = Color.FromArgb(140, 140, 140);
-                        EmbGroup[index].CtrlAlert.OffColor = Color.FromArgb(140, 140, 140);
-                    }*/
-                    }
-
-
-                    return;
-                }
-
-
-                if (EmbGroup[index].CtrlPower.Checked)
-                {
-                    // MessageBox.Show("调用执行打开分开关的函数！");
-
-                    // var mainForm = this.MdiParent as Main_Frm;
-
-                    //string powerMsg = mainForm.PowerOpen(index / 2 + 1);
-                    //if (powerMsg.IndexOf("OK") < 0)
-                    //{
-                    //    RtbInfo.Invoke(new SetTextCallback(SetInfoText), DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "打开EMB" + (index + 1).ToString() + "电源失败!" + powerMsg);
-                    //    ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "打开EMB" + (index + 1).ToString() + "电源开关失败!", "电源开关操作");
-
-                    //}
-                    //else
-                    //{
-                    //    RtbInfo.Invoke(new SetTextCallback(SetInfoText), DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "打开EMB" + (index + 1).ToString() + "电源!");
-                    //    ClsLogProcess.AddToInfoList(MaxInfos, ref LogInformation, "打开EMB" + (index + 1).ToString() + "电源开关!", "电源开关操作");
-
-                    //}
-
-
-                    var OpenSuccess = await OpenPowerChannel((byte)index, ClsGlobal.SerialPortRetrys);
-                    if (!OpenSuccess)
-                    {
-                        RtbInfo.Invoke(new SetTextCallback(SetInfoText),
-                            DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "打开EMB" + (index + 1).ToString() +
-                            "继电器开关失败!");
-                        ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError,
-                            "打开EMB" + (index + 1).ToString() + "继电器开关失败!", "串口操作");
-                        ClsGlobal.PowerStatus[index] = 1;
-                    }
-                    else
-                    {
-                        RtbInfo.Invoke(new SetTextCallback(SetInfoText),
-                            DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "打开EMB" + (index + 1).ToString() +
-                            "继电器开关!");
-                        ClsLogProcess.AddToInfoList(MaxInfos, ref LogInformation,
-                            "打开EMB" + (index + 1).ToString() + "继电器开关!", "UI 操作");
-                        ClsGlobal.PowerStatus[index] = 2;
-                        /*if (EmbGroup[index].IsEnabel)
-                    {
-                        EmbGroup[index].CtrlAlert.State = UILightState.On;
-                        EmbGroup[index].CtrlAlert.OffCenterColor = Color.FromArgb(140, 140, 140);
-                        EmbGroup[index].CtrlAlert.OffColor = Color.FromArgb(140, 140, 140);
-                    }*/
-                    }
-
-
-                    return;
-                }
-            }
-            finally
-            {
-                _isCtrlPowerPressing = false;
-
-                EmbGroup[index].CtrlPower.Enabled = true; // 重新启用按钮
-                EPBGroupBox.Enabled = true; // 重新启用整个组框
-            }
-        }
-
-
-        // 关掉电源通道，目前操作为空
-        private async Task<bool> ClosePowerChannel(byte ChannelNo, int maxRetries)
-        {
-            return false;
-        }
-
-
-        private async Task<bool> OpenPowerChannel(byte ChannelNo, int maxRetries)
-        {
-            return false;
-        }
-
-
-        private void JoinEmbChanged(object sender, EventArgs e, int index)
-        {
-            var checkBox = (CheckEdit)sender;
-            if (checkBox.Checked)
-            {
-                // EmbGroup[index].CtrlCurrentEmb.Enabled = true; // 界面上没有这个控件，暂时注释掉
-                EmbGroup[index].CtrlPower.Enabled = true;
-                // EmbGroup[index].CtrlAlert.Enabled = true; // 界面上没有这个控件，暂时注释掉
-                EmbGroup[index].CtrlCycles.Enabled = true;
-                EmbGroup[index].IsEnabel = true;
-            }
-            else
-            {
-                // EmbGroup[index].CtrlCurrentEmb.Enabled = false; // 界面上没有这个控件，暂时注释掉
-                EmbGroup[index].CtrlPower.Enabled = false;
-                // EmbGroup[index].CtrlAlert.Enabled = false; // 界面上没有这个控件，暂时注释掉
-                EmbGroup[index].CtrlCycles.Enabled = false;
-                // EmbGroup[index].CtrlCurrentEmb.Checked = false; // 界面上没有这个控件，暂时注释掉
-                EmbGroup[index].IsEnabel = false;
-            }
-        }
-
-        private void RuningStatusChanged(object sender, bool value, int index)
-        {
-            if (value)
-                StartEmbControlTimer(index);
-            // EmbGroup[index].CtrlAlert.OffCenterColor = Color.FromArgb(140, 140, 140);
-            // EmbGroup[index].CtrlAlert.OffColor = Color.FromArgb(140, 140, 140);
-            // EmbGroup[index].CtrlAlert.OnCenterColor = Color.Lime;
-            // EmbGroup[index].CtrlAlert.OnColor = Color.Lime;
-            // EmbGroup[index].CtrlAlert.State = UILightState.Blink;
-            else
-                StopEmbControlTimer(index);
-            // EmbGroup[index].CtrlAlert.State = UILightState.On;
-        }
 
 
         #region 周期定时处理
@@ -1764,7 +2187,7 @@ namespace MTEmbTest
                 // 首次启动时设置高精度定时器
                 if (Interlocked.Increment(ref activeTimersCount) == 1) timeBeginPeriod(DEFAULT_RESOLUTION);
 
-                timer.Handler = new TimerProc(EmbControlTimerHandler);
+                timer.Handler = EmbControlTimerHandler;
                 timer.TimerId = timeSetEvent(
                     timer.Interval,
                     DEFAULT_RESOLUTION,
@@ -1788,7 +2211,7 @@ namespace MTEmbTest
             catch (Exception ex)
             {
                 ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError,
-                    "启动EMB" + EmbIndex.ToString() + "定时控制失败！" + ex.Message, "CAN通信");
+                    "启动EMB" + EmbIndex + "定时控制失败！" + ex.Message, "CAN通信");
                 return false;
             }
         }
@@ -1821,7 +2244,7 @@ namespace MTEmbTest
             catch (Exception ex)
             {
                 ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError,
-                    "停止EMB" + index.ToString() + "定时控制失败！" + ex.Message, "CAN通信");
+                    "停止EMB" + index + "定时控制失败！" + ex.Message, "CAN通信");
                 return false;
             }
         }
@@ -1845,7 +2268,7 @@ namespace MTEmbTest
 
                     if (timer.CycleCounter[index] % 6000 == 0) //60秒记录一次
                         ClsLogProcess.AddToInfoList(MaxInfos, ref LogInformation,
-                            "EMB" + (index + 1).ToString() + " 发送夹紧指令 ", "CAN通信");
+                            "EMB" + (index + 1) + " 发送夹紧指令 ", "CAN通信");
 
                     /*
                     lock (clampCounterLocks[index])
@@ -1871,7 +2294,7 @@ namespace MTEmbTest
             catch (Exception ex)
             {
                 ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError,
-                    "EMB" + (index + 1).ToString() + "定时发送指令出错！" + ex.Message, "定时发送指令");
+                    "EMB" + (index + 1) + "定时发送指令出错！" + ex.Message, "定时发送指令");
             }
         }
 
@@ -1929,16 +2352,10 @@ namespace MTEmbTest
 
         #endregion
 
-        private void BtnTest_Click(object sender, EventArgs e)
-        {
-            // _do.SetEpb(channelNo: 1, directionIsForward: true);
-            // _do.SetEpb(channelNo: 9, directionIsForward: true);
-        }
-
         #region 日志相关
 
         /// <summary>
-        /// 按钮点击事件，查看运行日志
+        ///     按钮点击事件，查看运行日志
         /// </summary>
         /// <param name="sender"></param>
         /// <param name="e"></param>
@@ -1946,7 +2363,7 @@ namespace MTEmbTest
         {
             try
             {
-                string OutFile = Environment.CurrentDirectory + @"\RunLog.txt";
+                var OutFile = Environment.CurrentDirectory + @"\RunLog.txt";
                 ClsLogProcess.ViewLogData(ref LogInformation, OutFile);
             }
             catch (Exception ex)
@@ -1956,16 +2373,15 @@ namespace MTEmbTest
         }
 
         /// <summary>
-        /// 警告日志按钮点击事件
+        ///     警告日志按钮点击事件
         /// </summary>
         /// <param name="sender"></param>
         /// <param name="e"></param>
         private void BtnWarnLog_Click(object sender, EventArgs e)
         {
-
             try
             {
-                string OutFile = Environment.CurrentDirectory + @"\WarnLog.txt";
+                var OutFile = Environment.CurrentDirectory + @"\WarnLog.txt";
                 ClsLogProcess.ViewWarnData(ref LogWarn, OutFile);
             }
             catch (Exception ex)
@@ -1973,9 +2389,9 @@ namespace MTEmbTest
                 MessageBox.Show(ex.Message);
             }
         }
-        
+
         /// <summary>
-        /// 按钮点击事件，查看错误日志
+        ///     按钮点击事件，查看错误日志
         /// </summary>
         /// <param name="sender"></param>
         /// <param name="e"></param>
@@ -1983,7 +2399,7 @@ namespace MTEmbTest
         {
             try
             {
-                string OutFile = Environment.CurrentDirectory + @"\ErrorLog.txt";
+                var OutFile = Environment.CurrentDirectory + @"\ErrorLog.txt";
                 ClsErrorProcess.ViewErrorData(ref LogError, OutFile);
             }
             catch (Exception ex)
@@ -1993,155 +2409,5 @@ namespace MTEmbTest
         }
 
         #endregion
-
-        #region 测试相关代码 - 正式运行删除
-
-        /// <summary>
-        /// 切换开关事件，测试代码，正式运行时请删除
-        /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
-        private void toggleSwitch1_Toggled(object sender, EventArgs e)
-        {
-            // 打开所有epb
-            for (int i = 0; i < 12; i++)
-            {
-                _do.SetEpb(channelNo:i+1, directionIsForward:this.toggleSwitch1.IsOn);
-            }
-
-            // 打开气缸测试
-            // _ao.SetPercent("Cylinder1", 50); // => ~5V
-            // _ao.SetPercent("Cylinder2", 50); // => ~5V
-        }
-        
-
-        #endregion
-
-
-
-
-        /// <summary>
-        /// 窗体关闭事件，释放资源
-        /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
-        private void FrmEpbMainMonitor_FormClosed(object sender, FormClosedEventArgs e)
-        {
-            // _do?.Dispose(); // 释放DO对象资源
-            // _ao?.Dispose(); // 释放AO对象资源
-            _do?.AllOff(); // 停止所有EPB操作
-            _do?.Dispose();
-            _ao?.ResetAll(); // 停止所有AO操作
-            _ao?.Dispose(); // 释放AO对象资源
-
-            twoDeviceAiAcquirer.Stop();
-
-            twoDeviceAiAcquirer?.Dispose(); 
-
-            
-
-
-
-            //base.OnFormClosed(e);
-        }
-
-        // 工程值批次到达（dev="Dev1" 或 "Dev2"；eng 为 [通道, 样本]）
-        private void Acq_OnEngBatch(string dev, double[,] eng, DateTime current, DateTime last)
-        {
-            if (InvokeRequired)
-            {
-                // 切回 UI 线程，避免跨线程操作控件异常
-                BeginInvoke(new Action(() => Acq_OnEngBatch(dev, eng, current, last)));
-                return;
-            }
-
-            // ===== 示例1：读取指定通道的“最后一个样本”并显示到 SunnyUI 的 UILabel =====
-            // 你在 TwoDeviceAiAcquirer 里已把“最近值快照”维护好了，也暴露了 ReadCurrent/ReadPressure 简便查询接口：
-            //   ReadCurrent(int epbChannel), ReadPressure(int id)  —— 直接拿最近值用来显示 UI 即可。:contentReference[oaicite:6]{index=6}
-            //double p1 = _acq.ReadPressure(1);           // 压力1 (工程值)
-            
-            if (dev == "Dev1")
-            {
-                // 1) 取第0通道的一个点，顺便刷新数值显示（你原来就是取 [0,0]）
-                double epb1 = eng[1, 0];                 // EPB1 电流 (工程值)
-                textEditCurrent1.Text = $"{epb1:F2} A";   // 假设 textEditCurrent1 是显示 EPB1 电流的控件
-
-                // 2) 提取第0维（第0通道）的整段样本，准备绘制
-                int samples = eng.GetLength(1);           // 列数 = 样本数
-                if (samples > 0)
-                {
-                    // 建议用循环拷贝（最安全、与 .NET 4.8 兼容）
-                    var daqI = new double[samples];
-                    for (int i = 0; i < samples; i++)
-                        daqI[i] = eng[1, i];
-
-                    // 3) 调用你的单曲线绘制方法（内部已做 Invoke 封送，可直接调用）
-                    UpdateGraphDisplay2(daqI);
-                }
-
-
-            }
-            
-        }
-        
-        private async void BtnStartTest_Click(object sender, EventArgs e)
-        {
-            try
-            {
-                
-
-                
-
-
-
-
-                // 4) 组装 EpbManager（把回调委托接进去）
-                _epb = new EpbManager(
-                    cfg: _cfg,
-                    doController: _do,
-                    aoController: _ao,
-                    acq: twoDeviceAiAcquirer,
-                    log: logger);
-
-                // 5) 启动“卡钳1”通道
-                //    StartChannel 内部会根据 Test.TestTarget 次数、PeriodMs 周期、Groups 错峰等自动循环
-                // _epb.StartChannel(2); //界面卡顿，注释
-                await _epb.StartChannelAsync(2);
-
-                // UI 提示
-                RtbInfo?.AppendText($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  > 卡钳1测试已启动\n");
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"启动卡钳1测试失败：{ex.Message}", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            }
-        }
-
-        /// <summary>
-        /// 停止试验按钮
-        /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
-        private void BtnStop_Click(object sender, EventArgs e)
-        {
-            try
-            {
-                _epb.StopChannel(2);
-            }
-            catch (Exception ex)
-            {
-                RtbInfo?.AppendText($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  > 停止卡钳2测试失败\n");
-            }
-        }
-
-        private void CheckEpbA7_CheckedChanged(object sender, EventArgs e)
-        {
-            Console.WriteLine(@"CheckEpbA7_CheckedChanged");
-        }
-
-        private void CheckEpbA7_CheckStateChanged(object sender, EventArgs e)
-        {
-            Console.WriteLine(@"CheckEpbA7_CheckStateChanged");
-        }
     }
 }
