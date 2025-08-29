@@ -22,7 +22,7 @@ namespace Controller
         private readonly Func<int, double> _readPressure; // 读取压力：传入 hydId 返回 bar
         private readonly AoController _ao; // AO 控制器（统一做限幅与电压换算）
         private readonly IAppLogger _log;
-
+          
         //等待“释压”信号的表：key=hydId
         private readonly ConcurrentDictionary<int, TaskCompletionSource<bool>> _releaseWaiters = new();
 

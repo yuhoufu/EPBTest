@@ -127,7 +127,10 @@ namespace Controller
 
 
             // 2) 取 Runner 参数
-            var rcfg = _cfg.Test?.EpbCycleRunner ?? new EpbCycleRunnerConfig();
+            //var rcfg = _cfg.Test?.EpbCycleRunner ?? new EpbCycleRunnerConfig();
+
+            var rcfg = _cfg.Test?.GetEpbRunner(channel) ?? new EpbCycleRunnerConfig();
+
             var periodMs = _cfg.Test.PeriodMs;
             var sampleMs = 2; // 建议 2~5ms
 
@@ -239,7 +242,8 @@ namespace Controller
 
             var hydId = channel <= 6 ? 1 : 2;
 
-            var rcfg = _cfg.Test?.EpbCycleRunner ?? new EpbCycleRunnerConfig();
+            //var rcfg = _cfg.Test?.EpbCycleRunner ?? new EpbCycleRunnerConfig();
+            var rcfg = _cfg.Test?.GetEpbRunner(channel) ?? new EpbCycleRunnerConfig();
             var periodMs = _cfg.Test.PeriodMs;
             var sampleMs = 2;
 

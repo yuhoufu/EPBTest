@@ -154,12 +154,71 @@
       - 若响应偏慢：适度↑ EwmaAlpha（同时注意抗噪能力降低）
   -->
 	<EpbCycleRunnerConfig>
+		<!-- ① 全局默认，老格式仍兼容（直接写在根上） -->
 		<PeakIgnoreMs>100</PeakIgnoreMs>
 		<EmptyBandA>0.20</EmptyBandA>
 		<StableWinMs>50</StableWinMs>
 		<EwmaAlpha>0.20</EwmaAlpha>
 		<EmptyCurrentForwardA>0.63</EmptyCurrentForwardA>
 		<EmptyCurrentReverseA>-0.70</EmptyCurrentReverseA>
+		<!-- 可选：新增 LearnCycles；不写则不改变你现有逻辑 -->
+		<LearnCycles>5</LearnCycles>
+
+		<!-- ②（推荐的新写法）显式 Defaults，清晰表达默认集；与根上的字段等价，二者都支持，优先级：PerChannel > Defaults > 根上 -->
+		<Defaults>
+			<PeakIgnoreMs>100</PeakIgnoreMs>
+			<EmptyBandA>0.20</EmptyBandA>
+			<StableWinMs>50</StableWinMs>
+			<EwmaAlpha>0.20</EwmaAlpha>
+			<EmptyCurrentForwardA>0.63</EmptyCurrentForwardA>
+			<EmptyCurrentReverseA>-0.70</EmptyCurrentReverseA>
+			<LearnCycles>5</LearnCycles>
+		</Defaults>
+
+		<!-- ③ 每通道覆写（仅填差异项即可） -->
+		<PerChannel>
+			<Record>
+				<Channel>1</Channel>
+				<PeakIgnoreMs>120</PeakIgnoreMs>
+				<EmptyBandA>0.25</EmptyBandA>
+				<LearnCycles>3</LearnCycles>
+			</Record>
+			<Record>
+				<Channel>2</Channel>
+				<PeakIgnoreMs>90</PeakIgnoreMs>
+			</Record>
+			<Record>
+				<Channel>3</Channel>
+			</Record>
+			<Record>
+				<Channel>4</Channel>
+			</Record>
+			<Record>
+				<Channel>5</Channel>
+			</Record>
+			<Record>
+				<Channel>6</Channel>
+			</Record>
+			<Record>
+				<Channel>7</Channel>
+			</Record>
+			<Record>
+				<Channel>8</Channel>
+			</Record>
+			<Record>
+				<Channel>9</Channel>
+			</Record>
+			<Record>
+				<Channel>10</Channel>
+			</Record>
+			<Record>
+				<Channel>11</Channel>
+			</Record>
+			<Record>
+				<Channel>12</Channel>
+			</Record>
+		</PerChannel>
 	</EpbCycleRunnerConfig>
+
 
 </TestConfig>
