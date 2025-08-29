@@ -533,6 +533,7 @@ namespace Controller
                     return false;
                 }
 
+                Console.WriteLine($"EPB[{_channel}], 空行程阶段，等待夹紧");
                 // ③+④：从空行程向“夹紧升坡/限流平台”爬升，直到达到阈值/平台
                 // WaitCurrentAboveAsync 内部具备平台判据（见你现有实现）
                 var okClamp = await WaitCurrentAboveAsync(_posThrA, token);
@@ -546,6 +547,15 @@ namespace Controller
                     await _manager?.HydraulicMarkReleaseAsync(_channel);
                     return false;
                 }
+
+                // --- 关键：达到阈值后**立刻断电**（避免超调） ----------
+                _do.SetEpbOff(_channel);
+                _log.Info($"EPB[{_channel}] 已达到夹紧阈值 {_posThrA}A，已断电并标记释放。", "EPB");
+
+                // 如果有“液压组统一释压”逻辑，告诉协调器本卡钳已到达释放点
+                // （先断电再标记，确保断电动作不会被等待标记的异步延时影响）
+                await _manager?.HydraulicMarkReleaseAsync(_channel);
+
 
 
                 // ===================== ⑤ 保持 =====================
