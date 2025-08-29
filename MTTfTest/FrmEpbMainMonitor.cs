@@ -1672,6 +1672,8 @@ namespace MTEmbTest
                 pane.Fill = new Fill(Color.FromArgb(255, 255, 255));
                 pane.Chart.Fill = new Fill(Color.FromArgb(248, 248, 248));
 
+
+
                 pane.XAxis.Color = Color.Gray;
                 pane.XAxis.MajorTic.Color = Color.Gray;
                 pane.XAxis.MinorTic.Size = 0.0f;
@@ -1698,6 +1700,10 @@ namespace MTEmbTest
                 pane.Y2Axis.MinorTic.Size = 0.0f;
                 pane.Y2Axis.Title.FontSpec.Size = fontSize;
                 pane.Y2Axis.Scale.FontSpec.Size = fontSize;
+
+
+                // ★ 新增：确保有一个用于压力的第二左轴，并拿到它的索引
+                int pressureAxisIndex = EnsurePressureYAxis(pane);
 
                 // —— 路由表重建 —— //
                 _route.Clear();
@@ -1729,10 +1735,35 @@ namespace MTEmbTest
                     curve.Line.Width = 2f;
 
                     // 电流 -> Y2；压力/夹紧力 -> 左轴
-                    curve.IsY2Axis = _allChs[g].Type == SignalType.Current;
+                    // curve.IsY2Axis = _allChs[g].Type == SignalType.Current; //原来的y轴分配逻辑
+
+                    // ★ 关键：按信号类型把曲线分配到对应的轴
+                    switch (_allChs[g].Type)
+                    {
+                        case SignalType.Current:
+                            // 12 路电流 -> 右轴（Y2）
+                            curve.IsY2Axis = true;       // 右侧轴
+                            // curve.Y2AxisIndex = 0;    // 可省，默认 0（只有一个右轴）
+                            break;
+
+                        case SignalType.Pressure:
+                            // 两个压力 -> 新增的第二左轴（pressureAxisIndex >= 1）
+                            curve.IsY2Axis = false;      // 左侧轴族
+                            curve.YAxisIndex = pressureAxisIndex;
+                            break;
+
+                        case SignalType.Force:
+                        default:
+                            // 夹紧力 F -> 默认左轴（索引 0）
+                            curve.IsY2Axis = false;      // 左侧轴族
+                            curve.YAxisIndex = 0;
+                            break;
+                    }
+
+
 
                     // 初始可见性 = 复选框状态（若未找到控件则默认可见）
-                    var visible = _checkByGlobal.TryGetValue(g, out var cb) ? cb.Checked : true;
+                    var visible = !_checkByGlobal.TryGetValue(g, out var cb) || cb.Checked;
                     curve.IsVisible = visible;
 
                     _chCurve[g] = curve;
@@ -1779,6 +1810,53 @@ namespace MTEmbTest
                     "初始化曲线显示失败！" + ex.Message, "初始化");
             }
         }
+
+        #region 轴创建与选择
+
+        /// <summary>
+        /// 创建或获取用于“压力（bar）”显示的左侧第二 Y 轴，并返回其索引。
+        /// - 轴放在左侧（YAxisList）
+        /// - 通过 Axis.Tag 标记，避免重复创建
+        /// - 为了区分，采用对比度较高的配色；网格默认关闭，防止与主轴混乱
+        /// </summary>
+        /// <param name="pane">ZedGraph 的 GraphPane</param>
+        /// <returns>压力轴在 YAxisList 中的索引（>=1）</returns>
+        private static int EnsurePressureYAxis(GraphPane pane)
+        {
+            // 1) 若已存在（通过 Tag 标记），直接返回
+            for (int i = 0; i < pane.YAxisList.Count; i++)
+            {
+                if (pane.YAxisList[i]?.Tag is string tag && tag == "PRESSURE_AXIS")
+                    return i;
+            }
+
+            // 2) 创建新的左侧 Y 轴（将出现在默认 Y 轴的左边堆叠显示）
+            var pressureAxis = new YAxis("Pressure (bar)")
+            {
+                IsVisible = true,
+                // 颜色尽量与主轴（蓝色系）区分
+                Color = Color.DarkOrange,
+                Title = { FontSpec = { Size = 12, FontColor = Color.DarkOrange } },
+                Scale = { FontSpec = { Size = 12, FontColor = Color.DarkOrange } },
+                MajorGrid = { IsVisible = false, IsZeroLine = false },
+                MajorTic = { Color = Color.Gray },
+                MinorTic = { Size = 0.0f }
+            };
+
+            // 3) 关闭自动“数量级/格式”跳变，与你现有做法保持一致，避免闪动
+            pressureAxis.Scale.MagAuto = false;
+            pressureAxis.Scale.FormatAuto = false;
+
+            // 4) 打个标签，便于下次查找
+            pressureAxis.Tag = "PRESSURE_AXIS";
+
+            // 5) 加入到左轴列表并返回索引
+            pane.YAxisList.Add(pressureAxis);
+            return pane.YAxisList.Count - 1;
+        }
+
+        #endregion
+
 
         /// <summary>
         ///     启动 UI 重绘定时器：统一在该定时器里进行 AxisChange / Invalidate，
