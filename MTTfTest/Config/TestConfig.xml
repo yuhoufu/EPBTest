@@ -189,7 +189,11 @@
 			</Record>
 			<!-- EPB3：正向≈ +1.20A；反向≈ -1.45A（噪声较大，带宽稍放宽） -->
 			<Record>
-				<Channel>3</Channel>
+				<Channel>3</Channel>				
+			</Record>
+			<!-- EPB4：正向≈ +1.15A；反向≈ -1.05A -->			
+			<Record>
+				<Channel>4</Channel>
 				<EmptyCurrentForwardA>1.20</EmptyCurrentForwardA>
 				<EmptyCurrentReverseA>-1.45</EmptyCurrentReverseA>
 				<EmptyBandA>0.25</EmptyBandA>
@@ -200,16 +204,13 @@
 
 			<!-- EPB4：正向≈ +1.15A；反向≈ -1.05A -->
 			<Record>
-				<Channel>4</Channel>
+				<Channel>5</Channel>
 				<EmptyCurrentForwardA>1.15</EmptyCurrentForwardA>
 				<EmptyCurrentReverseA>-1.05</EmptyCurrentReverseA>
 				<EmptyBandA>0.22</EmptyBandA>
 				<StableWinMs>60</StableWinMs>
 				<PeakIgnoreMs>100</PeakIgnoreMs>
 				<EwmaAlpha>0.20</EwmaAlpha>
-			</Record>
-			<Record>
-				<Channel>5</Channel>
 			</Record>
 			<Record>
 				<Channel>6</Channel>

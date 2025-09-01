@@ -1087,7 +1087,9 @@ namespace MTEmbTest
                 // 5) 启动“卡钳1”通道
                 //    StartChannel 内部会根据 Test.TestTarget 次数、PeriodMs 周期、Groups 错峰等自动循环
                 // _epb.StartChannel(2); //界面卡顿，注释
-                await _epb.StartChannelAsync(2);
+                //await _epb.StartChannelAsync(2);
+                await _epb.StartChannelAsync(4);
+                //await _epb.StartChannelAsync(5);
 
                 // UI 提示
                 RtbInfo?.AppendText($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  > 卡钳1测试已启动\n");
@@ -1108,6 +1110,8 @@ namespace MTEmbTest
             try
             {
                 _epb.StopChannel(2);
+                _epb.StopChannel(4);
+               // _epb.StopChannel(5);
             }
             catch (Exception ex)
             {
