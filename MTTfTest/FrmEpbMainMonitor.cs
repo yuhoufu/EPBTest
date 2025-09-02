@@ -1056,9 +1056,9 @@ namespace MTEmbTest
             if (list.Count == 0 && x == 0.0) x = 0.0;
             else x += dt;
 
-            for (var i = 0; i < daqData.Length; i++)
+            foreach (var t in daqData)
             {
-                list.Add(x, daqData[i]);
+                list.Add(x, t);
                 x += dt;
             }
 
@@ -1839,9 +1839,17 @@ namespace MTEmbTest
             {
                 IsVisible = true,
                 // 颜色尽量与主轴（蓝色系）区分
+
+                /*
                 Color = Color.DarkOrange,
                 Title = { FontSpec = { Size = 12, FontColor = Color.DarkOrange } },
                 Scale = { FontSpec = { Size = 12, FontColor = Color.DarkOrange } },
+                */
+
+
+                Color = Color.DarkBlue,
+                Title = { FontSpec = { Size = 12, FontColor = Color.DarkBlue } },
+                Scale = { FontSpec = { Size = 12, FontColor = Color.DarkBlue } },
                 MajorGrid = { IsVisible = false, IsZeroLine = false },
                 MajorTic = { Color = Color.Gray },
                 MinorTic = { Size = 0.0f }

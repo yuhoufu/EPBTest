@@ -103,6 +103,28 @@ namespace Controller
                 _log);
         }
 
+        /// <summary>
+        ///     读取指定液压组的压力值（委托给 HydraulicController）
+        /// </summary>
+        /// <param name="hydId"></param>
+        /// <returns></returns>
+        private double ReadPressure(int hydId)
+        {
+            return _acq.ReadPressure(hydId);
+        }
+
+        // EpbManager.cs 里（EpbManager 类内）新增：
+        public Task HydraulicEnterAsync(int channel, CancellationToken token)
+        {
+            return _hydCoordinator?.EnterElectricalPhaseAsync(channel, token) ?? Task.CompletedTask;
+        }
+
+        public Task HydraulicMarkReleaseAsync(int channel)
+        {
+            return _hydCoordinator?.MarkVoltageReleaseAsync(channel) ?? Task.CompletedTask;
+        }
+
+
         /// <summary>启动指定 EPB 通道（跑 TestTarget 圈）</summary>
         public void StartChannel(int channel)
         {
@@ -208,27 +230,6 @@ namespace Controller
                 _log.Info($"EPB[{channel}] 周期 {i}/{_cfg.Test.TestTarget} {(ok ? "完成" : "失败")}", "EPB");
                 return ok;
             });
-        }
-
-        /// <summary>
-        ///     读取指定液压组的压力值（委托给 HydraulicController）
-        /// </summary>
-        /// <param name="hydId"></param>
-        /// <returns></returns>
-        private double ReadPressure(int hydId)
-        {
-            return _acq.ReadPressure(hydId);
-        }
-
-        // EpbManager.cs 里（EpbManager 类内）新增：
-        public Task HydraulicEnterAsync(int channel, CancellationToken token)
-        {
-            return _hydCoordinator?.EnterElectricalPhaseAsync(channel, token) ?? Task.CompletedTask;
-        }
-
-        public Task HydraulicMarkReleaseAsync(int channel)
-        {
-            return _hydCoordinator?.MarkVoltageReleaseAsync(channel) ?? Task.CompletedTask;
         }
         
         // （保留你已有的 StartChannelAsync / Pause/Resume/Stop 等实现，不改对外签名）

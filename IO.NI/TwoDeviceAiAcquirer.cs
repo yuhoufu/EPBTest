@@ -248,8 +248,16 @@ namespace IO.NI
                     // 刷新“最近值”供控制逻辑查询
                     UpdateLastSnapshot(engFiltered, item.Device);
 
-                    // 可选给 UI（全通道、已滤波工程值）
-                    OnEngBatch?.Invoke(item.Device, engFiltered, item.Current, item.Last);
+
+                    // 4) 生成发给 UI 的绝对值副本（不修改 engFiltered）
+                    //    这样 UI 看到的是绝对值，但内部仍保留带符号的数据用于控制/记录等。
+                    var uiEng = MakeEngineeringAbsoluteCopy(engFiltered);
+
+                    // 5) 通知 UI（全通道、已滤波、已取绝对值的工程值）
+                    OnEngBatch?.Invoke(item.Device, uiEng, item.Current, item.Last);
+
+
+
                 }
             }
             catch (OperationCanceledException)
@@ -259,6 +267,35 @@ namespace IO.NI
             {
                 _log.Error($"AI 后台处理异常：{ex}", "AI", ex);
             }
+        }
+
+        /// <summary>
+        /// 返回一个新的二维数组，该数组为源数组元素的绝对值副本，源数组不被修改。
+        /// 适用于 channels x samples 的 double[,] 格式数据。
+        /// </summary>
+        /// <param name="eng">源工程值数组（channels x samples），允许为 null。</param>
+        /// <returns>
+        /// 新的二维数组（与源数组维度相同）或 null（当源为 null 时）。
+        /// </returns>
+        private static double[,] MakeEngineeringAbsoluteCopy(double[,] eng)
+        {
+            if (eng == null) return null;
+
+            int dim0 = eng.GetLength(0);
+            int dim1 = eng.GetLength(1);
+            var copy = new double[dim0, dim1];
+
+            // 双重循环逐元素取绝对值
+            for (int i = 0; i < dim0; i++)
+            {
+                for (int j = 0; j < dim1; j++)
+                {
+                    // Math.Abs 对 double 语义清晰
+                    copy[i, j] = Math.Abs(eng[i, j]);
+                }
+            }
+
+            return copy;
         }
 
         // —— 工程值转换 & 快照 —— //
