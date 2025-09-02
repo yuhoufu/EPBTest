@@ -481,7 +481,7 @@ namespace MTEmbTest
                 aiConfigDetail =
                     AiConfigLoader.Load($@"{Environment.CurrentDirectory}\Config\AIConfig.xml");
 
-                twoDeviceAiAcquirer = new TwoDeviceAiAcquirer(aiConfigDetail, 1000, 50,
+                twoDeviceAiAcquirer = new TwoDeviceAiAcquirer(aiConfigDetail, 1000, 40,
                     10, logger);
 
                 twoDeviceAiAcquirer.OnEngBatch += Acq_OnEngBatch; // 订阅工程值批次到达事件
