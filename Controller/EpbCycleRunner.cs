@@ -106,8 +106,15 @@ namespace Controller
         }
 
 
-        public async Task<bool> LearnAsync(int nCycles, CancellationToken token)
+        public async Task<bool> LearnAsync(int nCycles, CancellationToken token, int? targetPeriodMs)
         {
+            // —— 若未显式传入周期（旧调用），用 5000ms 并给出日志 —— //
+            if (targetPeriodMs == null)
+            {
+                targetPeriodMs = 5000;
+                _log.Warn($"EPB[{_channel}] LearnAsync 未显式指定目标周期，默认按 {targetPeriodMs}ms 计算柔性分配。", "EPB");
+            }
+
             // —— 本地时间工具（仅本方法内使用） —— //
             static long NowTicks()
             {
@@ -125,11 +132,6 @@ namespace Controller
             const double R_REV_EMPTY = 0.35; // ⑦（计划值，定时控制）
             const double R_TAIL = 0.15; // ⑧
 
-            // —— 若未显式传入周期（旧调用），用 5000ms 并给出日志 —— //
-            // 建议在 EpbManager 调用带周期的版本；此处为兼容旧接口。
-            var defaultTargetPeriodMs = 5000;
-            _log.Warn($"EPB[{_channel}] LearnAsync 未显式指定目标周期，默认按 {defaultTargetPeriodMs}ms 计算柔性分配。", "EPB");
-            var targetPeriodMs = defaultTargetPeriodMs;
 
             _log.Info(
                 $"EPB[{_channel}] 学习开始，次数={nCycles}；采样={_sampleMs}ms，忽略涌流={_peakIgnoreMs}ms，" +
@@ -198,7 +200,7 @@ namespace Controller
                 }
 
                 // 分配给电控段的预算
-                var elecBudgetMs = Math.Max(0, targetPeriodMs - hydUsed);
+                var elecBudgetMs = Math.Max(0, (int)targetPeriodMs - hydUsed);
 
                 // —— 先给 ①“计划值”（从第二圈起才真正执行），第一圈置 0 —— //
                 var headPlan = 0;
@@ -459,6 +461,7 @@ namespace Controller
 
             return true;
         }
+
         public async Task<bool> RunOneAsync(int targetPeriodMs, CancellationToken token, bool? preRelease = false)
         {
             try
@@ -557,7 +560,6 @@ namespace Controller
                 await _manager?.HydraulicMarkReleaseAsync(_channel);
 
 
-
                 // ===================== ⑤ 保持 =====================
                 if (_holdMs > 0)
                 {
@@ -620,7 +622,7 @@ namespace Controller
                 return false;
             }
         }
-        
+
         /// 从 startTick 到当前的经过时间，单位毫秒。
         /// </summary>
         /// <param name="startTick"></param>
@@ -780,7 +782,7 @@ namespace Controller
                     return (false, 0, 0);
             }
         }
-        
+
         private async Task<bool> WaitCurrentAboveAsync(double thrA, CancellationToken token)
         {
             var ewma = ReadEwma(_readCurrent(_channel), _readCurrent(_channel));

@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Xml;
@@ -70,6 +71,9 @@ namespace Config
         public int Channel { get; set; }
         public double ForwardA { get; set; }
         public double ReverseA { get; set; }
+
+        // 夹紧的时长，ms
+        public int HoldMs { get; set; }
     }
 
     public sealed class EpbCycleRunnerConfig
@@ -142,7 +146,7 @@ namespace Config
         public List<ElectricalGroup> Groups { get; } = new();
 
         /// <summary>周期毫秒（由 TestCycleHz 推导），例如 10Hz => 100ms。</summary>
-        public int PeriodMs => (int)Math.Round(1000.0 / Math.Max(TestCycleHz, 0.001));
+        public int PeriodMs => (int)Math.Round(1000.0 * Math.Max(TestCycleHz, 0.001));
 
         public EpbCycleRunnerConfig EpbCycleRunner { get; set; } = new();
 
@@ -151,6 +155,65 @@ namespace Config
 
         // —— 内部：供 Loader 写入的“显式 Defaults”缓存（有则优先于根级） —— //
         internal EpbCycleRunnerConfig _defaultsFromXml;
+
+
+        // ======= 新增：EPB 试验记录集合 =======
+        /// <summary>
+        /// 12 条 EPB 记录（通道 1..12）。通常由 ConfigLoader 从 XML 读取或第一次启动时 EnsureEpbRecords() 初始化。
+        /// 每个记录包含：Id, StartTime, LatestStartTime, RunTime(字符串), TotalCount, RunCount, Status。
+        /// </summary>
+        public List<EpbTestRecord> EpbRecords { get; } = new();
+
+
+        /// <summary>
+        /// 确保 EpbRecords 至少包含 1..12 的记录（按 Id 升序），并返回集合引用。
+        /// 调用场景：首次加载配置后补齐，或需要访问某通道记录时使用。
+        /// 备注：此方法不会覆盖已有记录（保留 Loader 从 XML 读取的值）。
+        /// </summary>
+        public List<EpbTestRecord> EnsureEpbRecords(int expectedCount = 12)
+        {
+            // 若已存在且数量合适则直接返回（但仍保证包含 1..expectedCount 的 id）
+            // 需要 using System.Linq;
+            var present = new HashSet<int>(EpbRecords.Select(r => r.Id));
+
+            for (int id = 1; id <= expectedCount; id++)
+            {
+                if (!present.Contains(id))
+                {
+                    EpbRecords.Add(EpbTestRecord.CreateDefault(id));
+                }
+            }
+
+            // 保持稳定顺序：按 Id 升序
+            EpbRecords.Sort((a, b) => a.Id.CompareTo(b.Id));
+            return EpbRecords;
+        }
+
+        /// <summary>获取指定通道的记录（不存在时自动创建并返回）。channel 范围期望 1..12。</summary>
+        public EpbTestRecord GetEpbRecord(int channel)
+        {
+            if (channel <= 0) throw new ArgumentOutOfRangeException(nameof(channel));
+            EnsureEpbRecords();
+            var r = EpbRecords.Find(x => x.Id == channel);
+            if (r == null)
+            {
+                r = EpbTestRecord.CreateDefault(channel);
+                EpbRecords.Add(r);
+                EpbRecords.Sort((a, b) => a.Id.CompareTo(b.Id));
+            }
+            return r;
+        }
+
+        /// <summary>
+        /// 将指定通道记录重置为初始状态（不删除记录，仅重置字段）。
+        /// 线程安全说明：若多个线程可能同时修改记录，请上层加锁或改为并发安全实现。
+        /// </summary>
+        public void ResetEpbRecord(int channel)
+        {
+            var r = GetEpbRecord(channel);
+            r.Reset();
+        }
+        
 
         /// <summary>
         ///     取得某通道的“合并后”参数：PerChannel 覆写 &gt; Defaults(若存在) &gt; 全局根级。
@@ -478,10 +541,52 @@ public static class ConfigLoader
             cfg.EpbCycleRunner = new EpbCycleRunnerConfig();
         }
 
+
+
+        // 读取 EpbRecords（若存在）
+        foreach (XmlNode n in doc.SelectNodes("//TestConfig/EpbRecords/Record"))
+        {
+            var r = new EpbTestRecord
+            {
+                Id = GetInt(n, "Id", -1),
+                StartTime = TryParseDateTime(GetString(n, "StartTime", null)),
+                LatestStartTime = TryParseDateTime(GetString(n, "LatestStartTime", null)),
+                RunTime = GetString(n, "RunTime", FormatTimeSpan(TimeSpan.Zero)),
+                TotalCount = GetInt(n, "TotalCount", 0),
+                RunCount = GetInt(n, "RunCount", 0)
+            };
+
+            // 状态解析（容错）
+            var st = GetString(n, "Status", "NotStarted");
+            if (Enum.TryParse<EpbTestStatus>(st, out var status)) r.Status = status;
+            else r.Status = EpbTestStatus.NotStarted;
+
+            cfg.EpbRecords.Add(r);
+        }
+
+        // 辅助（DateTime 解析）
+        static DateTime? TryParseDateTime(string s)
+        {
+            if (string.IsNullOrWhiteSpace(s)) return null;
+            if (DateTime.TryParseExact(s.Trim(), "yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture,
+                    DateTimeStyles.AssumeLocal, out var dt)) return dt;
+            if (DateTime.TryParse(s, out dt)) return dt;
+            return null;
+        }
+
+
+
+
         log?.Info(
             $"Test 配置加载完成：周期={cfg.PeriodMs}ms，目标次数={cfg.TestTarget}，液压={cfg.Hydraulics.Count} 路，组数={cfg.Groups.Count}",
             "配置");
         return cfg;
+    }
+
+    
+    public static string FormatTimeSpan(TimeSpan ts)
+    {
+        return ts.ToString(@"d\.hh\:mm\:ss", CultureInfo.InvariantCulture);
     }
 
     // —— 辅助：可空 Int 读取 —— //
@@ -713,6 +818,9 @@ public static class ConfigLoader
             _ => HydraulicMode.ByPressure
         };
     }
+
+
+
 
     #endregion
 }

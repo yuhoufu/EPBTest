@@ -5,8 +5,8 @@
 		<TestName>EPB_Fatigue</TestName>
 		<!-- 周期次数 -->
 		<TestTarget>10</TestTarget>
-		<!-- 试验频率 Hz，例：10 表示 100ms -->
-		<TestCycle>0.2</TestCycle>
+		<!-- 试验周期 s，例：10 表示 10s -->
+		<TestCycle>5</TestCycle>
 		<StoreDir>D:\EPB_Data</StoreDir>
 	</Basic>
 
@@ -15,12 +15,125 @@
 		<!-- 其他可选：RunToCompletionSkipMissed/SkipNextIfOverrun / AlignToWallClock / Throw -->
 	</Timer>
 
+
+	<EpbRecords>
+		<Record>
+			<Id>1</Id>
+			<StartTime>2025-09-01 08:30:00</StartTime>
+			<LatestStartTime>2025-09-02 09:00:00</LatestStartTime>
+			<RunTime>0.02:15:30</RunTime>
+			<TotalCount>100000</TotalCount>
+			<RunCount>0</RunCount>
+			<Status>NotStarted</Status>
+		</Record>
+		<Record>
+			<Id>2</Id>
+			<StartTime>2025-09-01 08:30:00</StartTime>
+			<LatestStartTime>2025-09-02 09:00:00</LatestStartTime>
+			<RunTime>0.00:00:00</RunTime>
+			<TotalCount>100000</TotalCount>
+			<RunCount>0</RunCount>
+			<Status>NotStarted</Status>
+		</Record>
+		<Record>
+			<Id>3</Id>
+			<StartTime>2025-09-01 08:30:00</StartTime>
+			<LatestStartTime>2025-09-02 09:00:00</LatestStartTime>
+			<RunTime>0.00:00:00</RunTime>
+			<TotalCount>100000</TotalCount>
+			<RunCount>0</RunCount>
+			<Status>NotStarted</Status>
+		</Record>
+		<Record>
+			<Id>4</Id>
+			<StartTime>2025-09-01 08:30:00</StartTime>
+			<LatestStartTime>2025-09-02 09:00:00</LatestStartTime>
+			<RunTime>0.00:00:00</RunTime>
+			<TotalCount>100000</TotalCount>
+			<RunCount>0</RunCount>
+			<Status>NotStarted</Status>
+		</Record>
+		<Record>
+			<Id>5</Id>
+			<StartTime>2025-09-01 08:30:00</StartTime>
+			<LatestStartTime>2025-09-02 09:00:00</LatestStartTime>
+			<RunTime>0.00:00:00</RunTime>
+			<TotalCount>100000</TotalCount>
+			<RunCount>0</RunCount>
+			<Status>NotStarted</Status>
+		</Record>
+		<Record>
+			<Id>6</Id>
+			<StartTime>2025-09-01 08:30:00</StartTime>
+			<LatestStartTime>2025-09-02 09:00:00</LatestStartTime>
+			<RunTime>0.00:00:00</RunTime>
+			<TotalCount>100000</TotalCount>
+			<RunCount>0</RunCount>
+			<Status>NotStarted</Status>
+		</Record>
+		<Record>
+			<Id>7</Id>
+			<StartTime>2025-09-01 08:30:00</StartTime>
+			<LatestStartTime>2025-09-02 09:00:00</LatestStartTime>
+			<RunTime>0.00:00:00</RunTime>
+			<TotalCount>100000</TotalCount>
+			<RunCount>0</RunCount>
+			<Status>NotStarted</Status>
+		</Record>
+		<Record>
+			<Id>8</Id>
+			<StartTime>2025-09-01 08:30:00</StartTime>
+			<LatestStartTime>2025-09-02 09:00:00</LatestStartTime>
+			<RunTime>0.00:00:00</RunTime>
+			<TotalCount>100000</TotalCount>
+			<RunCount>0</RunCount>
+			<Status>NotStarted</Status>
+		</Record>
+		<Record>
+			<Id>9</Id>
+			<StartTime>2025-09-01 08:30:00</StartTime>
+			<LatestStartTime>2025-09-02 09:00:00</LatestStartTime>
+			<RunTime>0.00:00:00</RunTime>
+			<TotalCount>100000</TotalCount>
+			<RunCount>0</RunCount>
+			<Status>NotStarted</Status>
+		</Record>
+		<Record>
+			<Id>10</Id>
+			<StartTime>2025-09-01 08:30:00</StartTime>
+			<LatestStartTime>2025-09-02 09:00:00</LatestStartTime>
+			<RunTime>0.00:00:00</RunTime>
+			<TotalCount>100000</TotalCount>
+			<RunCount>0</RunCount>
+			<Status>NotStarted</Status>
+		</Record>
+		<Record>
+			<Id>11</Id>
+			<StartTime>2025-09-01 08:30:00</StartTime>
+			<LatestStartTime>2025-09-02 09:00:00</LatestStartTime>
+			<RunTime>0.00:00:00</RunTime>
+			<TotalCount>100000</TotalCount>
+			<RunCount>0</RunCount>
+			<Status>NotStarted</Status>
+		</Record>
+		<Record>
+			<Id>12</Id>
+			<StartTime>2025-09-01 08:30:00</StartTime>
+			<LatestStartTime>2025-09-02 09:00:00</LatestStartTime>
+			<RunTime>0.00:00:00</RunTime>
+			<TotalCount>100000</TotalCount>
+			<RunCount>0</RunCount>
+			<Status>NotStarted</Status>
+		</Record>
+	</EpbRecords>
+
+
 	<!-- 液压是否参与：开关按液压编号整体控制（1 控 1~6；2 控 7~12） -->
 	<Hydraulics>
 		<Hydraulic>
 			<Id>1</Id>
 			<!-- <Enabled>true</Enabled> -->
-			<Enabled>true</Enabled>
+			<Enabled>false</Enabled>
 			<Mode>Either</Mode>
 			<!-- ByPressure / ByDuration / Either -->
 			<SetPercent>100</SetPercent>
@@ -53,63 +166,75 @@
 	<EpbCurrentLimits>
 		<Record>
 			<Channel>1</Channel>
-			<ForwardA>3</ForwardA>
+			<ForwardA>12</ForwardA>
 			<ReverseA>2</ReverseA>
+			<HoldMs>1000</HoldMs>
 		</Record>
 		<Record>
 			<Channel>2</Channel>
 			<ForwardA>9.0</ForwardA>
 			<ReverseA>6.0</ReverseA>
+			<HoldMs>1000</HoldMs>
 		</Record>
 		<Record>
 			<Channel>3</Channel>
 			<ForwardA>9.0</ForwardA>
 			<ReverseA>6.0</ReverseA>
+			<HoldMs>1000</HoldMs>
 		</Record>
 		<Record>
 			<Channel>4</Channel>
-			<ForwardA>9.0</ForwardA>
+			<ForwardA>13.0</ForwardA>
 			<ReverseA>6.0</ReverseA>
+			<HoldMs>1000</HoldMs>
 		</Record>
 		<Record>
 			<Channel>5</Channel>
 			<ForwardA>9.0</ForwardA>
 			<ReverseA>6.0</ReverseA>
+			<HoldMs>1000</HoldMs>
 		</Record>
 		<Record>
 			<Channel>6</Channel>
 			<ForwardA>9.0</ForwardA>
 			<ReverseA>6.0</ReverseA>
+			<HoldMs>1000</HoldMs>
 		</Record>
 		<Record>
 			<Channel>7</Channel>
 			<ForwardA>9.0</ForwardA>
 			<ReverseA>6.0</ReverseA>
+			<HoldMs>1000</HoldMs>
 		</Record>
 		<Record>
 			<Channel>8</Channel>
 			<ForwardA>9.0</ForwardA>
 			<ReverseA>6.0</ReverseA>
+			<HoldMs>1000</HoldMs>
 		</Record>
 		<Record>
 			<Channel>9</Channel>
 			<ForwardA>9.0</ForwardA>
 			<ReverseA>6.0</ReverseA>
+			<HoldMs>1000</HoldMs>
 		</Record>
 		<Record>
 			<Channel>10</Channel>
 			<ForwardA>9.0</ForwardA>
 			<ReverseA>6.0</ReverseA>
+			<HoldMs>1000</HoldMs>
 		</Record>
 		<Record>
 			<Channel>11</Channel>
 			<ForwardA>9.0</ForwardA>
 			<ReverseA>6.0</ReverseA>
+			<HoldMs>1000</HoldMs>
 		</Record>
 		<Record>
 			<Channel>12</Channel>
 			<ForwardA>9.0</ForwardA>
 			<ReverseA>6.0</ReverseA>
+			<HoldMs>1000</HoldMs>
 		</Record>
 		<!-- ... 直到 12 -->
 	</EpbCurrentLimits>
@@ -177,11 +302,25 @@
 
 		<!-- ③ 每通道覆写（仅填差异项即可） -->
 		<PerChannel>
-			<Record>
+			<!--<Record>
 				<Channel>1</Channel>
 				<PeakIgnoreMs>120</PeakIgnoreMs>
 				<EmptyBandA>0.25</EmptyBandA>
 				<LearnCycles>3</LearnCycles>
+			</Record>-->
+
+			<Record>
+				<Channel>1</Channel>
+
+				<!-- 空行程稳态电流（中心值） -->
+				<EmptyCurrentForwardA>0.60</EmptyCurrentForwardA>
+				<EmptyCurrentReverseA>-0.70</EmptyCurrentReverseA>
+
+				<!-- 结合噪声水平，略收窄带宽，降低误判；保留原先 120ms 的上电忽略 -->
+				<EmptyBandA>0.25</EmptyBandA>
+				<PeakIgnoreMs>120</PeakIgnoreMs>
+				<StableWinMs>60</StableWinMs>
+				<EwmaAlpha>0.20</EwmaAlpha>
 			</Record>
 			<Record>
 				<Channel>2</Channel>
@@ -189,9 +328,9 @@
 			</Record>
 			<!-- EPB3：正向≈ +1.20A；反向≈ -1.45A（噪声较大，带宽稍放宽） -->
 			<Record>
-				<Channel>3</Channel>				
+				<Channel>3</Channel>
 			</Record>
-			<!-- EPB4：正向≈ +1.15A；反向≈ -1.05A -->			
+			<!-- EPB4：正向≈ +1.15A；反向≈ -1.05A -->
 			<Record>
 				<Channel>4</Channel>
 				<EmptyCurrentForwardA>1.20</EmptyCurrentForwardA>
@@ -235,6 +374,4 @@
 			</Record>
 		</PerChannel>
 	</EpbCycleRunnerConfig>
-
-
 </TestConfig>

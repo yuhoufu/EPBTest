@@ -522,6 +522,14 @@ namespace MTEmbTest
                 #endregion
 
                 twoDeviceAiAcquirer.Start(); // 开始采集
+
+                // epb初始化
+                _epb = new EpbManager(
+                    _cfg,
+                    _do,
+                    _ao,
+                    twoDeviceAiAcquirer,
+                    logger);
             }
 
             catch (Exception ex)
@@ -899,10 +907,21 @@ namespace MTEmbTest
         /// </summary>
         /// <param name="sender"></param>
         /// <param name="e"></param>
-        private void toggleSwitch1_Toggled(object sender, EventArgs e)
+        private async void toggleSwitch1_Toggled(object sender, EventArgs e)
         {
             // 打开所有epb
-            for (var i = 0; i < 12; i++) _do.SetEpb(i + 1, toggleSwitch1.IsOn);
+            //for (var i = 0; i < 12; i++) _do.SetEpb(i + 1, toggleSwitch1.IsOn);
+
+            if (toggleSwitch1.IsOn)
+            {
+
+                 await _epb.StartChannelAsync(4);
+            }
+            else
+            {
+
+                 _epb.StopChannel(4);
+            }
 
             // 打开气缸测试
             // _ao.SetPercent("Cylinder1", 50); // => ~5V
@@ -1077,18 +1096,19 @@ namespace MTEmbTest
             try
             {
                 // 4) 组装 EpbManager（把回调委托接进去）
-                _epb = new EpbManager(
+                /*_epb = new EpbManager(
                     _cfg,
                     _do,
                     _ao,
                     twoDeviceAiAcquirer,
-                    logger);
+                    logger);*/
 
                 // 5) 启动“卡钳1”通道
                 //    StartChannel 内部会根据 Test.TestTarget 次数、PeriodMs 周期、Groups 错峰等自动循环
                 // _epb.StartChannel(2); //界面卡顿，注释
                 //await _epb.StartChannelAsync(2);
-                await _epb.StartChannelAsync(4);
+                await _epb.StartChannelAsync(1);
+                //await _epb.StartChannelAsync(4);
                 //await _epb.StartChannelAsync(5);
 
                 // UI 提示
@@ -1109,8 +1129,9 @@ namespace MTEmbTest
         {
             try
             {
-                _epb.StopChannel(2);
-                _epb.StopChannel(4);
+                _epb.StopChannel(1);
+                // _epb.StopChannel(4);
+                // _epb.StopChannel(4);
                // _epb.StopChannel(5);
             }
             catch (Exception ex)

@@ -547,7 +547,7 @@
             this.zedGraphControl1.IsEnableVZoom = false;
             this.zedGraphControl1.IsEnableWheelZoom = false;
             this.zedGraphControl1.Location = new System.Drawing.Point(32767, 32767);
-            this.zedGraphControl1.Margin = new System.Windows.Forms.Padding(11238512, 48824632, 11238512, 48824632);
+            this.zedGraphControl1.Margin = new System.Windows.Forms.Padding(26639438, 126924976, 26639438, 126924976);
             this.zedGraphControl1.Name = "zedGraphControl1";
             this.zedGraphControl1.ScrollGrace = 0D;
             this.zedGraphControl1.ScrollMaxX = 0D;
@@ -1180,8 +1180,8 @@
             this.zedGraphControl2.IsEnableHZoom = false;
             this.zedGraphControl2.IsEnableVZoom = false;
             this.zedGraphControl2.IsEnableWheelZoom = false;
-            this.zedGraphControl2.Location = new System.Drawing.Point(496, 715);
-            this.zedGraphControl2.Margin = new System.Windows.Forms.Padding(476, 705, 476, 705);
+            this.zedGraphControl2.Location = new System.Drawing.Point(655, 979);
+            this.zedGraphControl2.Margin = new System.Windows.Forms.Padding(635, 969, 635, 969);
             this.zedGraphControl2.Name = "zedGraphControl2";
             this.zedGraphControl2.ScrollGrace = 0D;
             this.zedGraphControl2.ScrollMaxX = 0D;
@@ -2042,8 +2042,8 @@
             this.zedGraphControl3.IsEnableHZoom = false;
             this.zedGraphControl3.IsEnableVZoom = false;
             this.zedGraphControl3.IsEnableWheelZoom = false;
-            this.zedGraphControl3.Location = new System.Drawing.Point(496, 715);
-            this.zedGraphControl3.Margin = new System.Windows.Forms.Padding(476, 705, 476, 705);
+            this.zedGraphControl3.Location = new System.Drawing.Point(655, 979);
+            this.zedGraphControl3.Margin = new System.Windows.Forms.Padding(635, 969, 635, 969);
             this.zedGraphControl3.Name = "zedGraphControl3";
             this.zedGraphControl3.ScrollGrace = 0D;
             this.zedGraphControl3.ScrollMaxX = 0D;
@@ -2682,7 +2682,7 @@
             this.uiTableLayoutPanel15.ColumnCount = 3;
             this.uiTableLayoutPanel15.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 44.07583F));
             this.uiTableLayoutPanel15.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 55.92417F));
-            this.uiTableLayoutPanel15.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 211F));
+            this.uiTableLayoutPanel15.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 215F));
             this.uiTableLayoutPanel15.Controls.Add(this.uiLight3, 2, 3);
             this.uiTableLayoutPanel15.Controls.Add(this.uiLabel58, 0, 2);
             this.uiTableLayoutPanel15.Controls.Add(this.uiLabel57, 0, 1);
@@ -2713,7 +2713,7 @@
             this.uiLight3.CenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
             this.uiLight3.Font = new System.Drawing.Font("宋体", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
             this.uiLight3.Interval = 2000;
-            this.uiLight3.Location = new System.Drawing.Point(796, 524);
+            this.uiLight3.Location = new System.Drawing.Point(794, 524);
             this.uiLight3.Margin = new System.Windows.Forms.Padding(12, 4, 4, 4);
             this.uiLight3.MinimumSize = new System.Drawing.Size(2, 2);
             this.uiLight3.Name = "uiLight3";
@@ -2734,7 +2734,7 @@
             this.uiLabel58.Location = new System.Drawing.Point(4, 324);
             this.uiLabel58.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
             this.uiLabel58.Name = "uiLabel58";
-            this.uiLabel58.Size = new System.Drawing.Size(315, 162);
+            this.uiLabel58.Size = new System.Drawing.Size(314, 162);
             this.uiLabel58.TabIndex = 45;
             this.uiLabel58.Text = "剩余次数";
             this.uiLabel58.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -2747,7 +2747,7 @@
             this.uiLabel57.Location = new System.Drawing.Point(4, 162);
             this.uiLabel57.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
             this.uiLabel57.Name = "uiLabel57";
-            this.uiLabel57.Size = new System.Drawing.Size(315, 162);
+            this.uiLabel57.Size = new System.Drawing.Size(314, 162);
             this.uiLabel57.TabIndex = 44;
             this.uiLabel57.Text = "完成次数";
             this.uiLabel57.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -2760,7 +2760,7 @@
             this.uiLabel56.Location = new System.Drawing.Point(4, 0);
             this.uiLabel56.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
             this.uiLabel56.Name = "uiLabel56";
-            this.uiLabel56.Size = new System.Drawing.Size(315, 162);
+            this.uiLabel56.Size = new System.Drawing.Size(314, 162);
             this.uiLabel56.TabIndex = 43;
             this.uiLabel56.Text = "运行时间";
             this.uiLabel56.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
@@ -2775,14 +2775,14 @@
             this.uiTableLayoutPanel23.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
             this.uiTableLayoutPanel23.Controls.Add(this.LedRunCycles, 1, 1);
             this.uiTableLayoutPanel23.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel23.Location = new System.Drawing.Point(327, 166);
+            this.uiTableLayoutPanel23.Location = new System.Drawing.Point(326, 166);
             this.uiTableLayoutPanel23.Margin = new System.Windows.Forms.Padding(4);
             this.uiTableLayoutPanel23.Name = "uiTableLayoutPanel23";
             this.uiTableLayoutPanel23.RowCount = 3;
             this.uiTableLayoutPanel23.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
             this.uiTableLayoutPanel23.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 90F));
             this.uiTableLayoutPanel23.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
-            this.uiTableLayoutPanel23.Size = new System.Drawing.Size(615, 154);
+            this.uiTableLayoutPanel23.Size = new System.Drawing.Size(616, 154);
             this.uiTableLayoutPanel23.TabIndex = 38;
             this.uiTableLayoutPanel23.TagString = null;
             // 
@@ -2817,14 +2817,14 @@
             this.uiTableLayoutPanel32.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
             this.uiTableLayoutPanel32.Controls.Add(this.LedRunTime, 1, 1);
             this.uiTableLayoutPanel32.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel32.Location = new System.Drawing.Point(327, 4);
+            this.uiTableLayoutPanel32.Location = new System.Drawing.Point(326, 4);
             this.uiTableLayoutPanel32.Margin = new System.Windows.Forms.Padding(4);
             this.uiTableLayoutPanel32.Name = "uiTableLayoutPanel32";
             this.uiTableLayoutPanel32.RowCount = 3;
             this.uiTableLayoutPanel32.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
             this.uiTableLayoutPanel32.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 90F));
             this.uiTableLayoutPanel32.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
-            this.uiTableLayoutPanel32.Size = new System.Drawing.Size(615, 154);
+            this.uiTableLayoutPanel32.Size = new System.Drawing.Size(616, 154);
             this.uiTableLayoutPanel32.TabIndex = 37;
             this.uiTableLayoutPanel32.TagString = null;
             // 
@@ -2842,7 +2842,7 @@
             this.LedRunTime.IntervalOn = 1;
             this.LedRunTime.IntervalV = 0;
             this.LedRunTime.LedBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
-            this.LedRunTime.Location = new System.Drawing.Point(238, 67);
+            this.LedRunTime.Location = new System.Drawing.Point(239, 67);
             this.LedRunTime.Margin = new System.Windows.Forms.Padding(4);
             this.LedRunTime.Name = "LedRunTime";
             this.LedRunTime.Size = new System.Drawing.Size(137, 17);
@@ -2859,14 +2859,14 @@
             this.uiTableLayoutPanel41.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2F));
             this.uiTableLayoutPanel41.Controls.Add(this.LedLastCycles, 1, 1);
             this.uiTableLayoutPanel41.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel41.Location = new System.Drawing.Point(327, 328);
+            this.uiTableLayoutPanel41.Location = new System.Drawing.Point(326, 328);
             this.uiTableLayoutPanel41.Margin = new System.Windows.Forms.Padding(4);
             this.uiTableLayoutPanel41.Name = "uiTableLayoutPanel41";
             this.uiTableLayoutPanel41.RowCount = 3;
             this.uiTableLayoutPanel41.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
             this.uiTableLayoutPanel41.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 90F));
             this.uiTableLayoutPanel41.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 5F));
-            this.uiTableLayoutPanel41.Size = new System.Drawing.Size(615, 154);
+            this.uiTableLayoutPanel41.Size = new System.Drawing.Size(616, 154);
             this.uiTableLayoutPanel41.TabIndex = 39;
             this.uiTableLayoutPanel41.TagString = null;
             // 
@@ -2901,7 +2901,7 @@
             this.ProcBar.Margin = new System.Windows.Forms.Padding(4);
             this.ProcBar.MinimumSize = new System.Drawing.Size(4, 4);
             this.ProcBar.Name = "ProcBar";
-            this.ProcBar.Size = new System.Drawing.Size(726, 154);
+            this.ProcBar.Size = new System.Drawing.Size(722, 154);
             this.ProcBar.Style = Sunny.UI.UIStyle.Custom;
             this.ProcBar.TabIndex = 41;
             this.ProcBar.Text = "uiProcessBar1";

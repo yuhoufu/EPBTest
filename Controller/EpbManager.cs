@@ -212,7 +212,7 @@ namespace Controller
                 _log.Info($"EPB[{channel}] 启动前自学习 {learnCycles} 次。", "EPB");
                 try
                 {
-                    runner.LearnAsync(learnCycles, new CancellationToken())
+                    runner.LearnAsync(learnCycles, new CancellationToken(), periodMs)
                         .GetAwaiter().GetResult();
                     _log.Info($"EPB[{channel}] 自学习完成，进入正式试验。", "EPB");
                 }
@@ -256,7 +256,9 @@ namespace Controller
             var forwardA = GetProp<double>(limitRecord, "ForwardA", "PosCurrentA", "PosThresholdA",
                 "ForwardThresholdA");
             var holdMs = GetProp<int>(limitRecord, "HoldMs", "HoldTimeMs", "HoldDurationMs");
-            holdMs = 1000; // 设置为 1000ms（1秒），可根据实际需要调整，调试使用
+            
+            // 如果 holdMs 为 null、0 或无效值，则设置为默认值 1000ms
+            holdMs = (holdMs <= 0) ? 1000 : holdMs;  // 设置为 1000ms（1秒），可根据实际需要调整，调试使用
 
             var staggerMs = 0;
             foreach (var g in _cfg.Test.Groups)
@@ -301,7 +303,7 @@ namespace Controller
                 _log.Info($"EPB[{channel}] 启动前自学习 {learnCycles} 次。", "EPB");
                 try
                 {
-                    await runner.LearnAsync(learnCycles, uiToken).ConfigureAwait(false);
+                    await runner.LearnAsync(learnCycles, uiToken, periodMs).ConfigureAwait(false);
                     _log.Info($"EPB[{channel}] 自学习完成，进入正式试验。", "EPB");
                 }
                 catch (OperationCanceledException)
