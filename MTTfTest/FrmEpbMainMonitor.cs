@@ -440,6 +440,11 @@ namespace MTEmbTest
                 //给处理序号和通道号字典赋值
 
 
+                // 1) 加载全局配置（AO/DO/Test）
+                _cfg = ConfigLoader.LoadAll($@"{Environment.CurrentDirectory}\Config", logger);
+
+
+
                 LoadEmbControler();
 
                 // 初始化曲线
@@ -468,9 +473,7 @@ namespace MTEmbTest
                 // } // 已更改，暂时注释 2025/08/20
 
 
-                // 1) 加载全局配置（AO/DO/Test）
-                _cfg = ConfigLoader.LoadAll($@"{Environment.CurrentDirectory}\Config", logger);
-
+                
 
                 // 2) 初始化 DO 控制器
                 _do = new DoController(_cfg.DO, logger);
@@ -1027,7 +1030,7 @@ namespace MTEmbTest
                 if (p1 != null && _chData[p1.GlobalIndex].Count > 0)
                 {
                     var v = _chData[p1.GlobalIndex][_chData[p1.GlobalIndex].Count - 1].Y;
-                    textEditP1.Text = $@"{v:F2} A";
+                    textEditP1.Text = $@"{v:F0} bar";
                 }
 
 
@@ -1829,7 +1832,10 @@ namespace MTEmbTest
                 // —— 关掉抗锯齿，减少 CPU 消耗 —— //
                 zedGraphRealChart.IsAntiAlias = false;
 
-
+                // 设置曲线的应该的固定宽度为周期的4倍
+                // ReSharper disable once PossibleLossOfFraction
+                _fixedXWindowSec = _cfg.Test.PeriodMs / 1000 * 2;
+                
                 // 曲线应用固定宽度（若未显式设置，则用 ClsGlobal.XDuration）
                 SetXWindowSeconds(_fixedXWindowSec > 0 ? _fixedXWindowSec : ClsGlobal.XDuration);
 
