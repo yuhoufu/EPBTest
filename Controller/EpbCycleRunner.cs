@@ -191,13 +191,13 @@ namespace Controller
 
                 // 0) 液压（可选），其用时从总周期中扣除
                 var swHyd = Stopwatch.StartNew();
-                var hydOk = await _hydraulic.RunOnceAsync(_hydId, token);
+                //var hydOk = await _hydraulic.RunOnceAsync(_hydId, token); // 自学习暂时不做液压
                 var hydUsed = (int)swHyd.ElapsedMilliseconds; // 可能为 0（未启用）
-                if (!hydOk)
+                /*if (!hydOk) // 自学习暂时不做液压
                 {
                     _log.Warn($"EPB[{_channel}] 学习第{k + 1}轮：液压未达成，跳过。", "EPB");
                     continue;
-                }
+                }*/
 
                 // 分配给电控段的预算
                 var elecBudgetMs = Math.Max(0, (int)targetPeriodMs - hydUsed);
@@ -501,6 +501,10 @@ namespace Controller
                 var plan7 = (int)Math.Floor(flexEst * R_REV_EMPTY);
                 var plan8 = Math.Max(0, flexEst - plan1 - plan3 - plan7); // 剩余给尾段收口
 
+
+
+                // —— 接入点 #1：上电之前 —— //
+                await _manager?.HydraulicEnterAsync(_channel, token);
                 // ===================== ① 头部未上电 =====================
                 // （真正上电前调用“液压协调器：进入电控阶段”）
                 if (plan1 > 0)
@@ -509,8 +513,10 @@ namespace Controller
                     await Task.Delay(plan1, token);
                 }
 
-                // —— 接入点 #1：上电之前 —— //
-                await _manager?.HydraulicEnterAsync(_channel, token);
+               
+
+                // 延时4s后开始上电
+                await Task.Delay(4000- plan1, token);
 
                 var tElecStart = NowTicks(); // 用于⑧尾段收口
 
