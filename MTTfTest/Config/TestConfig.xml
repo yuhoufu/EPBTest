@@ -168,7 +168,7 @@
 			<Channel>1</Channel>
 			<ForwardA>12</ForwardA>
 			<ReverseA>2</ReverseA>
-			<HoldMs>1000</HoldMs>
+			<HoldMs>3000</HoldMs>
 		</Record>
 		<Record>
 			<Channel>2</Channel>

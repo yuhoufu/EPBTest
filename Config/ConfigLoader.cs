@@ -389,6 +389,7 @@ public static class ConfigLoader
         cfg.TestTarget = (int)GetDouble(doc, "//TestConfig/Basic/TestTarget", 1);
         cfg.TestCycleHz = GetDouble(doc, "//TestConfig/Basic/TestCycle", 10); // Hz
         cfg.StoreDir = GetString(doc, "//TestConfig/Basic/StoreDir", "D:\\EPB_Data");
+        
 
         var policyText = GetString(doc, "//TestConfig/Timer/OverrunPolicy", "RunToCompletionSkipMissed");
         if (!Enum.TryParse(policyText, out OverrunPolicy pol)) pol = OverrunPolicy.RunToCompletionSkipMissed;
@@ -420,7 +421,8 @@ public static class ConfigLoader
             {
                 Channel = GetInt(n, "Channel", -1),
                 ForwardA = GetDouble(n, "ForwardA", 0),
-                ReverseA = GetDouble(n, "ReverseA", 0)
+                ReverseA = GetDouble(n, "ReverseA", 0),
+                HoldMs = GetInt(n, "HoldMs", 0)
             });
 
         foreach (XmlNode n in doc.SelectNodes("//TestConfig/ElectricalGroups/Group"))

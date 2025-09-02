@@ -1,0 +1,326 @@
+VERSION ""
+
+
+NS_ : 
+	NS_DESC_
+	CM_
+	BA_DEF_
+	BA_
+	VAL_
+	CAT_DEF_
+	CAT_
+	FILTER
+	BA_DEF_DEF_
+	EV_DATA_
+	ENVVAR_DATA_
+	SGTYPE_
+	SGTYPE_VAL_
+	BA_DEF_SGTYPE_
+	BA_SGTYPE_
+	SIG_TYPE_REF_
+	VAL_TABLE_
+	SIG_GROUP_
+	SIG_VALTYPE_
+	SIGTYPE_VALTYPE_
+	BO_TX_BU_
+	BA_DEF_REL_
+	BA_REL_
+	BA_DEF_DEF_REL_
+	BU_SG_REL_
+	BU_EV_REL_
+	BU_BO_REL_
+	SG_MUL_VAL_
+
+BS_:
+
+BU_: WIUFL WIUFR WIURL WIURR
+VAL_TABLE_ controlable 15 "FL,FR,RL,RR可用" 14 "FL,FR,RL可用,RR不可用" 13 "FL,RL,RR可用,FR不可用" 12 "FL,FR可用,RL,RR不可用" 11 "FL,RL,RR可用,FR不可用" 10 "FL,RL可用,FR,RR不可用" 9 "FL,RR可用,FR,RL不可用" 8 "FL可用,FR,RL,RR不可用" 7 "FR,RL,RR可用,FL不可用" 6 "FR,RL可用,FL,RR不可用" 5 "FR,RR可用,FL,RL不可用" 4 "FR可用,FL,RL,RR不可用" 3 "RL,RR可用,FL,FR不可用" 2 "RL可用,FL,FR,RR不可用" 1 "RR可用,FL,FR,RL不可用" 0 "FL,FR,RL,RR均不可用" ;
+
+
+BO_ 1552 WIU_TestBench_Mot2ReqCmdRR_Debug: 16 WIURR
+ SG_ wiu_testBench2_setPoint_dcVolCmd : 0|10@1- (0.1,0) [-51.2|51.1] "" Vector__XXX
+ SG_ wiu_testBench2_setPoint_trqSlop : 64|8@1+ (1,0) [0|255] "Nm/s" Vector__XXX
+ SG_ wiu_testBench2_setPoint_trqCmd : 48|10@1- (0.01,0) [-5.12|5.11] "" Vector__XXX
+ SG_ wiu_testBench2_setPoint_spdSlop : 32|16@1+ (1,0) [0|65535] "rpm/s" Vector__XXX
+ SG_ wiu_testBench2_setPoint_SpdCmd : 16|16@1- (0.5,0) [0|0] "" Vector__XXX
+ SG_ wiu_testBench2_setPoint_opMod : 11|2@1+ (1,0) [0|3] "" Vector__XXX
+ SG_ wiu_testBench2_setPoint_enable : 10|1@1+ (1,0) [0|1] "" Vector__XXX
+
+BO_ 1548 WIU_TestBench_Mot2ReqCmdRL_Debug: 16 WIURL
+ SG_ wiu_testBench2_setPoint_dcVolCmd : 0|10@1- (0.1,0) [-51.2|51.1] "" Vector__XXX
+ SG_ wiu_testBench2_setPoint_trqSlop : 64|8@1+ (1,0) [0|255] "Nm/s" Vector__XXX
+ SG_ wiu_testBench2_setPoint_trqCmd : 48|10@1- (0.01,0) [-5.12|5.11] "" Vector__XXX
+ SG_ wiu_testBench2_setPoint_spdSlop : 32|16@1+ (1,0) [0|65535] "rpm/s" Vector__XXX
+ SG_ wiu_testBench2_setPoint_SpdCmd : 16|16@1- (0.5,0) [0|0] "" Vector__XXX
+ SG_ wiu_testBench2_setPoint_opMod : 11|2@1+ (1,0) [0|3] "" Vector__XXX
+ SG_ wiu_testBench2_setPoint_enable : 10|1@1+ (1,0) [0|1] "" Vector__XXX
+
+BO_ 1544 WIU_TestBench_Mot2ReqCmdFR_Debug: 16 WIUFR
+ SG_ wiu_testBench2_setPoint_dcVolCmd : 0|10@1- (0.1,0) [-51.2|51.1] "" Vector__XXX
+ SG_ wiu_testBench2_setPoint_trqSlop : 64|8@1+ (1,0) [0|255] "Nm/s" Vector__XXX
+ SG_ wiu_testBench2_setPoint_trqCmd : 48|10@1- (0.01,0) [-5.12|5.11] "" Vector__XXX
+ SG_ wiu_testBench2_setPoint_spdSlop : 32|16@1+ (1,0) [0|65535] "rpm/s" Vector__XXX
+ SG_ wiu_testBench2_setPoint_SpdCmd : 16|16@1- (0.5,0) [0|0] "" Vector__XXX
+ SG_ wiu_testBench2_setPoint_opMod : 11|2@1+ (1,0) [0|3] "" Vector__XXX
+ SG_ wiu_testBench2_setPoint_enable : 10|1@1+ (1,0) [0|1] "" Vector__XXX
+
+BO_ 1551 WIU_TestBench_Mot1ReqCmdRR_Debug: 16 WIURR
+ SG_ wiu_testBench1_setPoint_trqSlop : 64|8@1+ (1,0) [0|255] "Nm/s" Vector__XXX
+ SG_ wiu_testBench1_setPoint_trqCmd : 48|10@1- (0.01,0) [-5.12|5.11] "" Vector__XXX
+ SG_ wiu_testBench1_setPoint_spdSlop : 32|16@1+ (1,0) [0|65535] "rpm/s" Vector__XXX
+ SG_ wiu_testBench1_setPoint_SpdCmd : 16|16@1- (0.5,0) [0|0] "" Vector__XXX
+ SG_ wiu_testBench1_setPoint_opMod : 11|2@1+ (1,0) [0|3] "" Vector__XXX
+ SG_ wiu_testBench1_setPoint_enable : 10|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ wiu_testBench1_setPoint_dcVolCmd : 0|10@1- (0.1,0) [-51.2|51.1] "" Vector__XXX
+
+BO_ 1547 WIU_TestBench_Mot1ReqCmdRL_Debug: 16 WIURL
+ SG_ wiu_testBench1_setPoint_trqSlop : 64|8@1+ (1,0) [0|255] "Nm/s" Vector__XXX
+ SG_ wiu_testBench1_setPoint_trqCmd : 48|10@1- (0.01,0) [-5.12|5.11] "" Vector__XXX
+ SG_ wiu_testBench1_setPoint_spdSlop : 32|16@1+ (1,0) [0|65535] "rpm/s" Vector__XXX
+ SG_ wiu_testBench1_setPoint_SpdCmd : 16|16@1- (0.5,0) [0|0] "" Vector__XXX
+ SG_ wiu_testBench1_setPoint_opMod : 11|2@1+ (1,0) [0|3] "" Vector__XXX
+ SG_ wiu_testBench1_setPoint_enable : 10|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ wiu_testBench1_setPoint_dcVolCmd : 0|10@1- (0.1,0) [-51.2|51.1] "" Vector__XXX
+
+BO_ 1543 WIU_TestBench_Mot1ReqCmdFR_Debug: 16 WIUFR
+ SG_ wiu_testBench1_setPoint_trqSlop : 64|8@1+ (1,0) [0|255] "Nm/s" Vector__XXX
+ SG_ wiu_testBench1_setPoint_trqCmd : 48|10@1- (0.01,0) [-5.12|5.11] "" Vector__XXX
+ SG_ wiu_testBench1_setPoint_spdSlop : 32|16@1+ (1,0) [0|65535] "rpm/s" Vector__XXX
+ SG_ wiu_testBench1_setPoint_SpdCmd : 16|16@1- (0.5,0) [0|0] "" Vector__XXX
+ SG_ wiu_testBench1_setPoint_opMod : 11|2@1+ (1,0) [0|3] "" Vector__XXX
+ SG_ wiu_testBench1_setPoint_enable : 10|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ wiu_testBench1_setPoint_dcVolCmd : 0|10@1- (0.1,0) [-51.2|51.1] "" Vector__XXX
+
+BO_ 1550 WIU_TestBench_monInfos_RR_Debug: 20 WIURR
+ SG_ wiu_testBench_apbFeedback : 72|4@1+ (1,0) [0|15] "" Vector__XXX
+ SG_ wiu_testBench_clampForceSnsr : 144|14@1+ (4,0) [0|65532] "" Vector__XXX
+ SG_ wiu_testBench_iwRms : 136|7@1+ (1,0) [0|127] "" Vector__XXX
+ SG_ wiu_testBench_ivRms : 128|7@1+ (1,0) [0|127] "" Vector__XXX
+ SG_ wiu_testBench_iuRms : 120|7@1+ (1,0) [0|127] "" Vector__XXX
+ SG_ wiu_testBench_emTemp : 112|8@1+ (1,-50) [-50|205] "" Vector__XXX
+ SG_ wiu_testBench_mosTemp : 104|8@1+ (1,-50) [-50|205] "" Vector__XXX
+ SG_ wiu_testBench_operationMod : 57|4@1+ (1,0) [0|15] "" Vector__XXX
+ SG_ wiu_testBench_faultFlg : 15|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ wiu_testBench_errorcode : 96|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ wiu_testBench_dcVoltage : 64|8@1+ (0.1,0) [0|25.5] "" Vector__XXX
+ SG_ wiu_testBench_dcCurrent : 80|8@1+ (0.4,0) [0|102] "" Vector__XXX
+ SG_ wiu_testBench_actTorque : 48|9@1- (0.01,0) [-2.56|2.55] "" Vector__XXX
+ SG_ wiu_testBench_actSpeed : 32|16@1- (0.5,0) [-16384|16383.5] "rpm" Vector__XXX
+ SG_ wiu_testBench_actPosition : 16|13@1+ (0.1,-200) [-200|619.1] "" Vector__XXX
+ SG_ wiu_testBench_actClampForce : 0|15@1- (4,0) [-65536|65532] "" Vector__XXX
+
+BO_ 1546 WIU_TestBench_monInfos_RL_Debug: 20 WIURL
+ SG_ wiu_testBench_apbFeedback : 72|4@1+ (1,0) [0|15] "" Vector__XXX
+ SG_ wiu_testBench_clampForceSnsr : 144|14@1+ (4,0) [0|65532] "" Vector__XXX
+ SG_ wiu_testBench_iwRms : 136|7@1+ (1,0) [0|127] "" Vector__XXX
+ SG_ wiu_testBench_ivRms : 128|7@1+ (1,0) [0|127] "" Vector__XXX
+ SG_ wiu_testBench_iuRms : 120|7@1+ (1,0) [0|127] "" Vector__XXX
+ SG_ wiu_testBench_emTemp : 112|8@1+ (1,-50) [-50|205] "" Vector__XXX
+ SG_ wiu_testBench_mosTemp : 104|8@1+ (1,-50) [-50|205] "" Vector__XXX
+ SG_ wiu_testBench_operationMod : 57|4@1+ (1,0) [0|15] "" Vector__XXX
+ SG_ wiu_testBench_faultFlg : 15|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ wiu_testBench_errorcode : 96|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ wiu_testBench_dcVoltage : 64|8@1+ (0.1,0) [0|25.5] "" Vector__XXX
+ SG_ wiu_testBench_dcCurrent : 80|8@1+ (0.4,0) [0|102] "" Vector__XXX
+ SG_ wiu_testBench_actTorque : 48|9@1- (0.01,0) [-2.56|2.55] "" Vector__XXX
+ SG_ wiu_testBench_actSpeed : 32|16@1- (0.5,0) [-16384|16383.5] "rpm" Vector__XXX
+ SG_ wiu_testBench_actPosition : 16|13@1+ (0.1,-200) [-200|619.1] "" Vector__XXX
+ SG_ wiu_testBench_actClampForce : 0|15@1- (4,0) [-65536|65532] "" Vector__XXX
+
+BO_ 1549 WIU_TestBench_ReqCmd_RR_Debug: 16 Vector__XXX
+ SG_ testBench_enable : 87|1@1+ (1,0) [0|1] ""  WIURR
+ SG_ testBench_epbClampForceReq : 72|15@1+ (2,0) [0|65000] ""  WIURR
+ SG_ testBench_normalMode : 68|4@1+ (1,0) [0|15] ""  WIURR
+ SG_ testBench_operationMod_Req : 64|4@1+ (1,0) [0|15] ""  WIURR
+ SG_ testBench_setPoint_speed : 16|16@1- (0.5,0) [-16384|16383.5] "rpm"  WIURR
+ SG_ testBench_setPoint_position : 32|16@1- (0.1,0) [-3276.8|3276.7] "erad"  WIURR
+ SG_ testBench_setPoint_clampForce : 48|16@1- (2,0) [-65536|65534] "N"  WIURR
+ SG_ testBench_setPoint_torque : 0|16@1- (0.001,0) [-32.768|32.767] "Nm"  WIURR
+
+BO_ 1545 WIU_TestBench_ReqCmd_RL_Debug: 16 Vector__XXX
+ SG_ testBench_enable : 87|1@1+ (1,0) [0|1] ""  WIURL
+ SG_ testBench_epbClampForceReq : 72|15@1+ (2,0) [0|65000] ""  WIURL
+ SG_ testBench_normalMode : 68|4@1+ (1,0) [0|15] ""  WIURL
+ SG_ testBench_operationMod_Req : 64|4@1+ (1,0) [0|15] ""  WIURL
+ SG_ testBench_setPoint_speed : 16|16@1- (0.5,0) [-16384|16383.5] "rpm"  WIURL
+ SG_ testBench_setPoint_position : 32|16@1- (0.1,0) [-3276.8|3276.7] "erad"  WIURL
+ SG_ testBench_setPoint_clampForce : 48|16@1- (2,0) [-65536|65534] "N"  WIURL
+ SG_ testBench_setPoint_torque : 0|16@1- (0.001,0) [-32.768|32.767] "Nm"  WIURL
+
+BO_ 1541 WIU_TestBench_ReqCmd_FR_Debug: 16 Vector__XXX
+ SG_ testBench_enable : 87|1@1+ (1,0) [0|1] ""  WIUFR
+ SG_ testBench_epbClampForceReq : 72|15@1+ (2,0) [0|65000] ""  WIUFR
+ SG_ testBench_normalMode : 68|4@1+ (1,0) [0|15] ""  WIUFR
+ SG_ testBench_operationMod_Req : 64|4@1+ (1,0) [0|15] ""  WIUFR
+ SG_ testBench_setPoint_speed : 16|16@1- (0.5,0) [-16384|16383.5] "rpm"  WIUFR
+ SG_ testBench_setPoint_position : 32|16@1- (0.1,0) [-3276.8|3276.7] "erad"  WIUFR
+ SG_ testBench_setPoint_clampForce : 48|16@1- (2,0) [-65536|65534] "N"  WIUFR
+ SG_ testBench_setPoint_torque : 0|16@1- (0.001,0) [-32.768|32.767] "Nm"  WIUFR
+
+BO_ 1542 WIU_TestBench_monInfos_FR_Debug: 20 WIUFR
+ SG_ wiu_testBench_apbFeedback : 72|4@1+ (1,0) [0|15] "" Vector__XXX
+ SG_ wiu_testBench_clampForceSnsr : 144|14@1+ (4,0) [0|65532] "" Vector__XXX
+ SG_ wiu_testBench_iwRms : 136|7@1+ (1,0) [0|127] "" Vector__XXX
+ SG_ wiu_testBench_ivRms : 128|7@1+ (1,0) [0|127] "" Vector__XXX
+ SG_ wiu_testBench_iuRms : 120|7@1+ (1,0) [0|127] "" Vector__XXX
+ SG_ wiu_testBench_emTemp : 112|8@1+ (1,-50) [-50|205] "" Vector__XXX
+ SG_ wiu_testBench_mosTemp : 104|8@1+ (1,-50) [-50|205] "" Vector__XXX
+ SG_ wiu_testBench_operationMod : 57|4@1+ (1,0) [0|15] "" Vector__XXX
+ SG_ wiu_testBench_faultFlg : 15|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ wiu_testBench_errorcode : 96|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ wiu_testBench_dcVoltage : 64|8@1+ (0.1,0) [0|25.5] "" Vector__XXX
+ SG_ wiu_testBench_dcCurrent : 80|8@1+ (0.4,0) [0|102] "" Vector__XXX
+ SG_ wiu_testBench_actTorque : 48|9@1- (0.01,0) [-2.56|2.55] "" Vector__XXX
+ SG_ wiu_testBench_actSpeed : 32|16@1- (0.5,0) [-16384|16383.5] "rpm" Vector__XXX
+ SG_ wiu_testBench_actPosition : 16|13@1+ (0.1,-200) [-200|619.1] "" Vector__XXX
+ SG_ wiu_testBench_actClampForce : 0|15@1- (4,0) [-65536|65532] "" Vector__XXX
+
+BO_ 1540 WIU_TestBench_Mot2ReqCmdFL_Debug: 16 WIUFL
+ SG_ wiu_testBench2_setPoint_dcVolCmd : 0|10@1- (0.1,0) [-51.2|51.1] "" Vector__XXX
+ SG_ wiu_testBench2_setPoint_trqSlop : 64|8@1+ (1,0) [0|255] "Nm/s" Vector__XXX
+ SG_ wiu_testBench2_setPoint_trqCmd : 48|10@1- (0.01,0) [-5.12|5.11] "" Vector__XXX
+ SG_ wiu_testBench2_setPoint_spdSlop : 32|16@1+ (1,0) [0|65535] "rpm/s" Vector__XXX
+ SG_ wiu_testBench2_setPoint_SpdCmd : 16|16@1- (0.5,0) [0|0] "" Vector__XXX
+ SG_ wiu_testBench2_setPoint_opMod : 11|2@1+ (1,0) [0|3] "" Vector__XXX
+ SG_ wiu_testBench2_setPoint_enable : 10|1@1+ (1,0) [0|1] "" Vector__XXX
+
+BO_ 1539 WIU_TestBench_Mot1ReqCmdFL_Debug: 16 WIUFL
+ SG_ wiu_testBench1_setPoint_trqSlop : 64|8@1+ (1,0) [0|255] "Nm/s" Vector__XXX
+ SG_ wiu_testBench1_setPoint_trqCmd : 48|10@1- (0.01,0) [-5.12|5.11] "" Vector__XXX
+ SG_ wiu_testBench1_setPoint_spdSlop : 32|16@1+ (1,0) [0|65535] "rpm/s" Vector__XXX
+ SG_ wiu_testBench1_setPoint_SpdCmd : 16|16@1- (0.5,0) [0|0] "" Vector__XXX
+ SG_ wiu_testBench1_setPoint_opMod : 11|2@1+ (1,0) [0|3] "" Vector__XXX
+ SG_ wiu_testBench1_setPoint_enable : 10|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ wiu_testBench1_setPoint_dcVolCmd : 0|10@1- (0.1,0) [-51.2|51.1] "" Vector__XXX
+
+BO_ 1538 WIU_TestBench_monInfos_FL_Debug: 20 WIUFL
+ SG_ wiu_testBench_apbFeedback : 72|4@1+ (1,0) [0|15] "" Vector__XXX
+ SG_ wiu_testBench_iwRms : 136|7@1+ (1,0) [0|127] "" Vector__XXX
+ SG_ wiu_testBench_ivRms : 128|7@1+ (1,0) [0|127] "" Vector__XXX
+ SG_ wiu_testBench_iuRms : 120|7@1+ (1,0) [0|127] "" Vector__XXX
+ SG_ wiu_testBench_clampForceSnsr : 144|14@1+ (4,0) [0|65532] "" Vector__XXX
+ SG_ wiu_testBench_emTemp : 112|8@1+ (1,-50) [-50|205] "" Vector__XXX
+ SG_ wiu_testBench_mosTemp : 104|8@1+ (1,-50) [-50|205] "" Vector__XXX
+ SG_ wiu_testBench_operationMod : 57|4@1+ (1,0) [0|15] "" Vector__XXX
+ SG_ wiu_testBench_faultFlg : 15|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ wiu_testBench_errorcode : 96|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ wiu_testBench_dcVoltage : 64|8@1+ (0.1,0) [0|25.5] "" Vector__XXX
+ SG_ wiu_testBench_dcCurrent : 80|8@1+ (0.4,0) [0|102] "" Vector__XXX
+ SG_ wiu_testBench_actTorque : 48|9@1- (0.01,0) [-2.56|2.55] "" Vector__XXX
+ SG_ wiu_testBench_actSpeed : 32|16@1- (0.5,0) [-16384|16383.5] "rpm" Vector__XXX
+ SG_ wiu_testBench_actPosition : 16|13@1+ (0.1,-200) [-200|619.1] "" Vector__XXX
+ SG_ wiu_testBench_actClampForce : 0|15@1- (4,0) [-65536|65532] "" Vector__XXX
+
+BO_ 1537 WIU_TestBench_ReqCmd_FL_Debug: 16 Vector__XXX
+ SG_ testBench_enable : 87|1@1+ (1,0) [0|1] ""  WIUFL
+ SG_ testBench_epbClampForceReq : 72|15@1+ (2,0) [0|65000] ""  WIUFL
+ SG_ testBench_normalMode : 68|4@1+ (1,0) [0|15] ""  WIUFL
+ SG_ testBench_operationMod_Req : 64|4@1+ (1,0) [0|15] ""  WIUFL
+ SG_ testBench_setPoint_speed : 16|16@1- (0.5,0) [-16384|16383.5] "rpm"  WIUFL
+ SG_ testBench_setPoint_position : 32|16@1- (0.1,0) [-3276.8|3276.7] "erad"  WIUFL
+ SG_ testBench_setPoint_clampForce : 48|16@1- (2,0) [-65536|65534] "N"  WIUFL
+ SG_ testBench_setPoint_torque : 0|16@1- (0.001,0) [-32.768|32.767] "Nm"  WIUFL
+
+
+
+BA_DEF_ SG_  "GenSigStartValue" INT 0 0;
+BA_DEF_ SG_  "GenSigInvalidValue" INT 0 0;
+BA_DEF_ SG_  "GenSigInactiveValue" INT 0 0;
+BA_DEF_ BO_  "DiagMessage" ENUM  "No","Yes";
+BA_DEF_ BO_  "NmMessage" ENUM  "No","Yes";
+BA_DEF_ BO_  "GenMsgCycleTimeFast" INT 0 0;
+BA_DEF_ BO_  "GenMsgNrOfRepetition" INT 0 0;
+BA_DEF_ BO_  "GenMsgCycleTime" INT 0 0;
+BA_DEF_ BO_  "GenMsgDelayTime" INT 0 0;
+BA_DEF_ SG_  "GenSigSendType" ENUM  "Cyclic","OnWrite","OnWriteWithRepetition","OnChange","OnChangeWithRepetition","IfActive","IfActiveWithRepetition";
+BA_DEF_ BO_  "GenMsgSendType" ENUM  "Cyclic","Event","IfActive","CE","CA";
+BA_DEF_ BO_  "GenMsgILSupport" ENUM  "No","Yes";
+BA_DEF_ BU_  "ILUsed" ENUM  "No","Yes";
+BA_DEF_ BO_  "CANFD_BRS" ENUM  "0","1";
+BA_DEF_  "DBName" STRING ;
+BA_DEF_  "BusType" STRING ;
+BA_DEF_ BU_  "NodeLayerModules" STRING ;
+BA_DEF_ BU_  "ECU" STRING ;
+BA_DEF_ BU_  "CANoeJitterMax" INT 0 0;
+BA_DEF_ BU_  "CANoeJitterMin" INT 0 0;
+BA_DEF_ BU_  "CANoeDrift" INT 0 0;
+BA_DEF_ BU_  "CANoeStartDelay" INT 0 0;
+BA_DEF_ BO_  "VFrameFormat" ENUM  "StandardCAN","ExtendedCAN","reserved","reserved","reserved","reserved","reserved","reserved","reserved","reserved","reserved","reserved","reserved","reserved","StandardCAN_FD","ExtendedCAN_FD";
+BA_DEF_DEF_  "GenSigStartValue" 0;
+BA_DEF_DEF_  "GenSigInvalidValue" 0;
+BA_DEF_DEF_  "GenSigInactiveValue" 0;
+BA_DEF_DEF_  "DiagMessage" "";
+BA_DEF_DEF_  "NmMessage" "";
+BA_DEF_DEF_  "GenMsgCycleTimeFast" 0;
+BA_DEF_DEF_  "GenMsgNrOfRepetition" 0;
+BA_DEF_DEF_  "GenMsgCycleTime" 0;
+BA_DEF_DEF_  "GenMsgDelayTime" 0;
+BA_DEF_DEF_  "GenSigSendType" "Cyclic";
+BA_DEF_DEF_  "GenMsgSendType" "Cyclic";
+BA_DEF_DEF_  "GenMsgILSupport" "Yes";
+BA_DEF_DEF_  "ILUsed" "Yes";
+BA_DEF_DEF_  "CANFD_BRS" "0";
+BA_DEF_DEF_  "DBName" "";
+BA_DEF_DEF_  "BusType" "";
+BA_DEF_DEF_  "NodeLayerModules" "";
+BA_DEF_DEF_  "ECU" "";
+BA_DEF_DEF_  "CANoeJitterMax" 0;
+BA_DEF_DEF_  "CANoeJitterMin" 0;
+BA_DEF_DEF_  "CANoeDrift" 0;
+BA_DEF_DEF_  "CANoeStartDelay" 0;
+BA_DEF_DEF_  "VFrameFormat" "";
+BA_ "BusType" "CAN FD";
+BA_ "DBName" "CANMatrix";
+BA_ "GenMsgCycleTime" BO_ 1552 100;
+BA_ "CANFD_BRS" BO_ 1552 1;
+BA_ "VFrameFormat" BO_ 1552 14;
+BA_ "GenMsgCycleTime" BO_ 1548 100;
+BA_ "CANFD_BRS" BO_ 1548 1;
+BA_ "VFrameFormat" BO_ 1548 14;
+BA_ "GenMsgCycleTime" BO_ 1544 100;
+BA_ "CANFD_BRS" BO_ 1544 1;
+BA_ "VFrameFormat" BO_ 1544 14;
+BA_ "GenMsgCycleTime" BO_ 1551 100;
+BA_ "CANFD_BRS" BO_ 1551 1;
+BA_ "VFrameFormat" BO_ 1551 14;
+BA_ "GenMsgCycleTime" BO_ 1547 100;
+BA_ "CANFD_BRS" BO_ 1547 1;
+BA_ "VFrameFormat" BO_ 1547 14;
+BA_ "GenMsgCycleTime" BO_ 1543 100;
+BA_ "CANFD_BRS" BO_ 1543 1;
+BA_ "VFrameFormat" BO_ 1543 14;
+BA_ "GenMsgCycleTime" BO_ 1550 10;
+BA_ "CANFD_BRS" BO_ 1550 1;
+BA_ "VFrameFormat" BO_ 1550 14;
+BA_ "GenMsgCycleTime" BO_ 1546 10;
+BA_ "CANFD_BRS" BO_ 1546 1;
+BA_ "VFrameFormat" BO_ 1546 14;
+BA_ "GenMsgCycleTime" BO_ 1549 100;
+BA_ "VFrameFormat" BO_ 1549 14;
+BA_ "GenMsgCycleTime" BO_ 1545 100;
+BA_ "VFrameFormat" BO_ 1545 14;
+BA_ "GenMsgCycleTime" BO_ 1541 100;
+BA_ "VFrameFormat" BO_ 1541 14;
+BA_ "GenMsgCycleTime" BO_ 1542 10;
+BA_ "CANFD_BRS" BO_ 1542 1;
+BA_ "VFrameFormat" BO_ 1542 14;
+BA_ "GenMsgCycleTime" BO_ 1540 100;
+BA_ "CANFD_BRS" BO_ 1540 1;
+BA_ "VFrameFormat" BO_ 1540 14;
+BA_ "GenMsgCycleTime" BO_ 1539 100;
+BA_ "CANFD_BRS" BO_ 1539 1;
+BA_ "VFrameFormat" BO_ 1539 14;
+BA_ "GenMsgCycleTime" BO_ 1538 10;
+BA_ "CANFD_BRS" BO_ 1538 1;
+BA_ "VFrameFormat" BO_ 1538 14;
+BA_ "GenMsgCycleTime" BO_ 1537 100;
+BA_ "VFrameFormat" BO_ 1537 14;
+BA_ "GenSigStartValue" SG_ 1550 wiu_testBench_emTemp 50;
+BA_ "GenSigStartValue" SG_ 1550 wiu_testBench_mosTemp 50;
+BA_ "GenSigStartValue" SG_ 1546 wiu_testBench_emTemp 50;
+BA_ "GenSigStartValue" SG_ 1546 wiu_testBench_mosTemp 50;
+BA_ "GenSigStartValue" SG_ 1542 wiu_testBench_emTemp 50;
+BA_ "GenSigStartValue" SG_ 1542 wiu_testBench_mosTemp 50;
+BA_ "GenSigStartValue" SG_ 1538 wiu_testBench_emTemp 50;
+BA_ "GenSigStartValue" SG_ 1538 wiu_testBench_mosTemp 50;
+
