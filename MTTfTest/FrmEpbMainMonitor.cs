@@ -1018,8 +1018,18 @@ namespace MTEmbTest
                 if (epb1 != null && _chData[epb1.GlobalIndex].Count > 0)
                 {
                     var v = _chData[epb1.GlobalIndex][_chData[epb1.GlobalIndex].Count - 1].Y;
-                    textEditCurrent1.Text = $"{v:F2} A";
+                    textEditCurrent1.Text = $@"{v:F2} A";
                 }
+
+                // —— 示例：刷新 P1 压力 瞬时显示 —— //
+
+                var p1 = _allChs.FirstOrDefault(c => c.Device == "Dev2" && c.AiIndex == 4);
+                if (p1 != null && _chData[p1.GlobalIndex].Count > 0)
+                {
+                    var v = _chData[p1.GlobalIndex][_chData[p1.GlobalIndex].Count - 1].Y;
+                    textEditP1.Text = $@"{v:F2} A";
+                }
+
 
                 lastGraphyTime = current;
             }

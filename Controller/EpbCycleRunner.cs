@@ -505,6 +505,8 @@ namespace Controller
 
                 // —— 接入点 #1：上电之前 —— //
                 await _manager?.HydraulicEnterAsync(_channel, token);
+
+
                 // ===================== ① 头部未上电 =====================
                 // （真正上电前调用“液压协调器：进入电控阶段”）
                 if (plan1 > 0)
