@@ -2775,5 +2775,10 @@ namespace MTEmbTest
         }
 
         #endregion
+
+        private void SwitchEpb2_CheckedChanged(object sender, EventArgs e)
+        {
+
+        }
     }
 }
