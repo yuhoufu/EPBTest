@@ -2682,7 +2682,7 @@
             this.uiTableLayoutPanel15.ColumnCount = 3;
             this.uiTableLayoutPanel15.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 44.07583F));
             this.uiTableLayoutPanel15.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 55.92417F));
-            this.uiTableLayoutPanel15.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 216F));
+            this.uiTableLayoutPanel15.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 217F));
             this.uiTableLayoutPanel15.Controls.Add(this.uiLight3, 2, 3);
             this.uiTableLayoutPanel15.Controls.Add(this.uiLabel58, 0, 2);
             this.uiTableLayoutPanel15.Controls.Add(this.uiLabel57, 0, 1);
@@ -2738,6 +2738,7 @@
             this.uiLabel58.TabIndex = 45;
             this.uiLabel58.Text = "剩余次数";
             this.uiLabel58.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            this.uiLabel58.Visible = false;
             // 
             // uiLabel57
             // 
@@ -2751,6 +2752,7 @@
             this.uiLabel57.TabIndex = 44;
             this.uiLabel57.Text = "完成次数";
             this.uiLabel57.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            this.uiLabel57.Visible = false;
             // 
             // uiLabel56
             // 
@@ -2764,6 +2766,7 @@
             this.uiLabel56.TabIndex = 43;
             this.uiLabel56.Text = "运行时间";
             this.uiLabel56.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            this.uiLabel56.Visible = false;
             // 
             // uiTableLayoutPanel23
             // 
@@ -2785,6 +2788,7 @@
             this.uiTableLayoutPanel23.Size = new System.Drawing.Size(617, 154);
             this.uiTableLayoutPanel23.TabIndex = 38;
             this.uiTableLayoutPanel23.TagString = null;
+            this.uiTableLayoutPanel23.Visible = false;
             // 
             // LedRunCycles
             // 
@@ -2827,6 +2831,7 @@
             this.uiTableLayoutPanel32.Size = new System.Drawing.Size(617, 154);
             this.uiTableLayoutPanel32.TabIndex = 37;
             this.uiTableLayoutPanel32.TagString = null;
+            this.uiTableLayoutPanel32.Visible = false;
             // 
             // LedRunTime
             // 
@@ -2869,6 +2874,7 @@
             this.uiTableLayoutPanel41.Size = new System.Drawing.Size(617, 154);
             this.uiTableLayoutPanel41.TabIndex = 39;
             this.uiTableLayoutPanel41.TagString = null;
+            this.uiTableLayoutPanel41.Visible = false;
             // 
             // LedLastCycles
             // 
@@ -2901,7 +2907,7 @@
             this.ProcBar.Margin = new System.Windows.Forms.Padding(4);
             this.ProcBar.MinimumSize = new System.Drawing.Size(4, 4);
             this.ProcBar.Name = "ProcBar";
-            this.ProcBar.Size = new System.Drawing.Size(721, 154);
+            this.ProcBar.Size = new System.Drawing.Size(720, 154);
             this.ProcBar.Style = Sunny.UI.UIStyle.Custom;
             this.ProcBar.TabIndex = 41;
             this.ProcBar.Text = "uiProcessBar1";
@@ -4408,6 +4414,7 @@
             this.SwitchEpb1.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
             this.SwitchEpb1.Appearance.Options.UseBackColor = true;
             this.SwitchEpb1.Appearance.Options.UseForeColor = true;
+            this.SwitchEpb1.Checked = true;
             this.SwitchEpb1.CheckedText = "RUN";
             this.SwitchEpb1.Dock = System.Windows.Forms.DockStyle.Fill;
             this.SwitchEpb1.HtmlTemplate.Styles = resources.GetString("SwitchEpb1.HtmlTemplate.Styles");
@@ -4424,6 +4431,7 @@
             this.SwitchPower1.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
             this.SwitchPower1.Appearance.Options.UseBackColor = true;
             this.SwitchPower1.Appearance.Options.UseForeColor = true;
+            this.SwitchPower1.Checked = true;
             this.SwitchPower1.CheckedText = "ON";
             this.SwitchPower1.Dock = System.Windows.Forms.DockStyle.Fill;
             this.SwitchPower1.HtmlTemplate.Styles = resources.GetString("SwitchPower1.HtmlTemplate.Styles");
@@ -4906,7 +4914,7 @@
             // textEditCurrent1
             // 
             this.textEditCurrent1.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.textEditCurrent1.EditValue = "12.34";
+            this.textEditCurrent1.EditValue = "0";
             this.textEditCurrent1.Location = new System.Drawing.Point(3, 67);
             this.textEditCurrent1.Name = "textEditCurrent1";
             this.textEditCurrent1.Properties.Appearance.Options.UseTextOptions = true;
@@ -4917,7 +4925,7 @@
             // textEditCurrent2
             // 
             this.textEditCurrent2.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.textEditCurrent2.EditValue = "12.34";
+            this.textEditCurrent2.EditValue = "0";
             this.textEditCurrent2.Location = new System.Drawing.Point(115, 67);
             this.textEditCurrent2.Name = "textEditCurrent2";
             this.textEditCurrent2.Properties.Appearance.Options.UseTextOptions = true;
@@ -4928,7 +4936,7 @@
             // textEditCurrent3
             // 
             this.textEditCurrent3.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.textEditCurrent3.EditValue = "12.34";
+            this.textEditCurrent3.EditValue = "0";
             this.textEditCurrent3.Location = new System.Drawing.Point(227, 67);
             this.textEditCurrent3.Name = "textEditCurrent3";
             this.textEditCurrent3.Properties.Appearance.Options.UseTextOptions = true;
@@ -4939,7 +4947,7 @@
             // textEditCurrent4
             // 
             this.textEditCurrent4.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.textEditCurrent4.EditValue = "12.34";
+            this.textEditCurrent4.EditValue = "0";
             this.textEditCurrent4.Location = new System.Drawing.Point(339, 67);
             this.textEditCurrent4.Name = "textEditCurrent4";
             this.textEditCurrent4.Properties.Appearance.Options.UseTextOptions = true;
@@ -4950,7 +4958,7 @@
             // textEditCurrent5
             // 
             this.textEditCurrent5.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.textEditCurrent5.EditValue = "12.34";
+            this.textEditCurrent5.EditValue = "0";
             this.textEditCurrent5.Location = new System.Drawing.Point(451, 67);
             this.textEditCurrent5.Name = "textEditCurrent5";
             this.textEditCurrent5.Properties.Appearance.Options.UseTextOptions = true;
@@ -4961,7 +4969,7 @@
             // textEditCurrent6
             // 
             this.textEditCurrent6.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.textEditCurrent6.EditValue = "12.34";
+            this.textEditCurrent6.EditValue = "0";
             this.textEditCurrent6.Location = new System.Drawing.Point(563, 67);
             this.textEditCurrent6.Name = "textEditCurrent6";
             this.textEditCurrent6.Properties.Appearance.Options.UseTextOptions = true;
@@ -4972,7 +4980,7 @@
             // textEditCurrent7
             // 
             this.textEditCurrent7.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.textEditCurrent7.EditValue = "12.34";
+            this.textEditCurrent7.EditValue = "0";
             this.textEditCurrent7.Location = new System.Drawing.Point(675, 67);
             this.textEditCurrent7.Name = "textEditCurrent7";
             this.textEditCurrent7.Properties.Appearance.Options.UseTextOptions = true;
@@ -4983,7 +4991,7 @@
             // textEditCurrent8
             // 
             this.textEditCurrent8.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.textEditCurrent8.EditValue = "12.34";
+            this.textEditCurrent8.EditValue = "0";
             this.textEditCurrent8.Location = new System.Drawing.Point(787, 67);
             this.textEditCurrent8.Name = "textEditCurrent8";
             this.textEditCurrent8.Properties.Appearance.Options.UseTextOptions = true;
@@ -4994,7 +5002,7 @@
             // textEditCurrent9
             // 
             this.textEditCurrent9.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.textEditCurrent9.EditValue = "12.34";
+            this.textEditCurrent9.EditValue = "0";
             this.textEditCurrent9.Location = new System.Drawing.Point(899, 67);
             this.textEditCurrent9.Name = "textEditCurrent9";
             this.textEditCurrent9.Properties.Appearance.Options.UseTextOptions = true;
@@ -5005,7 +5013,7 @@
             // textEditCurrent10
             // 
             this.textEditCurrent10.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.textEditCurrent10.EditValue = "12.34";
+            this.textEditCurrent10.EditValue = "0";
             this.textEditCurrent10.Location = new System.Drawing.Point(1011, 67);
             this.textEditCurrent10.Name = "textEditCurrent10";
             this.textEditCurrent10.Properties.Appearance.Options.UseTextOptions = true;
@@ -5016,7 +5024,7 @@
             // textEditCurrent11
             // 
             this.textEditCurrent11.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.textEditCurrent11.EditValue = "12.34";
+            this.textEditCurrent11.EditValue = "0";
             this.textEditCurrent11.Location = new System.Drawing.Point(1123, 67);
             this.textEditCurrent11.Name = "textEditCurrent11";
             this.textEditCurrent11.Properties.Appearance.Options.UseTextOptions = true;
@@ -5027,7 +5035,7 @@
             // textEditCurrent12
             // 
             this.textEditCurrent12.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.textEditCurrent12.EditValue = "12.34";
+            this.textEditCurrent12.EditValue = "0";
             this.textEditCurrent12.Location = new System.Drawing.Point(1235, 67);
             this.textEditCurrent12.Name = "textEditCurrent12";
             this.textEditCurrent12.Properties.Appearance.Options.UseTextOptions = true;
@@ -5095,7 +5103,7 @@
             // textEditP1
             // 
             this.textEditP1.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.textEditP1.EditValue = "999.99";
+            this.textEditP1.EditValue = "0";
             this.textEditP1.Location = new System.Drawing.Point(3, 67);
             this.textEditP1.Name = "textEditP1";
             this.textEditP1.Properties.Appearance.Options.UseTextOptions = true;
@@ -5106,7 +5114,7 @@
             // textEditP2
             // 
             this.textEditP2.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.textEditP2.EditValue = "999.99";
+            this.textEditP2.EditValue = "0";
             this.textEditP2.Location = new System.Drawing.Point(101, 67);
             this.textEditP2.Name = "textEditP2";
             this.textEditP2.Properties.Appearance.Options.UseTextOptions = true;
@@ -5134,7 +5142,7 @@
             // textEditF
             // 
             this.textEditF.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.textEditF.EditValue = "25000";
+            this.textEditF.EditValue = "0";
             this.textEditF.Location = new System.Drawing.Point(199, 67);
             this.textEditF.Name = "textEditF";
             this.textEditF.Properties.Appearance.Options.UseTextOptions = true;
