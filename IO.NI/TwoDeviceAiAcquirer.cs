@@ -124,14 +124,14 @@ namespace IO.NI
             if (_dev1Channels.Length > 0)
             {
                 _task1 = CreateAiTask("Dev1_AI", _dev1Channels, aiMin, aiMax, term);
-                _reader1 = new AnalogMultiChannelReader(_task1.Stream) { SynchronizeCallbacks = true };
+                _reader1 = new AnalogMultiChannelReader(_task1.Stream) { SynchronizeCallbacks = false };
                 _reader1.BeginReadMultiSample(_samplesPerChannel, Dev1Callback, _task1);
             }
 
             if (_dev2Channels.Length > 0)
             {
                 _task2 = CreateAiTask("Dev2_AI", _dev2Channels, aiMin, aiMax, term);
-                _reader2 = new AnalogMultiChannelReader(_task2.Stream) { SynchronizeCallbacks = true };
+                _reader2 = new AnalogMultiChannelReader(_task2.Stream) { SynchronizeCallbacks = false };
                 _reader2.BeginReadMultiSample(_samplesPerChannel, Dev2Callback, _task2);
             }
 
@@ -419,7 +419,7 @@ namespace IO.NI
                     if (_dev1Channels.Length > 0)
                     {
                         _task1 = CreateAiTask("Dev1_AI", _dev1Channels, -10, 10, AITerminalConfiguration.Rse);
-                        _reader1 = new AnalogMultiChannelReader(_task1.Stream) { SynchronizeCallbacks = true };
+                        _reader1 = new AnalogMultiChannelReader(_task1.Stream) { SynchronizeCallbacks = false };
                         _reader1.BeginReadMultiSample(_samplesPerChannel, Dev1Callback, _task1);
                         _log.Warn("Dev1 已重建采集任务并恢复。", "AI");
                     }
@@ -447,7 +447,7 @@ namespace IO.NI
                     if (_dev2Channels.Length > 0)
                     {
                         _task2 = CreateAiTask("Dev2_AI", _dev2Channels, -10, 10, AITerminalConfiguration.Rse);
-                        _reader2 = new AnalogMultiChannelReader(_task2.Stream) { SynchronizeCallbacks = true };
+                        _reader2 = new AnalogMultiChannelReader(_task2.Stream) { SynchronizeCallbacks = false };
                         _reader2.BeginReadMultiSample(_samplesPerChannel, Dev2Callback, _task2);
                         _log.Warn("Dev2 已重建采集任务并恢复。", "AI");
                     }
