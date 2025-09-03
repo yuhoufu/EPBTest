@@ -51,6 +51,7 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="CurrentGuard.cs" />
     <Compile Include="DoController.cs" />
     <Compile Include="IAppLogger.cs" />
     <Compile Include="AoController.cs" />

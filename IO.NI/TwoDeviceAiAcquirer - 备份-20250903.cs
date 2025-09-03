@@ -16,9 +16,11 @@ namespace IO.NI
 {
     /// <summary>
     ///     双设备（Dev1/Dev2）AI 连续采样管理器：
-    ///     - DAQ 回调线程提供低时延的“最后一个样本”快速工程值（未滤波），并写入 _lastFastValue；
-    ///     - 后台处理线程负责将整批数据转换为工程值并滤波，然后写入 _lastFilteredValue；
-    ///     - 提供明确的读取接口以区分快/慢数据的用途（控制用 vs UI/统计用）。
+    ///     1）按 AIConfigDetail 构建通道；
+    ///     2）分别创建 Dev1/Dev2 的连续采样任务；
+    ///     3）Stopwatch 生成时间戳（与 FrmMainMonitor 一致的 Current/Last）；
+    ///     4）原始矩阵通过回调委托给 UI/落盘（<b>原始</b> double[通道,样本]）；
+    ///     5）内部把原始矩阵转工程值并做滤波，更新“最近值”并可回调（供控制逻辑/可选 UI）。
     /// </summary>
     public sealed class TwoDeviceAiAcquirer : IDisposable
     {
@@ -32,12 +34,8 @@ namespace IO.NI
         private readonly string[] _dev1Channels, _dev2Channels;
         private readonly List<AiConfigDetailRecord> _enabled;
 
-        // 最近的工程值快照（拆成两份以避免语义冲突）
-        // 1) 低时延快照（在 DAQ 回调线程中写入）：未滤波、用于控制逻辑/紧急读数
-        private readonly ConcurrentDictionary<string, double> _lastFastValue = new();
-
-        // 2) 滤波后快照（在后台线程中写入）：已滤波、用于 UI / 统计 / 报表
-        private readonly ConcurrentDictionary<string, double> _lastFilteredValue = new();
+        // 最近的工程值快照（供 ReadCurrent/ReadPressure）
+        private readonly ConcurrentDictionary<string, double> _lastValue = new();
 
         private readonly ILogger _log;
         private readonly int _medianLens;
@@ -102,104 +100,51 @@ namespace IO.NI
         public event Action<string /*Dev1|Dev2*/, double[,], DateTime /*current*/, DateTime /*last*/> OnEngBatch;
 
         /// <summary>
-        ///     低时延电流样本事件：在 DAQ 回调线程中触发，报告“当前批次最后一个样本”的工程值（未滤波）。
-        ///     用于实时控制，不建议做重活（如 IO/磁盘/复杂计算）。
+        /// 低时延电流样本事件：在 DAQ 回调线程中触发，报告“当前批次最后一个样本”的工程值（未滤波）。
+        /// 用于实时控制，不建议做重活（如 IO/磁盘/复杂计算）。
         /// </summary>
-        /// <param name="epbChannel">EPB 物理通道号（1..12）。</param>
-        /// <param name="amps">电流（A，已做零漂/比例/偏置换算）。</param>
-        /// <param name="ts">样本时间戳。</param>
+        /// <param>EPB 物理通道号（1..12）。
+        ///     <name>epbChannel</name>
+        /// </param>
+        /// <param>电流（A，已做零漂/比例/偏置换算）。
+        ///     <name>amps</name>
+        /// </param>
+        /// <param>样本时间戳。
+        ///     <name>ts</name>
+        /// </param>
         public event Action<int, double, DateTime> OnFastEpbCurrent;
 
 
         /// <summary>
-        ///     从参数名（例如 "EPB9_current"）中提取 EPB 通道号（9）。
-        ///     不匹配返回 -1。
+        /// 从参数名（例如 "EPB9_current"）中提取 EPB 通道号（9）。
+        /// 不匹配返回 -1。
         /// </summary>
         private static int TryParseEpbChannel(string paramName)
         {
             if (string.IsNullOrEmpty(paramName)) return -1;
             // 形如 EPB1_current / EPB12_current
+            // 简单解析：从 "EPB" 后取到 '_' 之前的数字
             var s = paramName;
             var i = s.IndexOf("EPB", StringComparison.OrdinalIgnoreCase);
             if (i < 0) return -1;
             i += 3;
-            var j = i;
+            int j = i;
             while (j < s.Length && char.IsDigit(s[j])) j++;
             if (j == i) return -1;
             if (int.TryParse(s.Substring(i, j - i), out var ch)) return ch;
             return -1;
         }
 
-        /// <summary>
-        ///     读取 EPB 电流的“常用”接口（向后兼容）。
-        ///     语义：优先返回低延迟快照（fast），若没有则返回滤波后值（filtered），否则返回 0.0。
-        ///     建议：控制逻辑应显式调用 <see cref="ReadCurrentFast" /> 或订阅 <see cref="OnFastEpbCurrent" />；
-        ///     UI/统计应使用 <see cref="ReadCurrentFiltered" /> 或订阅 <see cref="OnEngBatch" />.
-        /// </summary>
-        /// <param name="epbChannel">EPB 通道号（1..12）。</param>
-        /// <returns>电流（A）。</returns>
+
+
         public double ReadCurrent(int epbChannel)
         {
-            var key = $"EPB{epbChannel}_current";
-            if (_lastFastValue.TryGetValue(key, out var vFast)) return vFast;
-            if (_lastFilteredValue.TryGetValue(key, out var vFilt)) return vFilt;
-            return 0.0;
+            return _lastValue.TryGetValue($"EPB{epbChannel}_current", out var v) ? v : 0.0;
         }
 
-        /// <summary>
-        ///     明确读取“低延迟 / 未滤波”的 EPB 电流快照（由 DAQ 回调线程写入）。
-        ///     若不存在返回 0.0。
-        /// </summary>
-        /// <param name="epbChannel">EPB 通道号（1..12）。</param>
-        /// <returns>低延迟电流（A），或 0.0。</returns>
-        public double ReadCurrentFast(int epbChannel)
-        {
-            var key = $"EPB{epbChannel}_current";
-            return _lastFastValue.TryGetValue(key, out var v) ? v : 0.0;
-        }
-
-        /// <summary>
-        ///     明确读取“滤波后 / 平滑”的 EPB 电流快照（由后台线程写入）。
-        ///     若不存在返回 0.0。
-        /// </summary>
-        /// <param name="epbChannel">EPB 通道号（1..12）。</param>
-        /// <returns>滤波后电流（A），或 0.0。</returns>
-        public double ReadCurrentFiltered(int epbChannel)
-        {
-            var key = $"EPB{epbChannel}_current";
-            return _lastFilteredValue.TryGetValue(key, out var v) ? v : 0.0;
-        }
-
-        /// <summary>
-        ///     读取压力（默认行为同 ReadCurrent：优先 fast，再 filtered）。
-        ///     压力通常不会出现在 fast 分支；此方法保持兼容性并返回合适的值。
-        /// </summary>
-        /// <param name="id">压力编号（例如 1/2）。</param>
-        /// <returns>压力值（单位由配置定义），或 0.0。</returns>
         public double ReadPressure(int id)
         {
-            var key = $"Pressure_{id}";
-            if (_lastFastValue.TryGetValue(key, out var vFast)) return vFast;
-            if (_lastFilteredValue.TryGetValue(key, out var vFilt)) return vFilt;
-            return 0.0;
-        }
-
-        /// <summary>
-        ///     明确读取滤波后的压力值（UI/统计推荐使用）。
-        /// </summary>
-        public double ReadPressureFiltered(int id)
-        {
-            var key = $"Pressure_{id}";
-            return _lastFilteredValue.TryGetValue(key, out var v) ? v : 0.0;
-        }
-
-        /// <summary>
-        ///     明确读取（若存在）由 fast 分支写入的压力值（一般不会有）。
-        /// </summary>
-        public double ReadPressureFast(int id)
-        {
-            var key = $"Pressure_{id}";
-            return _lastFastValue.TryGetValue(key, out var v) ? v : 0.0;
+            return _lastValue.TryGetValue($"Pressure_{id}", out var v) ? v : 0.0;
         }
 
         public void Start(double aiMin = -10, double aiMax = 10,
@@ -285,6 +230,7 @@ namespace IO.NI
         }
 
 
+        
         private void OnAiBatch(IAsyncResult ar, AnalogMultiChannelReader reader,
             Dictionary<string, int> colIndex, string device,
             AsyncCallback again)
@@ -306,6 +252,7 @@ namespace IO.NI
                 OnRawBatch?.Invoke(device, raw, current, last);
 
 
+                
                 #region 仅针对本设备的“电流类”通道，取最后一个样本做快速工程值换算并上报
 
                 try
@@ -315,27 +262,29 @@ namespace IO.NI
                         .OrderBy(r => r.序号)
                         .ToList();
 
-                    var chCount = raw.GetLength(0);
-                    var lastCol = raw.GetLength(1) - 1;
+                    int chCount = raw.GetLength(0);
+                    int lastCol = raw.GetLength(1) - 1;
                     if (lastCol >= 0)
-                        for (var c = 0; c < chCount; c++)
+                    {
+                        for (int c = 0; c < chCount; c++)
                         {
                             var rec = devRecs[c];
 
                             // 仅处理 EPB 电流通道（Param 形如 “EPB1_current”）
-                            var epbCh = TryParseEpbChannel(rec.参数名);
+                            int epbCh = TryParseEpbChannel(rec.参数名);
                             if (epbCh < 1 || epbCh > 12) continue;
 
                             // 快速工程值换算： (v - zero) * k + b
-                            var v = raw[c, lastCol];
-                            var amps = (v - rec.零位漂移) * rec.变换斜率 + rec.变换截距;
+                            double v = raw[c, lastCol];
+                            double amps = (v - rec.零位漂移) * rec.变换斜率 + rec.变换截距;
 
                             // 直接触发低时延事件（在回调线程；订阅方应做到轻量）
                             OnFastEpbCurrent?.Invoke(epbCh, amps, current);
 
-                            // —— 改动：只写入 _lastFastValue（低延迟快照） —— //
-                            _lastFastValue[rec.参数名] = amps;
+                            // 顺便把“最近快照”也用未滤波值刷新，便于控制侧读取（可选）
+                            _lastValue[rec.参数名] = amps;
                         }
+                    }
                 }
                 catch
                 {
@@ -343,6 +292,7 @@ namespace IO.NI
                 }
 
                 #endregion
+
 
 
                 // 下一轮
@@ -379,7 +329,7 @@ namespace IO.NI
                     // 滤波（每通道独立中值/降点，与你项目一致）
                     var engFiltered = MedianFilterEachChannel(eng, _medianLens);
 
-                    // 刷新“最近值”供控制逻辑查询（**改动：写入 _lastFilteredValue**）
+                    // 刷新“最近值”供控制逻辑查询
                     UpdateLastSnapshot(engFiltered, item.Device);
 
 
@@ -478,12 +428,6 @@ namespace IO.NI
             return dst;
         }
 
-        /// <summary>
-        ///     将已滤波的工程值最后一个样本写入到 _lastFilteredValue（UI/统计用）。
-        ///     与以前不同：不再覆盖 _lastFastValue（以避免破坏控制用的低延迟读数）。
-        /// </summary>
-        /// <param name="engFiltered">滤波后的工程值矩阵（channels x samples）。</param>
-        /// <param name="device">设备名（"Dev1" 或 "Dev2"）。</param>
         private void UpdateLastSnapshot(double[,] engFiltered, string device)
         {
             var devRecs = _enabled
@@ -495,8 +439,7 @@ namespace IO.NI
             for (var c = 0; c < ch; c++)
             {
                 var rec = devRecs[c];
-                // 写入滤波后的快照（不覆盖 fast）
-                _lastFilteredValue[rec.参数名] = engFiltered[c, n - 1];
+                _lastValue[rec.参数名] = engFiltered[c, n - 1];
             }
         }
 
