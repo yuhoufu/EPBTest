@@ -20,6 +20,7 @@ using MTEmbTest.UIHelpers;
 using NationalInstruments.DAQmx;
 using Sunny.UI;
 using ZedGraph;
+using static System.Windows.Forms.VisualStyles.VisualStyleElement.TextBox;
 using Task = NationalInstruments.DAQmx.Task;
 //using AsyncListener;
 using TestConfig = DataOperation.TestConfig;
@@ -1023,9 +1024,95 @@ namespace MTEmbTest
                     var v = _chData[epb1.GlobalIndex][_chData[epb1.GlobalIndex].Count - 1].Y;
                     textEditCurrent1.Text = $@"{v:F2} A";
                 }
+                // —— 示例：刷新 EPB2 瞬时显示 —— //
+                var epb2 = _allChs.FirstOrDefault(c => c.Device == "Dev1" && c.AiIndex == 1);
+                if (epb2 != null && _chData[epb2.GlobalIndex].Count > 0)
+                {
+                    var v = _chData[epb2.GlobalIndex][_chData[epb2.GlobalIndex].Count - 1].Y;
+                    textEditCurrent2.Text = $@"{v:F2} A";
+                }
+
+                // —— 示例：刷新 epb3 瞬时显示 —— //
+                var epb3 = _allChs.FirstOrDefault(c => c.Device == "Dev1" && c.AiIndex == 2);
+                if (epb3 != null && _chData[epb3.GlobalIndex].Count > 0)
+                {
+                    var v = _chData[epb3.GlobalIndex][_chData[epb3.GlobalIndex].Count - 1].Y;
+                    textEditCurrent3.Text = $@"{v:F2} A";
+                }
+
+                // —— 示例：刷新 epb4 瞬时显示 —— //
+                var epb4 = _allChs.FirstOrDefault(c => c.Device == "Dev1" && c.AiIndex == 3);
+                if (epb4 != null && _chData[epb4.GlobalIndex].Count > 0)
+                {
+                    var v = _chData[epb4.GlobalIndex][_chData[epb4.GlobalIndex].Count - 1].Y;
+                    textEditCurrent4.Text = $@"{v:F2} A";
+                }
+
+                // —— 示例：刷新 epb5 瞬时显示 —— //
+                var epb5 = _allChs.FirstOrDefault(c => c.Device == "Dev1" && c.AiIndex == 4);
+                if (epb5 != null && _chData[epb5.GlobalIndex].Count > 0)
+                {
+                    var v = _chData[epb5.GlobalIndex][_chData[epb5.GlobalIndex].Count - 1].Y;
+                    textEditCurrent5.Text = $@"{v:F2} A";
+                }
+
+                // —— 示例：刷新 epb6 瞬时显示 —— //
+                var epb6 = _allChs.FirstOrDefault(c => c.Device == "Dev1" && c.AiIndex == 5);
+                if (epb6 != null && _chData[epb6.GlobalIndex].Count > 0)
+                {
+                    var v = _chData[epb6.GlobalIndex][_chData[epb6.GlobalIndex].Count - 1].Y;
+                    textEditCurrent6.Text = $@"{v:F2} A";
+                }
+
+                // —— 示例：刷新 epb7 瞬时显示 —— //
+                var epb7 = _allChs.FirstOrDefault(c => c.Device == "Dev1" && c.AiIndex == 6);
+                if (epb7 != null && _chData[epb7.GlobalIndex].Count > 0)
+                {
+                    var v = _chData[epb7.GlobalIndex][_chData[epb7.GlobalIndex].Count - 1].Y;
+                    textEditCurrent7.Text = $@"{v:F2} A";
+                }
+
+                // —— 示例：刷新 epb8 瞬时显示 —— //
+                var epb8 = _allChs.FirstOrDefault(c => c.Device == "Dev1" && c.AiIndex == 7);
+                if (epb8 != null && _chData[epb8.GlobalIndex].Count > 0)
+                {
+                    var v = _chData[epb8.GlobalIndex][_chData[epb8.GlobalIndex].Count - 1].Y;
+                    textEditCurrent8.Text = $@"{v:F2} A";
+                }
+
+                // —— 示例：刷新 epb9 瞬时显示 —— //
+                var epb9 = _allChs.FirstOrDefault(c => c.Device == "Dev2" && c.AiIndex == 0);
+                if (epb9 != null && _chData[epb9.GlobalIndex].Count > 0)
+                {
+                    var v = _chData[epb9.GlobalIndex][_chData[epb9.GlobalIndex].Count - 1].Y;
+                    textEditCurrent9.Text = $@"{v:F2} A";
+                }
+
+                // —— 示例：刷新 epb10 瞬时显示 —— //
+                var epb10 = _allChs.FirstOrDefault(c => c.Device == "Dev2" && c.AiIndex == 1);
+                if (epb10 != null && _chData[epb10.GlobalIndex].Count > 0)
+                {
+                    var v = _chData[epb10.GlobalIndex][_chData[epb10.GlobalIndex].Count - 1].Y;
+                    textEditCurrent10.Text = $@"{v:F2} A";
+                }
+
+                // —— 示例：刷新 epb11 瞬时显示 —— //
+                var epb11 = _allChs.FirstOrDefault(c => c.Device == "Dev2" && c.AiIndex == 2);
+                if (epb11 != null && _chData[epb11.GlobalIndex].Count > 0)
+                {
+                    var v = _chData[epb11.GlobalIndex][_chData[epb11.GlobalIndex].Count - 1].Y;
+                    textEditCurrent11.Text = $@"{v:F2} A";
+                }
+
+                // —— 示例：刷新 epb12 瞬时显示 —— //
+                var epb12 = _allChs.FirstOrDefault(c => c.Device == "Dev2" && c.AiIndex == 3);
+                if (epb12 != null && _chData[epb12.GlobalIndex].Count > 0)
+                {
+                    var v = _chData[epb12.GlobalIndex][_chData[epb12.GlobalIndex].Count - 1].Y;
+                    textEditCurrent12.Text = $@"{v:F2} A";
+                }
 
                 // —— 示例：刷新 P1 压力 瞬时显示 —— //
-
                 var p1 = _allChs.FirstOrDefault(c => c.Device == "Dev2" && c.AiIndex == 4);
                 if (p1 != null && _chData[p1.GlobalIndex].Count > 0)
                 {
@@ -1033,6 +1120,22 @@ namespace MTEmbTest
                     textEditP1.Text = $@"{v:F0} bar";
                 }
 
+                // —— 示例：刷新 p2 压力 瞬时显示 —— //
+                var p2 = _allChs.FirstOrDefault(c => c.Device == "Dev2" && c.AiIndex == 5);
+                if (p2 != null && _chData[p2.GlobalIndex].Count > 0)
+                {
+                    var v = _chData[p2.GlobalIndex][_chData[p2.GlobalIndex].Count - 1].Y;
+                    textEditP2.Text = $@"{v:F0} bar";
+                }
+
+
+                // —— 示例：刷新 f 压力 瞬时显示 —— //
+                var f = _allChs.FirstOrDefault(c => c.Device == "Dev2" && c.AiIndex == 6);
+                if (f != null && _chData[f.GlobalIndex].Count > 0)
+                {
+                    var v = _chData[f.GlobalIndex][_chData[f.GlobalIndex].Count - 1].Y;
+                    textEditF.Text = $@"{v:F0} N";
+                }
 
                 lastGraphyTime = current;
             }
