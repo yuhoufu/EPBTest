@@ -53,9 +53,17 @@ namespace IO.NI
         private AnalogMultiChannelReader _reader1, _reader2;
         private DateTime _t0 = DateTime.Now;
 
+
+        
         // NI 任务
         private NIDaqTask _task1, _task2;
         private long _ts0;
+
+        // 动态置零偏移（参数名 -> offset，工程值单位）
+        private readonly ConcurrentDictionary<string, double> _zeroOffsets = new(StringComparer.OrdinalIgnoreCase);
+
+
+
 
         public TwoDeviceAiAcquirer(
             AiConfigDetail cfg,
@@ -93,6 +101,62 @@ namespace IO.NI
 
             _cts.Dispose();
         }
+
+
+        /// <summary>将指定 EPB 通道（1..12）的“当前值”设为零点。</summary>
+        public void ZeroEpbChannel(int epbChannel)
+        {
+            var key = $"EPB{epbChannel}_current";
+            // 优先用 fast 值（低延迟）
+            if (_lastFastValue.TryGetValue(key, out var v))
+            {
+                _zeroOffsets[key] = v;
+                _log?.Info($"EPB 通道 {epbChannel} 已置零：offset={v:F4}", "AI");
+            }
+        }
+
+        /// <summary>清除指定 EPB 通道的动态零点。</summary>
+        public void ClearZeroEpbChannel(int epbChannel)
+        {
+            var key = $"EPB{epbChannel}_current";
+            _zeroOffsets.TryRemove(key, out _);
+        }
+
+        /// <summary>将指定“参数名”的当前值设为零点（通用：可用于压力等非 EPB 通道）。</summary>
+        public void ZeroByParamName(string paramName)
+        {
+            if (string.IsNullOrWhiteSpace(paramName)) return;
+            if (_lastFastValue.TryGetValue(paramName, out var v))
+            {
+                _zeroOffsets[paramName] = v;
+                _log?.Info($"参数 {paramName} 已置零：offset={v:F4}", "AI");
+            }
+        }
+
+        /// <summary>清除指定“参数名”的动态零点。</summary>
+        public void ClearZeroByParamName(string paramName)
+        {
+            if (string.IsNullOrWhiteSpace(paramName)) return;
+            _zeroOffsets.TryRemove(paramName, out _);
+        }
+
+        /// <summary>将“所有已知参数”的当前值设为零点（对每个 _lastFastValue 的键）。</summary>
+        public void ZeroAllChannels()
+        {
+            foreach (var kv in _lastFastValue)
+                _zeroOffsets[kv.Key] = kv.Value;
+            _log?.Warn("已对所有通道执行置零（基于 fast 快照）。", "AI");
+        }
+
+        /// <summary>清除全部动态零点。</summary>
+        public void ClearAllZeros()
+        {
+            _zeroOffsets.Clear();
+            _log?.Warn("已清除全部通道的动态置零。", "AI");
+        }
+
+
+
 
         // —— 供窗体订阅的两个回调 —— //
         // 原始电压数据（未标定、未滤波）：UI/落盘在窗体里直接调用 DaqAIContext.EnqueueRawData/StatData
@@ -310,6 +374,8 @@ namespace IO.NI
 
                 try
                 {
+                  
+                    // —— 修改 fast 分支：所有通道都写入 _lastFastValue —— //
                     var devRecs = _enabled
                         .Where(r => r.物理通道.StartsWith(device + "/"))
                         .OrderBy(r => r.序号)
@@ -322,19 +388,21 @@ namespace IO.NI
                         {
                             var rec = devRecs[c];
 
-                            // 仅处理 EPB 电流通道（Param 形如 “EPB1_current”）
-                            var epbCh = TryParseEpbChannel(rec.参数名);
-                            if (epbCh < 1 || epbCh > 12) continue;
-
-                            // 快速工程值换算： (v - zero) * k + b
+                            // 工程值换算（电压→工程值）
                             var v = raw[c, lastCol];
-                            var amps = (v - rec.零位漂移) * rec.变换斜率 + rec.变换截距;
+                            var eng = (v - rec.零位漂移) * rec.变换斜率 + rec.变换截距;
 
-                            // 直接触发低时延事件（在回调线程；订阅方应做到轻量）
-                            OnFastEpbCurrent?.Invoke(epbCh, amps, current);
+                            // 应用动态置零（工程值域）
+                            if (_zeroOffsets.TryGetValue(rec.参数名, out var z))
+                                eng -= z;
 
-                            // —— 改动：只写入 _lastFastValue（低延迟快照） —— //
-                            _lastFastValue[rec.参数名] = amps;
+                            // ① 对所有参数名都更新 fast 快照（包括 Pressure_1 / Pressure_2 / Force）
+                            _lastFastValue[rec.参数名] = eng;
+
+                            // ② 仅对 EPB 电流触发低时延事件（保持原有行为）
+                            var epbCh = TryParseEpbChannel(rec.参数名);
+                            if (epbCh >= 1 && epbCh <= 12)
+                                OnFastEpbCurrent?.Invoke(epbCh, eng, current);
                         }
                 }
                 catch
@@ -447,6 +515,10 @@ namespace IO.NI
                 {
                     var v = raw[c, i];
                     eng[c, i] = (v - zero) * scale + offs;
+
+                    // —— 新增：应用动态置零（工程值维度）——
+                    if (_zeroOffsets.TryGetValue(rec.参数名, out var z))
+                        eng[c, i] -= z;
                 }
             }
 
