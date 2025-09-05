@@ -8,6 +8,7 @@ using System.Windows.Forms;
 using Controller;
 using CustomTcpClient;
 using DataOperation;
+using IO.NI;
 using MTEmbTest;
 using MTEmbTest.Properties;
 
@@ -25,6 +26,8 @@ namespace MtEmbTest
 
             // 放在程序启动早期（如 Form_Load / Main 里）
             _ = typeof(EpbManager).FullName; // 用 Controller 内真实存在的公开类型名替换
+            _ = typeof(TwoDeviceAiAcquirer).FullName; // 解决断电打不到TwoDeviceAiAcquirer中的问题
+
         }
 
 
