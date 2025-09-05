@@ -2883,5 +2883,80 @@ namespace MTEmbTest
         {
 
         }
+
+        // 把全选中项做置零或清零
+        private void ZeroOrClearSelected(bool isZero)
+        {
+            if (twoDeviceAiAcquirer == null)
+            {
+                XtraMessageBox.Show("采集器未初始化。");
+                return;
+            }
+
+            // 取被勾选的全局索引（1..15）
+            var picked = _checkByGlobal
+                .Where(kv => kv.Value?.Checked == true)
+                .Select(kv => kv.Key)
+                .OrderBy(x => x)
+                .ToList();
+
+            if (picked.Count == 0)
+            {
+                XtraMessageBox.Show("请先勾选要操作的通道。");
+                return;
+            }
+
+            foreach (var idx in picked)
+            {
+                if (idx >= 0 && idx <= 11)
+                {
+                    // EPB 电流通道
+                    if (isZero) twoDeviceAiAcquirer.ZeroEpbChannel(idx+1);
+                    else twoDeviceAiAcquirer.ClearZeroEpbChannel(idx+1);
+                }
+                else
+                {
+                    // P1 / P2 / F -> 参数名
+                    string paramName = idx switch
+                    {
+                        12 => "Pressure_1",
+                        13 => "Pressure_2",
+                        14 => "Force",
+                        _ => null
+                    };
+                    if (string.IsNullOrEmpty(paramName)) continue;
+
+                    if (isZero) twoDeviceAiAcquirer.ZeroByParamName(paramName);
+                    else twoDeviceAiAcquirer.ClearZeroByParamName(paramName);
+                }
+            }
+
+            // 可选：简单提示
+            var label = isZero ? "置零" : "清除置零";
+            var list = string.Join(", ", picked.Select(IndexToDisplayName));
+            // 你也可以换成状态栏提示
+            Console.WriteLine($"{label}完成：{list}");
+        }
+
+        // 把全局索引转成界面显示名（1..12, P1, P2, F）
+        private static string IndexToDisplayName(int idx) => idx switch
+        {
+            >= 0 and <= 11 => $"#{idx+1}",
+            12 => "P1",
+            13 => "P2",
+            14 => "F",
+            _ => $"#{idx}"
+        };
+
+        private void ZeroButton_Click(object sender, EventArgs e)
+        {
+            ZeroOrClearSelected(isZero: true);
+        }
+
+        private void ClearZeroButton_Click(object sender, EventArgs e)
+        {
+            ZeroOrClearSelected(isZero: false);
+        }
+
     }
 }
