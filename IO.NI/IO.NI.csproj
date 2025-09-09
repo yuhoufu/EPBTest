@@ -4,7 +4,7 @@
   <PropertyGroup>
     <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
     <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
-    <ProjectGuid>{1857B54C-EF87-4239-B3B0-1B1ADF082A2D}</ProjectGuid>
+    <ProjectGuid>{1FDE7D08-9014-474C-90C4-A13814D94327}</ProjectGuid>
     <OutputType>Library</OutputType>
     <AppDesignerFolder>Properties</AppDesignerFolder>
     <RootNamespace>IO.NI</RootNamespace>
@@ -20,7 +20,7 @@
     <OutputPath>bin\Debug\</OutputPath>
     <DefineConstants>DEBUG;TRACE</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
-    <WarningLevel>0</WarningLevel>
+    <WarningLevel>4</WarningLevel>
     <LangVersion>9</LangVersion>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
@@ -51,20 +51,20 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="AoController.cs" />
     <Compile Include="CurrentGuard.cs" />
     <Compile Include="DoController.cs" />
     <Compile Include="IAppLogger.cs" />
-    <Compile Include="AoController.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="TwoDeviceAiAcquirer.cs" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Config\Config.csproj">
-      <Project>{7941D662-F680-489B-972D-F324CBB42A9D}</Project>
+      <Project>{7941d662-f680-489b-972d-f324cbb42a9d}</Project>
       <Name>Config</Name>
     </ProjectReference>
     <ProjectReference Include="..\DataOperation\DataOperation.csproj">
-      <Project>{FCE7FD92-9529-40DF-83AB-92B6B4DC469C}</Project>
+      <Project>{fce7fd92-9529-40df-83ab-92b6b4dc469c}</Project>
       <Name>DataOperation</Name>
     </ProjectReference>
   </ItemGroup>
