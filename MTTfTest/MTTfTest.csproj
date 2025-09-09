@@ -255,7 +255,7 @@
       <Name>DataOperation</Name>
     </ProjectReference>
     <ProjectReference Include="..\IO.NI\IO.NI.csproj">
-      <Project>{1857b54c-ef87-4239-b3b0-1b1adf082a2d}</Project>
+      <Project>{1fde7d08-9014-474c-90c4-a13814d94327}</Project>
       <Name>IO.NI</Name>
     </ProjectReference>
     <ProjectReference Include="..\Timing\Timing.csproj">

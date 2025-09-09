@@ -56,7 +56,7 @@
       <Name>Config</Name>
     </ProjectReference>
     <ProjectReference Include="..\IO.NI\IO.NI.csproj">
-      <Project>{1857B54C-EF87-4239-B3B0-1B1ADF082A2D}</Project>
+      <Project>{1FDE7D08-9014-474C-90C4-A13814D94327}</Project>
       <Name>IO.NI</Name>
     </ProjectReference>
     <ProjectReference Include="..\Timing\Timing.csproj">
