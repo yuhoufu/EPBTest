@@ -19,7 +19,8 @@ namespace MTEmbTest
 {
     public partial class FrmRawPlayBack : Form
     {
-        private const int StatLogRecordLens = 76;
+        private const int daqRawLogRecordLens = 60;
+        private const int canRawLogRecordLens = 76;
 
         private static readonly ConcurrentDictionary<int, double> EMBHandlerToRecvCanForceScale = new();
         private static readonly ConcurrentDictionary<int, double> EMBHandlerToRecvCanForceOffset = new();
@@ -40,51 +41,50 @@ namespace MTEmbTest
         private static readonly ConcurrentDictionary<string, double> EMBNameToRecvCanTorqueScale = new();
         private static readonly ConcurrentDictionary<string, double> EMBNameToRecvCanTorqueOffset = new();
 
-
         private static readonly ConcurrentDictionary<string, uint> DirectionToRecvFrame = new();
         private static readonly ConcurrentDictionary<string, string> EMBToDirection = new();
         private static readonly ConcurrentDictionary<int, uint> EMBHandlerToRecvFrame = new();
         private FileInfo[] allFiles;
         private BackgroundWorker bgwA;
-        private int[] BrakeNo;
+
+        private int[] CanBrakeNo;
+
+        // private double[] CanTorque;
         private double[] CanCurrent;
 
-
+        // private double[] DaqTorque;
         private double[] CanForce;
+
         private double[] CanRelTime;
-        private DateTime[] CanTime;
+        private DateTime[] CanSourceTime;
+
+
         private LineItem curveCanCurrent;
 
         private LineItem curveDaqCurrent;
 
-        private LineItem curveDaqTorque;
-
         private LineItem curveForce;
         private int[] DaqBrakeNo;
-
-
         private double[] DaqCurrent;
         private DateTime[] DaqSourceTime;
-        private double[] DaqTorque;
+
+        private string EpbName = "";
+        private int EpbNo;
 
         private string ExportFile = "";
 
         private double[] filterCurrent;
-        private int[] filterDaqBrakeNo;
-        private double[] filterDaqRelTime;
-        private DateTime[] filterDaqTime;
-        private double[] filterTorque;
+        private int[] FilterDaqBrakeNo;
+        private double[] FilterDaqRelTime;
+        private DateTime[] FilterDaqTime;
         private PointPairList listCanCurrent;
         private PointPairList listDaqCurrent;
-        private PointPairList listDaqTorque;
         private PointPairList listForce;
         private ConcurrentDictionary<string, double> ParaNameToOffset = new();
 
-
         private ConcurrentDictionary<string, double> ParaNameToScale = new();
         private ConcurrentDictionary<string, double> ParaNameToZeroValue = new();
-
-
+        private string SafeFile = "";
         private string selectedPath = "";
         private TestConfig testConfig;
         private double XAxisMax;
@@ -132,7 +132,6 @@ namespace MTEmbTest
         [DllImport("user32.dll")]
         public static extern bool ReleaseCapture();
 
-
         private void InitializeCurve()
         {
             try
@@ -154,9 +153,9 @@ namespace MTEmbTest
 
 
                 pane.Title.IsVisible = false;
-                pane.XAxis.Title.Text = "Time";
+                pane.XAxis.Title.Text = "RelativeTime(S)";
                 pane.YAxis.Title.IsVisible = false;
-                pane.XAxis.Title.IsVisible = false;
+                pane.XAxis.Title.IsVisible = true;
 
 
                 pane.Fill = new Fill(Color.FromArgb(255, 255, 255));
@@ -224,18 +223,6 @@ namespace MTEmbTest
                 pane.Y2Axis.MinorTic.Size = 0.0f;
 
 
-                var torqueYAxis = new YAxis("");
-                pane.YAxisList.Add(torqueYAxis);
-                torqueYAxis.IsVisible = true;
-                torqueYAxis.Title.FontSpec.FontColor = Color.Orange;
-                torqueYAxis.Color = Color.Orange;
-                torqueYAxis.Scale.FontSpec.FontColor = Color.Orange;
-                torqueYAxis.Title.FontSpec.Size = fontSize;
-                torqueYAxis.Scale.FontSpec.Size = fontSize;
-                torqueYAxis.MajorGrid.IsVisible = false;
-                torqueYAxis.MajorGrid.IsZeroLine = false;
-
-
                 var CanCurrentYAxis = new Y2Axis("");
                 pane.Y2AxisList.Add(CanCurrentYAxis);
                 CanCurrentYAxis.IsVisible = true;
@@ -255,13 +242,6 @@ namespace MTEmbTest
                 curveForce.IsY2Axis = false;
 
 
-                listDaqTorque = new PointPairList();
-                curveDaqTorque = pane.AddCurve("DAQ_Torque(Nm)", listDaqTorque, Color.Orange, SymbolType.None);
-                curveDaqTorque.Line.Width = 2;
-                curveDaqTorque.YAxisIndex = pane.YAxisList.Count - 1;
-                curveDaqTorque.IsY2Axis = false; // 
-
-
                 listDaqCurrent = new PointPairList();
                 curveDaqCurrent = pane.AddCurve("DAQ_Current(A)", listDaqCurrent, Color.Lime, SymbolType.None);
                 curveDaqCurrent.Line.Width = 2;
@@ -276,8 +256,8 @@ namespace MTEmbTest
                 curveCanCurrent.IsY2Axis = true; // 
 
 
-                zedGraphControlHistory.GraphPane.XAxis.Scale.Max = ClsGlobal.XDuration;
-                zedGraphControlHistory.GraphPane.XAxis.Scale.Min = 0.0;
+                //  zedGraphControlHistory.GraphPane.XAxis.Scale.Max = ClsGlobal.XDuration;
+                //  zedGraphControlHistory.GraphPane.XAxis.Scale.Min = 0.0;
 
 
                 zedGraphControlHistory.GraphPane.XAxis.Scale.MagAuto = false;
@@ -288,8 +268,6 @@ namespace MTEmbTest
                 zedGraphControlHistory.GraphPane.Y2Axis.Scale.MagAuto = false;
                 zedGraphControlHistory.GraphPane.Y2Axis.Scale.FormatAuto = false;
 
-                torqueYAxis.Scale.MagAuto = false;
-                torqueYAxis.Scale.FormatAuto = false;
 
                 CanCurrentYAxis.Scale.MagAuto = false;
                 CanCurrentYAxis.Scale.FormatAuto = false;
@@ -302,80 +280,266 @@ namespace MTEmbTest
             catch (Exception ex)
             {
                 MessageBox.Show("初始化曲线显示失败！" + ex.Message, "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                // ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "初始化曲线显示失败！" + ex.Message, "初始化");
             }
         }
-
-
-        public void LoadCanDbc()
-        {
-            var MsgID = EMBHandlerToRecvFrame[0];
-
-
-            var SendFactor1 = 0.0;
-            var SendOffset1 = 0.0;
-            var DbcMsg = DbcParser.TryGetFactorOffset(ClsGlobal.Dbc, MsgID, "actClampForce", out SendFactor1,
-                out SendOffset1);
-            if (DbcMsg.IndexOf("OK") < 0)
-            {
-                MessageBox.Show(DbcMsg);
-                return;
-            }
-
-            EMBHandlerToRecvCanForceScale[0] = SendFactor1;
-            EMBHandlerToRecvCanForceOffset[0] = SendOffset1;
-
-            var EmbName = "EMB1";
-
-            EMBNameToRecvCanForceScale[EmbName] = SendFactor1;
-            EMBNameToRecvCanForceOffset[EmbName] = SendOffset1;
-
-
-            var SendFactor2 = 0.0;
-            var SendOffset2 = 0.0;
-            DbcMsg = DbcParser.TryGetFactorOffset(ClsGlobal.Dbc, MsgID, "dcCurrent", out SendFactor2, out SendOffset2);
-            if (DbcMsg.IndexOf("OK") < 0)
-            {
-                MessageBox.Show(DbcMsg);
-                return;
-            }
-
-            EMBHandlerToRecvCanCurrentScale[0] = SendFactor2;
-            EMBHandlerToRecvCanCurrentOffset[0] = SendOffset2;
-
-
-            EMBNameToRecvCanCurrentScale[EmbName] = SendFactor2;
-            EMBNameToRecvCanCurrentOffset[EmbName] = SendOffset2;
-
-
-            var SendFactor3 = 0.0;
-            var SendOffset3 = 0.0;
-            DbcMsg = DbcParser.TryGetFactorOffset(ClsGlobal.Dbc, MsgID, "actTorque", out SendFactor3, out SendOffset3);
-            if (DbcMsg.IndexOf("OK") < 0)
-            {
-                MessageBox.Show(DbcMsg);
-                return;
-            }
-
-            EMBHandlerToRecvCanTorqueScale[0] = SendFactor3;
-            EMBHandlerToRecvCanTorqueOffset[0] = SendOffset3;
-
-
-            EMBNameToRecvCanTorqueScale[EmbName] = SendFactor3;
-            EMBNameToRecvCanTorqueOffset[EmbName] = SendOffset3;
-        }
-
 
         private void FrmPlayBack_Load(object sender, EventArgs e)
         {
             InitializeCurve();
 
+            // 方向和接收帧ID关系  如RL-1536
             MakeDirectionMapping();
+
+
             bgwA = new BackgroundWorker();
             bgwA.WorkerReportsProgress = true;
             bgwA.DoWork += bgwA_DoWork;
-
             bgwA.RunWorkerCompleted += bgwA_Completed;
+        }
+
+        private void bgwA_DoWork(object sender, DoWorkEventArgs e)
+        {
+            try
+            {
+                var bgworker = sender as BackgroundWorker;
+                var FileName = e.Argument.ToString();
+                ReadData(FileName);
+            }
+
+            catch (Exception ex)
+            {
+            }
+        }
+
+
+        private void bgwA_Completed(object sender, RunWorkerCompletedEventArgs e)
+        {
+            if (CanForce != null)
+            {
+                for (var i = 0; i < CanForce.Length; i++)
+                {
+                    var x = CanSourceTime[i].Subtract(CanSourceTime[0]).TotalSeconds;
+
+                    listForce.Add(x, CanForce[i]);
+                    listCanCurrent.Add(x, CanCurrent[i]);
+                }
+
+
+                filterCurrent = ClsDataFilter.MakeMedianFilterReducePoint(ref DaqCurrent, ClsGlobal.MedianLens);
+
+                var daqspan = 1.0 / ClsGlobal.DaqFrequency * ClsGlobal.MedianLens;
+
+                var DaqDataLens = DaqCurrent.Length / ClsGlobal.MedianLens;
+                FilterDaqRelTime = new double[DaqDataLens];
+                FilterDaqBrakeNo = new int[DaqDataLens];
+                FilterDaqTime = new DateTime[DaqDataLens];
+
+                for (var i = 0; i < DaqDataLens; i++)
+                {
+                    FilterDaqTime[i] = DaqSourceTime[i * ClsGlobal.MedianLens];
+                    FilterDaqRelTime[i] =
+                        DaqSourceTime[i * ClsGlobal.MedianLens].Subtract(DaqSourceTime[0]).TotalSeconds;
+                    FilterDaqBrakeNo[i] = DaqBrakeNo[i * ClsGlobal.MedianLens];
+                }
+
+
+                for (var i = 0; i < DaqDataLens; i++)
+                    //DaqRelTime[i] = daqspan * (double)i;
+                    listDaqCurrent.Add(FilterDaqRelTime[i], filterCurrent[i]);
+
+
+                RtbTestInfo.Clear();
+                RtbTestInfo.AppendText("试验名称: " + testConfig.TestName + "\n");
+                RtbTestInfo.AppendText("试验环境: " + testConfig.TestEnvir + "\n");
+                RtbTestInfo.AppendText("试验周期: " + testConfig.TestSpan.ToString("f2") + "S\n");
+                RtbTestInfo.AppendText("试验次数: " + testConfig.TestTarget + "\n");
+                RtbTestInfo.AppendText("当前范围: <" + CanBrakeNo[0] + "," + CanBrakeNo[CanBrakeNo.Length - 1] + ">\n");
+
+                ProgressShow.Visible = false;
+                Application.DoEvents();
+
+
+                zedGraphControlHistory.GraphPane.XAxis.Scale.Max = FilterDaqRelTime[FilterDaqRelTime.Length - 1];
+                zedGraphControlHistory.GraphPane.XAxis.Scale.Min = 0.0;
+
+
+                XAxisMin = 0.0;
+                XAxisMax = FilterDaqRelTime[FilterDaqRelTime.Length - 1];
+
+                zedGraphControlHistory.AxisChange();
+                zedGraphControlHistory.Invalidate();
+            }
+
+            else
+            {
+                MessageBox.Show("记录数据为空！");
+            }
+        }
+
+
+        private void ReadData(string FileName)
+        {
+            try
+            {
+                using (var fs = new FileStream(FileName, FileMode.Open))
+                {
+                    var sr = new BinaryReader(fs);
+                    var FileLens = (int)fs.Length;
+                    var Frames = FileLens / canRawLogRecordLens;
+
+                    CanBrakeNo = new int[Frames];
+                    CanSourceTime = new DateTime[Frames];
+                    CanForce = new double[Frames];
+                    CanCurrent = new double[Frames];
+
+                    CanRelTime = new double[Frames];
+
+
+                    for (var i = 0; i < Frames; i++) //测试了一整，还是这个最快
+                    {
+                        CanBrakeNo[i] = sr.ReadInt32();
+
+
+                        CanRelTime[i] = ClsGlobal.CanRecvTimeSpanMillSecs / 1000.0 * i;
+
+
+                        CanSourceTime[i] = DateTime.FromFileTime(sr.ReadInt64());
+
+                        var Data = sr.ReadBytes(64);
+
+
+                        double forceValue = 0;
+                        double currentValue = 0;
+                        byte faultflg = 0;
+                        double torque = 0;
+                        ClsBitFieldParser.ParseClampData(Data,
+                            EMBHandlerToRecvCanForceScale[EpbNo - 1],
+                            EMBHandlerToRecvCanTorqueScale[EpbNo - 1],
+                            EMBHandlerToRecvCanCurrentScale[EpbNo - 1],
+                            out forceValue, out faultflg, out torque, out currentValue);
+
+                        CanForce[i] = forceValue;
+                        CanCurrent[i] = currentValue;
+                    }
+
+                    sr.Close();
+                    fs.Close();
+                }
+
+
+                var daqFile = FileName.Replace("EMB_CAN" + EpbNo, "DAQ_Dev1");
+
+                using (var fs = new FileStream(daqFile, FileMode.Open))
+                {
+                    var sr = new BinaryReader(fs);
+                    var FileLens = (int)fs.Length;
+                    var Frames = FileLens / daqRawLogRecordLens;
+
+
+                    DaqCurrent = new double[Frames];
+                    DaqSourceTime = new DateTime[Frames];
+                    DaqBrakeNo = new int[Frames];
+
+
+                    for (var i = 0; i < Frames; i++) //测试了一整，还是这个最快
+                    {
+                        DaqBrakeNo[i] = sr.ReadInt32();
+                        DaqSourceTime[i] = DateTime.FromFileTime(sr.ReadInt64());
+
+                        var Data = sr.ReadBytes(daqRawLogRecordLens - 12);
+
+                        var currentRaw = BitConverter.ToDouble(Data, (EpbNo - 1) * 8);
+
+                        DaqCurrent[i] = (currentRaw - ParaNameToZeroValue[EpbName]) * ParaNameToScale[EpbName] +
+                                        ParaNameToOffset[EpbName];
+                    }
+
+                    sr.Close();
+                    fs.Close();
+                }
+            }
+            catch (Exception ex)
+            {
+                // ex.Message;
+            }
+        }
+
+
+        private void ShowOrHideCurve()
+        {
+            curveForce.IsVisible = ChkForce.Checked;
+            zedGraphControlHistory.GraphPane.YAxis.IsVisible = ChkForce.Checked;
+
+            curveDaqCurrent.IsVisible = ChkDaqCurrent.Checked;
+            zedGraphControlHistory.GraphPane.Y2Axis.IsVisible = ChkDaqCurrent.Checked;
+
+            //curveDaqTorque.IsVisible = ChkDaqTorque.Checked;
+            //zedGraphControlHistory.GraphPane.YAxisList[1].IsVisible = ChkDaqTorque.Checked;
+
+
+            curveCanCurrent.IsVisible = ChkPressure.Checked;
+            zedGraphControlHistory.GraphPane.Y2AxisList[1].IsVisible = ChkPressure.Checked;
+
+            zedGraphControlHistory.AxisChange();
+            zedGraphControlHistory.Invalidate();
+        }
+
+        private void ChkForce_CheckedChanged(object sender, EventArgs e)
+        {
+            ShowOrHideCurve();
+        }
+
+        private void ChkCurrent_CheckedChanged(object sender, EventArgs e)
+        {
+            ShowOrHideCurve();
+        }
+
+        private void ChkDaqCurrent_CheckedChanged(object sender, EventArgs e)
+        {
+            ShowOrHideCurve();
+        }
+
+        private void ChkDaqTorque_CheckedChanged(object sender, EventArgs e)
+        {
+            ShowOrHideCurve();
+        }
+
+        private void BtnExportFile_Click(object sender, EventArgs e)
+        {
+            if (FilterDaqTime == null)
+            {
+                MessageBox.Show("数据集为空，无法导出！");
+                return;
+            }
+
+
+            var saveFileDialog = new SaveFileDialog();
+            saveFileDialog.Filter = "CSV files (*.csv)|*.csv|All files (*.*)|*.*";
+            saveFileDialog.Title = "Export to CSV";
+            // saveFileDialog.FileName = "data_export_" + DateTime.Now.ToString("yyyyMMdd") + ".csv";
+            saveFileDialog.FileName = ExportFile;
+
+            if (saveFileDialog.ShowDialog() == DialogResult.OK)
+                try
+                {
+                    ProgressShow.Visible = true;
+                    ProgressShow.BringToFront(); // 确保在最上层
+                    Application.DoEvents();
+
+
+                    ExportData(FilterDaqTime, FilterDaqRelTime, FilterDaqBrakeNo, CanBrakeNo, CanForce, CanCurrent,
+                        filterCurrent, saveFileDialog.FileName);
+
+                    ProgressShow.Visible = false;
+
+                    Application.DoEvents();
+
+                    MessageBox.Show("导出完成！");
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(ex.Message);
+                }
         }
 
 
@@ -387,6 +551,7 @@ namespace MTEmbTest
             DirectionToRecvFrame["RL"] = (uint)Convert.ToInt32(ClsGlobal.RL_Recv, 16);
             DirectionToRecvFrame["RR"] = (uint)Convert.ToInt32(ClsGlobal.RR_Recv, 16);
         }
+
 
         public void LoadEMBHandlerAndFrameNo(string xmlPath)
         {
@@ -404,7 +569,7 @@ namespace MTEmbTest
                 var xdoc = XDocument.Load(xmlPath);
 
                 // 解析XML数据
-                foreach (var emb in xdoc.Descendants("EMB"))
+                foreach (var emb in xdoc.Descendants("EPB"))
                     dt.Rows.Add(
                         (string)emb.Element("名称"),
                         (string)emb.Element("型号"),
@@ -432,274 +597,279 @@ namespace MTEmbTest
             }
         }
 
-
-        private void bgwA_DoWork(object sender, DoWorkEventArgs e)
+        public void LoadCanDbc()
         {
-            try
+            foreach (var frame in EMBHandlerToRecvFrame)
             {
-                var bgworker = sender as BackgroundWorker;
-                var FileName = e.Argument.ToString();
-                ReadData(FileName);
+                var SendFactor = 0.0;
+                var SendOffset = 0.0;
+                var DbcMsg = DbcParser.TryGetFactorOffset(ClsGlobal.Dbc, frame.Value, "actClampForce", out SendFactor,
+                    out SendOffset);
+                if (DbcMsg.IndexOf("OK") < 0)
+                {
+                    MessageBox.Show(DbcMsg);
+                    return;
+                }
+
+                EMBHandlerToRecvCanForceScale[frame.Key] = SendFactor;
+                EMBHandlerToRecvCanForceOffset[frame.Key] = SendOffset;
+
+                var EmbName = "EPB" + (frame.Key + 1);
+
+                EMBNameToRecvCanForceScale[EmbName] = SendFactor;
+                EMBNameToRecvCanForceOffset[EmbName] = SendOffset;
             }
 
-            catch (Exception ex)
+
+            foreach (var frame in EMBHandlerToRecvFrame)
             {
+                var SendFactor = 0.0;
+                var SendOffset = 0.0;
+                var DbcMsg = DbcParser.TryGetFactorOffset(ClsGlobal.Dbc, frame.Value, "dcCurrent", out SendFactor,
+                    out SendOffset);
+                if (DbcMsg.IndexOf("OK") < 0)
+                {
+                    MessageBox.Show(DbcMsg);
+                    return;
+                }
+
+                EMBHandlerToRecvCanCurrentScale[frame.Key] = SendFactor;
+                EMBHandlerToRecvCanCurrentOffset[frame.Key] = SendOffset;
+
+                var EmbName = "EPB" + (frame.Key + 1);
+
+                EMBNameToRecvCanCurrentScale[EmbName] = SendFactor;
+                EMBNameToRecvCanCurrentOffset[EmbName] = SendOffset;
+            }
+
+            foreach (var frame in EMBHandlerToRecvFrame)
+            {
+                var SendFactor = 0.0;
+                var SendOffset = 0.0;
+                var DbcMsg = DbcParser.TryGetFactorOffset(ClsGlobal.Dbc, frame.Value, "actTorque", out SendFactor,
+                    out SendOffset);
+                if (DbcMsg.IndexOf("OK") < 0)
+                {
+                    MessageBox.Show(DbcMsg);
+                    return;
+                }
+
+                EMBHandlerToRecvCanTorqueScale[frame.Key] = SendFactor;
+                EMBHandlerToRecvCanTorqueOffset[frame.Key] = SendOffset;
+
+                var EmbName = "EPB" + (frame.Key + 1);
+
+                EMBNameToRecvCanTorqueScale[EmbName] = SendFactor;
+                EMBNameToRecvCanTorqueOffset[EmbName] = SendOffset;
+            }
+        }
+
+        private void BtnChoiseFolder_Click(object sender, EventArgs e)
+        {
+            using (var folderDialog = new FolderBrowserDialog())
+            {
+                folderDialog.Description = "选择文件夹";
+                folderDialog.ShowNewFolderButton = false;
+                folderDialog.SelectedPath = @"D:\Github\wanxiang\EPBTest\MTTfTest\bin\Debug\DataStore\"; // 默认选中的路径
+
+                if (folderDialog.ShowDialog() == DialogResult.OK)
+                {
+                    selectedPath = folderDialog.SelectedPath;
+
+                    try
+                    {
+                        EpbNo = int.Parse(CmbEpbNo.Text.Replace("EPB", ""));
+                        EpbName = CmbEpbNo.Text;
+
+
+                        // 获取文件夹中所有文件
+                        allFiles = new DirectoryInfo(selectedPath).GetFiles("*.*", SearchOption.TopDirectoryOnly);
+                        var SelectPart = allFiles.Where(file => FilterCondition(file, "CAN" + EpbNo + "_Raw", "bin"))
+                            .OrderBy(file => file.CreationTime) // 按创建时间升序
+                            .ToArray();
+
+                        // 提取纯文件名（不含路径）
+                        var fileNames = SelectPart
+                            .Select(file => file.Name)
+                            .ToArray();
+
+                        LbFileList.Items.Clear();
+                        LbFileList.Items.AddRange(fileNames);
+
+                        var xmlPath = Path.Combine(selectedPath, @"TestConfig.xml");
+                        // LoadTestConfigFromXml(xmlPath); // 暂时注释
+
+                        xmlPath = Path.Combine(selectedPath, @"EMBControl.XML");
+                        //LoadEMBHandlerAndFrameNo(xmlPath); // 暂时注释
+
+
+                        // LoadCanDbc();
+
+
+                        var ReadMsg = ClsXmlOperation.GetDaqScaleMapping(selectedPath + @"\AIConfig.xml", "Dev1",
+                            out ParaNameToScale);
+                        if (ReadMsg.IndexOf("OK") < 0)
+                        {
+                            MessageBox.Show(ReadMsg);
+                            return;
+                        }
+
+                        ReadMsg = ClsXmlOperation.GetDaqOffsetMapping(selectedPath + @"\AIConfig.xml", "Dev1",
+                            out ParaNameToOffset);
+                        if (ReadMsg.IndexOf("OK") < 0)
+                        {
+                            MessageBox.Show(ReadMsg);
+                            return;
+                        }
+
+                        ReadMsg = ClsXmlOperation.GetDaqZeroValueMapping(selectedPath + @"\AIConfig.xml", "Dev1",
+                            out ParaNameToZeroValue);
+                        if (ReadMsg.IndexOf("OK") < 0) MessageBox.Show(ReadMsg);
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show($"错误: {ex.Message}");
+                    }
+                }
             }
         }
 
 
-        private void bgwA_Completed(object sender, RunWorkerCompletedEventArgs e)
+        private bool FilterCondition(FileInfo file, string nameFilter, string extensionFilter)
         {
-            if (CanForce != null)
+            // 1. 文件名过滤
+            var nameValid = string.IsNullOrWhiteSpace(nameFilter) ||
+                            file.Name.IndexOf(nameFilter, StringComparison.OrdinalIgnoreCase) >= 0;
+
+            // 2. 扩展名过滤
+            var extensionValid = string.IsNullOrWhiteSpace(extensionFilter) ||
+                                 extensionFilter.Split(new[] { ';', ',' }, StringSplitOptions.RemoveEmptyEntries)
+                                     .Any(ext =>
+                                         file.Extension.Equals(
+                                             ext.StartsWith(".") ? ext : "." + ext,
+                                             StringComparison.OrdinalIgnoreCase));
+
+            // 3. 组合条件
+            return nameValid && extensionValid;
+        }
+
+        private void LbFileList_DoubleClick(object sender, EventArgs e)
+        {
+            try
             {
-                CanRelTime = new double[CanForce.Length];
-
-                for (var i = 0; i < CanForce.Length; i++)
-                {
-                    CanRelTime[i] = CanTime[i].Subtract(CanTime[0]).TotalSeconds;
-                    listForce.Add(CanRelTime[i], CanForce[i]);
-                    listCanCurrent.Add(CanRelTime[i], CanCurrent[i]);
-                }
+                SafeFile = LbFileList.SelectedItem.ToString();
+                var CurFileName = selectedPath + "\\" + SafeFile;
+                ExportFile = CurFileName.Replace(".bin", ".csv");
 
 
-                filterCurrent = ClsDataFilter.MakeMedianFilterReducePoint(ref DaqCurrent, ClsGlobal.MedianLens);
-                filterTorque = ClsDataFilter.MakeMedianFilterReducePoint(ref DaqTorque, ClsGlobal.MedianLens);
+                CanForce = null;
+                CanCurrent = null;
+                CanBrakeNo = null;
+                CanSourceTime = null;
+                DaqBrakeNo = null;
+                DaqSourceTime = null;
+                DaqCurrent = null;
+                filterCurrent = null;
+                CanRelTime = null;
+                FilterDaqRelTime = null;
+                FilterDaqBrakeNo = null;
+                FilterDaqTime = null;
 
+                listForce.Clear();
+                listDaqCurrent.Clear();
+                listCanCurrent.Clear();
+                zedGraphControlHistory.AxisChange();
+                zedGraphControlHistory.Invalidate();
 
-                var DaqDataLens = DaqCurrent.Length / ClsGlobal.MedianLens;
-                filterDaqRelTime = new double[DaqDataLens];
-                filterDaqBrakeNo = new int[DaqDataLens];
-                filterDaqTime = new DateTime[DaqDataLens];
+                ProgressShow.Location = new Point(
+                    zedGraphControlHistory.Left + (zedGraphControlHistory.Width - ProgressShow.Width) / 2,
+                    zedGraphControlHistory.Top + (zedGraphControlHistory.Height - ProgressShow.Height) / 2
+                );
 
-                for (var i = 0; i < DaqDataLens; i++)
-                {
-                    filterDaqTime[i] = DaqSourceTime[i * ClsGlobal.MedianLens];
-                    filterDaqRelTime[i] =
-                        DaqSourceTime[i * ClsGlobal.MedianLens].Subtract(DaqSourceTime[0]).TotalSeconds;
-                    filterDaqBrakeNo[i] = DaqBrakeNo[i * ClsGlobal.MedianLens];
-                }
-
-                //double[] daqreltime = new double[DaqSourceTime.Length];
-
-                //for (int i = 0; i < DaqSourceTime.Length; i++)
-                //{
-                //    daqreltime[i]= DaqSourceTime[i].Subtract(DaqSourceTime[0]).TotalSeconds;
-                //}
-
-                for (var i = 0; i < filterCurrent.Length; i++)
-                {
-                    listDaqCurrent.Add(filterDaqRelTime[i], filterCurrent[i]);
-                    listDaqTorque.Add(filterDaqRelTime[i], filterTorque[i]);
-                }
-
-
-                var maxLens = CanForce.Length > filterCurrent.Length ? CanForce.Length : filterCurrent.Length;
-
-
-                zedGraphControlHistory.GraphPane.XAxis.Scale.Max = 0.01 * maxLens;
-                zedGraphControlHistory.GraphPane.XAxis.Scale.Min = 0.0;
-
-                XAxisMin = 0.0;
-                XAxisMax = 0.01 * maxLens;
-
-
-                RtbTestInfo.Clear();
-                RtbTestInfo.AppendText("试验名称: " + testConfig.TestName + "\n");
-                RtbTestInfo.AppendText("试验阶段: " + testConfig.TestEnvir + "\n");
-                RtbTestInfo.AppendText("试验周期: " + testConfig.TestSpan.ToString("f2") + "S\n");
-                RtbTestInfo.AppendText("试验次数: " + testConfig.TestTarget + "\n");
-                //  RtbTestInfo.AppendText("当前范围: <" + DaqBrakeNo[0].ToString() + "," + DaqBrakeNo[DaqBrakeNo.Length - 1].ToString() + ">\n");
-                RtbTestInfo.AppendText("当前范围: <" + BrakeNo[0] + "," + BrakeNo[BrakeNo.Length - 1] + ">\n");
-
-                ProgressShow.Visible = false;
+                ProgressShow.Visible = true;
+                ProgressShow.BringToFront(); // 确保在最上层
                 Application.DoEvents();
 
 
-                zedGraphControlHistory.AxisChange();
-                zedGraphControlHistory.Invalidate();
-            }
-
-            else
-            {
-                MessageBox.Show("记录数据为空！");
-            }
-        }
-
-        private void ReadData(string FileName)
-        {
-            try
-            {
-                using (var fs = new FileStream(FileName, FileMode.Open))
-                {
-                    var sr = new BinaryReader(fs);
-                    var FileLens = (int)fs.Length;
-                    var Frames = FileLens / StatLogRecordLens;
-
-                    CanForce = new double[Frames];
-
-                    CanTime = new DateTime[Frames];
-                    BrakeNo = new int[Frames];
-                    CanCurrent = new double[Frames];
-
-
-                    for (var i = 0; i < Frames; i++) //测试了一整，还是这个最快
-                    {
-                        BrakeNo[i] = sr.ReadInt32();
-                        CanTime[i] = DateTime.FromFileTime(sr.ReadInt64());
-
-                        var Data = sr.ReadBytes(64);
-
-
-                        double forceValue = 0;
-                        double currentValue = 0;
-                        byte faultflg = 0;
-                        double torque = 0;
-                        ClsBitFieldParser.ParseClampData(Data,
-                            EMBHandlerToRecvCanForceScale[0],
-                            EMBHandlerToRecvCanTorqueScale[0],
-                            EMBHandlerToRecvCanCurrentScale[0],
-                            out forceValue, out faultflg, out torque, out currentValue);
-
-                        CanForce[i] = forceValue;
-                        CanCurrent[i] = currentValue;
-                    }
-
-                    sr.Close();
-                    fs.Close();
-                }
-
-
-                var daqFile = FileName.Replace("EMB_CAN1", "DAQ_Dev1");
-
-                using (var fs = new FileStream(daqFile, FileMode.Open))
-                {
-                    var sr = new BinaryReader(fs);
-                    var FileLens = (int)fs.Length;
-                    var Frames = FileLens / 44;
-
-
-                    DaqCurrent = new double[Frames];
-                    DaqSourceTime = new DateTime[Frames];
-                    DaqBrakeNo = new int[Frames];
-                    DaqTorque = new double[Frames];
-
-
-                    for (var i = 0; i < Frames; i++) //测试了一整，还是这个最快
-                    {
-                        DaqBrakeNo[i] = sr.ReadInt32();
-                        DaqSourceTime[i] = DateTime.FromFileTime(sr.ReadInt64());
-
-
-                        DaqCurrent[i] =
-                            (sr.ReadDouble() - ParaNameToZeroValue["EMB1_current"]) * ParaNameToScale["EMB1_current"] +
-                            ParaNameToOffset["EMB1_current"];
-                        DaqTorque[i] =
-                            (sr.ReadDouble() - ParaNameToZeroValue["EMB1_torque"]) * ParaNameToScale["EMB1_torque"] +
-                            ParaNameToOffset["EMB1_torque"];
-
-
-                        sr.ReadDouble();
-                        sr.ReadDouble();
-                    }
-
-                    sr.Close();
-                    fs.Close();
-                }
+                bgwA.RunWorkerAsync(CurFileName);
             }
             catch (Exception ex)
             {
-                // ex.Message;
+                MessageBox.Show(ex.Message);
             }
         }
 
-
-        private void ShowOrHideCurve()
+        public void LoadTestConfigFromXml(string xmlPath)
         {
-            curveForce.IsVisible = ChkForce.Checked;
-            zedGraphControlHistory.GraphPane.YAxisList[0].IsVisible = ChkForce.Checked;
-
-            curveCanCurrent.IsVisible = ChkCurrent.Checked;
-            zedGraphControlHistory.GraphPane.Y2AxisList[1].IsVisible = ChkCurrent.Checked;
-
-
-            curveDaqCurrent.IsVisible = ChkDaqCurrent.Checked;
-            zedGraphControlHistory.GraphPane.Y2AxisList[0].IsVisible = ChkDaqCurrent.Checked;
-
-
-            curveDaqTorque.IsVisible = ChkDaqTorque.Checked;
-            zedGraphControlHistory.GraphPane.YAxisList[1].IsVisible = ChkDaqTorque.Checked;
-
-
-            zedGraphControlHistory.AxisChange();
-            zedGraphControlHistory.Invalidate();
-        }
-
-        private void ChkForce_CheckedChanged(object sender, EventArgs e)
-        {
-            ShowOrHideCurve();
-        }
-
-        private void ChkCurrent_CheckedChanged(object sender, EventArgs e)
-        {
-            ShowOrHideCurve();
-        }
-
-        private void ChkDaqCurrent_CheckedChanged_1(object sender, EventArgs e)
-        {
-            ShowOrHideCurve();
-        }
-
-        private void ChkDaqTorque_CheckedChanged_1(object sender, EventArgs e)
-        {
-            ShowOrHideCurve();
-        }
-
-        private void ChkDaqCurrent_CheckedChanged(object sender, EventArgs e)
-        {
-            ShowOrHideCurve();
-        }
-
-        private void ChkDaqTorque_CheckedChanged(object sender, EventArgs e)
-        {
-            ShowOrHideCurve();
-        }
-
-        private void BtnExportFile_Click(object sender, EventArgs e)
-        {
-            if (filterDaqTime == null)
+            try
             {
-                MessageBox.Show("数据集为空，无法导出！");
-                return;
+                if (!File.Exists(xmlPath))
+                {
+                    MessageBox.Show("未发现试验信息文件！");
+                    return;
+                }
+
+
+                testConfig = LoadTestConfigFromFile(xmlPath);
+                if (testConfig == null)
+                {
+                    MessageBox.Show("试验信息文件读取失败！");
+                    return;
+                }
+
+                RtbTestInfo.Clear();
+
+                testConfig.TestSpan = 1.0 / double.Parse(testConfig.TestCycle);
+
+                RtbTestInfo.AppendText("试验名称: " + testConfig.TestName + "\n");
+                RtbTestInfo.AppendText("试验环境: " + testConfig.TestEnvir + "\n");
+                RtbTestInfo.AppendText("试验周期: " + testConfig.TestSpan.ToString("f2") + "S\n");
+                RtbTestInfo.AppendText("试验次数: " + testConfig.TestTarget + "\n");
             }
 
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message);
+            }
+        }
 
-            var saveFileDialog = new SaveFileDialog();
-            saveFileDialog.Filter = "CSV files (*.csv)|*.csv|All files (*.*)|*.*";
-            saveFileDialog.Title = "Export to CSV";
 
-            saveFileDialog.FileName = ExportFile;
-
-            if (saveFileDialog.ShowDialog() == DialogResult.OK)
-                try
+        private TestConfig LoadTestConfigFromFile(string xmlPath)
+        {
+            try
+            {
+                var serializer = new XmlSerializer(typeof(TestConfig));
+                using (var reader = new StreamReader(xmlPath))
                 {
-                    ProgressShow.Visible = true;
-                    ProgressShow.BringToFront(); // 确保在最上层
-                    Application.DoEvents();
-
-
-                    ExportData(filterDaqTime, filterDaqRelTime, filterDaqBrakeNo, BrakeNo, CanForce, CanCurrent,
-                        filterCurrent, filterTorque, saveFileDialog.FileName);
-
-                    ProgressShow.Visible = false;
-
-                    Application.DoEvents();
-
-                    MessageBox.Show("导出完成！");
+                    return (TestConfig)serializer.Deserialize(reader);
                 }
-                catch (Exception ex)
-                {
-                    MessageBox.Show(ex.Message);
-                }
+            }
+            catch
+            {
+                return new TestConfig(); // 返回空配置避免异常
+            }
+        }
+
+        private void CmbEmbNo_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            EpbNo = int.Parse(CmbEpbNo.Text.Replace("EPB", ""));
+            EpbName = CmbEpbNo.Text;
+
+            if (selectedPath.Length < 1) return;
+
+            // 获取文件夹中所有文件
+            allFiles = new DirectoryInfo(selectedPath).GetFiles("*.*", SearchOption.TopDirectoryOnly);
+            var SelectPart = allFiles.Where(file => FilterCondition(file, "CAN" + EpbNo + "_Raw", "bin"))
+                .OrderBy(file => file.CreationTime) // 按创建时间升序
+                .ToArray();
+
+            // 提取纯文件名（不含路径）
+            var fileNames = SelectPart
+                .Select(file => file.Name)
+                .ToArray();
+
+            LbFileList.Items.Clear();
+            LbFileList.Items.AddRange(fileNames);
         }
 
 
@@ -711,7 +881,6 @@ namespace MTEmbTest
             double[] CanForce,
             double[] CanCurrent,
             double[] filterCurrent,
-            double[] filterTorque,
             string ExportFileName)
         {
             // 验证数组长度一致性
@@ -735,7 +904,6 @@ namespace MTEmbTest
             var adjustedCanForce = new List<double>();
             var adjustedCanCurrent = new List<double>();
             var adjustedFilterCurrent = new List<double>();
-            var adjustedFilterTorque = new List<double>();
 
             var j = 0; // CAN数据的索引
             var lastCanForce = 0.0;
@@ -753,7 +921,6 @@ namespace MTEmbTest
                     adjustedDaqBrake.Add(FilterDaqBrakeNo[i]);
                     adjustedCanBrake.Add(FilterDaqBrakeNo[i]); // 对齐到DAQ刹车号
                     adjustedFilterCurrent.Add(filterCurrent[i]);
-                    adjustedFilterTorque.Add(filterTorque[i]);
 
                     if (hasPreviousCanValue)
                     {
@@ -788,7 +955,6 @@ namespace MTEmbTest
                     adjustedCanForce.Add(CanForce[j]);
                     adjustedCanCurrent.Add(CanCurrent[j]);
                     adjustedFilterCurrent.Add(filterCurrent[i]);
-                    adjustedFilterTorque.Add(filterTorque[i]);
 
                     // 保存当前CAN值
                     lastCanForce = CanForce[j];
@@ -805,7 +971,6 @@ namespace MTEmbTest
                     adjustedDaqBrake.Add(FilterDaqBrakeNo[i]);
                     adjustedCanBrake.Add(FilterDaqBrakeNo[i]); // 对齐到DAQ刹车号
                     adjustedFilterCurrent.Add(filterCurrent[i]);
-                    adjustedFilterTorque.Add(filterTorque[i]);
 
                     if (hasPreviousCanValue)
                     {
@@ -823,7 +988,7 @@ namespace MTEmbTest
             using (var writer = new StreamWriter(ExportFileName, false, Encoding.UTF8))
             {
                 // 写入标题行
-                writer.WriteLine("TimeStamp,RelTime,DAQBrakeNo,CanBrakeNo,CanForce,CanCurrent,DAQCurrent,DAQTorque");
+                writer.WriteLine("TimeStamp,RelTime,DAQBrakeNo,CanBrakeNo,CanForce,CanCurrent,DAQCurrent");
 
                 // 写入数据行
                 for (var i = 0; i < adjustedTime.Count; i++)
@@ -834,39 +999,18 @@ namespace MTEmbTest
                         $"{adjustedCanBrake[i]}," +
                         $"{adjustedCanForce[i]:0.000}," +
                         $"{adjustedCanCurrent[i]:0.000}," +
-                        $"{adjustedFilterCurrent[i]:0.000}," +
-                        $"{adjustedFilterTorque[i]:0.000}");
+                        $"{adjustedFilterCurrent[i]:0.000}");
             }
         }
 
-
-        /// <summary>
-        ///     沿 X 轴平移图表
-        /// </summary>
-        /// <param name="shift">平移量（正=右移，负=左移）</param>
-        private void AbsPanXAxis(double shift)
+        private void BtnPanLeft_Click(object sender, EventArgs e)
         {
-            if (zedGraphControlHistory.GraphPane == null) return;
+            PercentPanXAxis(-0.9);
+        }
 
-
-            var pane = zedGraphControlHistory.GraphPane;
-
-            // 计算新范围
-            var newMin = pane.XAxis.Scale.Min + shift;
-            var newMax = pane.XAxis.Scale.Max + shift;
-
-            // 可选：检查范围是否超出数据边界
-            if (newMin < XAxisMin) newMin = XAxisMin;
-
-            if (newMax > XAxisMax) newMax = XAxisMax;
-
-            // 应用新范围
-            pane.XAxis.Scale.Min = newMin;
-            pane.XAxis.Scale.Max = newMax;
-
-            // 刷新图表
-            zedGraphControlHistory.AxisChange();
-            zedGraphControlHistory.Invalidate();
+        private void BtnPanRight_Click(object sender, EventArgs e)
+        {
+            PercentPanXAxis(0.9);
         }
 
         private void PercentPanXAxis(double shift)
@@ -893,289 +1037,6 @@ namespace MTEmbTest
             // 刷新图表
             zedGraphControlHistory.AxisChange();
             zedGraphControlHistory.Invalidate();
-        }
-
-
-        public void AppendDoublesToFileV2(
-            double value1,
-            double value2,
-            double value3,
-            double value4,
-            double value5,
-            string fileName,
-            string delimiter = ",",
-            string format = "F3")
-        {
-            try
-            {
-                // 参数验证
-                if (string.IsNullOrWhiteSpace(fileName))
-                    throw new ArgumentException("文件名不能为空", nameof(fileName));
-
-                if (string.IsNullOrEmpty(delimiter))
-                    throw new ArgumentException("分隔符不能为空", nameof(delimiter));
-
-                // 格式化数值
-                var line = string.Format("{0}{1}{2}{3}{4}{5}{6}{7}{8}{9}",
-                    value1.ToString(format),
-                    delimiter,
-                    value2.ToString(format),
-                    delimiter,
-                    value3.ToString(format),
-                    delimiter,
-                    value4.ToString(format),
-                    delimiter,
-                    value5.ToString(format),
-                    Environment.NewLine);
-
-                // 追加写入文件（使用UTF-8编码）
-                File.AppendAllText(fileName, line, Encoding.UTF8);
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show(ex.Message);
-            }
-        }
-
-
-        public void AppendDoublesToFile(
-            int brakeNo,
-            double value1,
-            double value2,
-            double value3,
-            double value4,
-            double value5,
-            string fileName,
-            string delimiter = ",",
-            string format = "F3")
-        {
-            try
-            {
-                // 参数验证
-                if (string.IsNullOrWhiteSpace(fileName))
-                    throw new ArgumentException("文件名不能为空", nameof(fileName));
-
-                if (string.IsNullOrEmpty(delimiter))
-                    throw new ArgumentException("分隔符不能为空", nameof(delimiter));
-
-                // 格式化数值
-                var line = string.Format("{0}{1}{2}{3}{4}{5}{6}{7}{8}{9}{10}{11}",
-                    brakeNo.ToString(),
-                    delimiter,
-                    value1.ToString(format),
-                    delimiter,
-                    value2.ToString(format),
-                    delimiter,
-                    value3.ToString(format),
-                    delimiter,
-                    value4.ToString(format),
-                    delimiter,
-                    value5.ToString(format),
-                    Environment.NewLine);
-
-                // 追加写入文件（使用UTF-8编码）
-                File.AppendAllText(fileName, line, Encoding.UTF8);
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show(ex.Message);
-            }
-        }
-
-        private void BtnPanLeft_Click(object sender, EventArgs e)
-        {
-            PercentPanXAxis(-0.9);
-        }
-
-        private void BtnPanRight_Click(object sender, EventArgs e)
-        {
-            PercentPanXAxis(0.9);
-        }
-
-
-        private bool FilterCondition(FileInfo file, string nameFilter, string extensionFilter)
-        {
-            // 1. 文件名过滤
-            var nameValid = string.IsNullOrWhiteSpace(nameFilter) ||
-                            file.Name.IndexOf(nameFilter, StringComparison.OrdinalIgnoreCase) >= 0;
-
-            // 2. 扩展名过滤
-            var extensionValid = string.IsNullOrWhiteSpace(extensionFilter) ||
-                                 extensionFilter.Split(new[] { ';', ',' }, StringSplitOptions.RemoveEmptyEntries)
-                                     .Any(ext =>
-                                         file.Extension.Equals(
-                                             ext.StartsWith(".") ? ext : "." + ext,
-                                             StringComparison.OrdinalIgnoreCase));
-
-            // 3. 组合条件
-            return nameValid && extensionValid;
-        }
-
-
-        private TestConfig LoadTestConfigFromFile(string xmlPath)
-        {
-            try
-            {
-                var serializer = new XmlSerializer(typeof(TestConfig));
-                using (var reader = new StreamReader(xmlPath))
-                {
-                    return (TestConfig)serializer.Deserialize(reader);
-                }
-            }
-            catch
-            {
-                return new TestConfig(); // 返回空配置避免异常
-            }
-        }
-
-        public void LoadTestConfigFromXml(string xmlPath)
-        {
-            try
-            {
-                if (!File.Exists(xmlPath))
-                {
-                    MessageBox.Show("未发现试验信息文件！");
-                    return;
-                }
-
-
-                testConfig = LoadTestConfigFromFile(xmlPath);
-                if (testConfig == null)
-                {
-                    MessageBox.Show("试验信息文件读取失败！");
-                    return;
-                }
-
-                RtbTestInfo.Clear();
-
-                testConfig.TestSpan = 1.0 / double.Parse(testConfig.TestCycle);
-
-                RtbTestInfo.AppendText("试验名称: " + testConfig.TestName + "\n");
-                RtbTestInfo.AppendText("试验阶段: " + testConfig.TestEnvir + "\n");
-                RtbTestInfo.AppendText("试验周期: " + testConfig.TestSpan.ToString("f2") + "S\n");
-                RtbTestInfo.AppendText("试验次数: " + testConfig.TestTarget + "\n");
-            }
-
-            catch (Exception ex)
-            {
-                MessageBox.Show(ex.Message);
-            }
-        }
-
-        private void BtnChoiseFolder_Click(object sender, EventArgs e)
-        {
-            using (var folderDialog = new FolderBrowserDialog())
-            {
-                folderDialog.Description = "选择文件夹";
-                folderDialog.ShowNewFolderButton = false;
-                folderDialog.SelectedPath = @"D:\Github\wanxiang\EPBTest\MTTfTest\bin\Debug\DataStore";
-
-                if (folderDialog.ShowDialog() == DialogResult.OK)
-                {
-                    selectedPath = folderDialog.SelectedPath;
-
-                    try
-                    {
-                        // 获取文件夹中所有文件
-                        allFiles = new DirectoryInfo(selectedPath).GetFiles("*.*", SearchOption.TopDirectoryOnly);
-                        var SelectPart = allFiles.Where(file => FilterCondition(file, "CAN", "bin"))
-                            .OrderBy(file => file.CreationTime) // 按创建时间升序
-                            .ToArray();
-
-                        // 提取纯文件名（不含路径）
-                        var fileNames = SelectPart
-                            .Select(file => file.Name)
-                            .ToArray();
-
-                        LbFileList.Items.Clear();
-                        LbFileList.Items.AddRange(fileNames);
-
-                        var xmlPath = Path.Combine(selectedPath, @"TestConfig.xml");
-                        LoadTestConfigFromXml(xmlPath);
-
-                        xmlPath = Path.Combine(selectedPath, @"EMBControl.XML");
-                        LoadEMBHandlerAndFrameNo(xmlPath);
-
-
-                        LoadCanDbc();
-
-
-                        var ReadMsg = ClsXmlOperation.GetDaqScaleMapping(selectedPath + @"\AIConfig.xml", "Dev1",
-                            out ParaNameToScale);
-                        if (ReadMsg.IndexOf("OK") < 0)
-                        {
-                            MessageBox.Show(ReadMsg);
-                            return;
-                        }
-
-                        ReadMsg = ClsXmlOperation.GetDaqOffsetMapping(selectedPath + @"\AIConfig.xml", "Dev1",
-                            out ParaNameToOffset);
-                        if (ReadMsg.IndexOf("OK") < 0)
-                        {
-                            MessageBox.Show(ReadMsg);
-                            return;
-                        }
-
-                        ReadMsg = ClsXmlOperation.GetDaqZeroValueMapping(selectedPath + @"\AIConfig.xml", "Dev1",
-                            out ParaNameToZeroValue);
-                        if (ReadMsg.IndexOf("OK") < 0) MessageBox.Show(ReadMsg);
-                    }
-                    catch (Exception ex)
-                    {
-                        MessageBox.Show($"错误: {ex.Message}");
-                    }
-                }
-            }
-        }
-
-        private void LbFileList_DoubleClick(object sender, EventArgs e)
-        {
-            try
-            {
-                var SafeFile = LbFileList.SelectedItem.ToString();
-                var CurFileName = selectedPath + "\\" + SafeFile;
-                ExportFile = CurFileName.Replace(".bin", ".csv");
-
-                CanForce = null;
-                CanCurrent = null;
-                CanRelTime = null;
-                BrakeNo = null;
-
-                DaqCurrent = null;
-                DaqTorque = null;
-                DaqSourceTime = null;
-                DaqBrakeNo = null;
-
-                XAxisMin = 0.0;
-                XAxisMax = 0.0;
-
-                //   testConfig = new TestConfig();
-
-                listDaqCurrent.Clear();
-                listDaqTorque.Clear();
-                listForce.Clear();
-                listCanCurrent.Clear();
-                zedGraphControlHistory.AxisChange();
-                zedGraphControlHistory.Invalidate();
-
-
-                ProgressShow.Location = new Point(
-                    zedGraphControlHistory.Left + (zedGraphControlHistory.Width - ProgressShow.Width) / 2,
-                    zedGraphControlHistory.Top + (zedGraphControlHistory.Height - ProgressShow.Height) / 2
-                );
-
-                ProgressShow.Visible = true;
-                ProgressShow.BringToFront(); // 确保在最上层
-                Application.DoEvents();
-
-
-                bgwA.RunWorkerAsync(CurFileName);
-            }
-
-            catch (Exception ex)
-            {
-                MessageBox.Show(ex.Message);
-            }
         }
     }
 }
