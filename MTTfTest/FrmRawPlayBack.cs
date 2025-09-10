@@ -19,7 +19,7 @@ namespace MTEmbTest
 {
     public partial class FrmRawPlayBack : Form
     {
-        private const int daqRawLogRecordLens = 60;
+        private const int daqRawLogRecordLens = 76; // 固定字节12+8通道 （8*8） 
         private const int canRawLogRecordLens = 76;
 
         private static readonly ConcurrentDictionary<int, double> EMBHandlerToRecvCanForceScale = new();
@@ -80,10 +80,11 @@ namespace MTEmbTest
         private PointPairList listCanCurrent;
         private PointPairList listDaqCurrent;
         private PointPairList listForce;
-        private ConcurrentDictionary<string, double> ParaNameToOffset = new();
 
+        private ConcurrentDictionary<string, double> ParaNameToOffset = new();
         private ConcurrentDictionary<string, double> ParaNameToScale = new();
         private ConcurrentDictionary<string, double> ParaNameToZeroValue = new();
+
         private string SafeFile = "";
         private string selectedPath = "";
         private TestConfig testConfig;
@@ -290,6 +291,8 @@ namespace MTEmbTest
             // 方向和接收帧ID关系  如RL-1536
             MakeDirectionMapping();
 
+            EpbName = CmbEpbNo.Text; // 默认EPB1
+
 
             bgwA = new BackgroundWorker();
             bgwA.WorkerReportsProgress = true;
@@ -312,7 +315,12 @@ namespace MTEmbTest
         }
 
 
-        private void bgwA_Completed(object sender, RunWorkerCompletedEventArgs e)
+        /// <summary>
+        ///     数据处理完成--Old
+        /// </summary>
+        /// <param name="sender"></param>
+        /// <param name="e"></param>
+        private void bgwA_Completed_Old(object sender, RunWorkerCompletedEventArgs e)
         {
             if (CanForce != null)
             {
@@ -376,11 +384,76 @@ namespace MTEmbTest
             }
         }
 
+        /// <summary>
+        ///     数据处理完成
+        /// </summary>
+        /// <param name="sender"></param>
+        /// <param name="e"></param>
+        private void bgwA_Completed(object sender, RunWorkerCompletedEventArgs e)
+        {
+            // 检查DAQ数据是否有效
+            if (DaqCurrent is { Length: > 0 })
+            {
+                // 对DAQ电流数据进行中值滤波
+                filterCurrent = ClsDataFilter.MakeMedianFilterReducePoint(ref DaqCurrent, ClsGlobal.MedianLens);
+
+                // 计算滤波后的数据长度和时间间隔
+                var daqspan = 1.0 / ClsGlobal.DaqFrequency * ClsGlobal.MedianLens;
+                var DaqDataLens = DaqCurrent.Length / ClsGlobal.MedianLens;
+
+                // 初始化滤波后的时间相关数组
+                FilterDaqRelTime = new double[DaqDataLens];
+                FilterDaqBrakeNo = new int[DaqDataLens];
+                FilterDaqTime = new DateTime[DaqDataLens];
+
+                // 填充滤波后的时间数据
+                for (var i = 0; i < DaqDataLens; i++)
+                {
+                    FilterDaqTime[i] = DaqSourceTime[i * ClsGlobal.MedianLens];
+                    FilterDaqRelTime[i] =
+                        DaqSourceTime[i * ClsGlobal.MedianLens].Subtract(DaqSourceTime[0]).TotalSeconds;
+                    FilterDaqBrakeNo[i] = DaqBrakeNo[i * ClsGlobal.MedianLens];
+                }
+
+                // 将滤波后的数据添加到图表列表
+                for (var i = 0; i < DaqDataLens; i++) listDaqCurrent.Add(FilterDaqRelTime[i], filterCurrent[i]);
+
+                // 更新UI显示 -- 有bug，暂时注释
+                /*RtbTestInfo.Clear();
+                RtbTestInfo.AppendText("试验名称: " + testConfig.TestName + "\n");
+                RtbTestInfo.AppendText("试验环境: " + testConfig.TestEnvir + "\n");
+                RtbTestInfo.AppendText("试验周期: " + testConfig.TestSpan.ToString("f2") + "S\n");
+                RtbTestInfo.AppendText("试验次数: " + testConfig.TestTarget + "\n");*/
+
+                // 隐藏进度条并处理UI事件
+                ProgressShow.Visible = false;
+                Application.DoEvents();
+
+                // 设置图表X轴范围
+                zedGraphControlHistory.GraphPane.XAxis.Scale.Max = FilterDaqRelTime[FilterDaqRelTime.Length - 1];
+                zedGraphControlHistory.GraphPane.XAxis.Scale.Min = 0.0;
+
+                // 更新全局变量
+                XAxisMin = 0.0;
+                XAxisMax = FilterDaqRelTime[FilterDaqRelTime.Length - 1];
+
+                // 刷新图表
+                zedGraphControlHistory.AxisChange();
+                zedGraphControlHistory.Invalidate();
+            }
+            else
+            {
+                MessageBox.Show("DAQ记录数据为空！");
+            }
+        }
+
 
         private void ReadData(string FileName)
         {
             try
             {
+                // CAN数据的读取处理，旧代码，注释掉；
+                /*
                 using (var fs = new FileStream(FileName, FileMode.Open))
                 {
                     var sr = new BinaryReader(fs);
@@ -426,8 +499,10 @@ namespace MTEmbTest
                     fs.Close();
                 }
 
-
                 var daqFile = FileName.Replace("EMB_CAN" + EpbNo, "DAQ_Dev1");
+                */
+
+                var daqFile = FileName;
 
                 using (var fs = new FileStream(daqFile, FileMode.Open))
                 {
@@ -605,7 +680,7 @@ namespace MTEmbTest
                 var SendOffset = 0.0;
                 var DbcMsg = DbcParser.TryGetFactorOffset(ClsGlobal.Dbc, frame.Value, "actClampForce", out SendFactor,
                     out SendOffset);
-                if (DbcMsg.IndexOf("OK") < 0)
+                if (DbcMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
                 {
                     MessageBox.Show(DbcMsg);
                     return;
@@ -627,7 +702,7 @@ namespace MTEmbTest
                 var SendOffset = 0.0;
                 var DbcMsg = DbcParser.TryGetFactorOffset(ClsGlobal.Dbc, frame.Value, "dcCurrent", out SendFactor,
                     out SendOffset);
-                if (DbcMsg.IndexOf("OK") < 0)
+                if (DbcMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
                 {
                     MessageBox.Show(DbcMsg);
                     return;
@@ -648,7 +723,7 @@ namespace MTEmbTest
                 var SendOffset = 0.0;
                 var DbcMsg = DbcParser.TryGetFactorOffset(ClsGlobal.Dbc, frame.Value, "actTorque", out SendFactor,
                     out SendOffset);
-                if (DbcMsg.IndexOf("OK") < 0)
+                if (DbcMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
                 {
                     MessageBox.Show(DbcMsg);
                     return;
@@ -664,11 +739,16 @@ namespace MTEmbTest
             }
         }
 
-        private void BtnChoiseFolder_Click(object sender, EventArgs e)
+        /// <summary>
+        ///     选择文件夹
+        /// </summary>
+        /// <param name="sender"></param>
+        /// <param name="e"></param>
+        private void BtnChoiceFolder_Click(object sender, EventArgs e)
         {
             using (var folderDialog = new FolderBrowserDialog())
             {
-                folderDialog.Description = "选择文件夹";
+                folderDialog.Description = @"选择文件夹";
                 folderDialog.ShowNewFolderButton = false;
                 folderDialog.SelectedPath = @"D:\Github\wanxiang\EPBTest\MTTfTest\bin\Debug\DataStore\"; // 默认选中的路径
 
@@ -684,7 +764,9 @@ namespace MTEmbTest
 
                         // 获取文件夹中所有文件
                         allFiles = new DirectoryInfo(selectedPath).GetFiles("*.*", SearchOption.TopDirectoryOnly);
-                        var SelectPart = allFiles.Where(file => FilterCondition(file, "CAN" + EpbNo + "_Raw", "bin"))
+                        // var SelectPart = allFiles.Where(file => FilterCondition(file, "CAN" + EpbNo + "_Raw", "bin")) // 暂时注释
+                        var SelectPart = allFiles
+                            .Where(file => FilterCondition(file, "DAQ_Dev1_Raw", "bin")) // 指定显示Dev1的记录文件
                             .OrderBy(file => file.CreationTime) // 按创建时间升序
                             .ToArray();
 
@@ -708,7 +790,7 @@ namespace MTEmbTest
 
                         var ReadMsg = ClsXmlOperation.GetDaqScaleMapping(selectedPath + @"\AIConfig.xml", "Dev1",
                             out ParaNameToScale);
-                        if (ReadMsg.IndexOf("OK") < 0)
+                        if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
                         {
                             MessageBox.Show(ReadMsg);
                             return;
@@ -716,7 +798,7 @@ namespace MTEmbTest
 
                         ReadMsg = ClsXmlOperation.GetDaqOffsetMapping(selectedPath + @"\AIConfig.xml", "Dev1",
                             out ParaNameToOffset);
-                        if (ReadMsg.IndexOf("OK") < 0)
+                        if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
                         {
                             MessageBox.Show(ReadMsg);
                             return;
@@ -724,11 +806,11 @@ namespace MTEmbTest
 
                         ReadMsg = ClsXmlOperation.GetDaqZeroValueMapping(selectedPath + @"\AIConfig.xml", "Dev1",
                             out ParaNameToZeroValue);
-                        if (ReadMsg.IndexOf("OK") < 0) MessageBox.Show(ReadMsg);
+                        if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0) MessageBox.Show(ReadMsg);
                     }
                     catch (Exception ex)
                     {
-                        MessageBox.Show($"错误: {ex.Message}");
+                        MessageBox.Show($@"错误: {ex.Message}");
                     }
                 }
             }
@@ -753,6 +835,12 @@ namespace MTEmbTest
             return nameValid && extensionValid;
         }
 
+
+        /// <summary>
+        ///     选择具体文件
+        /// </summary>
+        /// <param name="sender"></param>
+        /// <param name="e"></param>
         private void LbFileList_DoubleClick(object sender, EventArgs e)
         {
             try

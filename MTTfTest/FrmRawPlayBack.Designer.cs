@@ -151,7 +151,7 @@
             this.BtnChoiseFolder.TabIndex = 4;
             this.BtnChoiseFolder.Text = "选择文件夹";
             this.BtnChoiseFolder.UseVisualStyleBackColor = true;
-            this.BtnChoiseFolder.Click += new System.EventHandler(this.BtnChoiseFolder_Click);
+            this.BtnChoiseFolder.Click += new System.EventHandler(this.BtnChoiceFolder_Click);
             // 
             // ChkDaqCurrent
             // 
