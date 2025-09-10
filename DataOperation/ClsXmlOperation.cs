@@ -73,11 +73,7 @@ namespace DataOperation
                 return ex.Message;
             }
         }
-
-
-      
-
-
+        
         public static string  ReadCanNameChannelToDictionary(string filePath,out ConcurrentDictionary<string,int> NameToChannnel)
         {
             NameToChannnel = new ConcurrentDictionary<string, int>();
@@ -216,8 +212,7 @@ namespace DataOperation
 
             return "OK";
         }
-
-
+        
         public static string GetDaqAIChannelMapping(string filePath, string DevName, string[] UsedChannel,out ConcurrentDictionary<string, int> channelMapping)
         {
             channelMapping = new ConcurrentDictionary<string, int>();
@@ -298,9 +293,7 @@ namespace DataOperation
 
             return "OK";
         }
-
-
-
+        
         public static string GetDaqScaleMapping(string filePath, string DevName, out ConcurrentDictionary<string, double> scaleMapping)
         {
             scaleMapping = new ConcurrentDictionary<string, double>();
@@ -406,122 +399,7 @@ namespace DataOperation
                 return $"读取零位漂移配置失败: {ex.Message}";
             }
         }
-
-
-
-
-
-
-
-
-
-        //public static string GetEmbScaleMapping(string filePath, string DevName, out ConcurrentDictionary<string, double> scaleMapping)
-        //{
-        //    scaleMapping = new ConcurrentDictionary<string, double>();
-        //    try
-        //    {
-        //        XDocument doc = XDocument.Load(filePath);
-        //        var enabledRecords = doc.Descendants("Records")
-
-        //              .Where(r =>
-        //            (string)r.Element("是否启用") == "1" &&          // 是否启用为1
-        //           ((string)r.Element("物理通道") ?? "").Contains(DevName)) // 物理通道包含Dev1
-        //            .Select(r => new
-        //            {
-        //                Param = (string)r.Element("参数名"),
-        //                Slope = (string)r.Element("变换斜率")
-        //            });
-
-        //        foreach (var record in enabledRecords)
-        //        {
-        //            if (double.TryParse(record.Slope, out double slope))
-        //            {
-        //                scaleMapping.TryAdd(record.Param, slope);
-        //            }
-        //            else
-        //            {
-        //                return $"无效斜率值: {record.Param}={record.Slope}";
-        //            }
-        //        }
-        //        return "OK";
-        //    }
-        //    catch (Exception ex)
-        //    {
-        //        return $"读取斜率配置失败: {ex.Message}";
-        //    }
-        //}
-
-        //public static string GetEmbOffsetMapping(string filePath, string DevName, out ConcurrentDictionary<string, double> offsetMapping)
-        //{
-        //    offsetMapping = new ConcurrentDictionary<string, double>();
-        //    try
-        //    {
-        //        XDocument doc = XDocument.Load(filePath);
-        //        var enabledRecords = doc.Descendants("Records")
-        //              .Where(r =>
-        //            (string)r.Element("是否启用") == "1" &&          // 是否启用为1
-        //           ((string)r.Element("物理通道") ?? "").Contains(DevName)) // 物理通道包含Dev1
-        //            .Select(r => new
-        //            {
-        //                Param = (string)r.Element("参数名"),
-        //                Offset = (string)r.Element("变换截距")
-        //            });
-
-        //        foreach (var record in enabledRecords)
-        //        {
-        //            if (double.TryParse(record.Offset, out double offset))
-        //            {
-        //                offsetMapping.TryAdd(record.Param, offset);
-        //            }
-        //            else
-        //            {
-        //                return $"无效截距值: {record.Param}={record.Offset}";
-        //            }
-        //        }
-        //        return "OK";
-        //    }
-        //    catch (Exception ex)
-        //    {
-        //        return $"读取截距配置失败: {ex.Message}";
-        //    }
-        //}
-
-        //public static string GetEmbZeroValueMapping(string filePath, string DevName, out ConcurrentDictionary<string, double> zeroValueMapping)
-        //{
-        //    zeroValueMapping = new ConcurrentDictionary<string, double>();
-        //    try
-        //    {
-        //        XDocument doc = XDocument.Load(filePath);
-        //        var enabledRecords = doc.Descendants("Records")
-        //              .Where(r =>
-        //            (string)r.Element("是否启用") == "1" &&          // 是否启用为1
-        //           ((string)r.Element("物理通道") ?? "").Contains(DevName)) // 物理通道包含Dev1
-        //            .Select(r => new
-        //            {
-        //                Param = (string)r.Element("参数名"),
-        //                Offset = (string)r.Element("零位漂移")
-        //            });
-
-        //        foreach (var record in enabledRecords)
-        //        {
-        //            if (double.TryParse(record.Offset, out double offset))
-        //            {
-        //                zeroValueMapping.TryAdd(record.Param, offset);
-        //            }
-        //            else
-        //            {
-        //                return $"无效零位漂移值: {record.Param}={record.Offset}";
-        //            }
-        //        }
-        //        return "OK";
-        //    }
-        //    catch (Exception ex)
-        //    {
-        //        return $"读取零位漂移配置失败: {ex.Message}";
-        //    }
-        //}
-
-
+        
         public static string GetDaqPhyChanelToNameMapping(string filePath, string DevName, out ConcurrentDictionary<string, string> phyChannelNameMapping)
         {
             phyChannelNameMapping = new ConcurrentDictionary<string, string>();
@@ -549,9 +427,6 @@ namespace DataOperation
                 return $"参数通道和名称失败: {ex.Message}";
             }
         }
-
-
-
-
+        
     }
 }
