@@ -1,9 +1,4 @@
-﻿using DataOperation;
-using MtEmbTest;
-using NationalInstruments.DAQmx;
-using NationalInstruments.DataInfrastructure;
-using Sunny.UI.Win32;
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.ComponentModel;
@@ -13,114 +8,95 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
-using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.Xml.Linq;
 using System.Xml.Serialization;
+using DataOperation;
+using MtEmbTest;
 using ZedGraph;
 
 namespace MTEmbTest
 {
-    public partial class FrmRawPlayBack: Form
+    public partial class FrmRawPlayBack : Form
     {
-        [DllImport("user32.dll")]
-        public static extern int SendMessage(IntPtr hWnd, int Msg, int wParam, int lParam);
-
-        [DllImport("user32.dll")]
-        public static extern bool ReleaseCapture();
-
-
-
-        private string selectedPath = "";
-        private FileInfo[] allFiles;
-
-        private double XAxisMin = 0.0;
-        private double XAxisMax = 0.0;
-        private TestConfig testConfig;
         private const int StatLogRecordLens = 76;
 
-        private LineItem curveForce;
-        private PointPairList listForce;
-        private LineItem curveCanCurrent;
-        private PointPairList listCanCurrent;
+        private static readonly ConcurrentDictionary<int, double> EMBHandlerToRecvCanForceScale = new();
+        private static readonly ConcurrentDictionary<int, double> EMBHandlerToRecvCanForceOffset = new();
 
-        private LineItem curveDaqCurrent;
-        private PointPairList listDaqCurrent;
+        private static readonly ConcurrentDictionary<int, double> EMBHandlerToRecvCanCurrentScale = new();
+        private static readonly ConcurrentDictionary<int, double> EMBHandlerToRecvCanCurrentOffset = new();
 
-        private LineItem curveDaqTorque;
-        private PointPairList listDaqTorque;
+        private static readonly ConcurrentDictionary<int, double> EMBHandlerToRecvCanTorqueScale = new();
+        private static readonly ConcurrentDictionary<int, double> EMBHandlerToRecvCanTorqueOffset = new();
 
-        private string ExportFile = "";
-        BackgroundWorker bgwA;
-      
-      
-        private double[] CanForce;
+
+        private static readonly ConcurrentDictionary<string, double> EMBNameToRecvCanForceScale = new();
+        private static readonly ConcurrentDictionary<string, double> EMBNameToRecvCanForceOffset = new();
+
+        private static readonly ConcurrentDictionary<string, double> EMBNameToRecvCanCurrentScale = new();
+        private static readonly ConcurrentDictionary<string, double> EMBNameToRecvCanCurrentOffset = new();
+
+        private static readonly ConcurrentDictionary<string, double> EMBNameToRecvCanTorqueScale = new();
+        private static readonly ConcurrentDictionary<string, double> EMBNameToRecvCanTorqueOffset = new();
+
+
+        private static readonly ConcurrentDictionary<string, uint> DirectionToRecvFrame = new();
+        private static readonly ConcurrentDictionary<string, string> EMBToDirection = new();
+        private static readonly ConcurrentDictionary<int, uint> EMBHandlerToRecvFrame = new();
+        private FileInfo[] allFiles;
+        private BackgroundWorker bgwA;
+        private int[] BrakeNo;
         private double[] CanCurrent;
+
+
+        private double[] CanForce;
         private double[] CanRelTime;
         private DateTime[] CanTime;
-        private int[] BrakeNo;
+        private LineItem curveCanCurrent;
+
+        private LineItem curveDaqCurrent;
+
+        private LineItem curveDaqTorque;
+
+        private LineItem curveForce;
+        private int[] DaqBrakeNo;
 
 
         private double[] DaqCurrent;
-        private double[] DaqTorque;
         private DateTime[] DaqSourceTime;
-        private int[] DaqBrakeNo;
+        private double[] DaqTorque;
+
+        private string ExportFile = "";
 
         private double[] filterCurrent;
-        private double[] filterTorque;
         private int[] filterDaqBrakeNo;
         private double[] filterDaqRelTime;
         private DateTime[] filterDaqTime;
-
-        private static ConcurrentDictionary<int, double> EMBHandlerToRecvCanForceScale = new ConcurrentDictionary<int, double>();
-        private static ConcurrentDictionary<int, double> EMBHandlerToRecvCanForceOffset = new ConcurrentDictionary<int, double>();
-
-        private static ConcurrentDictionary<int, double> EMBHandlerToRecvCanCurrentScale = new ConcurrentDictionary<int, double>();
-        private static ConcurrentDictionary<int, double> EMBHandlerToRecvCanCurrentOffset = new ConcurrentDictionary<int, double>();
-
-        private static ConcurrentDictionary<int, double> EMBHandlerToRecvCanTorqueScale = new ConcurrentDictionary<int, double>();
-        private static ConcurrentDictionary<int, double> EMBHandlerToRecvCanTorqueOffset = new ConcurrentDictionary<int, double>();
+        private double[] filterTorque;
+        private PointPairList listCanCurrent;
+        private PointPairList listDaqCurrent;
+        private PointPairList listDaqTorque;
+        private PointPairList listForce;
+        private ConcurrentDictionary<string, double> ParaNameToOffset = new();
 
 
-        private static ConcurrentDictionary<string, double> EMBNameToRecvCanForceScale = new ConcurrentDictionary<string, double>();
-        private static ConcurrentDictionary<string, double> EMBNameToRecvCanForceOffset = new ConcurrentDictionary<string, double>();
-
-        private static ConcurrentDictionary<string, double> EMBNameToRecvCanCurrentScale = new ConcurrentDictionary<string, double>();
-        private static ConcurrentDictionary<string, double> EMBNameToRecvCanCurrentOffset = new ConcurrentDictionary<string, double>();
-
-        private static ConcurrentDictionary<string, double> EMBNameToRecvCanTorqueScale = new ConcurrentDictionary<string, double>();
-        private static ConcurrentDictionary<string, double> EMBNameToRecvCanTorqueOffset = new ConcurrentDictionary<string, double>();
+        private ConcurrentDictionary<string, double> ParaNameToScale = new();
+        private ConcurrentDictionary<string, double> ParaNameToZeroValue = new();
 
 
-        private ConcurrentDictionary<string, double> ParaNameToScale = new ConcurrentDictionary<string, double>();
-        private ConcurrentDictionary<string, double> ParaNameToOffset = new ConcurrentDictionary<string, double>();
-        private ConcurrentDictionary<string, double> ParaNameToZeroValue = new ConcurrentDictionary<string, double>();
+        private string selectedPath = "";
+        private TestConfig testConfig;
+        private double XAxisMax;
 
-     
-        private static ConcurrentDictionary<string, uint> DirectionToRecvFrame = new ConcurrentDictionary<string, uint>();
-        private static ConcurrentDictionary<string, string> EMBToDirection = new ConcurrentDictionary<string, string>();
-        private static ConcurrentDictionary<int, uint> EMBHandlerToRecvFrame = new ConcurrentDictionary<int, uint>();
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+        private double XAxisMin;
 
 
         public FrmRawPlayBack()
         {
             InitializeComponent();
             // 创建自定义标题栏
-            Panel titleBar = new Panel
+            var titleBar = new Panel
             {
                 Height = 30,
                 Dock = DockStyle.Top,
@@ -128,16 +104,16 @@ namespace MTEmbTest
             };
 
             // 添加自定义按钮
-            Button btnClose = new Button
+            var btnClose = new Button
             {
                 Text = "X",
                 Size = new Size(30, 30),
                 Dock = DockStyle.Right
             };
-            btnClose.Click += (s, e) => this.Close();
+            btnClose.Click += (s, e) => Close();
 
             titleBar.Controls.Add(btnClose);
-            this.Controls.Add(titleBar);
+            Controls.Add(titleBar);
 
             // 添加拖拽功能
             titleBar.MouseDown += (s, e) =>
@@ -150,17 +126,21 @@ namespace MTEmbTest
             };
         }
 
-       
+        [DllImport("user32.dll")]
+        public static extern int SendMessage(IntPtr hWnd, int Msg, int wParam, int lParam);
+
+        [DllImport("user32.dll")]
+        public static extern bool ReleaseCapture();
 
 
         private void InitializeCurve()
         {
             try
             {
-                int fontSize = 8;
+                var fontSize = 8;
 
                 // 保留原有初始化代码
-                GraphPane pane = zedGraphControlHistory.GraphPane;
+                var pane = zedGraphControlHistory.GraphPane;
                 // 设置 X 轴和 Y 轴以及刻度线为灰色
 
 
@@ -173,20 +153,14 @@ namespace MTEmbTest
                 pane.YAxis.MinorTic.Size = 0.0f;
 
 
-
                 pane.Title.IsVisible = false;
                 pane.XAxis.Title.Text = "Time";
                 pane.YAxis.Title.IsVisible = false;
                 pane.XAxis.Title.IsVisible = false;
 
 
-
-
                 pane.Fill = new Fill(Color.FromArgb(255, 255, 255));
                 pane.Chart.Fill = new Fill(Color.FromArgb(248, 248, 248));
-
-
-
 
 
                 pane.Chart.Border.IsVisible = false;
@@ -194,7 +168,6 @@ namespace MTEmbTest
 
                 // 设置图例背景色和曲线区域一致
                 pane.Legend.Fill = new Fill(Color.FromArgb(255, 255, 255));
-
 
 
                 // 设置图例字体为白色，不显示边框
@@ -224,7 +197,6 @@ namespace MTEmbTest
                 pane.XAxis.Scale.FontSpec.Size = fontSize;
 
 
-
                 pane.YAxis.Title.FontSpec.FontColor = Color.FromArgb(80, 160, 255);
                 pane.YAxis.Scale.FontSpec.FontColor = Color.FromArgb(80, 160, 255);
                 pane.YAxis.Title.FontSpec.Size = fontSize;
@@ -237,7 +209,6 @@ namespace MTEmbTest
                 pane.YAxis.MajorTic.Size = 0.0f;
                 pane.YAxis.MinorTic.Size = 0.0f;
                 pane.YAxis.MajorTic.IsOpposite = false;
-
 
 
                 pane.Y2Axis.IsVisible = true;
@@ -277,15 +248,6 @@ namespace MTEmbTest
                 CanCurrentYAxis.MajorGrid.IsZeroLine = false;
 
 
-
-
-
-
-
-
-
-
-
                 listForce = new PointPairList();
                 curveForce = pane.AddCurve("Act_Force(N)", listForce, Color.FromArgb(80, 160, 255), SymbolType.None);
                 curveForce.Line.Width = 2;
@@ -307,30 +269,11 @@ namespace MTEmbTest
                 curveDaqCurrent.IsY2Axis = true;
 
 
-
                 listCanCurrent = new PointPairList();
                 curveCanCurrent = pane.AddCurve("Act_Current(A)", listCanCurrent, Color.Purple, SymbolType.None);
                 curveCanCurrent.Line.Width = 2;
                 curveCanCurrent.YAxisIndex = pane.Y2AxisList.Count - 1;
                 curveCanCurrent.IsY2Axis = true; // 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
                 zedGraphControlHistory.GraphPane.XAxis.Scale.Max = ClsGlobal.XDuration;
@@ -359,77 +302,67 @@ namespace MTEmbTest
             catch (Exception ex)
             {
                 MessageBox.Show("初始化曲线显示失败！" + ex.Message, "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-               // ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "初始化曲线显示失败！" + ex.Message, "初始化");
-
+                // ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "初始化曲线显示失败！" + ex.Message, "初始化");
             }
         }
 
 
-
         public void LoadCanDbc()
         {
-
-            uint MsgID = EMBHandlerToRecvFrame[0];
-            
-
-                double SendFactor1 = 0.0;
-                double SendOffset1 = 0.0;
-                string DbcMsg = DbcParser.TryGetFactorOffset(ClsGlobal.Dbc, MsgID, "actClampForce", out SendFactor1, out SendOffset1);
-                if (DbcMsg.IndexOf("OK") < 0)
-                {
-                    MessageBox.Show(DbcMsg);
-                    return;
-                }
-                EMBHandlerToRecvCanForceScale[0] = SendFactor1;
-                EMBHandlerToRecvCanForceOffset[0] = SendOffset1;
-
-                string EmbName = "EMB1";
-
-                EMBNameToRecvCanForceScale[EmbName] = SendFactor1;
-                EMBNameToRecvCanForceOffset[EmbName] = SendOffset1;
-          
+            var MsgID = EMBHandlerToRecvFrame[0];
 
 
-           
-                double SendFactor2 = 0.0;
-                double SendOffset2 = 0.0;
-                DbcMsg = DbcParser.TryGetFactorOffset(ClsGlobal.Dbc, MsgID, "dcCurrent", out SendFactor2, out SendOffset2);
-                if (DbcMsg.IndexOf("OK") < 0)
-                {
-                    MessageBox.Show(DbcMsg);
-                    return;
-                }
-                EMBHandlerToRecvCanCurrentScale[0] = SendFactor2;
-                EMBHandlerToRecvCanCurrentOffset[0] = SendOffset2;
+            var SendFactor1 = 0.0;
+            var SendOffset1 = 0.0;
+            var DbcMsg = DbcParser.TryGetFactorOffset(ClsGlobal.Dbc, MsgID, "actClampForce", out SendFactor1,
+                out SendOffset1);
+            if (DbcMsg.IndexOf("OK") < 0)
+            {
+                MessageBox.Show(DbcMsg);
+                return;
+            }
 
-               
+            EMBHandlerToRecvCanForceScale[0] = SendFactor1;
+            EMBHandlerToRecvCanForceOffset[0] = SendOffset1;
 
-                EMBNameToRecvCanCurrentScale[EmbName] = SendFactor2;
-                EMBNameToRecvCanCurrentOffset[EmbName] = SendOffset2;
+            var EmbName = "EMB1";
 
-
-            
-
-           
-                double SendFactor3 = 0.0;
-                double SendOffset3 = 0.0;
-                DbcMsg = DbcParser.TryGetFactorOffset(ClsGlobal.Dbc, MsgID, "actTorque", out SendFactor3, out SendOffset3);
-                if (DbcMsg.IndexOf("OK") < 0)
-                {
-                    MessageBox.Show(DbcMsg);
-                    return;
-                }
-                EMBHandlerToRecvCanTorqueScale[0] = SendFactor3;
-                EMBHandlerToRecvCanTorqueOffset[0] = SendOffset3;
-
-              
-
-                EMBNameToRecvCanTorqueScale[EmbName] = SendFactor3;
-                EMBNameToRecvCanTorqueOffset[EmbName] = SendOffset3;
-
-            
+            EMBNameToRecvCanForceScale[EmbName] = SendFactor1;
+            EMBNameToRecvCanForceOffset[EmbName] = SendOffset1;
 
 
+            var SendFactor2 = 0.0;
+            var SendOffset2 = 0.0;
+            DbcMsg = DbcParser.TryGetFactorOffset(ClsGlobal.Dbc, MsgID, "dcCurrent", out SendFactor2, out SendOffset2);
+            if (DbcMsg.IndexOf("OK") < 0)
+            {
+                MessageBox.Show(DbcMsg);
+                return;
+            }
+
+            EMBHandlerToRecvCanCurrentScale[0] = SendFactor2;
+            EMBHandlerToRecvCanCurrentOffset[0] = SendOffset2;
+
+
+            EMBNameToRecvCanCurrentScale[EmbName] = SendFactor2;
+            EMBNameToRecvCanCurrentOffset[EmbName] = SendOffset2;
+
+
+            var SendFactor3 = 0.0;
+            var SendOffset3 = 0.0;
+            DbcMsg = DbcParser.TryGetFactorOffset(ClsGlobal.Dbc, MsgID, "actTorque", out SendFactor3, out SendOffset3);
+            if (DbcMsg.IndexOf("OK") < 0)
+            {
+                MessageBox.Show(DbcMsg);
+                return;
+            }
+
+            EMBHandlerToRecvCanTorqueScale[0] = SendFactor3;
+            EMBHandlerToRecvCanTorqueOffset[0] = SendOffset3;
+
+
+            EMBNameToRecvCanTorqueScale[EmbName] = SendFactor3;
+            EMBNameToRecvCanTorqueOffset[EmbName] = SendOffset3;
         }
 
 
@@ -443,18 +376,16 @@ namespace MTEmbTest
             bgwA.DoWork += bgwA_DoWork;
 
             bgwA.RunWorkerCompleted += bgwA_Completed;
-
-
         }
 
 
         private void MakeDirectionMapping()
         {
             DirectionToRecvFrame.Clear();
-            DirectionToRecvFrame["FL"] = (uint)System.Convert.ToInt32(ClsGlobal.FL_Recv, 16);
-            DirectionToRecvFrame["FR"] = (uint)System.Convert.ToInt32(ClsGlobal.FR_Recv, 16);
-            DirectionToRecvFrame["RL"] = (uint)System.Convert.ToInt32(ClsGlobal.RL_Recv, 16);
-            DirectionToRecvFrame["RR"] = (uint)System.Convert.ToInt32(ClsGlobal.RR_Recv, 16);
+            DirectionToRecvFrame["FL"] = (uint)Convert.ToInt32(ClsGlobal.FL_Recv, 16);
+            DirectionToRecvFrame["FR"] = (uint)Convert.ToInt32(ClsGlobal.FR_Recv, 16);
+            DirectionToRecvFrame["RL"] = (uint)Convert.ToInt32(ClsGlobal.RL_Recv, 16);
+            DirectionToRecvFrame["RR"] = (uint)Convert.ToInt32(ClsGlobal.RR_Recv, 16);
         }
 
         public void LoadEMBHandlerAndFrameNo(string xmlPath)
@@ -462,7 +393,7 @@ namespace MTEmbTest
             try
             {
                 // 创建DataTable结构
-                DataTable dt = new DataTable();
+                var dt = new DataTable();
                 dt.Columns.Add("名称", typeof(string));
                 dt.Columns.Add("型号", typeof(string));
                 dt.Columns.Add("产品编号", typeof(string));
@@ -470,27 +401,23 @@ namespace MTEmbTest
 
                 // 加载XML文件
 
-                XDocument xdoc = XDocument.Load(xmlPath);
+                var xdoc = XDocument.Load(xmlPath);
 
                 // 解析XML数据
-                foreach (XElement emb in xdoc.Descendants("EMB"))
-                {
+                foreach (var emb in xdoc.Descendants("EMB"))
                     dt.Rows.Add(
                         (string)emb.Element("名称"),
                         (string)emb.Element("型号"),
                         (string)emb.Element("产品编号"),
                         (string)emb.Element("方向")
                     );
-                }
 
-                for (int i = 0; i < dt.Rows.Count; i++)
-                {
+                for (var i = 0; i < dt.Rows.Count; i++)
                     EMBToDirection[dt.Rows[i]["名称"].ToString()] = dt.Rows[i]["方向"].ToString();
-                }
 
                 var sortedKeys = EMBToDirection.Keys.OrderBy(key => key).ToList();
 
-                int handleNo = -1;
+                var handleNo = -1;
 
                 foreach (var key in sortedKeys)
                 {
@@ -498,7 +425,6 @@ namespace MTEmbTest
 
                     EMBHandlerToRecvFrame[handleNo] = DirectionToRecvFrame[EMBToDirection[key]];
                 }
-
             }
             catch (Exception ex)
             {
@@ -507,22 +433,18 @@ namespace MTEmbTest
         }
 
 
-
         private void bgwA_DoWork(object sender, DoWorkEventArgs e)
         {
-
             try
             {
                 var bgworker = sender as BackgroundWorker;
-                string FileName = e.Argument.ToString();
+                var FileName = e.Argument.ToString();
                 ReadData(FileName);
             }
 
             catch (Exception ex)
             {
-
             }
-
         }
 
 
@@ -530,10 +452,9 @@ namespace MTEmbTest
         {
             if (CanForce != null)
             {
-
                 CanRelTime = new double[CanForce.Length];
 
-                 for (int i = 0; i < CanForce.Length; i++)
+                for (var i = 0; i < CanForce.Length; i++)
                 {
                     CanRelTime[i] = CanTime[i].Subtract(CanTime[0]).TotalSeconds;
                     listForce.Add(CanRelTime[i], CanForce[i]);
@@ -545,15 +466,16 @@ namespace MTEmbTest
                 filterTorque = ClsDataFilter.MakeMedianFilterReducePoint(ref DaqTorque, ClsGlobal.MedianLens);
 
 
-                int DaqDataLens = DaqCurrent.Length / ClsGlobal.MedianLens;
+                var DaqDataLens = DaqCurrent.Length / ClsGlobal.MedianLens;
                 filterDaqRelTime = new double[DaqDataLens];
                 filterDaqBrakeNo = new int[DaqDataLens];
                 filterDaqTime = new DateTime[DaqDataLens];
 
-                for (int i = 0; i < DaqDataLens; i++)
+                for (var i = 0; i < DaqDataLens; i++)
                 {
                     filterDaqTime[i] = DaqSourceTime[i * ClsGlobal.MedianLens];
-                    filterDaqRelTime[i] = DaqSourceTime[i * ClsGlobal.MedianLens].Subtract(DaqSourceTime[0]).TotalSeconds;
+                    filterDaqRelTime[i] =
+                        DaqSourceTime[i * ClsGlobal.MedianLens].Subtract(DaqSourceTime[0]).TotalSeconds;
                     filterDaqBrakeNo[i] = DaqBrakeNo[i * ClsGlobal.MedianLens];
                 }
 
@@ -564,21 +486,21 @@ namespace MTEmbTest
                 //    daqreltime[i]= DaqSourceTime[i].Subtract(DaqSourceTime[0]).TotalSeconds;
                 //}
 
-                    for (int i = 0; i < filterCurrent.Length; i++)
+                for (var i = 0; i < filterCurrent.Length; i++)
                 {
                     listDaqCurrent.Add(filterDaqRelTime[i], filterCurrent[i]);
                     listDaqTorque.Add(filterDaqRelTime[i], filterTorque[i]);
                 }
 
 
-                int maxLens = (CanForce.Length > filterCurrent.Length) ? CanForce.Length : filterCurrent.Length;
+                var maxLens = CanForce.Length > filterCurrent.Length ? CanForce.Length : filterCurrent.Length;
 
 
-                zedGraphControlHistory.GraphPane.XAxis.Scale.Max = 0.01*(double)maxLens;
+                zedGraphControlHistory.GraphPane.XAxis.Scale.Max = 0.01 * maxLens;
                 zedGraphControlHistory.GraphPane.XAxis.Scale.Min = 0.0;
 
                 XAxisMin = 0.0;
-                XAxisMax = 0.01 * (double)maxLens;
+                XAxisMax = 0.01 * maxLens;
 
 
                 RtbTestInfo.Clear();
@@ -586,56 +508,46 @@ namespace MTEmbTest
                 RtbTestInfo.AppendText("试验阶段: " + testConfig.TestEnvir + "\n");
                 RtbTestInfo.AppendText("试验周期: " + testConfig.TestSpan.ToString("f2") + "S\n");
                 RtbTestInfo.AppendText("试验次数: " + testConfig.TestTarget + "\n");
-              //  RtbTestInfo.AppendText("当前范围: <" + DaqBrakeNo[0].ToString() + "," + DaqBrakeNo[DaqBrakeNo.Length - 1].ToString() + ">\n");
-              RtbTestInfo.AppendText("当前范围: <" + BrakeNo[0].ToString() + "," + BrakeNo[BrakeNo.Length - 1].ToString() + ">\n");
+                //  RtbTestInfo.AppendText("当前范围: <" + DaqBrakeNo[0].ToString() + "," + DaqBrakeNo[DaqBrakeNo.Length - 1].ToString() + ">\n");
+                RtbTestInfo.AppendText("当前范围: <" + BrakeNo[0] + "," + BrakeNo[BrakeNo.Length - 1] + ">\n");
 
                 ProgressShow.Visible = false;
                 Application.DoEvents();
 
 
-
-
-
                 zedGraphControlHistory.AxisChange();
                 zedGraphControlHistory.Invalidate();
-
             }
 
             else
             {
                 MessageBox.Show("记录数据为空！");
-                return;
             }
-
-
-
-
-
-
         }
+
         private void ReadData(string FileName)
         {
             try
             {
-                using (FileStream fs = new FileStream(FileName, FileMode.Open))
+                using (var fs = new FileStream(FileName, FileMode.Open))
                 {
-                    BinaryReader sr = new BinaryReader(fs);
-                    int FileLens = (int)fs.Length;
-                    int Frames = FileLens / StatLogRecordLens;
+                    var sr = new BinaryReader(fs);
+                    var FileLens = (int)fs.Length;
+                    var Frames = FileLens / StatLogRecordLens;
 
                     CanForce = new double[Frames];
-                 
-                    CanTime=new DateTime[Frames];
+
+                    CanTime = new DateTime[Frames];
                     BrakeNo = new int[Frames];
                     CanCurrent = new double[Frames];
-                 
 
-                    for (int i = 0; i < Frames; i++)   //测试了一整，还是这个最快
+
+                    for (var i = 0; i < Frames; i++) //测试了一整，还是这个最快
                     {
                         BrakeNo[i] = sr.ReadInt32();
                         CanTime[i] = DateTime.FromFileTime(sr.ReadInt64());
 
-                      byte[] Data= sr.ReadBytes(64);
+                        var Data = sr.ReadBytes(64);
 
 
                         double forceValue = 0;
@@ -643,13 +555,13 @@ namespace MTEmbTest
                         byte faultflg = 0;
                         double torque = 0;
                         ClsBitFieldParser.ParseClampData(Data,
-                        EMBHandlerToRecvCanForceScale[0],
-                        EMBHandlerToRecvCanTorqueScale[0],
-                        EMBHandlerToRecvCanCurrentScale[0],
-                        out forceValue, out faultflg, out torque, out currentValue);
+                            EMBHandlerToRecvCanForceScale[0],
+                            EMBHandlerToRecvCanTorqueScale[0],
+                            EMBHandlerToRecvCanCurrentScale[0],
+                            out forceValue, out faultflg, out torque, out currentValue);
 
-                          CanForce[i] = forceValue;
-                          CanCurrent[i] = currentValue;
+                        CanForce[i] = forceValue;
+                        CanCurrent[i] = currentValue;
                     }
 
                     sr.Close();
@@ -657,14 +569,13 @@ namespace MTEmbTest
                 }
 
 
-                string daqFile = FileName.Replace("EMB_CAN1", "DAQ_Dev1");
+                var daqFile = FileName.Replace("EMB_CAN1", "DAQ_Dev1");
 
-                using (FileStream fs = new FileStream(daqFile, FileMode.Open))
+                using (var fs = new FileStream(daqFile, FileMode.Open))
                 {
-                    BinaryReader sr = new BinaryReader(fs);
-                    int FileLens = (int)fs.Length;
-                    int Frames = FileLens / 44;
-
+                    var sr = new BinaryReader(fs);
+                    var FileLens = (int)fs.Length;
+                    var Frames = FileLens / 44;
 
 
                     DaqCurrent = new double[Frames];
@@ -673,16 +584,18 @@ namespace MTEmbTest
                     DaqTorque = new double[Frames];
 
 
-                    for (int i = 0; i < Frames; i++)   //测试了一整，还是这个最快
+                    for (var i = 0; i < Frames; i++) //测试了一整，还是这个最快
                     {
                         DaqBrakeNo[i] = sr.ReadInt32();
                         DaqSourceTime[i] = DateTime.FromFileTime(sr.ReadInt64());
-                    
-
-                        DaqCurrent[i] = (sr.ReadDouble() - ParaNameToZeroValue["EMB1_current"]) * ParaNameToScale["EMB1_current"] + ParaNameToOffset["EMB1_current"];
-                        DaqTorque[i] = (sr.ReadDouble() - ParaNameToZeroValue["EMB1_torque"]) * ParaNameToScale["EMB1_torque"] + ParaNameToOffset["EMB1_torque"];
 
 
+                        DaqCurrent[i] =
+                            (sr.ReadDouble() - ParaNameToZeroValue["EMB1_current"]) * ParaNameToScale["EMB1_current"] +
+                            ParaNameToOffset["EMB1_current"];
+                        DaqTorque[i] =
+                            (sr.ReadDouble() - ParaNameToZeroValue["EMB1_torque"]) * ParaNameToScale["EMB1_torque"] +
+                            ParaNameToOffset["EMB1_torque"];
 
 
                         sr.ReadDouble();
@@ -692,8 +605,6 @@ namespace MTEmbTest
                     sr.Close();
                     fs.Close();
                 }
-
-
             }
             catch (Exception ex)
             {
@@ -702,12 +613,8 @@ namespace MTEmbTest
         }
 
 
-
-       
-
         private void ShowOrHideCurve()
         {
-
             curveForce.IsVisible = ChkForce.Checked;
             zedGraphControlHistory.GraphPane.YAxisList[0].IsVisible = ChkForce.Checked;
 
@@ -723,10 +630,8 @@ namespace MTEmbTest
             zedGraphControlHistory.GraphPane.YAxisList[1].IsVisible = ChkDaqTorque.Checked;
 
 
-
             zedGraphControlHistory.AxisChange();
             zedGraphControlHistory.Invalidate();
-
         }
 
         private void ChkForce_CheckedChanged(object sender, EventArgs e)
@@ -768,65 +673,59 @@ namespace MTEmbTest
             }
 
 
-
-            SaveFileDialog saveFileDialog = new SaveFileDialog();
+            var saveFileDialog = new SaveFileDialog();
             saveFileDialog.Filter = "CSV files (*.csv)|*.csv|All files (*.*)|*.*";
             saveFileDialog.Title = "Export to CSV";
-         
+
             saveFileDialog.FileName = ExportFile;
 
             if (saveFileDialog.ShowDialog() == DialogResult.OK)
-            {
                 try
                 {
                     ProgressShow.Visible = true;
-                    ProgressShow.BringToFront();  // 确保在最上层
+                    ProgressShow.BringToFront(); // 确保在最上层
                     Application.DoEvents();
 
 
-                    ExportData(filterDaqTime, filterDaqRelTime, filterDaqBrakeNo, BrakeNo, CanForce, CanCurrent, filterCurrent, filterTorque,saveFileDialog.FileName);
+                    ExportData(filterDaqTime, filterDaqRelTime, filterDaqBrakeNo, BrakeNo, CanForce, CanCurrent,
+                        filterCurrent, filterTorque, saveFileDialog.FileName);
 
                     ProgressShow.Visible = false;
 
                     Application.DoEvents();
 
                     MessageBox.Show("导出完成！");
-
                 }
                 catch (Exception ex)
                 {
                     MessageBox.Show(ex.Message);
                 }
-            }
         }
 
 
-   private void ExportData(
-   DateTime[] FilterDaqTime,
-   double[] FilterDaqRelTime,
-   int[] FilterDaqBrakeNo,
-   int[] CanBrakeNo,
-   double[] CanForce,
-   double[] CanCurrent,
-   double[] filterCurrent,
-   double[] filterTorque,
-   string ExportFileName)
+        private void ExportData(
+            DateTime[] FilterDaqTime,
+            double[] FilterDaqRelTime,
+            int[] FilterDaqBrakeNo,
+            int[] CanBrakeNo,
+            double[] CanForce,
+            double[] CanCurrent,
+            double[] filterCurrent,
+            double[] filterTorque,
+            string ExportFileName)
         {
             // 验证数组长度一致性
-            int baseLength = FilterDaqBrakeNo.Length;
+            var baseLength = FilterDaqBrakeNo.Length;
             if (FilterDaqTime.Length != baseLength ||
                 FilterDaqRelTime.Length != baseLength)
-            //||
-            //filterCurrent.Length != baseLength)
-            {
-                throw new ArgumentException("FilterDaqTime, FilterDaqRelTime, FilterDaqBrakeNo and filterCurrent arrays must have the same length");
-            }
+                //||
+                //filterCurrent.Length != baseLength)
+                throw new ArgumentException(
+                    "FilterDaqTime, FilterDaqRelTime, FilterDaqBrakeNo and filterCurrent arrays must have the same length");
 
-            int canLength = CanBrakeNo.Length;
+            var canLength = CanBrakeNo.Length;
             if (CanForce.Length != canLength || CanCurrent.Length != canLength)
-            {
                 throw new ArgumentException("CanBrakeNo, CanForce and CanCurrent arrays must have the same length");
-            }
 
             // 创建调整后的列表
             var adjustedTime = new List<DateTime>();
@@ -838,14 +737,13 @@ namespace MTEmbTest
             var adjustedFilterCurrent = new List<double>();
             var adjustedFilterTorque = new List<double>();
 
-            int j = 0; // CAN数据的索引
-            double lastCanForce = 0.0;
-            double lastCanCurrent = 0.0;
-            bool hasPreviousCanValue = false;
+            var j = 0; // CAN数据的索引
+            var lastCanForce = 0.0;
+            var lastCanCurrent = 0.0;
+            var hasPreviousCanValue = false;
 
             // 处理每一行数据
-            for (int i = 0; i < baseLength; i++)
-            {
+            for (var i = 0; i < baseLength; i++)
                 // 检查是否需要插入行
                 if (j < canLength && FilterDaqBrakeNo[i] < CanBrakeNo[j])
                 {
@@ -878,7 +776,6 @@ namespace MTEmbTest
                     hasPreviousCanValue = true;
                     j++;
                     i--; // 重新处理当前DAQ行
-                    continue;
                 }
                 // 正常处理匹配的行
                 else if (j < canLength && FilterDaqBrakeNo[i] == CanBrakeNo[j])
@@ -921,17 +818,15 @@ namespace MTEmbTest
                         adjustedCanCurrent.Add(0.0);
                     }
                 }
-            }
 
             // 写入CSV文件
-            using (StreamWriter writer = new StreamWriter(ExportFileName, false, Encoding.UTF8))
+            using (var writer = new StreamWriter(ExportFileName, false, Encoding.UTF8))
             {
                 // 写入标题行
                 writer.WriteLine("TimeStamp,RelTime,DAQBrakeNo,CanBrakeNo,CanForce,CanCurrent,DAQCurrent,DAQTorque");
 
                 // 写入数据行
-                for (int i = 0; i < adjustedTime.Count; i++)
-                {
+                for (var i = 0; i < adjustedTime.Count; i++)
                     writer.WriteLine(
                         $"{adjustedTime[i]:yyyy-MM-dd HH:mm:ss.fff}," +
                         $"{adjustedRelTime[i]:0.000}," +
@@ -941,13 +836,12 @@ namespace MTEmbTest
                         $"{adjustedCanCurrent[i]:0.000}," +
                         $"{adjustedFilterCurrent[i]:0.000}," +
                         $"{adjustedFilterTorque[i]:0.000}");
-                }
             }
         }
 
 
         /// <summary>
-        /// 沿 X 轴平移图表
+        ///     沿 X 轴平移图表
         /// </summary>
         /// <param name="shift">平移量（正=右移，负=左移）</param>
         private void AbsPanXAxis(double shift)
@@ -955,24 +849,16 @@ namespace MTEmbTest
             if (zedGraphControlHistory.GraphPane == null) return;
 
 
-            
-
-            GraphPane pane = zedGraphControlHistory.GraphPane;
+            var pane = zedGraphControlHistory.GraphPane;
 
             // 计算新范围
-            double newMin = pane.XAxis.Scale.Min + shift;
-            double newMax = pane.XAxis.Scale.Max + shift;
+            var newMin = pane.XAxis.Scale.Min + shift;
+            var newMax = pane.XAxis.Scale.Max + shift;
 
             // 可选：检查范围是否超出数据边界
-            if (newMin < XAxisMin)
-            {
-                newMin = XAxisMin;
-            }
+            if (newMin < XAxisMin) newMin = XAxisMin;
 
-            if (newMax > XAxisMax)
-            {
-                newMax = XAxisMax;
-            }
+            if (newMax > XAxisMax) newMax = XAxisMax;
 
             // 应用新范围
             pane.XAxis.Scale.Min = newMin;
@@ -986,25 +872,19 @@ namespace MTEmbTest
         private void PercentPanXAxis(double shift)
         {
             if (zedGraphControlHistory.GraphPane == null) return;
-            GraphPane pane = zedGraphControlHistory.GraphPane;
+            var pane = zedGraphControlHistory.GraphPane;
 
-            double AbsValue = (pane.XAxis.Scale.Max - pane.XAxis.Scale.Min) * shift;
+            var AbsValue = (pane.XAxis.Scale.Max - pane.XAxis.Scale.Min) * shift;
 
 
             // 计算新范围
-            double newMin = pane.XAxis.Scale.Min + AbsValue;
-            double newMax = pane.XAxis.Scale.Max + AbsValue;
+            var newMin = pane.XAxis.Scale.Min + AbsValue;
+            var newMax = pane.XAxis.Scale.Max + AbsValue;
 
             // 可选：检查范围是否超出数据边界
-            if (newMin < XAxisMin)
-            {
-                newMin = XAxisMin;
-            }
+            if (newMin < XAxisMin) newMin = XAxisMin;
 
-            if (newMax > XAxisMax)
-            {
-                newMax = XAxisMax;
-            }
+            if (newMax > XAxisMax) newMax = XAxisMax;
 
             // 应用新范围
             pane.XAxis.Scale.Min = newMin;
@@ -1017,14 +897,14 @@ namespace MTEmbTest
 
 
         public void AppendDoublesToFileV2(
-        double value1,
-        double value2,
-        double value3,
-        double value4,
-        double value5,
-        string fileName,
-        string delimiter = ",",
-        string format = "F3")
+            double value1,
+            double value2,
+            double value3,
+            double value4,
+            double value5,
+            string fileName,
+            string delimiter = ",",
+            string format = "F3")
         {
             try
             {
@@ -1036,16 +916,15 @@ namespace MTEmbTest
                     throw new ArgumentException("分隔符不能为空", nameof(delimiter));
 
                 // 格式化数值
-                string line = string.Format("{0}{1}{2}{3}{4}{5}{6}{7}{8}{9}",
-                 
+                var line = string.Format("{0}{1}{2}{3}{4}{5}{6}{7}{8}{9}",
                     value1.ToString(format),
                     delimiter,
                     value2.ToString(format),
-                     delimiter,
+                    delimiter,
                     value3.ToString(format),
-                     delimiter,
+                    delimiter,
                     value4.ToString(format),
-                     delimiter,
+                    delimiter,
                     value5.ToString(format),
                     Environment.NewLine);
 
@@ -1056,25 +935,19 @@ namespace MTEmbTest
             {
                 MessageBox.Show(ex.Message);
             }
-
         }
 
 
-
-
-
-
-
         public void AppendDoublesToFile(
-        int brakeNo,
-         double value1,
-         double value2,
-         double value3,
-         double value4,
-         double value5,
-         string fileName,
-         string delimiter = ",",
-         string format = "F3")
+            int brakeNo,
+            double value1,
+            double value2,
+            double value3,
+            double value4,
+            double value5,
+            string fileName,
+            string delimiter = ",",
+            string format = "F3")
         {
             try
             {
@@ -1086,17 +959,17 @@ namespace MTEmbTest
                     throw new ArgumentException("分隔符不能为空", nameof(delimiter));
 
                 // 格式化数值
-                string line = string.Format("{0}{1}{2}{3}{4}{5}{6}{7}{8}{9}{10}{11}",
+                var line = string.Format("{0}{1}{2}{3}{4}{5}{6}{7}{8}{9}{10}{11}",
                     brakeNo.ToString(),
-                     delimiter,
+                    delimiter,
                     value1.ToString(format),
                     delimiter,
                     value2.ToString(format),
-                     delimiter,
+                    delimiter,
                     value3.ToString(format),
-                     delimiter,
+                    delimiter,
                     value4.ToString(format),
-                     delimiter,
+                    delimiter,
                     value5.ToString(format),
                     Environment.NewLine);
 
@@ -1107,7 +980,6 @@ namespace MTEmbTest
             {
                 MessageBox.Show(ex.Message);
             }
-
         }
 
         private void BtnPanLeft_Click(object sender, EventArgs e)
@@ -1124,11 +996,11 @@ namespace MTEmbTest
         private bool FilterCondition(FileInfo file, string nameFilter, string extensionFilter)
         {
             // 1. 文件名过滤
-            bool nameValid = string.IsNullOrWhiteSpace(nameFilter) ||
+            var nameValid = string.IsNullOrWhiteSpace(nameFilter) ||
                             file.Name.IndexOf(nameFilter, StringComparison.OrdinalIgnoreCase) >= 0;
 
             // 2. 扩展名过滤
-            bool extensionValid = string.IsNullOrWhiteSpace(extensionFilter) ||
+            var extensionValid = string.IsNullOrWhiteSpace(extensionFilter) ||
                                  extensionFilter.Split(new[] { ';', ',' }, StringSplitOptions.RemoveEmptyEntries)
                                      .Any(ext =>
                                          file.Extension.Equals(
@@ -1155,13 +1027,11 @@ namespace MTEmbTest
                 return new TestConfig(); // 返回空配置避免异常
             }
         }
+
         public void LoadTestConfigFromXml(string xmlPath)
         {
             try
             {
-
-
-
                 if (!File.Exists(xmlPath))
                 {
                     MessageBox.Show("未发现试验信息文件！");
@@ -1184,21 +1054,21 @@ namespace MTEmbTest
                 RtbTestInfo.AppendText("试验阶段: " + testConfig.TestEnvir + "\n");
                 RtbTestInfo.AppendText("试验周期: " + testConfig.TestSpan.ToString("f2") + "S\n");
                 RtbTestInfo.AppendText("试验次数: " + testConfig.TestTarget + "\n");
-
             }
 
             catch (Exception ex)
             {
                 MessageBox.Show(ex.Message);
             }
-
         }
+
         private void BtnChoiseFolder_Click(object sender, EventArgs e)
         {
-            using (FolderBrowserDialog folderDialog = new FolderBrowserDialog())
+            using (var folderDialog = new FolderBrowserDialog())
             {
                 folderDialog.Description = "选择文件夹";
                 folderDialog.ShowNewFolderButton = false;
+                folderDialog.SelectedPath = @"D:\Github\wanxiang\EPBTest\MTTfTest\bin\Debug\DataStore";
 
                 if (folderDialog.ShowDialog() == DialogResult.OK)
                 {
@@ -1206,25 +1076,21 @@ namespace MTEmbTest
 
                     try
                     {
-                       
-
-
-
                         // 获取文件夹中所有文件
                         allFiles = new DirectoryInfo(selectedPath).GetFiles("*.*", SearchOption.TopDirectoryOnly);
-                        FileInfo[] SelectPart = allFiles.Where(file => FilterCondition(file, "CAN" , "bin"))
+                        var SelectPart = allFiles.Where(file => FilterCondition(file, "CAN", "bin"))
                             .OrderBy(file => file.CreationTime) // 按创建时间升序
                             .ToArray();
 
                         // 提取纯文件名（不含路径）
-                        string[] fileNames = SelectPart
+                        var fileNames = SelectPart
                             .Select(file => file.Name)
                             .ToArray();
 
                         LbFileList.Items.Clear();
                         LbFileList.Items.AddRange(fileNames);
 
-                        string xmlPath = Path.Combine(selectedPath, @"TestConfig.xml");
+                        var xmlPath = Path.Combine(selectedPath, @"TestConfig.xml");
                         LoadTestConfigFromXml(xmlPath);
 
                         xmlPath = Path.Combine(selectedPath, @"EMBControl.XML");
@@ -1234,26 +1100,25 @@ namespace MTEmbTest
                         LoadCanDbc();
 
 
-                        string ReadMsg = ClsXmlOperation.GetDaqScaleMapping(selectedPath + @"\AIConfig.xml", "Dev1", out ParaNameToScale);
+                        var ReadMsg = ClsXmlOperation.GetDaqScaleMapping(selectedPath + @"\AIConfig.xml", "Dev1",
+                            out ParaNameToScale);
                         if (ReadMsg.IndexOf("OK") < 0)
                         {
                             MessageBox.Show(ReadMsg);
                             return;
                         }
 
-                        ReadMsg = ClsXmlOperation.GetDaqOffsetMapping(selectedPath + @"\AIConfig.xml", "Dev1", out ParaNameToOffset);
+                        ReadMsg = ClsXmlOperation.GetDaqOffsetMapping(selectedPath + @"\AIConfig.xml", "Dev1",
+                            out ParaNameToOffset);
                         if (ReadMsg.IndexOf("OK") < 0)
                         {
                             MessageBox.Show(ReadMsg);
                             return;
                         }
 
-                        ReadMsg = ClsXmlOperation.GetDaqZeroValueMapping(selectedPath + @"\AIConfig.xml", "Dev1", out ParaNameToZeroValue);
-                        if (ReadMsg.IndexOf("OK") < 0)
-                        {
-                            MessageBox.Show(ReadMsg);
-                            return;
-                        }
+                        ReadMsg = ClsXmlOperation.GetDaqZeroValueMapping(selectedPath + @"\AIConfig.xml", "Dev1",
+                            out ParaNameToZeroValue);
+                        if (ReadMsg.IndexOf("OK") < 0) MessageBox.Show(ReadMsg);
                     }
                     catch (Exception ex)
                     {
@@ -1267,9 +1132,8 @@ namespace MTEmbTest
         {
             try
             {
-
-                string  SafeFile = LbFileList.SelectedItem.ToString();
-                string CurFileName = selectedPath + "\\" + SafeFile;
+                var SafeFile = LbFileList.SelectedItem.ToString();
+                var CurFileName = selectedPath + "\\" + SafeFile;
                 ExportFile = CurFileName.Replace(".bin", ".csv");
 
                 CanForce = null;
@@ -1285,7 +1149,7 @@ namespace MTEmbTest
                 XAxisMin = 0.0;
                 XAxisMax = 0.0;
 
-             //   testConfig = new TestConfig();
+                //   testConfig = new TestConfig();
 
                 listDaqCurrent.Clear();
                 listDaqTorque.Clear();
@@ -1296,26 +1160,22 @@ namespace MTEmbTest
 
 
                 ProgressShow.Location = new Point(
-           zedGraphControlHistory.Left + (zedGraphControlHistory.Width - ProgressShow.Width) / 2,
-           zedGraphControlHistory.Top + (zedGraphControlHistory.Height - ProgressShow.Height) / 2
-       );
+                    zedGraphControlHistory.Left + (zedGraphControlHistory.Width - ProgressShow.Width) / 2,
+                    zedGraphControlHistory.Top + (zedGraphControlHistory.Height - ProgressShow.Height) / 2
+                );
 
                 ProgressShow.Visible = true;
-                ProgressShow.BringToFront();  // 确保在最上层
+                ProgressShow.BringToFront(); // 确保在最上层
                 Application.DoEvents();
-
-
 
 
                 bgwA.RunWorkerAsync(CurFileName);
             }
 
-            catch(Exception ex)
+            catch (Exception ex)
             {
                 MessageBox.Show(ex.Message);
             }
         }
-
-       
     }
 }
