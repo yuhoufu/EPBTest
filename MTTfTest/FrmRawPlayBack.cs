@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Data;
+using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Linq;
@@ -14,6 +15,7 @@ using System.Xml.Serialization;
 using DataOperation;
 using MtEmbTest;
 using ZedGraph;
+// ReSharper disable All
 
 namespace MTEmbTest
 {
@@ -579,18 +581,18 @@ namespace MTEmbTest
             ShowOrHideCurve();
         }
 
-        private void BtnExportFile_Click(object sender, EventArgs e)
+        private void BtnExportFile_Click_Old(object sender, EventArgs e)
         {
             if (FilterDaqTime == null)
             {
-                MessageBox.Show("数据集为空，无法导出！");
+                MessageBox.Show(@"数据集为空，无法导出！");
                 return;
             }
 
 
             var saveFileDialog = new SaveFileDialog();
-            saveFileDialog.Filter = "CSV files (*.csv)|*.csv|All files (*.*)|*.*";
-            saveFileDialog.Title = "Export to CSV";
+            saveFileDialog.Filter = @"CSV files (*.csv)|*.csv|All files (*.*)|*.*";
+            saveFileDialog.Title = @"Export to CSV";
             // saveFileDialog.FileName = "data_export_" + DateTime.Now.ToString("yyyyMMdd") + ".csv";
             saveFileDialog.FileName = ExportFile;
 
@@ -600,21 +602,125 @@ namespace MTEmbTest
                     ProgressShow.Visible = true;
                     ProgressShow.BringToFront(); // 确保在最上层
                     Application.DoEvents();
-
-
-                    ExportData(FilterDaqTime, FilterDaqRelTime, FilterDaqBrakeNo, CanBrakeNo, CanForce, CanCurrent,
+                    
+                    ExportData_Old(FilterDaqTime, FilterDaqRelTime, FilterDaqBrakeNo, CanBrakeNo, CanForce, CanCurrent,
                         filterCurrent, saveFileDialog.FileName);
 
                     ProgressShow.Visible = false;
 
                     Application.DoEvents();
 
-                    MessageBox.Show("导出完成！");
+                    MessageBox.Show(@"导出完成！");
                 }
                 catch (Exception ex)
                 {
                     MessageBox.Show(ex.Message);
                 }
+        }
+
+
+        /// <summary>
+        /// 导出按钮点击事件处理程序
+        /// </summary>
+        /// <param name="sender">事件源</param>
+        /// <param name="e">事件参数</param>
+        /// <remarks>
+        /// 此方法处理用户点击导出按钮的操作，显示保存文件对话框，
+        /// 并将DAQ数据导出到用户选择的CSV文件中。
+        /// 所有CAN总线相关数据处理逻辑已被移除，仅保留DAQ数据导出功能。
+        /// </remarks>
+        private void BtnExportFile_Click(object sender, EventArgs e)
+        {
+            // 检查数据是否可用
+            if (FilterDaqTime == null || FilterDaqTime.Length == 0)
+            {
+                MessageBox.Show(
+                    @"数据集为空，无法导出！",
+                    @"导出失败",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning
+                );
+                return;
+            }
+
+            // 创建并配置保存文件对话框
+            using (var saveFileDialog = new SaveFileDialog())
+            {
+                saveFileDialog.Filter = @"CSV files (*.csv)|*.csv|All files (*.*)|*.*";
+                saveFileDialog.Title = @"导出DAQ数据到CSV";
+                saveFileDialog.FileName = ExportFile;
+                saveFileDialog.OverwritePrompt = true; // 覆盖确认提示
+                saveFileDialog.AddExtension = true;    // 自动添加扩展名
+
+                // 显示对话框并处理用户选择
+                if (saveFileDialog.ShowDialog() == DialogResult.OK)
+                {
+                    try
+                    {
+                        // 显示进度指示器
+                        ProgressShow.Visible = true;
+                        ProgressShow.BringToFront(); // 确保在最上层
+                        Application.DoEvents(); // 允许UI更新
+
+                        // 调用仅处理DAQ数据的导出方法
+                        ExportDaqData(
+                            FilterDaqTime,
+                            FilterDaqRelTime,
+                            FilterDaqBrakeNo,
+                            filterCurrent,
+                            saveFileDialog.FileName
+                        );
+
+                        // 隐藏进度指示器
+                        ProgressShow.Visible = false;
+                        Application.DoEvents(); // 允许UI更新
+
+                        // 显示成功消息
+                        MessageBox.Show(
+                            @"数据导出完成！",
+                            @"导出成功",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Information
+                        );
+                    }
+                    catch (IOException ioEx)
+                    {
+                        // 处理文件IO相关异常
+                        ProgressShow.Visible = false;
+                        MessageBox.Show(
+                            $"文件写入失败: {ioEx.Message}\n\n请检查文件路径和权限。",
+                            @"导出错误",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Error
+                        );
+                    }
+                    catch (ArgumentException argEx)
+                    {
+                        // 处理参数错误异常
+                        ProgressShow.Visible = false;
+                        MessageBox.Show(
+                            $"数据格式错误: {argEx.Message}\n\n请确保数据完整性。",
+                            @"导出错误",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Error
+                        );
+                    }
+                    catch (Exception ex)
+                    {
+                        // 处理其他未知异常
+                        ProgressShow.Visible = false;
+                        MessageBox.Show(
+                            $"导出过程中发生未知错误: {ex.Message}",
+                            @"导出错误",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Error
+                        );
+
+                        // 可选：记录详细错误信息到日志
+                        Debug.WriteLine($"导出错误: {ex}");
+                    }
+                }
+            }
         }
 
 
@@ -961,7 +1067,7 @@ namespace MTEmbTest
         }
 
 
-        private void ExportData(
+        private void ExportData_Old(
             DateTime[] FilterDaqTime,
             double[] FilterDaqRelTime,
             int[] FilterDaqBrakeNo,
@@ -1090,6 +1196,92 @@ namespace MTEmbTest
                         $"{adjustedFilterCurrent[i]:0.000}");
             }
         }
+
+
+        /// <summary>
+        /// 导出DAQ数据到CSV文件
+        /// </summary>
+        /// <param name="FilterDaqTime">滤波后的DAQ时间戳数组</param>
+        /// <param name="FilterDaqRelTime">滤波后的DAQ相对时间数组（秒）</param>
+        /// <param name="FilterDaqBrakeNo">滤波后的DAQ刹车编号数组</param>
+        /// <param name="filterCurrent">滤波后的DAQ电流数据数组</param>
+        /// <param name="ExportFileName">导出文件的完整路径</param>
+        /// <exception cref="ArgumentException">当输入数组长度不一致时抛出</exception>
+        /// <exception cref="IOException">当文件写入失败时抛出</exception>
+        /// <remarks>
+        /// 此方法将处理后的DAQ数据导出为CSV格式文件，包含时间戳、相对时间、刹车编号和滤波后的电流值。
+        /// 所有CAN总线相关数据处理逻辑已被移除，仅保留DAQ数据。
+        /// </remarks>
+        private void ExportDaqData(
+            DateTime[] FilterDaqTime,
+            double[] FilterDaqRelTime,
+            int[] FilterDaqBrakeNo,
+            double[] filterCurrent,
+            string ExportFileName)
+        {
+            // 验证输入参数有效性
+            if (FilterDaqTime == null)
+                throw new ArgumentNullException(nameof(FilterDaqTime), "FilterDaqTime数组不能为null");
+            if (FilterDaqRelTime == null)
+                throw new ArgumentNullException(nameof(FilterDaqRelTime), "FilterDaqRelTime数组不能为null");
+            if (FilterDaqBrakeNo == null)
+                throw new ArgumentNullException(nameof(FilterDaqBrakeNo), "FilterDaqBrakeNo数组不能为null");
+            if (filterCurrent == null)
+                throw new ArgumentNullException(nameof(filterCurrent), "filterCurrent数组不能为null");
+            if (string.IsNullOrWhiteSpace(ExportFileName))
+                throw new ArgumentException("导出文件名不能为空或空白", nameof(ExportFileName));
+
+            // 验证数组长度一致性
+            var baseLength = FilterDaqBrakeNo.Length;
+            if (FilterDaqTime.Length != baseLength ||
+                FilterDaqRelTime.Length != baseLength ||
+                filterCurrent.Length != baseLength)
+            {
+                throw new ArgumentException(
+                    "所有输入数组必须具有相同的长度: " +
+                    $"FilterDaqTime({FilterDaqTime.Length}), " +
+                    $"FilterDaqRelTime({FilterDaqRelTime.Length}), " +
+                    $"FilterDaqBrakeNo({FilterDaqBrakeNo.Length}), " +
+                    $"filterCurrent({filterCurrent.Length})");
+            }
+
+            // 确保输出目录存在
+            var directory = Path.GetDirectoryName(ExportFileName);
+            if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            try
+            {
+                // 使用UTF-8编码写入CSV文件，确保兼容中文等特殊字符
+                using (var writer = new StreamWriter(ExportFileName, false, Encoding.UTF8))
+                {
+                    // 写入CSV文件标题行
+                    writer.WriteLine("TimeStamp,RelTime,DAQBrakeNo,DAQCurrent");
+
+                    // 写入所有数据行
+                    for (var i = 0; i < baseLength; i++)
+                    {
+                        // 格式化并写入数据行
+                        writer.WriteLine(
+                            $"{FilterDaqTime[i]:yyyy-MM-dd HH:mm:ss.fff}," +  // 时间戳格式化为标准格式
+                            $"{FilterDaqRelTime[i]:F3}," +                     // 相对时间保留3位小数
+                            $"{FilterDaqBrakeNo[i]}," +                        // 刹车编号
+                            $"{filterCurrent[i]:F3}");                         // 电流值保留3位小数
+                    }
+                }
+
+                // 可选：记录导出成功信息
+                Console.WriteLine($"DAQ数据已成功导出到: {ExportFileName}");
+            }
+            catch (Exception ex)
+            {
+                // 包装并重新抛出异常，保留原始异常信息
+                throw new IOException($"导出数据到文件 '{ExportFileName}' 失败", ex);
+            }
+        }
+
 
         private void BtnPanLeft_Click(object sender, EventArgs e)
         {
