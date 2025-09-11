@@ -31,6 +31,7 @@
             this.components = new System.ComponentModel.Container();
             this.tableLayoutPanel4 = new System.Windows.Forms.TableLayoutPanel();
             this.tableLayoutPanel5 = new System.Windows.Forms.TableLayoutPanel();
+            this.ChkForce = new Sunny.UI.UICheckBox();
             this.CmbEpbNo = new Sunny.UI.UIComboBox();
             this.BtnChoiseFolder = new System.Windows.Forms.Button();
             this.ChkDaqCurrent = new Sunny.UI.UICheckBox();
@@ -43,7 +44,6 @@
             this.zedGraphControlHistory = new ZedGraph.ZedGraphControl();
             this.LbFileList = new Sunny.UI.UIListBox();
             this.RtbTestInfo = new Sunny.UI.UIRichTextBox();
-            this.ChkForce = new Sunny.UI.UICheckBox();
             this.tableLayoutPanel4.SuspendLayout();
             this.tableLayoutPanel5.SuspendLayout();
             this.uiPanel1.SuspendLayout();
@@ -107,6 +107,22 @@
             this.tableLayoutPanel5.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100F));
             this.tableLayoutPanel5.Size = new System.Drawing.Size(1695, 69);
             this.tableLayoutPanel5.TabIndex = 1;
+            // 
+            // ChkForce
+            // 
+            this.ChkForce.CheckBoxSize = 24;
+            this.ChkForce.Checked = true;
+            this.ChkForce.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.ChkForce.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.ChkForce.Font = new System.Drawing.Font("宋体", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.ChkForce.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.ChkForce.Location = new System.Drawing.Point(654, 3);
+            this.ChkForce.MinimumSize = new System.Drawing.Size(1, 1);
+            this.ChkForce.Name = "ChkForce";
+            this.ChkForce.Size = new System.Drawing.Size(187, 63);
+            this.ChkForce.TabIndex = 7;
+            this.ChkForce.Text = "Act_Force";
+            this.ChkForce.Visible = false;
             // 
             // CmbEpbNo
             // 
@@ -296,22 +312,6 @@
             this.RtbTestInfo.Size = new System.Drawing.Size(332, 176);
             this.RtbTestInfo.TabIndex = 6;
             this.RtbTestInfo.TextAlignment = System.Drawing.ContentAlignment.MiddleCenter;
-            // 
-            // ChkForce
-            // 
-            this.ChkForce.CheckBoxSize = 24;
-            this.ChkForce.Checked = true;
-            this.ChkForce.Cursor = System.Windows.Forms.Cursors.Hand;
-            this.ChkForce.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.ChkForce.Font = new System.Drawing.Font("宋体", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.ChkForce.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.ChkForce.Location = new System.Drawing.Point(654, 3);
-            this.ChkForce.MinimumSize = new System.Drawing.Size(1, 1);
-            this.ChkForce.Name = "ChkForce";
-            this.ChkForce.Size = new System.Drawing.Size(187, 63);
-            this.ChkForce.TabIndex = 7;
-            this.ChkForce.Text = "Act_Force";
-            this.ChkForce.Visible = false;
             // 
             // FrmRawPlayBack
             // 

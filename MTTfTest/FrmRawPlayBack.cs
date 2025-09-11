@@ -15,14 +15,15 @@ using System.Xml.Serialization;
 using DataOperation;
 using MtEmbTest;
 using ZedGraph;
+
 // ReSharper disable All
 
 namespace MTEmbTest
 {
     public partial class FrmRawPlayBack : Form
     {
-        private const int daqRawLogRecordLens = 76; // 固定字节12+8通道 （8*8） 
         private const int canRawLogRecordLens = 76;
+        private static int daqRawLogRecordLens = 76;
 
         private static readonly ConcurrentDictionary<int, double> EMBHandlerToRecvCanForceScale = new();
         private static readonly ConcurrentDictionary<int, double> EMBHandlerToRecvCanForceOffset = new();
@@ -450,13 +451,13 @@ namespace MTEmbTest
         }
 
         /// <summary>
-        /// 数据处理完成 - 测试版本，使用未滤波的原始数据
+        ///     数据处理完成 - 测试版本，使用未滤波的原始数据
         /// </summary>
         /// <param name="sender">事件源</param>
         /// <param name="e">事件参数</param>
         /// <remarks>
-        /// 此方法使用未滤波的原始数据填充FilterDaqRelTime、FilterDaqBrakeNo和FilterDaqTime数组，
-        /// 用于测试目的，以便查看原始数据的效果。
+        ///     此方法使用未滤波的原始数据填充FilterDaqRelTime、FilterDaqBrakeNo和FilterDaqTime数组，
+        ///     用于测试目的，以便查看原始数据的效果。
         /// </remarks>
         private void bgwA_Completed_RawData(object sender, RunWorkerCompletedEventArgs e)
         {
@@ -495,7 +496,6 @@ namespace MTEmbTest
                 {
                     listDaqCurrent.Add(FilterDaqRelTime[i], DaqCurrent[i]);
                 }
-                
 
 
                 // 隐藏进度条并处理UI事件
@@ -518,7 +518,8 @@ namespace MTEmbTest
                 zedGraphControlHistory.Invalidate();
 
                 // 显示数据信息
-                MessageBox.Show($"已加载 {dataLength} 个未滤波数据点", "数据加载完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show($"已加载 {dataLength} 个未滤波数据点", "数据加载完成", MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
             }
             else
             {
@@ -527,67 +528,19 @@ namespace MTEmbTest
         }
 
 
-
         private void ReadData(string FileName)
         {
             try
             {
-                // CAN数据的读取处理，旧代码，注释掉；
-                /*
-                using (var fs = new FileStream(FileName, FileMode.Open))
-                {
-                    var sr = new BinaryReader(fs);
-                    var FileLens = (int)fs.Length;
-                    var Frames = FileLens / canRawLogRecordLens;
-
-                    CanBrakeNo = new int[Frames];
-                    CanSourceTime = new DateTime[Frames];
-                    CanForce = new double[Frames];
-                    CanCurrent = new double[Frames];
-
-                    CanRelTime = new double[Frames];
-
-
-                    for (var i = 0; i < Frames; i++) //测试了一整，还是这个最快
-                    {
-                        CanBrakeNo[i] = sr.ReadInt32();
-
-
-                        CanRelTime[i] = ClsGlobal.CanRecvTimeSpanMillSecs / 1000.0 * i;
-
-
-                        CanSourceTime[i] = DateTime.FromFileTime(sr.ReadInt64());
-
-                        var Data = sr.ReadBytes(64);
-
-
-                        double forceValue = 0;
-                        double currentValue = 0;
-                        byte faultflg = 0;
-                        double torque = 0;
-                        ClsBitFieldParser.ParseClampData(Data,
-                            EMBHandlerToRecvCanForceScale[EpbNo - 1],
-                            EMBHandlerToRecvCanTorqueScale[EpbNo - 1],
-                            EMBHandlerToRecvCanCurrentScale[EpbNo - 1],
-                            out forceValue, out faultflg, out torque, out currentValue);
-
-                        CanForce[i] = forceValue;
-                        CanCurrent[i] = currentValue;
-                    }
-
-                    sr.Close();
-                    fs.Close();
-                }
-
-                var daqFile = FileName.Replace("EMB_CAN" + EpbNo, "DAQ_Dev1");
-                */
-
                 var daqFile = FileName;
 
                 using (var fs = new FileStream(daqFile, FileMode.Open))
                 {
                     var sr = new BinaryReader(fs);
                     var FileLens = (int)fs.Length;
+
+                    daqRawLogRecordLens = EpbNo <= 8 ? 76 : 68; // 1~8 归属 Dev1， 9~12 归属Dev2 后续还要修改
+
                     var Frames = FileLens / daqRawLogRecordLens;
 
 
@@ -595,6 +548,8 @@ namespace MTEmbTest
                     DaqSourceTime = new DateTime[Frames];
                     DaqBrakeNo = new int[Frames];
 
+                    // 根据EPB的编号来得到数据在数采卡的存储序号
+                    var idx = EpbNo <= 8 ? EpbNo : EpbNo - 8; // 1~8 归属 Dev1， 9~12 归属Dev2 后续还要修改
 
                     for (var i = 0; i < Frames; i++) //测试了一整，还是这个最快
                     {
@@ -603,7 +558,7 @@ namespace MTEmbTest
 
                         var Data = sr.ReadBytes(daqRawLogRecordLens - 12);
 
-                        var currentRaw = BitConverter.ToDouble(Data, (EpbNo - 1) * 8);
+                        var currentRaw = BitConverter.ToDouble(Data, (idx - 1) * 8);
 
                         DaqCurrent[i] = (currentRaw - ParaNameToZeroValue[EpbName]) * ParaNameToScale[EpbName] +
                                         ParaNameToOffset[EpbName];
@@ -680,7 +635,7 @@ namespace MTEmbTest
                     ProgressShow.Visible = true;
                     ProgressShow.BringToFront(); // 确保在最上层
                     Application.DoEvents();
-                    
+
                     ExportData_Old(FilterDaqTime, FilterDaqRelTime, FilterDaqBrakeNo, CanBrakeNo, CanForce, CanCurrent,
                         filterCurrent, saveFileDialog.FileName);
 
@@ -698,14 +653,14 @@ namespace MTEmbTest
 
 
         /// <summary>
-        /// 导出按钮点击事件处理程序
+        ///     导出按钮点击事件处理程序
         /// </summary>
         /// <param name="sender">事件源</param>
         /// <param name="e">事件参数</param>
         /// <remarks>
-        /// 此方法处理用户点击导出按钮的操作，显示保存文件对话框，
-        /// 并将DAQ数据导出到用户选择的CSV文件中。
-        /// 所有CAN总线相关数据处理逻辑已被移除，仅保留DAQ数据导出功能。
+        ///     此方法处理用户点击导出按钮的操作，显示保存文件对话框，
+        ///     并将DAQ数据导出到用户选择的CSV文件中。
+        ///     所有CAN总线相关数据处理逻辑已被移除，仅保留DAQ数据导出功能。
         /// </remarks>
         private void BtnExportFile_Click(object sender, EventArgs e)
         {
@@ -728,7 +683,7 @@ namespace MTEmbTest
                 saveFileDialog.Title = @"导出DAQ数据到CSV";
                 saveFileDialog.FileName = ExportFile;
                 saveFileDialog.OverwritePrompt = true; // 覆盖确认提示
-                saveFileDialog.AddExtension = true;    // 自动添加扩展名
+                saveFileDialog.AddExtension = true; // 自动添加扩展名
 
                 // 显示对话框并处理用户选择
                 if (saveFileDialog.ShowDialog() == DialogResult.OK)
@@ -945,13 +900,13 @@ namespace MTEmbTest
                     {
                         EpbNo = int.Parse(CmbEpbNo.Text.Replace("EPB", ""));
                         EpbName = CmbEpbNo.Text;
-
+                        var dev = EpbNo <= 8 ? "Dev1" : "Dev2"; // 1~8 归属 Dev1， 9~12 归属Dev2 后续还要修改
 
                         // 获取文件夹中所有文件
                         allFiles = new DirectoryInfo(selectedPath).GetFiles("*.*", SearchOption.TopDirectoryOnly);
                         // var SelectPart = allFiles.Where(file => FilterCondition(file, "CAN" + EpbNo + "_Raw", "bin")) // 暂时注释
                         var SelectPart = allFiles
-                            .Where(file => FilterCondition(file, "DAQ_Dev1_Raw", "bin")) // 指定显示Dev1的记录文件
+                            .Where(file => FilterCondition(file, $"DAQ_{dev}_Raw", "bin")) // 指定显示Dev1的记录文件
                             .OrderBy(file => file.CreationTime) // 按创建时间升序
                             .ToArray();
 
@@ -972,8 +927,10 @@ namespace MTEmbTest
 
                         // LoadCanDbc();
 
+                        var currentDev = EpbNo <= 8 ? "Dev1" : "Dev2";
 
-                        var ReadMsg = ClsXmlOperation.GetDaqScaleMapping(selectedPath + @"\AIConfig.xml", "Dev1",
+
+                        var ReadMsg = ClsXmlOperation.GetDaqScaleMapping(selectedPath + @"\AIConfig.xml", currentDev,
                             out ParaNameToScale);
                         if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
                         {
@@ -981,7 +938,7 @@ namespace MTEmbTest
                             return;
                         }
 
-                        ReadMsg = ClsXmlOperation.GetDaqOffsetMapping(selectedPath + @"\AIConfig.xml", "Dev1",
+                        ReadMsg = ClsXmlOperation.GetDaqOffsetMapping(selectedPath + @"\AIConfig.xml", currentDev,
                             out ParaNameToOffset);
                         if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
                         {
@@ -989,7 +946,7 @@ namespace MTEmbTest
                             return;
                         }
 
-                        ReadMsg = ClsXmlOperation.GetDaqZeroValueMapping(selectedPath + @"\AIConfig.xml", "Dev1",
+                        ReadMsg = ClsXmlOperation.GetDaqZeroValueMapping(selectedPath + @"\AIConfig.xml", currentDev,
                             out ParaNameToZeroValue);
                         if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0) MessageBox.Show(ReadMsg);
                     }
@@ -1130,11 +1087,39 @@ namespace MTEmbTest
 
             if (selectedPath.Length < 1) return;
 
+
+            // DAQ_Dev2_Raw_1
+
+            var currentDev = EpbNo <= 8 ? "Dev1" : "Dev2";
+
+
             // 获取文件夹中所有文件
             allFiles = new DirectoryInfo(selectedPath).GetFiles("*.*", SearchOption.TopDirectoryOnly);
-            var SelectPart = allFiles.Where(file => FilterCondition(file, "CAN" + EpbNo + "_Raw", "bin"))
+            var SelectPart = allFiles.Where(file => FilterCondition(file, $"DAQ_{currentDev}_Raw", "bin"))
                 .OrderBy(file => file.CreationTime) // 按创建时间升序
                 .ToArray();
+
+            // 更新ParaNameToScale、 ParaNameToOffset、ParaNameToZeroValue
+            var ReadMsg = ClsXmlOperation.GetDaqScaleMapping(selectedPath + @"\AIConfig.xml", currentDev,
+                out ParaNameToScale);
+            if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
+            {
+                MessageBox.Show(ReadMsg);
+                return;
+            }
+
+            ReadMsg = ClsXmlOperation.GetDaqOffsetMapping(selectedPath + @"\AIConfig.xml", currentDev,
+                out ParaNameToOffset);
+            if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
+            {
+                MessageBox.Show(ReadMsg);
+                return;
+            }
+
+            ReadMsg = ClsXmlOperation.GetDaqZeroValueMapping(selectedPath + @"\AIConfig.xml", currentDev,
+                out ParaNameToZeroValue);
+            if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0) MessageBox.Show(ReadMsg);
+
 
             // 提取纯文件名（不含路径）
             var fileNames = SelectPart
@@ -1278,7 +1263,7 @@ namespace MTEmbTest
 
 
         /// <summary>
-        /// 导出DAQ数据到CSV文件
+        ///     导出DAQ数据到CSV文件
         /// </summary>
         /// <param name="FilterDaqTime">滤波后的DAQ时间戳数组</param>
         /// <param name="FilterDaqRelTime">滤波后的DAQ相对时间数组（秒）</param>
@@ -1288,8 +1273,8 @@ namespace MTEmbTest
         /// <exception cref="ArgumentException">当输入数组长度不一致时抛出</exception>
         /// <exception cref="IOException">当文件写入失败时抛出</exception>
         /// <remarks>
-        /// 此方法将处理后的DAQ数据导出为CSV格式文件，包含时间戳、相对时间、刹车编号和滤波后的电流值。
-        /// 所有CAN总线相关数据处理逻辑已被移除，仅保留DAQ数据。
+        ///     此方法将处理后的DAQ数据导出为CSV格式文件，包含时间戳、相对时间、刹车编号和滤波后的电流值。
+        ///     所有CAN总线相关数据处理逻辑已被移除，仅保留DAQ数据。
         /// </remarks>
         private void ExportDaqData(
             DateTime[] FilterDaqTime,
@@ -1344,10 +1329,10 @@ namespace MTEmbTest
                     {
                         // 格式化并写入数据行
                         writer.WriteLine(
-                            $"{FilterDaqTime[i]:yyyy-MM-dd HH:mm:ss.fff}," +  // 时间戳格式化为标准格式
-                            $"{FilterDaqRelTime[i]:F3}," +                     // 相对时间保留3位小数
-                            $"{FilterDaqBrakeNo[i]}," +                        // 刹车编号
-                            $"{filterCurrent[i]:F3}");                         // 电流值保留3位小数
+                            $"{FilterDaqTime[i]:yyyy-MM-dd HH:mm:ss.fff}," + // 时间戳格式化为标准格式
+                            $"{FilterDaqRelTime[i]:F3}," + // 相对时间保留3位小数
+                            $"{FilterDaqBrakeNo[i]}," + // 刹车编号
+                            $"{filterCurrent[i]:F3}"); // 电流值保留3位小数
                     }
                 }
 
