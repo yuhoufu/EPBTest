@@ -397,15 +397,37 @@ namespace IO.NI
                 // ① 先 re-arm 下一批，减小回调耗时对节拍的影响
                 reader.BeginReadMultiSample(_samplesPerChannel, again, task);
 
-                // ② 两种时间：主机“实测” + 按采样率推进的“理想”
-                var last = _lastTs;
-                var hostNow = NowFromStopwatch(_swStartTicks, _t0); // 高精度主机时刻
-                var idealNow = last.AddSeconds(n / _sampleRate); // 由 Fs * n 推进
+                // ② 取本设备的时钟状态
+                if (!_devClocks.TryGetValue(device, out var clk))
+                {
+                    // 极端情况下（热插拔/重启后）没有就创建
+                    clk = new DevClock { T0 = _t0, Last = _t0, Samples = 0 };
+                    _devClocks[device] = clk;
+                }
+                
+                var last = clk.Last;
+                
+                //  两种时间：主机“实测” + 按采样率推进的“理想”
+                var hostNow = _t0.AddMilliseconds(_sw.ElapsedMilliseconds - _ts0); // 主机"实测时间"
+
+
+                var idealNow = last.AddSeconds(n / _sampleRate); //  理想时间：由采样率推进，避免 jitter 抖动 Fs * n
 
                 // ③ 轻微纠偏（例如 >5ms 时用主机时间，否则用理想时间，避免长期漂移）
                 var driftMs = (hostNow - idealNow).TotalMilliseconds;
                 var current = Math.Abs(driftMs) > 5 ? hostNow : idealNow;
-                //var current =  idealNow;
+
+                //var current =  idealNow; // 不用纠偏，直接采用理想时间
+
+                // ④ （可选）诊断丢块：host Δt 远大于 n/Fs
+                var hostDt = (hostNow - last).TotalSeconds;
+                var expectDt = n / _sampleRate;
+                if (hostDt > expectDt * 1.5)             // 系数可按经验调
+                {
+                    var lost = (int)Math.Round(hostDt * _sampleRate) - n;
+                    if (lost > 0)
+                        _log.Warn($"[{device}] 疑似丢样：hostΔt={hostDt:F4}s 期望={expectDt:F4}s 约缺 {lost} 点（≈{lost / (double)_samplesPerChannel:F2} 批）。", "AI");
+                }
 
 
                 // 1) 原始矩阵入队（后台转工程值 + 滤波）
@@ -460,7 +482,12 @@ namespace IO.NI
 
                 // 下一轮
                 //reader.BeginReadMultiSample(_samplesPerChannel, again, task);
-                _lastTs = current;
+                //_lastTs = current;
+
+                // ⑧ 更新本设备的时钟
+                clk.Last = current;
+                clk.Samples += n;
+
             }
             catch (DaqException ex)
             {
