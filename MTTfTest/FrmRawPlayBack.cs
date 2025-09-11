@@ -391,7 +391,7 @@ namespace MTEmbTest
         /// </summary>
         /// <param name="sender"></param>
         /// <param name="e"></param>
-        private void bgwA_Completed_Old2(object sender, RunWorkerCompletedEventArgs e)
+        private void bgwA_Completed(object sender, RunWorkerCompletedEventArgs e)
         {
             // 检查DAQ数据是否有效
             if (DaqCurrent is { Length: > 0 })
@@ -458,7 +458,7 @@ namespace MTEmbTest
         /// 此方法使用未滤波的原始数据填充FilterDaqRelTime、FilterDaqBrakeNo和FilterDaqTime数组，
         /// 用于测试目的，以便查看原始数据的效果。
         /// </remarks>
-        private void bgwA_Completed(object sender, RunWorkerCompletedEventArgs e)
+        private void bgwA_Completed_RawData(object sender, RunWorkerCompletedEventArgs e)
         {
             // 检查DAQ数据是否有效
             if (DaqCurrent is { Length: > 0 } && DaqSourceTime is { Length: > 0 } && DaqBrakeNo is { Length: > 0 })
@@ -745,8 +745,8 @@ namespace MTEmbTest
                             FilterDaqTime,
                             FilterDaqRelTime,
                             FilterDaqBrakeNo,
-                            // filterCurrent,
-                            DaqCurrent,
+                            filterCurrent,
+                            // DaqCurrent, // 如果需要导出原始数据启用
                             saveFileDialog.FileName
                         );
 
@@ -1345,7 +1345,7 @@ namespace MTEmbTest
                         // 格式化并写入数据行
                         writer.WriteLine(
                             $"{FilterDaqTime[i]:yyyy-MM-dd HH:mm:ss.fff}," +  // 时间戳格式化为标准格式
-                            $"{FilterDaqRelTime[i]:F6}," +                     // 相对时间保留3位小数
+                            $"{FilterDaqRelTime[i]:F3}," +                     // 相对时间保留3位小数
                             $"{FilterDaqBrakeNo[i]}," +                        // 刹车编号
                             $"{filterCurrent[i]:F3}");                         // 电流值保留3位小数
                     }
