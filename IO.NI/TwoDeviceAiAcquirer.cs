@@ -52,9 +52,9 @@ namespace IO.NI
         private DateTime _lastTs = DateTime.Now;
         private AnalogMultiChannelReader _reader1, _reader2;
         private DateTime _t0 = DateTime.Now;
+        private long _swStartTicks; // Stopwatch 起点
 
 
-        
         // NI 任务
         private NIDaqTask _task1, _task2;
         private long _ts0;
@@ -62,7 +62,33 @@ namespace IO.NI
         // 动态置零偏移（参数名 -> offset，工程值单位）
         private readonly ConcurrentDictionary<string, double> _zeroOffsets = new(StringComparer.OrdinalIgnoreCase);
 
+        // 顶部字段处
+        private sealed class DevClock // 每设备时钟状态
+        {
+            public DateTime T0; // 本设备参考起点（与 Start() 同时刻）
+            public DateTime Last; // 本设备上一次时间戳
+            public long Samples; // 本设备自启动累计样本数（可用于诊断）
+        }
 
+        private readonly ConcurrentDictionary<string, DevClock> _devClocks = new();
+
+
+        private void InitTimeBase()
+        {
+            _t0 = DateTime.Now;
+            _swStartTicks = Stopwatch.GetTimestamp();
+            _sw.Restart();
+            _ts0 = 0;
+            _lastTs = _t0;
+        }
+
+        /// <summary>把当前 Stopwatch 读数换算为 DateTime（纳秒级精度，避免整数毫秒量化）。</summary>
+        private static DateTime NowFromStopwatch(long startStamp, DateTime t0)
+        {
+            long now = Stopwatch.GetTimestamp();
+            double sec = (now - startStamp) / (double)Stopwatch.Frequency;
+            return t0.AddSeconds(sec);
+        }
 
 
         public TwoDeviceAiAcquirer(
@@ -154,8 +180,6 @@ namespace IO.NI
             _zeroOffsets.Clear();
             _log?.Warn("已清除全部通道的动态置零。", "AI");
         }
-
-
 
 
         // —— 供窗体订阅的两个回调 —— //
@@ -272,11 +296,21 @@ namespace IO.NI
             Stop();
             if (!_sw.IsRunning)
             {
+                //InitTimeBase();
                 _t0 = DateTime.Now;
                 _sw.Start();
                 _ts0 = _sw.ElapsedMilliseconds;
-                _lastTs = _t0;
             }
+
+
+            // 为每个实际启用的设备放入独立的时钟
+            if (_dev1Channels.Length > 0)
+                _devClocks["Dev1"] = new DevClock { T0 = _t0, Last = _t0, Samples = 0 };
+
+            if (_dev2Channels.Length > 0)
+                _devClocks["Dev2"] = new DevClock { T0 = _t0, Last = _t0, Samples = 0 };
+
+
 
             if (_dev1Channels.Length > 0)
             {
@@ -285,6 +319,7 @@ namespace IO.NI
                 _reader1.BeginReadMultiSample(_samplesPerChannel, Dev1Callback, _task1);
             }
 
+            // 暂时注释dev2
             if (_dev2Channels.Length > 0)
             {
                 _task2 = CreateAiTask("Dev2_AI", _dev2Channels, aiMin, aiMax, term);
@@ -357,10 +392,21 @@ namespace IO.NI
             {
                 var task = (NIDaqTask)ar.AsyncState;
                 var raw = reader.EndReadMultiSample(ar); // [ch, n]
+                int n = raw.GetLength(1);
 
-                var nowMs = _sw.ElapsedMilliseconds;
-                var current = _t0.AddMilliseconds(nowMs - _ts0);
+                // ① 先 re-arm 下一批，减小回调耗时对节拍的影响
+                reader.BeginReadMultiSample(_samplesPerChannel, again, task);
+
+                // ② 两种时间：主机“实测” + 按采样率推进的“理想”
                 var last = _lastTs;
+                var hostNow = NowFromStopwatch(_swStartTicks, _t0); // 高精度主机时刻
+                var idealNow = last.AddSeconds(n / _sampleRate); // 由 Fs * n 推进
+
+                // ③ 轻微纠偏（例如 >5ms 时用主机时间，否则用理想时间，避免长期漂移）
+                var driftMs = (hostNow - idealNow).TotalMilliseconds;
+                var current = Math.Abs(driftMs) > 5 ? hostNow : idealNow;
+                //var current =  idealNow;
+
 
                 // 1) 原始矩阵入队（后台转工程值 + 滤波）
                 _queue.Enqueue(new Item(device, raw, current, last));
@@ -374,7 +420,6 @@ namespace IO.NI
 
                 try
                 {
-                  
                     // —— 修改 fast 分支：所有通道都写入 _lastFastValue —— //
                     var devRecs = _enabled
                         .Where(r => r.物理通道.StartsWith(device + "/"))
@@ -414,7 +459,7 @@ namespace IO.NI
 
 
                 // 下一轮
-                reader.BeginReadMultiSample(_samplesPerChannel, again, task);
+                //reader.BeginReadMultiSample(_samplesPerChannel, again, task);
                 _lastTs = current;
             }
             catch (DaqException ex)
@@ -582,6 +627,8 @@ namespace IO.NI
 
             task.Timing.ConfigureSampleClock("", _sampleRate, SampleClockActiveEdge.Rising,
                 SampleQuantityMode.ContinuousSamples, _samplesPerChannel);
+            //task.Stream.ConfigureInputBuffer(0);
+
             task.Control(TaskAction.Verify);
             task.Start();
             return task;
