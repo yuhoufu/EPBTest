@@ -105,7 +105,7 @@ namespace MtEmbTest
         public static string RR_Recv;
         public static double XDuration;
         public static double FileChangeMinutes;
-        public static double DaqFrequency;
+        public static double DaqFrequency; // 数采的采样率
         public static int SamplesPerChannel;
         public static double CanRecvTimeSpanMillSecs;
 

@@ -124,9 +124,44 @@ namespace DataOperation
             }
         }
 
+        /// <summary>
+        /// 把一批原始采样写入文件：按 last→current 为批内每个样本生成独立时间戳（线性插值）。
+        /// </summary>
+        /// <param name="bw">已打开的 BinaryWriter。</param>
+        /// <param name="raw">原始矩阵 [channel, sample]。</param>
+        /// <param name="last">上一批最后一个样本时刻。</param>
+        /// <param name="current">本批最后一个样本时刻。</param>
+        /// <param name="brakeNo">刹车编号（沿用你的格式）。</param>
+        private static void WriteRawBatchWithInterpolatedTimestamps(
+            BinaryWriter bw, double[,] raw, DateTime last, DateTime current, int brakeNo, double fallbackSampleRateHz = 1000)
+        {
+            int ch = raw.GetLength(0);
+            int n = raw.GetLength(1);
+            if (n <= 0) return;
+
+            long spanTicks = (current - last).Ticks;
+            // 正常情况下按 last→current 平均铺开；异常（span<=0）按后备采样率兜底
+            double step = spanTicks > 0
+                ? spanTicks / (double)n
+                : TimeSpan.FromSeconds(1.0 / fallbackSampleRateHz).Ticks;
+
+            long baseTicks = last.Ticks;
+
+            for (int i = 0; i < n; i++)
+            {
+                long tsTicks = baseTicks + (long)Math.Round(step * (i + 1));
+                var ts = new DateTime(tsTicks, DateTimeKind.Local);
+
+                bw.Write(brakeNo);
+                bw.Write(ts.ToFileTime());   // 读取端用 FromFileTime 即可
+                for (int c = 0; c < ch; c++)
+                    bw.Write(raw[c, i]);
+            }
+        }
+
 
         // 定时触发的批量写入
-        public async Task FlushRawToDiskAsync()
+        public async Task FlushRawToDiskAsync_Old()
         {
             await rawFileLock.WaitAsync();
             var Lens = DaqRawData.Count;
@@ -181,6 +216,8 @@ namespace DataOperation
                             Buffer.BlockCopy(rowData, 0, buffer, offset, 8 * Channels);
                             offset += 8 * Channels;
                         }
+
+
                     }
 
 
@@ -208,6 +245,121 @@ namespace DataOperation
                 rawFileLock.Release();
                 buffer = null;
                 if (fs != null) fs.Dispose();
+            }
+        }
+
+
+        /// <summary>
+        /// 将队列中的原始采样批量写入磁盘（二进制）。
+        /// 【重要】为“批内每个样本”生成独立时间戳：按 last→current 等分，
+        /// 并使用 (j+1) 避免首样本时间与上一批最后一个样本时间重复，
+        /// 解决导出 CSV 时 RelTime 出现 0/0.001 交替的问题。
+        /// </summary>
+        /// <remarks>
+        /// 单样本帧格式保持不变：
+        ///   int SaveRawCounter(4B) + long TimeFile(8B) + double[Channels] (8*Channels B)
+        /// 缓冲大小仍按“Lens * SamplesPerChannel”预估；若你的 SamplesPerChannel
+        /// 是固定的，此计算与原逻辑一致。
+        /// </remarks>
+        public async Task FlushRawToDiskAsync()
+        {
+            await rawFileLock.WaitAsync();
+            var Lens = DaqRawData.Count;
+
+            // 预估缓冲大小：每样本 (4 + 8 + 8*Channels) 字节
+            var buffer = new byte[Lens * SamplesPerChannel * (4 + 8 + 8 * Channels)];
+            FileStream fs = null;
+
+            try
+            {
+                if (Lens < 1) return; // finally 仍会执行
+
+                // Step 1: 检查是否需要切换文件
+                if ((DateTime.Now - _lastFlushTime).TotalMinutes >= StoreTimeMinutes)
+                {
+                    currentRawFileName = GenerateRawFileName();
+                    _lastFlushTime = DateTime.Now;
+                }
+
+                SaveRawCounter++;
+                var offset = 0;
+
+                // 跳过首次写盘（保持你原有策略）
+                if (SaveRawCounter <= 1)
+                {
+                    for (var i = 0; i < Lens; i++) DaqRawData.TryDequeue(out var _);
+                    return;
+                }
+
+                // 复用一块行缓冲，避免在内层循环频繁分配
+                var rowData = new double[Channels];
+
+                // Step 2: 逐批取出并展开为“逐样本”记录
+                for (var i = 0; i < Lens; i++)
+                {
+                    if (!DaqRawData.TryDequeue(out var daqData)) continue;
+
+                    int recvSamples = daqData.Data.GetLength(1);
+                    if (recvSamples <= 0) continue;
+
+                    // —— 用 Ticks 做线性插值，更精确 —— //
+                    long lastTicks = daqData.LastRecvTime.Ticks;
+                    long spanTicks = (daqData.RecvTime - daqData.LastRecvTime).Ticks;
+
+                    // 正常：按 last→current 等分；异常（<=0）：用 1ms/样本 兜底
+                    double stepTicks = spanTicks > 0
+                        ? spanTicks / (double)recvSamples
+                        : TimeSpan.FromMilliseconds(1).Ticks;   // 兜底：1 kHz
+
+                    for (int j = 0; j < recvSamples; j++)
+                    {
+                        // ★ 关键：用 (j + 1) 确保首样本时间 > last（避免跨批重复）
+                        long tsTicks = lastTicks + (long)Math.Round(stepTicks * (j + 1));
+                        var daqTime = new DateTime(tsTicks, DateTimeKind.Local);
+
+                        // 写 Counter（保持原有 SaveRawCounter-1 语义）
+                        var counterBytes = BitConverter.GetBytes(SaveRawCounter - 1);
+                        Buffer.BlockCopy(counterBytes, 0, buffer, offset, 4);
+                        offset += 4;
+
+                        // 写时间戳（long: ToFileTime）
+                        var timeBytes = BitConverter.GetBytes(daqTime.ToFileTime());
+                        Buffer.BlockCopy(timeBytes, 0, buffer, offset, 8);
+                        offset += 8;
+
+                        // 拷贝本样本的各通道
+                        for (int k = 0; k < Channels; k++)
+                            rowData[k] = daqData.Data[k, j];
+
+                        Buffer.BlockCopy(rowData, 0, buffer, offset, 8 * Channels);
+                        offset += 8 * Channels;
+                    }
+                }
+
+                // Step 3: 异步批量写入
+                fs = new FileStream(
+                    currentRawFileName,
+                    FileMode.Append,
+                    FileAccess.Write,
+                    FileShare.Read,
+                    8192,
+                    FileOptions.WriteThrough | FileOptions.Asynchronous);
+
+                await fs.WriteAsync(buffer, 0, offset);
+                await fs.FlushAsync();
+            }
+            catch (Exception ex)
+            {
+                var logFilePath = Path.Combine(Directory.GetCurrentDirectory(),
+                    $"DAQ_{DaqCardName}WriteDiskErrorLog.txt");
+                var errorMessage = $"[{DateTime.Now}] DAQ_{DaqCardName} flush error: {ex.Message}";
+                File.AppendAllText(logFilePath, errorMessage + Environment.NewLine);
+            }
+            finally
+            {
+                rawFileLock.Release();
+                buffer = null;
+                fs?.Dispose();
             }
         }
 

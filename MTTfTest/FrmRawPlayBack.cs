@@ -391,7 +391,7 @@ namespace MTEmbTest
         /// </summary>
         /// <param name="sender"></param>
         /// <param name="e"></param>
-        private void bgwA_Completed(object sender, RunWorkerCompletedEventArgs e)
+        private void bgwA_Completed_Old2(object sender, RunWorkerCompletedEventArgs e)
         {
             // 检查DAQ数据是否有效
             if (DaqCurrent is { Length: > 0 })
@@ -448,6 +448,84 @@ namespace MTEmbTest
                 MessageBox.Show("DAQ记录数据为空！");
             }
         }
+
+        /// <summary>
+        /// 数据处理完成 - 测试版本，使用未滤波的原始数据
+        /// </summary>
+        /// <param name="sender">事件源</param>
+        /// <param name="e">事件参数</param>
+        /// <remarks>
+        /// 此方法使用未滤波的原始数据填充FilterDaqRelTime、FilterDaqBrakeNo和FilterDaqTime数组，
+        /// 用于测试目的，以便查看原始数据的效果。
+        /// </remarks>
+        private void bgwA_Completed(object sender, RunWorkerCompletedEventArgs e)
+        {
+            // 检查DAQ数据是否有效
+            if (DaqCurrent is { Length: > 0 } && DaqSourceTime is { Length: > 0 } && DaqBrakeNo is { Length: > 0 })
+            {
+                // 确保数据长度一致
+                if (DaqCurrent.Length != DaqSourceTime.Length || DaqCurrent.Length != DaqBrakeNo.Length)
+                {
+                    MessageBox.Show("数据数组长度不一致，无法处理！");
+                    return;
+                }
+
+                // 使用原始数据长度
+                var dataLength = DaqCurrent.Length;
+
+                // 初始化数组
+                FilterDaqRelTime = new double[dataLength];
+                FilterDaqBrakeNo = new int[dataLength];
+                FilterDaqTime = new DateTime[dataLength];
+
+                // 计算第一个时间点作为参考
+                DateTime startTime = DaqSourceTime[0];
+
+                // 填充未滤波的原始数据
+                for (var i = 0; i < dataLength; i++)
+                {
+                    FilterDaqTime[i] = DaqSourceTime[i];
+                    FilterDaqRelTime[i] = DaqSourceTime[i].Subtract(startTime).TotalSeconds;
+                    FilterDaqBrakeNo[i] = DaqBrakeNo[i];
+                }
+
+                // 将未滤波的数据添加到图表列表
+                listDaqCurrent.Clear(); // 清空现有数据
+                for (var i = 0; i < dataLength; i++)
+                {
+                    listDaqCurrent.Add(FilterDaqRelTime[i], DaqCurrent[i]);
+                }
+                
+
+
+                // 隐藏进度条并处理UI事件
+                ProgressShow.Visible = false;
+                Application.DoEvents();
+
+                // 设置图表X轴范围
+                if (dataLength > 0)
+                {
+                    zedGraphControlHistory.GraphPane.XAxis.Scale.Max = FilterDaqRelTime[dataLength - 1];
+                    zedGraphControlHistory.GraphPane.XAxis.Scale.Min = 0.0;
+
+                    // 更新全局变量
+                    XAxisMin = 0.0;
+                    XAxisMax = FilterDaqRelTime[dataLength - 1];
+                }
+
+                // 刷新图表
+                zedGraphControlHistory.AxisChange();
+                zedGraphControlHistory.Invalidate();
+
+                // 显示数据信息
+                MessageBox.Show($"已加载 {dataLength} 个未滤波数据点", "数据加载完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            else
+            {
+                MessageBox.Show("DAQ记录数据为空或数据不完整！", "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
 
 
         private void ReadData(string FileName)
@@ -667,7 +745,8 @@ namespace MTEmbTest
                             FilterDaqTime,
                             FilterDaqRelTime,
                             FilterDaqBrakeNo,
-                            filterCurrent,
+                            // filterCurrent,
+                            DaqCurrent,
                             saveFileDialog.FileName
                         );
 
@@ -1266,7 +1345,7 @@ namespace MTEmbTest
                         // 格式化并写入数据行
                         writer.WriteLine(
                             $"{FilterDaqTime[i]:yyyy-MM-dd HH:mm:ss.fff}," +  // 时间戳格式化为标准格式
-                            $"{FilterDaqRelTime[i]:F3}," +                     // 相对时间保留3位小数
+                            $"{FilterDaqRelTime[i]:F6}," +                     // 相对时间保留3位小数
                             $"{FilterDaqBrakeNo[i]}," +                        // 刹车编号
                             $"{filterCurrent[i]:F3}");                         // 电流值保留3位小数
                     }

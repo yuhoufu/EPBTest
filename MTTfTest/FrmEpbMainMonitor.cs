@@ -20,11 +20,12 @@ using MTEmbTest.UIHelpers;
 using NationalInstruments.DAQmx;
 using Sunny.UI;
 using ZedGraph;
-using static System.Windows.Forms.VisualStyles.VisualStyleElement.TextBox;
 using Task = NationalInstruments.DAQmx.Task;
 //using AsyncListener;
 using TestConfig = DataOperation.TestConfig;
 using Timer = System.Threading.Timer;
+
+// ReSharper disable AsyncVoidLambda
 
 namespace MTEmbTest
 {
@@ -109,6 +110,20 @@ namespace MTEmbTest
         private int _closingReentry = 0;
 
         private string _currentDev = "EMB1"; // 添加私有字段
+
+
+        // —— 数据落盘上下文与定时器（沿用旧项目结构）——
+        private DaqAIContext _daqDev1;
+        private DaqAIContext _daqDev2;
+        private Timer _daqRawTimerDev1, _daqStatTimerDev1;
+        private Timer _daqRawTimerDev2, _daqStatTimerDev2;
+
+        /// <summary>每帧样本时间跨度（毫秒），与旧项目一致：1000 / 采样频率。</summary>
+        private double _daqTimeSpanMs = 10.0; // 会在 Load 中设为 1000.0 / ClsGlobal.DaqFrequency 可以使用DaqTimeSpanMilSeconds
+
+        /// <summary>本次试验的数据根目录（每次试验一个唯一文件夹）。</summary>
+        private string _dataStorePath = string.Empty;
+
         private volatile bool _dirtyForRedraw; // 有新数据，需要重绘
         private DoController _do;
         private EpbManager _epb;
@@ -350,12 +365,10 @@ namespace MTEmbTest
                 activeWriteBuffer = bufferA;
                 readyReadBuffer = bufferB;
 
-                var ReadMsg = string.Empty;
 
-
-                ReadMsg = ClsXmlOperation.GetDaqAIUsedChannels(
+                var ReadMsg = ClsXmlOperation.GetDaqAIUsedChannels(
                     Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev1", out Dev1UsedDaqAIChannels);
-                if (ReadMsg.IndexOf("OK") < 0)
+                if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
                 {
                     MessageBox.Show(ReadMsg);
                     return;
@@ -370,7 +383,7 @@ namespace MTEmbTest
 
                 ReadMsg = ClsXmlOperation.GetDaqAIUsedChannels(
                     Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev2", out Dev2UsedDaqAIChannels);
-                if (ReadMsg.IndexOf("OK") < 0)
+                if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
                 {
                     MessageBox.Show(ReadMsg);
                     return;
@@ -385,39 +398,80 @@ namespace MTEmbTest
 
                 ReadMsg = ClsXmlOperation.GetDaqAIChannelMapping(
                     Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev1", Dev1UsedDaqAIChannels,
-                    out EMBToDaqCurrentChannel);
+                    out Dev1DaqChannel);
                 if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
                 {
                     MessageBox.Show(ReadMsg);
                     return;
                 }
 
-                if (EMBToDaqCurrentChannel.Count < 1)
+                if (Dev1DaqChannel.Count < 1)
                 {
-                    MessageBox.Show(@"未读取到DAQ电流和EMB控制器对应关系！");
+                    MessageBox.Show(@"未读取到DAQ电流和EPB卡钳对应关系！");
                     return;
                 }
 
+                // Dev2通道, Dev2DaqChannel
+                ReadMsg = ClsXmlOperation.GetDaqAIChannelMapping(
+                    Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev2", Dev2UsedDaqAIChannels,
+                    out Dev2DaqChannel, paramTypeFilter: new string[] { }); //paramTypeFilter 参数为空，不过滤
+                if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
+                {
+                    MessageBox.Show(ReadMsg);
+                    return;
+                }
 
+                if (Dev2DaqChannel.Count < 1)
+                {
+                    MessageBox.Show(@"未读取到DAQ电流和EPB卡钳对应关系！");
+                    return;
+                }
+
+                // Dev1的系数映射
                 ReadMsg = ClsXmlOperation.GetDaqScaleMapping(
-                    Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev1", out ParaNameToScale);
-                if (ReadMsg.IndexOf("OK") < 0)
+                    Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev1", out Dev1ParaNameToScale);
+                if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
                 {
                     MessageBox.Show(ReadMsg);
                     return;
                 }
 
                 ReadMsg = ClsXmlOperation.GetDaqOffsetMapping(
-                    Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev1", out ParaNameToOffset);
-                if (ReadMsg.IndexOf("OK") < 0)
+                    Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev1", out Dev1ParaNameToOffset);
+                if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
                 {
                     MessageBox.Show(ReadMsg);
                     return;
                 }
 
                 ReadMsg = ClsXmlOperation.GetDaqZeroValueMapping(
-                    Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev1", out ParaNameToZeroValue);
-                if (ReadMsg.IndexOf("OK") < 0)
+                    Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev1", out Dev1ParaNameToZeroValue);
+                if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
+                {
+                    MessageBox.Show(ReadMsg);
+                    return;
+                }
+
+                // Dev2的系数映射
+                ReadMsg = ClsXmlOperation.GetDaqScaleMapping(
+                    Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev2", out Dev2ParaNameToScale);
+                if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
+                {
+                    MessageBox.Show(ReadMsg);
+                    return;
+                }
+
+                ReadMsg = ClsXmlOperation.GetDaqOffsetMapping(
+                    Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev2", out Dev2ParaNameToOffset);
+                if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
+                {
+                    MessageBox.Show(ReadMsg);
+                    return;
+                }
+
+                ReadMsg = ClsXmlOperation.GetDaqZeroValueMapping(
+                    Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev2", out Dev2ParaNameToZeroValue);
+                if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
                 {
                     MessageBox.Show(ReadMsg);
                     return;
@@ -443,7 +497,6 @@ namespace MTEmbTest
 
                 // 1) 加载全局配置（AO/DO/Test）
                 _cfg = ConfigLoader.LoadAll($@"{Environment.CurrentDirectory}\Config", logger);
-
 
 
                 LoadEmbControler();
@@ -474,8 +527,6 @@ namespace MTEmbTest
                 // } // 已更改，暂时注释 2025/08/20
 
 
-                
-
                 // 2) 初始化 DO 控制器
                 _do = new DoController(_cfg.DO, logger);
 
@@ -485,10 +536,12 @@ namespace MTEmbTest
                 aiConfigDetail =
                     AiConfigLoader.Load($@"{Environment.CurrentDirectory}\Config\AIConfig.xml");
 
-                twoDeviceAiAcquirer = new TwoDeviceAiAcquirer(aiConfigDetail, 1000, 40,
-                    10, logger);
+                twoDeviceAiAcquirer = new TwoDeviceAiAcquirer(aiConfigDetail, ClsGlobal.DaqFrequency, samplesPerChannel:ClsGlobal.SamplesPerChannel,
+                    medianLens: 10, logger);
 
                 twoDeviceAiAcquirer.OnEngBatch += Acq_OnEngBatch; // 订阅工程值批次到达事件
+
+                twoDeviceAiAcquirer.OnRawBatch += Acq_OnRawBatch; // ← 新增：订阅原始批次事件（两卡通用 ) // 2025/09/09
 
                 #region 曲线勾选控件相关
 
@@ -534,6 +587,14 @@ namespace MTEmbTest
                     _ao,
                     twoDeviceAiAcquirer,
                     logger);
+
+
+                // 1) 计算每帧毫秒跨度（旧工程做法） On 2025/09/09
+                _daqTimeSpanMs = 1000.0 / ClsGlobal.DaqFrequency; // 设置单个试验的采用周期 
+
+                // 2) 准备落盘目录并启动定时落盘 On 2025/09/09
+                PrepareDataStoreDirectory();
+                InitDaqLogTimer(2000); // 建议 100~500ms；与旧工程默认相当
             }
 
             catch (Exception ex)
@@ -917,15 +978,9 @@ namespace MTEmbTest
             //for (var i = 0; i < 12; i++) _do.SetEpb(i + 1, toggleSwitch1.IsOn);
 
             if (toggleSwitch1.IsOn)
-            {
-
-                 await _epb.StartChannelAsync(4);
-            }
+                await _epb.StartChannelAsync(4);
             else
-            {
-
-                 _epb.StopChannel(4);
-            }
+                _epb.StopChannel(4);
 
             // 打开气缸测试
             // _ao.SetPercent("Cylinder1", 50); // => ~5V
@@ -1024,6 +1079,7 @@ namespace MTEmbTest
                     var v = _chData[epb1.GlobalIndex][_chData[epb1.GlobalIndex].Count - 1].Y;
                     textEditCurrent1.Text = $@"{v:F2} A";
                 }
+
                 // —— 示例：刷新 EPB2 瞬时显示 —— //
                 var epb2 = _allChs.FirstOrDefault(c => c.Device == "Dev1" && c.AiIndex == 1);
                 if (epb2 != null && _chData[epb2.GlobalIndex].Count > 0)
@@ -1248,7 +1304,7 @@ namespace MTEmbTest
                 _epb.StopChannel(1);
                 // _epb.StopChannel(4);
                 // _epb.StopChannel(4);
-               // _epb.StopChannel(5);
+                // _epb.StopChannel(5);
             }
             catch (Exception ex)
             {
@@ -1340,10 +1396,124 @@ namespace MTEmbTest
             {
             }
 
+            // 4) 停止并释放落盘定时器，并做最后一次 Flush on 2025/09/09
+            try
+            {
+                // 停止定时器
+                void StopTimer(ref Timer t)
+                {
+                    try
+                    {
+                        t?.Change(Timeout.Infinite, Timeout.Infinite);
+                        t?.Dispose();
+                        t = null;
+                    }
+                    catch
+                    {
+                    }
+                }
+
+                StopTimer(ref _daqRawTimerDev1);
+                StopTimer(ref _daqStatTimerDev1);
+                StopTimer(ref _daqRawTimerDev2);
+                StopTimer(ref _daqStatTimerDev2);
+
+                // 最后一轮同步写盘（避免尾帧留在内存队列）
+                _daqDev1?.FlushRawToDiskAsync().GetAwaiter().GetResult();
+                _daqDev1?.FlushStatToDiskAsync().GetAwaiter().GetResult();
+                _daqDev2?.FlushRawToDiskAsync().GetAwaiter().GetResult();
+                _daqDev2?.FlushStatToDiskAsync().GetAwaiter().GetResult();
+            }
+            catch
+            {
+                /* 关闭阶段忽略单次失败 */
+            }
+
+
             base.OnFormClosing(e);
         }
 
         #endregion
+
+
+        private void SwitchEpb2_CheckedChanged(object sender, EventArgs e)
+        {
+        }
+
+        // 把全选中项做置零或清零
+        private void ZeroOrClearSelected(bool isZero)
+        {
+            if (twoDeviceAiAcquirer == null)
+            {
+                XtraMessageBox.Show("采集器未初始化。");
+                return;
+            }
+
+            // 取被勾选的全局索引（1..15）
+            var picked = _checkByGlobal
+                .Where(kv => kv.Value?.Checked == true)
+                .Select(kv => kv.Key)
+                .OrderBy(x => x)
+                .ToList();
+
+            if (picked.Count == 0)
+            {
+                XtraMessageBox.Show("请先勾选要操作的通道。");
+                return;
+            }
+
+            foreach (var idx in picked)
+                if (idx >= 0 && idx <= 11)
+                {
+                    // EPB 电流通道
+                    if (isZero) twoDeviceAiAcquirer.ZeroEpbChannel(idx + 1);
+                    else twoDeviceAiAcquirer.ClearZeroEpbChannel(idx + 1);
+                }
+                else
+                {
+                    // P1 / P2 / F -> 参数名
+                    var paramName = idx switch
+                    {
+                        12 => "Pressure_1",
+                        13 => "Pressure_2",
+                        14 => "Force",
+                        _ => null
+                    };
+                    if (string.IsNullOrEmpty(paramName)) continue;
+
+                    if (isZero) twoDeviceAiAcquirer.ZeroByParamName(paramName);
+                    else twoDeviceAiAcquirer.ClearZeroByParamName(paramName);
+                }
+
+            // 可选：简单提示
+            var label = isZero ? "置零" : "清除置零";
+            var list = string.Join(", ", picked.Select(IndexToDisplayName));
+            // 你也可以换成状态栏提示
+            Console.WriteLine($"{label}完成：{list}");
+        }
+
+        // 把全局索引转成界面显示名（1..12, P1, P2, F）
+        private static string IndexToDisplayName(int idx)
+        {
+            return idx switch
+            {
+                >= 0 and <= 11 => $"#{idx + 1}",
+                12 => "P1",
+                13 => "P2",
+                14 => "F",
+                _ => $"#{idx}"
+            };
+        }
+
+        private void ZeroButton_Click(object sender, EventArgs e)
+        {
+            ZeroOrClearSelected(true);
+        }
+
+        private void ClearZeroButton_Click(object sender, EventArgs e)
+        {
+            ZeroOrClearSelected(false);
+        }
 
         /// <summary>信号类型（用于决定放哪根轴与命名等）。</summary>
         private enum SignalType
@@ -1422,10 +1592,15 @@ namespace MTEmbTest
 
 
         #region DAQ_AI变量
+        private ConcurrentDictionary<string, double> Dev1ParaNameToScale = new();
+        private ConcurrentDictionary<string, double> Dev1ParaNameToOffset = new();
+        private ConcurrentDictionary<string, double> Dev1ParaNameToZeroValue = new();
 
-        private ConcurrentDictionary<string, double> ParaNameToScale = new();
-        private ConcurrentDictionary<string, double> ParaNameToOffset = new();
-        private ConcurrentDictionary<string, double> ParaNameToZeroValue = new();
+        private ConcurrentDictionary<string, double> Dev2ParaNameToScale = new();
+        private ConcurrentDictionary<string, double> Dev2ParaNameToOffset = new();
+        private ConcurrentDictionary<string, double> Dev2ParaNameToZeroValue = new();
+
+
 
 
         private static string[] Dev1UsedDaqAIChannels;
@@ -1441,7 +1616,8 @@ namespace MTEmbTest
         private AsyncCallback Dev2analogCallback;
         private Task Dev2runningAnalogTask;
 
-        private static ConcurrentDictionary<string, int> EMBToDaqCurrentChannel = new();
+        private static ConcurrentDictionary<string, int> Dev1DaqChannel = new();
+        private static ConcurrentDictionary<string, int> Dev2DaqChannel = new();
 
         private static ConcurrentDictionary<string, uint> DirectionToSendFrame = new();
 
@@ -1814,7 +1990,6 @@ namespace MTEmbTest
                 pane.Chart.Fill = new Fill(Color.FromArgb(248, 248, 248));
 
 
-
                 pane.XAxis.Color = Color.Gray;
                 pane.XAxis.MajorTic.Color = Color.Gray;
                 pane.XAxis.MinorTic.Size = 0.0f;
@@ -1844,7 +2019,7 @@ namespace MTEmbTest
 
 
                 // ★ 新增：确保有一个用于压力的第二左轴，并拿到它的索引
-                int pressureAxisIndex = EnsurePressureYAxis(pane);
+                var pressureAxisIndex = EnsurePressureYAxis(pane);
 
                 // —— 路由表重建 —— //
                 _route.Clear();
@@ -1883,24 +2058,23 @@ namespace MTEmbTest
                     {
                         case SignalType.Current:
                             // 12 路电流 -> 右轴（Y2）
-                            curve.IsY2Axis = true;       // 右侧轴
+                            curve.IsY2Axis = true; // 右侧轴
                             // curve.Y2AxisIndex = 0;    // 可省，默认 0（只有一个右轴）
                             break;
 
                         case SignalType.Pressure:
                             // 两个压力 -> 新增的第二左轴（pressureAxisIndex >= 1）
-                            curve.IsY2Axis = false;      // 左侧轴族
+                            curve.IsY2Axis = false; // 左侧轴族
                             curve.YAxisIndex = pressureAxisIndex;
                             break;
 
                         case SignalType.Force:
                         default:
                             // 夹紧力 F -> 默认左轴（索引 0）
-                            curve.IsY2Axis = false;      // 左侧轴族
+                            curve.IsY2Axis = false; // 左侧轴族
                             curve.YAxisIndex = 0;
                             break;
                     }
-
 
 
                     // 初始可见性 = 复选框状态（若未找到控件则默认可见）
@@ -1938,7 +2112,7 @@ namespace MTEmbTest
                 // 设置曲线的应该的固定宽度为周期的4倍
                 // ReSharper disable once PossibleLossOfFraction
                 _fixedXWindowSec = _cfg.Test.PeriodMs / 1000 * 2;
-                
+
                 // 曲线应用固定宽度（若未显式设置，则用 ClsGlobal.XDuration）
                 SetXWindowSeconds(_fixedXWindowSec > 0 ? _fixedXWindowSec : ClsGlobal.XDuration);
 
@@ -1958,21 +2132,19 @@ namespace MTEmbTest
         #region 轴创建与选择
 
         /// <summary>
-        /// 创建或获取用于“压力（bar）”显示的左侧第二 Y 轴，并返回其索引。
-        /// - 轴放在左侧（YAxisList）
-        /// - 通过 Axis.Tag 标记，避免重复创建
-        /// - 为了区分，采用对比度较高的配色；网格默认关闭，防止与主轴混乱
+        ///     创建或获取用于“压力（bar）”显示的左侧第二 Y 轴，并返回其索引。
+        ///     - 轴放在左侧（YAxisList）
+        ///     - 通过 Axis.Tag 标记，避免重复创建
+        ///     - 为了区分，采用对比度较高的配色；网格默认关闭，防止与主轴混乱
         /// </summary>
         /// <param name="pane">ZedGraph 的 GraphPane</param>
         /// <returns>压力轴在 YAxisList 中的索引（>=1）</returns>
         private static int EnsurePressureYAxis(GraphPane pane)
         {
             // 1) 若已存在（通过 Tag 标记），直接返回
-            for (int i = 0; i < pane.YAxisList.Count; i++)
-            {
+            for (var i = 0; i < pane.YAxisList.Count; i++)
                 if (pane.YAxisList[i]?.Tag is string tag && tag == "PRESSURE_AXIS")
                     return i;
-            }
 
             // 2) 创建新的左侧 Y 轴（将出现在默认 Y 轴的左边堆叠显示）
             var pressureAxis = new YAxis("Pressure (bar)")
@@ -2603,8 +2775,8 @@ namespace MTEmbTest
             }
 
             for (var i = 0; i < totalCount; i++)
-                result[i] = (result[i] - ParaNameToZeroValue[CurrentDev]) * ParaNameToScale[CurrentDev] +
-                            ParaNameToOffset[CurrentDev];
+                result[i] = (result[i] - Dev2ParaNameToZeroValue[CurrentDev]) * Dev2ParaNameToScale[CurrentDev] +
+                            Dev2ParaNameToOffset[CurrentDev];
 
             var filterCurrent = ClsDataFilter.MakeMedianFilterReducePoint(ref result, ClsGlobal.MedianLens);
 
@@ -2879,84 +3051,161 @@ namespace MTEmbTest
 
         #endregion
 
-        private void SwitchEpb2_CheckedChanged(object sender, EventArgs e)
-        {
 
+        #region 数据落盘相关 2025/09/09
+
+        /// <summary>
+        ///     生成一次试验的落盘根目录，并拷贝关键配置，便于追溯。
+        ///     命名示例：DataStore\2025-09-08_12-34-56\
+        /// </summary>
+        private void PrepareDataStoreDirectory()
+        {
+            var root = Path.Combine(Environment.CurrentDirectory, "DataStore");
+            Directory.CreateDirectory(root);
+            _dataStorePath = Path.Combine(root, DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss"));
+            Directory.CreateDirectory(_dataStorePath);
+
+            // 备份关键配置（AI/DO/AO/Test），和旧项目一样便于追溯
+            void TryCopy(string file)
+            {
+                try
+                {
+                    var src = Path.Combine(Environment.CurrentDirectory, "Config", file);
+                    if (File.Exists(src)) File.Copy(src, Path.Combine(_dataStorePath, file), true);
+                }
+                catch
+                {
+                    /* 忽略单个文件的拷贝失败 */
+                }
+            }
+
+            TryCopy("AIConfig.xml");
+            TryCopy("DOConfig.xml");
+            TryCopy("AOConfig.xml");
+            TryCopy("TestConfig.xml");
         }
 
-        // 把全选中项做置零或清零
-        private void ZeroOrClearSelected(bool isZero)
+        /// <summary>
+        ///     初始化 DAQ 数据落盘上下文与定时器（按设备划分：Dev1/Dev2）。
+        /// </summary>
+        /// <param name="logSpanMs">定时落盘周期（毫秒），建议 100~500ms；与旧项目相同。</param>
+        private void InitDaqLogTimer(int logSpanMs)
         {
-            if (twoDeviceAiAcquirer == null)
-            {
-                XtraMessageBox.Show("采集器未初始化。");
-                return;
-            }
+            // 1) Dev1 上下文
+            var dev1ChannelCount = 8 /*Dev1UsedDaqAIChannels?.Length ?? 0*/; //dev1的使用通道数量
 
-            // 取被勾选的全局索引（1..15）
-            var picked = _checkByGlobal
-                .Where(kv => kv.Value?.Checked == true)
-                .Select(kv => kv.Key)
-                .OrderBy(x => x)
-                .ToList();
 
-            if (picked.Count == 0)
+            _daqDev1 = new DaqAIContext(
+                "Dev1",
+                100, // 单批缓存上限（沿用旧工程缺省）
+                ClsGlobal.FileChangeMinutes,
+                _daqTimeSpanMs, // 或用 DaqTimeSpanMilSeconds
+                dev1ChannelCount,
+                ClsGlobal.SamplesPerChannel,
+                _dataStorePath)
             {
-                XtraMessageBox.Show("请先勾选要操作的通道。");
-                return;
-            }
+                // Dev1：建立 EPB 电流通道映射（EPB1..8 -> Dev1 各通道序号）
+                // 旧工程用 ClsXmlOperation.GetDaqAIChannelMapping 读到的 EMB->通道索引用于统计落盘。
+                // 你当前窗体已加载了 Dev1 的 Dev1DaqChannel，可直接复用。
+                eMBToDaqCurrentChannel = new SortedDictionary<string, int>(Dev1DaqChannel),
+                // Dev1：工程值变换（scale/offset/zero），用于统计落盘转工程值:contentReference[oaicite:18]{index=18}
+                paraNameToScale = new ConcurrentDictionary<string, double>(Dev1ParaNameToScale),
+                paraNameToOffset = new ConcurrentDictionary<string, double>(Dev1ParaNameToOffset),
+                paraNameToZeroValue = new ConcurrentDictionary<string, double>(Dev1ParaNameToZeroValue)
+            };
 
-            foreach (var idx in picked)
-            {
-                if (idx >= 0 && idx <= 11)
+            // 2) Dev2 上下文（与 Dev1 对称）
+            var dev2ChannelCount = Dev2UsedDaqAIChannels?.Length ?? 0;
+            _daqDev2 = new DaqAIContext(
+                "Dev2",
+                maxLens: 100,
+                ClsGlobal.FileChangeMinutes,
+                _daqTimeSpanMs,
+                dev2ChannelCount,
+                ClsGlobal.SamplesPerChannel,
+                _dataStorePath);
+
+            // Dev2 的 EMB->通道映射：建议再次调用配置读取方法获取 Dev2 的映射
+            // （若你的 AIConfig.xml 已定义 EPB7..12 -> Dev2/ai#），否则统计落盘会只写 Dev1。
+            // 这里演示读取：
+
+            _daqDev2.eMBToDaqCurrentChannel = new SortedDictionary<string, int>(Dev2DaqChannel);
+            _daqDev2.paraNameToScale = new ConcurrentDictionary<string, double>(Dev2ParaNameToScale);
+            _daqDev2.paraNameToOffset = new ConcurrentDictionary<string, double>(Dev2ParaNameToOffset);
+            _daqDev2.paraNameToZeroValue = new ConcurrentDictionary<string, double>(Dev2ParaNameToZeroValue);
+
+            // 3) 定时器：原始落盘 + 统计落盘（与旧项目一样双定时器，每个设备两只）
+            _daqRawTimerDev1 = new Timer(async _ =>
                 {
-                    // EPB 电流通道
-                    if (isZero) twoDeviceAiAcquirer.ZeroEpbChannel(idx+1);
-                    else twoDeviceAiAcquirer.ClearZeroEpbChannel(idx+1);
-                }
-                else
-                {
-                    // P1 / P2 / F -> 参数名
-                    string paramName = idx switch
+                    try
                     {
-                        12 => "Pressure_1",
-                        13 => "Pressure_2",
-                        14 => "Force",
-                        _ => null
-                    };
-                    if (string.IsNullOrEmpty(paramName)) continue;
+                        await _daqDev1.FlushRawToDiskAsync();
+                    }
+                    catch
+                    {
+                    }
+                },
+                null, logSpanMs, logSpanMs);
 
-                    if (isZero) twoDeviceAiAcquirer.ZeroByParamName(paramName);
-                    else twoDeviceAiAcquirer.ClearZeroByParamName(paramName);
-                }
+            // 暂时注释
+            /*_daqStatTimerDev1 = new Timer(async _ =>
+                {
+                    try
+                    {
+                        await _daqDev1.FlushStatToDiskAsync();
+                    }
+                    catch
+                    {
+                    }
+                },
+                null, logSpanMs, logSpanMs);*/
+
+            _daqRawTimerDev2 = new Timer(async _ =>
+                {
+                    try
+                    {
+                        await _daqDev2.FlushRawToDiskAsync();
+                    }
+                    catch
+                    {
+                    }
+                },
+                null, logSpanMs, logSpanMs);
+
+            // 暂时注释
+            /*_daqStatTimerDev2 = new Timer(async _ =>
+                {
+                    try
+                    {
+                        await _daqDev2.FlushStatToDiskAsync();
+                    }
+                    catch
+                    {
+                    }
+                },
+                null, logSpanMs, logSpanMs);*/
+        }
+
+        /// <summary>
+        ///     采集线程回调：接收原始二维阵列并入队（旧项目同款策略）。
+        ///     注意：这里只做入队，不做磁盘 I/O；I/O 交给定时器线程做（避免阻塞采集）。
+        /// </summary>
+        private void Acq_OnRawBatch(string device, double[,] raw, DateTime current, DateTime last)
+        {
+            if (_isClosing) return;
+
+            if (device.Equals("Dev1", StringComparison.OrdinalIgnoreCase))
+            {
+                _daqDev1?.EnqueueRawData(raw, current, last);
+                _daqDev1?.EnqueueStatData(raw, current); // 统计队列（依赖 eMB->通道映射）
             }
-
-            // 可选：简单提示
-            var label = isZero ? "置零" : "清除置零";
-            var list = string.Join(", ", picked.Select(IndexToDisplayName));
-            // 你也可以换成状态栏提示
-            Console.WriteLine($"{label}完成：{list}");
+            else if (device.Equals("Dev2", StringComparison.OrdinalIgnoreCase))
+            {
+                _daqDev2?.EnqueueRawData(raw, current, last);
+                _daqDev2?.EnqueueStatData(raw, current);
+            }
         }
 
-        // 把全局索引转成界面显示名（1..12, P1, P2, F）
-        private static string IndexToDisplayName(int idx) => idx switch
-        {
-            >= 0 and <= 11 => $"#{idx+1}",
-            12 => "P1",
-            13 => "P2",
-            14 => "F",
-            _ => $"#{idx}"
-        };
-
-        private void ZeroButton_Click(object sender, EventArgs e)
-        {
-            ZeroOrClearSelected(isZero: true);
-        }
-
-        private void ClearZeroButton_Click(object sender, EventArgs e)
-        {
-            ZeroOrClearSelected(isZero: false);
-        }
-
+        #endregion
     }
 }
