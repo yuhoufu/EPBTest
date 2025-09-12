@@ -314,8 +314,8 @@ namespace Controller
         private sealed class Latch
         {
             public readonly object Gate = new();
-            public CancellationTokenSource Cts; // Fallback 持有的 CTS（仅回退方案用）
             public readonly HashSet<int> InFlight = new(); // 仍未到“电压释放点”的通道
+            public CancellationTokenSource Cts; // Fallback 持有的 CTS（仅回退方案用）
             public bool PressureOn; // 是否已进入“建压保持”状态
             public Func<Task> ReleaseActionAsync; // 统一“释压”动作（优先使用 HydraulicController）
         }
