@@ -390,6 +390,8 @@ namespace IO.NI
         {
             try
             {
+                if (reader is null) return; // 任务已停止，不处理
+
                 var task = (NIDaqTask)ar.AsyncState;
                 var raw = reader.EndReadMultiSample(ar); // [ch, n]
                 int n = raw.GetLength(1);
