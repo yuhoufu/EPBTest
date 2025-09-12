@@ -502,7 +502,6 @@ namespace Controller
                 var plan8 = Math.Max(0, flexEst - plan1 - plan3 - plan7); // 剩余给尾段收口
 
 
-
                 // —— 接入点 #1：上电之前 —— //
                 await _manager?.HydraulicEnterAsync(_channel, token);
 
@@ -515,10 +514,9 @@ namespace Controller
                     await Task.Delay(plan1, token);
                 }
 
-               
 
                 // 延时4s后开始上电
-                await Task.Delay(4000- plan1, token);
+                await Task.Delay(4000 - plan1, token);
 
                 var tElecStart = NowTicks(); // 用于⑧尾段收口
 
