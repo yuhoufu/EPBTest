@@ -119,6 +119,12 @@ namespace Controller
             return _hydCoordinator?.EnterElectricalPhaseAsync(channel, token) ?? Task.CompletedTask;
         }
 
+
+        /// <summary>
+        /// 释放液压
+        /// </summary>
+        /// <param name="channel"></param>
+        /// <returns></returns>
         public Task HydraulicMarkReleaseAsync(int channel)
         {
             return _hydCoordinator?.MarkVoltageReleaseAsync(channel) ?? Task.CompletedTask;
