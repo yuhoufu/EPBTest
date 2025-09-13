@@ -61,8 +61,8 @@ namespace MTEmbTest
         private const string FormKey = "FrmEpbMainMonitor";
         private const int UI_TARGET_FPS = 25; // 目标帧率
 
-        // —— 15 路全局定义 —— //
-        private static readonly ChannelDef[] _allChs = BuildChannels();
+        // 修改为动态从配置构建通道映射
+        private static readonly ChannelDef[] _allChs = BuildChannelsFromConfig();
         private readonly LineItem[] _chCurve = new LineItem[15];
 
         // —— 15 条曲线/数据/时间缓存 —— //
@@ -118,7 +118,9 @@ namespace MTEmbTest
         private Timer _daqRawTimerDev1, _daqStatTimerDev1;
         private Timer _daqRawTimerDev2, _daqStatTimerDev2;
 
-        /// <summary>每帧样本时间跨度（毫秒），与旧项目一致：1000 / 采样频率。</summary>
+        /// <summary>每帧样本时间跨度（毫秒），与旧项目一致：1000 / 采样频率。
+        /// 数据落盘使用
+        /// </summary>
         private double _daqTimeSpanMs = 10.0; // 会在 Load 中设为 1000.0 / ClsGlobal.DaqFrequency 可以使用DaqTimeSpanMilSeconds
 
         /// <summary>本次试验的数据根目录（每次试验一个唯一文件夹）。</summary>
@@ -245,43 +247,117 @@ namespace MTEmbTest
             // }
         }
 
-        private static ChannelDef[] BuildChannels()
+        /// <summary>
+        /// 动态从AIConfig.xml读取配置并构建通道映射，消除硬编码
+        /// </summary>
+        private static ChannelDef[] BuildChannelsFromConfig()
+        {
+            try
+            {
+                // 读取AIConfig.xml配置
+                var configPath = Path.Combine(Application.StartupPath, "Config", "AIConfig.xml");
+                var aiConfig = AiConfigLoader.Load(configPath);
+                var enabledRecords = aiConfig.Enabled();
+
+                var list = new List<ChannelDef>();
+                int globalIndex = 0;
+
+                foreach (var record in enabledRecords)
+                {
+                    // 解析物理通道：如 "Dev1/ai0" -> Device="Dev1", AiIndex=0
+                    var parts = record.物理通道.Split('/');
+                    if (parts.Length != 2) continue;
+
+                    var device = parts[0];  // Dev1 或 Dev2
+                    var aiChannel = parts[1]; // ai0, ai1, etc.
+
+                    if (!aiChannel.StartsWith("ai") ||
+                        !int.TryParse(aiChannel.Substring(2), out int aiIndex))
+                        continue;
+
+                    // 根据参数名动态判断信号类型和显示名
+                    SignalType signalType;
+                    string displayName;
+
+                    if (record.参数名.Contains("_current"))
+                    {
+                        signalType = SignalType.Current;
+                        // 从EPB1_current提取编号1
+                        var epbNum = record.参数名.Replace("EPB", "").Replace("_current", "");
+                        displayName = $"DAQ_A{epbNum}_I(A)";
+                    }
+                    else if (record.参数名.StartsWith("Pressure_"))
+                    {
+                        signalType = SignalType.Pressure;
+                        var pressureNum = record.参数名.Replace("Pressure_", "");
+                        displayName = $"DAQ_P{pressureNum}_(bar)";
+                    }
+                    else if (record.参数名 == "Force")
+                    {
+                        signalType = SignalType.Force;
+                        displayName = "DAQ_F_(N)";
+                    }
+                    else
+                    {
+                        continue; // 跳过不认识的参数
+                    }
+
+                    // 动态分配全局索引
+                    int finalGlobalIndex = globalIndex;
+
+                    // 为了兼容现有UI布局，调整特殊通道的全局索引
+                    if (signalType == SignalType.Pressure && record.参数名 == "Pressure_1")
+                        finalGlobalIndex = 12;
+                    else if (signalType == SignalType.Pressure && record.参数名 == "Pressure_2")
+                        finalGlobalIndex = 13;
+                    else if (signalType == SignalType.Force)
+                        finalGlobalIndex = 14;
+
+                    list.Add(new ChannelDef
+                    {
+                        GlobalIndex = finalGlobalIndex,
+                        DisplayName = displayName,
+                        Device = device,
+                        AiIndex = aiIndex,
+                        Type = signalType
+                    });
+
+                    globalIndex++;
+                }
+
+                return list.ToArray();
+            }
+            catch (Exception ex)
+            {
+                // 配置读取失败时，回退到最小化的默认配置
+                MessageBox.Show($"读取AIConfig.xml失败，使用默认配置：{ex.Message}", "配置错误",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return GetFallbackChannels();
+            }
+        }
+
+        /// <summary>
+        /// 当配置读取失败时的回退配置（最小化配置）
+        /// </summary>
+        private static ChannelDef[] GetFallbackChannels()
         {
             var list = new List<ChannelDef>();
 
-            // Dev1: EPB1..EPB8 -> ai0..ai7
-            for (var i = 0; i < 8; i++)
+            // 至少提供基本的EPB电流通道
+            for (int i = 0; i < 12; i++)
+            {
+                var device = i < 6 ? "Dev1" : "Dev2";
+                var aiIndex = i < 6 ? i : (i - 6);
+
                 list.Add(new ChannelDef
                 {
                     GlobalIndex = i,
                     DisplayName = $"DAQ_A{i + 1}_I(A)",
-                    Device = "Dev1",
-                    AiIndex = i,
+                    Device = device,
+                    AiIndex = aiIndex,
                     Type = SignalType.Current
                 });
-
-            // Dev2: EPB9..EPB12 -> ai0..ai3
-            for (var i = 0; i < 4; i++)
-                list.Add(new ChannelDef
-                {
-                    GlobalIndex = 8 + i,
-                    DisplayName = $"DAQ_A{9 + i}_I(A)",
-                    Device = "Dev2",
-                    AiIndex = i,
-                    Type = SignalType.Current
-                });
-
-            // Dev2: P1, P2, F -> ai4, ai5, ai6
-            list.Add(new ChannelDef
-            {
-                GlobalIndex = 12, DisplayName = "DAQ_P1_(bar)", Device = "Dev2", AiIndex = 4, Type = SignalType.Pressure
-            });
-            list.Add(new ChannelDef
-            {
-                GlobalIndex = 13, DisplayName = "DAQ_P2_(bar)", Device = "Dev2", AiIndex = 5, Type = SignalType.Pressure
-            });
-            list.Add(new ChannelDef
-                { GlobalIndex = 14, DisplayName = "DAQ_F_(N)", Device = "Dev2", AiIndex = 6, Type = SignalType.Force });
+            }
 
             return list.ToArray();
         }
@@ -580,7 +656,7 @@ namespace MTEmbTest
 
                 twoDeviceAiAcquirer.Start(); // 开始采集
 
-                // epb初始化
+                // epb管理器初始化
                 _epb = new EpbManager(
                     _cfg,
                     _do,
@@ -589,17 +665,19 @@ namespace MTEmbTest
                     logger);
 
 
-                // 1) 计算每帧毫秒跨度（旧工程做法） On 2025/09/09
+                //数据落盘相关
+
+                // 1) 计算每帧毫秒跨度（旧工程做法） 数据落盘中使用  On 2025/09/09
                 _daqTimeSpanMs = 1000.0 / ClsGlobal.DaqFrequency; // 设置单个试验的采用周期 
 
                 // 2) 准备落盘目录并启动定时落盘 On 2025/09/09
                 PrepareDataStoreDirectory();
-                InitDaqLogTimer(2000); // 建议 100~500ms；与旧工程默认相当
+                InitDaqLogTimer(500); // 建议 100~500ms；与旧工程默认相当
             }
 
             catch (Exception ex)
             {
-                MessageBox.Show("初始化错误 : " + ex.Message);
+                MessageBox.Show(@"初始化错误 : " + ex.Message);
             }
         }
 
@@ -719,12 +797,12 @@ namespace MTEmbTest
                 */
 
 
-                EmbGroup[0].CtrlPower = SwitchPower1;
-                EmbGroup[1].CtrlPower = SwitchPower2;
-                EmbGroup[2].CtrlPower = SwitchPower3;
-                EmbGroup[3].CtrlPower = SwitchPower4;
-                EmbGroup[4].CtrlPower = SwitchPower5;
-                EmbGroup[5].CtrlPower = SwitchPower6;
+                // EmbGroup[0].CtrlPower = SwitchPower1;
+                // EmbGroup[1].CtrlPower = SwitchPower2;
+                // EmbGroup[2].CtrlPower = SwitchPower3;
+                // EmbGroup[3].CtrlPower = SwitchPower4;
+                // EmbGroup[4].CtrlPower = SwitchPower5;
+                // EmbGroup[5].CtrlPower = SwitchPower6;
 
 
                 for (var i = 0; i < 6; i++)
@@ -1279,7 +1357,7 @@ namespace MTEmbTest
                 //    StartChannel 内部会根据 Test.TestTarget 次数、PeriodMs 周期、Groups 错峰等自动循环
                 // _epb.StartChannel(2); //界面卡顿，注释
                 //await _epb.StartChannelAsync(2);
-                await _epb.StartChannelAsync(1);
+                //await _epb.StartChannelAsync(1);
                 //await _epb.StartChannelAsync(4);
                 //await _epb.StartChannelAsync(5);
 
