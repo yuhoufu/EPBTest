@@ -151,9 +151,9 @@
 		<Hydraulic>
 			<Id>2</Id>
 			<!-- <Enabled>true</Enabled> -->
-			<Enabled>false</Enabled>
+			<Enabled>true</Enabled>
 			<Mode>ByPressure</Mode>
-			<SetPercent>28</SetPercent>
+			<SetPercent>100</SetPercent>
 			<PressureThresholdBar>18.0</PressureThresholdBar>
 			<DurationMs>0</DurationMs>
 			<HoldAfterReachedMs>200</HoldAfterReachedMs>
@@ -168,7 +168,7 @@
 			<Channel>1</Channel>
 			<ForwardA>12</ForwardA>
 			<ReverseA>2</ReverseA>
-			<HoldMs>3000</HoldMs>
+			<HoldMs>1000</HoldMs>
 		</Record>
 		<Record>
 			<Channel>2</Channel>
