@@ -61,6 +61,7 @@ namespace Controller
             }
 
             // 2) 对未覆盖的通道，用 DOConfig.EPB 的 HydraulicId 兜底
+            // 这段代码暂时无用，doconfig中暂时没有hydraulicid字段
             if (_doCfg?.Epb != null)
                 foreach (var r in _doCfg.Epb)
                     if (r.Enabled && r.Channel > 0 && r.HydraulicId.HasValue && !_channel2Hyd.ContainsKey(r.Channel))
@@ -69,7 +70,6 @@ namespace Controller
 
         /// <summary>
         ///     ★ 接入点（上电前调用）：声明“我这个通道要开始电控了”，若该组还没建压则先建压。
-        ///     关键改动：不再调用不存在的 BeginHoldAsync，而是：
         ///     - 若有 _hydCtl：启动 BuildAndHoldAsync(hydId, token)，并把 ReleaseAction 绑定为 _hydCtl.Release(hydId)
         ///     - 否则：使用 Fallback DO/AO + 读压保持，到统一释放时撤销
         /// </summary>
@@ -81,9 +81,9 @@ namespace Controller
                 return;
             }
 
-            var latch = _latches.GetOrAdd(hydId, _ => new Latch());
+            var latch = _latches.GetOrAdd(hydId, _ => new Latch()); // 每个 hydId 一份
 
-            lock (latch.Gate)
+            lock (latch.Gate) // 
             {
                 latch.InFlight.Add(epbChannel);
             }
@@ -311,9 +311,12 @@ namespace Controller
         }
 
         // hydId 对应的一轮“闩锁”状态
+        /// <summary>
+        /// 记录某个液压组的当前状态。
+        /// </summary>
         private sealed class Latch
         {
-            public readonly object Gate = new();
+            public readonly object Gate = new(); // 
             public readonly HashSet<int> InFlight = new(); // 仍未到“电压释放点”的通道
             public CancellationTokenSource Cts; // Fallback 持有的 CTS（仅回退方案用）
             public bool PressureOn; // 是否已进入“建压保持”状态
