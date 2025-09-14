@@ -70,6 +70,9 @@ namespace MTEmbTest
 
         // —— CheckEdit 映射（全局索引 -> 控件），用于实时控制可见性 —— //
         private readonly Dictionary<int, CheckEdit> _checkByGlobal = new(16);
+
+        // —— 瞬时值显示控件映射（全局索引 -> 文本控件）—— //
+        private readonly Dictionary<int, DevExpress.XtraEditors.TextEdit> _instantDisplayControls = new(16);
         private readonly DeviceContext[] _deviceContexts = new DeviceContext[DeviceCount];
         private readonly double[] _lastX = Enumerable.Repeat(0.0, 15).ToArray();
 
@@ -260,9 +263,14 @@ namespace MTEmbTest
                 var enabledRecords = aiConfig.Enabled();
 
                 var list = new List<ChannelDef>();
-                int globalIndex = 0;
 
-                foreach (var record in enabledRecords)
+                // 先按序号排序，确保通道顺序正确
+                var sortedRecords = enabledRecords.OrderBy(r => r.序号).ToList();
+
+                // 按序号顺序分配全局索引，从0开始
+                int globalIndexCounter = 0;
+
+                foreach (var record in sortedRecords)
                 {
                     // 解析物理通道：如 "Dev1/ai0" -> Device="Dev1", AiIndex=0
                     var parts = record.物理通道.Split('/');
@@ -283,14 +291,25 @@ namespace MTEmbTest
                     {
                         signalType = SignalType.Current;
                         // 从EPB1_current提取编号1
-                        var epbNum = record.参数名.Replace("EPB", "").Replace("_current", "");
-                        displayName = $"DAQ_A{epbNum}_I(A)";
+                        var epbNumStr = record.参数名.Replace("EPB", "").Replace("_current", "");
+                        if (int.TryParse(epbNumStr, out int epbNum))
+                        {
+                            displayName = $"DAQ_A{epbNum}_I(A)";
+                        }
+                        else
+                        {
+                            continue; // 解析失败，跳过
+                        }
                     }
-                    else if (record.参数名.StartsWith("Pressure_"))
+                    else if (record.参数名 == "Pressure_1")
                     {
                         signalType = SignalType.Pressure;
-                        var pressureNum = record.参数名.Replace("Pressure_", "");
-                        displayName = $"DAQ_P{pressureNum}_(bar)";
+                        displayName = "DAQ_P1_(bar)";
+                    }
+                    else if (record.参数名 == "Pressure_2")
+                    {
+                        signalType = SignalType.Pressure;
+                        displayName = "DAQ_P2_(bar)";
                     }
                     else if (record.参数名 == "Force")
                     {
@@ -302,27 +321,16 @@ namespace MTEmbTest
                         continue; // 跳过不认识的参数
                     }
 
-                    // 动态分配全局索引
-                    int finalGlobalIndex = globalIndex;
-
-                    // 为了兼容现有UI布局，调整特殊通道的全局索引
-                    if (signalType == SignalType.Pressure && record.参数名 == "Pressure_1")
-                        finalGlobalIndex = 12;
-                    else if (signalType == SignalType.Pressure && record.参数名 == "Pressure_2")
-                        finalGlobalIndex = 13;
-                    else if (signalType == SignalType.Force)
-                        finalGlobalIndex = 14;
-
                     list.Add(new ChannelDef
                     {
-                        GlobalIndex = finalGlobalIndex,
-                        DisplayName = displayName,
                         Device = device,
                         AiIndex = aiIndex,
+                        GlobalIndex = globalIndexCounter, // 按顺序分配全局索引
+                        DisplayName = displayName,
                         Type = signalType
                     });
 
-                    globalIndex++;
+                    globalIndexCounter++; // 全局索引递增
                 }
 
                 return list.ToArray();
@@ -362,14 +370,56 @@ namespace MTEmbTest
             return list.ToArray();
         }
 
+        /// <summary>
+        /// 旧版本硬编码通道映射（用于测试问题根源）
+        /// </summary>
+        private static ChannelDef[] BuildChannelsOld()
+        {
+            var list = new List<ChannelDef>();
+
+            // Dev1: EPB1..EPB6 -> ai0..ai5
+            for (var i = 0; i < 6; i++)
+                list.Add(new ChannelDef
+                {
+                    GlobalIndex = i,
+                    DisplayName = $"DAQ_A{i + 1}_I(A)",
+                    Device = "Dev1",
+                    AiIndex = i,
+                    Type = SignalType.Current
+                });
+
+            // Dev1: P1 -> ai6
+            list.Add(new ChannelDef
+            {
+                GlobalIndex = 12, DisplayName = "DAQ_P1_(bar)", Device = "Dev1", AiIndex = 6, Type = SignalType.Pressure
+            });
+
+            // Dev2: EPB7..EPB12 -> ai0..ai5
+            for (var i = 0; i < 6; i++)
+                list.Add(new ChannelDef
+                {
+                    GlobalIndex = 6 + i,
+                    DisplayName = $"DAQ_A{7 + i}_I(A)",
+                    Device = "Dev2",
+                    AiIndex = i,
+                    Type = SignalType.Current
+                });
+
+            // Dev2: F -> ai6, P2 -> ai7
+            list.Add(new ChannelDef
+                { GlobalIndex = 14, DisplayName = "DAQ_F_(N)", Device = "Dev2", AiIndex = 6, Type = SignalType.Force });
+            list.Add(new ChannelDef
+            {
+                GlobalIndex = 13, DisplayName = "DAQ_P2_(bar)", Device = "Dev2", AiIndex = 7, Type = SignalType.Pressure
+            });
+
+            return list.ToArray();
+        }
+
         private static string RouteKey(string dev, int ai)
         {
             return $"{dev}#{ai}";
         }
-
-        /// <summary>
-        ///     设置固定的 X 轴显示窗口（秒）。调用后立即应用到图表。
-        ///     例如：SetXWindowSeconds(25);
         /// </summary>
         /// <param name="seconds">窗口宽度（秒，大于 0）。</param>
         public void SetXWindowSeconds(double seconds)
@@ -474,7 +524,7 @@ namespace MTEmbTest
 
                 ReadMsg = ClsXmlOperation.GetDaqAIChannelMapping(
                     Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev1", Dev1UsedDaqAIChannels,
-                    out Dev1DaqChannel);
+                    out Dev1DaqChannel, paramTypeFilter: new string[] { }); //paramTypeFilter 参数为空，处理所有类型
                 if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
                 {
                     MessageBox.Show(ReadMsg);
@@ -575,7 +625,7 @@ namespace MTEmbTest
                 _cfg = ConfigLoader.LoadAll($@"{Environment.CurrentDirectory}\Config", logger);
 
 
-                LoadEmbControler();
+                //LoadEmbControler(); // 暂时注释
 
                 // 初始化曲线
                 InitializeCurve();
@@ -1150,126 +1200,8 @@ namespace MTEmbTest
                     AppendChannelBatch(g, buf, dt, draw);
                 }
 
-                // —— 示例：刷新 EPB1 瞬时显示 —— //
-                var epb1 = _allChs.FirstOrDefault(c => c.Device == "Dev1" && c.AiIndex == 0);
-                if (epb1 != null && _chData[epb1.GlobalIndex].Count > 0)
-                {
-                    var v = _chData[epb1.GlobalIndex][_chData[epb1.GlobalIndex].Count - 1].Y;
-                    textEditCurrent1.Text = $@"{v:F2} A";
-                }
-
-                // —— 示例：刷新 EPB2 瞬时显示 —— //
-                var epb2 = _allChs.FirstOrDefault(c => c.Device == "Dev1" && c.AiIndex == 1);
-                if (epb2 != null && _chData[epb2.GlobalIndex].Count > 0)
-                {
-                    var v = _chData[epb2.GlobalIndex][_chData[epb2.GlobalIndex].Count - 1].Y;
-                    textEditCurrent2.Text = $@"{v:F2} A";
-                }
-
-                // —— 示例：刷新 epb3 瞬时显示 —— //
-                var epb3 = _allChs.FirstOrDefault(c => c.Device == "Dev1" && c.AiIndex == 2);
-                if (epb3 != null && _chData[epb3.GlobalIndex].Count > 0)
-                {
-                    var v = _chData[epb3.GlobalIndex][_chData[epb3.GlobalIndex].Count - 1].Y;
-                    textEditCurrent3.Text = $@"{v:F2} A";
-                }
-
-                // —— 示例：刷新 epb4 瞬时显示 —— //
-                var epb4 = _allChs.FirstOrDefault(c => c.Device == "Dev1" && c.AiIndex == 3);
-                if (epb4 != null && _chData[epb4.GlobalIndex].Count > 0)
-                {
-                    var v = _chData[epb4.GlobalIndex][_chData[epb4.GlobalIndex].Count - 1].Y;
-                    textEditCurrent4.Text = $@"{v:F2} A";
-                }
-
-                // —— 示例：刷新 epb5 瞬时显示 —— //
-                var epb5 = _allChs.FirstOrDefault(c => c.Device == "Dev1" && c.AiIndex == 4);
-                if (epb5 != null && _chData[epb5.GlobalIndex].Count > 0)
-                {
-                    var v = _chData[epb5.GlobalIndex][_chData[epb5.GlobalIndex].Count - 1].Y;
-                    textEditCurrent5.Text = $@"{v:F2} A";
-                }
-
-                // —— 示例：刷新 epb6 瞬时显示 —— //
-                var epb6 = _allChs.FirstOrDefault(c => c.Device == "Dev1" && c.AiIndex == 5);
-                if (epb6 != null && _chData[epb6.GlobalIndex].Count > 0)
-                {
-                    var v = _chData[epb6.GlobalIndex][_chData[epb6.GlobalIndex].Count - 1].Y;
-                    textEditCurrent6.Text = $@"{v:F2} A";
-                }
-
-                // —— 示例：刷新 epb7 瞬时显示 —— //
-                var epb7 = _allChs.FirstOrDefault(c => c.Device == "Dev1" && c.AiIndex == 6);
-                if (epb7 != null && _chData[epb7.GlobalIndex].Count > 0)
-                {
-                    var v = _chData[epb7.GlobalIndex][_chData[epb7.GlobalIndex].Count - 1].Y;
-                    textEditCurrent7.Text = $@"{v:F2} A";
-                }
-
-                // —— 示例：刷新 epb8 瞬时显示 —— //
-                var epb8 = _allChs.FirstOrDefault(c => c.Device == "Dev1" && c.AiIndex == 7);
-                if (epb8 != null && _chData[epb8.GlobalIndex].Count > 0)
-                {
-                    var v = _chData[epb8.GlobalIndex][_chData[epb8.GlobalIndex].Count - 1].Y;
-                    textEditCurrent8.Text = $@"{v:F2} A";
-                }
-
-                // —— 示例：刷新 epb9 瞬时显示 —— //
-                var epb9 = _allChs.FirstOrDefault(c => c.Device == "Dev2" && c.AiIndex == 0);
-                if (epb9 != null && _chData[epb9.GlobalIndex].Count > 0)
-                {
-                    var v = _chData[epb9.GlobalIndex][_chData[epb9.GlobalIndex].Count - 1].Y;
-                    textEditCurrent9.Text = $@"{v:F2} A";
-                }
-
-                // —— 示例：刷新 epb10 瞬时显示 —— //
-                var epb10 = _allChs.FirstOrDefault(c => c.Device == "Dev2" && c.AiIndex == 1);
-                if (epb10 != null && _chData[epb10.GlobalIndex].Count > 0)
-                {
-                    var v = _chData[epb10.GlobalIndex][_chData[epb10.GlobalIndex].Count - 1].Y;
-                    textEditCurrent10.Text = $@"{v:F2} A";
-                }
-
-                // —— 示例：刷新 epb11 瞬时显示 —— //
-                var epb11 = _allChs.FirstOrDefault(c => c.Device == "Dev2" && c.AiIndex == 2);
-                if (epb11 != null && _chData[epb11.GlobalIndex].Count > 0)
-                {
-                    var v = _chData[epb11.GlobalIndex][_chData[epb11.GlobalIndex].Count - 1].Y;
-                    textEditCurrent11.Text = $@"{v:F2} A";
-                }
-
-                // —— 示例：刷新 epb12 瞬时显示 —— //
-                var epb12 = _allChs.FirstOrDefault(c => c.Device == "Dev2" && c.AiIndex == 3);
-                if (epb12 != null && _chData[epb12.GlobalIndex].Count > 0)
-                {
-                    var v = _chData[epb12.GlobalIndex][_chData[epb12.GlobalIndex].Count - 1].Y;
-                    textEditCurrent12.Text = $@"{v:F2} A";
-                }
-
-                // —— 示例：刷新 P1 压力 瞬时显示 —— //
-                var p1 = _allChs.FirstOrDefault(c => c.Device == "Dev2" && c.AiIndex == 4);
-                if (p1 != null && _chData[p1.GlobalIndex].Count > 0)
-                {
-                    var v = _chData[p1.GlobalIndex][_chData[p1.GlobalIndex].Count - 1].Y;
-                    textEditP1.Text = $@"{v:F0} bar";
-                }
-
-                // —— 示例：刷新 p2 压力 瞬时显示 —— //
-                var p2 = _allChs.FirstOrDefault(c => c.Device == "Dev2" && c.AiIndex == 5);
-                if (p2 != null && _chData[p2.GlobalIndex].Count > 0)
-                {
-                    var v = _chData[p2.GlobalIndex][_chData[p2.GlobalIndex].Count - 1].Y;
-                    textEditP2.Text = $@"{v:F0} bar";
-                }
-
-
-                // —— 示例：刷新 f 压力 瞬时显示 —— //
-                var f = _allChs.FirstOrDefault(c => c.Device == "Dev2" && c.AiIndex == 6);
-                if (f != null && _chData[f.GlobalIndex].Count > 0)
-                {
-                    var v = _chData[f.GlobalIndex][_chData[f.GlobalIndex].Count - 1].Y;
-                    textEditF.Text = $@"{v:F0} N";
-                }
+                // —— 动态刷新所有通道的瞬时显示值 —— //
+                UpdateInstantDisplayValues();
 
                 lastGraphyTime = current;
             }
@@ -2106,6 +2038,7 @@ namespace MTEmbTest
 
                 // —— 绑定/缓存 15 个 CheckEdit —— //
                 _checkByGlobal.Clear();
+                _instantDisplayControls.Clear();
                 var n = Math.Min(_allChs.Length, _persistNames.Length);
                 for (var g = 0; g < n; g++)
                 {
@@ -2117,6 +2050,55 @@ namespace MTEmbTest
                     ctl.Tag = g; // 保存全局曲线索引
                     ctl.CheckedChanged -= OnCurveCheckChanged; // 防止重复绑定
                     ctl.CheckedChanged += OnCurveCheckChanged;
+
+                    // 映射瞬时显示控件 - 直接通过属性引用而非Controls.Find
+                    DevExpress.XtraEditors.TextEdit displayCtl = null;
+                    if (g < _allChs.Length)
+                    {
+                        var ch = _allChs[g];
+                        switch (ch.Type)
+                        {
+                            case SignalType.Current:
+                                // EPB电流通道 (0-11) -> textEditCurrent1-12
+                                displayCtl = g switch
+                                {
+                                    0 => textEditCurrent1,
+                                    1 => textEditCurrent2,
+                                    2 => textEditCurrent3,
+                                    3 => textEditCurrent4,
+                                    4 => textEditCurrent5,
+                                    5 => textEditCurrent6,
+                                    6 => textEditCurrent7,
+                                    7 => textEditCurrent8,
+                                    8 => textEditCurrent9,
+                                    9 => textEditCurrent10,
+                                    10 => textEditCurrent11,
+                                    11 => textEditCurrent12,
+                                    _ => null
+                                };
+                                break;
+                            case SignalType.Pressure:
+                                // 压力通道 -> textEditP1, textEditP2
+                                displayCtl = ch.DisplayName.Contains("P1") ? textEditP1 :
+                                           ch.DisplayName.Contains("P2") ? textEditP2 : null;
+                                break;
+                            case SignalType.Force:
+                                // 夹紧力通道 -> textEditF
+                                displayCtl = textEditF;
+                                break;
+                        }
+
+                        if (displayCtl != null)
+                        {
+                            _instantDisplayControls[g] = displayCtl;
+                            // 调试日志
+                            logger?.Info($"控件映射成功: 全局索引{g} -> {displayCtl.Name} (设备:{ch.Device}, 通道:{ch.AiIndex}, 参数:{ch.DisplayName}, 类型:{ch.Type})");
+                        }
+                        else
+                        {
+                            logger?.Warn($"未找到对应控件: 全局索引{g}, 参数:{ch.DisplayName}, 类型:{ch.Type}");
+                        }
+                    }
                 }
 
                 // —— 创建 15 条曲线 —— //
@@ -3170,7 +3152,7 @@ namespace MTEmbTest
         private void InitDaqLogTimer(int logSpanMs)
         {
             // 1) Dev1 上下文
-            var dev1ChannelCount = 8 /*Dev1UsedDaqAIChannels?.Length ?? 0*/; //dev1的使用通道数量
+            var dev1ChannelCount = Dev1UsedDaqAIChannels?.Length ?? 0; //dev1的使用通道数量，动态获取
 
 
             _daqDev1 = new DaqAIContext(
@@ -3182,7 +3164,7 @@ namespace MTEmbTest
                 ClsGlobal.SamplesPerChannel,
                 _dataStorePath)
             {
-                // Dev1：建立 EPB 电流通道映射（EPB1..8 -> Dev1 各通道序号）
+                // Dev1：建立通道映射（EPB1..6电流 + Pressure_1压力 -> Dev1各通道序号）
                 // 旧工程用 ClsXmlOperation.GetDaqAIChannelMapping 读到的 EMB->通道索引用于统计落盘。
                 // 你当前窗体已加载了 Dev1 的 Dev1DaqChannel，可直接复用。
                 eMBToDaqCurrentChannel = new SortedDictionary<string, int>(Dev1DaqChannel),
@@ -3262,6 +3244,98 @@ namespace MTEmbTest
                     }
                 },
                 null, logSpanMs, logSpanMs);*/
+        }
+
+        /// <summary>
+        /// 根据全局通道索引获取对应的瞬时显示控件名称
+        /// </summary>
+        /// <param name="globalIndex">全局通道索引 0-14</param>
+        /// <returns>控件名称，如果没有对应控件则返回null</returns>
+        private static string GetDisplayControlName(int globalIndex)
+        {
+            return globalIndex switch
+            {
+                // EPB电流通道 (0-11) -> textEditCurrent1-12
+                >= 0 and <= 11 => $"textEditCurrent{globalIndex + 1}",
+                // 压力通道 (12-13) -> textEditP1, textEditP2
+                12 => "textEditP1",
+                13 => "textEditP2",
+                // 夹紧力通道 (14) -> textEditF
+                14 => "textEditF",
+                _ => null
+            };
+        }
+
+        /// <summary>
+        /// 动态更新所有通道的瞬时显示值
+        /// </summary>
+        private void UpdateInstantDisplayValues()
+        {
+            if (_isClosing || IsDisposed || !IsHandleCreated) return;
+
+            // 如果需要跨线程调用，封送到UI线程
+            if (InvokeRequired)
+            {
+                try
+                {
+                    BeginInvoke(new Action(UpdateInstantDisplayValues));
+                }
+                catch
+                {
+                    // 窗体已销毁，忽略
+                }
+                return;
+            }
+
+            try
+            {
+                foreach (var kvp in _instantDisplayControls)
+                {
+                    var globalIndex = kvp.Key;
+                    var textEdit = kvp.Value;
+
+                    if (globalIndex < 0 || globalIndex >= _chData.Length) continue;
+                    if (_chData[globalIndex] == null || _chData[globalIndex].Count == 0) continue;
+                    if (textEdit == null || textEdit.IsDisposed) continue;
+
+                    try
+                    {
+                        var latestValue = _chData[globalIndex][_chData[globalIndex].Count - 1].Y;
+                        var formattedText = FormatDisplayValue(globalIndex, latestValue);
+                        textEdit.Text = formattedText;
+                    }
+                    catch (Exception ex)
+                    {
+                        // 忽略单个控件更新失败，避免影响其他控件
+                        logger?.Error($"更新通道{globalIndex}显示值失败: {ex.Message}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                logger?.Error($"批量更新瞬时显示值失败: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 根据通道类型格式化显示值
+        /// </summary>
+        /// <param name="globalIndex">全局通道索引</param>
+        /// <param name="value">原始数值</param>
+        /// <returns>格式化后的显示文本</returns>
+        private string FormatDisplayValue(int globalIndex, double value)
+        {
+            if (globalIndex < 0 || globalIndex >= _allChs.Length)
+                return $"{value:F2}";
+
+            var channel = _allChs[globalIndex];
+            return channel.Type switch
+            {
+                SignalType.Current => $"{value:F3}",    // 电流显示3位小数 (精度更高)
+                SignalType.Pressure => $"{value:F1}",  // 压力显示1位小数
+                SignalType.Force => $"{value:F0}",     // 夹紧力显示整数
+                _ => $"{value:F2}"
+            };
         }
 
         /// <summary>
