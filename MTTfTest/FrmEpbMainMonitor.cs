@@ -251,7 +251,8 @@ namespace MTEmbTest
         }
 
         /// <summary>
-        /// 动态从AIConfig.xml读取配置并构建通道映射，消除硬编码
+        /// 动态从AIConfig.xml读取配置并构建通道映射，按界面控件顺序排列
+        /// 界面顺序：CheckEpbA1-A12, CheckP1, CheckP2, CheckF
         /// </summary>
         private static ChannelDef[] BuildChannelsFromConfig()
         {
@@ -260,80 +261,63 @@ namespace MTEmbTest
                 // 读取AIConfig.xml配置
                 var configPath = Path.Combine(Application.StartupPath, "Config", "AIConfig.xml");
                 var aiConfig = AiConfigLoader.Load(configPath);
-                var enabledRecords = aiConfig.Enabled();
+                var enabledRecords = aiConfig.Enabled().ToList();
 
-                var list = new List<ChannelDef>();
+                var result = new List<ChannelDef>();
+                int globalIndex = 0;
 
-                // 先按序号排序，确保通道顺序正确
-                var sortedRecords = enabledRecords.OrderBy(r => r.序号).ToList();
-
-                // 按序号顺序分配全局索引，从0开始
-                int globalIndexCounter = 0;
-
-                foreach (var record in sortedRecords)
+                // 1. 先添加EPB1-12电流（按编号顺序）
+                for (int epbNum = 1; epbNum <= 12; epbNum++)
                 {
-                    // 解析物理通道：如 "Dev1/ai0" -> Device="Dev1", AiIndex=0
-                    var parts = record.物理通道.Split('/');
-                    if (parts.Length != 2) continue;
-
-                    var device = parts[0];  // Dev1 或 Dev2
-                    var aiChannel = parts[1]; // ai0, ai1, etc.
-
-                    if (!aiChannel.StartsWith("ai") ||
-                        !int.TryParse(aiChannel.Substring(2), out int aiIndex))
-                        continue;
-
-                    // 根据参数名动态判断信号类型和显示名
-                    SignalType signalType;
-                    string displayName;
-
-                    if (record.参数名.Contains("_current"))
+                    var record = enabledRecords.FirstOrDefault(r => r.参数名 == $"EPB{epbNum}_current");
+                    if (record != null)
                     {
-                        signalType = SignalType.Current;
-                        // 从EPB1_current提取编号1
-                        var epbNumStr = record.参数名.Replace("EPB", "").Replace("_current", "");
-                        if (int.TryParse(epbNumStr, out int epbNum))
+                        var channelDef = CreateChannelDef(record, globalIndex);
+                        if (channelDef != null)
                         {
-                            displayName = $"DAQ_A{epbNum}_I(A)";
-                        }
-                        else
-                        {
-                            continue; // 解析失败，跳过
+                            result.Add(channelDef);
+                            globalIndex++;
                         }
                     }
-                    else if (record.参数名 == "Pressure_1")
-                    {
-                        signalType = SignalType.Pressure;
-                        displayName = "DAQ_P1_(bar)";
-                    }
-                    else if (record.参数名 == "Pressure_2")
-                    {
-                        signalType = SignalType.Pressure;
-                        displayName = "DAQ_P2_(bar)";
-                    }
-                    else if (record.参数名 == "Force")
-                    {
-                        signalType = SignalType.Force;
-                        displayName = "DAQ_F_(N)";
-                    }
-                    else
-                    {
-                        continue; // 跳过不认识的参数
-                    }
-
-                    list.Add(new ChannelDef
-                    {
-                        Device = device,
-                        AiIndex = aiIndex,
-                        GlobalIndex = globalIndexCounter, // 按顺序分配全局索引
-                        DisplayName = displayName,
-                        Type = signalType
-                    });
-
-                    globalIndexCounter++; // 全局索引递增
                 }
 
-                return list.ToArray();
+                // 2. 添加压力P1
+                var pressureP1 = enabledRecords.FirstOrDefault(r => r.参数名 == "Pressure_1");
+                if (pressureP1 != null)
+                {
+                    var channelDef = CreateChannelDef(pressureP1, globalIndex);
+                    if (channelDef != null)
+                    {
+                        result.Add(channelDef);
+                        globalIndex++;
+                    }
+                }
+
+                // 3. 添加压力P2
+                var pressureP2 = enabledRecords.FirstOrDefault(r => r.参数名 == "Pressure_2");
+                if (pressureP2 != null)
+                {
+                    var channelDef = CreateChannelDef(pressureP2, globalIndex);
+                    if (channelDef != null)
+                    {
+                        result.Add(channelDef);
+                        globalIndex++;
+                    }
+                }
+
+                // 4. 添加夹紧力F
+                var force = enabledRecords.FirstOrDefault(r => r.参数名 == "Force");
+                if (force != null)
+                {
+                    var channelDef = CreateChannelDef(force, globalIndex);
+                    if (channelDef != null)
+                    {
+                        result.Add(channelDef);
+                        globalIndex++;
+                    }
+                }
+
+                return result.ToArray();
             }
             catch (Exception ex)
             {
@@ -345,27 +329,124 @@ namespace MTEmbTest
         }
 
         /// <summary>
-        /// 当配置读取失败时的回退配置（最小化配置）
+        /// 根据配置记录创建通道定义
+        /// </summary>
+        private static ChannelDef CreateChannelDef(dynamic record, int globalIndex)
+        {
+            // 解析物理通道：如 "Dev1/ai0" -> Device="Dev1", AiIndex=0
+            var parts = record.物理通道.Split('/');
+            if (parts.Length != 2) return null;
+
+            var device = parts[0];  // Dev1 或 Dev2
+            var aiChannel = parts[1]; // ai0, ai1, etc.
+
+            // 明确初始化aiIndex变量
+            int aiIndex = -1; // 默认值
+            if (!aiChannel.StartsWith("ai") ||
+                !int.TryParse(aiChannel.Substring(2), out aiIndex))
+                return null; // 解析失败，直接返回null
+
+            // 根据参数名动态判断信号类型和显示名
+            SignalType signalType;
+            string displayName;
+
+            if (record.参数名.Contains("_current"))
+            {
+                signalType = SignalType.Current;
+                // 从EPB1_current提取编号1
+                var epbNumStr = record.参数名.Replace("EPB", "").Replace("_current", "");
+                if (int.TryParse(epbNumStr, out int epbNum))
+                {
+                    displayName = $"DAQ_A{epbNum}_I(A)";
+                }
+                else
+                {
+                    return null; // 解析失败
+                }
+            }
+            else if (record.参数名 == "Pressure_1")
+            {
+                signalType = SignalType.Pressure;
+                displayName = "DAQ_P1_(bar)";
+            }
+            else if (record.参数名 == "Pressure_2")
+            {
+                signalType = SignalType.Pressure;
+                displayName = "DAQ_P2_(bar)";
+            }
+            else if (record.参数名 == "Force")
+            {
+                signalType = SignalType.Force;
+                displayName = "DAQ_F_(N)";
+            }
+            else
+            {
+                return null; // 跳过不认识的参数
+            }
+
+            return new ChannelDef
+            {
+                Device = device,
+                AiIndex = aiIndex, // aiIndex现在肯定已经初始化
+                GlobalIndex = globalIndex, // 按界面顺序分配全局索引
+                DisplayName = displayName,
+                Type = signalType
+            };
+        }
+
+        /// <summary>
+        /// 当配置读取失败时的回退配置（按界面顺序：EPB1-12, P1, P2, F）
         /// </summary>
         private static ChannelDef[] GetFallbackChannels()
         {
             var list = new List<ChannelDef>();
+            int globalIndex = 0;
 
-            // 至少提供基本的EPB电流通道
-            for (int i = 0; i < 12; i++)
+            // 1. EPB1-12电流通道（按界面顺序）
+            for (int epbNum = 1; epbNum <= 12; epbNum++)
             {
-                var device = i < 6 ? "Dev1" : "Dev2";
-                var aiIndex = i < 6 ? i : (i - 6);
+                var device = epbNum <= 6 ? "Dev1" : "Dev2";
+                var aiIndex = epbNum <= 6 ? (epbNum - 1) : (epbNum - 7);
 
                 list.Add(new ChannelDef
                 {
-                    GlobalIndex = i,
-                    DisplayName = $"DAQ_A{i + 1}_I(A)",
+                    GlobalIndex = globalIndex++,
+                    DisplayName = $"DAQ_A{epbNum}_I(A)",
                     Device = device,
                     AiIndex = aiIndex,
                     Type = SignalType.Current
                 });
             }
+
+            // 2. 压力P1（globalIndex=12）
+            list.Add(new ChannelDef
+            {
+                GlobalIndex = globalIndex++, // 12
+                DisplayName = "DAQ_P1_(bar)",
+                Device = "Dev1",
+                AiIndex = 6,
+                Type = SignalType.Pressure
+            });
+
+            // 3. 压力P2（globalIndex=13）
+            list.Add(new ChannelDef
+            {
+                GlobalIndex = globalIndex++, // 13
+                DisplayName = "DAQ_P2_(bar)",
+                Device = "Dev2",
+                AiIndex = 7,
+                Type = SignalType.Pressure
+            });
+
+            // 4. 夹紧力F（globalIndex=14）
+            list.Add(new ChannelDef
+            {
+                GlobalIndex = globalIndex++, // 14
+                DisplayName = "DAQ_F_(N)",
+                Device = "Dev2",
+                AiIndex = 6,
+                Type = SignalType.Force
+            });
 
             return list.ToArray();
         }
@@ -668,6 +749,7 @@ namespace MTEmbTest
                 twoDeviceAiAcquirer.OnEngBatch += Acq_OnEngBatch; // 订阅工程值批次到达事件
 
                 twoDeviceAiAcquirer.OnRawBatch += Acq_OnRawBatch; // ← 新增：订阅原始批次事件（两卡通用 ) // 2025/09/09
+
 
                 #region 曲线勾选控件相关
 
@@ -1322,16 +1404,6 @@ namespace MTEmbTest
             }
         }
 
-        private void CheckEpbA7_CheckedChanged(object sender, EventArgs e)
-        {
-            Console.WriteLine(@"CheckEpbA7_CheckedChanged");
-        }
-
-        private void CheckEpbA7_CheckStateChanged(object sender, EventArgs e)
-        {
-            Console.WriteLine(@"CheckEpbA7_CheckStateChanged");
-        }
-
         #region 3) 窗体关闭：一次性解绑/停止/释放
 
         /// <summary>
@@ -1428,11 +1500,27 @@ namespace MTEmbTest
                 StopTimer(ref _daqRawTimerDev2);
                 StopTimer(ref _daqStatTimerDev2);
 
-                // 最后一轮同步写盘（避免尾帧留在内存队列）
-                _daqDev1?.FlushRawToDiskAsync().GetAwaiter().GetResult();
-                _daqDev1?.FlushStatToDiskAsync().GetAwaiter().GetResult();
-                _daqDev2?.FlushRawToDiskAsync().GetAwaiter().GetResult();
-                _daqDev2?.FlushStatToDiskAsync().GetAwaiter().GetResult();
+                // 修复：使用Task.Run异步执行Flush操作，避免UI线程阻塞
+                System.Threading.Tasks.Task.Run(async () =>
+                {
+                    try
+                    {
+                        if (_daqDev1 != null)
+                        {
+                            await _daqDev1.FlushRawToDiskAsync();
+                            await _daqDev1.FlushStatToDiskAsync();
+                        }
+                        if (_daqDev2 != null)
+                        {
+                            await _daqDev2.FlushRawToDiskAsync();
+                            await _daqDev2.FlushStatToDiskAsync();
+                        }
+                    }
+                    catch
+                    {
+                        /* 关闭阶段忽略单次失败 */
+                    }
+                });
             }
             catch
             {
@@ -2059,23 +2147,33 @@ namespace MTEmbTest
                         switch (ch.Type)
                         {
                             case SignalType.Current:
-                                // EPB电流通道 (0-11) -> textEditCurrent1-12
-                                displayCtl = g switch
+                                // EPB电流通道 - 根据DisplayName中的编号映射到对应控件
+                                if (ch.DisplayName.Contains("DAQ_A") && ch.DisplayName.Contains("_I(A)"))
                                 {
-                                    0 => textEditCurrent1,
-                                    1 => textEditCurrent2,
-                                    2 => textEditCurrent3,
-                                    3 => textEditCurrent4,
-                                    4 => textEditCurrent5,
-                                    5 => textEditCurrent6,
-                                    6 => textEditCurrent7,
-                                    7 => textEditCurrent8,
-                                    8 => textEditCurrent9,
-                                    9 => textEditCurrent10,
-                                    10 => textEditCurrent11,
-                                    11 => textEditCurrent12,
-                                    _ => null
-                                };
+                                    // 从"DAQ_A7_I(A)"中提取编号7
+                                    var startIndex = ch.DisplayName.IndexOf("DAQ_A") + 5;
+                                    var endIndex = ch.DisplayName.IndexOf("_I(A)");
+                                    if (startIndex < endIndex &&
+                                        int.TryParse(ch.DisplayName.Substring(startIndex, endIndex - startIndex), out int epbNum))
+                                    {
+                                        displayCtl = epbNum switch
+                                        {
+                                            1 => textEditCurrent1,
+                                            2 => textEditCurrent2,
+                                            3 => textEditCurrent3,
+                                            4 => textEditCurrent4,
+                                            5 => textEditCurrent5,
+                                            6 => textEditCurrent6,
+                                            7 => textEditCurrent7,
+                                            8 => textEditCurrent8,
+                                            9 => textEditCurrent9,
+                                            10 => textEditCurrent10,
+                                            11 => textEditCurrent11,
+                                            12 => textEditCurrent12,
+                                            _ => null
+                                        };
+                                    }
+                                }
                                 break;
                             case SignalType.Pressure:
                                 // 压力通道 -> textEditP1, textEditP2
@@ -3331,9 +3429,9 @@ namespace MTEmbTest
             var channel = _allChs[globalIndex];
             return channel.Type switch
             {
-                SignalType.Current => $"{value:F3}",    // 电流显示3位小数 (精度更高)
-                SignalType.Pressure => $"{value:F1}",  // 压力显示1位小数
-                SignalType.Force => $"{value:F0}",     // 夹紧力显示整数
+                SignalType.Current => $"{value:F3} A",     // 电流显示3位小数 + 单位A
+                SignalType.Pressure => $"{value:F1} bar", // 压力显示1位小数 + 单位bar
+                SignalType.Force => $"{value:F0} N",      // 夹紧力显示整数 + 单位N
                 _ => $"{value:F2}"
             };
         }

@@ -226,11 +226,12 @@ namespace MtEmbTest
                 ClsGlobal.PowerServerAdr[0] = ConfigOperation.SetOneItem("Power1ServerAdr");
                 ClsGlobal.PowerServerPort[0] = ConfigOperation.SetOneItem("Power1ServerPort");
 
-
+                // 无需CAN卡，禁用
+                /*
                 var DbcMsg = DbcParser.ParseDbcFile(Environment.CurrentDirectory + @"\Config\CAN_V4_3_0.dbc",
                     out ClsGlobal.Dbc);
 
-                if (DbcMsg.IndexOf("OK") < 0) MessageBox.Show(DbcMsg);
+                if (DbcMsg.IndexOf("OK") < 0) MessageBox.Show(DbcMsg);*/
             }
 
             catch (Exception ex)

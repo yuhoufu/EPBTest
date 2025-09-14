@@ -272,8 +272,18 @@ namespace DataOperation
 
                 for (int i = 0; i < UsedChannel.Length; i++)
                 {
-                    string ParaName = recordList[UsedChannel[i]].Replace("_current","");
-                    channelMapping[ParaName] = i;
+                    // 检查键是否存在，避免"给定关键字不在字典中"错误
+                    if (recordList.TryGetValue(UsedChannel[i], out string paramName))
+                    {
+                        string cleanParamName = paramName.Replace("_current", "");
+                        channelMapping[cleanParamName] = i;
+                    }
+                    else
+                    {
+                        // 如果物理通道不在recordList中（比如非电流类型），跳过
+                        // 这可能是压力或夹紧力通道，不需要映射到channelMapping中
+                        continue;
+                    }
                 }
 
 
@@ -478,7 +488,7 @@ namespace DataOperation
                     var key = rec.NormalizedKey;
                     if (!channelMapping.TryAdd(key, i))
                     {
-                        return $"参数键重复：{key}。请检查配置中参数名/类型是否冲突。";
+                        return $"参数键重复：{key}（物理通道：{phy}，参数名：{rec.ParamName}，参数类型：{rec.ParamType}）。请检查配置中参数名/类型是否冲突。";
                     }
                 }
 

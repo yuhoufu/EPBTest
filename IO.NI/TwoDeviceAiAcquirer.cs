@@ -422,14 +422,14 @@ namespace IO.NI
                 //var current =  idealNow; // 不用纠偏，直接采用理想时间
 
                 // ④ （可选）诊断丢块：host Δt 远大于 n/Fs
-                var hostDt = (hostNow - last).TotalSeconds;
+                /*var hostDt = (hostNow - last).TotalSeconds;
                 var expectDt = n / _sampleRate;
                 if (hostDt > expectDt * 1.5)             // 系数可按经验调
                 {
                     var lost = (int)Math.Round(hostDt * _sampleRate) - n;
                     if (lost > 0)
                         _log.Warn($"[{device}] 疑似丢样：hostΔt={hostDt:F4}s 期望={expectDt:F4}s 约缺 {lost} 点（≈{lost / (double)_samplesPerChannel:F2} 批）。", "AI");
-                }
+                }*/
 
 
                 // 1) 原始矩阵入队（后台转工程值 + 滤波）
