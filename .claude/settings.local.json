@@ -8,7 +8,9 @@
       "Bash(dotnet clean:*)",
       "Bash(dotnet msbuild:*)",
       "Bash(where:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(del:*)",
+      "Bash(rm:*)"
     ],
     "deny": [],
     "ask": []

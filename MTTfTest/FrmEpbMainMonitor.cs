@@ -70,10 +70,10 @@ namespace MTEmbTest
 
         // —— CheckEdit 映射（全局索引 -> 控件），用于实时控制可见性 —— //
         private readonly Dictionary<int, CheckEdit> _checkByGlobal = new(16);
+        private readonly DeviceContext[] _deviceContexts = new DeviceContext[DeviceCount];
 
         // —— 瞬时值显示控件映射（全局索引 -> 文本控件）—— //
-        private readonly Dictionary<int, DevExpress.XtraEditors.TextEdit> _instantDisplayControls = new(16);
-        private readonly DeviceContext[] _deviceContexts = new DeviceContext[DeviceCount];
+        private readonly Dictionary<int, TextEdit> _instantDisplayControls = new(16);
         private readonly double[] _lastX = Enumerable.Repeat(0.0, 15).ToArray();
 
         // 控制曲线显示的check控件名
@@ -121,8 +121,9 @@ namespace MTEmbTest
         private Timer _daqRawTimerDev1, _daqStatTimerDev1;
         private Timer _daqRawTimerDev2, _daqStatTimerDev2;
 
-        /// <summary>每帧样本时间跨度（毫秒），与旧项目一致：1000 / 采样频率。
-        /// 数据落盘使用
+        /// <summary>
+        ///     每帧样本时间跨度（毫秒），与旧项目一致：1000 / 采样频率。
+        ///     数据落盘使用
         /// </summary>
         private double _daqTimeSpanMs = 10.0; // 会在 Load 中设为 1000.0 / ClsGlobal.DaqFrequency 可以使用DaqTimeSpanMilSeconds
 
@@ -251,8 +252,8 @@ namespace MTEmbTest
         }
 
         /// <summary>
-        /// 动态从AIConfig.xml读取配置并构建通道映射，按界面控件顺序排列
-        /// 界面顺序：CheckEpbA1-A12, CheckP1, CheckP2, CheckF
+        ///     动态从AIConfig.xml读取配置并构建通道映射，按界面控件顺序排列
+        ///     界面顺序：CheckEpbA1-A12, CheckP1, CheckP2, CheckF
         /// </summary>
         private static ChannelDef[] BuildChannelsFromConfig()
         {
@@ -264,10 +265,10 @@ namespace MTEmbTest
                 var enabledRecords = aiConfig.Enabled().ToList();
 
                 var result = new List<ChannelDef>();
-                int globalIndex = 0;
+                var globalIndex = 0;
 
                 // 1. 先添加EPB1-12电流（按编号顺序）
-                for (int epbNum = 1; epbNum <= 12; epbNum++)
+                for (var epbNum = 1; epbNum <= 12; epbNum++)
                 {
                     var record = enabledRecords.FirstOrDefault(r => r.参数名 == $"EPB{epbNum}_current");
                     if (record != null)
@@ -329,7 +330,7 @@ namespace MTEmbTest
         }
 
         /// <summary>
-        /// 根据配置记录创建通道定义
+        ///     根据配置记录创建通道定义
         /// </summary>
         private static ChannelDef CreateChannelDef(dynamic record, int globalIndex)
         {
@@ -337,11 +338,11 @@ namespace MTEmbTest
             var parts = record.物理通道.Split('/');
             if (parts.Length != 2) return null;
 
-            var device = parts[0];  // Dev1 或 Dev2
+            var device = parts[0]; // Dev1 或 Dev2
             var aiChannel = parts[1]; // ai0, ai1, etc.
 
             // 明确初始化aiIndex变量
-            int aiIndex = -1; // 默认值
+            var aiIndex = -1; // 默认值
             if (!aiChannel.StartsWith("ai") ||
                 !int.TryParse(aiChannel.Substring(2), out aiIndex))
                 return null; // 解析失败，直接返回null
@@ -356,13 +357,9 @@ namespace MTEmbTest
                 // 从EPB1_current提取编号1
                 var epbNumStr = record.参数名.Replace("EPB", "").Replace("_current", "");
                 if (int.TryParse(epbNumStr, out int epbNum))
-                {
                     displayName = $"DAQ_A{epbNum}_I(A)";
-                }
                 else
-                {
                     return null; // 解析失败
-                }
             }
             else if (record.参数名 == "Pressure_1")
             {
@@ -395,18 +392,18 @@ namespace MTEmbTest
         }
 
         /// <summary>
-        /// 当配置读取失败时的回退配置（按界面顺序：EPB1-12, P1, P2, F）
+        ///     当配置读取失败时的回退配置（按界面顺序：EPB1-12, P1, P2, F）
         /// </summary>
         private static ChannelDef[] GetFallbackChannels()
         {
             var list = new List<ChannelDef>();
-            int globalIndex = 0;
+            var globalIndex = 0;
 
             // 1. EPB1-12电流通道（按界面顺序）
-            for (int epbNum = 1; epbNum <= 12; epbNum++)
+            for (var epbNum = 1; epbNum <= 12; epbNum++)
             {
                 var device = epbNum <= 6 ? "Dev1" : "Dev2";
-                var aiIndex = epbNum <= 6 ? (epbNum - 1) : (epbNum - 7);
+                var aiIndex = epbNum <= 6 ? epbNum - 1 : epbNum - 7;
 
                 list.Add(new ChannelDef
                 {
@@ -452,7 +449,7 @@ namespace MTEmbTest
         }
 
         /// <summary>
-        /// 旧版本硬编码通道映射（用于测试问题根源）
+        ///     旧版本硬编码通道映射（用于测试问题根源）
         /// </summary>
         private static ChannelDef[] BuildChannelsOld()
         {
@@ -501,6 +498,7 @@ namespace MTEmbTest
         {
             return $"{dev}#{ai}";
         }
+
         /// </summary>
         /// <param name="seconds">窗口宽度（秒，大于 0）。</param>
         public void SetXWindowSeconds(double seconds)
@@ -605,7 +603,7 @@ namespace MTEmbTest
 
                 ReadMsg = ClsXmlOperation.GetDaqAIChannelMapping(
                     Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev1", Dev1UsedDaqAIChannels,
-                    out Dev1DaqChannel, paramTypeFilter: new string[] { }); //paramTypeFilter 参数为空，处理所有类型
+                    out Dev1DaqChannel, new string[] { }); //paramTypeFilter 参数为空，处理所有类型
                 if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
                 {
                     MessageBox.Show(ReadMsg);
@@ -621,7 +619,7 @@ namespace MTEmbTest
                 // Dev2通道, Dev2DaqChannel
                 ReadMsg = ClsXmlOperation.GetDaqAIChannelMapping(
                     Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev2", Dev2UsedDaqAIChannels,
-                    out Dev2DaqChannel, paramTypeFilter: new string[] { }); //paramTypeFilter 参数为空，不过滤
+                    out Dev2DaqChannel, new string[] { }); //paramTypeFilter 参数为空，不过滤
                 if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
                 {
                     MessageBox.Show(ReadMsg);
@@ -743,8 +741,9 @@ namespace MTEmbTest
                 aiConfigDetail =
                     AiConfigLoader.Load($@"{Environment.CurrentDirectory}\Config\AIConfig.xml");
 
-                twoDeviceAiAcquirer = new TwoDeviceAiAcquirer(aiConfigDetail, ClsGlobal.DaqFrequency, samplesPerChannel:ClsGlobal.SamplesPerChannel,
-                    medianLens: 10, logger);
+                twoDeviceAiAcquirer = new TwoDeviceAiAcquirer(aiConfigDetail, ClsGlobal.DaqFrequency,
+                    ClsGlobal.SamplesPerChannel,
+                    10, logger);
 
                 twoDeviceAiAcquirer.OnEngBatch += Acq_OnEngBatch; // 订阅工程值批次到达事件
 
@@ -1510,6 +1509,7 @@ namespace MTEmbTest
                             await _daqDev1.FlushRawToDiskAsync();
                             await _daqDev1.FlushStatToDiskAsync();
                         }
+
                         if (_daqDev2 != null)
                         {
                             await _daqDev2.FlushRawToDiskAsync();
@@ -1690,6 +1690,7 @@ namespace MTEmbTest
 
 
         #region DAQ_AI变量
+
         private ConcurrentDictionary<string, double> Dev1ParaNameToScale = new();
         private ConcurrentDictionary<string, double> Dev1ParaNameToOffset = new();
         private ConcurrentDictionary<string, double> Dev1ParaNameToZeroValue = new();
@@ -1697,8 +1698,6 @@ namespace MTEmbTest
         private ConcurrentDictionary<string, double> Dev2ParaNameToScale = new();
         private ConcurrentDictionary<string, double> Dev2ParaNameToOffset = new();
         private ConcurrentDictionary<string, double> Dev2ParaNameToZeroValue = new();
-
-
 
 
         private static string[] Dev1UsedDaqAIChannels;
@@ -2140,7 +2139,7 @@ namespace MTEmbTest
                     ctl.CheckedChanged += OnCurveCheckChanged;
 
                     // 映射瞬时显示控件 - 直接通过属性引用而非Controls.Find
-                    DevExpress.XtraEditors.TextEdit displayCtl = null;
+                    TextEdit displayCtl = null;
                     if (g < _allChs.Length)
                     {
                         var ch = _allChs[g];
@@ -2154,8 +2153,8 @@ namespace MTEmbTest
                                     var startIndex = ch.DisplayName.IndexOf("DAQ_A") + 5;
                                     var endIndex = ch.DisplayName.IndexOf("_I(A)");
                                     if (startIndex < endIndex &&
-                                        int.TryParse(ch.DisplayName.Substring(startIndex, endIndex - startIndex), out int epbNum))
-                                    {
+                                        int.TryParse(ch.DisplayName.Substring(startIndex, endIndex - startIndex),
+                                            out var epbNum))
                                         displayCtl = epbNum switch
                                         {
                                             1 => textEditCurrent1,
@@ -2172,13 +2171,13 @@ namespace MTEmbTest
                                             12 => textEditCurrent12,
                                             _ => null
                                         };
-                                    }
                                 }
+
                                 break;
                             case SignalType.Pressure:
                                 // 压力通道 -> textEditP1, textEditP2
                                 displayCtl = ch.DisplayName.Contains("P1") ? textEditP1 :
-                                           ch.DisplayName.Contains("P2") ? textEditP2 : null;
+                                    ch.DisplayName.Contains("P2") ? textEditP2 : null;
                                 break;
                             case SignalType.Force:
                                 // 夹紧力通道 -> textEditF
@@ -2190,7 +2189,8 @@ namespace MTEmbTest
                         {
                             _instantDisplayControls[g] = displayCtl;
                             // 调试日志
-                            logger?.Info($"控件映射成功: 全局索引{g} -> {displayCtl.Name} (设备:{ch.Device}, 通道:{ch.AiIndex}, 参数:{ch.DisplayName}, 类型:{ch.Type})");
+                            logger?.Info(
+                                $"控件映射成功: 全局索引{g} -> {displayCtl.Name} (设备:{ch.Device}, 通道:{ch.AiIndex}, 参数:{ch.DisplayName}, 类型:{ch.Type})");
                         }
                         else
                         {
@@ -3276,7 +3276,7 @@ namespace MTEmbTest
             var dev2ChannelCount = Dev2UsedDaqAIChannels?.Length ?? 0;
             _daqDev2 = new DaqAIContext(
                 "Dev2",
-                maxLens: 100,
+                100,
                 ClsGlobal.FileChangeMinutes,
                 _daqTimeSpanMs,
                 dev2ChannelCount,
@@ -3345,7 +3345,7 @@ namespace MTEmbTest
         }
 
         /// <summary>
-        /// 根据全局通道索引获取对应的瞬时显示控件名称
+        ///     根据全局通道索引获取对应的瞬时显示控件名称
         /// </summary>
         /// <param name="globalIndex">全局通道索引 0-14</param>
         /// <returns>控件名称，如果没有对应控件则返回null</returns>
@@ -3365,7 +3365,7 @@ namespace MTEmbTest
         }
 
         /// <summary>
-        /// 动态更新所有通道的瞬时显示值
+        ///     动态更新所有通道的瞬时显示值
         /// </summary>
         private void UpdateInstantDisplayValues()
         {
@@ -3382,6 +3382,7 @@ namespace MTEmbTest
                 {
                     // 窗体已销毁，忽略
                 }
+
                 return;
             }
 
@@ -3416,7 +3417,7 @@ namespace MTEmbTest
         }
 
         /// <summary>
-        /// 根据通道类型格式化显示值
+        ///     根据通道类型格式化显示值
         /// </summary>
         /// <param name="globalIndex">全局通道索引</param>
         /// <param name="value">原始数值</param>
@@ -3429,9 +3430,9 @@ namespace MTEmbTest
             var channel = _allChs[globalIndex];
             return channel.Type switch
             {
-                SignalType.Current => $"{value:F3} A",     // 电流显示3位小数 + 单位A
+                SignalType.Current => $"{value:F3} A", // 电流显示3位小数 + 单位A
                 SignalType.Pressure => $"{value:F1} bar", // 压力显示1位小数 + 单位bar
-                SignalType.Force => $"{value:F0} N",      // 夹紧力显示整数 + 单位N
+                SignalType.Force => $"{value:F0} N", // 夹紧力显示整数 + 单位N
                 _ => $"{value:F2}"
             };
         }
