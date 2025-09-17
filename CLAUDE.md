@@ -10,20 +10,27 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### Visual Studio 解决方案构建
 ```bash
-# 构建整个解决方案
-msbuild TfTest.sln /p:Configuration=Debug /p:Platform="Any CPU"
+# 构建整个解决方案（Debug配置使用x86平台）
+msbuild TfTest.sln /p:Configuration=Debug /p:Platform=x86
 
-# 构建发布版本
+# 构建发布版本（Release配置使用Any CPU）
 msbuild TfTest.sln /p:Configuration=Release /p:Platform="Any CPU"
 
 # 仅构建主应用程序项目
-msbuild MTTfTest\MTTfTest.csproj /p:Configuration=Debug
+msbuild MTTfTest\MTTfTest.csproj /p:Configuration=Debug /p:Platform=x86
+
+# 清理构建输出
+msbuild TfTest.sln /t:Clean
 ```
 
 ### 运行应用程序
 ```bash
-# 从构建输出目录运行
+# 从构建输出目录运行（Debug配置）
 cd MTTfTest\bin\Debug
+MTTFTest.exe
+
+# 从构建输出目录运行（Release配置）
+cd MTTfTest\bin\Release
 MTTFTest.exe
 
 # 或者从 Visual Studio 启动 (F5)
@@ -94,11 +101,29 @@ MTTFTest.exe
 - `Func<int, double>`: 压力读取委托
 
 ### 并发模式
-- 使用`HighPrecisionTimer`进行精确定时
+- 使用`HighPrecisionTimer`进行精确定时，支持暂停/恢复/停止操作
 - `ConcurrentDictionary`管理并发状态
 - `TaskCompletionSource`实现异步等待
+- `ManualResetEventSlim`实现暂停门控机制
+- 每个EPB使用独立的高精度定时器实现精确循环控制
+
+### 数据落盘机制
+- **实时数据流**：AI采集数据实时写入原始文件（.raw格式）
+- **缓冲策略**：使用内存缓冲区批量写入，避免频繁I/O操作
+- **数据压缩**：支持数据压缩存储以节省磁盘空间
+- **异步落盘**：`FlushRawToDiskAsync`方法实现异步数据持久化
+- **故障恢复**：系统重启后可从最后保存点恢复数据
 
 ## 测试和调试
+
+### 调试配置
+- Debug模式自动启用符号调试和详细日志
+- 应用程序配置文件：`MTTfTest\App.config`
+- 日志级别可在运行时动态调整
+
+### 硬件测试模式
+- **仿真模式**：可在无硬件情况下运行，用于界面和逻辑测试
+- **硬件模式**：连接实际设备进行完整功能测试
 
 ### 单元测试
 目前项目中未包含专门的测试项目。建议针对核心控制逻辑添加单元测试。
@@ -112,6 +137,13 @@ MTTFTest.exe
 
 ## 常见开发任务
 
+### 开发工作流程
+1. **代码修改**：在相应模块中进行功能开发
+2. **构建验证**：使用msbuild命令构建项目
+3. **配置更新**：如需要，更新XML配置文件
+4. **测试验证**：在仿真模式下测试功能逻辑
+5. **硬件测试**：连接硬件进行完整功能验证
+
 ### 添加新的EPB控制特性
 1. 在`Controller/EpbManager.cs`中扩展管理逻辑
 2. 在`Controller/EpbCycleRunner.cs`中实现具体循环控制
@@ -123,6 +155,13 @@ MTTFTest.exe
 3. 在`DataOperation/ClsTestConfig.cs`中添加数据处理
 
 ### 界面修改
-1. 主界面：`MTTfTest/FrmEpbMainMonitor.cs`
-2. 测试设置：`MTTfTest/FrmTestSetting.cs`
-3. 数据回放：`MTTfTest/FrmPlayBack.cs`
+1. **主监控界面**：`MTTfTest/FrmEpbMainMonitor.cs` - 实时状态显示和控制
+2. **测试设置界面**：`MTTfTest/FrmTestSetting.cs` - 测试参数配置
+3. **数据回放界面**：`MTTfTest/FrmPlayBack.cs` - 历史数据分析
+4. **原始数据回放**：`MTTfTest/FrmRawPlayBack.cs` - 原始数据查看
+
+### 调试和故障排除
+- **日志文件位置**：应用程序目录下的日志文件夹
+- **配置验证**：启动时会自动验证XML配置文件完整性
+- **硬件连接检查**：系统启动时检测NI设备和CAN卡连接状态
+- **内存监控**：长时间运行时注意监控内存使用情况，特别是数据采集缓冲区

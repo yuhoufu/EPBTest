@@ -10,7 +10,15 @@
       "Bash(where:*)",
       "Bash(git push:*)",
       "Bash(del:*)",
-      "Bash(rm:*)"
+      "Bash(rm:*)",
+      "Bash(dir)",
+      "Bash(dir:*)",
+      "Bash(verbosity=normal)",
+      "Bash(find:*)",
+      "Bash(for:*)",
+      "Bash(do echo \"=== $file ===\")",
+      "Bash(grep:*)",
+      "Bash(done)"
     ],
     "deny": [],
     "ask": []
