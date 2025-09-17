@@ -189,6 +189,10 @@ namespace MTEmbTest
         private TestConfig testConfig;
         private TwoDeviceAiAcquirer twoDeviceAiAcquirer;
 
+        // 落盘相关字段
+        private DataOperation.EpbDiskWriter _diskWriter;
+        private DataOperation.IEpbCycleRecorder _recorder;
+
 
         public FrmEpbMainMonitor()
         {
@@ -750,6 +754,50 @@ namespace MTEmbTest
                 twoDeviceAiAcquirer.OnRawBatch += Acq_OnRawBatch; // ← 新增：订阅原始批次事件（两卡通用 ) // 2025/09/09
 
 
+                // epb管理器初始化
+                _epb = new EpbManager(
+                    _cfg,
+                    _do,
+                    _ao,
+                    twoDeviceAiAcquirer,
+                    logger);
+
+                // 1) 创建写盘器（使用 DataRetentionPolicy）
+                var policy = new DataOperation.DataRetentionPolicy
+                {
+                    DataStorePath = System.IO.Path.Combine(Environment.CurrentDirectory, "DataStore"), // 数据根目录
+                    FileSizeMb = 10,           // 每通道 .dat 大小，可按需改 384
+                    RetainLatestCycles = 10,            // 停止时“最新N圈”
+                    CleanupMode = "archive"      // 或 "delete"
+                };
+                _diskWriter = new DataOperation.EpbDiskWriter(policy);
+
+                // 适配器：实现 IEpbCycleRecorder，把 EpbDiskWriter 包起来
+                var recorder = new DiskWriterRecorderAdapter(_diskWriter);
+
+                // 2) 注入到 EpbManager
+                _epb.Recorder = recorder;
+
+
+                // 4) 订阅“写盘批次”事件（采集层 → 批量喂入落盘器）
+                //    这要求 TwoDeviceAiAcquirer 已按我们给的方案增加 OnDiskBatch 事件
+                twoDeviceAiAcquirer.OnDiskBatch += (device, tsUtc, currentsByEpb, p1, p2) =>
+                {
+                    // 参数基本校验（防御）
+                    if (tsUtc == null || currentsByEpb == null) return;
+
+                    foreach (var kv in currentsByEpb)
+                    {
+                        int epbId = kv.Key;
+                        var iArr = kv.Value;
+                        var gArr = (epbId <= 6) ? p1 : p2;  // 1..6 用组1压力；7..12 用组2压力
+                        if (iArr == null || gArr == null) continue;
+                        if (tsUtc.Length != iArr.Length || tsUtc.Length != gArr.Length) continue;
+
+                        _diskWriter.WriteBatch(epbId, tsUtc, iArr, gArr);
+                    }
+                };
+
                 #region 曲线勾选控件相关
 
                 // 1) 载入 UI 配置
@@ -787,13 +835,6 @@ namespace MTEmbTest
 
                 twoDeviceAiAcquirer.Start(); // 开始采集
 
-                // epb管理器初始化
-                _epb = new EpbManager(
-                    _cfg,
-                    _do,
-                    _ao,
-                    twoDeviceAiAcquirer,
-                    logger);
 
 
                 //数据落盘相关

@@ -190,6 +190,18 @@ namespace IO.NI
         public event Action<string /*Dev1|Dev2*/, double[,], DateTime /*current*/, DateTime /*last*/> OnEngBatch;
 
         /// <summary>
+        /// 写盘批次事件（后台线程触发）：
+        /// device: "Dev1" | "Dev2"
+        /// tsUtc:   本批次每个样本的 UTC 时间戳（长度 = n）
+        /// currentsByEpb: 字典，键为 1..12 的 EPB 通道号，值为该通道的电流数组（长度 = n）
+        /// pressureGroup1: 组1（EPB1..6）对应的压力数组（长度 = n；若不存在则为 null）
+        /// pressureGroup2: 组2（EPB7..12）对应的压力数组（长度 = n；若不存在则为 null）
+        /// </summary>
+        public event Action<string, DateTime[], Dictionary<int, double[]>, double[], double[]> OnDiskBatch;
+
+
+
+        /// <summary>
         ///     低时延电流样本事件：在 DAQ 回调线程中触发，报告“当前批次最后一个样本”的工程值（未滤波）。
         ///     用于实时控制，不建议做重活（如 IO/磁盘/复杂计算）。
         /// </summary>
@@ -523,8 +535,65 @@ namespace IO.NI
 
                     // 刷新“最近值”供控制逻辑查询（**改动：写入 _lastFilteredValue**）
                     UpdateLastSnapshot(engFiltered, item.Device);
+                    
+                    #region 生成“落盘批次”并触发 OnDiskBatch（使用 engFiltered，不取绝对值） On 2025.09.16 
 
+                    // ====== 生成“落盘批次”并触发 OnDiskBatch（使用 engFiltered，不取绝对值） ======
+                    try
+                    {
+                        // 1) 计算时间戳数组（以本批最后一个样本对齐 item.Current，向前按 Fs 均匀回推）
+                        var n = engFiltered.GetLength(1);
+                        var tsUtc = new DateTime[n];
+                        double dt = 1.0 / _sampleRate;                 // 你的 Fs
+                        var tStart = item.Current.ToUniversalTime().AddSeconds(-(n - 1) * dt);
+                        for (int k = 0; k < n; k++) tsUtc[k] = tStart.AddSeconds(k * dt);
 
+                        // 2) 构建“每 EPB 通道”的电流数组（从当前 device 的工程值矩阵提取）
+                        var currentsByEpb = new Dictionary<int, double[]>();
+                        var devRecs = _enabled
+                            .Where(r => r.物理通道.StartsWith(item.Device + "/"))
+                            .OrderBy(r => r.序号)
+                            .ToList();
+                        var chCount = engFiltered.GetLength(0);
+                        for (int c = 0; c < chCount; c++)
+                        {
+                            var name = devRecs[c].参数名; // 形如 EPB1_current / Pressure_1
+                            int epb = TryParseEpbChannel(name);
+                            if (epb >= 1 && epb <= 12)
+                            {
+                                var arr = new double[n];
+                                for (int i = 0; i < n; i++) arr[i] = engFiltered[c, i]; // 不取绝对值
+                                currentsByEpb[epb] = arr;
+                            }
+                        }
+
+                        // 3) 提取两组压力（多名称兜底：Pressure_1/2、Hyd1/2_pressure、P1/2）
+                        int colP1 = FindColumnIndex(devRecs, "Pressure_1", "Hyd1_pressure", "P1", "Pressure1");
+                        int colP2 = FindColumnIndex(devRecs, "Pressure_2", "Hyd2_pressure", "P2", "Pressure2");
+
+                        double[] pressure1 = null, pressure2 = null;
+                        if (colP1 >= 0)
+                        {
+                            pressure1 = new double[n];
+                            for (int i = 0; i < n; i++) pressure1[i] = engFiltered[colP1, i];
+                        }
+                        if (colP2 >= 0)
+                        {
+                            pressure2 = new double[n];
+                            for (int i = 0; i < n; i++) pressure2[i] = engFiltered[colP2, i];
+                        }
+
+                        // 4) 触发“写盘批次”事件（上层订阅后直接喂给 _diskWriter.WriteBatch）
+                        OnDiskBatch?.Invoke(item.Device, tsUtc, currentsByEpb, pressure1, pressure2);
+                    }
+                    catch (Exception ex)
+                    {
+                        _log?.Warn($"生成写盘批次时出现异常（已忽略）：{ex.Message}", "AI");
+                    }
+                    
+
+                    #endregion
+                    
                     // 4) 生成发给 UI 的绝对值副本（不修改 engFiltered）
                     //    这样 UI 看到的是绝对值，但内部仍保留带符号的数据用于控制/记录等。
                     var uiEng = MakeEngineeringAbsoluteCopy(engFiltered);
@@ -541,6 +610,25 @@ namespace IO.NI
                 _log.Error($"AI 后台处理异常：{ex}", "AI", ex);
             }
         }
+
+        /// <summary>
+        /// 在 devRecs（本 device 的通道描述）中按多个“候选参数名”查找列索引；找不到返回 -1。
+        /// </summary>
+        private static int FindColumnIndex(List<AiConfigDetailRecord> devRecs, params string[] candidateNames)
+        {
+            if (devRecs == null || candidateNames == null) return -1;
+            for (int c = 0; c < devRecs.Count; c++)
+            {
+                var name = devRecs[c].参数名;
+                foreach (var key in candidateNames)
+                {
+                    if (string.Equals(name, key, StringComparison.OrdinalIgnoreCase))
+                        return c;
+                }
+            }
+            return -1;
+        }
+
 
         /// <summary>
         ///     返回一个新的二维数组，该数组为源数组元素的绝对值副本，源数组不被修改。

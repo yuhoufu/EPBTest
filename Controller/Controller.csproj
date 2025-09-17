@@ -55,6 +55,10 @@
       <Project>{7941D662-F680-489B-972D-F324CBB42A9D}</Project>
       <Name>Config</Name>
     </ProjectReference>
+    <ProjectReference Include="..\DataOperation\DataOperation.csproj">
+      <Project>{FCE7FD92-9529-40DF-83AB-92B6B4DC469C}</Project>
+      <Name>DataOperation</Name>
+    </ProjectReference>
     <ProjectReference Include="..\IO.NI\IO.NI.csproj">
       <Project>{1FDE7D08-9014-474C-90C4-A13814D94327}</Project>
       <Name>IO.NI</Name>

@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Config;
+using DataOperation;
 using IO.NI;
 using Timing;
 using IAppLogger = Config.IAppLogger;
@@ -17,6 +18,9 @@ namespace Controller
     /// </summary>
     public sealed class EpbManager
     {
+        /// <summary>可选的圈记录器，外部在创建后赋值。</summary> // 2025.09.16 新增
+        public IEpbCycleRecorder Recorder { get; set; } 
+
         private readonly AoController _ao;
 
         // EpbManager 字段区
@@ -325,7 +329,18 @@ namespace Controller
             timer.StartAsync(_cfg.Test.TestTarget, staggerMs, async (i, token) =>
             {
                 _log.Info($"EPB[{channel}] 周期 {i}/{_cfg.Test.TestTarget} 开始。", "EPB");
+
+
+                // —— 新增：圈开始（圈号 i，以 1 开始；若你的计数为 0 开始，可按需调整）
+                Recorder?.BeginCycle(channel, i, DateTime.UtcNow);
+
+
                 var ok = await runner.RunOneAsync(periodMs, token).ConfigureAwait(false);
+                
+                // —— 新增：圈结束（取本圈累计样本数做 finalN；若 Recorder 为 null 则 finalN=0）
+                var finalN = Recorder?.GetCurrentCycleSampleCount(channel) ?? 0;
+                Recorder?.CompleteCycle(channel, i, finalN, DateTime.UtcNow);
+
                 _log.Info($"EPB[{channel}] 周期 {i}/{_cfg.Test.TestTarget} {(ok ? "完成" : "失败")}", "EPB");
                 return ok;
             });
@@ -345,6 +360,10 @@ namespace Controller
         {
             if (_timers.TryGetValue(channel, out var t)) t.Stop();
             _timers.Remove(channel);
+
+            // —— 新增：停止时强制把最近 N=10 圈落盘（含常开圈0）
+            Recorder?.FlushRecent(channel, 10);
+
             _do.SetEpbOff(channel); // 安全落位
         }
 
@@ -376,5 +395,23 @@ namespace Controller
 
             return default;
         }
+
+
+        // —— 圈开始（如仍保留该方法供其他调用）
+        private void OnCycleBegin(int epbId, int cycleNumber)
+        {
+            Recorder?.BeginCycle(epbId, cycleNumber, DateTime.UtcNow);
+        }
+
+        // —— 圈结束
+        private void OnCycleComplete(int epbId, int cycleNumber)
+        {
+            var finalN = Recorder?.GetCurrentCycleSampleCount(epbId) ?? 0;
+            Recorder?.CompleteCycle(epbId, cycleNumber, finalN, DateTime.UtcNow);
+        }
+
+
+
+
     }
 }
