@@ -255,7 +255,7 @@ public sealed class EpbDiskWriter : IDisposable
             s.CurrentCycle = cycleNumber;
             s.CurrentSampleIndex = 0;
             var startIndex = s.TotalWritten % s.CapacityRecords; // 非负
-            UpsertCycleStart(epbId, cycleNumber, startUtc, startIndex);
+            UpsertCycleStart(epbId, cycleNumber, startUtc.ToLocalTime(), startIndex);
         }
     }
 
@@ -316,7 +316,10 @@ public sealed class EpbDiskWriter : IDisposable
 
             var rec = new SampleRecord
             {
-                TimestampBinary = tsUtc.ToBinary(),
+                //TimestampBinary = tsUtc.ToBinary(),
+
+                // 统一使用“系统本地时间”写入
+                TimestampBinary = tsUtc.ToLocalTime().ToBinary(),
                 CycleNumber = cycle,
                 SampleIndex = sampleIndex,
                 EpbCurrent = epbCurrent,
@@ -368,7 +371,8 @@ public sealed class EpbDiskWriter : IDisposable
             foreach (var cy in purgeList)
             {
                 // 以圈开始时间命名子目录，便于回放/检索
-                var tsFolder = cy.StartTimeUtc.ToString("yyyyMMdd_HHmmss");
+                var tsFolder = cy.StartTimeUtc.ToLocalTime().ToString("yyyyMMdd_HHmmss");
+
                 var subDir = Path.Combine(dir, tsFolder);
                 Directory.CreateDirectory(subDir);
 
@@ -402,16 +406,48 @@ public sealed class EpbDiskWriter : IDisposable
     }
 
     /// <summary>
+    /// 导出格式选项（全部可选；不填用默认）：
+    /// TimeFormat 默认 "yyyy-MM-dd HH:mm:ss.fff"
+    /// CurrentFormat 默认 "F3"
+    /// PressureFormat 默认 "F1"
+    /// </summary>
+    public sealed class ExportFormatOptions
+    {
+        public string TimeFormat { get; set; } = "yyyy-MM-dd HH:mm:ss.fff";
+        public string CurrentFormat { get; set; } = "F3";
+        public string PressureFormat { get; set; } = "F1";
+    }
+
+    /// <summary>把 SampleRecord.TimestampBinary 转为本地时间的字符串（按给定格式）。</summary>
+    private static string FormatLocalTime(long tsBinary, string fmt)
+    {
+        // 存盘时我们会写 LocalTime 的 Binary，这里仍按 Local 解析并格式化
+        return DateTime.FromBinary(tsBinary).ToLocalTime().ToString(fmt ?? "yyyy-MM-dd HH:mm:ss.fff");
+    }
+
+
+
+    /// <summary>
     ///     导出指定“正式圈”的 CSV（UTC 时间戳, Cycle, SampleIndex, EpbCurrent, GroupPressure）。
     /// </summary>
     public void ExportCycleToCsv(int epbId, CycleInfo cycle, string csvPath)
     {
+
+        ExportFormatOptions fmt = new ExportFormatOptions(); // 使用默认格式
+        ExportCycleToCsv(epbId, cycle, csvPath, fmt);
+    }
+
+
+    public void ExportCycleToCsv(int epbId, CycleInfo cycle, string csvPath, ExportFormatOptions fmt = null)
+    {
+        fmt ??= new ExportFormatOptions();
+
         var s = GetState(epbId);
         var v = _views[epbId];
         var capacity = s.CapacityRecords;
         if (capacity <= 0)
         {
-            File.WriteAllText(csvPath, "TimestampUtc,Cycle,SampleIndex,EpbCurrent,GroupPressure");
+            File.WriteAllText(csvPath, "Timestamp,Cycle,SampleIndex,EpbCurrent,GroupPressure", Encoding.UTF8);
             return;
         }
 
@@ -420,16 +456,21 @@ public sealed class EpbDiskWriter : IDisposable
 
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(csvPath)) ?? ".");
         using var sw = new StreamWriter(csvPath, false, Encoding.UTF8);
-        sw.WriteLine("TimestampUtc,Cycle,SampleIndex,EpbCurrent,GroupPressure");
+        sw.WriteLine("Timestamp,Cycle,SampleIndex,EpbCurrent,GroupPressure");
         for (var i = 0; i < count; i++)
         {
             var idx = (start + i) % capacity;
             var rec = ReadRecord(v, idx * SampleRecord.Size);
-            if (rec.CycleNumber <= 0 || rec.TimestampBinary == 0) continue; // 双保险
-            var ts = DateTime.FromBinary(rec.TimestampBinary).ToUniversalTime();
-            sw.WriteLine($"{ts:o},{rec.CycleNumber},{rec.SampleIndex},{rec.EpbCurrent:F6},{rec.GroupPressure:F6}");
+            if (rec.CycleNumber <= 0 || rec.TimestampBinary == 0) continue;
+
+            var tsText = FormatLocalTime(rec.TimestampBinary, fmt.TimeFormat);
+            var curText = rec.EpbCurrent.ToString(fmt.CurrentFormat);
+            var prText = rec.GroupPressure.ToString(fmt.PressureFormat);
+            sw.WriteLine($"{tsText},{rec.CycleNumber},{rec.SampleIndex},{curText},{prText}");
         }
     }
+    
+
 
     /// <summary>
     ///     将指定“正式圈”的数据导出为二进制快照（每条 SampleRecord 32B 原样序列化，升序写入）。
@@ -461,13 +502,45 @@ public sealed class EpbDiskWriter : IDisposable
         }
     }
 
+
+    /// <summary>
+    /// 从二进制快照（ExportCycleToBin 生成）导出 CSV（升序输出）。
+    /// </summary>
+    public void ImportBinToCsv(string binPath, string csvPath, ExportFormatOptions fmt = null)
+    {
+        fmt ??= new ExportFormatOptions(); // 使用默认格式
+
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(csvPath)) ?? ".");
+        using var fs = new FileStream(binPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+        using var br = new BinaryReader(fs);
+        using var sw = new StreamWriter(csvPath, false, Encoding.UTF8);
+
+        sw.WriteLine("Timestamp,Cycle,SampleIndex,EpbCurrent,GroupPressure");
+
+        // 文件就是按升序写入的 SampleRecord 流，直接顺序读出
+        while (fs.Position < fs.Length)
+        {
+            var tsBin = br.ReadInt64();
+            var cyc = br.ReadInt32();
+            var idx = br.ReadInt32();
+            var cur = br.ReadDouble();
+            var pr = br.ReadDouble();
+
+            var tsText = FormatLocalTime(tsBin, fmt.TimeFormat);
+            sw.WriteLine($"{tsText},{cyc},{idx},{cur.ToString(fmt.CurrentFormat)},{pr.ToString(fmt.PressureFormat)}");
+        }
+    }
+
+
     /// <summary>
     ///     导出 Free-Run（Cycle=0）最近窗口（按样本数向后回溯），并以升序输出到 CSV。
     ///     传入 sampleCount 大于可用数据时，按实际可用条数导出，不抛异常。
     /// </summary>
     /// <returns>实际导出的 Free-Run 条数</returns>
-    public int ExportFreeRunBySamples(int epbId, int sampleCount, string csvPath)
+    public int ExportFreeRunBySamples(int epbId, int sampleCount, string csvPath, ExportFormatOptions fmt = null)
     {
+        fmt ??= new ExportFormatOptions(); // 使用默认格式
+
         sampleCount = Math.Max(1, sampleCount);
         var s = GetState(epbId);
         var v = _views[epbId];
@@ -498,15 +571,22 @@ public sealed class EpbDiskWriter : IDisposable
         list.Reverse(); // 升序
 
         using var sw = new StreamWriter(csvPath, false, Encoding.UTF8);
-        sw.WriteLine("TimestampUtc,Cycle,SampleIndex,EpbCurrent,GroupPressure");
+        sw.WriteLine("Timestamp,Cycle,SampleIndex,EpbCurrent,GroupPressure");
         foreach (var rec in list)
         {
-            var ts = DateTime.FromBinary(rec.TimestampBinary).ToUniversalTime();
-            sw.WriteLine($"{ts:o},{rec.CycleNumber},{rec.SampleIndex},{rec.EpbCurrent:F6},{rec.GroupPressure:F6}");
+            var tsText = FormatLocalTime(rec.TimestampBinary, fmt.TimeFormat);
+            var curText = rec.EpbCurrent.ToString(fmt.CurrentFormat);
+            var prText = rec.GroupPressure.ToString(fmt.PressureFormat);
+            sw.WriteLine($"{tsText},{rec.CycleNumber},{rec.SampleIndex},{curText},{prText}");
+
         }
 
         return list.Count;
     }
+
+
+
+
 
     /// <summary>获取通道当前圈内已写样本数（用于 CompleteCycle 的 finalSampleCount）。</summary>
     public int GetCurrentCycleSampleCount(int epbId)
@@ -625,7 +705,7 @@ ON CONFLICT(epb_id,cycle_number) DO UPDATE SET
   status='running'";
         cmd.Parameters.AddWithValue("@e", epbId);
         cmd.Parameters.AddWithValue("@c", cycleNumber);
-        cmd.Parameters.AddWithValue("@st", startUtc.ToString("o"));
+        cmd.Parameters.AddWithValue("@st", startUtc.ToLocalTime().ToString("o"));
         cmd.Parameters.AddWithValue("@pos", startRecordIndex);
         cmd.ExecuteNonQuery();
     }
@@ -638,7 +718,7 @@ UPDATE {TABLE_CYCLES}
    SET sample_count=@n, end_time=@et, status='running'
  WHERE epb_id=@e AND cycle_number=@c";
         cmd.Parameters.AddWithValue("@n", sampleCount);
-        cmd.Parameters.AddWithValue("@et", lastUtc.ToString("o"));
+        cmd.Parameters.AddWithValue("@et", lastUtc.ToLocalTime().ToString("o"));
         cmd.Parameters.AddWithValue("@e", epbId);
         cmd.Parameters.AddWithValue("@c", cycleNumber);
         cmd.ExecuteNonQuery();
@@ -652,7 +732,7 @@ UPDATE {TABLE_CYCLES}
    SET sample_count=@n, end_time=@et, status='completed'
  WHERE epb_id=@e AND cycle_number=@c";
         cmd.Parameters.AddWithValue("@n", finalSampleCount);
-        cmd.Parameters.AddWithValue("@et", endUtc.ToString("o"));
+        cmd.Parameters.AddWithValue("@et", endUtc.ToLocalTime().ToString("o"));
         cmd.Parameters.AddWithValue("@e", epbId);
         cmd.Parameters.AddWithValue("@c", cycleNumber);
         cmd.ExecuteNonQuery();
