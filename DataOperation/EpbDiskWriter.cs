@@ -311,6 +311,7 @@ namespace DataOperation
         public void WriteBatch(int epbId, DateTime[] tsUtc, double[] epbCurrents, double[] groupPressures)
         {
             if (tsUtc == null || epbCurrents == null || groupPressures == null)
+                // ReSharper disable once NotResolvedInText
                 throw new ArgumentNullException("tsUtc/epbCurrents/groupPressures");
             if (tsUtc.Length != epbCurrents.Length || tsUtc.Length != groupPressures.Length)
                 throw new ArgumentException("tsUtc/epbCurrents/groupPressures 长度必须一致");
