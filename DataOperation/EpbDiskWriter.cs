@@ -396,7 +396,10 @@ public sealed class EpbDiskWriter : IDisposable
     }
 
     /// <summary>把 x 对 m 取模并规范化到 [0, m)；m 必须 &gt; 0。</summary>
-    private static long ModNN(long x, long m) => ((x % m) + m) % m;
+    private static long ModNN(long x, long m)
+    {
+        return (x % m + m) % m;
+    }
 
     /// <summary>
     ///     导出指定“正式圈”的 CSV（UTC 时间戳, Cycle, SampleIndex, EpbCurrent, GroupPressure）。
@@ -406,7 +409,11 @@ public sealed class EpbDiskWriter : IDisposable
         var s = GetState(epbId);
         var v = _views[epbId];
         var capacity = s.CapacityRecords;
-        if (capacity <= 0) { File.WriteAllText(csvPath, "TimestampUtc,Cycle,SampleIndex,EpbCurrent,GroupPressure"); return; }
+        if (capacity <= 0)
+        {
+            File.WriteAllText(csvPath, "TimestampUtc,Cycle,SampleIndex,EpbCurrent,GroupPressure");
+            return;
+        }
 
         var start = ModNN(cycle.StartRecordIndex, capacity);
         var count = Math.Min(cycle.SampleCount, (int)capacity);
@@ -414,7 +421,7 @@ public sealed class EpbDiskWriter : IDisposable
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(csvPath)) ?? ".");
         using var sw = new StreamWriter(csvPath, false, Encoding.UTF8);
         sw.WriteLine("TimestampUtc,Cycle,SampleIndex,EpbCurrent,GroupPressure");
-        for (int i = 0; i < count; i++)
+        for (var i = 0; i < count; i++)
         {
             var idx = (start + i) % capacity;
             var rec = ReadRecord(v, idx * SampleRecord.Size);
@@ -441,7 +448,7 @@ public sealed class EpbDiskWriter : IDisposable
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(binPath)) ?? ".");
         using var fs = new FileStream(binPath, FileMode.Create, FileAccess.Write, FileShare.Read);
         using var bw = new BinaryWriter(fs);
-        for (int i = 0; i < count; i++)
+        for (var i = 0; i < count; i++)
         {
             var idx = (start + i) % capacity;
             var rec = ReadRecord(v, idx * SampleRecord.Size);
@@ -455,8 +462,8 @@ public sealed class EpbDiskWriter : IDisposable
     }
 
     /// <summary>
-    /// 导出 Free-Run（Cycle=0）最近窗口（按样本数向后回溯），并以升序输出到 CSV。
-    /// 传入 sampleCount 大于可用数据时，按实际可用条数导出，不抛异常。
+    ///     导出 Free-Run（Cycle=0）最近窗口（按样本数向后回溯），并以升序输出到 CSV。
+    ///     传入 sampleCount 大于可用数据时，按实际可用条数导出，不抛异常。
     /// </summary>
     /// <returns>实际导出的 Free-Run 条数</returns>
     public int ExportFreeRunBySamples(int epbId, int sampleCount, string csvPath)
@@ -475,14 +482,15 @@ public sealed class EpbDiskWriter : IDisposable
             return 0;
         }
 
-        long written = s.TotalWritten;                // 快照
-        long maxBack = Math.Min(written, capacity);   // 最多回溯一圈容量
+        var written = s.TotalWritten; // 快照
+        var maxBack = Math.Min(written, capacity); // 最多回溯一圈容量
         var list = new List<SampleRecord>(Math.Min(sampleCount, (int)maxBack));
 
         for (long back = 1; back <= maxBack && list.Count < sampleCount; back++)
         {
-            long raw = written - back;
-            long idx = raw % capacity; if (idx < 0) idx += capacity;   // 标准化
+            var raw = written - back;
+            var idx = raw % capacity;
+            if (idx < 0) idx += capacity; // 标准化
             var rec = ReadRecord(v, idx * SampleRecord.Size);
             if (rec.CycleNumber == 0 && rec.TimestampBinary != 0) list.Add(rec);
         }
@@ -496,8 +504,10 @@ public sealed class EpbDiskWriter : IDisposable
             var ts = DateTime.FromBinary(rec.TimestampBinary).ToUniversalTime();
             sw.WriteLine($"{ts:o},{rec.CycleNumber},{rec.SampleIndex},{rec.EpbCurrent:F6},{rec.GroupPressure:F6}");
         }
+
         return list.Count;
     }
+
     /// <summary>获取通道当前圈内已写样本数（用于 CompleteCycle 的 finalSampleCount）。</summary>
     public int GetCurrentCycleSampleCount(int epbId)
     {
