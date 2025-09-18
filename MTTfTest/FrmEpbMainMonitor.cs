@@ -14,6 +14,7 @@ using Config;
 using Controller;
 using DataOperation;
 using DevExpress.XtraEditors;
+using DevExpress.XtraEditors.Filtering.Templates;
 using IO.NI;
 using MtEmbTest;
 using MTEmbTest.UIHelpers;
@@ -766,15 +767,19 @@ namespace MTEmbTest
                 var policy = new DataOperation.DataRetentionPolicy
                 {
                     DataStorePath = System.IO.Path.Combine(Environment.CurrentDirectory, "DataStore"), // 数据根目录
-                    FileSizeMb = 10,           // 每通道 .dat 大小，可按需改 384
+                    FileSizeMb = 100,           // 每通道 .dat大小，单位MB，可按需改 384
                     RetainLatestCycles = 10,            // 停止时“最新N圈”
                     CleanupMode = "archive"      // 或 "delete"
                 };
                 _diskWriter = new DataOperation.EpbDiskWriter(policy);
+                _diskWriter.StartFreeRun(1);
+
 
                 // 适配器：实现 IEpbCycleRecorder，把 EpbDiskWriter 包起来
                 var recorder = new DiskWriterRecorderAdapter(_diskWriter);
 
+                
+                
                 // 2) 注入到 EpbManager
                 _epb.Recorder = recorder;
 
@@ -844,7 +849,7 @@ namespace MTEmbTest
 
                 // 2) 准备落盘目录并启动定时落盘 On 2025/09/09
                 PrepareDataStoreDirectory();
-                InitDaqLogTimer(500); // 建议 100~500ms；与旧工程默认相当
+                //InitDaqLogTimer(500); // 建议 100~500ms；与旧工程默认相当
             }
 
             catch (Exception ex)
@@ -1568,6 +1573,9 @@ namespace MTEmbTest
                 /* 关闭阶段忽略单次失败 */
             }
 
+
+            // 测试
+            _diskWriter.ExportFreeRunBySamples(1,100000,Path.Combine(Environment.CurrentDirectory,@$"DataStore\EPB1-{DateTime.Now:yyyy_MM_dd-HH_mm_ss}.csv"));
 
             base.OnFormClosing(e);
         }
