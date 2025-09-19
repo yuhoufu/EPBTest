@@ -516,7 +516,7 @@ namespace Controller
 
 
                 // 延时4s后开始上电
-                await Task.Delay(4000 - plan1, token);
+                //await Task.Delay(4000 - plan1, token); // 延时上电注释掉 2025.09.19
 
                 var tElecStart = NowTicks(); // 用于⑧尾段收口
 
