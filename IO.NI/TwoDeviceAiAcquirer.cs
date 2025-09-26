@@ -531,7 +531,8 @@ namespace IO.NI
                     // 转工程值（使用配置）
                     var eng = ConvertToEngineering(item.Raw, item.Device);
                     // 滤波（每通道独立中值/降点，与你项目一致）
-                    var engFiltered = MedianFilterEachChannel(eng, _medianLens);
+                    //var engFiltered = MedianFilterEachChannel(eng, _medianLens); // 暂时去掉滤波
+                    var engFiltered = eng;
 
                     // 刷新“最近值”供控制逻辑查询（**改动：写入 _lastFilteredValue**）
                     UpdateLastSnapshot(engFiltered, item.Device);

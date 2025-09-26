@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -36,6 +37,17 @@ namespace Controller
 
         private readonly TwoDeviceAiAcquirer _acq; // ★ 新增：数据采集器
         private HydraulicGroupCoordinator _hydCoordinator; // ★ 新增：液压组协调器
+
+        private readonly Dictionary<int, EpbCycleRunner> _runners = new();
+        private readonly long _wallBaseTicks = Stopwatch.GetTimestamp();
+        private readonly DateTime _wallBaseUtc = DateTime.UtcNow;
+
+        // 将 DateTime（采集回调给的 ts）换算为当前进程 Stopwatch Ticks
+        private long ToStopwatchTicks(DateTime tsUtc)
+        {
+            var dtSec = (tsUtc - _wallBaseUtc).TotalSeconds;
+            return _wallBaseTicks + (long)(dtSec * Stopwatch.Frequency);
+        }
 
         public EpbManager(
             GlobalConfig cfg,
@@ -85,9 +97,20 @@ namespace Controller
             _cfg = cfg;
             _do = doController;
             _ao = aoController;
-            _readCurrent = acq.ReadCurrent;
+            //_readCurrent = acq.ReadCurrent;
+            _readCurrent = acq.ReadCurrentFast;
             _log = log ?? NullLogger.Instance;
             _acq = acq;
+
+            // —— 订阅“低时延电流样本”并转发给对应 Runner —— //
+            _acq.OnFastEpbCurrent += (ch, amps, ts) =>
+            {
+                if (_runners.TryGetValue(ch, out var r))
+                {
+                    var tick = ToStopwatchTicks(ts.ToUniversalTime());
+                    r.FeedCurrentSample(ch, tick, amps);
+                }
+            };
 
             _hydraulic = new HydraulicController(
                 _do,
@@ -197,6 +220,9 @@ namespace Controller
                 _log,
                 this);
 
+            // —— 新增：登记 Runner —— //
+            _runners[channel] = runner;
+
             var learnCycles = GetProp<int>(rcfg, "LearnCycles");
             if (learnCycles <= 0) learnCycles = 5;
 
@@ -253,6 +279,9 @@ namespace Controller
             if (_timers.TryGetValue(channel, out var t)) t.Stop();
             _timers.Remove(channel);
 
+            // —— 新增：移除 Runner —— //
+            _runners.Remove(channel);
+
             // —— 新增：停止时强制把最近 N=10 圈落盘（含常开圈0）
             Recorder?.FlushRecent(channel, 10);
 
@@ -301,7 +330,6 @@ namespace Controller
             var finalN = Recorder?.GetCurrentCycleSampleCount(epbId) ?? 0;
             Recorder?.CompleteCycle(epbId, cycleNumber, finalN, DateTime.UtcNow);
         }
-
 
 
 
