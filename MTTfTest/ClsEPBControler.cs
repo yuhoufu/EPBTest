@@ -11,10 +11,10 @@ namespace MtEmbTest
 {
 
     [Serializable]
-    public class ClsEMBControler
+    public class ClsEPBControler
     {
-        public int EmbNo;
-        public string EmbName;
+        public int EpbNo;
+        public string EpbName;
         //public int Cycles;
         public bool IsEnabel;
         //public int CanChannel;
