@@ -133,12 +133,12 @@
 		<Hydraulic>
 			<Id>1</Id>
 			<!-- <Enabled>true</Enabled> -->
-			<Enabled>false</Enabled>
+			<Enabled>true</Enabled>
 			<Mode>Either</Mode>
 			<!-- ByPressure / ByDuration / Either -->
 			<SetPercent>100</SetPercent>
 			<!-- AO 百分比 -->
-			<PressureThresholdBar>20.0</PressureThresholdBar>
+			<PressureThresholdBar>30.0</PressureThresholdBar>
 			<DurationMs>800</DurationMs>
 			<!-- 模式含时长时使用 -->
 			<HoldAfterReachedMs>0</HoldAfterReachedMs>
@@ -166,13 +166,13 @@
 	<EpbCurrentLimits>
 		<Record>
 			<Channel>1</Channel>
-			<ForwardA>12</ForwardA>
+			<ForwardA>10</ForwardA>
 			<ReverseA>2</ReverseA>
 			<HoldMs>1000</HoldMs>
 		</Record>
 		<Record>
 			<Channel>2</Channel>
-			<ForwardA>9.0</ForwardA>
+			<ForwardA>10</ForwardA>
 			<ReverseA>6.0</ReverseA>
 			<HoldMs>1000</HoldMs>
 		</Record>
@@ -324,7 +324,16 @@
 			</Record>
 			<Record>
 				<Channel>2</Channel>
-				<PeakIgnoreMs>90</PeakIgnoreMs>
+
+				<!-- 空行程稳态电流（中心值） -->
+				<EmptyCurrentForwardA>0.60</EmptyCurrentForwardA>
+				<EmptyCurrentReverseA>-0.70</EmptyCurrentReverseA>
+
+				<!-- 结合噪声水平，略收窄带宽，降低误判；保留原先 120ms 的上电忽略 -->
+				<EmptyBandA>0.25</EmptyBandA>
+				<PeakIgnoreMs>120</PeakIgnoreMs>
+				<StableWinMs>60</StableWinMs>
+				<EwmaAlpha>0.20</EwmaAlpha>
 			</Record>
 			<!-- EPB3：正向≈ +1.20A；反向≈ -1.45A（噪声较大，带宽稍放宽） -->
 			<Record>

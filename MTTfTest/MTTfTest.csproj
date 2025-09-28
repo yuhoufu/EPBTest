@@ -119,7 +119,7 @@
     <Compile Include="AxisRangeDialog.Designer.cs">
       <DependentUpon>AxisRangeDialog.cs</DependentUpon>
     </Compile>
-    <Compile Include="ClsEMBControler.cs" />
+    <Compile Include="ClsEPBControler.cs" />
     <Compile Include="ClsGlobe.cs" />
     <Compile Include="ConfigOperation.cs" />
     <Compile Include="FormLoggerAdapter.cs" />

@@ -104,7 +104,7 @@ namespace MTEmbTest
         private readonly Stopwatch Dispstopwatch = new();
 
 
-        private readonly ClsEMBControler[] EmbGroup = new ClsEMBControler[12];
+        private readonly ClsEPBControler[] EpbGroup = new ClsEPBControler[12];
         private readonly object graphLock = new(); //曲线更新锁
         private readonly bool IsTestConfirm = false;
         private AoController _ao;
@@ -709,7 +709,7 @@ namespace MTEmbTest
                 _cfg = ConfigLoader.LoadAll($@"{Environment.CurrentDirectory}\Config", logger);
 
 
-                //LoadEmbControler(); // 暂时注释
+                LoadEpbController(); // 暂时注释
 
                 // 初始化曲线
                 InitializeCurve();
@@ -755,6 +755,7 @@ namespace MTEmbTest
                 twoDeviceAiAcquirer.OnRawBatch += Acq_OnRawBatch; // ← 新增：订阅原始批次事件（两卡通用 ) // 2025/09/09
 
 
+
                 // epb管理器初始化
                 _epb = new EpbManager(
                     _cfg,
@@ -762,6 +763,10 @@ namespace MTEmbTest
                     _ao,
                     twoDeviceAiAcquirer,
                     logger);
+
+
+                
+                
 
                 // 1) 创建写盘器（使用 DataRetentionPolicy）
                 var policy = new DataOperation.DataRetentionPolicy
@@ -773,7 +778,7 @@ namespace MTEmbTest
                 };
                 _diskWriter = new DataOperation.EpbDiskWriter(policy);
                 _diskWriter.StartFreeRun(1);
-
+                
 
                 // 适配器：实现 IEpbCycleRecorder，把 EpbDiskWriter 包起来
                 var recorder = new DiskWriterRecorderAdapter(_diskWriter);
@@ -920,88 +925,108 @@ namespace MTEmbTest
         }
 
 
-        private void LoadEmbControler()
+        private void LoadEpbController()
         {
             try
             {
-                for (var i = 0; i < 6; i++)
+                for (var i = 0; i < 12; i++)
                 {
-                    EmbGroup[i] = new ClsEMBControler();
-                    EmbGroup[i].EmbNo = i + 1;
-                    EmbGroup[i].EmbName = "EPB" + (i + 1);
-                    //  EmbGroup[i].Cycles = 0;
-                    EmbGroup[i].IsEnabel = true;
+                    EpbGroup[i] = new ClsEPBControler
+                    {
+                        EpbNo = i + 1,
+                        EpbName = "EPB" + (i + 1),
+                        //  EpbGroup[i].Cycles = 0;
+                        IsEnabel = true
+                    };
                 }
 
-                EmbGroup[0].CtrlJoinTest = ChkEpb1;
-                EmbGroup[1].CtrlJoinTest = ChkEpb2;
-                EmbGroup[2].CtrlJoinTest = ChkEpb3;
-                EmbGroup[3].CtrlJoinTest = ChkEpb4;
-                EmbGroup[4].CtrlJoinTest = ChkEpb5;
-                EmbGroup[5].CtrlJoinTest = ChkEpb6;
+                EpbGroup[0].CtrlJoinTest = ChkEpb1;
+                EpbGroup[1].CtrlJoinTest = ChkEpb2;
+                EpbGroup[2].CtrlJoinTest = ChkEpb3;
+                EpbGroup[3].CtrlJoinTest = ChkEpb4;
+                EpbGroup[4].CtrlJoinTest = ChkEpb5;
+                EpbGroup[5].CtrlJoinTest = ChkEpb6;
+                EpbGroup[6].CtrlJoinTest = ChkEpb7;
+                EpbGroup[7].CtrlJoinTest = ChkEpb8;
+                EpbGroup[8].CtrlJoinTest = ChkEpb9;
+                EpbGroup[9].CtrlJoinTest = ChkEpb10;
+                EpbGroup[10].CtrlJoinTest = ChkEpb11;
+                EpbGroup[11].CtrlJoinTest = ChkEpb12;
 
 
                 /*
-                EmbGroup[0].CtrlCurrentEmb = RadEmb1;
-                EmbGroup[1].CtrlCurrentEmb = RadEmb2;
-                EmbGroup[2].CtrlCurrentEmb = RadEmb3;
-                EmbGroup[3].CtrlCurrentEmb = RadEmb4;
-                EmbGroup[4].CtrlCurrentEmb = RadEmb5;
-                EmbGroup[5].CtrlCurrentEmb = RadEmb6; */
+                EpbGroup[0].CtrlCurrentEmb = RadEmb1;
+                EpbGroup[1].CtrlCurrentEmb = RadEmb2;
+                EpbGroup[2].CtrlCurrentEmb = RadEmb3;
+                EpbGroup[3].CtrlCurrentEmb = RadEmb4;
+                EpbGroup[4].CtrlCurrentEmb = RadEmb5;
+                EpbGroup[5].CtrlCurrentEmb = RadEmb6; */
 
-                EmbGroup[0].CtrlRunning = SwitchEpb1;
-                EmbGroup[1].CtrlRunning = SwitchEpb2;
-                EmbGroup[2].CtrlRunning = SwitchEpb3;
-                EmbGroup[3].CtrlRunning = SwitchEpb4;
-                EmbGroup[4].CtrlRunning = SwitchEpb5;
-                EmbGroup[5].CtrlRunning = SwitchEpb6;
+                EpbGroup[0].CtrlRunning = SwitchEpb1;
+                EpbGroup[1].CtrlRunning = SwitchEpb2;
+                EpbGroup[2].CtrlRunning = SwitchEpb3;
+                EpbGroup[3].CtrlRunning = SwitchEpb4;
+                EpbGroup[4].CtrlRunning = SwitchEpb5;
+                EpbGroup[5].CtrlRunning = SwitchEpb6; 
+                EpbGroup[6].CtrlRunning = SwitchEpb7;
+                EpbGroup[7].CtrlRunning = SwitchEpb8;
+                EpbGroup[8].CtrlRunning = SwitchEpb9;
+                EpbGroup[9].CtrlRunning = SwitchEpb10;
+                EpbGroup[10].CtrlRunning = SwitchEpb11;
+                EpbGroup[11].CtrlRunning = SwitchEpb12;
 
 
-                EmbGroup[0].CtrlCycles = LabEpb1;
-                EmbGroup[1].CtrlCycles = LabEpb2;
-                EmbGroup[2].CtrlCycles = LabEpb3;
-                EmbGroup[3].CtrlCycles = LabEpb4;
-                EmbGroup[4].CtrlCycles = LabEpb5;
-                EmbGroup[5].CtrlCycles = LabEpb6;
+                EpbGroup[0].CtrlCycles = LabEpb1;
+                EpbGroup[1].CtrlCycles = LabEpb2;
+                EpbGroup[2].CtrlCycles = LabEpb3;
+                EpbGroup[3].CtrlCycles = LabEpb4;
+                EpbGroup[4].CtrlCycles = LabEpb5;
+                EpbGroup[5].CtrlCycles = LabEpb6;
+                EpbGroup[6].CtrlCycles = LabEpb7;
+                EpbGroup[7].CtrlCycles = LabEpb8;
+                EpbGroup[8].CtrlCycles = LabEpb9;
+                EpbGroup[9].CtrlCycles = LabEpb10;
+                EpbGroup[10].CtrlCycles = LabEpb11;
+                EpbGroup[11].CtrlCycles = LabEpb12;
 
                 /*
-                EmbGroup[0].CtrlAlert = AlertEmb1;
-                EmbGroup[1].CtrlAlert = AlertEmb2;
-                EmbGroup[2].CtrlAlert = AlertEmb3;
-                EmbGroup[3].CtrlAlert = AlertEmb4;
-                EmbGroup[4].CtrlAlert = AlertEmb5;
-                EmbGroup[5].CtrlAlert = AlertEmb6;   // 界面上没有这些控件，暂时注释掉
+                EpbGroup[0].CtrlAlert = AlertEmb1;
+                EpbGroup[1].CtrlAlert = AlertEmb2;
+                EpbGroup[2].CtrlAlert = AlertEmb3;
+                EpbGroup[3].CtrlAlert = AlertEmb4;
+                EpbGroup[4].CtrlAlert = AlertEmb5;
+                EpbGroup[5].CtrlAlert = AlertEmb6;   // 界面上没有这些控件，暂时注释掉
                 */
 
 
-                // EmbGroup[0].CtrlPower = SwitchPower1;
-                // EmbGroup[1].CtrlPower = SwitchPower2;
-                // EmbGroup[2].CtrlPower = SwitchPower3;
-                // EmbGroup[3].CtrlPower = SwitchPower4;
-                // EmbGroup[4].CtrlPower = SwitchPower5;
-                // EmbGroup[5].CtrlPower = SwitchPower6;
+                // EpbGroup[0].CtrlPower = SwitchPower1;
+                // EpbGroup[1].CtrlPower = SwitchPower2;
+                // EpbGroup[2].CtrlPower = SwitchPower3;
+                // EpbGroup[3].CtrlPower = SwitchPower4;
+                // EpbGroup[4].CtrlPower = SwitchPower5;
+                // EpbGroup[5].CtrlPower = SwitchPower6;
 
 
-                for (var i = 0; i < 6; i++)
+                for (var i = 0; i < 12; i++)
                 {
-                    EmbGroup[i].CtrlRunning.Enabled = false; //单个启动按钮设为不允许，启动之后才允许
+                    EpbGroup[i].CtrlRunning.Enabled = false; //单个启动按钮设为不允许，启动之后才允许
                     var index = i;
-                    EmbGroup[i].CtrlJoinTest.CheckedChanged += (sender, e) => JoinEmbChanged(sender, e, index);
+                    EpbGroup[i].CtrlJoinTest.CheckedChanged += (sender, e) => JoinEmbChanged(sender, e, index);
 
-                    // EmbGroup[i].CtrlCurrentEmb.CheckedChanged += (sender, e) => CurrentEmbChanged(sender, e, index); // 界面上没有这个控件，暂时注释掉
+                    // EpbGroup[i].CtrlCurrentEmb.CheckedChanged += (sender, e) => CurrentEmbChanged(sender, e, index); // 界面上没有这个控件，暂时注释掉
 
 
-                    EmbGroup[i].CtrlRunning.CheckedChanged += (sender, e) =>
+                    EpbGroup[i].CtrlRunning.CheckedChanged += (sender, e) =>
                     {
                         RuningStatusChanged(sender, ((UISwitch)sender).Active, index);
                     };
 
-                    EmbGroup[i].CtrlRunning.Click += (sender, e) => RunningClick(sender, e, index);
-                    EmbGroup[i].CtrlPower.Click += (sender, e) => PowerClick(sender, e, index);
-                    EmbGroup[i].CtrlPower.KeyPress += (sender, e) => CtrlPower_KeyHandler(sender, e, index);
-                    EmbGroup[i].CtrlPower.KeyDown += (sender, e) => CtrlPower_KeyHandler(sender, e, index);
-                    EmbGroup[i].CtrlPower.KeyUp += (sender, e) => CtrlPower_KeyHandler(sender, e, index);
-                    //EmbGroup[i].CtrlPower.CheckedChanged += (sender, e) => PowerClick(sender, e, index);
+                    EpbGroup[i].CtrlRunning.Click += (sender, e) => RunningClick(sender, e, index);
+                    //EpbGroup[i].CtrlPower.Click += (sender, e) => PowerClick(sender, e, index);
+                    //EpbGroup[i].CtrlPower.KeyPress += (sender, e) => CtrlPower_KeyHandler(sender, e, index);
+                    //EpbGroup[i].CtrlPower.KeyDown += (sender, e) => CtrlPower_KeyHandler(sender, e, index);
+                    //EpbGroup[i].CtrlPower.KeyUp += (sender, e) => CtrlPower_KeyHandler(sender, e, index);
+                    //EpbGroup[i].CtrlPower.CheckedChanged += (sender, e) => PowerClick(sender, e, index);
                 }
             }
             catch (Exception ex)
@@ -1017,10 +1042,10 @@ namespace MTEmbTest
 
         private void RunningClick(object sender, EventArgs e, int index)
         {
-            if (!EmbGroup[index].CtrlPower.Checked && EmbGroup[index].CtrlRunning.Checked) //运行状态
+            if (!EpbGroup[index].CtrlPower.Checked && EpbGroup[index].CtrlRunning.Checked) //运行状态
             {
                 MessageBox.Show(@"请先打开电源！");
-                EmbGroup[index].CtrlRunning.Checked = false;
+                EpbGroup[index].CtrlRunning.Checked = false;
             }
         }
 
@@ -1030,30 +1055,30 @@ namespace MTEmbTest
             if (_isCtrlPowerPressing) return;
 
             _isCtrlPowerPressing = true;
-            EmbGroup[index].CtrlPower.Enabled = false; // 禁用按钮，防止重复点击
+            EpbGroup[index].CtrlPower.Enabled = false; // 禁用按钮，防止重复点击
             EPBGroupBox.Enabled = false; // 禁用整个组框，防止其他操作
             try
             {
                 if (!IsTestConfirm)
                 {
                     MessageBox.Show(@"请先确认试验信息！");
-                    EmbGroup[index].CtrlPower.Toggle();
+                    EpbGroup[index].CtrlPower.Toggle();
 
-                    // EmbGroup[index].CtrlPower.Checked = false;
+                    // EpbGroup[index].CtrlPower.Checked = false;
                     //
-                    EmbGroup[index].CtrlPower.Refresh();
+                    EpbGroup[index].CtrlPower.Refresh();
                     return;
                 }
 
 
-                if (!EmbGroup[index].CtrlPower.Checked && EmbGroup[index].CtrlRunning.Checked) //运行状态想关电源
+                if (!EpbGroup[index].CtrlPower.Checked && EpbGroup[index].CtrlRunning.Checked) //运行状态想关电源
                 {
                     MessageBox.Show(@"请先停止运行再关闭电源！");
-                    EmbGroup[index].CtrlPower.Checked = true;
+                    EpbGroup[index].CtrlPower.Checked = true;
                     return;
                 }
 
-                if (!EmbGroup[index].CtrlPower.Checked && !EmbGroup[index].CtrlRunning.Checked) //非运行状态想关电源
+                if (!EpbGroup[index].CtrlPower.Checked && !EpbGroup[index].CtrlRunning.Checked) //非运行状态想关电源
                 {
                     // MessageBox.Show("调用执行关闭分开关的函数！");
                     // var mainForm = this.MdiParent as Main_Frm;
@@ -1094,11 +1119,11 @@ namespace MTEmbTest
                         ClsGlobal.PowerStatus[index] = 1;
 
 
-                        /*if (EmbGroup[index].IsEnabel)
+                        /*if (EpbGroup[index].IsEnabel)
                     {
-                        EmbGroup[index].CtrlAlert.State = UILightState.Off;
-                        EmbGroup[index].CtrlAlert.OffCenterColor = Color.FromArgb(140, 140, 140);
-                        EmbGroup[index].CtrlAlert.OffColor = Color.FromArgb(140, 140, 140);
+                        EpbGroup[index].CtrlAlert.State = UILightState.Off;
+                        EpbGroup[index].CtrlAlert.OffCenterColor = Color.FromArgb(140, 140, 140);
+                        EpbGroup[index].CtrlAlert.OffColor = Color.FromArgb(140, 140, 140);
                     }*/
                     }
 
@@ -1107,7 +1132,7 @@ namespace MTEmbTest
                 }
 
 
-                if (EmbGroup[index].CtrlPower.Checked)
+                if (EpbGroup[index].CtrlPower.Checked)
                 {
                     // MessageBox.Show("调用执行打开分开关的函数！");
 
@@ -1146,11 +1171,11 @@ namespace MTEmbTest
                         ClsLogProcess.AddToInfoList(MaxInfos, ref LogInformation,
                             "打开EMB" + (index + 1) + "继电器开关!", "UI 操作");
                         ClsGlobal.PowerStatus[index] = 2;
-                        /*if (EmbGroup[index].IsEnabel)
+                        /*if (EpbGroup[index].IsEnabel)
                     {
-                        EmbGroup[index].CtrlAlert.State = UILightState.On;
-                        EmbGroup[index].CtrlAlert.OffCenterColor = Color.FromArgb(140, 140, 140);
-                        EmbGroup[index].CtrlAlert.OffColor = Color.FromArgb(140, 140, 140);
+                        EpbGroup[index].CtrlAlert.State = UILightState.On;
+                        EpbGroup[index].CtrlAlert.OffCenterColor = Color.FromArgb(140, 140, 140);
+                        EpbGroup[index].CtrlAlert.OffColor = Color.FromArgb(140, 140, 140);
                     }*/
                     }
                 }
@@ -1159,7 +1184,7 @@ namespace MTEmbTest
             {
                 _isCtrlPowerPressing = false;
 
-                EmbGroup[index].CtrlPower.Enabled = true; // 重新启用按钮
+                EpbGroup[index].CtrlPower.Enabled = true; // 重新启用按钮
                 EPBGroupBox.Enabled = true; // 重新启用整个组框
             }
         }
@@ -1183,20 +1208,20 @@ namespace MTEmbTest
             var checkBox = (CheckEdit)sender;
             if (checkBox.Checked)
             {
-                // EmbGroup[index].CtrlCurrentEmb.Enabled = true; // 界面上没有这个控件，暂时注释掉
-                EmbGroup[index].CtrlPower.Enabled = true;
-                // EmbGroup[index].CtrlAlert.Enabled = true; // 界面上没有这个控件，暂时注释掉
-                EmbGroup[index].CtrlCycles.Enabled = true;
-                EmbGroup[index].IsEnabel = true;
+                // EpbGroup[index].CtrlCurrentEmb.Enabled = true; // 界面上没有这个控件，暂时注释掉
+               // EpbGroup[index].CtrlPower.Enabled = true; // 界面上没有这个控件，暂时注释
+                // EpbGroup[index].CtrlAlert.Enabled = true; // 界面上没有这个控件，暂时注释掉
+                EpbGroup[index].CtrlCycles.Enabled = true;
+                EpbGroup[index].IsEnabel = true;
             }
             else
             {
-                // EmbGroup[index].CtrlCurrentEmb.Enabled = false; // 界面上没有这个控件，暂时注释掉
-                EmbGroup[index].CtrlPower.Enabled = false;
-                // EmbGroup[index].CtrlAlert.Enabled = false; // 界面上没有这个控件，暂时注释掉
-                EmbGroup[index].CtrlCycles.Enabled = false;
-                // EmbGroup[index].CtrlCurrentEmb.Checked = false; // 界面上没有这个控件，暂时注释掉
-                EmbGroup[index].IsEnabel = false;
+                // EpbGroup[index].CtrlCurrentEmb.Enabled = false; // 界面上没有这个控件，暂时注释掉
+               // EpbGroup[index].CtrlPower.Enabled = false; // 界面上没有这个控件暂时注释
+                // EpbGroup[index].CtrlAlert.Enabled = false; // 界面上没有这个控件，暂时注释掉
+                EpbGroup[index].CtrlCycles.Enabled = false;
+                // EpbGroup[index].CtrlCurrentEmb.Checked = false; // 界面上没有这个控件，暂时注释掉
+                EpbGroup[index].IsEnabel = false;
             }
         }
 
@@ -1204,14 +1229,14 @@ namespace MTEmbTest
         {
             if (value)
                 StartEmbControlTimer(index);
-            // EmbGroup[index].CtrlAlert.OffCenterColor = Color.FromArgb(140, 140, 140);
-            // EmbGroup[index].CtrlAlert.OffColor = Color.FromArgb(140, 140, 140);
-            // EmbGroup[index].CtrlAlert.OnCenterColor = Color.Lime;
-            // EmbGroup[index].CtrlAlert.OnColor = Color.Lime;
-            // EmbGroup[index].CtrlAlert.State = UILightState.Blink;
+            // EpbGroup[index].CtrlAlert.OffCenterColor = Color.FromArgb(140, 140, 140);
+            // EpbGroup[index].CtrlAlert.OffColor = Color.FromArgb(140, 140, 140);
+            // EpbGroup[index].CtrlAlert.OnCenterColor = Color.Lime;
+            // EpbGroup[index].CtrlAlert.OnColor = Color.Lime;
+            // EpbGroup[index].CtrlAlert.State = UILightState.Blink;
             else
                 StopEmbControlTimer(index);
-            // EmbGroup[index].CtrlAlert.State = UILightState.On;
+            // EpbGroup[index].CtrlAlert.State = UILightState.On;
         }
 
         private void BtnTest_Click(object sender, EventArgs e)
@@ -1415,17 +1440,80 @@ namespace MTEmbTest
                 // 5) 启动“卡钳1”通道
                 //    StartChannel 内部会根据 Test.TestTarget 次数、PeriodMs 周期、Groups 错峰等自动循环
                 // _epb.StartChannel(2); //界面卡顿，注释
-                //await _epb.StartChannelAsync(2);
-                //await _epb.StartChannelAsync(1);
+                // await _epb.StartChannelAsync(1);
+                // await _epb.StartChannelAsync(2);
                 //await _epb.StartChannelAsync(4);
                 //await _epb.StartChannelAsync(5);
+
+
+                #region 【同步起跑（电源保护）】：学习阶段同组错峰 + 正式阶段锚点对齐且同组错峰（首周期）
+
+
+                // 1) 收集勾选通道
+                var selected = new List<int>();
+                for (int chIndex = 0; chIndex < 12; chIndex++)
+                {
+                    var ch = chIndex + 1;
+                    if (EpbGroup[chIndex].CtrlJoinTest.Checked)
+                        selected.Add(ch);
+                }
+
+                if (selected.Count == 0)
+                {
+                    // Create and initialize an object with message box settings.
+                    XtraMessageBoxArgs args = new XtraMessageBoxArgs()
+                    {
+                        Caption = "提示",
+                        Text = "请至少勾选一个通道！",
+                        Buttons = new DialogResult[] { DialogResult.Yes },
+                        Icon = System.Drawing.SystemIcons.Warning,        // 警告图标
+                        DefaultButtonIndex = 0                  // 默认按钮（0=第一个）
+
+                    };
+                    // Assign a message box icon.
+                    // Display the message box and close the application if the user clicks "Yes".
+                    if (await XtraMessageBox.ShowAsync(args) == DialogResult.Yes)
+                       return;
+                }
+
+                try
+                {
+                    using var cts = new CancellationTokenSource();
+
+                    // 可绑定到“停止”按钮以触发取消：
+                    // uiButtonStop.Click += (_, __) => cts.Cancel();
+
+                    // 若你希望“任一通道学习失败即整体中止”，把第三个参数传 true
+                    await _epb.StartChannelsSynchronizedPowerAwareAsync(selected, cts.Token, abortAllIfAnyLearnFailed: false);
+
+                    
+                    RtbInfo?.AppendText($"已按电源保护策略：学习错峰 + 组间同步起跑（同组首周期错峰）");
+                }
+                catch (OperationCanceledException)
+                {
+                    RtbInfo?.AppendText($"操作已取消");
+                }
+                catch (Exception ex)
+                {
+                    RtbInfo?.AppendText($"启动失败：{ex.Message}");
+                }
+                finally
+                {
+                    //启用按钮
+                }
+
+
+
+                #endregion
+
+
 
                 // UI 提示
                 RtbInfo?.AppendText($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  > 卡钳1测试已启动\n");
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"启动卡钳1测试失败：{ex.Message}", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show($@"启动卡钳1测试失败：{ex.Message}", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
         }
 
@@ -1439,7 +1527,7 @@ namespace MTEmbTest
             try
             {
                 _epb.StopChannel(1);
-                // _epb.StopChannel(4);
+                 _epb.StopChannel(2);
                 // _epb.StopChannel(4);
                 // _epb.StopChannel(5);
             }
@@ -1583,9 +1671,6 @@ namespace MTEmbTest
         #endregion
 
 
-        private void SwitchEpb2_CheckedChanged(object sender, EventArgs e)
-        {
-        }
 
         // 把全选中项做置零或清零
         private void ZeroOrClearSelected(bool isZero)
@@ -3464,6 +3549,8 @@ namespace MTEmbTest
                 logger?.Error($"批量更新瞬时显示值失败: {ex.Message}");
             }
         }
+
+        
 
         /// <summary>
         ///     根据通道类型格式化显示值
