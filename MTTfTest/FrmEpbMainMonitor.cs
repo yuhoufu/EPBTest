@@ -1487,15 +1487,15 @@ namespace MTEmbTest
                     await _epb.StartChannelsSynchronizedPowerAwareAsync(selected, cts.Token, abortAllIfAnyLearnFailed: false);
 
                     
-                    RtbInfo?.AppendText($"已按电源保护策略：学习错峰 + 组间同步起跑（同组首周期错峰）");
+                    RtbInfo?.AppendText($"已按电源保护策略：学习错峰 + 组间同步起跑（同组首周期错峰）\n");
                 }
                 catch (OperationCanceledException)
                 {
-                    RtbInfo?.AppendText($"操作已取消");
+                    RtbInfo?.AppendText($"操作已取消\n");
                 }
                 catch (Exception ex)
                 {
-                    RtbInfo?.AppendText($"启动失败：{ex.Message}");
+                    RtbInfo?.AppendText($"启动失败：{ex.Message}\n");
                 }
                 finally
                 {
@@ -1526,10 +1526,13 @@ namespace MTEmbTest
         {
             try
             {
-                _epb.StopChannel(1);
-                 _epb.StopChannel(2);
+                //_epb.StopChannel(1);
+                 //_epb.StopChannel(2);
                 // _epb.StopChannel(4);
                 // _epb.StopChannel(5);
+
+                _epb.StopAll(); // 停止所有通道
+                RtbInfo?.AppendText($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  > 停止试验\n");
             }
             catch (Exception ex)
             {
