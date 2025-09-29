@@ -1,4 +1,5 @@
 ﻿using System;
+using System.CodeDom;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -11,6 +12,7 @@ using NIDaqTask = NationalInstruments.DAQmx.Task;
 using Task = System.Threading.Tasks.Task;
 using ILogger = Config.IAppLogger;
 using NLogger = Config.NullLogger;
+using static DataOperation.ClsDataFilter;
 
 namespace IO.NI
 {
@@ -62,6 +64,24 @@ namespace IO.NI
         // 动态置零偏移（参数名 -> offset，工程值单位）
         private readonly ConcurrentDictionary<string, double> _zeroOffsets = new(StringComparer.OrdinalIgnoreCase);
 
+
+        // 以设备处理矩阵 channels × samples 为例
+        private ClsDataFilter.MedianStreamCausal _dev1MedianCausal;         // 因果，无延迟（控制/实时）
+        private ClsDataFilter.MedianStreamCausal _dev2MedianCausal;         // 因果，无延迟（控制/实时）
+        private ClsDataFilter.MedianStreamSymmetric _medianSymmetric;   // 对称，有延迟（显示/报表）
+
+        // 你的配置：单侧点数（等同 UI 的 “Max. smoothing width on one side”）
+        private readonly int _medianHalfWidth = 31;
+        // 你的通道数（与 eng 矩阵第 0 维一致）
+        private readonly int _channels;
+
+        /// <summary>fast 分支的低时延滤波策略。</summary>
+        private readonly FastFilter _fastFilter = new FastFilter(
+            medianK: 9,      // 3 或 5，推荐 5
+            ewmaAlpha: 0.4,  // 0.3~0.6 之间调
+            maxSlewAperSec: 0 // 每秒最大电流变化（A/s），依硬件调
+        );
+
         // 顶部字段处
         private sealed class DevClock // 每设备时钟状态
         {
@@ -109,6 +129,12 @@ namespace IO.NI
 
             BuildColumnIndex(_enabled, "Dev1", _dev1Channels, _colIndexDev1);
             BuildColumnIndex(_enabled, "Dev2", _dev2Channels, _colIndexDev2);
+
+            _dev1MedianCausal = new ClsDataFilter.MedianStreamCausal(_dev1Channels.Length, _medianHalfWidth,
+                MedianSelectPointsMode.OnlyPrevious); // 控制用因果滤波
+                
+            _dev2MedianCausal = new ClsDataFilter.MedianStreamCausal(_dev2Channels.Length, _medianHalfWidth,
+                MedianSelectPointsMode.OnlyPrevious); // 控制用因果滤波
 
             _worker = Task.Run(ProcessLoop, _cts.Token);
         }
@@ -241,7 +267,7 @@ namespace IO.NI
         public double ReadCurrent(int epbChannel)
         {
             var key = $"EPB{epbChannel}_current";
-            if (_lastFastValue.TryGetValue(key, out var vFast)) return vFast;
+            //if (_lastFastValue.TryGetValue(key, out var vFast)) return vFast;
             if (_lastFilteredValue.TryGetValue(key, out var vFilt)) return vFilt;
             return 0.0;
         }
@@ -452,6 +478,7 @@ namespace IO.NI
                 OnRawBatch?.Invoke(device, raw, current, last);
 
 
+                
                 #region 仅针对本设备的“电流类”通道，取最后一个样本做快速工程值换算并上报
 
                 try
@@ -471,11 +498,18 @@ namespace IO.NI
 
                             // 工程值换算（电压→工程值）
                             var v = raw[c, lastCol];
-                            var eng = (v - rec.零位漂移) * rec.变换斜率 + rec.变换截距;
+                            // var eng = (v - rec.零位漂移) * rec.变换斜率 + rec.变换截距;
+                            //
+                            // // 应用动态置零（工程值域）
+                            // if (_zeroOffsets.TryGetValue(rec.参数名, out var z))
+                            //     eng -= z;
 
-                            // 应用动态置零（工程值域）
-                            if (_zeroOffsets.TryGetValue(rec.参数名, out var z))
-                                eng -= z;
+                            // —— 批内聚合：尾部中值/截尾均值/最后样本 —— //
+                            var eng = ComputeFastRepresentative(raw, c, lastCol, rec, current);
+
+
+                            // —— 新增：低时延稳态快照 —— //
+                            eng = _fastFilter.Update(rec.参数名, eng, current);
 
                             // ① 对所有参数名都更新 fast 快照（包括 Pressure_1 / Pressure_2 / Force）
                             _lastFastValue[rec.参数名] = eng;
@@ -492,6 +526,7 @@ namespace IO.NI
                 }
 
                 #endregion
+                
 
 
                 // 下一轮
@@ -515,6 +550,102 @@ namespace IO.NI
             }
         }
 
+        #region  fast 快照的批内聚合选项。
+
+        /// <summary>
+        /// fast 快照的批内聚合选项。
+        /// </summary>
+        private sealed class FastSnapshotOptions
+        {
+            /// <summary>聚合模式。</summary>
+            public enum ModeKind { LastSample, TailMedian, TailTrimmedMean }
+
+            /// <summary>使用的聚合模式（默认 TailMedian）。</summary>
+            public ModeKind Mode { get; set; } = ModeKind.TailMedian;
+
+            /// <summary>
+            /// 尾部参与聚合的样本数 K（建议奇数 3/5/7/9）。
+            /// 仅当 Mode=TailMedian 或 TailTrimmedMean 时生效。
+            /// </summary>
+            public int TailCount { get; set; } = 5;
+
+            /// <summary>
+            /// 截尾比例（0..0.45），仅对 TailTrimmedMean 生效。
+            /// 例如 0.2 表示两端各截去 20% 再求均值。
+            /// </summary>
+            public double TrimRatio { get; set; } = 0.2;
+        }
+
+        /// <summary>fast 快照批内聚合选项（可按需改默认值）。</summary>
+        private readonly FastSnapshotOptions _fastSnap = new FastSnapshotOptions
+        {
+            Mode = FastSnapshotOptions.ModeKind.TailMedian,
+            TailCount = 5,
+            TrimRatio = 0.2
+        };
+
+        /// <summary>
+        /// 计算某通道在“当前批次”上的鲁棒代表值：
+        /// - LastSample：取最后一个样本；
+        /// - TailMedian：取批尾 K 点中值；
+        /// - TailTrimmedMean：批尾 K 点按比例截尾后的均值；
+        /// 然后再交给外层的 _fastFilter.Update 做因果平滑与限速。
+        /// </summary>
+        /// <param name="raw">当前批次原始电压数组 [ch, n]。</param>
+        /// <param name="ch">通道索引。</param>
+        /// <param name="lastCol">最后一列索引（n-1）。</param>
+        /// <param name="rec">该通道的配置记录（用于电压→工程值）。</param>
+        /// <param name="now">当前主机时间戳，用于 fastFilter 的 dt。</param>
+        /// <returns>批内聚合后的工程值代表。</returns>
+        private double ComputeFastRepresentative(double[,] raw, int ch, int lastCol, dynamic rec, DateTime now)
+        {
+            // 工具：把“电压样本”换算为“工程值样本”（含动态置零）
+            double ToEng(double v)
+            {
+                var eng = (v - rec.零位漂移) * rec.变换斜率 + rec.变换截距;
+                if (_zeroOffsets.TryGetValue(rec.参数名, out double z)) eng -= z;
+                return eng;
+            }
+
+            if (_fastSnap.Mode == FastSnapshotOptions.ModeKind.LastSample || lastCol < 0)
+            {
+                // 仅最后一个样本（几乎零延迟）
+                return ToEng(raw[ch, lastCol]);
+            }
+
+            // 参与聚合的尾部窗口 [startCol..lastCol]
+            int k = Math.Max(1, _fastSnap.TailCount);
+            int startCol = Math.Max(0, lastCol - k + 1);
+            int count = lastCol - startCol + 1;
+
+            // 收集尾部 K 个样本（工程值域）
+            var buf = new double[count];
+            for (int j = 0, col = startCol; col <= lastCol; col++, j++)
+                buf[j] = ToEng(raw[ch, col]);
+
+            if (_fastSnap.Mode == FastSnapshotOptions.ModeKind.TailMedian)
+            {
+                Array.Sort(buf);                   // K ≤ 9 时排序成本极小
+                return buf[count / 2];             // 中值（奇数严格中位；偶数取上中位）
+            }
+            else // TailTrimmedMean
+            {
+                Array.Sort(buf);
+                int trim = (int)Math.Round(count * Math.Min(0.45, Math.Max(0.0, _fastSnap.TrimRatio)));
+                int s = trim;
+                int e = count - trim;              // [s, e) 保留
+                if (e <= s) { s = 0; e = count; }  // 太短就退化为普通均值
+
+                double sum = 0;
+                for (int i = s; i < e; i++) sum += buf[i];
+                return sum / (e - s);
+            }
+        }
+
+        #endregion
+
+
+
         // —— 后台线程：转工程值 + 滤波 + 更新快照 + 可选回调 —— //
         private async Task ProcessLoop()
         {
@@ -532,7 +663,14 @@ namespace IO.NI
                     var eng = ConvertToEngineering(item.Raw, item.Device);
                     // 滤波（每通道独立中值/降点，与你项目一致）
                     //var engFiltered = MedianFilterEachChannel(eng, _medianLens); // 暂时去掉滤波
-                    var engFiltered = eng;
+                    //var engFiltered = eng;
+
+
+                    // 因果中值滤波（无延迟，控制用）
+                    var engSmoothed =item.Device.Equals("Dev1") ?  _dev1MedianCausal.Process(eng) : _dev2MedianCausal.Process(eng);
+
+                    var engFiltered = engSmoothed;
+
 
                     // 刷新“最近值”供控制逻辑查询（**改动：写入 _lastFilteredValue**）
                     UpdateLastSnapshot(engFiltered, item.Device);
@@ -601,6 +739,8 @@ namespace IO.NI
 
                     // 5) 通知 UI（全通道、已滤波、已取绝对值的工程值）
                     OnEngBatch?.Invoke(item.Device, uiEng, item.Current, item.Last);
+
+                    //OnFastEpbCurrent?.Invoke(epbCh, eng, item.Current);
                 }
             }
             catch (OperationCanceledException)
@@ -839,4 +979,7 @@ namespace IO.NI
             public DateTime Last { get; } = Last;
         }
     }
+
+
+
 }
