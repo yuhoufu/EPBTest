@@ -1,4 +1,7 @@
-﻿using System;
+﻿// ReSharper disable InconsistentNaming
+// ReSharper disable RedundantNameQualifier
+
+using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Data.SQLite;
@@ -8,6 +11,8 @@ using System.Linq;
 using System.Text;
 
 namespace DataOperation;
+
+#region 策略/结构/枚举
 
 /// <summary>
 ///     落盘策略配置（可从 TestConfig.xml 读取，也可直接 new 指定）
@@ -39,7 +44,7 @@ public sealed class DataRetentionPolicy
 /// <summary>
 ///     单条采样记录（32B，已去除全部“预留字段”）
 ///     字节布局（小端）：
-///     0  : Int64 TimestampBinary
+///     0  : Int64 TimestampBinary（按本地时间写入的 DateTime.ToBinary）
 ///     8  : Int32 CycleNumber
 ///     12 : Int32 SampleIndex
 ///     16 : Double EpbCurrent
@@ -48,9 +53,9 @@ public sealed class DataRetentionPolicy
 public struct SampleRecord
 {
     public long TimestampBinary; // 8
-    public int CycleNumber; // 4
-    public int SampleIndex; // 4
-    public double EpbCurrent; // 8
+    public int CycleNumber;      // 4
+    public int SampleIndex;      // 4
+    public double EpbCurrent;    // 8
     public double GroupPressure; // 8
 
     /// <summary>固定记录长度（字节）。</summary>
@@ -72,10 +77,11 @@ public enum StopTrigger
     AfterKMoreCycles = 2
 }
 
+#endregion
+
 /// <summary>
-///     EpbDiskWriter：12 路 EPB 的内存映射数据写入 + SQLite 圈级索引 + 最新 N 圈保留/落盘。
-///     仅保留两个实测字段：电流（EpbCurrent）与组压力（GroupPressure）；循环号与真实动作绑定。
-///     支持 Free-Run 模式（CycleNumber=0），用于未开循环时的自由记录。
+///     EpbDiskWriter：12 路 EPB 的内存映射数据写入 + SQLite 圈级索引 + 最新 N 圈保留/落盘。<br/>
+///     —— 已改为“分块视图（窗口化映射）”，避免整文件映射导致“内存资源不足”。 ——
 /// </summary>
 public sealed class EpbDiskWriter : IDisposable
 {
@@ -87,9 +93,8 @@ public sealed class EpbDiskWriter : IDisposable
         var s = GetState(epbId);
         lock (s.Gate)
         {
-            // Immediate 已经执行过
+            // Immediate 已经执行过；如果是 EndOfCurrentCycle 但未走到 Complete 场景，这里兜底
             if (s.StopTrigger == StopTrigger.EndOfCurrentCycle)
-                // 若不是在 Complete 内触发的情况，这里兜底
                 PersistLatestCyclesNow(epbId, s.StopKeepLatestN, s.StopAction);
         }
     }
@@ -100,24 +105,21 @@ public sealed class EpbDiskWriter : IDisposable
 
     private const int EPB_COUNT = 12;
     private const string TABLE_CYCLES = "epb_cycles";
-    private static readonly int[] CH_TO_GROUP = Enumerable.Range(1, EPB_COUNT).Select(ch => ch <= 6 ? 1 : 2).ToArray();
 
     private sealed class EpbState
     {
         public readonly object Gate = new();
-        public long CapacityRecords; // 文件可容纳记录数
-        public int? CurrentCycle; // 正式圈号（null=未开圈）
-        public int CurrentSampleIndex; // 当前圈内样本序号（0..）
-        public bool FreeRunOn; // 是否开启 Free-Run
-        public int FreeRunSampleIndex; // Free-Run 下的“伪圈”样本序号
+        public long CapacityRecords;     // 文件可容纳记录数
+        public int? CurrentCycle;        // 正式圈号（null=未开圈）
+        public int CurrentSampleIndex;  // 当前圈内样本序号（0..）
+        public bool FreeRunOn;           // 是否开启 Free-Run
+        public int FreeRunSampleIndex;  // Free-Run 下的“伪圈”样本序号
         public string StopAction = "archive";
 
-        public int StopAfterK; // 仅当 StopTrigger=AfterKMoreCycles
-
-        // 停止选项
-        public int StopKeepLatestN = 10;
+        public int StopAfterK;               // 仅当 StopTrigger=AfterKMoreCycles
+        public int StopKeepLatestN = 10;     // 停止时保留的最新圈数
         public StopTrigger StopTrigger = StopTrigger.EndOfCurrentCycle;
-        public long TotalWritten; // 已写入总条数（单调递增）
+        public long TotalWritten;             // 已写入总条数（单调递增）
     }
 
     #endregion
@@ -132,6 +134,14 @@ public sealed class EpbDiskWriter : IDisposable
     private readonly MemoryMappedViewAccessor[] _views = new MemoryMappedViewAccessor[EPB_COUNT + 1];
     private readonly EpbState[] _states = new EpbState[EPB_COUNT + 1];
 
+    // —— 窗口化映射新增：记录每个通道当前视图的“文件基址/长度”（单位：字节） —— //
+    private readonly long[] _viewBaseOffsets = new long[EPB_COUNT + 1];
+    private readonly long[] _viewLengths = new long[EPB_COUNT + 1];
+
+    // 视图窗口大小与对齐（可按需调整）
+    private const long VIEW_BYTES = 64L * 1024 * 1024; // 64MB
+    private const long VIEW_ALIGN = 64L * 1024;        // 64KB（Windows allocation granularity）
+
     private readonly SQLiteConnection _conn;
 
     private bool _disposed;
@@ -142,6 +152,7 @@ public sealed class EpbDiskWriter : IDisposable
 
     /// <summary>
     ///     构造 EpbDiskWriter 并初始化 12 个通道的 .dat 内存映射与 SQLite 索引库。
+    ///     —— 此版本采用“窗口化映射”，不再整文件映射到进程地址空间。
     /// </summary>
     /// <param name="policy">落盘策略配置。</param>
     public EpbDiskWriter(DataRetentionPolicy policy)
@@ -169,7 +180,13 @@ public sealed class EpbDiskWriter : IDisposable
             EnsureFixedSizeFile(path, _fileBytes);
 
             _mmfs[ch] = MemoryMappedFile.CreateFromFile(path, FileMode.Open, $"EPB{ch}_MMF", _fileBytes);
-            _views[ch] = _mmfs[ch].CreateViewAccessor(0, _fileBytes, MemoryMappedFileAccess.ReadWrite);
+
+            // —— 仅映射“首块窗口”，避免整文件映射占用巨大虚拟地址空间 —— //
+            long firstBase = 0;
+            long firstLen = Math.Min(_fileBytes, AlignUp(VIEW_BYTES, VIEW_ALIGN));
+            _views[ch] = _mmfs[ch].CreateViewAccessor(firstBase, firstLen, MemoryMappedFileAccess.ReadWrite);
+            _viewBaseOffsets[ch] = firstBase;
+            _viewLengths[ch] = firstLen;
 
             _states[ch].CapacityRecords = _fileBytes / SampleRecord.Size;
         }
@@ -185,6 +202,8 @@ public sealed class EpbDiskWriter : IDisposable
         {
             _views[ch]?.Dispose();
             _mmfs[ch]?.Dispose();
+            _views[ch] = null;
+            _mmfs[ch] = null;
         }
 
         _conn?.Dispose();
@@ -200,30 +219,21 @@ public sealed class EpbDiskWriter : IDisposable
     public void StartFreeRun(int epbId)
     {
         var s = GetState(epbId);
-        lock (s.Gate)
-        {
-            s.FreeRunOn = true;
-        }
+        lock (s.Gate) s.FreeRunOn = true;
     }
 
     /// <summary>关闭指定通道的 Free-Run 模式。</summary>
     public void StopFreeRun(int epbId)
     {
         var s = GetState(epbId);
-        lock (s.Gate)
-        {
-            s.FreeRunOn = false;
-        }
+        lock (s.Gate) s.FreeRunOn = false;
     }
 
     /// <summary>查询指定通道是否处于 Free-Run。</summary>
     public bool IsFreeRunOn(int epbId)
     {
         var s = GetState(epbId);
-        lock (s.Gate)
-        {
-            return s.FreeRunOn;
-        }
+        lock (s.Gate) return s.FreeRunOn;
     }
 
     /// <summary>
@@ -252,8 +262,10 @@ public sealed class EpbDiskWriter : IDisposable
         {
             if (s.CapacityRecords <= 0)
                 throw new InvalidOperationException("CapacityRecords must be positive.");
+
             s.CurrentCycle = cycleNumber;
             s.CurrentSampleIndex = 0;
+
             var startIndex = s.TotalWritten % s.CapacityRecords; // 非负
             UpsertCycleStart(epbId, cycleNumber, startUtc.ToLocalTime(), startIndex);
         }
@@ -291,7 +303,6 @@ public sealed class EpbDiskWriter : IDisposable
     public void WriteSample(int epbId, DateTime tsUtc, double epbCurrent, double groupPressure)
     {
         var s = GetState(epbId);
-        var v = _views[epbId];
 
         int cycle;
         int sampleIndex;
@@ -316,8 +327,6 @@ public sealed class EpbDiskWriter : IDisposable
 
             var rec = new SampleRecord
             {
-                //TimestampBinary = tsUtc.ToBinary(),
-
                 // 统一使用“系统本地时间”写入
                 TimestampBinary = tsUtc.ToLocalTime().ToBinary(),
                 CycleNumber = cycle,
@@ -327,8 +336,10 @@ public sealed class EpbDiskWriter : IDisposable
             };
 
             var idx = s.TotalWritten % s.CapacityRecords;
-            var offset = idx * SampleRecord.Size;
-            WriteRecord(v, offset, in rec);
+            var fileOff = idx * SampleRecord.Size;
+
+            // —— 窗口化写入 —— //
+            WriteRecord(epbId, fileOff, in rec);
             s.TotalWritten++;
 
             // 正式圈期间，顺带更新进度（减少 DB 交互可按批处理优化）
@@ -342,7 +353,6 @@ public sealed class EpbDiskWriter : IDisposable
     public void WriteBatch(int epbId, DateTime[] tsUtc, double[] epbCurrents, double[] groupPressures)
     {
         if (tsUtc == null || epbCurrents == null || groupPressures == null)
-            // ReSharper disable once NotResolvedInText
             throw new ArgumentNullException("tsUtc/epbCurrents/groupPressures");
         if (tsUtc.Length != epbCurrents.Length || tsUtc.Length != groupPressures.Length)
             throw new ArgumentException("tsUtc/epbCurrents/groupPressures 长度必须一致");
@@ -372,15 +382,14 @@ public sealed class EpbDiskWriter : IDisposable
             {
                 // 以圈开始时间命名子目录，便于回放/检索
                 var tsFolder = cy.StartTimeUtc.ToLocalTime().ToString("yyyyMMdd_HHmmss");
-
                 var subDir = Path.Combine(dir, tsFolder);
                 Directory.CreateDirectory(subDir);
 
-                // 升序导出 CSV（原 ExportCycleToCsv 已按起点到终点顺序写出）
+                // 升序导出 CSV
                 var csv = Path.Combine(subDir, $"EPB{epbId}_Cycle_{cy.CycleNumber:D6}.csv");
                 ExportCycleToCsv(epbId, cy, csv);
 
-                // 升序导出二进制快照（后续可 ImportBinToCsv 或直接回放）
+                // 升序导出二进制快照
                 var bin = Path.Combine(subDir, $"EPB{epbId}_Cycle_{cy.CycleNumber:D6}.bin");
                 ExportCycleToBin(epbId, cy, bin);
             }
@@ -389,7 +398,6 @@ public sealed class EpbDiskWriter : IDisposable
         // 删除更早圈的“圈级索引”（业务索引），底层环形数据将被自然覆盖
         DeleteCycles(purgeList);
     }
-
 
     /// <summary>执行全局“只保留最新 N 圈”策略（全部 12 通道）。</summary>
     public void ApplyRetentionPolicy()
@@ -400,50 +408,33 @@ public sealed class EpbDiskWriter : IDisposable
     }
 
     /// <summary>把 x 对 m 取模并规范化到 [0, m)；m 必须 &gt; 0。</summary>
-    private static long ModNN(long x, long m)
-    {
-        return (x % m + m) % m;
-    }
+    private static long ModNN(long x, long m) => (x % m + m) % m;
 
-    /// <summary>
-    /// 导出格式选项（全部可选；不填用默认）：
-    /// TimeFormat 默认 "yyyy-MM-dd HH:mm:ss.fff"
-    /// CurrentFormat 默认 "F3"
-    /// PressureFormat 默认 "F1"
-    /// </summary>
+    /// <summary>导出格式选项。</summary>
     public sealed class ExportFormatOptions
     {
+        /// <summary>时间格式（默认 yyyy-MM-dd HH:mm:ss.fff）。</summary>
         public string TimeFormat { get; set; } = "yyyy-MM-dd HH:mm:ss.fff";
+        /// <summary>电流格式（默认 F3）。</summary>
         public string CurrentFormat { get; set; } = "F3";
+        /// <summary>压力格式（默认 F1）。</summary>
         public string PressureFormat { get; set; } = "F1";
     }
 
-    /// <summary>把 SampleRecord.TimestampBinary 转为本地时间的字符串（按给定格式）。</summary>
     private static string FormatLocalTime(long tsBinary, string fmt)
-    {
-        // 存盘时我们会写 LocalTime 的 Binary，这里仍按 Local 解析并格式化
-        return DateTime.FromBinary(tsBinary).ToLocalTime().ToString(fmt ?? "yyyy-MM-dd HH:mm:ss.fff");
-    }
-
-
+        => DateTime.FromBinary(tsBinary).ToLocalTime().ToString(fmt ?? "yyyy-MM-dd HH:mm:ss.fff");
 
     /// <summary>
-    ///     导出指定“正式圈”的 CSV（UTC 时间戳, Cycle, SampleIndex, EpbCurrent, GroupPressure）。
+    ///     导出指定“正式圈”的 CSV（升序）。
     /// </summary>
     public void ExportCycleToCsv(int epbId, CycleInfo cycle, string csvPath)
-    {
-
-        ExportFormatOptions fmt = new ExportFormatOptions(); // 使用默认格式
-        ExportCycleToCsv(epbId, cycle, csvPath, fmt);
-    }
-
+        => ExportCycleToCsv(epbId, cycle, csvPath, new ExportFormatOptions());
 
     public void ExportCycleToCsv(int epbId, CycleInfo cycle, string csvPath, ExportFormatOptions fmt = null)
     {
         fmt ??= new ExportFormatOptions();
 
         var s = GetState(epbId);
-        var v = _views[epbId];
         var capacity = s.CapacityRecords;
         if (capacity <= 0)
         {
@@ -460,26 +451,20 @@ public sealed class EpbDiskWriter : IDisposable
         for (var i = 0; i < count; i++)
         {
             var idx = (start + i) % capacity;
-            var rec = ReadRecord(v, idx * SampleRecord.Size);
+            var rec = ReadRecord(epbId, idx * SampleRecord.Size);
             if (rec.CycleNumber <= 0 || rec.TimestampBinary == 0) continue;
 
             var tsText = FormatLocalTime(rec.TimestampBinary, fmt.TimeFormat);
-            var curText = rec.EpbCurrent.ToString(fmt.CurrentFormat);
-            var prText = rec.GroupPressure.ToString(fmt.PressureFormat);
-            sw.WriteLine($"{tsText},{rec.CycleNumber},{rec.SampleIndex},{curText},{prText}");
+            sw.WriteLine($"{tsText},{rec.CycleNumber},{rec.SampleIndex},{rec.EpbCurrent.ToString(fmt.CurrentFormat)},{rec.GroupPressure.ToString(fmt.PressureFormat)}");
         }
     }
-    
-
 
     /// <summary>
     ///     将指定“正式圈”的数据导出为二进制快照（每条 SampleRecord 32B 原样序列化，升序写入）。
-    ///     文件结构：连续的 SampleRecord 二进制块（小端）。
     /// </summary>
     public void ExportCycleToBin(int epbId, CycleInfo cycle, string binPath)
     {
         var s = GetState(epbId);
-        var v = _views[epbId];
         var capacity = s.CapacityRecords;
         if (capacity <= 0) return;
 
@@ -492,8 +477,9 @@ public sealed class EpbDiskWriter : IDisposable
         for (var i = 0; i < count; i++)
         {
             var idx = (start + i) % capacity;
-            var rec = ReadRecord(v, idx * SampleRecord.Size);
+            var rec = ReadRecord(epbId, idx * SampleRecord.Size);
             if (rec.CycleNumber <= 0 || rec.TimestampBinary == 0) continue;
+
             bw.Write(rec.TimestampBinary);
             bw.Write(rec.CycleNumber);
             bw.Write(rec.SampleIndex);
@@ -502,13 +488,10 @@ public sealed class EpbDiskWriter : IDisposable
         }
     }
 
-
-    /// <summary>
-    /// 从二进制快照（ExportCycleToBin 生成）导出 CSV（升序输出）。
-    /// </summary>
+    /// <summary>从二进制快照（ExportCycleToBin 生成）导出 CSV（升序输出）。</summary>
     public void ImportBinToCsv(string binPath, string csvPath, ExportFormatOptions fmt = null)
     {
-        fmt ??= new ExportFormatOptions(); // 使用默认格式
+        fmt ??= new ExportFormatOptions();
 
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(csvPath)) ?? ".");
         using var fs = new FileStream(binPath, FileMode.Open, FileAccess.Read, FileShare.Read);
@@ -517,8 +500,7 @@ public sealed class EpbDiskWriter : IDisposable
 
         sw.WriteLine("Timestamp,Cycle,SampleIndex,EpbCurrent,GroupPressure");
 
-        // 文件就是按升序写入的 SampleRecord 流，直接顺序读出
-        while (fs.Position < fs.Length)
+        while (fs.Position + SampleRecord.Size <= fs.Length)
         {
             var tsBin = br.ReadInt64();
             var cyc = br.ReadInt32();
@@ -531,19 +513,16 @@ public sealed class EpbDiskWriter : IDisposable
         }
     }
 
-
     /// <summary>
     ///     导出 Free-Run（Cycle=0）最近窗口（按样本数向后回溯），并以升序输出到 CSV。
-    ///     传入 sampleCount 大于可用数据时，按实际可用条数导出，不抛异常。
     /// </summary>
     /// <returns>实际导出的 Free-Run 条数</returns>
     public int ExportFreeRunBySamples(int epbId, int sampleCount, string csvPath, ExportFormatOptions fmt = null)
     {
-        fmt ??= new ExportFormatOptions(); // 使用默认格式
+        fmt ??= new ExportFormatOptions();
 
         sampleCount = Math.Max(1, sampleCount);
         var s = GetState(epbId);
-        var v = _views[epbId];
 
         var capacity = s.CapacityRecords;
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(csvPath)) ?? ".");
@@ -551,7 +530,7 @@ public sealed class EpbDiskWriter : IDisposable
         if (capacity <= 0 || s.TotalWritten == 0)
         {
             using var sw0 = new StreamWriter(csvPath, false, Encoding.UTF8);
-            sw0.WriteLine("TimestampUtc,Cycle,SampleIndex,EpbCurrent,GroupPressure");
+            sw0.WriteLine("Timestamp,Cycle,SampleIndex,EpbCurrent,GroupPressure");
             return 0;
         }
 
@@ -564,7 +543,7 @@ public sealed class EpbDiskWriter : IDisposable
             var raw = written - back;
             var idx = raw % capacity;
             if (idx < 0) idx += capacity; // 标准化
-            var rec = ReadRecord(v, idx * SampleRecord.Size);
+            var rec = ReadRecord(epbId, idx * SampleRecord.Size);
             if (rec.CycleNumber == 0 && rec.TimestampBinary != 0) list.Add(rec);
         }
 
@@ -575,27 +554,17 @@ public sealed class EpbDiskWriter : IDisposable
         foreach (var rec in list)
         {
             var tsText = FormatLocalTime(rec.TimestampBinary, fmt.TimeFormat);
-            var curText = rec.EpbCurrent.ToString(fmt.CurrentFormat);
-            var prText = rec.GroupPressure.ToString(fmt.PressureFormat);
-            sw.WriteLine($"{tsText},{rec.CycleNumber},{rec.SampleIndex},{curText},{prText}");
-
+            sw.WriteLine($"{tsText},{rec.CycleNumber},{rec.SampleIndex},{rec.EpbCurrent.ToString(fmt.CurrentFormat)},{rec.GroupPressure.ToString(fmt.PressureFormat)}");
         }
 
         return list.Count;
     }
 
-
-
-
-
     /// <summary>获取通道当前圈内已写样本数（用于 CompleteCycle 的 finalSampleCount）。</summary>
     public int GetCurrentCycleSampleCount(int epbId)
     {
         var s = GetState(epbId);
-        lock (s.Gate)
-        {
-            return s.CurrentSampleIndex;
-        }
+        lock (s.Gate) return s.CurrentSampleIndex;
     }
 
     /// <summary>设置“立即停止并保留最新 N 圈”（上层在 StopChannel 前可调用）。</summary>
@@ -614,13 +583,82 @@ public sealed class EpbDiskWriter : IDisposable
 
     #endregion
 
-    #region 内部：文件/写读/索引
+    #region 内部：窗口化映射 + 写读 + 文件/索引
 
-    // 放到 EpbDiskWriter 内，使用 _rootDir
-    private string GetDatPath(int epbId)
+    /// <summary>向下对齐到 align 的整数倍。</summary>
+    private static long AlignDown(long x, long align) => (x / align) * align;
+
+    /// <summary>向上对齐到 align 的整数倍。</summary>
+    private static long AlignUp(long x, long align) => ((x + align - 1) / align) * align;
+
+    /// <summary>
+    /// 确保指定通道的视图覆盖目标文件偏移（至少覆盖 <paramref name="minSpanBytes"/> 字节）。<br/>
+    /// 若不在范围，释放旧视图并以目标点为中心重建窗口。
+    /// </summary>
+    private void EnsureViewCovers(int ch, long targetOffset, long minSpanBytes)
     {
-        return Path.Combine(_rootDir, $"EPB{epbId}_sliding.dat");
+        var baseOff = _viewBaseOffsets[ch];
+        var len = _viewLengths[ch];
+        var endOff = baseOff + len;
+
+        var needSpan = Math.Max(1, minSpanBytes);
+        if (targetOffset >= baseOff && (targetOffset + needSpan - 1) < endOff)
+            return;
+
+        long desiredBase = Math.Max(0, targetOffset - VIEW_BYTES / 2);
+        long newBase = AlignDown(desiredBase, VIEW_ALIGN);
+        long remain = Math.Max(0, _fileBytes - newBase);
+        long desiredLen = Math.Min(VIEW_BYTES, remain);
+        long newLen = AlignUp(Math.Max(1, desiredLen), VIEW_ALIGN);
+
+        if (newBase + newLen > _fileBytes)
+            newLen = AlignUp(Math.Max(1, _fileBytes - newBase), VIEW_ALIGN);
+
+        _views[ch]?.Dispose();
+        _views[ch] = _mmfs[ch].CreateViewAccessor(newBase, newLen, MemoryMappedFileAccess.ReadWrite);
+        _viewBaseOffsets[ch] = newBase;
+        _viewLengths[ch] = newLen;
     }
+
+    /// <summary>
+    /// 写入一条记录（自动窗口化）。
+    /// </summary>
+    private void WriteRecord(int epbId, long fileOffset, in SampleRecord r)
+    {
+        EnsureViewCovers(epbId, fileOffset, SampleRecord.Size);
+        var baseOff = _viewBaseOffsets[epbId];
+        var v = _views[epbId];
+        var off = fileOffset - baseOff;
+
+        v.Write(off + 0, r.TimestampBinary);
+        v.Write(off + 8, r.CycleNumber);
+        v.Write(off + 12, r.SampleIndex);
+        v.Write(off + 16, r.EpbCurrent);
+        v.Write(off + 24, r.GroupPressure);
+    }
+
+    /// <summary>
+    /// 读取一条记录（自动窗口化）。
+    /// </summary>
+    private SampleRecord ReadRecord(int epbId, long fileOffset)
+    {
+        EnsureViewCovers(epbId, fileOffset, SampleRecord.Size);
+        var baseOff = _viewBaseOffsets[epbId];
+        var v = _views[epbId];
+        var off = fileOffset - baseOff;
+
+        return new SampleRecord
+        {
+            TimestampBinary = v.ReadInt64(off + 0),
+            CycleNumber = v.ReadInt32(off + 8),
+            SampleIndex = v.ReadInt32(off + 12),
+            EpbCurrent = v.ReadDouble(off + 16),
+            GroupPressure = v.ReadDouble(off + 24)
+        };
+    }
+
+    // 文件路径
+    private string GetDatPath(int epbId) => Path.Combine(_rootDir, $"EPB{epbId}_sliding.dat");
 
     private static void EnsureFixedSizeFile(string path, long sizeBytes)
     {
@@ -633,44 +671,21 @@ public sealed class EpbDiskWriter : IDisposable
                 fs.SetLength(sizeBytes);
                 fs.Flush(true);
             }
-
             return;
         }
 
-        using (var fs = new FileStream(path, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.ReadWrite))
-        {
-            fs.SetLength(sizeBytes);
-            fs.Flush(true);
-        }
-    }
-
-    private static void WriteRecord(MemoryMappedViewAccessor v, long offset, in SampleRecord r)
-    {
-        v.Write(offset + 0, r.TimestampBinary);
-        v.Write(offset + 8, r.CycleNumber);
-        v.Write(offset + 12, r.SampleIndex);
-        v.Write(offset + 16, r.EpbCurrent);
-        v.Write(offset + 24, r.GroupPressure);
-    }
-
-    private static SampleRecord ReadRecord(MemoryMappedViewAccessor v, long offset)
-    {
-        return new SampleRecord
-        {
-            TimestampBinary = v.ReadInt64(offset + 0),
-            CycleNumber = v.ReadInt32(offset + 8),
-            SampleIndex = v.ReadInt32(offset + 12),
-            EpbCurrent = v.ReadDouble(offset + 16),
-            GroupPressure = v.ReadDouble(offset + 24)
-        };
+        using var fsNew = new FileStream(path, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.ReadWrite);
+        fsNew.SetLength(sizeBytes);
+        fsNew.Flush(true);
     }
 
     private EpbState GetState(int epbId)
     {
         if (epbId < 1 || epbId > EPB_COUNT) throw new ArgumentOutOfRangeException(nameof(epbId));
-        return _states[epbId];
+        return _states[epbId] ??= new EpbState();
     }
 
+    // —— SQLite 圈级索引 —— //
     private void InitSchema()
     {
         using var cmd = _conn.CreateCommand();
@@ -687,9 +702,7 @@ CREATE TABLE IF NOT EXISTS {TABLE_CYCLES}(
   created_at TEXT DEFAULT (datetime('now')),
   UNIQUE(epb_id, cycle_number)
 );
-
-CREATE INDEX IF NOT EXISTS idx_cycles_epb ON {TABLE_CYCLES}(epb_id, cycle_number);
-";
+CREATE INDEX IF NOT EXISTS idx_cycles_epb ON {TABLE_CYCLES}(epb_id, cycle_number);";
         cmd.ExecuteNonQuery();
     }
 
@@ -700,7 +713,7 @@ CREATE INDEX IF NOT EXISTS idx_cycles_epb ON {TABLE_CYCLES}(epb_id, cycle_number
 INSERT INTO {TABLE_CYCLES}(epb_id, cycle_number, start_time, start_position, status, sample_count)
 VALUES(@e,@c,@st,@pos,'running',0)
 ON CONFLICT(epb_id,cycle_number) DO UPDATE SET
-  start_time = COALESCE({TABLE_CYCLES}.start_time, excluded.start_time),
+  start_time     = COALESCE({TABLE_CYCLES}.start_time,     excluded.start_time),
   start_position = COALESCE({TABLE_CYCLES}.start_position, excluded.start_position),
   status='running'";
         cmd.Parameters.AddWithValue("@e", epbId);
@@ -804,7 +817,7 @@ public sealed class CycleInfo
     public string Status { get; set; }
 }
 
-#region 接口
+#region 接口（保持你原文件里的接口/适配器，未改动其签名）
 
 /// <summary>
 ///     供 EpbManager 调用的“圈级记录器”接口；
@@ -831,14 +844,9 @@ public interface IEpbCycleRecorder
     void FlushRecent(int epbId, int lastNCycles);
 }
 
-#endregion
-
-#region 适配器
-
 /// <summary>
 ///     将 EpbDiskWriter 适配为 IEpbCycleRecorder，避免 EpbManager 直接依赖具体类。
 /// </summary>
-// 适配器：将 EpbDiskWriter 适配为 IEpbCycleRecorder，避免 EpbManager 直接依赖具体类。
 public sealed class DiskWriterRecorderAdapter : IEpbCycleRecorder
 {
     private readonly EpbDiskWriter _writer;
@@ -848,38 +856,20 @@ public sealed class DiskWriterRecorderAdapter : IEpbCycleRecorder
         _writer = writer ?? throw new ArgumentNullException(nameof(writer));
     }
 
-    /// <summary>圈开始</summary>
     public void BeginCycle(int epbId, int cycleNumber, DateTime startUtc)
-    {
-        _writer.BeginCycle(epbId, cycleNumber, startUtc);
-    }
+        => _writer.BeginCycle(epbId, cycleNumber, startUtc);
 
-    /// <summary>圈内批量写入</summary>
     public void WriteBatch(int epbId, DateTime[] tsUtc, double[] currents, double[] groupPressures)
-    {
-        _writer.WriteBatch(epbId, tsUtc, currents, groupPressures);
-    }
+        => _writer.WriteBatch(epbId, tsUtc, currents, groupPressures);
 
-    /// <summary>当前圈累计样本数</summary>
     public int GetCurrentCycleSampleCount(int epbId)
-    {
-        return _writer.GetCurrentCycleSampleCount(epbId);
-    }
+        => _writer.GetCurrentCycleSampleCount(epbId);
 
-    /// <summary>
-    ///     停止时落盘“最新 N 圈”正式数据（Cycle&gt;0）。
-    ///     这里选择与底层保持一致，调用 PersistLatestCyclesNow（仅作用于正式圈）。
-    /// </summary>
     public void FlushRecent(int epbId, int lastNCycles)
-    {
-        _writer.PersistLatestCyclesNow(epbId, Math.Max(1, lastNCycles));
-    }
+        => _writer.PersistLatestCyclesNow(epbId, Math.Max(1, lastNCycles));
 
-    /// <summary>圈结束</summary>
-    public void CompleteCycle(int epbId, int cycleNumber, int finalSampleCount, DateTime endUtc)
-    {
-        _writer.CompleteCycle(epbId, cycleNumber, finalSampleCount, endUtc);
-    }
+    public void CompleteCycle(int epbId, int cycleNumber, int finalN, DateTime endUtc)
+        => _writer.CompleteCycle(epbId, cycleNumber, finalN, endUtc);
 }
 
 #endregion
