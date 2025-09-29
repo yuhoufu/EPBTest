@@ -50,10 +50,21 @@ namespace Controller
         private double _tRevEmptyMs;
         private double _tRevPeakDecayMs;
 
-        // === 在 EpbCycleRunner 字段区补充（若前面已经有 _currentBus 字段则保留，不要重复定义）===
-        private readonly CurrentRingBuffer[] _currentBus = Enumerable.Range(0, 16)
-            .Select(_ => new CurrentRingBuffer(131072))
-            .ToArray();
+        // // === 在 EpbCycleRunner 字段区补充（若前面已经有 _currentBus 字段则保留，不要重复定义）===
+        // private readonly CurrentRingBuffer[] _currentBus = Enumerable.Range(0, 16)
+        //     .Select(_ => new CurrentRingBuffer(131072))
+        //     .ToArray();
+
+        // 建议容量：32768 样本（以 2ms 采样计 ≈ 65 秒窗口），够用又省内存。
+        // 如仍嫌大，可进一步降到 16384（≈ 32 秒）。
+        private const int CURRENT_BUF_CAP = 32768;
+
+        /// <summary>
+        /// 进程级共享的电流环形缓冲；避免每个 Runner 都各自持有 16 份副本导致内存爆炸。
+        /// </summary>
+        private static readonly CurrentRingBuffer[] _currentBus =
+            Enumerable.Range(0, 16).Select(_ => new CurrentRingBuffer(CURRENT_BUF_CAP)).ToArray();
+
 
         /// <summary>
         /// 由采集线程调用：喂入一个“低时延电流样本”（Stopwatch Tick 与电流）。
@@ -2224,11 +2235,11 @@ namespace Controller
         private async Task<bool> WaitCurrentAboveAsync(
             double thrA,
             CancellationToken token,
-            int predictiveCutMs = 2,
+            int predictiveCutMs = 5,
             double minSlopeAperMs = 0.02,
             double maxSlopeAperMs = 1.0,   // 斜率物理上限（A/ms）
-            double safetyMarginA = 0.5,
-            int slopeWinSize = 3)          // 滑动窗口大小
+            double safetyMarginA = 2,
+            int slopeWinSize = 10)          // 滑动窗口大小
         {
             var tBegin = Stopwatch.GetTimestamp();
 
@@ -2295,7 +2306,7 @@ namespace Controller
                         double remainA = (thrA/* - safetyMarginA*/) - current;
 
                         // 只在接近阈值时才启用预测
-                        if (slope >= minSlopeAperMs && remainA > 0 && remainA < 1) // 接近阈值1A内
+                        if (slope >= minSlopeAperMs && remainA > 0 && remainA < 3) // 接近阈值3A内
                         {
                             double tToThrMs = remainA / slope;
                             if (tToThrMs <= predictiveCutMs && tToThrMs >= 0)
