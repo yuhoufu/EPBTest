@@ -402,8 +402,6 @@ namespace Controller
             }
         }
 
-
-
         public void PauseChannel(int channel)
         {
             if (_timers.TryGetValue(channel, out var t)) t.Pause();
