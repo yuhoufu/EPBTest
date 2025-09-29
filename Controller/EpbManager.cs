@@ -391,7 +391,7 @@ namespace Controller
 
                 int totalCycles = _cfg.Test.TestTarget;
 
-                timer.StartAsync(totalCycles, initialDelayMs, async (cycleIndex, token) =>
+                /*await */_ = timer.StartAsync(totalCycles, initialDelayMs, async (cycleIndex, token) =>
                 {
                     Recorder?.BeginCycle(ch, cycleIndex, DateTime.UtcNow);
                     var ok = await runner.RunOneAsync(periodMs, token).ConfigureAwait(false);
