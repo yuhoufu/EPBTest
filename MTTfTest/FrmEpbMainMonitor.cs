@@ -195,6 +195,19 @@ namespace MTEmbTest
         private DataOperation.IEpbCycleRecorder _recorder;
 
 
+
+        /// <summary>内存中的 12 路 EPB 记录，来源于 TestConfig.xml 的 &lt;EpbRecords&gt;。</summary>
+        private List<Config.EpbTestRecord> _uiEpbRecords = new List<Config.EpbTestRecord>();
+
+        /// <summary>切换开关（通道 → ToggleButton）。</summary>
+        private readonly Dictionary<int, DevExpress.UITemplates.Collection.Editors.ToggleButton> _switchByChannel
+            = new Dictionary<int, DevExpress.UITemplates.Collection.Editors.ToggleButton>();
+
+        /// <summary>计划总次数显示（通道 → UILabel）。</summary>
+        private readonly Dictionary<int, Sunny.UI.UILabel> _planLabelByChannel
+            = new Dictionary<int, Sunny.UI.UILabel>();
+
+
         public FrmEpbMainMonitor()
         {
             InitializeComponent();
