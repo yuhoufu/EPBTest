@@ -18,6 +18,21 @@ namespace Controller
         private const int PlateauWindowMs = 150;
         private const double PlateauFlatRangeA = 0.15;
 
+        // // === 在 EpbCycleRunner 字段区补充（若前面已经有 _currentBus 字段则保留，不要重复定义）===
+        // private readonly CurrentRingBuffer[] _currentBus = Enumerable.Range(0, 16)
+        //     .Select(_ => new CurrentRingBuffer(131072))
+        //     .ToArray();
+
+        // 建议容量：32768 样本（以 2ms 采样计 ≈ 65 秒窗口），够用又省内存。
+        // 如仍嫌大，可进一步降到 16384（≈ 32 秒）。
+        private const int CURRENT_BUF_CAP = 32768;
+
+        /// <summary>
+        ///     进程级共享的电流环形缓冲；避免每个 Runner 都各自持有 16 份副本导致内存爆炸。
+        /// </summary>
+        private static readonly CurrentRingBuffer[] _currentBus =
+            Enumerable.Range(0, 16).Select(_ => new CurrentRingBuffer(CURRENT_BUF_CAP)).ToArray();
+
         private readonly int _channel;
         private readonly DoController _do;
         private readonly double _emptyBandA;
@@ -38,6 +53,10 @@ namespace Controller
         // ⑦ 反向空行程“默认保持”时长（用于“首圈已夹紧/无空行程”时的释放），单位 ms
         private readonly int _revEmptyKeepMs = 1500; // 可按需要改成 200~500ms
         private readonly int _sampleMs;
+
+
+        // —— 在类中加：保存最近几个采样点 —— //
+        private readonly Queue<(double I, long Tick)> _slopeWindow = new();
         private readonly int _stableWinMs;
 
         //private HydraulicOrchestrator _hydCoordinator; // 可选的液压协调器 - 已弃用
@@ -49,46 +68,6 @@ namespace Controller
         private double _tFwdPeakDecayMs;
         private double _tRevEmptyMs;
         private double _tRevPeakDecayMs;
-
-        // // === 在 EpbCycleRunner 字段区补充（若前面已经有 _currentBus 字段则保留，不要重复定义）===
-        // private readonly CurrentRingBuffer[] _currentBus = Enumerable.Range(0, 16)
-        //     .Select(_ => new CurrentRingBuffer(131072))
-        //     .ToArray();
-
-        // 建议容量：32768 样本（以 2ms 采样计 ≈ 65 秒窗口），够用又省内存。
-        // 如仍嫌大，可进一步降到 16384（≈ 32 秒）。
-        private const int CURRENT_BUF_CAP = 32768;
-
-        /// <summary>
-        /// 进程级共享的电流环形缓冲；避免每个 Runner 都各自持有 16 份副本导致内存爆炸。
-        /// </summary>
-        private static readonly CurrentRingBuffer[] _currentBus =
-            Enumerable.Range(0, 16).Select(_ => new CurrentRingBuffer(CURRENT_BUF_CAP)).ToArray();
-
-
-        /// <summary>
-        /// 由采集线程调用：喂入一个“低时延电流样本”（Stopwatch Tick 与电流）。
-        /// </summary>
-        public void FeedCurrentSample(int epbChannel, long tick, double currentAmp)
-        {
-            if (epbChannel < 1 || epbChannel >= _currentBus.Length) return;
-            _currentBus[epbChannel].Add(new CurrentSample(tick, currentAmp));
-        }
-
-        /// <summary>
-        /// 单个电流采样点（Stopwatch Ticks + 电流 A）。
-        /// </summary>
-        private readonly struct CurrentSample
-        {
-            public readonly long Tick;
-            public readonly double I;
-
-            public CurrentSample(long tick, double i)
-            {
-                Tick = tick;
-                I = i;
-            }
-        }
 
 
         public EpbCycleRunner(
@@ -146,1238 +125,13 @@ namespace Controller
         }
 
 
-
-        public async Task<bool> LearnAsyncOld0(int nCycles, CancellationToken token, int? targetPeriodMs)
-        {
-            // —— 若未显式传入周期（旧调用），用 5000ms 并给出日志 —— //
-            if (targetPeriodMs == null)
-            {
-                targetPeriodMs = 5000;
-                _log.Warn($"EPB[{_channel}] LearnAsync 未显式指定目标周期，默认按 {targetPeriodMs}ms 计算柔性分配。", "EPB");
-            }
-
-            // —— 本地时间工具（仅本方法内使用） —— //
-            static long NowTicks()
-            {
-                return Stopwatch.GetTimestamp();
-            }
-
-            static int MsBetween(long t0, long t1)
-            {
-                return (int)((t1 - t0) * 1000.0 / Stopwatch.Frequency);
-            }
-
-            // —— 比例（①③⑦⑧），⑤单独使用 _holdMs —— //
-            const double R_HEAD = 0.15; // ①
-            const double R_FWD_EMPTY = 0.35; // ③（计划值）
-            const double R_REV_EMPTY = 0.35; // ⑦（计划值，定时控制）
-            const double R_TAIL = 0.15; // ⑧
-
-
-            _log.Info(
-                $"EPB[{_channel}] 学习开始，次数={nCycles}；采样={_sampleMs}ms，忽略涌流={_peakIgnoreMs}ms，" +
-                $"emptyBand={_emptyBandA:F2}A，stableWin={_stableWinMs}ms，posThr={_posThrA:F2}A，" +
-                $"plateau(win={PlateauWindowMs}ms, flat≤{PlateauFlatRangeA:F2}A, +emptyMargin≥{PlateauAboveEmptyMarginA:F2}A)。",
-                "EPB");
-
-            // ========== 预释放：在正式学习循环前，确保卡钳处于“已释放”状态 ==========
-            if (_revEmptyKeepMs > 0)
-                try
-                {
-                    _log.Info($"EPB[{_channel}] 自学习预处理：先反向释放，进入反向空行程后保持 {_revEmptyKeepMs}ms。", "EPB");
-                    _do.SetEpbReverse(_channel);
-                    await Task.Delay(_peakIgnoreMs, token); // 忽略涌流
-
-                    // 尝试判定进入反向空行程（若失败也不阻塞流程，仍按定时保持）
-                    var (okRel, _, iEmptyRel) = await WaitStableAroundAsync(-0.5, -1, _emptyBandA, _stableWinMs, token);
-                    if (okRel)
-                    {
-                        _log.Info($"EPB[{_channel}] 预释放：已进入反向空行程，Iempty-≈{iEmptyRel:F2}A。保持 {_revEmptyKeepMs}ms。",
-                            "EPB");
-                        // 记录一次估计值（可作为后续观测的初值，非必须）
-                        if (_iEmptyRevA == 0) _iEmptyRevA = iEmptyRel;
-                    }
-                    else
-                    {
-                        _log.Warn($"EPB[{_channel}] 预释放：未稳定判定到反向空行程，仍按 {_revEmptyKeepMs}ms 定时保持。", "EPB");
-                    }
-
-                    await Task.Delay(_revEmptyKeepMs, token);
-                }
-                catch (OperationCanceledException)
-                {
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    _log.Warn($"EPB[{_channel}] 预释放阶段异常：{ex.Message}（忽略继续）。", "EPB");
-                }
-                finally
-                {
-                    _do.SetEpbOff(_channel); // 反向断电，准备进入学习循环
-                }
-
-            // —— 累积样本（中位数抑制离群） —— //
-            var fwdPeakList = new List<double>(); // ②
-            var fwdEmptyList = new List<double>(); // ③（实测，用于统计与对比）
-            var clampList = new List<double>(); // ④
-            var revPeakList = new List<double>(); // ⑥
-            var revEmptyList = new List<double>(); // ⑦（按计划定时）
-            var iEmptyFList = new List<double>();
-            var iEmptyRList = new List<double>();
-
-            for (var k = 0; k < nCycles; k++)
-            {
-                token.ThrowIfCancellationRequested();
-
-                // 0) 液压（可选），其用时从总周期中扣除
-                var swHyd = Stopwatch.StartNew();
-                //var hydOk = await _hydraulic.RunOnceAsync(_hydId, token); // 自学习暂时不做液压
-                var hydUsed = (int)swHyd.ElapsedMilliseconds; // 可能为 0（未启用）
-                /*if (!hydOk) // 自学习暂时不做液压
-                {
-                    _log.Warn($"EPB[{_channel}] 学习第{k + 1}轮：液压未达成，跳过。", "EPB");
-                    continue;
-                }*/
-
-                // 分配给电控段的预算
-                var elecBudgetMs = Math.Max(0, (int)targetPeriodMs - hydUsed);
-
-                // —— 先给 ①“计划值”（从第二圈起才真正执行），第一圈置 0 —— //
-                var headPlan = 0;
-                if (k >= 1 && fwdPeakList.Count > 0 && clampList.Count > 0 && revPeakList.Count > 0)
-                {
-                    // 用“已学中位数”预估刚性，提前算出 ① 计划
-                    var rigidEst =
-                        (int)Math.Round(Median(fwdPeakList) + Median(clampList) + Median(revPeakList)); // 刚性时间
-                    var flexEst = Math.Max(0, elecBudgetMs - rigidEst - Math.Max(0, _holdMs)); // 柔性时间
-                    headPlan = (int)Math.Floor(flexEst * R_HEAD);
-                }
-
-                // ① 头部未上电（仅第二圈起执行）
-                if (headPlan > 0)
-                {
-                    _log.Info($"EPB[{_channel}] 学习{k + 1}：①头部未上电 {headPlan}ms（按比例 {R_HEAD:P0} 计划）。", "EPB");
-                    await Task.Delay(headPlan, token);
-                }
-                else if (k == 0)
-                {
-                    _log.Info($"EPB[{_channel}] 学习{k + 1}：①头部未上电跳过（首圈不延时）。", "EPB");
-                }
-
-                var tElecStart = NowTicks(); // 电控段起点（用于最终⑧收口）
-
-                // ========== ② + ③ + ④：正向 ==========
-                _do.SetEpbForward(_channel);
-                _log.Info($"EPB[{_channel}] 学习{k + 1}：②正向上电，忽略涌流 {_peakIgnoreMs}ms…", "EPB");
-                await Task.Delay(_peakIgnoreMs, token);
-
-                // ②：判入正向空行程（小电流带）
-                var (okEmptyFwd, tEnterEmptyFwd_ms, iEmptyFwd) =
-                    await WaitStableAroundAsync(+0.5, +1, _emptyBandA, _stableWinMs, token);
-                if (!okEmptyFwd)
-                {
-                    _do.SetEpbOff(_channel);
-                    _log.Warn($"EPB[{_channel}] 学习{k + 1}：②未判定到正向空行程，放弃本轮。", "EPB");
-                    continue;
-                }
-
-                var tFwdPeakDecay = Math.Max(0, tEnterEmptyFwd_ms); // ②
-                _log.Info($"EPB[{_channel}] 学习{k + 1}：②FwdPeakDecay={tFwdPeakDecay}ms，Iempty+≈{iEmptyFwd:F2}A。", "EPB");
-
-                // —— ③/④ 分离 —— //
-                var emptyLeaveThr = iEmptyFwd + _emptyBandA; // ③ 离开空行程阈值（向上）
-                var tEmptyEnterTick = NowTicks();
-                var rampStartTick = tEmptyEnterTick; // ③ 结束 / ④ 起点
-                var clampReachTick = tEmptyEnterTick; // ④ 结束
-
-                var rampStarted = false; // 是否离开空行程带
-                var clampReached = false; // 是否到达阈值/平台
-                var clampCause = "timeout";
-
-                // 平台检测窗口
-                var winCap = Math.Max(1, PlateauWindowMs / Math.Max(1, _sampleMs));
-                var ring = new double[winCap];
-                int rc = 0, rh = 0;
-
-                var ewma = ReadEwma(_readCurrent(_channel), _readCurrent(_channel));
-                var tLoopBegin = NowTicks();
-                while (true)
-                {
-                    token.ThrowIfCancellationRequested();
-                    await Task.Delay(_sampleMs, token);
-
-                    var raw = _readCurrent(_channel);
-                    ewma = ReadEwma(ewma, raw);
-
-                    // ③：第一次离开空行程带（向上）→ 开始上升
-                    if (!rampStarted && ewma >= emptyLeaveThr)
-                    {
-                        rampStarted = true;
-                        rampStartTick = NowTicks();
-                    }
-
-                    // ④：到达夹紧阈值
-                    if (ewma >= _posThrA)
-                    {
-                        clampReached = true;
-                        clampReachTick = NowTicks();
-                        clampCause = "threshold";
-                        break;
-                    }
-
-                    // ④：限流平台（窗口近似直线且显著高于空行程）
-                    ring[rh] = ewma;
-                    rh = (rh + 1) % winCap;
-                    if (rc < winCap) rc++;
-                    if (rc == winCap && iEmptyFwd != 0)
-                    {
-                        double min = ring[0], max = ring[0];
-                        for (var i = 1; i < winCap; i++)
-                        {
-                            var v = ring[i];
-                            if (v < min) min = v;
-                            if (v > max) max = v;
-                        }
-
-                        var range = max - min;
-                        if (range <= PlateauFlatRangeA && ewma >= iEmptyFwd + PlateauAboveEmptyMarginA)
-                        {
-                            clampReached = true;
-                            clampReachTick = NowTicks();
-                            clampCause = "platform";
-                            _log.Warn(
-                                $"EPB[{_channel}] 学习{k + 1}：④检测到“限流平台”，{PlateauWindowMs}ms内波动≤{range:F2}A，" +
-                                $"EWMA≈{ewma:F2}A（Iempty+≈{iEmptyFwd:F2}A，阈=Iempty+{PlateauAboveEmptyMarginA:F2}）。",
-                                "EPB");
-                            break;
-                        }
-                    }
-
-                    if (MsBetween(tLoopBegin, NowTicks()) > 10_000) break; // 学习阶段 2s 超时
-                }
-
-                // 正向断电
-                _do.SetEpbOff(_channel);
-
-                // ③ 实测（未离开则记 0）
-                if (!rampStarted) rampStartTick = clampReachTick;
-                var tFwdEmpty = Math.Max(0, MsBetween(tEmptyEnterTick, rampStartTick)); // ③（实测）
-                var tClampRamp = Math.Max(0, MsBetween(rampStartTick, clampReachTick)); // ④
-
-                _log.Info(
-                    $"EPB[{_channel}] 学习{k + 1}：③FwdEmpty(actual)={tFwdEmpty}ms，④ClampRamp={tClampRamp}ms（{clampCause}）。",
-                    "EPB");
-
-                // ⑤ 保持
-                var holdUsed = Math.Max(0, _holdMs);
-                Console.WriteLine($"_holdMs:{_holdMs}");
-
-                if (holdUsed > 0)
-                {
-                    _log.Info($"EPB[{_channel}] 学习{k + 1}：⑤保持 {holdUsed}ms。", "EPB");
-                    Console.WriteLine($"EPB[{_channel}] 学习{k + 1}：⑤保持 {holdUsed}ms。", "EPB");
-                    await Task.Delay(holdUsed, token);
-                }
-
-                // ========== ⑥ + ⑦：反向 ==========
-                _do.SetEpbReverse(_channel);
-                _log.Info($"EPB[{_channel}] 学习{k + 1}：⑥反向上电，忽略涌流 {_peakIgnoreMs}ms…", "EPB");
-                await Task.Delay(_peakIgnoreMs, token);
-
-                // ⑥：入反向空行程
-                var (okEmptyRev, tEnterEmptyRev_ms, iEmptyRev) =
-                    await WaitStableAroundAsync(-0.5, -1, _emptyBandA, _stableWinMs, token);
-                if (!okEmptyRev)
-                {
-                    _do.SetEpbOff(_channel);
-                    _log.Warn($"EPB[{_channel}] 学习{k + 1}：⑥未判定到反向空行程，放弃本轮。", "EPB");
-                    continue;
-                }
-
-                var tRevPeakDecay = Math.Max(0, tEnterEmptyRev_ms); // ⑥
-                _log.Info($"EPB[{_channel}] 学习{k + 1}：⑥RevPeakDecay={tRevPeakDecay}ms，Iempty-≈{iEmptyRev:F2}A。", "EPB");
-
-                // —— 用“本圈刚性 ②+④+⑥ + ⑤ + ①(已执行) ”从电控预算中扣除，得到柔性预算 —— //
-                var rigidThis = (int)Math.Round((double)(tFwdPeakDecay + tClampRamp + tRevPeakDecay));
-                var flexBudget = elecBudgetMs - headPlan - rigidThis - holdUsed;
-                if (flexBudget < 0)
-                {
-                    _log.Warn(
-                        $"EPB[{_channel}] 学习{k + 1}：柔性预算为负（预算{elecBudgetMs}ms，①{headPlan}ms，②④⑥合计{rigidThis}ms，⑤{holdUsed}ms）。" +
-                        "将 ③/⑦/⑧ 置 0，仅做 ⑦=0 定时与⑧收口。", "EPB");
-                    flexBudget = 0;
-                }
-
-                // 按比例得到计划 ①③⑦⑧（注意①已执行，这里计算用于日志与⑧参考）
-                var plan3 = (int)Math.Floor(flexBudget * R_FWD_EMPTY); // ③（计划，仅对比）
-                var plan7 = (int)Math.Floor(flexBudget * R_REV_EMPTY); // ⑦（计划，用于定时控制）
-                var plan8 = Math.Max(0, flexBudget - plan3 - plan7); // ⑧（计划，尾段实际用收口完成）
-
-                _log.Info(
-                    $"EPB[{_channel}] 学习{k + 1}：柔性预算={flexBudget}ms -> ③(计划)={plan3}ms，⑦(计划)={plan7}ms，⑧(计划)≈{plan8}ms。",
-                    "EPB");
-
-                // ⑦：按“计划时间”定时控制（不观测退出）
-                var run7 = Math.Max(10, plan7); // 给个最小 10ms
-                _log.Info($"EPB[{_channel}] 学习{k + 1}：⑦反向空行程定时 {run7}ms…", "EPB");
-                await Task.Delay(run7, token);
-                var tRevEmpty = run7;
-
-                // 反向断电
-                _do.SetEpbOff(_channel);
-
-                // ⑧：尾段收口 —— 把实际误差全吸收，使电控段总时长 ≈ elecBudgetMs
-                var elecElapsed = MsBetween(tElecStart, NowTicks());
-                var tailRemain = Math.Max(0, elecBudgetMs - elecElapsed);
-                if (tailRemain > 0)
-                {
-                    _log.Info($"EPB[{_channel}] 学习{k + 1}：⑧尾段收口 {tailRemain}ms（计划≈{plan8}ms）。", "EPB");
-                    await Task.Delay(tailRemain, token);
-                }
-
-                // —— 记录“③ 计划 vs 实测”的对比 —— //
-                if (plan3 > 0 || tFwdEmpty > 0)
-                {
-                    var diff = tFwdEmpty - plan3;
-                    _log.Info(
-                        $"EPB[{_channel}] 学习{k + 1}：③实测={tFwdEmpty}ms vs ③计划={plan3}ms，差值={diff}ms。", "EPB");
-                }
-
-                // —— 累积样本 —— //
-                fwdPeakList.Add(tFwdPeakDecay); // ②
-                fwdEmptyList.Add(tFwdEmpty); // ③（实测）
-                clampList.Add(tClampRamp); // ④
-                revPeakList.Add(tRevPeakDecay); // ⑥
-                revEmptyList.Add(tRevEmpty); // ⑦（按计划定时）
-                iEmptyFList.Add(iEmptyFwd);
-                iEmptyRList.Add(iEmptyRev);
-
-                _log.Info(
-                    $"EPB[{_channel}] 学习{k + 1} 汇总：②={tFwdPeakDecay}ms, ③(actual)={tFwdEmpty}ms, " +
-                    $"④={tClampRamp}ms, ⑥={tRevPeakDecay}ms, ⑦(planned)={tRevEmpty}ms, " +
-                    $"I±empty≈({iEmptyFwd:F2},{iEmptyRev:F2})A。", "EPB");
-
-                // ========= 阶段统计日志 =========
-                var tHead = headPlan;
-                var t2 = (int)Math.Round((decimal)tFwdPeakDecay);
-                var t3 = (int)Math.Round((decimal)tFwdEmpty);
-                var t4 = (int)Math.Round((decimal)tClampRamp);
-                var t5 = holdUsed;
-                var t6 = (int)Math.Round((decimal)tRevPeakDecay);
-                var t7 = (int)Math.Round((decimal)tRevEmpty);
-                var t8 = tailRemain;
-
-                var total = tHead + t2 + t3 + t4 + t5 + t6 + t7 + t8;
-
-                _log.Info(
-                    $"EPB[{_channel}] 学习{k + 1}阶段统计：" +
-                    $"①Head={tHead}ms, ②FwdPeak={t2}ms, ③FwdEmpty={t3}ms, ④ClampRamp={t4}ms, " +
-                    $"⑤Hold={t5}ms, ⑥RevPeak={t6}ms, ⑦RevEmpty={t7}ms, ⑧Tail={t8}ms | " +
-                    $"合计={total}ms (目标≈{targetPeriodMs}ms)", "EPB");
-            }
-
-
-            if (!fwdPeakList.Any() || !revPeakList.Any())
-            {
-                _log.Warn($"EPB[{_channel}] 学习失败：有效样本不足（至少应包含 ② 与 ⑥）。", "EPB");
-                return false;
-            }
-
-            // —— 中位数抑制离群 —— //
-            _tFwdPeakDecayMs = Median(fwdPeakList); // ②
-            _tClampRampMs = clampList.Any() ? Median(clampList) : 0.0; // ④
-            _tRevPeakDecayMs = Median(revPeakList); // ⑥
-
-            _tFwdEmptyMs = fwdEmptyList.Any() ? Median(fwdEmptyList) : 0.0; // ③（参考）
-            _tRevEmptyMs = revEmptyList.Any() ? Median(revEmptyList) : 0.0; // ⑦（定时）
-
-            _iEmptyFwdA = iEmptyFList.Any() ? Median(iEmptyFList) : 0.0;
-            _iEmptyRevA = iEmptyRList.Any() ? Median(iEmptyRList) : 0.0;
-
-            _log.Info(
-                $"EPB[{_channel}] 学习完成(中位数)：②={_tFwdPeakDecayMs}ms，④={_tClampRampMs}ms，⑥={_tRevPeakDecayMs}ms；" +
-                $"③(actual)={_tFwdEmptyMs}ms（参考），⑦(planned)={_tRevEmptyMs}ms；" +
-                $"I±empty≈({_iEmptyFwdA:F2},{_iEmptyRevA:F2})A。", "EPB");
-
-            return true;
-        }
-
-
-        public async Task<bool> LearnAsyncOld(int nCycles, CancellationToken token, int? targetPeriodMs)
-        {
-            // —— 若未显式传入周期（旧调用），用 5000ms 并给出日志 —— //
-            if (targetPeriodMs == null)
-            {
-                targetPeriodMs = 5000;
-                _log.Warn($"EPB[{_channel}] LearnAsync 未显式指定目标周期，默认按 {targetPeriodMs}ms 计算柔性分配。", "EPB");
-            }
-
-            // —— 本地时间工具（仅本方法内使用） —— //
-            static long NowTicks()
-            {
-                return Stopwatch.GetTimestamp();
-            }
-
-            static int MsBetween(long t0, long t1)
-            {
-                return (int)((t1 - t0) * 1000.0 / Stopwatch.Frequency);
-            }
-
-            // —— 比例（①③⑦⑧），⑤单独使用 _holdMs —— //
-            const double R_HEAD = 0.15; // ①
-            const double R_FWD_EMPTY = 0.35; // ③（计划值）
-            const double R_REV_EMPTY = 0.35; // ⑦（计划值，定时控制）
-            const double R_TAIL = 0.15; // ⑧
-
-
-            _log.Info(
-                $"EPB[{_channel}] 学习开始，次数={nCycles}；采样={_sampleMs}ms，忽略涌流={_peakIgnoreMs}ms，" +
-                $"emptyBand={_emptyBandA:F2}A，stableWin={_stableWinMs}ms，posThr={_posThrA:F2}A，" +
-                $"plateau(win={PlateauWindowMs}ms, flat≤{PlateauFlatRangeA:F2}A, +emptyMargin≥{PlateauAboveEmptyMarginA:F2}A)。",
-                "EPB");
-
-            // ========== 预释放：在正式学习循环前，确保卡钳处于“已释放”状态 ==========
-            if (_revEmptyKeepMs > 0)
-                try
-                {
-                    _log.Info($"EPB[{_channel}] 自学习预处理：先反向释放，进入反向空行程后保持 {_revEmptyKeepMs}ms。", "EPB");
-                    _do.SetEpbReverse(_channel);
-                    await Task.Delay(_peakIgnoreMs, token); // 忽略涌流
-
-                    // 尝试判定进入反向空行程（若失败也不阻塞流程，仍按定时保持）
-                    var (okRel, _, iEmptyRel) = await WaitStableAroundAsync(-0.5, -1, _emptyBandA, _stableWinMs, token);
-                    if (okRel)
-                    {
-                        _log.Info($"EPB[{_channel}] 预释放：已进入反向空行程，Iempty-≈{iEmptyRel:F2}A。保持 {_revEmptyKeepMs}ms。",
-                            "EPB");
-                        // 记录一次估计值（可作为后续观测的初值，非必须）
-                        if (_iEmptyRevA == 0) _iEmptyRevA = iEmptyRel;
-                    }
-                    else
-                    {
-                        _log.Warn($"EPB[{_channel}] 预释放：未稳定判定到反向空行程，仍按 {_revEmptyKeepMs}ms 定时保持。", "EPB");
-                    }
-
-                    await Task.Delay(_revEmptyKeepMs, token);
-                }
-                catch (OperationCanceledException)
-                {
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    _log.Warn($"EPB[{_channel}] 预释放阶段异常：{ex.Message}（忽略继续）。", "EPB");
-                }
-                finally
-                {
-                    _do.SetEpbOff(_channel); // 反向断电，准备进入学习循环
-                }
-
-            // —— 累积样本（中位数抑制离群） —— //
-            var fwdPeakList = new List<double>(); // ②
-            var fwdEmptyList = new List<double>(); // ③（实测，用于统计与对比）
-            var clampList = new List<double>(); // ④
-            var revPeakList = new List<double>(); // ⑥
-            var revEmptyList = new List<double>(); // ⑦（按计划定时）
-            var iEmptyFList = new List<double>();
-            var iEmptyRList = new List<double>();
-
-            for (var k = 0; k < nCycles; k++)
-            {
-                token.ThrowIfCancellationRequested();
-
-                // 0) 液压（可选），其用时从总周期中扣除
-                var swHyd = Stopwatch.StartNew();
-                //var hydOk = await _hydraulic.RunOnceAsync(_hydId, token); // 自学习暂时不做液压
-                var hydUsed = (int)swHyd.ElapsedMilliseconds; // 可能为 0（未启用）
-                /*if (!hydOk) // 自学习暂时不做液压
-                {
-                    _log.Warn($"EPB[{_channel}] 学习第{k + 1}轮：液压未达成，跳过。", "EPB");
-                    continue;
-                }*/
-
-                // 分配给电控段的预算
-                var elecBudgetMs = Math.Max(0, (int)targetPeriodMs - hydUsed);
-
-                // —— 先给 ①“计划值”（从第二圈起才真正执行），第一圈置 0 —— //
-                var headPlan = 0;
-                if (k >= 1 && fwdPeakList.Count > 0 && clampList.Count > 0 && revPeakList.Count > 0)
-                {
-                    // 用“已学中位数”预估刚性，提前算出 ① 计划
-                    var rigidEst =
-                        (int)Math.Round(Median(fwdPeakList) + Median(clampList) + Median(revPeakList)); // 刚性时间
-                    var flexEst = Math.Max(0, elecBudgetMs - rigidEst - Math.Max(0, _holdMs)); // 柔性时间
-                    headPlan = (int)Math.Floor(flexEst * R_HEAD);
-                }
-
-                // ① 头部未上电（仅第二圈起执行）
-                if (headPlan > 0)
-                {
-                    _log.Info($"EPB[{_channel}] 学习{k + 1}：①头部未上电 {headPlan}ms（按比例 {R_HEAD:P0} 计划）。", "EPB");
-                    await Task.Delay(headPlan, token);
-                }
-                else if (k == 0)
-                {
-                    _log.Info($"EPB[{_channel}] 学习{k + 1}：①头部未上电跳过（首圈不延时）。", "EPB");
-                }
-
-                var tElecStart = NowTicks(); // 电控段起点（用于最终⑧收口）
-
-                // ========== ② + ③ + ④：正向 ==========
-                _do.SetEpbForward(_channel);
-                _log.Info($"EPB[{_channel}] 学习{k + 1}：②正向上电，忽略涌流 {_peakIgnoreMs}ms…", "EPB");
-                await Task.Delay(_peakIgnoreMs, token);
-
-                // ②：判入正向空行程（小电流带）
-                var (okEmptyFwd, tEnterEmptyFwd_ms, iEmptyFwd) =
-                    await WaitStableAroundAsync(+0.5, +1, _emptyBandA, _stableWinMs, token);
-                if (!okEmptyFwd)
-                {
-                    _do.SetEpbOff(_channel);
-                    _log.Warn($"EPB[{_channel}] 学习{k + 1}：②未判定到正向空行程，放弃本轮。", "EPB");
-                    continue;
-                }
-
-                var tFwdPeakDecay = Math.Max(0, tEnterEmptyFwd_ms); // ②
-                _log.Info($"EPB[{_channel}] 学习{k + 1}：②FwdPeakDecay={tFwdPeakDecay}ms，Iempty+≈{iEmptyFwd:F2}A。", "EPB");
-
-                // ③：离开空行程上边界（仅用于统计 ③/④；控制上不依赖该事件）
-                var emptyLeaveThr = iEmptyFwd + _emptyBandA;
-                var rampStartTick = await WaitLeaveBandUpAsync(emptyLeaveThr, token) ?? Stopwatch.GetTimestamp();
-
-                // ③+④：从空行程爬升到“夹紧阈值/平台/预测触发”，判定与 RunOne 完全一致
-                var okClamp = await WaitCurrentAboveAsync(_posThrA, token);
-                var clampReachTick = Stopwatch.GetTimestamp(); // 记录“达到应断电条件”的时刻（与对齐节拍一致）
-                if (!okClamp)
-                {
-                    _do.SetEpbOff(_channel);
-                    _log.Warn($"EPB[{_channel}] 学习{k + 1}：④未达到阈值/平台（阈 {_posThrA:F2}A），放弃本轮。", "EPB");
-                    continue;
-                }
-
-                // —— 关键：与 RunOne 一致 —— 达到应断电条件后**立刻断电**，避免超调
-                _do.SetEpbOff(_channel);
-                _log.Info($"EPB[{_channel}] 学习{k + 1}：已达到夹紧条件（阈/平台/预测），已立即正向断电。", "EPB");
-
-                // 统计 ③/④（用于更新中位数，支撑后续分配）
-                var tFwdEmpty = Math.Max(0, MsBetween(tElecStart + (tEnterEmptyFwd_ms * Stopwatch.Frequency / 1000), rampStartTick)); // ③
-                var tClampRamp = Math.Max(0, MsBetween(rampStartTick, clampReachTick)); // ④
-                _log.Info($"EPB[{_channel}] 学习{k + 1}：③FwdEmpty(actual)={tFwdEmpty}ms，④ClampRamp={tClampRamp}ms。", "EPB");
-
-
-                // ⑤ 保持
-                var holdUsed = Math.Max(0, _holdMs);
-                Console.WriteLine($"_holdMs:{_holdMs}");
-
-                if (holdUsed > 0)
-                {
-                    _log.Info($"EPB[{_channel}] 学习{k + 1}：⑤保持 {holdUsed}ms。", "EPB");
-                    Console.WriteLine($"EPB[{_channel}] 学习{k + 1}：⑤保持 {holdUsed}ms。", "EPB");
-                    await Task.Delay(holdUsed, token);
-                }
-
-                // ========== ⑥ + ⑦：反向 ==========
-                _do.SetEpbReverse(_channel);
-                _log.Info($"EPB[{_channel}] 学习{k + 1}：⑥反向上电，忽略涌流 {_peakIgnoreMs}ms…", "EPB");
-                await Task.Delay(_peakIgnoreMs, token);
-
-                // ⑥：入反向空行程
-                var (okEmptyRev, tEnterEmptyRev_ms, iEmptyRev) =
-                    await WaitStableAroundAsync(-0.5, -1, _emptyBandA, _stableWinMs, token);
-                if (!okEmptyRev)
-                {
-                    _do.SetEpbOff(_channel);
-                    _log.Warn($"EPB[{_channel}] 学习{k + 1}：⑥未判定到反向空行程，放弃本轮。", "EPB");
-                    continue;
-                }
-
-                var tRevPeakDecay = Math.Max(0, tEnterEmptyRev_ms); // ⑥
-                _log.Info($"EPB[{_channel}] 学习{k + 1}：⑥RevPeakDecay={tRevPeakDecay}ms，Iempty-≈{iEmptyRev:F2}A。", "EPB");
-
-                // —— 用“本圈刚性 ②+④+⑥ + ⑤ + ①(已执行) ”从电控预算中扣除，得到柔性预算 —— //
-                var rigidThis = (int)Math.Round((double)(tFwdPeakDecay + tClampRamp + tRevPeakDecay));
-                var flexBudget = elecBudgetMs - headPlan - rigidThis - holdUsed;
-                if (flexBudget < 0)
-                {
-                    _log.Warn(
-                        $"EPB[{_channel}] 学习{k + 1}：柔性预算为负（预算{elecBudgetMs}ms，①{headPlan}ms，②④⑥合计{rigidThis}ms，⑤{holdUsed}ms）。" +
-                        "将 ③/⑦/⑧ 置 0，仅做 ⑦=0 定时与⑧收口。", "EPB");
-                    flexBudget = 0;
-                }
-
-                // 按比例得到计划 ①③⑦⑧（注意①已执行，这里计算用于日志与⑧参考）
-                var plan3 = (int)Math.Floor(flexBudget * R_FWD_EMPTY); // ③（计划，仅对比）
-                var plan7 = (int)Math.Floor(flexBudget * R_REV_EMPTY); // ⑦（计划，用于定时控制）
-                var plan8 = Math.Max(0, flexBudget - plan3 - plan7); // ⑧（计划，尾段实际用收口完成）
-
-                _log.Info(
-                    $"EPB[{_channel}] 学习{k + 1}：柔性预算={flexBudget}ms -> ③(计划)={plan3}ms，⑦(计划)={plan7}ms，⑧(计划)≈{plan8}ms。",
-                    "EPB");
-
-                // ⑦：按“计划时间”定时控制（不观测退出）
-                var run7 = Math.Max(10, plan7); // 给个最小 10ms
-                _log.Info($"EPB[{_channel}] 学习{k + 1}：⑦反向空行程定时 {run7}ms…", "EPB");
-                await Task.Delay(run7, token);
-                var tRevEmpty = run7;
-
-                // 反向断电
-                _do.SetEpbOff(_channel);
-
-                // ⑧：尾段收口 —— 把实际误差全吸收，使电控段总时长 ≈ elecBudgetMs
-                var elecElapsed = MsBetween(tElecStart, NowTicks());
-                var tailRemain = Math.Max(0, elecBudgetMs - elecElapsed);
-                if (tailRemain > 0)
-                {
-                    _log.Info($"EPB[{_channel}] 学习{k + 1}：⑧尾段收口 {tailRemain}ms（计划≈{plan8}ms）。", "EPB");
-                    await Task.Delay(tailRemain, token);
-                }
-
-                // —— 记录“③ 计划 vs 实测”的对比 —— //
-                if (plan3 > 0 || tFwdEmpty > 0)
-                {
-                    var diff = tFwdEmpty - plan3;
-                    _log.Info(
-                        $"EPB[{_channel}] 学习{k + 1}：③实测={tFwdEmpty}ms vs ③计划={plan3}ms，差值={diff}ms。", "EPB");
-                }
-
-                // —— 累积样本 —— //
-                fwdPeakList.Add(tFwdPeakDecay); // ②
-                fwdEmptyList.Add(tFwdEmpty); // ③（实测）
-                clampList.Add(tClampRamp); // ④
-                revPeakList.Add(tRevPeakDecay); // ⑥
-                revEmptyList.Add(tRevEmpty); // ⑦（按计划定时）
-                iEmptyFList.Add(iEmptyFwd);
-                iEmptyRList.Add(iEmptyRev);
-
-                _log.Info(
-                    $"EPB[{_channel}] 学习{k + 1} 汇总：②={tFwdPeakDecay}ms, ③(actual)={tFwdEmpty}ms, " +
-                    $"④={tClampRamp}ms, ⑥={tRevPeakDecay}ms, ⑦(planned)={tRevEmpty}ms, " +
-                    $"I±empty≈({iEmptyFwd:F2},{iEmptyRev:F2})A。", "EPB");
-
-                // ========= 阶段统计日志 =========
-                var tHead = headPlan;
-                var t2 = (int)Math.Round((decimal)tFwdPeakDecay);
-                var t3 = (int)Math.Round((decimal)tFwdEmpty);
-                var t4 = (int)Math.Round((decimal)tClampRamp);
-                var t5 = holdUsed;
-                var t6 = (int)Math.Round((decimal)tRevPeakDecay);
-                var t7 = (int)Math.Round((decimal)tRevEmpty);
-                var t8 = tailRemain;
-
-                var total = tHead + t2 + t3 + t4 + t5 + t6 + t7 + t8;
-
-                _log.Info(
-                    $"EPB[{_channel}] 学习{k + 1}阶段统计：" +
-                    $"①Head={tHead}ms, ②FwdPeak={t2}ms, ③FwdEmpty={t3}ms, ④ClampRamp={t4}ms, " +
-                    $"⑤Hold={t5}ms, ⑥RevPeak={t6}ms, ⑦RevEmpty={t7}ms, ⑧Tail={t8}ms | " +
-                    $"合计={total}ms (目标≈{targetPeriodMs}ms)", "EPB");
-            }
-
-
-            if (!fwdPeakList.Any() || !revPeakList.Any())
-            {
-                _log.Warn($"EPB[{_channel}] 学习失败：有效样本不足（至少应包含 ② 与 ⑥）。", "EPB");
-                return false;
-            }
-
-            // —— 中位数抑制离群 —— //
-            _tFwdPeakDecayMs = Median(fwdPeakList); // ②
-            _tClampRampMs = clampList.Any() ? Median(clampList) : 0.0; // ④
-            _tRevPeakDecayMs = Median(revPeakList); // ⑥
-
-            _tFwdEmptyMs = fwdEmptyList.Any() ? Median(fwdEmptyList) : 0.0; // ③（参考）
-            _tRevEmptyMs = revEmptyList.Any() ? Median(revEmptyList) : 0.0; // ⑦（定时）
-
-            _iEmptyFwdA = iEmptyFList.Any() ? Median(iEmptyFList) : 0.0;
-            _iEmptyRevA = iEmptyRList.Any() ? Median(iEmptyRList) : 0.0;
-
-            _log.Info(
-                $"EPB[{_channel}] 学习完成(中位数)：②={_tFwdPeakDecayMs}ms，④={_tClampRampMs}ms，⑥={_tRevPeakDecayMs}ms；" +
-                $"③(actual)={_tFwdEmptyMs}ms（参考），⑦(planned)={_tRevEmptyMs}ms；" +
-                $"I±empty≈({_iEmptyFwdA:F2},{_iEmptyRevA:F2})A。", "EPB");
-
-            return true;
-        }
-
         /// <summary>
-        /// 自学习流程（Learn）：在固定的目标周期内，按 ①~⑧ 阶段组织一次完整的 EPB 循环，
-        /// 统计 ②/③/④/⑥/⑦ 的用时与 I±empty，并以中位数抑制离群后更新到类成员。
-        /// 本版在不改动外部依赖与方法签名/字段的前提下，消除了由“等待离开正向空行程上边界”导致的 UI 卡顿：
-        /// 直接用“进入空行程的时刻”作为 ③ 的起点（即不再额外等待上穿），避免多一次高频等待循环造成的界面卡顿；
-        /// 控制路径保持与现有逻辑一致：达到夹紧判据后立即正向断电。
+        ///     由采集线程调用：喂入一个“低时延电流样本”（Stopwatch Tick 与电流）。
         /// </summary>
-        public async Task<bool> LearnAsyncOld2(int nCycles, CancellationToken token, int? targetPeriodMs)
+        public void FeedCurrentSample(int epbChannel, long tick, double currentAmp)
         {
-            // —— 若未显式传入周期（旧调用），用 5000ms 并给出日志 —— //
-            if (targetPeriodMs == null)
-            {
-                targetPeriodMs = 5000;
-                _log.Warn($"EPB[{_channel}] LearnAsync 未显式指定目标周期，默认按 {targetPeriodMs}ms 计算柔性分配。", "EPB");
-            }
-
-            // —— 本地时间工具（仅本方法内使用） —— //
-            static long NowTicks()
-            {
-                return Stopwatch.GetTimestamp();
-            }
-
-            static int MsBetween(long t0, long t1)
-            {
-                return (int)((t1 - t0) * 1000.0 / Stopwatch.Frequency);
-            }
-
-            // —— 比例（①③⑦⑧），⑤单独使用 _holdMs —— //
-            const double R_HEAD = 0.15;       // ①
-            const double R_FWD_EMPTY = 0.35;  // ③（计划值）
-            const double R_REV_EMPTY = 0.35;  // ⑦（计划值，定时控制）
-            const double R_TAIL = 0.15;       // ⑧
-
-            _log.Info(
-                $"EPB[{_channel}] 学习开始，次数={nCycles}；采样={_sampleMs}ms，忽略涌流={_peakIgnoreMs}ms，" +
-                $"emptyBand={_emptyBandA:F2}A，stableWin={_stableWinMs}ms，posThr={_posThrA:F2}A，" +
-                $"plateau(win={PlateauWindowMs}ms, flat≤{PlateauFlatRangeA:F2}A, +emptyMargin≥{PlateauAboveEmptyMarginA:F2}A)。",
-                "EPB");
-
-            // ========== 预释放：在正式学习循环前，确保卡钳处于“已释放”状态 ==========
-            if (_revEmptyKeepMs > 0)
-                try
-                {
-                    _log.Info($"EPB[{_channel}] 自学习预处理：先反向释放，进入反向空行程后保持 {_revEmptyKeepMs}ms。", "EPB");
-                    _do.SetEpbReverse(_channel);
-                    await Task.Delay(_peakIgnoreMs, token).ConfigureAwait(false); // 忽略涌流
-
-                    // 尝试判定进入反向空行程（若失败也不阻塞流程，仍按定时保持）
-                    var (okRel, _, iEmptyRel) = await WaitStableAroundAsync(-0.5, -1, _emptyBandA, _stableWinMs, token).ConfigureAwait(false);
-                    if (okRel)
-                    {
-                        _log.Info($"EPB[{_channel}] 预释放：已进入反向空行程，Iempty-≈{iEmptyRel:F2}A。保持 {_revEmptyKeepMs}ms。", "EPB");
-                        // 记录一次估计值（可作为后续观测的初值，非必须）
-                        if (_iEmptyRevA == 0) _iEmptyRevA = iEmptyRel;
-                    }
-                    else
-                    {
-                        _log.Warn($"EPB[{_channel}] 预释放：未稳定判定到反向空行程，仍按 {_revEmptyKeepMs}ms 定时保持。", "EPB");
-                    }
-
-                    await Task.Delay(_revEmptyKeepMs, token).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException)
-                {
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    _log.Warn($"EPB[{_channel}] 预释放阶段异常：{ex.Message}（忽略继续）。", "EPB");
-                }
-                finally
-                {
-                    _do.SetEpbOff(_channel); // 反向断电，准备进入学习循环
-                }
-
-            // —— 累积样本（中位数抑制离群） —— //
-            var fwdPeakList = new List<double>(); // ②
-            var fwdEmptyList = new List<double>(); // ③（实测，用于统计与对比）
-            var clampList = new List<double>(); // ④
-            var revPeakList = new List<double>(); // ⑥
-            var revEmptyList = new List<double>(); // ⑦（按计划定时）
-            var iEmptyFList = new List<double>();
-            var iEmptyRList = new List<double>();
-
-            for (var k = 0; k < nCycles; k++)
-            {
-                token.ThrowIfCancellationRequested();
-
-                // 0) 液压（可选），其用时从总周期中扣除
-                var swHyd = Stopwatch.StartNew();
-                //var hydOk = await _hydraulic.RunOnceAsync(_hydId, token); // 自学习暂时不做液压
-                var hydUsed = (int)swHyd.ElapsedMilliseconds; // 可能为 0（未启用）
-                /*if (!hydOk) // 自学习暂时不做液压
-                {
-                    _log.Warn($"EPB[{_channel}] 学习第{k + 1}轮：液压未达成，跳过。", "EPB");
-                    continue;
-                }*/
-
-                // 分配给电控段的预算
-                var elecBudgetMs = Math.Max(0, (int)targetPeriodMs - hydUsed);
-
-                // —— 先给 ①“计划值”（从第二圈起才真正执行），第一圈置 0 —— //
-                var headPlan = 0;
-                if (k >= 1 && fwdPeakList.Count > 0 && clampList.Count > 0 && revPeakList.Count > 0)
-                {
-                    // 用“已学中位数”预估刚性，提前算出 ① 计划
-                    var rigidEst =
-                        (int)Math.Round(Median(fwdPeakList) + Median(clampList) + Median(revPeakList)); // 刚性时间
-                    var flexEst = Math.Max(0, elecBudgetMs - rigidEst - Math.Max(0, _holdMs));          // 柔性时间
-                    headPlan = (int)Math.Floor(flexEst * R_HEAD);
-                }
-
-                // ① 头部未上电（仅第二圈起执行）
-                if (headPlan > 0)
-                {
-                    _log.Info($"EPB[{_channel}] 学习{k + 1}：①头部未上电 {headPlan}ms（按比例 {R_HEAD:P0} 计划）。", "EPB");
-                    await Task.Delay(headPlan, token).ConfigureAwait(false);
-                }
-                else if (k == 0)
-                {
-                    _log.Info($"EPB[{_channel}] 学习{k + 1}：①头部未上电跳过（首圈不延时）。", "EPB");
-                }
-
-                var tElecStart = NowTicks(); // 电控段起点（用于最终⑧收口）
-
-                // ========== ② + ③ + ④：正向 ==========
-                _do.SetEpbForward(_channel);
-                _log.Info($"EPB[{_channel}] 学习{k + 1}：②正向上电，忽略涌流 {_peakIgnoreMs}ms…", "EPB");
-                await Task.Delay(_peakIgnoreMs, token).ConfigureAwait(false);
-
-                // ②：判入正向空行程（小电流带）
-                var (okEmptyFwd, tEnterEmptyFwd_ms, iEmptyFwd) =
-                    await WaitStableAroundAsync(+0.5, +1, _emptyBandA, _stableWinMs, token).ConfigureAwait(false);
-                if (!okEmptyFwd)
-                {
-                    _do.SetEpbOff(_channel);
-                    _log.Warn($"EPB[{_channel}] 学习{k + 1}：②未判定到正向空行程，放弃本轮。", "EPB");
-                    continue;
-                }
-
-                var tFwdPeakDecay = Math.Max(0, tEnterEmptyFwd_ms); // ②
-                _log.Info($"EPB[{_channel}] 学习{k + 1}：②FwdPeakDecay={tFwdPeakDecay}ms，Iempty+≈{iEmptyFwd:F2}A。", "EPB");
-
-                // —— 这里移除“实时等待离开空行程上边界”的高频等待以避免 UI 卡顿 —— //
-                // 计算“进入空行程”的绝对 Tick，作为 ③ 的起点（统计用途）
-                long tEnterEmptyFwdTick = tElecStart + (long)(tEnterEmptyFwd_ms * (Stopwatch.Frequency / 1000.0));
-                long rampStartTick = tEnterEmptyFwdTick; // 直接以“进入空行程”作为 ③ 的起点，避免额外等待
-
-                // ③+④：从空行程爬升到“夹紧阈值/平台/预测触发”，判定与 RunOne 完全一致
-                var okClamp = await WaitCurrentAboveAsync(_posThrA, token).ConfigureAwait(false);
-                var clampReachTick = Stopwatch.GetTimestamp(); // 记录“达到应断电条件”的时刻（与对齐节拍一致）
-                if (!okClamp)
-                {
-                    _do.SetEpbOff(_channel);
-                    _log.Warn($"EPB[{_channel}] 学习{k + 1}：④未达到阈值/平台（阈 {_posThrA:F2}A），放弃本轮。", "EPB");
-                    continue;
-                }
-
-                // —— 与 RunOne 一致 —— 达到应断电条件后**立刻断电**，避免超调
-                _do.SetEpbOff(_channel);
-                _log.Info($"EPB[{_channel}] 学习{k + 1}：已达到夹紧条件（阈/平台/预测），已立即正向断电。", "EPB");
-
-                // 统计 ③/④（用于更新中位数，支撑后续分配）
-                var tFwdEmpty = Math.Max(0, MsBetween(tEnterEmptyFwdTick, rampStartTick)); // ③（此处为 0 或极小，避免等待带来的卡顿）
-                var tClampRamp = Math.Max(0, MsBetween(rampStartTick, clampReachTick)); // ④（把原 ③ 的一部分计入 ④）
-                _log.Info($"EPB[{_channel}] 学习{k + 1}：③FwdEmpty(actual)={tFwdEmpty}ms，④ClampRamp={tClampRamp}ms。", "EPB");
-
-                // ⑤ 保持
-                var holdUsed = Math.Max(0, _holdMs);
-                Console.WriteLine($"_holdMs:{_holdMs}");
-
-                if (holdUsed > 0)
-                {
-                    _log.Info($"EPB[{_channel}] 学习{k + 1}：⑤保持 {holdUsed}ms。", "EPB");
-                    Console.WriteLine($"EPB[{_channel}] 学习{k + 1}：⑤保持 {holdUsed}ms。", "EPB");
-                    await Task.Delay(holdUsed, token).ConfigureAwait(false);
-                }
-
-                // ========== ⑥ + ⑦：反向 ==========
-                _do.SetEpbReverse(_channel);
-                _log.Info($"EPB[{_channel}] 学习{k + 1}：⑥反向上电，忽略涌流 {_peakIgnoreMs}ms…", "EPB");
-                await Task.Delay(_peakIgnoreMs, token).ConfigureAwait(false);
-
-                // ⑥：入反向空行程
-                var (okEmptyRev, tEnterEmptyRev_ms, iEmptyRev) =
-                    await WaitStableAroundAsync(-0.5, -1, _emptyBandA, _stableWinMs, token).ConfigureAwait(false);
-                if (!okEmptyRev)
-                {
-                    _do.SetEpbOff(_channel);
-                    _log.Warn($"EPB[{_channel}] 学习{k + 1}：⑥未判定到反向空行程，放弃本轮。", "EPB");
-                    continue;
-                }
-
-                var tRevPeakDecay = Math.Max(0, tEnterEmptyRev_ms); // ⑥
-                _log.Info($"EPB[{_channel}] 学习{k + 1}：⑥RevPeakDecay={tRevPeakDecay}ms，Iempty-≈{iEmptyRev:F2}A。", "EPB");
-
-                // —— 用“本圈刚性 ②+④+⑥ + ⑤ + ①(已执行) ”从电控预算中扣除，得到柔性预算 —— //
-                var rigidThis = (int)Math.Round((double)(tFwdPeakDecay + tClampRamp + tRevPeakDecay));
-                var flexBudget = elecBudgetMs - headPlan - rigidThis - holdUsed;
-                if (flexBudget < 0)
-                {
-                    _log.Warn(
-                        $"EPB[{_channel}] 学习{k + 1}：柔性预算为负（预算{elecBudgetMs}ms，①{headPlan}ms，②④⑥合计{rigidThis}ms，⑤{holdUsed}ms）。" +
-                        "将 ③/⑦/⑧ 置 0，仅做 ⑦=0 定时与⑧收口。", "EPB");
-                    flexBudget = 0;
-                }
-
-                // 按比例得到计划 ①③⑦⑧（注意①已执行，这里计算用于日志与⑧参考）
-                var plan3 = (int)Math.Floor(flexBudget * R_FWD_EMPTY); // ③（计划，仅对比）
-                var plan7 = (int)Math.Floor(flexBudget * R_REV_EMPTY); // ⑦（计划，用于定时控制）
-                var plan8 = Math.Max(0, flexBudget - plan3 - plan7);   // ⑧（计划，尾段实际用收口完成）
-
-                _log.Info(
-                    $"EPB[{_channel}] 学习{k + 1}：柔性预算={flexBudget}ms -> ③(计划)={plan3}ms，⑦(计划)={plan7}ms，⑧(计划)≈{plan8}ms。",
-                    "EPB");
-
-                // ⑦：按“计划时间”定时控制（不观测退出）
-                var run7 = Math.Max(10, plan7); // 给个最小 10ms
-                _log.Info($"EPB[{_channel}] 学习{k + 1}：⑦反向空行程定时 {run7}ms…", "EPB");
-                await Task.Delay(run7, token).ConfigureAwait(false);
-                var tRevEmpty = run7;
-
-                // 反向断电
-                _do.SetEpbOff(_channel);
-
-                // ⑧：尾段收口 —— 把实际误差全吸收，使电控段总时长 ≈ elecBudgetMs
-                var elecElapsed = MsBetween(tElecStart, NowTicks());
-                var tailRemain = Math.Max(0, elecBudgetMs - elecElapsed);
-                if (tailRemain > 0)
-                {
-                    _log.Info($"EPB[{_channel}] 学习{k + 1}：⑧尾段收口 {tailRemain}ms（计划≈{plan8}ms）。", "EPB");
-                    await Task.Delay(tailRemain, token).ConfigureAwait(false);
-                }
-
-                // —— 记录“③ 计划 vs 实测”的对比 —— //
-                if (plan3 > 0 || tFwdEmpty > 0)
-                {
-                    var diff = tFwdEmpty - plan3;
-                    _log.Info(
-                        $"EPB[{_channel}] 学习{k + 1}：③实测={tFwdEmpty}ms vs ③计划={plan3}ms，差值={diff}ms。", "EPB");
-                }
-
-                // —— 累积样本 —— //
-                fwdPeakList.Add(tFwdPeakDecay); // ②
-                fwdEmptyList.Add(tFwdEmpty);    // ③（实测）
-                clampList.Add(tClampRamp);      // ④
-                revPeakList.Add(tRevPeakDecay); // ⑥
-                revEmptyList.Add(tRevEmpty);    // ⑦（按计划定时）
-                iEmptyFList.Add(iEmptyFwd);
-                iEmptyRList.Add(iEmptyRev);
-
-                _log.Info(
-                    $"EPB[{_channel}] 学习{k + 1} 汇总：②={tFwdPeakDecay}ms, ③(actual)={tFwdEmpty}ms, " +
-                    $"④={tClampRamp}ms, ⑥={tRevPeakDecay}ms, ⑦(planned)={tRevEmpty}ms, " +
-                    $"I±empty≈({iEmptyFwd:F2},{iEmptyRev:F2})A。", "EPB");
-
-                // ========= 阶段统计日志 =========
-                var tHead = headPlan;
-                var t2 = (int)Math.Round((decimal)tFwdPeakDecay);
-                var t3 = (int)Math.Round((decimal)tFwdEmpty);
-                var t4 = (int)Math.Round((decimal)tClampRamp);
-                var t5 = holdUsed;
-                var t6 = (int)Math.Round((decimal)tRevPeakDecay);
-                var t7 = (int)Math.Round((decimal)tRevEmpty);
-                var t8 = tailRemain;
-
-                var total = tHead + t2 + t3 + t4 + t5 + t6 + t7 + t8;
-
-                _log.Info(
-                    $"EPB[{_channel}] 学习{k + 1}阶段统计：" +
-                    $"①Head={tHead}ms, ②FwdPeak={t2}ms, ③FwdEmpty={t3}ms, ④ClampRamp={t4}ms, " +
-                    $"⑤Hold={t5}ms, ⑥RevPeak={t6}ms, ⑦RevEmpty={t7}ms, ⑧Tail={t8}ms | " +
-                    $"合计={total}ms (目标≈{targetPeriodMs}ms)", "EPB");
-            }
-
-            if (!fwdPeakList.Any() || !revPeakList.Any())
-            {
-                _log.Warn($"EPB[{_channel}] 学习失败：有效样本不足（至少应包含 ② 与 ⑥）。", "EPB");
-                return false;
-            }
-
-            // —— 中位数抑制离群 —— //
-            _tFwdPeakDecayMs = Median(fwdPeakList);                 // ②
-            _tClampRampMs = clampList.Any() ? Median(clampList) : 0.0; // ④
-            _tRevPeakDecayMs = Median(revPeakList);                 // ⑥
-
-            _tFwdEmptyMs = fwdEmptyList.Any() ? Median(fwdEmptyList) : 0.0; // ③（参考）
-            _tRevEmptyMs = revEmptyList.Any() ? Median(revEmptyList) : 0.0; // ⑦（定时）
-
-            _iEmptyFwdA = iEmptyFList.Any() ? Median(iEmptyFList) : 0.0;
-            _iEmptyRevA = iEmptyRList.Any() ? Median(iEmptyRList) : 0.0;
-
-            _log.Info(
-                $"EPB[{_channel}] 学习完成(中位数)：②={_tFwdPeakDecayMs}ms，④={_tClampRampMs}ms，⑥={_tRevPeakDecayMs}ms；" +
-                $"③(actual)={_tFwdEmptyMs}ms（参考），⑦(planned)={_tRevEmptyMs}ms；" +
-                $"I±empty≈({_iEmptyFwdA:F2},{_iEmptyRevA:F2})A。", "EPB");
-
-            return true;
-        }
-
-        /// <summary>
-        /// 自学习：按目标周期进行柔性分配；正向阈值判断及正向断电逻辑与 <see cref="RunOneAsync"/> 一致。
-        /// 关键变更：
-        ///  - 删除对“离开空行程上边界”的实时等待；
-        ///  - 在达到“应断电条件”并断电后，使用环形缓冲回溯求得 ③ 的 rampStartTick，避免 UI 卡顿；
-        ///  - 统计口径更稳（采样相位与对齐抖动不再影响统计）。
-        /// </summary>
-        public async Task<bool> LearnAsyncNew0(int nCycles, CancellationToken token, int? targetPeriodMs)
-        {
-            // —— 若未显式传入周期（旧调用），用 5000ms 并给出日志 —— //
-            if (targetPeriodMs == null)
-            {
-                targetPeriodMs = 5000;
-                _log.Warn($"EPB[{_channel}] LearnAsync 未显式指定目标周期，默认按 {targetPeriodMs}ms 计算柔性分配。", "EPB");
-            }
-
-            // —— 本地时间工具（仅本方法内使用） —— //
-            static long NowTicks() => Stopwatch.GetTimestamp();
-            static int MsBetween(long t0, long t1) => (int)((t1 - t0) * 1000.0 / Stopwatch.Frequency);
-
-            // —— 比例（①③⑦⑧），⑤单独使用 _holdMs —— //
-            const double R_HEAD = 0.15;      // ①
-            const double R_FWD_EMPTY = 0.35; // ③（计划值）
-            const double R_REV_EMPTY = 0.35; // ⑦（计划值，定时控制）
-            const double R_TAIL = 0.15;      // ⑧
-
-            _log.Info(
-                $"EPB[{_channel}] 学习开始，次数={nCycles}；采样={_sampleMs}ms，忽略涌流={_peakIgnoreMs}ms，" +
-                $"emptyBand={_emptyBandA:F2}A，stableWin={_stableWinMs}ms，posThr={_posThrA:F2}A，" +
-                $"plateau(win={PlateauWindowMs}ms, flat≤{PlateauFlatRangeA:F2}A, +emptyMargin≥{PlateauAboveEmptyMarginA:F2}A)。",
-                "EPB");
-
-            // ========== 预释放：在正式学习循环前，确保卡钳处于“已释放”状态 ==========
-            if (_revEmptyKeepMs > 0)
-                try
-                {
-                    _log.Info($"EPB[{_channel}] 自学习预处理：先反向释放，进入反向空行程后保持 {_revEmptyKeepMs}ms。", "EPB");
-                    _do.SetEpbReverse(_channel);
-                    await Task.Delay(_peakIgnoreMs, token); // 忽略涌流
-
-                    var (okRel, _, iEmptyRel) = await WaitStableAroundAsync(-0.5, -1, _emptyBandA, _stableWinMs, token);
-                    if (okRel)
-                    {
-                        _log.Info($"EPB[{_channel}] 预释放：已进入反向空行程，Iempty-≈{iEmptyRel:F2}A。保持 {_revEmptyKeepMs}ms。", "EPB");
-                        if (_iEmptyRevA == 0) _iEmptyRevA = iEmptyRel;
-                    }
-                    else
-                    {
-                        _log.Warn($"EPB[{_channel}] 预释放：未稳定判定到反向空行程，仍按 {_revEmptyKeepMs}ms 定时保持。", "EPB");
-                    }
-
-                    await Task.Delay(_revEmptyKeepMs, token);
-                }
-                catch (OperationCanceledException) { throw; }
-                catch (Exception ex)
-                {
-                    _log.Warn($"EPB[{_channel}] 预释放阶段异常：{ex.Message}（忽略继续）。", "EPB");
-                }
-                finally
-                {
-                    _do.SetEpbOff(_channel);
-                }
-
-            // —— 累积样本（中位数抑制离群） —— //
-            var fwdPeakList = new List<double>(); // ②
-            var fwdEmptyList = new List<double>(); // ③（实测）
-            var clampList = new List<double>(); // ④
-            var revPeakList = new List<double>(); // ⑥
-            var revEmptyList = new List<double>(); // ⑦（定时）
-            var iEmptyFList = new List<double>();
-            var iEmptyRList = new List<double>();
-
-            for (var k = 0; k < nCycles; k++)
-            {
-                token.ThrowIfCancellationRequested();
-
-                // 0) 液压（可选）；这里 hydUsed 恒为 0（保留接口）
-                var swHyd = Stopwatch.StartNew();
-                var hydUsed = (int)swHyd.ElapsedMilliseconds;
-
-                var elecBudgetMs = Math.Max(0, (int)targetPeriodMs - hydUsed);
-
-                // —— ① 头部未上电（从第二圈起按中位数估算） —— //
-                var headPlan = 0;
-                if (k >= 1 && fwdPeakList.Count > 0 && clampList.Count > 0 && revPeakList.Count > 0)
-                {
-                    var rigidEst = (int)Math.Round(Median(fwdPeakList) + Median(clampList) + Median(revPeakList));
-                    var flexEst = Math.Max(0, elecBudgetMs - rigidEst - Math.Max(0, _holdMs));
-                    headPlan = (int)Math.Floor(flexEst * R_HEAD);
-                }
-                if (headPlan > 0)
-                {
-                    _log.Info($"EPB[{_channel}] 学习{k + 1}：①头部未上电 {headPlan}ms（按比例 {R_HEAD:P0} 计划）。", "EPB");
-                    await Task.Delay(headPlan, token);
-                }
-                else if (k == 0)
-                {
-                    _log.Info($"EPB[{_channel}] 学习{k + 1}：①头部未上电跳过（首圈不延时）。", "EPB");
-                }
-
-                var tElecStart = NowTicks(); // 电控段起点（用于⑧收口）
-
-                // ========== ② + ③ + ④：正向 ==========
-                _do.SetEpbForward(_channel);
-                _log.Info($"EPB[{_channel}] 学习{k + 1}：②正向上电，忽略涌流 {_peakIgnoreMs}ms…", "EPB");
-                await Task.Delay(_peakIgnoreMs, token);
-                //
-                // // ②：判入正向空行程（小电流带）
-                 var (okEmptyFwd, tEnterEmptyFwd_ms, iEmptyFwd) =
-                     await WaitStableAroundAsync(+0.5, +1, _emptyBandA, _stableWinMs, token);
-
-                if (!okEmptyFwd)
-                {
-                    _do.SetEpbOff(_channel);
-                    _log.Warn($"EPB[{_channel}] 学习{k + 1}：②未判定到正向空行程，放弃本轮。", "EPB");
-                    continue;
-                }
-
-                var tFwdPeakDecay = Math.Max(0, tEnterEmptyFwd_ms); // ②
-                _log.Info($"EPB[{_channel}] 学习{k + 1}：②FwdPeakDecay={tFwdPeakDecay}ms，Iempty+≈{iEmptyFwd:F2}A。", "EPB");
-
-                // ③+④：从空行程爬升到“夹紧阈值/平台/预测触发”
-                // —— 判定与 RunOneAsync 完全一致：到达应断电条件后立即断电 —— //
-                var okClamp = await WaitCurrentAboveAsync(_posThrA, token);
-                var clampReachTick = Stopwatch.GetTimestamp();  // 达到阈值/平台的时刻
-                if (!okClamp)
-                {
-                    _do.SetEpbOff(_channel);
-                    _log.Warn($"EPB[{_channel}] 学习{k + 1}：④未达到阈值/平台（阈 {_posThrA:F2}A），放弃本轮。", "EPB");
-                    continue;
-                }
-
-                // —— 立刻断电，避免超调 —— //
-                _do.SetEpbOff(_channel);
-                _log.Info($"EPB[{_channel}] 学习{k + 1}：已达到夹紧条件（阈/平台/预测），已立即正向断电。", "EPB");
-
-                // ③：不再实时 await“离开空带上界”，改为 —— 回溯缓冲：
-                // enterTick = 本圈电控起点 + 进入空行程相对时间
-                long enterTick = tElecStart + (long)(tEnterEmptyFwd_ms * (Stopwatch.Frequency / 1000.0));
-                double emptyLeaveThr = iEmptyFwd + _emptyBandA;
-
-                // 在 enterTick 之后，到 clampReachTick 之前，找“首次上穿 emptyLeaveThr”的 Tick
-                long? rampStartTick = _currentBus[_channel].FindFirstUpCrossing(emptyLeaveThr, enterTick);
-                if (rampStartTick is null || rampStartTick.Value > clampReachTick)
-                {
-                    // 若未找到，保守起见用 clampReachTick 代替（③ 记 0，全部算到 ④）
-                    rampStartTick = clampReachTick;
-                }
-
-                // 统计 ③/④
-                var tFwdEmpty = Math.Max(0, MsBetween(enterTick, rampStartTick.Value));      // ③
-                var tClampRamp = Math.Max(0, MsBetween(rampStartTick.Value, clampReachTick)); // ④
-                _log.Info($"EPB[{_channel}] 学习{k + 1}：③FwdEmpty(actual)={tFwdEmpty}ms，④ClampRamp={tClampRamp}ms。", "EPB");
-
-                // ⑤ 保持
-                var holdUsed = Math.Max(0, _holdMs);
-                if (holdUsed > 0)
-                {
-                    _log.Info($"EPB[{_channel}] 学习{k + 1}：⑤保持 {holdUsed}ms。", "EPB");
-                    await Task.Delay(holdUsed, token);
-                }
-
-                // ========== ⑥ + ⑦：反向 ==========
-                _do.SetEpbReverse(_channel);
-                _log.Info($"EPB[{_channel}] 学习{k + 1}：⑥反向上电，忽略涌流 {_peakIgnoreMs}ms…", "EPB");
-                await Task.Delay(_peakIgnoreMs, token);
-
-                var (okEmptyRev, tEnterEmptyRev_ms, iEmptyRev) =
-                    await WaitStableAroundAsync(-0.5, -1, _emptyBandA, _stableWinMs, token);
-                if (!okEmptyRev)
-                {
-                    _do.SetEpbOff(_channel);
-                    _log.Warn($"EPB[{_channel}] 学习{k + 1}：⑥未判定到反向空行程，放弃本轮。", "EPB");
-                    continue;
-                }
-
-                var tRevPeakDecay = Math.Max(0, tEnterEmptyRev_ms); // ⑥
-                _log.Info($"EPB[{_channel}] 学习{k + 1}：⑥RevPeakDecay={tRevPeakDecay}ms，Iempty-≈{iEmptyRev:F2}A。", "EPB");
-
-                // —— 预算与分配（与原逻辑一致）——
-                var rigidThis = (int)Math.Round((double)(tFwdPeakDecay + tClampRamp + tRevPeakDecay));
-                var flexBudget = elecBudgetMs - headPlan - rigidThis - holdUsed;
-                if (flexBudget < 0)
-                {
-                    _log.Warn(
-                        $"EPB[{_channel}] 学习{k + 1}：柔性预算为负（预算{elecBudgetMs}ms，①{headPlan}ms，②④⑥合计{rigidThis}ms，⑤{holdUsed}ms）。" +
-                        "将 ③/⑦/⑧ 置 0，仅做 ⑦=0 定时与⑧收口。", "EPB");
-                    flexBudget = 0;
-                }
-
-                var plan3 = (int)Math.Floor(flexBudget * R_FWD_EMPTY); // ③（计划，仅对比）
-                var plan7 = (int)Math.Floor(flexBudget * R_REV_EMPTY); // ⑦（计划，定时）
-                var plan8 = Math.Max(0, flexBudget - plan3 - plan7);   // ⑧（尾段收口）
-
-                _log.Info(
-                    $"EPB[{_channel}] 学习{k + 1}：柔性预算={flexBudget}ms -> ③(计划)={plan3}ms，⑦(计划)={plan7}ms，⑧(计划)≈{plan8}ms。",
-                    "EPB");
-
-                // ⑦：反向空行程定时
-                var run7 = Math.Max(10, plan7);
-                _log.Info($"EPB[{_channel}] 学习{k + 1}：⑦反向空行程定时 {run7}ms…", "EPB");
-                await Task.Delay(run7, token);
-                var tRevEmpty = run7;
-
-                // 反向断电
-                _do.SetEpbOff(_channel);
-
-                // ⑧：尾段收口
-                var elecElapsed = MsBetween(tElecStart, NowTicks());
-                var tailRemain = Math.Max(0, elecBudgetMs - elecElapsed);
-                if (tailRemain > 0)
-                {
-                    _log.Info($"EPB[{_channel}] 学习{k + 1}：⑧尾段收口 {tailRemain}ms（计划≈{plan8}ms）。", "EPB");
-                    await Task.Delay(tailRemain, token);
-                }
-
-                // 日志：③计划 vs 实测
-                if (plan3 > 0 || tFwdEmpty > 0)
-                {
-                    var diff = tFwdEmpty - plan3;
-                    _log.Info($"EPB[{_channel}] 学习{k + 1}：③实测={tFwdEmpty}ms vs ③计划={plan3}ms，差值={diff}ms。", "EPB");
-                }
-
-                // —— 累积样本 —— //
-                fwdPeakList.Add(tFwdPeakDecay);   // ②
-                fwdEmptyList.Add(tFwdEmpty);      // ③（实测）
-                clampList.Add(tClampRamp);        // ④
-                revPeakList.Add(tRevPeakDecay);   // ⑥
-                revEmptyList.Add(tRevEmpty);      // ⑦（定时）
-                iEmptyFList.Add(iEmptyFwd);
-                iEmptyRList.Add(iEmptyRev);
-
-                _log.Info(
-                    $"EPB[{_channel}] 学习{k + 1} 汇总：②={tFwdPeakDecay}ms, ③(actual)={tFwdEmpty}ms, " +
-                    $"④={tClampRamp}ms, ⑥={tRevPeakDecay}ms, ⑦(planned)={tRevEmpty}ms, " +
-                    $"I±empty≈({iEmptyFwd:F2},{iEmptyRev:F2})A。", "EPB");
-
-                // 阶段统计
-                var tHead = headPlan;
-                var t2 = (int)Math.Round((decimal)tFwdPeakDecay);
-                var t3 = (int)Math.Round((decimal)tFwdEmpty);
-                var t4 = (int)Math.Round((decimal)tClampRamp);
-                var t5 = holdUsed;
-                var t6 = (int)Math.Round((decimal)tRevPeakDecay);
-                var t7 = (int)Math.Round((decimal)tRevEmpty);
-                var t8 = tailRemain;
-                var total = tHead + t2 + t3 + t4 + t5 + t6 + t7 + t8;
-
-                _log.Info(
-                    $"EPB[{_channel}] 学习{k + 1}阶段统计：" +
-                    $"①Head={tHead}ms, ②FwdPeak={t2}ms, ③FwdEmpty={t3}ms, ④ClampRamp={t4}ms, " +
-                    $"⑤Hold={t5}ms, ⑥RevPeak={t6}ms, ⑦RevEmpty={t7}ms, ⑧Tail={t8}ms | 合计={total}ms (目标≈{targetPeriodMs}ms)",
-                    "EPB");
-            }
-
-            if (!fwdPeakList.Any() || !revPeakList.Any())
-            {
-                _log.Warn($"EPB[{_channel}] 学习失败：有效样本不足（至少应包含 ② 与 ⑥）。", "EPB");
-                return false;
-            }
-
-            // —— 中位数抑制离群 —— //
-            _tFwdPeakDecayMs = Median(fwdPeakList);                 // ②
-            _tClampRampMs = clampList.Any() ? Median(clampList) : 0.0; // ④
-            _tRevPeakDecayMs = Median(revPeakList);                 // ⑥
-
-            _tFwdEmptyMs = fwdEmptyList.Any() ? Median(fwdEmptyList) : 0.0; // ③（参考）
-            _tRevEmptyMs = revEmptyList.Any() ? Median(revEmptyList) : 0.0; // ⑦（定时）
-
-            _iEmptyFwdA = iEmptyFList.Any() ? Median(iEmptyFList) : 0.0;
-            _iEmptyRevA = iEmptyRList.Any() ? Median(iEmptyRList) : 0.0;
-
-            _log.Info(
-                $"EPB[{_channel}] 学习完成(中位数)：②={_tFwdPeakDecayMs}ms，④={_tClampRampMs}ms，⑥={_tRevPeakDecayMs}ms；" +
-                $"③(actual)={_tFwdEmptyMs}ms（参考），⑦(planned)={_tRevEmptyMs}ms；" +
-                $"I±empty≈({_iEmptyFwdA:F2},{_iEmptyRevA:F2})A。", "EPB");
-
-            return true;
+            if (epbChannel < 1 || epbChannel >= _currentBus.Length) return;
+            _currentBus[epbChannel].Add(new CurrentSample(tick, currentAmp));
         }
 
         public async Task<bool> LearnAsync(int nCycles, CancellationToken token, int? targetPeriodMs)
@@ -1388,8 +142,15 @@ namespace Controller
                 _log.Warn($"EPB[{_channel}] LearnAsync 未显式指定目标周期，默认按 {targetPeriodMs}ms 计算柔性分配。", "EPB");
             }
 
-            static long NowTicks() => Stopwatch.GetTimestamp();
-            static int MsBetween(long t0, long t1) => (int)((t1 - t0) * 1000.0 / Stopwatch.Frequency);
+            static long NowTicks()
+            {
+                return Stopwatch.GetTimestamp();
+            }
+
+            static int MsBetween(long t0, long t1)
+            {
+                return (int)((t1 - t0) * 1000.0 / Stopwatch.Frequency);
+            }
 
             const double R_HEAD = 0.15;
             const double R_FWD_EMPTY = 0.35;
@@ -1414,7 +175,8 @@ namespace Controller
                         await WaitStableAroundAsync(-0.5, -1, _emptyBandA, _stableWinMs, token).ConfigureAwait(false);
                     if (okRel)
                     {
-                        _log.Info($"EPB[{_channel}] 预释放：已进入反向空行程，Iempty-≈{iEmptyRel:F2}A。保持 {_revEmptyKeepMs}ms。", "EPB");
+                        _log.Info($"EPB[{_channel}] 预释放：已进入反向空行程，Iempty-≈{iEmptyRel:F2}A。保持 {_revEmptyKeepMs}ms。",
+                            "EPB");
                         if (_iEmptyRevA == 0) _iEmptyRevA = iEmptyRel;
                     }
                     else
@@ -1424,7 +186,10 @@ namespace Controller
 
                     await Task.Delay(_revEmptyKeepMs, token).ConfigureAwait(false);
                 }
-                catch (OperationCanceledException) { throw; }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
                 catch (Exception ex)
                 {
                     _log.Warn($"EPB[{_channel}] 预释放阶段异常：{ex.Message}（忽略继续）。", "EPB");
@@ -1460,6 +225,7 @@ namespace Controller
                     var flexEst = Math.Max(0, elecBudgetMs - rigidEst - Math.Max(0, _holdMs));
                     headPlan = (int)Math.Floor(flexEst * R_HEAD);
                 }
+
                 if (headPlan > 0)
                 {
                     _log.Info($"EPB[{_channel}] 学习{k + 1}：①头部未上电 {headPlan}ms（按比例 {R_HEAD:P0} 计划）。", "EPB");
@@ -1505,15 +271,16 @@ namespace Controller
                 _log.Info($"EPB[{_channel}] 学习{k + 1}：已达到夹紧条件（{clampCause}），立即正向断电。", "EPB");
 
                 // ③ 回溯“离开空带上边界”的起点
-                long enterTick = tElecStart + (long)(tEnterEmptyFwd_ms * (Stopwatch.Frequency / 1000.0));
-                double emptyLeave = iEmptyFwd + _emptyBandA;
-                long? rampStartTick = _currentBus[_channel].FindFirstUpCrossing(emptyLeave, enterTick);
+                var enterTick = tElecStart + (long)(tEnterEmptyFwd_ms * (Stopwatch.Frequency / 1000.0));
+                var emptyLeave = iEmptyFwd + _emptyBandA;
+                var rampStartTick = _currentBus[_channel].FindFirstUpCrossing(emptyLeave, enterTick);
                 if (rampStartTick is null || rampStartTick.Value > clampReachTick)
                     rampStartTick = clampReachTick; // 保守兜底
 
                 var tFwdEmpty = Math.Max(0, MsBetween(enterTick, rampStartTick.Value));
                 var tClampRamp = Math.Max(0, MsBetween(rampStartTick.Value, clampReachTick));
-                _log.Info($"EPB[{_channel}] 学习{k + 1}：③FwdEmpty(actual)={tFwdEmpty}ms，④ClampRamp={tClampRamp}ms。", "EPB");
+                _log.Info($"EPB[{_channel}] 学习{k + 1}：③FwdEmpty(actual)={tFwdEmpty}ms，④ClampRamp={tClampRamp}ms。",
+                    "EPB");
 
                 // ⑤ 保持
                 var holdUsed = Math.Max(0, _holdMs);
@@ -1626,7 +393,8 @@ namespace Controller
 
             _log.Info(
                 $"EPB[{_channel}] 学习完成(中位数)：②={_tFwdPeakDecayMs}ms，④={_tClampRampMs}ms，⑥={_tRevPeakDecayMs}ms；" +
-                $"③(actual)={_tFwdEmptyMs}ms，⑦(planned)={_tRevEmptyMs}ms；I±empty≈({_iEmptyFwdA:F2},{_iEmptyRevA:F2})A。", "EPB");
+                $"③(actual)={_tFwdEmptyMs}ms，⑦(planned)={_tRevEmptyMs}ms；I±empty≈({_iEmptyFwdA:F2},{_iEmptyRevA:F2})A。",
+                "EPB");
 
             return true;
         }
@@ -1810,24 +578,24 @@ namespace Controller
 
 
         /// <summary>
-        /// 将指定值限制在指定的范围内。
+        ///     将指定值限制在指定的范围内。
         /// </summary>
         /// <param name="v">要限制的值。</param>
         /// <param name="lo">范围的下限（包含）。</param>
         /// <param name="hi">范围的上限（包含）。</param>
         /// <returns>
-        /// 如果 <paramref name="v"/> 小于 <paramref name="lo"/>，返回 <paramref name="lo"/>；
-        /// 如果 <paramref name="v"/> 大于 <paramref name="hi"/>，返回 <paramref name="hi"/>；
-        /// 否则返回 <paramref name="v"/>。
+        ///     如果 <paramref name="v" /> 小于 <paramref name="lo" />，返回 <paramref name="lo" />；
+        ///     如果 <paramref name="v" /> 大于 <paramref name="hi" />，返回 <paramref name="hi" />；
+        ///     否则返回 <paramref name="v" />。
         /// </returns>
         /// <remarks>
-        /// 此方法确保返回值始终在 [<paramref name="lo"/>, <paramref name="hi"/>] 区间内。
-        /// 如果 <paramref name="lo"/> 大于 <paramref name="hi"/>，所有输入值都将被限制为 <paramref name="lo"/>。
-        /// 对于 NaN 值，将直接返回 NaN。
+        ///     此方法确保返回值始终在 [<paramref name="lo" />, <paramref name="hi" />] 区间内。
+        ///     如果 <paramref name="lo" /> 大于 <paramref name="hi" />，所有输入值都将被限制为 <paramref name="lo" />。
+        ///     对于 NaN 值，将直接返回 NaN。
         /// </remarks>
         /// <example>
-        /// 以下示例演示如何使用 Clamp 方法：
-        /// <code>
+        ///     以下示例演示如何使用 Clamp 方法：
+        ///     <code>
         /// double value = 150;
         /// double clamped = Clamp(value, 0, 100); // 返回 100
         /// 
@@ -1852,21 +620,21 @@ namespace Controller
         }
 
         /// <summary>
-        /// 计算指数加权移动平均（EWMA）值。
+        ///     计算指数加权移动平均（EWMA）值。
         /// </summary>
         /// <param name="prev">上一个EWMA值（历史平均值）。</param>
         /// <param name="cur">当前的新观测值。</param>
         /// <returns>更新后的EWMA值。</returns>
         /// <remarks>
-        /// 此方法使用公式: EWMA = prev + α × (cur - prev)
-        /// 其中 α 是平滑因子，控制新观测值对平均值的影响程度。
-        /// α 值越大，新观测值的权重越高，平均值对近期变化越敏感；
-        /// α 值越小，历史数据的权重越高，平均值越平滑。
-        /// 典型的 α 值范围是 0.01 到 0.3，具体取决于应用场景。
+        ///     此方法使用公式: EWMA = prev + α × (cur - prev)
+        ///     其中 α 是平滑因子，控制新观测值对平均值的影响程度。
+        ///     α 值越大，新观测值的权重越高，平均值对近期变化越敏感；
+        ///     α 值越小，历史数据的权重越高，平均值越平滑。
+        ///     典型的 α 值范围是 0.01 到 0.3，具体取决于应用场景。
         /// </remarks>
         /// <example>
-        /// 以下示例演示如何使用 ReadEwma 方法：
-        /// <code>
+        ///     以下示例演示如何使用 ReadEwma 方法：
+        ///     <code>
         /// double previousEwma = 50.0;
         /// double currentValue = 55.0;
         /// double newEwma = ReadEwma(previousEwma, currentValue);
@@ -2024,21 +792,21 @@ namespace Controller
         }
 
         /// <summary>
-        /// 等待 EPB 通道电流达到或超过指定阈值（A）。
-        /// <para>改动要点：直接使用瞬时电流值参与判断（不做平滑），并将采样读取放到循环起始处以减少首判延迟。</para>
+        ///     等待 EPB 通道电流达到或超过指定阈值（A）。
+        ///     <para>改动要点：直接使用瞬时电流值参与判断（不做平滑），并将采样读取放到循环起始处以减少首判延迟。</para>
         /// </summary>
         /// <param name="thrA">电流阈值（安培）。达到或超过则立即返回 <c>true</c>。</param>
         /// <param name="token">取消令牌。</param>
         /// <returns>
-        /// 若在超时时间（固定 10 s）内达到阈值或识别到“限流平台”，返回 <c>true</c>；
-        /// 超时未达到则返回 <c>false</c>。
+        ///     若在超时时间（固定 10 s）内达到阈值或识别到“限流平台”，返回 <c>true</c>；
+        ///     超时未达到则返回 <c>false</c>。
         /// </returns>
         /// <remarks>
-        /// 其他逻辑保持与原方法一致：
-        /// 1) 达阈值立即返回；
-        /// 2) “限流平台”检测：在 <see cref="PlateauWindowMs"/> 毫秒窗口内波动近似恒定，且显著高于空行程电流 <c>_iEmptyFwdA</c>；
-        /// 3) 超时保护：超过 10 s 返回 <c>false</c>；
-        /// 4) 采样节拍仍基于 <c>_sampleMs</c> 的 <see cref="Task.Delay(int, CancellationToken)"/>。
+        ///     其他逻辑保持与原方法一致：
+        ///     1) 达阈值立即返回；
+        ///     2) “限流平台”检测：在 <see cref="PlateauWindowMs" /> 毫秒窗口内波动近似恒定，且显著高于空行程电流 <c>_iEmptyFwdA</c>；
+        ///     3) 超时保护：超过 10 s 返回 <c>false</c>；
+        ///     4) 采样节拍仍基于 <c>_sampleMs</c> 的 <see cref="Task.Delay(int, CancellationToken)" />。
         /// </remarks>
         private async Task<bool> WaitCurrentAboveAsyncOld2(double thrA, CancellationToken token)
         {
@@ -2097,10 +865,10 @@ namespace Controller
                 await Task.Delay(_sampleMs, token);
             }
         }
-        
+
         /// <summary>
-        /// 等待 EPB 通道电流达到或超过指定阈值（A），并使用“斜率预测 + 提前量”实现更精准的断电控制。
-        /// 带详细日志输出以便调试。
+        ///     等待 EPB 通道电流达到或超过指定阈值（A），并使用“斜率预测 + 提前量”实现更精准的断电控制。
+        ///     带详细日志输出以便调试。
         /// </summary>
         private async Task<bool> WaitCurrentAboveAsyncOld3(
             double thrA,
@@ -2117,13 +885,13 @@ namespace Controller
             int count = 0, head = 0;
 
             // —— 斜率计算需要上一帧 —— //
-            bool hasLast = false;
-            double lastI = 0.0;
+            var hasLast = false;
+            var lastI = 0.0;
             long lastTick = 0;
 
             // —— Tick 相关 —— //
-            long tickPerMs = Stopwatch.Frequency / 1000;
-            long nextDue = Stopwatch.GetTimestamp();
+            var tickPerMs = Stopwatch.Frequency / 1000;
+            var nextDue = Stopwatch.GetTimestamp();
 
             // —— 打印一次方法启动参数 —— //
             _log.Info(
@@ -2131,7 +899,7 @@ namespace Controller
                 $"MinSlope={minSlopeAperMs:F3}A/ms, Margin={safetyMarginA:F2}A, SampleMs={_sampleMs}ms",
                 "EPB");
 
-            int loopCounter = 0; // 控制调试日志频率
+            var loopCounter = 0; // 控制调试日志频率
 
             while (true)
             {
@@ -2139,15 +907,18 @@ namespace Controller
 
                 // —— ① 对齐节拍 —— //
                 {
-                    long now = Stopwatch.GetTimestamp();
+                    var now = Stopwatch.GetTimestamp();
                     if (now < nextDue)
                     {
-                        int ms = (int)Math.Max(0, (nextDue - now) / tickPerMs - 1);
+                        var ms = (int)Math.Max(0, (nextDue - now) / tickPerMs - 1);
                         if (ms > 0) await Task.Delay(ms, token);
-                        while ((now = Stopwatch.GetTimestamp()) < nextDue) { /* 自旋 */ }
+                        while ((now = Stopwatch.GetTimestamp()) < nextDue)
+                        {
+                            /* 自旋 */
+                        }
                     }
                 }
-                nextDue += (long)_sampleMs * tickPerMs;
+                nextDue += _sampleMs * tickPerMs;
 
                 // —— ② 读取瞬时电流 —— //
                 var current = _readCurrent(_channel);
@@ -2156,21 +927,22 @@ namespace Controller
                 // —— ③ 达阈值 —— //
                 if (current + safetyMarginA >= thrA)
                 {
-                    _log.Info($"EPB[{_channel}] 达到阈值: I={current:F2}A ≥ Thr={thrA:F2}A (Margin={safetyMarginA:F2}A)", "EPB");
+                    _log.Info($"EPB[{_channel}] 达到阈值: I={current:F2}A ≥ Thr={thrA:F2}A (Margin={safetyMarginA:F2}A)",
+                        "EPB");
                     return true;
                 }
 
                 // —— ④ 斜率预测 —— //
                 if (predictiveCutMs > 0 && hasLast)
                 {
-                    double dtMs = (nowTick - lastTick) * 1000.0 / Stopwatch.Frequency;
+                    var dtMs = (nowTick - lastTick) * 1000.0 / Stopwatch.Frequency;
                     if (dtMs > 0.05)
                     {
-                        double slope = (current - lastI) / dtMs;
+                        var slope = (current - lastI) / dtMs;
                         if (slope >= minSlopeAperMs)
                         {
-                            double remainA = (thrA - safetyMarginA) - current;
-                            double tToThrMs = remainA / slope;
+                            var remainA = thrA - safetyMarginA - current;
+                            var tToThrMs = remainA / slope;
 
                             if (tToThrMs <= predictiveCutMs && tToThrMs >= 0)
                             {
@@ -2180,8 +952,6 @@ namespace Controller
                                     "EPB");
                                 return true;
                             }
-
-                            
                         }
                     }
                 }
@@ -2194,12 +964,13 @@ namespace Controller
                 if (count == winCap && _iEmptyFwdA != 0)
                 {
                     double min = ring[0], max = ring[0];
-                    for (int i = 1; i < winCap; i++)
+                    for (var i = 1; i < winCap; i++)
                     {
-                        double v = ring[i];
+                        var v = ring[i];
                         if (v < min) min = v;
                         if (v > max) max = v;
                     }
+
                     var range = max - min;
 
                     if (range <= PlateauFlatRangeA && current >= _iEmptyFwdA + PlateauAboveEmptyMarginA)
@@ -2228,18 +999,14 @@ namespace Controller
             }
         }
 
-
-        // —— 在类中加：保存最近几个采样点 —— //
-        private readonly Queue<(double I, long Tick)> _slopeWindow = new Queue<(double, long)>();
-
         private async Task<bool> WaitCurrentAboveAsync(
             double thrA,
             CancellationToken token,
             int predictiveCutMs = 5,
             double minSlopeAperMs = 0.02,
-            double maxSlopeAperMs = 1.0,   // 斜率物理上限（A/ms）
+            double maxSlopeAperMs = 1.0, // 斜率物理上限（A/ms）
             double safetyMarginA = 2,
-            int slopeWinSize = 10)          // 滑动窗口大小
+            int slopeWinSize = 10) // 滑动窗口大小
         {
             var tBegin = Stopwatch.GetTimestamp();
 
@@ -2247,8 +1014,8 @@ namespace Controller
             var ring = new double[winCap];
             int count = 0, head = 0;
 
-            long tickPerMs = Stopwatch.Frequency / 1000;
-            long nextDue = Stopwatch.GetTimestamp();
+            var tickPerMs = Stopwatch.Frequency / 1000;
+            var nextDue = Stopwatch.GetTimestamp();
 
             _slopeWindow.Clear();
 
@@ -2264,15 +1031,17 @@ namespace Controller
 
                 // 对齐采样节拍
                 {
-                    long now = Stopwatch.GetTimestamp();
+                    var now = Stopwatch.GetTimestamp();
                     if (now < nextDue)
                     {
-                        int ms = (int)Math.Max(0, (nextDue - now) / tickPerMs - 1);
+                        var ms = (int)Math.Max(0, (nextDue - now) / tickPerMs - 1);
                         if (ms > 0) await Task.Delay(ms, token);
-                        while ((now = Stopwatch.GetTimestamp()) < nextDue) { }
+                        while ((now = Stopwatch.GetTimestamp()) < nextDue)
+                        {
+                        }
                     }
                 }
-                nextDue += (long)_sampleMs * tickPerMs;
+                nextDue += _sampleMs * tickPerMs;
 
                 // 读取瞬时电流
                 var current = _readCurrent(_channel);
@@ -2295,20 +1064,20 @@ namespace Controller
                     var first = _slopeWindow.Peek();
                     var last = _slopeWindow.Last();
 
-                    double dI = last.I - first.I;
-                    double dtMs = (last.Tick - first.Tick) * 1000.0 / Stopwatch.Frequency;
+                    var dI = last.I - first.I;
+                    var dtMs = (last.Tick - first.Tick) * 1000.0 / Stopwatch.Frequency;
 
                     if (dtMs > 0.5) // 至少 0.5ms 间隔
                     {
-                        double slope = dI / dtMs;
+                        var slope = dI / dtMs;
                         slope = Math.Min(slope, maxSlopeAperMs); // 限幅
 
-                        double remainA = (thrA/* - safetyMarginA*/) - current;
+                        var remainA = thrA /* - safetyMarginA*/ - current;
 
                         // 只在接近阈值时才启用预测
                         if (slope >= minSlopeAperMs && remainA > 0 && remainA < 3) // 接近阈值3A内
                         {
-                            double tToThrMs = remainA / slope;
+                            var tToThrMs = remainA / slope;
                             if (tToThrMs <= predictiveCutMs && tToThrMs >= 0)
                             {
                                 _log.Warn(
@@ -2349,20 +1118,20 @@ namespace Controller
 
 
         /// <summary>
-        /// 以与 <see cref="WaitCurrentAboveAsync"/> 相同的“对齐采样节拍”方式，
-        /// 等待电流第一次**上穿**给定的离开阈值（例如 Iempty+_ + band）。
+        ///     以与 <see cref="WaitCurrentAboveAsync" /> 相同的“对齐采样节拍”方式，
+        ///     等待电流第一次**上穿**给定的离开阈值（例如 Iempty+_ + band）。
         /// </summary>
         /// <param name="leaveThrA">离开空行程的上边界阈值（安培）。</param>
         /// <param name="token">取消令牌。</param>
         /// <param name="maxWaitMs">最大等待时长，毫秒，默认 2000ms。</param>
         /// <returns>
-        /// 成功时返回“首次上穿阈值的 Stopwatch Tick”；超时返回 <c>null</c>。
+        ///     成功时返回“首次上穿阈值的 Stopwatch Tick”；超时返回 <c>null</c>。
         /// </returns>
         private async Task<long?> WaitLeaveBandUpAsync(double leaveThrA, CancellationToken token, int maxWaitMs = 2000)
         {
-            long tickPerMs = Stopwatch.Frequency / 1000;
-            long nextDue = Stopwatch.GetTimestamp();
-            long tBegin = Stopwatch.GetTimestamp();
+            var tickPerMs = Stopwatch.Frequency / 1000;
+            var nextDue = Stopwatch.GetTimestamp();
+            var tBegin = Stopwatch.GetTimestamp();
 
             while (true)
             {
@@ -2370,14 +1139,18 @@ namespace Controller
 
                 // —— 与 WaitCurrentAboveAsync 一致的对齐节拍 —— //
                 // （避免 Task.Delay 抖动，让采样/判断更稳定）
-                long now = Stopwatch.GetTimestamp();
+                var now = Stopwatch.GetTimestamp();
                 if (now < nextDue)
                 {
-                    int ms = (int)Math.Max(0, (nextDue - now) / tickPerMs - 1);
+                    var ms = (int)Math.Max(0, (nextDue - now) / tickPerMs - 1);
                     if (ms > 0) await Task.Delay(ms, token);
-                    while ((now = Stopwatch.GetTimestamp()) < nextDue) { /* 自旋对齐 */ }
+                    while ((now = Stopwatch.GetTimestamp()) < nextDue)
+                    {
+                        /* 自旋对齐 */
+                    }
                 }
-                nextDue += (long)_sampleMs * tickPerMs; // 与 _sampleMs 对齐的节拍
+
+                nextDue += _sampleMs * tickPerMs; // 与 _sampleMs 对齐的节拍
                 var current = _readCurrent(_channel);
 
                 if (current >= leaveThrA)
@@ -2389,16 +1162,93 @@ namespace Controller
             }
         }
 
-        
+
         /// <summary>
-        /// 线程安全环形缓冲，存放电流采样点；支持按时间区间搜索“第一次上穿阈值”的时刻。
+        ///     协作式等待“达到夹紧判据”（阈值 或 平台）；
+        ///     - 仅用 Task.Delay 对齐采样节拍，绝不自旋；
+        ///     - 返回是否达成、达成时刻 Tick 以及原因字符串("threshold"/"platform"/"timeout")。
+        /// </summary>
+        private async Task<(bool ok, long tick, string cause)> WaitClampCoopAsync(
+            double iEmptyFwdA, CancellationToken token)
+        {
+            // 平台窗口长度（样本数）
+            var winCap = Math.Max(1, PlateauWindowMs / Math.Max(1, _sampleMs));
+            var win = new double[winCap];
+            int rc = 0, rh = 0;
+
+            var tStart = Stopwatch.GetTimestamp();
+            var cause = "timeout";
+
+            while (true)
+            {
+                token.ThrowIfCancellationRequested();
+
+                // 协作式节拍等待（不回 UI）
+                await Task.Delay(_sampleMs, token).ConfigureAwait(false);
+
+                // 读当前（如需去抖可自行做 EWMA，这里直接用工程值）
+                var v = _readCurrent(_channel);
+
+                // ① 阈值判据
+                if (v >= _posThrA)
+                {
+                    cause = "threshold";
+                    return (true, Stopwatch.GetTimestamp(), cause);
+                }
+
+                // ② 平台判据（窗口内平坦，且高于 Iempty+ + margin）
+                win[rh] = v;
+                rh = (rh + 1) % winCap;
+                if (rc < winCap) rc++;
+                if (rc == winCap && iEmptyFwdA != 0)
+                {
+                    double min = win[0], max = win[0];
+                    for (var i = 1; i < winCap; i++)
+                    {
+                        var x = win[i];
+                        if (x < min) min = x;
+                        if (x > max) max = x;
+                    }
+
+                    var range = max - min;
+                    if (range <= PlateauFlatRangeA && v >= iEmptyFwdA + PlateauAboveEmptyMarginA)
+                    {
+                        cause = "platform";
+                        return (true, Stopwatch.GetTimestamp(), cause);
+                    }
+                }
+
+                // ③ 超时保护（给一个宽松上限，避免异常工况卡住）
+                if ((int)((Stopwatch.GetTimestamp() - tStart) * 1000.0 / Stopwatch.Frequency) > 10_000)
+                    return (false, Stopwatch.GetTimestamp(), cause);
+            }
+        }
+
+        /// <summary>
+        ///     单个电流采样点（Stopwatch Ticks + 电流 A）。
+        /// </summary>
+        private readonly struct CurrentSample
+        {
+            public readonly long Tick;
+            public readonly double I;
+
+            public CurrentSample(long tick, double i)
+            {
+                Tick = tick;
+                I = i;
+            }
+        }
+
+
+        /// <summary>
+        ///     线程安全环形缓冲，存放电流采样点；支持按时间区间搜索“第一次上穿阈值”的时刻。
         /// </summary>
         private sealed class CurrentRingBuffer
         {
             private readonly CurrentSample[] _buf;
-            private int _head;               // 指向“下一个写入位置”
-            private int _count;              // 实际有效元素数（<= _buf.Length）
             private readonly object _lock = new();
+            private int _count; // 实际有效元素数（<= _buf.Length）
+            private int _head; // 指向“下一个写入位置”
 
             public CurrentRingBuffer(int capacity = 131072)
             {
@@ -2418,7 +1268,7 @@ namespace Controller
             }
 
             /// <summary>
-            /// 在给定“起始 Tick 之后”的样本中，返回“首次上穿阈值 thrA 的样本 Tick”。找不到返回 null。
+            ///     在给定“起始 Tick 之后”的样本中，返回“首次上穿阈值 thrA 的样本 Tick”。找不到返回 null。
             /// </summary>
             public long? FindFirstUpCrossing(double thrA, long startTick)
             {
@@ -2427,8 +1277,8 @@ namespace Controller
                     if (_count == 0) return null;
 
                     // 从最老元素开始线性扫描（容量很大但单圈样本量有限，且只在 Learn 的统计阶段调用，不影响实时）
-                    int idx = (_head - _count + _buf.Length) % _buf.Length;
-                    int left = _count;
+                    var idx = (_head - _count + _buf.Length) % _buf.Length;
+                    var left = _count;
 
                     // 跳过 startTick 之前的数据
                     while (left > 0 && _buf[idx].Tick < startTick)
@@ -2450,70 +1300,5 @@ namespace Controller
                 }
             }
         }
-
-
-
-        /// <summary>
-        /// 协作式等待“达到夹紧判据”（阈值 或 平台）；
-        /// - 仅用 Task.Delay 对齐采样节拍，绝不自旋；
-        /// - 返回是否达成、达成时刻 Tick 以及原因字符串("threshold"/"platform"/"timeout")。
-        /// </summary>
-        private async Task<(bool ok, long tick, string cause)> WaitClampCoopAsync(
-            double iEmptyFwdA, CancellationToken token)
-        {
-            // 平台窗口长度（样本数）
-            int winCap = Math.Max(1, PlateauWindowMs / Math.Max(1, _sampleMs));
-            double[] win = new double[winCap];
-            int rc = 0, rh = 0;
-
-            var tStart = Stopwatch.GetTimestamp();
-            string cause = "timeout";
-
-            while (true)
-            {
-                token.ThrowIfCancellationRequested();
-
-                // 协作式节拍等待（不回 UI）
-                await Task.Delay(_sampleMs, token).ConfigureAwait(false);
-
-                // 读当前（如需去抖可自行做 EWMA，这里直接用工程值）
-                var v = _readCurrent(_channel);
-
-                // ① 阈值判据
-                if (v >= _posThrA)
-                {
-                    cause = "threshold";
-                    return (true, Stopwatch.GetTimestamp(), cause);
-                }
-
-                // ② 平台判据（窗口内平坦，且高于 Iempty+ + margin）
-                win[rh] = v; rh = (rh + 1) % winCap; if (rc < winCap) rc++;
-                if (rc == winCap && iEmptyFwdA != 0)
-                {
-                    double min = win[0], max = win[0];
-                    for (int i = 1; i < winCap; i++)
-                    {
-                        var x = win[i];
-                        if (x < min) min = x;
-                        if (x > max) max = x;
-                    }
-                    var range = max - min;
-                    if (range <= PlateauFlatRangeA && v >= iEmptyFwdA + PlateauAboveEmptyMarginA)
-                    {
-                        cause = "platform";
-                        return (true, Stopwatch.GetTimestamp(), cause);
-                    }
-                }
-
-                // ③ 超时保护（给一个宽松上限，避免异常工况卡住）
-                if ((int)((Stopwatch.GetTimestamp() - tStart) * 1000.0 / Stopwatch.Frequency) > 10_000)
-                {
-                    return (false, Stopwatch.GetTimestamp(), cause);
-                }
-            }
-        }
-
-
     }
-
 }
