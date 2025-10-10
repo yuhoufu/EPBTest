@@ -19,8 +19,11 @@ namespace Controller
     /// </summary>
     public sealed class EpbManager
     {
-        /// <summary>可选的圈记录器，外部在创建后赋值。</summary> // 2025.09.16 新增
-        public IEpbCycleRecorder Recorder { get; set; } 
+        /// <summary>可选的圈记录器，外部在创建后赋值。</summary>
+        /// // 2025.09.16 新增
+        public IEpbCycleRecorder Recorder { get; set; }
+
+        private readonly TwoDeviceAiAcquirer _acq; // ★ 新增：数据采集器
 
         private readonly AoController _ao;
 
@@ -33,21 +36,12 @@ namespace Controller
 
         // —— 回调（采样） —— //
         private readonly EpbCycleRunner.ReadCurrentDelegate _readCurrent;
-        private readonly Dictionary<int, HighPrecisionTimer> _timers = new();
-
-        private readonly TwoDeviceAiAcquirer _acq; // ★ 新增：数据采集器
-        private HydraulicGroupCoordinator _hydCoordinator; // ★ 新增：液压组协调器
 
         private readonly Dictionary<int, EpbCycleRunner> _runners = new();
+        private readonly Dictionary<int, HighPrecisionTimer> _timers = new();
         private readonly long _wallBaseTicks = Stopwatch.GetTimestamp();
         private readonly DateTime _wallBaseUtc = DateTime.UtcNow;
-
-        // 将 DateTime（采集回调给的 ts）换算为当前进程 Stopwatch Ticks
-        private long ToStopwatchTicks(DateTime tsUtc)
-        {
-            var dtSec = (tsUtc - _wallBaseUtc).TotalSeconds;
-            return _wallBaseTicks + (long)(dtSec * Stopwatch.Frequency);
-        }
+        private readonly HydraulicGroupCoordinator _hydCoordinator; // ★ 新增：液压组协调器
 
         public EpbManager(
             GlobalConfig cfg,
@@ -130,6 +124,13 @@ namespace Controller
                 _log);
         }
 
+        // 将 DateTime（采集回调给的 ts）换算为当前进程 Stopwatch Ticks
+        private long ToStopwatchTicks(DateTime tsUtc)
+        {
+            var dtSec = (tsUtc - _wallBaseUtc).TotalSeconds;
+            return _wallBaseTicks + (long)(dtSec * Stopwatch.Frequency);
+        }
+
         /// <summary>
         ///     读取指定液压组的压力值（委托给 HydraulicController）
         /// </summary>
@@ -148,7 +149,7 @@ namespace Controller
 
 
         /// <summary>
-        /// 释放液压
+        ///     释放液压
         /// </summary>
         /// <param name="channel"></param>
         /// <returns></returns>
@@ -156,7 +157,7 @@ namespace Controller
         {
             return _hydCoordinator?.MarkVoltageReleaseAsync(channel) ?? Task.CompletedTask;
         }
-        
+
         // （保留你已有的 StartChannelAsync / Pause/Resume/Stop 等实现，不改对外签名）
         public async Task StartChannelAsync(int channel, CancellationToken uiToken = default)
         {
@@ -181,9 +182,9 @@ namespace Controller
             var forwardA = GetProp<double>(limitRecord, "ForwardA", "PosCurrentA", "PosThresholdA",
                 "ForwardThresholdA");
             var holdMs = GetProp<int>(limitRecord, "HoldMs", "HoldTimeMs", "HoldDurationMs");
-            
+
             // 如果 holdMs 为 null、0 或无效值，则设置为默认值 1000ms
-            holdMs = (holdMs <= 0) ? 1000 : holdMs;  // 设置为 1000ms（1秒），可根据实际需要调整，调试使用
+            holdMs = holdMs <= 0 ? 1000 : holdMs; // 设置为 1000ms（1秒），可根据实际需要调整，调试使用
 
             var staggerMs = 0;
             foreach (var g in _cfg.Test.Groups)
@@ -243,7 +244,7 @@ namespace Controller
                     _log.Warn($"EPB[{channel}] 自学习异常：{ex.Message}，仍将尝试进入正式试验。", "EPB");
                 }
             }
-           
+
             timer.StartAsync(_cfg.Test.TestTarget, staggerMs, async (i, token) =>
             {
                 _log.Info($"EPB[{channel}] 周期 {i}/{_cfg.Test.TestTarget} 开始。", "EPB");
@@ -254,7 +255,7 @@ namespace Controller
 
 
                 var ok = await runner.RunOneAsync(periodMs, token).ConfigureAwait(false);
-                
+
                 // —— 新增：圈结束（取本圈累计样本数做 finalN；若 Recorder 为 null 则 finalN=0）
                 var finalN = Recorder?.GetCurrentCycleSampleCount(channel) ?? 0;
                 Recorder?.CompleteCycle(channel, i, finalN, DateTime.UtcNow);
@@ -266,24 +267,24 @@ namespace Controller
 
 
         /// <summary>
-        /// 并发自学习（同组内按索引错峰） + 正式试验同步起跑（同组内按索引错峰、组间同锚点）。
-        /// 适用场景：同一电源组的卡钳同时上电可能过流，因此需要在“学习阶段”和“首个周期”都做组内错峰；
-        /// 不同电源组之间无需错峰，采用同一启动锚点对齐。
+        ///     并发自学习（同组内按索引错峰） + 正式试验同步起跑（同组内按索引错峰、组间同锚点）。
+        ///     适用场景：同一电源组的卡钳同时上电可能过流，因此需要在“学习阶段”和“首个周期”都做组内错峰；
+        ///     不同电源组之间无需错峰，采用同一启动锚点对齐。
         /// </summary>
         /// <param name="channels">要运行的 EPB 通道号集合（例如 new[]{1,2,7,8}）。</param>
         /// <param name="uiToken">UI 层传入的取消令牌。</param>
         /// <param name="abortAllIfAnyLearnFailed">
-        /// 当任一通道学习失败时是否整体中止（true）；
-        /// 若为 false（默认），则跳过失败通道，其他通道继续进入正式试验。
+        ///     当任一通道学习失败时是否整体中止（true）；
+        ///     若为 false（默认），则跳过失败通道，其他通道继续进入正式试验。
         /// </param>
         /// <exception cref="ArgumentException">当未提供任何通道时抛出。</exception>
         /// <remarks>
-        /// 规则摘要：
-        /// - 学习阶段：按“组”为单位执行；对“本次被选中且属于该组”的成员，按通道号升序编号 i=0..n-1；
-        ///   然后对每个成员延时 i * StaggerMs 后触发 LearnAsync（同组错峰，不同组可并行）。
-        /// - 正式试验阶段：全局计算 Anchor（当前时间 + 2s，向上对齐到 PeriodMs 边界）；
-        ///   首次触发时间 = Anchor + i * StaggerMs（i 为该通道在其所属组内的索引）。不同组共享同一 Anchor。
-        /// - 仅对“首个周期”应用错峰，后续周期按统一 PeriodMs 运行，不再扩大相位差。
+        ///     规则摘要：
+        ///     - 学习阶段：按“组”为单位执行；对“本次被选中且属于该组”的成员，按通道号升序编号 i=0..n-1；
+        ///     然后对每个成员延时 i * StaggerMs 后触发 LearnAsync（同组错峰，不同组可并行）。
+        ///     - 正式试验阶段：全局计算 Anchor（当前时间 + 2s，向上对齐到 PeriodMs 边界）；
+        ///     首次触发时间 = Anchor + i * StaggerMs（i 为该通道在其所属组内的索引）。不同组共享同一 Anchor。
+        ///     - 仅对“首个周期”应用错峰，后续周期按统一 PeriodMs 运行，不再扩大相位差。
         /// </remarks>
         public async Task StartChannelsSynchronizedPowerAwareAsync(
             IEnumerable<int> channels,
@@ -294,7 +295,7 @@ namespace Controller
                 throw new ArgumentException("必须至少指定一个通道。", nameof(channels));
 
             var selected = channels.Distinct().OrderBy(x => x).ToList();
-            int periodMs = Math.Max(1, _cfg.Test?.PeriodMs ?? 5000);
+            var periodMs = Math.Max(1, _cfg.Test?.PeriodMs ?? 5000);
 
             // 1) 预准备：为每个通道构建 Runner 与高精度定时器（不启动）
             foreach (var ch in selected)
@@ -304,6 +305,7 @@ namespace Controller
                     _log.Warn($"EPB[{ch}] 已在运行，跳过重复准备。", "EPB");
                     continue;
                 }
+
                 await PrepareRunnerAndTimerAsync(ch, uiToken).ConfigureAwait(false);
             }
 
@@ -311,7 +313,7 @@ namespace Controller
             // 2.1 建立“通道 -> 组”映射
             //var groups = _cfg.Test?.Groups ?? Array.Empty<ElectricalGroup>();
             // 也可直接返回空 List，保证两边同为 List<ElectricalGroup>
-            var groups = _cfg.Test?.Groups ?? new List<Config.ElectricalGroup>();
+            var groups = _cfg.Test?.Groups ?? new List<ElectricalGroup>();
             // 但前提是 _cfg.Test?.Groups 的静态类型是 List<Config.ElectricalGroup> 或者能隐式转换到 List<>
 
             var groupByChannel = MapChannelToGroup(groups);
@@ -331,13 +333,13 @@ namespace Controller
                 }
 
                 var rcfg = _cfg.Test?.GetEpbRunner(ch) ?? new EpbCycleRunnerConfig();
-                int learnCycles = (int)(rcfg.LearnCycles > 0 ? rcfg.LearnCycles : 5);
+                var learnCycles = (int)(rcfg.LearnCycles > 0 ? rcfg.LearnCycles : 5);
 
                 // 该通道所属组的错峰间隔（若没分组或未配置则视为 0）
                 var grp = groupByChannel.TryGetValue(ch, out var g) ? g : null;
-                int staggerMs = grp != null ? Math.Max(0, grp.StaggerMs) : 0;
-                int idx = indexInGroup.TryGetValue(ch, out var i) ? i : 0;
-                int delayMs = idx * staggerMs;
+                var staggerMs = grp != null ? Math.Max(0, grp.StaggerMs) : 0;
+                var idx = indexInGroup.TryGetValue(ch, out var i) ? i : 0;
+                var delayMs = idx * staggerMs;
 
                 learnTasks.Add(StartOneLearnWithDelayAsync(ch, runner, learnCycles, periodMs, delayMs, uiToken));
             }
@@ -367,7 +369,7 @@ namespace Controller
             }
 
             // 3) —— 正式试验阶段：统一锚点 + 组内索引错峰（仅首周期） —— //
-            var anchorUtc = ComputeAlignedAnchorUtc(periodMs, secondsAhead: 2);
+            var anchorUtc = ComputeAlignedAnchorUtc(periodMs, 2);
 
             foreach (var ch in toRun)
             {
@@ -378,20 +380,22 @@ namespace Controller
                 }
 
                 var grp = groupByChannel.TryGetValue(ch, out var g) ? g : null;
-                int staggerMs = grp != null ? Math.Max(0, grp.StaggerMs) : 0;
-                int idx = indexInGroup.TryGetValue(ch, out var i) ? i : 0;
+                var staggerMs = grp != null ? Math.Max(0, grp.StaggerMs) : 0;
+                var idx = indexInGroup.TryGetValue(ch, out var i) ? i : 0;
 
                 // 首次触发：Anchor + i * StaggerMs
                 var firstUtc = anchorUtc.AddMilliseconds(idx * staggerMs);
-                int initialDelayMs = (int)Math.Max(0, (firstUtc - DateTime.UtcNow).TotalMilliseconds);
+                var initialDelayMs = (int)Math.Max(0, (firstUtc - DateTime.UtcNow).TotalMilliseconds);
 
-                string grpName = $"Group_{grp.Id}";
+                var grpName = $"Group_{grp.Id}";
                 _log.Info($"EPB[{ch}] 起跑：Group={grpName}, Index={idx}, StaggerMs={staggerMs}, " +
-                          $"Anchor={anchorUtc:HH:mm:ss.fff}Z, InitialDelay={initialDelayMs}ms, Period={periodMs}ms。", "EPB");
+                          $"Anchor={anchorUtc:HH:mm:ss.fff}Z, InitialDelay={initialDelayMs}ms, Period={periodMs}ms。",
+                    "EPB");
 
-                int totalCycles = _cfg.Test.TestTarget;
+                var totalCycles = _cfg.Test.TestTarget;
 
-                /*await */_ = timer.StartAsync(totalCycles, initialDelayMs, async (cycleIndex, token) =>
+                /*await */
+                _ = timer.StartAsync(totalCycles, initialDelayMs, async (cycleIndex, token) =>
                 {
                     Recorder?.BeginCycle(ch, cycleIndex, DateTime.UtcNow);
                     var ok = await runner.RunOneAsync(periodMs, token).ConfigureAwait(false);
@@ -473,7 +477,7 @@ namespace Controller
         #region —— 私有辅助：学习延时、锚点、索引等 ——
 
         /// <summary>
-        /// 延时后启动单通道学习。
+        ///     延时后启动单通道学习。
         /// </summary>
         private async Task<(int ch, bool ok, Exception ex)> StartOneLearnWithDelayAsync(
             int channel,
@@ -492,7 +496,7 @@ namespace Controller
                 }
 
                 _log.Info($"EPB[{channel}] 开始学习（{learnCycles} 次）。", "EPB");
-                bool ok = await runner.LearnAsync(learnCycles, token, periodMs).ConfigureAwait(false);
+                var ok = await runner.LearnAsync(learnCycles, token, periodMs).ConfigureAwait(false);
                 _log.Info($"EPB[{channel}] 学习 {(ok ? "完成" : "失败")}。", "EPB");
 
                 // 返回带名字的元组：ch、ok、ex（学习成功时 ex 为 null）
@@ -510,7 +514,7 @@ namespace Controller
         }
 
         /// <summary>
-        /// 构建“通道 -> 组”的映射。若通道未出现在任何组中，则不加入映射（视作独立组）。
+        ///     构建“通道 -> 组”的映射。若通道未出现在任何组中，则不加入映射（视作独立组）。
         /// </summary>
         private static Dictionary<int, ElectricalGroup> MapChannelToGroup(IEnumerable<ElectricalGroup> groups)
         {
@@ -519,18 +523,17 @@ namespace Controller
             {
                 if (g?.Members == null) continue;
                 foreach (var ch in g.Members)
-                {
                     // 若一个通道在多个组中，只保留第一次出现（配置应避免重复归属）
                     if (!map.ContainsKey(ch))
                         map[ch] = g;
-                }
             }
+
             return map;
         }
 
         /// <summary>
-        /// 计算“组内索引”：对“本次被选中 ∩ 该组成员”的通道，按通道号升序编号 i=0..n-1。
-        /// 未分组通道的索引为 0。
+        ///     计算“组内索引”：对“本次被选中 ∩ 该组成员”的通道，按通道号升序编号 i=0..n-1。
+        ///     未分组通道的索引为 0。
         /// </summary>
         private static Dictionary<int, int> ComputeIndexInGroup(
             IList<int> selected,
@@ -548,6 +551,7 @@ namespace Controller
                     list = new List<int>();
                     buckets[grp] = list;
                 }
+
                 list.Add(ch);
             }
 
@@ -555,7 +559,7 @@ namespace Controller
             foreach (var kv in buckets)
             {
                 var list = kv.Value.OrderBy(x => x).ToList();
-                for (int i = 0; i < list.Count; i++)
+                for (var i = 0; i < list.Count; i++)
                     result[list[i]] = i;
             }
 
@@ -563,7 +567,7 @@ namespace Controller
         }
 
         /// <summary>
-        /// 计算“现在 + secondsAhead”后向上对齐到 PeriodMs 边界的 UTC 锚点。
+        ///     计算“现在 + secondsAhead”后向上对齐到 PeriodMs 边界的 UTC 锚点。
         /// </summary>
         private static DateTime ComputeAlignedAnchorUtc(int periodMs, int secondsAhead)
         {
@@ -571,13 +575,13 @@ namespace Controller
             var baseUtc = nowUtc.AddSeconds(secondsAhead);
 
             // 以 Unix Epoch 做整数对齐，减少多定时器首发相位误差
-            long msFromEpoch = (long)(baseUtc - new DateTime(1970, 1, 1)).TotalMilliseconds;
-            long aligned = ((msFromEpoch + periodMs - 1) / periodMs) * periodMs;
+            var msFromEpoch = (long)(baseUtc - new DateTime(1970, 1, 1)).TotalMilliseconds;
+            var aligned = (msFromEpoch + periodMs - 1) / periodMs * periodMs;
             return new DateTime(1970, 1, 1).AddMilliseconds(aligned);
         }
 
         /// <summary>
-        /// 为单通道准备 Runner 与 Timer（仅构建，不启动）。复用原有解析逻辑。
+        ///     为单通道准备 Runner 与 Timer（仅构建，不启动）。复用原有解析逻辑。
         /// </summary>
         private async Task PrepareRunnerAndTimerAsync(int channel, CancellationToken uiToken)
         {
@@ -589,9 +593,10 @@ namespace Controller
             var sampleMs = 2;
 
             var limitRecord = _cfg.Test.EpbLimits.FirstOrDefault(x => GetProp<int>(x, "Channel") == channel)
-                               ?? throw new InvalidOperationException($"未配置 EPB[{channel}] 电流限值。");
+                              ?? throw new InvalidOperationException($"未配置 EPB[{channel}] 电流限值。");
 
-            var forwardA = GetProp<double>(limitRecord, "ForwardA", "PosCurrentA", "PosThresholdA", "ForwardThresholdA");
+            var forwardA = GetProp<double>(limitRecord, "ForwardA", "PosCurrentA", "PosThresholdA",
+                "ForwardThresholdA");
             var holdMs = GetProp<int>(limitRecord, "HoldMs", "HoldTimeMs", "HoldDurationMs");
             if (holdMs <= 0) holdMs = 1000;
 
@@ -620,8 +625,5 @@ namespace Controller
         }
 
         #endregion
-
-
-
     }
 }
