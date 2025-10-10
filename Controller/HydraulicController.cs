@@ -10,24 +10,39 @@ using NullLogger = Config.NullLogger;
 namespace Controller
 {
     /// <summary>
-    /// 液压控制器：
-    /// - 负责单路液压的启/停与到达判定；
-    /// - 支持三种模式：ByPressure / ByDuration / Either；
-    /// - 通过 AoController 输出“能力百分比”并由其内部转换为电压。
+    ///     液压控制器：
+    ///     - 负责单路液压的启/停与到达判定；
+    ///     - 支持三种模式：ByPressure / ByDuration / Either；
+    ///     - 通过 AoController 输出“能力百分比”并由其内部转换为电压。
     /// </summary>
     public sealed class HydraulicController
     {
-        private readonly DoController _do;
-        private readonly TestConfig _test;
-        private readonly Func<int, double> _readPressure; // 读取压力：传入 hydId 返回 bar
         private readonly AoController _ao; // AO 控制器（统一做限幅与电压换算）
-        private readonly IAppLogger _log;
-          
-        //等待“释压”信号的表：key=hydId
-        private readonly ConcurrentDictionary<int, TaskCompletionSource<bool>> _releaseWaiters = new();
+        private readonly DoController _do;
 
         private readonly ConcurrentDictionary<int, TaskCompletionSource<bool>> _holdTcs
             = new();
+
+        private readonly IAppLogger _log;
+        private readonly Func<int, double> _readPressure; // 读取压力：传入 hydId 返回 bar
+
+        //等待“释压”信号的表：key=hydId
+        private readonly ConcurrentDictionary<int, TaskCompletionSource<bool>> _releaseWaiters = new();
+        private readonly TestConfig _test;
+
+
+        public HydraulicController(DoController doController,
+            TestConfig test,
+            Func<int, double> readPressure,
+            AoController aoController,
+            IAppLogger log = null)
+        {
+            _do = doController ?? throw new ArgumentNullException(nameof(doController));
+            _test = test ?? throw new ArgumentNullException(nameof(test));
+            _readPressure = readPressure ?? throw new ArgumentNullException(nameof(readPressure));
+            _ao = aoController ?? throw new ArgumentNullException(nameof(aoController));
+            _log = log ?? NullLogger.Instance;
+        }
 
 
         /// <summary>外部直接请求释压；返回 true 表示本次请求有效（成功触发）。</summary>
@@ -137,23 +152,9 @@ namespace Controller
                 tcs.TrySetResult(true);
         }
 
-
-        public HydraulicController(DoController doController,
-            TestConfig test,
-            Func<int, double> readPressure,
-            AoController aoController,
-            IAppLogger log = null)
-        {
-            _do = doController ?? throw new ArgumentNullException(nameof(doController));
-            _test = test ?? throw new ArgumentNullException(nameof(test));
-            _readPressure = readPressure ?? throw new ArgumentNullException(nameof(readPressure));
-            _ao = aoController ?? throw new ArgumentNullException(nameof(aoController));
-            _log = log ?? NullLogger.Instance;
-        }
-
         /// <summary>
-        /// 执行一次液压控制（按 TestConfig.Hydraulics 中的配置项）。
-        /// hydId: 1/2（两路液压）
+        ///     执行一次液压控制（按 TestConfig.Hydraulics 中的配置项）。
+        ///     hydId: 1/2（两路液压）
         /// </summary>
         public async Task<bool> RunOnceAsync(int hydId, CancellationToken token)
         {

@@ -312,7 +312,7 @@ namespace Controller
 
         // hydId 对应的一轮“闩锁”状态
         /// <summary>
-        /// 记录某个液压组的当前状态。
+        ///     记录某个液压组的当前状态。
         /// </summary>
         private sealed class Latch
         {
