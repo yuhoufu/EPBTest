@@ -6,6 +6,7 @@ using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Runtime.Remoting.Channels;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -206,6 +207,9 @@ namespace MTEmbTest
         /// <summary>计划总次数显示（通道 → UILabel）。</summary>
         private readonly Dictionary<int, Sunny.UI.UILabel> _planLabelByChannel
             = new Dictionary<int, Sunny.UI.UILabel>();
+
+        private CancellationTokenSource _batchCts; // 批量操作取消令牌源
+
 
 
         public FrmEpbMainMonitor()
@@ -890,7 +894,7 @@ namespace MTEmbTest
             if (testConfig == null) return;
 
             TxtTargetCycles.Text = testConfig.TestTarget;
-            TxtTestStandard.Text = testConfig.TestStandard;
+            //TxtTestStandard.Text = testConfig.TestStandard; // 界面删除了，注释
             TxtTestName.Text = testConfig.TestName;
             TxtTestCycleTime.Text = testConfig.TestCycle;
         }
@@ -1440,6 +1444,100 @@ namespace MTEmbTest
 
         private async void BtnStartTest_Click(object sender, EventArgs e)
         {
+            #region 旧的代码
+            /*
+            try
+            {
+                // 4) 组装 EpbManager（把回调委托接进去）
+                /*_epb = new EpbManager(
+                    _cfg,
+                    _do,
+                    _ao,
+                    twoDeviceAiAcquirer,
+                    logger);#1#
+
+                // 5) 启动“卡钳1”通道
+                //    StartChannel 内部会根据 Test.TestTarget 次数、PeriodMs 周期、Groups 错峰等自动循环
+                // _epb.StartChannel(2); //界面卡顿，注释
+                // await _epb.StartChannelAsync(1);
+                // await _epb.StartChannelAsync(2);
+                //await _epb.StartChannelAsync(4);
+                //await _epb.StartChannelAsync(5);
+
+
+                #region 【同步起跑（电源保护）】：学习阶段同组错峰 + 正式阶段锚点对齐且同组错峰（首周期）
+
+
+                // 1) 收集勾选通道
+                var selected = new List<int>();
+                for (int chIndex = 0; chIndex < 12; chIndex++)
+                {
+                    var ch = chIndex + 1;
+                    if (EpbGroup[chIndex].CtrlJoinTest.Checked)
+                        selected.Add(ch);
+                }
+
+                if (selected.Count == 0)
+                {
+                    // Create and initialize an object with message box settings.
+                    XtraMessageBoxArgs args = new XtraMessageBoxArgs()
+                    {
+                        Caption = "提示",
+                        Text = "请至少勾选一个通道！",
+                        Buttons = new DialogResult[] { DialogResult.Yes },
+                        Icon = SystemIcons.Warning,        // 警告图标
+                        DefaultButtonIndex = 0                  // 默认按钮（0=第一个）
+
+                    };
+                    // Assign a message box icon.
+                    // Display the message box and close the application if the user clicks "Yes".
+                    if (await XtraMessageBox.ShowAsync(args) == DialogResult.Yes)
+                        return;
+                }
+
+                try
+                {
+                    using var cts = new CancellationTokenSource();
+
+                    // 可绑定到“停止”按钮以触发取消：
+                    // uiButtonStop.Click += (_, __) => cts.Cancel();
+
+                    // 若你希望“任一通道学习失败即整体中止”，把第三个参数传 true
+                    await _epb.StartChannelsSynchronizedPowerAwareAsync(selected, cts.Token, abortAllIfAnyLearnFailed: false);
+
+
+                    RtbInfo?.AppendText($"已按电源保护策略：学习错峰 + 组间同步起跑（同组首周期错峰）\n");
+                }
+                catch (OperationCanceledException)
+                {
+                    RtbInfo?.AppendText($"操作已取消\n");
+                }
+                catch (Exception ex)
+                {
+                    RtbInfo?.AppendText($"启动失败：{ex.Message}\n");
+                }
+                finally
+                {
+                    //启用按钮
+                }
+
+
+
+                #endregion
+
+
+
+                // UI 提示
+                RtbInfo?.AppendText($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  > 卡钳1测试已启动\n");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($@"启动卡钳1测试失败：{ex.Message}", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            */
+            #endregion
+
+            int[] channels = new int[]{};
             try
             {
                 // 4) 组装 EpbManager（把回调委托接进去）
@@ -1457,6 +1555,8 @@ namespace MTEmbTest
                 // await _epb.StartChannelAsync(2);
                 //await _epb.StartChannelAsync(4);
                 //await _epb.StartChannelAsync(5);
+
+                
 
 
                 #region 【同步起跑（电源保护）】：学习阶段同组错峰 + 正式阶段锚点对齐且同组错峰（首周期）
@@ -1489,26 +1589,32 @@ namespace MTEmbTest
                        return;
                 }
 
+                // 读取自学习圈数（比如从一个文本框；没有就用 3）
+                int learnCycles = 3;
+                // int.TryParse(TxtLearnCycles.Text, out learnCycles) 也可以
+
+                if (_batchCts != null) { _batchCts.Dispose(); _batchCts = null; }
+                _batchCts = new CancellationTokenSource();
+
+                 channels = selected.ToArray();       // 例如: {1,2,4,6} 或 {1..12}
+
                 try
                 {
-                    using var cts = new CancellationTokenSource();
+                    await _epb.StartBatchSynchronizedAsync(
+                        channels,            // 批量要跑的通道
+                        learnCycles,         // 自学习圈数（按你期望）
+                        _batchCts.Token      // 取消令牌（Stop 按钮用）
+                    );
 
-                    // 可绑定到“停止”按钮以触发取消：
-                    // uiButtonStop.Click += (_, __) => cts.Cancel();
-
-                    // 若你希望“任一通道学习失败即整体中止”，把第三个参数传 true
-                    await _epb.StartChannelsSynchronizedPowerAwareAsync(selected, cts.Token, abortAllIfAnyLearnFailed: false);
-
-                    
-                    RtbInfo?.AppendText($"已按电源保护策略：学习错峰 + 组间同步起跑（同组首周期错峰）\n");
+                    RtbInfo?.AppendText("批量启动完成：学习阶段已对齐并错峰，上线后每圈对齐运行中…\n");
                 }
                 catch (OperationCanceledException)
                 {
-                    RtbInfo?.AppendText($"操作已取消\n");
+                    RtbInfo?.AppendText("批量启动取消。\n");
                 }
                 catch (Exception ex)
                 {
-                    RtbInfo?.AppendText($"启动失败：{ex.Message}\n");
+                    RtbInfo?.AppendText($"批量启动失败：{ex.Message}\n");
                 }
                 finally
                 {
@@ -1522,12 +1628,13 @@ namespace MTEmbTest
 
 
                 // UI 提示
-                RtbInfo?.AppendText($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  > 卡钳1测试已启动\n");
+               // RtbInfo?.AppendText($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  > 卡钳1测试已启动\n");
             }
             catch (Exception ex)
             {
-                MessageBox.Show($@"启动卡钳1测试失败：{ex.Message}", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show($@"启动卡钳{channels.ToString()}测试失败：{ex.Message}", @"提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
+
         }
 
         /// <summary>
@@ -1537,10 +1644,12 @@ namespace MTEmbTest
         /// <param name="e"></param>
         private void BtnStop_Click(object sender, EventArgs e)
         {
-            try
+            #region 旧的代码
+
+            /*try
             {
                 //_epb.StopChannel(1);
-                 //_epb.StopChannel(2);
+                //_epb.StopChannel(2);
                 // _epb.StopChannel(4);
                 // _epb.StopChannel(5);
 
@@ -1550,7 +1659,23 @@ namespace MTEmbTest
             catch (Exception ex)
             {
                 RtbInfo?.AppendText($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  > 停止卡钳2测试失败\n");
+            }*/
+
+            #endregion
+
+
+            try
+            {
+                _batchCts?.Cancel();   // 触发外壳的 await 停下学习/计时器工作
+                _epb.StopAll();        // 内部 DO/AO/Runner 停车
+                RtbInfo?.AppendText($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  > 停止试验\n");
             }
+            catch (Exception ex)
+            {
+                RtbInfo?.AppendText($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  > 停止失败：{ex.Message}\n");
+            }
+
+
         }
 
         #region 3) 窗体关闭：一次性解绑/停止/释放

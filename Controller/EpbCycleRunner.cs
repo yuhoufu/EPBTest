@@ -10,7 +10,7 @@ using NLogger = Config.NullLogger;
 
 namespace Controller
 {
-    public sealed class EpbCycleRunner
+    public sealed partial class EpbCycleRunner
     {
         public delegate double ReadCurrentDelegate(int epbChannel);
 

@@ -20,6 +20,8 @@ public sealed class HighPrecisionTimer
 
     private long _ticksStart; // 计划起点
 
+    public OverrunPolicy Policy => _policy; // 只读
+
     public HighPrecisionTimer(int periodMs, OverrunPolicy policy, IAppLogger log = null)
     {
         _periodMs = Math.Max(1, periodMs);

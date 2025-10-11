@@ -48,7 +48,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Config\Config.csproj">
-      <Project>{7941D662-F680-489B-972D-F324CBB42A9D}</Project>
+      <Project>{7941d662-f680-489b-972d-f324cbb42a9d}</Project>
       <Name>Config</Name>
     </ProjectReference>
   </ItemGroup>
