@@ -21,8 +21,6 @@ namespace Controller
         private readonly Dictionary<int, HighPrecisionTimer> _timerCache = new Dictionary<int, HighPrecisionTimer>();
 
 
-
-
         #region 对外主入口
 
         /// <summary>
@@ -66,7 +64,7 @@ namespace Controller
         ///     学习阶段：第 k 圈对齐到 t_k = t0 + k*Period，通道相位 = (ch 索引)×Δ。
         ///     每圈先 “组内建压（幂等）”，再分波次触发学习一圈。
         /// </summary>
-        private async Task RunLearningPhaseAsync(
+        private async Task RunLearningPhaseAsyncOld(
             Dictionary<int, List<int>> groups,
             Dictionary<int, DateTime> t0OfGroup,
             int learnCycles,
@@ -122,6 +120,99 @@ namespace Controller
                 }
 
                 await Task.WhenAll(tasksAllGroups).ConfigureAwait(false);
+            }
+        }
+
+        private async Task RunLearningPhaseAsync(
+            Dictionary<int, List<int>> groups,
+            Dictionary<int, DateTime> t0OfGroup,
+            int learnCycles,
+            CancellationToken token)
+        {
+            // —— 保护：无任务直接返回 —— //
+            if (groups == null || groups.Count == 0 || learnCycles <= 0)
+                return;
+
+            // —— 1) 让所有参与 Runner 进入“无① + ⑧外壳收尾（学习不等尾）”模式，并开启聚合 —— //
+            foreach (var list in groups.Values)
+            {
+                // 升序保证次序稳定（非必须）
+                var enabled = list.OrderBy(x => x).ToList();
+                for (int i = 0; i < enabled.Count; i++)
+                {
+                    var ch = enabled[i];
+                    var r = GetRunner(ch);
+                    r.UseNoHeadPhase = true; // 学习不做①，错峰由外层“相位”承担
+                    r.EnableTailCompensation = true; // ⑧尾部由外壳统一对齐（学习单圈不等待）
+                    r.TailMinMs = T8MinMs;
+                    r.BeginLearnAggregation(); // 清空本轮学习样本
+                }
+            }
+
+            // —— 2) 多圈学习 —— //
+            for (int k = 0; k < learnCycles; k++)
+            {
+                token.ThrowIfCancellationRequested();
+
+                // 用于收集“本圈内所有组/通道”的任务（并发执行）
+                var tasksAllGroups = new List<Task>();
+
+                // 遍历每个压力组
+                foreach (var kv in groups)
+                {
+                    var pg = kv.Key; // 压力组 ID：1 或 2
+                    var list = kv.Value; // 该组启用的通道集合
+                    if (list == null || list.Count == 0) continue;
+
+                    var t0 = t0OfGroup[pg];
+                    var tk = t0.AddMilliseconds(k * PeriodMs); // 本圈该压力组的锚点时刻
+
+                    // —— 2.1) 每圈锚点：组内“建压并保持”（协调器内部要“幂等”） —— //
+                    tasksAllGroups.Add(HydraulicEnterAtGroupAnchorAsync(pg, token));
+
+                    // —— 2.2) 组内各通道：按“相位 0/Δ/2Δ”错峰触发“单圈学习核心” —— //
+                    var enabled = list.OrderBy(x => x).ToList();
+                    for (int i = 0; i < enabled.Count; i++)
+                    {
+                        var ch = enabled[i];
+                        var phase = IndexInPowerGroup(ch) * StaggerDeltaMs; // 0/Δ/2Δ
+                        var at = tk.AddMilliseconds(phase);
+                        var delay = at - DateTime.UtcNow;
+
+                        var runner = GetRunner(ch);
+
+                        tasksAllGroups.Add(Task.Run(async () =>
+                        {
+                            // 到“锚点+相位”再起跑（每圈都对齐）
+                            if (delay.TotalMilliseconds > 1)
+                                await Task.Delay(delay, token).ConfigureAwait(false);
+
+                            // —— 学习单圈核心：不做①；⑧由外壳统一对齐（此处不等待） —— //
+                            var sample = await runner.LearnOneAlignedCoreAsync(
+                                PeriodMs, T8BaseMs, phase, T8MinMs, token
+                            ).ConfigureAwait(false);
+
+                            // 成功圈：并入聚合；失败圈（null）——跳过
+                            if (sample != null)
+                                runner.ApplyLearnSample(sample);
+                        }, token));
+                    }
+                }
+
+                // 等待本圈所有任务结束，再进入下一圈
+                await Task.WhenAll(tasksAllGroups).ConfigureAwait(false);
+            }
+
+            // —— 3) 学习聚合结束：写回中位数/统计量 —— //
+            foreach (var list in groups.Values)
+            {
+                var enabled = list.OrderBy(x => x).ToList();
+                for (int i = 0; i < enabled.Count; i++)
+                {
+                    var ch = enabled[i];
+                    var r = GetRunner(ch);
+                    r.FinalizeLearnAggregation();
+                }
             }
         }
 
@@ -261,7 +352,7 @@ namespace Controller
             r.EnableTailCompensation = true;
             r.TailMinMs = T8MinMs;
         }
-        
+
         /// <summary>获取指定通道的 EPB 循环运行器</summary>
         private IEpbCycleRunner GetRunner(int channel)
         {
@@ -288,7 +379,8 @@ namespace Controller
             if (limitRecord == null)
                 throw new InvalidOperationException($"未配置 EPB[{channel}] 电流限值。");
 
-            var forwardA = GetProp<double>(limitRecord, "ForwardA", "PosCurrentA", "PosThresholdA", "ForwardThresholdA");
+            var forwardA = GetProp<double>(limitRecord, "ForwardA", "PosCurrentA", "PosThresholdA",
+                "ForwardThresholdA");
             var holdMs = GetProp<int>(limitRecord, "HoldMs", "HoldTimeMs", "HoldDurationMs");
 
             // 如果 holdMs 为 null、0 或无效值，则设置为默认值 1000ms
@@ -344,6 +436,7 @@ namespace Controller
 
             return timer;
         }
+
         /// <summary>
         ///     在"压力组锚点"触发建压保持（每圈一次）。协调器内部需幂等，覆盖 0/Δ/2Δ 三波上电窗口。
         /// </summary>
@@ -388,7 +481,7 @@ namespace Controller
     //     void Stop();
     // }
 
-    public interface IEpbCycleRunner
+    public interface IEpbCycleRunnerOld
     {
         /// <summary>是否移除①头部等待（周期起点即进入上电相关流程）。</summary>
         bool UseNoHeadPhase { get; set; }
@@ -411,6 +504,61 @@ namespace Controller
         /// </summary>
         Task<bool> RunOneAlignedAsync(int periodMs, int tailBaseMs, int phaseMs, int tailMinMs, DateTime deadlineUtc,
             CancellationToken token);
+    }
+
+
+    /// <summary>
+    /// EPB 单通道“单圈执行 + 学习/运行外壳”接口。
+    /// </summary>
+    public interface IEpbCycleRunner
+    {
+        /// <summary>是否移除①头部等待（由外部“相位对齐”承担）。</summary>
+        bool UseNoHeadPhase { get; set; }
+
+        /// <summary>是否在⑧尾段由外壳统一扣回（相位延时 + 迟到量）。</summary>
+        bool EnableTailCompensation { get; set; }
+
+        /// <summary>⑧尾段最小时长保护（毫秒）。</summary>
+        int TailMinMs { get; set; }
+
+        /// <summary>
+        /// 学习单圈（对齐外壳版）：<b>不做①</b>，⑧按 <c>(tailBaseMs - phaseMs)</c> 扣回（统一收尾）。
+        /// <para>注意：该方法为历史兼容入口，在“批量学习”中推荐使用 <see cref="LearnOneAlignedCoreAsync"/> + 聚合。</para>
+        /// </summary>
+        Task<bool> LearnOneAlignedAsync(int periodMs, int tailBaseMs, int phaseMs, int tailMinMs,
+            CancellationToken token);
+
+        /// <summary>
+        /// 正式单圈（对齐外壳版）：<b>不做①</b>，⑧按 <c>(tailBaseMs - phaseMs - lateness)</c> 扣回，
+        /// 并以 <paramref name="deadlineUtc"/> 为“硬截止”统一收尾。
+        /// </summary>
+        Task<bool> RunOneAlignedAsync(int periodMs, int tailBaseMs, int phaseMs, int tailMinMs, DateTime deadlineUtc,
+            CancellationToken token);
+
+        // ===================== 批量学习（推荐） =====================
+
+        /// <summary>
+        /// 开始一轮批量学习的聚合（清空内部样本缓存）。
+        /// 必须在发起多圈学习前调用一次。
+        /// </summary>
+        void BeginLearnAggregation();
+
+        /// <summary>
+        /// 单圈学习的“核心版本”：<b>不做①</b>、⑧不等待（交由外壳统一对齐），
+        /// 返回本圈测得的各阶段耗时/电流作为样本；失败圈返回 null。
+        /// </summary>
+        Task<EpbCycleRunner.LearnSample> LearnOneAlignedCoreAsync(int periodMs, int tailBaseMs, int phaseMs,
+            int tailMinMs, CancellationToken token);
+
+        /// <summary>
+        /// 将 <paramref name="sample"/> 并入当前聚合容器（仅在 <see cref="BeginLearnAggregation"/> 之后有效）。
+        /// </summary>
+        void ApplyLearnSample(EpbCycleRunner.LearnSample sample);
+
+        /// <summary>
+        /// 结束本轮聚合：将样本的统计量（建议中位数）写回 Runner 的估计字段（如 _tFwdPeakDecayMs 等）。
+        /// </summary>
+        void FinalizeLearnAggregation();
     }
 
     #endregion

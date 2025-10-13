@@ -400,7 +400,7 @@ namespace Controller
         }
 
 
-        public async Task<bool> RunOneAsync(int targetPeriodMs, CancellationToken token, bool? preRelease = false)
+        public async Task<bool> RunOneAsyncOld(int targetPeriodMs, CancellationToken token, bool? preRelease = false)
         {
             try
             {
@@ -566,6 +566,165 @@ namespace Controller
                 return false;
             }
         }
+
+        /// <summary>
+        /// 新的RunOneAsync，支持“外壳相位”承担头部未上电
+        /// </summary>
+        /// <param name="targetPeriodMs"></param>
+        /// <param name="token"></param>
+        /// <param name="preRelease"></param>
+        /// <returns></returns>
+        public async Task<bool> RunOneAsync(int targetPeriodMs, CancellationToken token, bool? preRelease = false)
+        {
+            try
+            {
+                // —— 本地工具：计时 & 比例系数（与 LearnAsync 保持一致）——
+                // ★C# 7.3 不支持本地静态函数的 captures，请保持你现状即可：
+                static long NowTicks() { return Stopwatch.GetTimestamp(); }
+                static int MsBetween(long t0, long t1) { return (int)((t1 - t0) * 1000.0 / Stopwatch.Frequency); }
+
+                // 柔性分配的比例（①③⑦⑧）；⑤为 _holdMs
+                const double R_HEAD = 0.15;
+                const double R_FWD_EMPTY = 0.35;
+                const double R_REV_EMPTY = 0.35;
+                const double R_TAIL = 0.15;
+
+                var elecBudgetMs = Math.Max(0, targetPeriodMs);
+
+                // —— 估算刚性/柔性（维持你的原逻辑）——
+                var rigidEst = (int)Math.Round(
+                    Math.Max(0, _tFwdPeakDecayMs) +
+                    Math.Max(0, _tClampRampMs) +
+                    Math.Max(0, _tRevPeakDecayMs));
+
+                var flexEst = Math.Max(0, elecBudgetMs - rigidEst - Math.Max(0, _holdMs));
+                var plan1 = (int)Math.Floor(flexEst * R_HEAD);
+                var plan3 = (int)Math.Floor(flexEst * R_FWD_EMPTY);
+                var plan7 = (int)Math.Floor(flexEst * R_REV_EMPTY);
+                var plan8 = Math.Max(0, flexEst - plan1 - plan3 - plan7);
+
+                // —— 接入点 #1：上电之前（液压进入并保持）——
+                await _manager?.HydraulicEnterAsync(_channel, token);
+
+                // ===================== ① 头部未上电 =====================
+                // ★修改点：若由“外壳相位”承担，则跳过①（把 plan1 清零并仅记录日志）
+                if (UseNoHeadPhase)
+                {
+                    if (plan1 > 0)
+                        _log.Info($"EPB[{_channel}] ①头部未上电已由外层相位对齐承担，内部跳过 plan1={plan1}ms。", "EPB");
+                    plan1 = 0;
+                }
+
+                if (plan1 > 0)
+                {
+                    _log.Info($"EPB[{_channel}] ①头部未上电 {plan1}ms（按比例计划）。", "EPB");
+                    await Task.Delay(plan1, token);
+                }
+
+                var tElecStart = NowTicks(); // 用于⑧尾段收口
+
+                // ===================== ② + ③ + ④：正向 =====================
+                _do.SetEpbForward(_channel);
+                _log.Info($"EPB[{_channel}] ②正向上电，忽略涌流 {_peakIgnoreMs}ms…", "EPB");
+                await Task.Delay(_peakIgnoreMs, token);
+
+                var tupleFwd = await WaitStableAroundAsync(
+                    _iEmptyFwdA != 0 ? _iEmptyFwdA : +0.5,
+                    +1,
+                    _emptyBandA,
+                    _stableWinMs,
+                    token);
+                var okEmptyFwd = tupleFwd.Item1;
+                if (!okEmptyFwd)
+                {
+                    _log.Warn($"EPB[{_channel}] 正向未判定到空行程（②失败），本轮终止。", "EPB");
+                    _do.SetEpbOff(_channel);
+                    return false;
+                }
+
+                var okClamp = await WaitCurrentAboveAsync(_posThrA, token);
+                if (!okClamp)
+                {
+                    _log.Warn($"EPB[{_channel}] 正向未达到阈值/平台（阈 {_posThrA}A），本轮终止。", "EPB");
+                    _do.SetEpbOff(_channel);
+                    await _manager?.HydraulicMarkReleaseAsync(_channel);
+                    return false;
+                }
+
+                _do.SetEpbOff(_channel);
+                _log.Info($"EPB[{_channel}] 达到夹紧阈值 {_posThrA}A，已断电并标记释放。", "EPB");
+                await _manager?.HydraulicMarkReleaseAsync(_channel);
+
+                // ===================== ⑤ 保持 =====================
+                if (_holdMs > 0)
+                {
+                    _log.Info($"EPB[{_channel}] ⑤保持 {_holdMs}ms。", "EPB");
+                    await Task.Delay(_holdMs, token);
+                }
+
+                // ===================== ⑥ + ⑦：反向 =====================
+                _do.SetEpbReverse(_channel);
+                _log.Info($"EPB[{_channel}] ⑥反向上电，忽略涌流 {_peakIgnoreMs}ms…", "EPB");
+                await Task.Delay(_peakIgnoreMs, token);
+
+                var tupleRev = await WaitStableAroundAsync(
+                    _iEmptyRevA != 0 ? _iEmptyRevA : -0.5,
+                    -1,
+                    _emptyBandA,
+                    _stableWinMs,
+                    token);
+                var okEmptyRev = tupleRev.Item1;
+                if (!okEmptyRev)
+                {
+                    _log.Warn($"EPB[{_channel}] 反向未判定到空行程（⑥失败），本轮终止。", "EPB");
+                    _do.SetEpbOff(_channel);
+                    return false;
+                }
+
+                var run7 = Math.Max(10, plan7);
+                _log.Info($"EPB[{_channel}] ⑦反向空行程定时 {run7}ms。", "EPB");
+                await Task.Delay(run7, token);
+
+                _do.SetEpbOff(_channel);
+
+                // ===================== ⑧ 尾段收口 =====================
+                // ★修改点：若启用“外壳收尾”，这里不再等待，仅计算（可选打印），把收尾权交给 RunOneAlignedAsync
+                var elecElapsed = MsBetween(tElecStart, NowTicks());
+                var tailRemain = Math.Max(0, elecBudgetMs - elecElapsed);
+
+                if (EnableTailCompensation)
+                {
+                    if (tailRemain > 0)
+                    {
+                        _log.Info($"EPB[{_channel}] ⑧尾段交由外壳统一扣回（内部测得剩余 {tailRemain}ms）。", "EPB");
+                    }
+                }
+                else
+                {
+                    if (tailRemain > 0)
+                    {
+                        _log.Info($"EPB[{_channel}] ⑧尾段收口 {tailRemain}ms（内部执行）。", "EPB");
+                        await Task.Delay(tailRemain, token);
+                    }
+                }
+
+                return true;
+            }
+            catch (OperationCanceledException)
+            {
+                _log.Warn($"EPB[{_channel}] 本轮被取消。", "EPB");
+                _do.SetEpbOff(_channel);
+                return false;
+            }
+            catch (Exception ex)
+            {
+                _log.Error($"EPB[{_channel}] 运行异常：{ex.Message}", "EPB", ex);
+                _do.SetEpbOff(_channel);
+                return false;
+            }
+        }
+
+
 
         /// 从 startTick 到当前的经过时间，单位毫秒。
         /// </summary>
