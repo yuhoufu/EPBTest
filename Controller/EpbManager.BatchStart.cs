@@ -48,9 +48,39 @@ namespace Controller
                 t0OfGroup[pg] = CeilToBoundary(nowUtc.AddMilliseconds(AnchorWarmupMs), PeriodMs);
             }
 
+
+            // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+            // 【新增】学习前批量“预释放”：三波错峰（电源组索引 0/Δ/2Δ）
+            //   - 只做一次，避免每圈都反向上电带来的额外能耗/时间占用。
+            //   - keepMs 传 null：各 Runner 内部使用自身 DefaultPreReleaseKeepMs。
+            // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+            if (learnCycles > 0)
+            {
+                // 展平出所有参与学习/正式运行的通道（已在 groups 中）
+                var allChannels = groups.Values.SelectMany(v => v).Distinct().OrderBy(x => x).ToArray();
+
+                _log.Info($"批量预释放：通道[{string.Join(",", allChannels)}]，三波错峰，Δ={StaggerDeltaMs}ms。", "EPB");
+                await PreReleaseBatchStaggeredAsync(allChannels, /*keepMs*/ null, /*deltaMs*/ StaggerDeltaMs, token)
+                    .ConfigureAwait(false);
+            }
+
+
             // —— 2) （可选）学习阶段：次数不多，用“每圈循环 + Task.Delay”实现同样对齐 —— //
             if (learnCycles > 0)
+            {
+                /*// ========== 新增：修正时间基准 ==========
+                // 设置从现在开始的下一个完整周期作为基准时间
+                var baseTime = DateTime.UtcNow.AddMilliseconds(500);
+
+                // 为每个压力组设置正确的时间基准
+                foreach (var pg in groups.Keys)
+                {
+                    t0OfGroup[pg] = baseTime;
+                    _log?.Error($"压力组{pg}时间基准已设置为: {baseTime:HH:mm:ss.fff}");
+                }*/
                 await RunLearningPhaseAsync(groups, t0OfGroup, learnCycles, token).ConfigureAwait(false);
+
+            }
 
             // —— 3) 正式阶段：为每个通道创建对齐到“锚点+相位”的高精计时器 —— //
             StartFormalPhaseTimers(groups, t0OfGroup, token);
@@ -179,6 +209,11 @@ namespace Controller
                         var at = tk.AddMilliseconds(phase);
                         var delay = at - DateTime.UtcNow;
 
+                        if (i == 0)
+                        {
+                            _log?.Error($"通道{ch}: tk={tk:HH:mm:ss.fff}, phase={phase}ms, at={at:HH:mm:ss.fff}, delay={delay.TotalMilliseconds}ms");
+                        }
+
                         var runner = GetRunner(ch);
 
                         tasksAllGroups.Add(Task.Run(async () =>
@@ -291,7 +326,7 @@ namespace Controller
         public int PeriodMs { get; set; } = 5000;
 
         /// <summary>组内错峰步长 Δ（毫秒）。索引 0/1/2 → 0/Δ/2Δ。</summary>
-        public int StaggerDeltaMs { get; set; } = 120;
+        public int StaggerDeltaMs { get; set; } = 350; // 原先120ms
 
         /// <summary>将旧①“头部未上电”的时间并入⑧后的“尾段基准时长”（毫秒）。</summary>
         public int T8BaseMs { get; set; } = 800;
@@ -324,12 +359,12 @@ namespace Controller
             return dict;
         }
 
-        /// <summary>电源组内索引（固定映射）：1/4/7/10→0；2/5/8/11→1；3/6/9/12→2。</summary>
+        /*/// <summary>电源组内索引（固定映射）：1/4/7/10→0；2/5/8/11→1；3/6/9/12→2。</summary>
         private static int IndexInPowerGroup(int ch)
         {
             if (ch < 1) ch = 1;
             return (ch - 1) % 3;
-        }
+        }*/
 
         /// <summary>向上取整到周期边界（UTC）。</summary>
         private static DateTime CeilToBoundary(DateTime utcNow, int periodMs)
@@ -559,6 +594,8 @@ namespace Controller
         /// 结束本轮聚合：将样本的统计量（建议中位数）写回 Runner 的估计字段（如 _tFwdPeakDecayMs 等）。
         /// </summary>
         void FinalizeLearnAggregation();
+
+        Task<bool> PreReleaseAsync(int? keepMs, CancellationToken token);
     }
 
     #endregion

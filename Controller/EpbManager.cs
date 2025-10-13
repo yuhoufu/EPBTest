@@ -625,5 +625,99 @@ namespace Controller
         }
 
         #endregion
+
+
+
+
+        #region 卡钳预释放
+
+        /// <summary>
+        /// 批量执行“预释放”（反向进入空行程并保持）。
+        /// </summary>
+        /// <param name="channels">要执行预释放的通道号（1..12）。</param>
+        /// <param name="keepMs">
+        /// 反向空行程保持时长（毫秒）。为 <c>null</c> 时，每个通道使用其 Runner 的默认值
+        ///（通常来自配置字段 <c>_revEmptyKeepMs</c>）。
+        /// </param>
+        /// <param name="token">取消令牌。</param>
+        /// <returns>全部通道任务完成的 <see cref="Task"/>。</returns>
+        /// <remarks>
+        /// - 默认并发执行全部通道的预释放。若你希望遵守“电源组错峰”，可以按 IndexInPowerGroup 分三波执行。<br/>
+        /// - 该方法仅做“学习前的姿态归零”，不做液压建压/释压；正式流程仍由“每圈锚点”统一控制。
+        /// </remarks>
+        public async Task PreReleaseBatchAsync(int[] channels, int? keepMs, CancellationToken token)
+        {
+            if (channels == null || channels.Length == 0)
+                throw new ArgumentException("channels 不能为空。", nameof(channels));
+
+            // 并发跑每个通道的预释放
+            var tasks = new List<Task>();
+            var enabled = channels.Distinct().OrderBy(x => x).ToArray();
+
+            for (int i = 0; i < enabled.Length; i++)
+            {
+                var ch = enabled[i];
+                var runner = GetRunner(ch); // 你在 BatchStart.cs 中实现的对接
+
+                // 若 keepMs==null，runner 内部会使用 DefaultPreReleaseKeepMs
+                tasks.Add(runner.PreReleaseAsync(keepMs, token));
+            }
+
+            await Task.WhenAll(tasks).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// （可选增强）按“电源组相位 0/Δ/2Δ”三波错峰执行批量预释放。
+        /// 当你担心同时反向上电电流过大时使用。
+        /// </summary>
+        public async Task PreReleaseBatchStaggeredAsync(int[] channels, int? keepMs, int deltaMs, CancellationToken token)
+        {
+            if (channels == null || channels.Length == 0)
+                throw new ArgumentException("channels 不能为空。", nameof(channels));
+
+            var enabled = channels.Distinct().OrderBy(x => x).ToArray();
+
+            // 三个相位桶：索引 0：1/4/7/10；索引 1：2/5/8/11；索引 2：3/6/9/12
+            var buckets = new[] { new List<int>(), new List<int>(), new List<int>() };
+            for (int i = 0; i < enabled.Length; i++)
+            {
+                var ch = enabled[i];
+                var idx = IndexInPowerGroup(ch);
+                buckets[idx].Add(ch);
+            }
+
+            var t0 = DateTime.UtcNow.AddMilliseconds(500); // 给 500ms 预热时间（可按需调整）
+
+            for (int phaseIdx = 0; phaseIdx < 3; phaseIdx++)
+            {
+                var bucket = buckets[phaseIdx];
+                if (bucket.Count == 0) continue;
+
+                var at = t0.AddMilliseconds(phaseIdx * deltaMs);
+                var delay = at - DateTime.UtcNow;
+                if (delay.TotalMilliseconds > 1)
+                    await Task.Delay(delay, token).ConfigureAwait(false);
+
+                var tasks = new List<Task>();
+                for (int j = 0; j < bucket.Count; j++)
+                {
+                    var ch = bucket[j];
+                    var runner = GetRunner(ch);
+                    tasks.Add(runner.PreReleaseAsync(keepMs, token));
+                }
+
+                await Task.WhenAll(tasks).ConfigureAwait(false);
+            }
+        }
+
+        // 你已有的工具：电源组索引（1/4/7/10→0；2/5/8/11→1；3/6/9/12→2）
+        private static int IndexInPowerGroup(int ch)
+        {
+            if (ch < 1) ch = 1;
+            return (ch - 1) % 3;
+        }
+
+        #endregion
+
     }
 }
