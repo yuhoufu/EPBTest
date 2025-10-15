@@ -14,6 +14,11 @@ namespace Controller
     {
         public delegate double ReadCurrentDelegate(int epbChannel);
 
+        /// <summary>
+        ///     获取“预释放”阶段默认保持时长（ms），等于原始字段 <c>_revEmptyKeepMs</c>。
+        /// </summary>
+        public int DefaultPreReleaseKeepMs { get; } = 1500;
+
         private const double PlateauAboveEmptyMarginA = 0.8;
         private const int PlateauWindowMs = 150;
         private const double PlateauFlatRangeA = 0.15;
@@ -51,12 +56,6 @@ namespace Controller
         private readonly ReadCurrentDelegate _readCurrent;
 
         // ⑦ 反向空行程“默认保持”时长（用于“首圈已夹紧/无空行程”时的释放），单位 ms
-        private readonly int _revEmptyKeepMs = 1500; // 可按需要改成 200~500ms
-
-        /// <summary>
-        /// 获取“预释放”阶段默认保持时长（ms），等于原始字段 <c>_revEmptyKeepMs</c>。
-        /// </summary>
-        public int DefaultPreReleaseKeepMs => _revEmptyKeepMs;
 
         private readonly int _sampleMs;
 
@@ -132,6 +131,72 @@ namespace Controller
 
 
         /// <summary>
+        ///     对当前通道执行一次“预释放”：
+        ///     反向上电 → 忽略涌流 → 等待进入反向空行程（Ewma 稳定判据）→ 保持 keepMs → 断电。
+        ///     若未稳定判定到反向空行程，仍按 keepMs 定时保持（兜底），然后断电。
+        /// </summary>
+        /// <param name="keepMs">
+        ///     反向空行程保持时长（毫秒）。为 <c>null</c> 时使用 <see cref="DefaultPreReleaseKeepMs" />。
+        /// </param>
+        /// <param name="token">取消令牌。</param>
+        /// <returns>执行是否顺利（判定到反向空行程记为 true；未判定到也会完成动作但返回 false）。</returns>
+        public async Task<bool> PreReleaseAsync(int? keepMs, CancellationToken token)
+        {
+            var holdMs = keepMs ?? DefaultPreReleaseKeepMs;
+            if (holdMs < 0) holdMs = 0;
+
+            try
+            {
+                _log.Info($"EPB[{_channel}] 预释放：开始（目标保持 {holdMs}ms）。", "EPB");
+
+                // 1) 反向上电 → 忽略涌流（去抖）
+                _do.SetEpbReverse(_channel);
+                await Task.Delay(_peakIgnoreMs, token).ConfigureAwait(false);
+
+                // 2) 判定进入反向空行程（Ewma 稳定窗口）
+                // 目标电流：优先用已学习到的 _iEmptyRevA；没有则用 -0.5A 兜底
+                var target = _iEmptyRevA != 0 ? _iEmptyRevA : -0.5;
+                var tuple = await WaitStableAroundAsync(
+                    target,
+                    -1, // 反向
+                    _emptyBandA,
+                    _stableWinMs,
+                    token).ConfigureAwait(false);
+
+                var okRel = tuple.Item1;
+                var iEmptyRel = tuple.Item3;
+
+                if (okRel)
+                    _log.Info($"EPB[{_channel}] 预释放：已进入反向空行程，Iempty-≈{iEmptyRel:F2}A。保持 {holdMs}ms。", "EPB");
+                else
+                    _log.Warn($"EPB[{_channel}] 预释放：未稳定判定到反向空行程，仍按 {holdMs}ms 定时保持。", "EPB");
+
+                // 3) 保持 keepMs（无论是否判定成功都保持）
+                if (holdMs > 0)
+                    await Task.Delay(holdMs, token).ConfigureAwait(false);
+
+                return okRel;
+            }
+            catch (OperationCanceledException)
+            {
+                // 传递取消（上层通常会统一断电）
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"EPB[{_channel}] 预释放阶段异常：{ex.Message}（忽略继续）。", "EPB");
+                return false;
+            }
+            finally
+            {
+                // 4) 断电（始终）
+                _do.SetEpbOff(_channel);
+                _log.Info($"EPB[{_channel}] 预释放：完成，已断电。", "EPB");
+            }
+        }
+
+
+        /// <summary>
         ///     由采集线程调用：喂入一个“低时延电流样本”（Stopwatch Tick 与电流）。
         /// </summary>
         public void FeedCurrentSample(int epbChannel, long tick, double currentAmp)
@@ -170,10 +235,10 @@ namespace Controller
                 "EPB");
 
             // 预释放
-            if (_revEmptyKeepMs > 0)
+            if (DefaultPreReleaseKeepMs > 0)
                 try
                 {
-                    _log.Info($"EPB[{_channel}] 自学习预处理：先反向释放，进入反向空行程后保持 {_revEmptyKeepMs}ms。", "EPB");
+                    _log.Info($"EPB[{_channel}] 自学习预处理：先反向释放，进入反向空行程后保持 {DefaultPreReleaseKeepMs}ms。", "EPB");
                     _do.SetEpbReverse(_channel);
                     await Task.Delay(_peakIgnoreMs, token).ConfigureAwait(false);
 
@@ -181,16 +246,17 @@ namespace Controller
                         await WaitStableAroundAsync(-0.5, -1, _emptyBandA, _stableWinMs, token).ConfigureAwait(false);
                     if (okRel)
                     {
-                        _log.Info($"EPB[{_channel}] 预释放：已进入反向空行程，Iempty-≈{iEmptyRel:F2}A。保持 {_revEmptyKeepMs}ms。",
+                        _log.Info(
+                            $"EPB[{_channel}] 预释放：已进入反向空行程，Iempty-≈{iEmptyRel:F2}A。保持 {DefaultPreReleaseKeepMs}ms。",
                             "EPB");
                         if (_iEmptyRevA == 0) _iEmptyRevA = iEmptyRel;
                     }
                     else
                     {
-                        _log.Warn($"EPB[{_channel}] 预释放：未稳定判定到反向空行程，仍按 {_revEmptyKeepMs}ms 定时保持。", "EPB");
+                        _log.Warn($"EPB[{_channel}] 预释放：未稳定判定到反向空行程，仍按 {DefaultPreReleaseKeepMs}ms 定时保持。", "EPB");
                     }
 
-                    await Task.Delay(_revEmptyKeepMs, token).ConfigureAwait(false);
+                    await Task.Delay(DefaultPreReleaseKeepMs, token).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                 {
@@ -406,339 +472,23 @@ namespace Controller
         }
 
 
-        public async Task<bool> RunOneAsyncOld(int targetPeriodMs, CancellationToken token, bool? preRelease = false)
-        {
-            try
-            {
-                // —— 本地工具：计时 & 比例系数（与 LearnAsync 保持一致）——
-                static long NowTicks()
-                {
-                    return Stopwatch.GetTimestamp();
-                }
-
-                static int MsBetween(long t0, long t1)
-                {
-                    return (int)((t1 - t0) * 1000.0 / Stopwatch.Frequency);
-                }
-
-                // 柔性分配的比例（①③⑦⑧）；⑤为 _holdMs
-                const double R_HEAD = 0.15; // ① 头部未上电（腾出组内错峰/等待液压稳定等）
-                const double R_FWD_EMPTY = 0.35; // ③ 正向空行程（计划值，仅用于分配，不改变判稳逻辑）
-                const double R_REV_EMPTY = 0.35; // ⑦ 反向空行程（计划值，定时控制）
-                const double R_TAIL = 0.15; // ⑧ 尾段收口（把误差吸收，使电控段≈预算）
-
-                // —— 关键变化：液压建/释压改由“协调器”统一控制。
-                // 这里的电控预算直接按整个周期 targetPeriodMs 来分配；
-                // 若需要与 Learn 的“刚性时间”联动，可继续使用下方的刚性/柔性估算。
-                var elecBudgetMs = Math.Max(0, targetPeriodMs);
-
-                // 用“已学习的估计值”计算刚性时间与柔性时间（便于给①③⑦⑧分配计划）
-                // 刚性：②FwdPeakDecay + ④ClampRamp + ⑥RevPeakDecay（⑤hold 单独占用）
-                var rigidEst = (int)Math.Round(
-                    Math.Max(0, _tFwdPeakDecayMs) +
-                    Math.Max(0, _tClampRampMs) +
-                    Math.Max(0, _tRevPeakDecayMs));
-
-                var flexEst = Math.Max(0, elecBudgetMs - rigidEst - Math.Max(0, _holdMs));
-                var plan1 = (int)Math.Floor(flexEst * R_HEAD);
-                var plan3 = (int)Math.Floor(flexEst * R_FWD_EMPTY);
-                var plan7 = (int)Math.Floor(flexEst * R_REV_EMPTY);
-                var plan8 = Math.Max(0, flexEst - plan1 - plan3 - plan7); // 剩余给尾段收口
-
-
-                // —— 接入点 #1：上电之前 —— //
-                await _manager?.HydraulicEnterAsync(_channel, token);
-
-
-                // ===================== ① 头部未上电 =====================
-                // （真正上电前调用“液压协调器：进入电控阶段”）
-                if (plan1 > 0)
-                {
-                    _log.Info($"EPB[{_channel}] ①头部未上电 {plan1}ms（按比例 {R_HEAD:P0} 计划）。", "EPB");
-                    await Task.Delay(plan1, token);
-                }
-
-
-                // 延时4s后开始上电
-                //await Task.Delay(4000 - plan1, token); // 延时上电注释掉 2025.09.19
-
-                var tElecStart = NowTicks(); // 用于⑧尾段收口
-
-                // ===================== ② + ③ + ④：正向 =====================
-                // 上电（正向）
-                _do.SetEpbForward(_channel);
-                _log.Info($"EPB[{_channel}] ②正向上电，忽略涌流 {_peakIgnoreMs}ms…", "EPB");
-                await Task.Delay(_peakIgnoreMs, token); // 忽略上电涌流（去抖）
-
-                // ②：进入正向“空行程电流”小带宽（Ewma 判稳）
-                var (okEmptyFwd, tEnterEmptyFwd_ms, iEmptyFwd) =
-                    await WaitStableAroundAsync(
-                        _iEmptyFwdA != 0 ? _iEmptyFwdA : +0.5, // 目标均值；若学习未得出，用 +0.5A 兜底
-                        +1, // 正向
-                        _emptyBandA, // 带宽
-                        _stableWinMs, // 稳定窗口
-                        token);
-
-                if (!okEmptyFwd)
-                {
-                    _log.Warn($"EPB[{_channel}] 正向未判定到空行程（②失败），本轮终止。", "EPB");
-                    _do.SetEpbOff(_channel);
-                    return false;
-                }
-
-                Console.WriteLine($"EPB[{_channel}], 空行程阶段，等待夹紧");
-                // ③+④：从空行程向“夹紧升坡/限流平台”爬升，直到达到阈值/平台
-                // WaitCurrentAboveAsync 内部具备平台判据（见你现有实现）
-                var okClamp = await WaitCurrentAboveAsync(_posThrA, token);
-                if (!okClamp)
-                {
-                    _log.Warn($"EPB[{_channel}] 正向未达到阈值/平台（阈 {_posThrA}A），本轮终止。", "EPB");
-                    _do.SetEpbOff(_channel);
-
-                    // —— 接入点 #2：到达本卡钳“电压释放点”的瞬间 ——
-                    // 若该液压组内这是最后一个未释放成员，协调器会统一释压
-                    await _manager?.HydraulicMarkReleaseAsync(_channel);
-                    return false;
-                }
-
-                // --- 关键：达到阈值后**立刻断电**（避免超调） ----------
-                _do.SetEpbOff(_channel);
-                _log.Info($"EPB[{_channel}] 已达到夹紧阈值 {_posThrA}A，已断电并标记释放。", "EPB");
-
-                // 如果有“液压组统一释压”逻辑，告诉协调器本卡钳已到达释放点
-                // （先断电再标记，确保断电动作不会被等待标记的异步延时影响）
-                await _manager?.HydraulicMarkReleaseAsync(_channel);
-
-
-                // ===================== ⑤ 保持 =====================
-                if (_holdMs > 0)
-                {
-                    _log.Info($"EPB[{_channel}] ⑤保持 {_holdMs}ms。", "EPB");
-                    await Task.Delay(_holdMs, token);
-                }
-
-                // ===================== ⑥ + ⑦：反向 =====================
-                // 反向上电
-                _do.SetEpbReverse(_channel);
-                _log.Info($"EPB[{_channel}] ⑥反向上电，忽略涌流 {_peakIgnoreMs}ms…", "EPB");
-                await Task.Delay(_peakIgnoreMs, token);
-
-                // ⑥：进入反向空行程小带
-                var (okEmptyRev, _, iEmptyRev) =
-                    await WaitStableAroundAsync(
-                        _iEmptyRevA != 0 ? _iEmptyRevA : -0.5, // 目标均值；若学习未得出，用 -0.5A 兜底
-                        -1, // 反向
-                        _emptyBandA,
-                        _stableWinMs,
-                        token);
-
-                if (!okEmptyRev)
-                {
-                    _log.Warn($"EPB[{_channel}] 反向未判定到空行程（⑥失败），本轮终止。", "EPB");
-                    _do.SetEpbOff(_channel);
-                    return false;
-                }
-
-                // ⑦：反向按“计划时间”定时（不观测退出）
-                var run7 = Math.Max(10, plan7);
-                _log.Info($"EPB[{_channel}] ⑦反向空行程定时 {run7}ms。", "EPB");
-                await Task.Delay(run7, token);
-
-                // 反向断电
-                _do.SetEpbOff(_channel);
-
-                // ===================== ⑧ 尾段收口：把误差吸收 =====================
-                // 目标：电控段总时长 ≈ elecBudgetMs
-                var elecElapsed = MsBetween(tElecStart, NowTicks());
-                var tailRemain = Math.Max(0, elecBudgetMs - elecElapsed);
-                if (tailRemain > 0)
-                {
-                    _log.Info($"EPB[{_channel}] ⑧尾段收口 {tailRemain}ms（计划 {plan8}ms，实际剩余 {tailRemain}ms）。", "EPB");
-                    await Task.Delay(tailRemain, token);
-                }
-
-                return true;
-            }
-            catch (OperationCanceledException)
-            {
-                _log.Warn($"EPB[{_channel}] 本轮被取消。", "EPB");
-                _do.SetEpbOff(_channel);
-                return false;
-            }
-            catch (Exception ex)
-            {
-                _log.Error($"EPB[{_channel}] 运行异常：{ex.Message}", "EPB", ex);
-                _do.SetEpbOff(_channel);
-                return false;
-            }
-        }
-
         /// <summary>
-        /// 新的RunOneAsync，支持“外壳相位”承担头部未上电
-        /// </summary>
-        /// <param name="targetPeriodMs"></param>
-        /// <param name="token"></param>
-        /// <param name="preRelease"></param>
-        /// <returns></returns>
-        public async Task<bool> RunOneAsyncOld2(int targetPeriodMs, CancellationToken token, bool? preRelease = false)
-        {
-            try
-            {
-                // —— 本地工具：计时 & 比例系数（与 LearnAsync 保持一致）——
-                // ★C# 7.3 不支持本地静态函数的 captures，请保持你现状即可：
-                static long NowTicks() { return Stopwatch.GetTimestamp(); }
-                static int MsBetween(long t0, long t1) { return (int)((t1 - t0) * 1000.0 / Stopwatch.Frequency); }
-
-                // 柔性分配的比例（①③⑦⑧）；⑤为 _holdMs
-                const double R_HEAD = 0.15;
-                const double R_FWD_EMPTY = 0.35;
-                const double R_REV_EMPTY = 0.35;
-                const double R_TAIL = 0.15;
-
-                var elecBudgetMs = Math.Max(0, targetPeriodMs);
-
-                // —— 估算刚性/柔性（维持你的原逻辑）——
-                var rigidEst = (int)Math.Round(
-                    Math.Max(0, _tFwdPeakDecayMs) +
-                    Math.Max(0, _tClampRampMs) +
-                    Math.Max(0, _tRevPeakDecayMs));
-
-                var flexEst = Math.Max(0, elecBudgetMs - rigidEst - Math.Max(0, _holdMs));
-                var plan1 = (int)Math.Floor(flexEst * R_HEAD);
-                var plan3 = (int)Math.Floor(flexEst * R_FWD_EMPTY);
-                var plan7 = (int)Math.Floor(flexEst * R_REV_EMPTY);
-                var plan8 = Math.Max(0, flexEst - plan1 - plan3 - plan7);
-
-                // —— 接入点 #1：上电之前（液压进入并保持）——
-                await _manager?.HydraulicEnterAsync(_channel, token);
-
-                // ===================== ① 头部未上电 =====================
-                // ★修改点：若由“外壳相位”承担，则跳过①（把 plan1 清零并仅记录日志）
-                if (UseNoHeadPhase)
-                {
-                    if (plan1 > 0)
-                        _log.Info($"EPB[{_channel}] ①头部未上电已由外层相位对齐承担，内部跳过 plan1={plan1}ms。", "EPB");
-                    plan1 = 0;
-                }
-
-                if (plan1 > 0)
-                {
-                    _log.Info($"EPB[{_channel}] ①头部未上电 {plan1}ms（按比例计划）。", "EPB");
-                    await Task.Delay(plan1, token);
-                }
-
-                var tElecStart = NowTicks(); // 用于⑧尾段收口
-
-                // ===================== ② + ③ + ④：正向 =====================
-                _do.SetEpbForward(_channel);
-                _log.Info($"EPB[{_channel}] ②正向上电，忽略涌流 {_peakIgnoreMs}ms…", "EPB");
-                await Task.Delay(_peakIgnoreMs, token);
-
-                var tupleFwd = await WaitStableAroundAsync(
-                    _iEmptyFwdA != 0 ? _iEmptyFwdA : +0.5,
-                    +1,
-                    _emptyBandA,
-                    _stableWinMs,
-                    token);
-                var okEmptyFwd = tupleFwd.Item1;
-                if (!okEmptyFwd)
-                {
-                    _log.Warn($"EPB[{_channel}] 正向未判定到空行程（②失败），本轮终止。", "EPB");
-                    _do.SetEpbOff(_channel);
-                    return false;
-                }
-
-                var okClamp = await WaitCurrentAboveAsync(_posThrA, token);
-                if (!okClamp)
-                {
-                    _log.Warn($"EPB[{_channel}] 正向未达到阈值/平台（阈 {_posThrA}A），本轮终止。", "EPB");
-                    _do.SetEpbOff(_channel);
-                    await _manager?.HydraulicMarkReleaseAsync(_channel);
-                    return false;
-                }
-
-                _do.SetEpbOff(_channel);
-                _log.Info($"EPB[{_channel}] 达到夹紧阈值 {_posThrA}A，已断电并标记释放。", "EPB");
-                await _manager?.HydraulicMarkReleaseAsync(_channel);
-
-                // ===================== ⑤ 保持 =====================
-                if (_holdMs > 0)
-                {
-                    _log.Info($"EPB[{_channel}] ⑤保持 {_holdMs}ms。", "EPB");
-                    await Task.Delay(_holdMs, token);
-                }
-
-                // ===================== ⑥ + ⑦：反向 =====================
-                _do.SetEpbReverse(_channel);
-                _log.Info($"EPB[{_channel}] ⑥反向上电，忽略涌流 {_peakIgnoreMs}ms…", "EPB");
-                await Task.Delay(_peakIgnoreMs, token);
-
-                var tupleRev = await WaitStableAroundAsync(
-                    _iEmptyRevA != 0 ? _iEmptyRevA : -0.5,
-                    -1,
-                    _emptyBandA,
-                    _stableWinMs,
-                    token);
-                var okEmptyRev = tupleRev.Item1;
-                if (!okEmptyRev)
-                {
-                    _log.Warn($"EPB[{_channel}] 反向未判定到空行程（⑥失败），本轮终止。", "EPB");
-                    _do.SetEpbOff(_channel);
-                    return false;
-                }
-
-                var run7 = Math.Max(10, plan7);
-                _log.Info($"EPB[{_channel}] ⑦反向空行程定时 {run7}ms。", "EPB");
-                await Task.Delay(run7, token);
-
-                _do.SetEpbOff(_channel);
-
-                // ===================== ⑧ 尾段收口 =====================
-                // ★修改点：若启用“外壳收尾”，这里不再等待，仅计算（可选打印），把收尾权交给 RunOneAlignedAsync
-                var elecElapsed = MsBetween(tElecStart, NowTicks());
-                var tailRemain = Math.Max(0, elecBudgetMs - elecElapsed);
-
-                if (EnableTailCompensation)
-                {
-                    if (tailRemain > 0)
-                    {
-                        _log.Info($"EPB[{_channel}] ⑧尾段交由外壳统一扣回（内部测得剩余 {tailRemain}ms）。", "EPB");
-                    }
-                }
-                else
-                {
-                    if (tailRemain > 0)
-                    {
-                        _log.Info($"EPB[{_channel}] ⑧尾段收口 {tailRemain}ms（内部执行）。", "EPB");
-                        await Task.Delay(tailRemain, token);
-                    }
-                }
-
-                return true;
-            }
-            catch (OperationCanceledException)
-            {
-                _log.Warn($"EPB[{_channel}] 本轮被取消。", "EPB");
-                _do.SetEpbOff(_channel);
-                return false;
-            }
-            catch (Exception ex)
-            {
-                _log.Error($"EPB[{_channel}] 运行异常：{ex.Message}", "EPB", ex);
-                _do.SetEpbOff(_channel);
-                return false;
-            }
-        }
-
-        /// <summary>
-        /// 新的 RunOneAsync：与新的 LearnOneAlignedCoreAsync 统一流程/判据。
-        /// <list type="number">
-        ///   <item>① 头部：若由“外壳相位”承担，则内部跳过（<see cref="UseNoHeadPhase"/>）。</item>
-        ///   <item>②~④ 正向：上电→忽略涌流→直接执行“夹紧阈值判定”（<see cref="WaitCurrentAboveAsync(double, System.Threading.CancellationToken, int, double, double, double, int)"/>），不再判空行程/带宽。</item>
-        ///   <item>⑤ 保持：按 <c>_holdMs</c> 执行（可为 0）。</item>
-        ///   <item>⑥~⑦ 反向：上电→忽略涌流→刚性衰减等待（≤<see cref="RevDecayRigidMaxMs"/> 且 I≤<see cref="RevDecayLimitA"/>）→固定空行程 <see cref="RevEmptyFixedMs"/>，不做空行程带宽判据。</item>
-        ///   <item>⑧ 尾段：若启用“外壳收尾”（<see cref="EnableTailCompensation"/>），内部仅计算剩余并不等待。</item>
-        /// </list>
+        ///     新的 RunOneAsync：与新的 LearnOneAlignedCoreAsync 统一流程/判据。
+        ///     <list type="number">
+        ///         <item>① 头部：若由“外壳相位”承担，则内部跳过（<see cref="UseNoHeadPhase" />）。</item>
+        ///         <item>
+        ///             ②~④ 正向：上电→忽略涌流→直接执行“夹紧阈值判定”（
+        ///             <see
+        ///                 cref="WaitCurrentAboveAsync(double, System.Threading.CancellationToken, int, double, double, double, int)" />
+        ///             ），不再判空行程/带宽。
+        ///         </item>
+        ///         <item>⑤ 保持：按 <c>_holdMs</c> 执行（可为 0）。</item>
+        ///         <item>
+        ///             ⑥~⑦ 反向：上电→忽略涌流→刚性衰减等待（≤<see cref="RevDecayRigidMaxMs" /> 且 I≤<see cref="RevDecayLimitA" />）→固定空行程
+        ///             <see cref="RevEmptyFixedMs" />，不做空行程带宽判据。
+        ///         </item>
+        ///         <item>⑧ 尾段：若启用“外壳收尾”（<see cref="EnableTailCompensation" />），内部仅计算剩余并不等待。</item>
+        ///     </list>
         /// </summary>
         /// <param name="targetPeriodMs">目标周期（ms）。用于尾段预算/日志；①/⑧若交由外壳承担，内部不直接用。</param>
         /// <param name="token">取消令牌。</param>
@@ -750,8 +500,15 @@ namespace Controller
             {
                 // —— 本地计时工具（与 Learn… 保持一致）——
                 // ★注意：C# 7.3 对本地静态函数的 captures 有限制，这里仅使用无 captures 的形式。
-                static long NowTicks() { return Stopwatch.GetTimestamp(); }
-                static int MsBetween(long t0, long t1) { return (int)((t1 - t0) * 1000.0 / Stopwatch.Frequency); }
+                static long NowTicks()
+                {
+                    return Stopwatch.GetTimestamp();
+                }
+
+                static int MsBetween(long t0, long t1)
+                {
+                    return (int)((t1 - t0) * 1000.0 / Stopwatch.Frequency);
+                }
 
                 // —— 预算 ——（用于日志与⑧尾段估算）
                 var elecBudgetMs = Math.Max(0, targetPeriodMs);
@@ -763,16 +520,10 @@ namespace Controller
                 // ===================== ① 头部未上电（可交给外壳相位） =====================
                 // 旧版本中 ① 按比例分配；现在若 UseNoHeadPhase=true，则完全由外壳承担并在此跳过。
                 // 这里仅记录“外壳承担”日志，不再实际等待。
-                if (UseNoHeadPhase)
-                {
-                    _log?.Info($"EPB[{_channel}] ①头部未上电由外壳相位承担，内部跳过。", "EPB");
-                }
-                else
-                {
-                    // 若你仍希望在无外壳相位时保留一个固定头部等待，可在此加入：
-                    // int headMs = 0; if (headMs > 0) await Task.Delay(headMs, token);
-                }
+                if (UseNoHeadPhase) _log?.Info($"EPB[{_channel}] ①头部未上电由外壳相位承担，内部跳过。", "EPB");
 
+                // 若你仍希望在无外壳相位时保留一个固定头部等待，可在此加入：
+                // int headMs = 0; if (headMs > 0) await Task.Delay(headMs, token);
                 var tElecStart = NowTicks(); // 用于⑧尾段收口计算
 
                 // ===================== ② + ③ + ④：正向（合并为直接夹紧判据） =====================
@@ -828,8 +579,12 @@ namespace Controller
                     {
                         var ms = (int)Math.Max(0, (nextDue - now) / tickPerMs - 1);
                         if (ms > 0) await Task.Delay(ms, token).ConfigureAwait(false);
-                        while ((now = Stopwatch.GetTimestamp()) < nextDue) { /* busy wait to align */ }
+                        while ((now = Stopwatch.GetTimestamp()) < nextDue)
+                        {
+                            /* busy wait to align */
+                        }
                     }
+
                     nextDue += (long)(Math.Max(1, _sampleMs) * tickPerMs);
 
                     var current = _readCurrent(_channel);
@@ -850,17 +605,13 @@ namespace Controller
                 }
 
                 if (!decayReached)
-                {
                     _log?.Warn(
                         $"EPB[{_channel}] 反向峰值衰减未达标：限值={RevDecayLimitA:F2}A，上限={RevDecayRigidMaxMs}ms，实测≈{tRevPeakDecayMs}ms（按上限计入）。",
                         "EPB");
-                }
                 else
-                {
                     _log?.Info(
                         $"EPB[{_channel}] 反向峰值衰减达标：I≤{RevDecayLimitA:F2}A，TRevPeakDecay≈{tRevPeakDecayMs}ms。",
                         "EPB");
-                }
 
                 // —— 反向固定空行程（不再做带宽判据） —— //
                 var run7 = Math.Max(0, RevEmptyFixedMs);
@@ -1087,263 +838,6 @@ namespace Controller
             }
         }
 
-        private async Task<bool> WaitCurrentAboveAsyncOld(double thrA, CancellationToken token)
-        {
-            var ewma = ReadEwma(_readCurrent(_channel), _readCurrent(_channel));
-            var tBegin = Stopwatch.GetTimestamp();
-
-            // —— 平台检测窗口（环形缓冲）——
-            var winCap = Math.Max(1, PlateauWindowMs / Math.Max(1, _sampleMs));
-            var ring = new double[winCap];
-            int count = 0, head = 0;
-
-            while (true)
-            {
-                token.ThrowIfCancellationRequested();
-                await Task.Delay(_sampleMs, token);
-
-                var raw = _readCurrent(_channel);
-                ewma = ReadEwma(ewma, raw);
-
-                // 1) 达阈值：立即返回（上层会立刻断电）
-                if (ewma >= thrA) return true;
-
-                // 2) 限流平台：150ms 内几乎一条直线，且显著高于空行程
-                ring[head] = ewma;
-                head = (head + 1) % winCap;
-                if (count < winCap) count++;
-                if (count == winCap && _iEmptyFwdA != 0)
-                {
-                    double min = ring[0], max = ring[0];
-                    for (var i = 1; i < winCap; i++)
-                    {
-                        var v = ring[i];
-                        if (v < min) min = v;
-                        if (v > max) max = v;
-                    }
-
-                    var range = max - min;
-                    if (range <= PlateauFlatRangeA && ewma >= _iEmptyFwdA + PlateauAboveEmptyMarginA)
-                    {
-                        _log.Warn($"EPB[{_channel}] 检测到疑似电源限流平台，{PlateauWindowMs}ms 内波动≤{range:F2}A，" +
-                                  $"EWMA≈{ewma:F2}A（空行程≈{_iEmptyFwdA:F2}A）。提前断电。", "EPB");
-                        return true; // 视同到达“应断电”条件
-                    }
-                }
-
-                // 3) 超时保护
-                if (ElapsedMs(tBegin) > 10_000) return false;
-            }
-        }
-
-        /// <summary>
-        ///     等待 EPB 通道电流达到或超过指定阈值（A）。
-        ///     <para>改动要点：直接使用瞬时电流值参与判断（不做平滑），并将采样读取放到循环起始处以减少首判延迟。</para>
-        /// </summary>
-        /// <param name="thrA">电流阈值（安培）。达到或超过则立即返回 <c>true</c>。</param>
-        /// <param name="token">取消令牌。</param>
-        /// <returns>
-        ///     若在超时时间（固定 10 s）内达到阈值或识别到“限流平台”，返回 <c>true</c>；
-        ///     超时未达到则返回 <c>false</c>。
-        /// </returns>
-        /// <remarks>
-        ///     其他逻辑保持与原方法一致：
-        ///     1) 达阈值立即返回；
-        ///     2) “限流平台”检测：在 <see cref="PlateauWindowMs" /> 毫秒窗口内波动近似恒定，且显著高于空行程电流 <c>_iEmptyFwdA</c>；
-        ///     3) 超时保护：超过 10 s 返回 <c>false</c>；
-        ///     4) 采样节拍仍基于 <c>_sampleMs</c> 的 <see cref="Task.Delay(int, CancellationToken)" />。
-        /// </remarks>
-        private async Task<bool> WaitCurrentAboveAsyncOld2(double thrA, CancellationToken token)
-        {
-            // 记录起始时间用于超时判断（需配合现有的 ElapsedMs(tBegin) 辅助函数）
-            var tBegin = Stopwatch.GetTimestamp();
-
-            // —— 平台检测窗口（环形缓冲，单位：样本数）——
-            // 与原逻辑一致：窗口大小 = PlateauWindowMs / _sampleMs（至少为 1）
-            var winCap = Math.Max(1, PlateauWindowMs / Math.Max(1, _sampleMs));
-            var ring = new double[winCap];
-            int count = 0, head = 0;
-
-            while (true)
-            {
-                token.ThrowIfCancellationRequested();
-
-                // ① 先读取当前瞬时电流（避免先 Delay 带来的首判滞后）
-                var current = _readCurrent(_channel);
-
-                // ② 达阈值：立即返回（上层会立刻断电）
-                if (current >= thrA) return true;
-
-                // ③ 限流平台检测（逻辑保持不变，只是用 raw 电流而非 EWMA）
-                ring[head] = current;
-                head = (head + 1) % winCap;
-                if (count < winCap) count++;
-
-                if (count == winCap && _iEmptyFwdA != 0)
-                {
-                    // 在窗口内求极差
-                    double min = ring[0], max = ring[0];
-                    for (var i = 1; i < winCap; i++)
-                    {
-                        var v = ring[i];
-                        if (v < min) min = v;
-                        if (v > max) max = v;
-                    }
-
-                    var range = max - min;
-
-                    // 平台判据：波动很小，且电流显著高于空行程
-                    if (range <= PlateauFlatRangeA && current >= _iEmptyFwdA + PlateauAboveEmptyMarginA)
-                    {
-                        _log.Warn(
-                            $"EPB[{_channel}] 检测到疑似电源限流平台，{PlateauWindowMs}ms 内波动≤{range:F2}A，" +
-                            $"I≈{current:F2}A（空行程≈{_iEmptyFwdA:F2}A）。提前断电。",
-                            "EPB");
-                        return true; // 视同到达“应断电”条件
-                    }
-                }
-
-                // ④ 超时保护（与原逻辑一致）
-                if (ElapsedMs(tBegin) > 10_000) return false;
-
-                // ⑤ 节拍等待（放在读取之后，保证首判即时）
-                await Task.Delay(_sampleMs, token);
-            }
-        }
-
-        /// <summary>
-        ///     等待 EPB 通道电流达到或超过指定阈值（A），并使用“斜率预测 + 提前量”实现更精准的断电控制。
-        ///     带详细日志输出以便调试。
-        /// </summary>
-        private async Task<bool> WaitCurrentAboveAsyncOld3(
-            double thrA,
-            CancellationToken token,
-            int predictiveCutMs = 2,
-            double minSlopeAperMs = 0.02,
-            double safetyMarginA = 0.0)
-        {
-            var tBegin = Stopwatch.GetTimestamp();
-
-            // —— 平台检测窗口 —— //
-            var winCap = Math.Max(1, PlateauWindowMs / Math.Max(1, _sampleMs));
-            var ring = new double[winCap];
-            int count = 0, head = 0;
-
-            // —— 斜率计算需要上一帧 —— //
-            var hasLast = false;
-            var lastI = 0.0;
-            long lastTick = 0;
-
-            // —— Tick 相关 —— //
-            var tickPerMs = Stopwatch.Frequency / 1000;
-            var nextDue = Stopwatch.GetTimestamp();
-
-            // —— 打印一次方法启动参数 —— //
-            _log.Info(
-                $"WaitCurrentAboveAsync 启动: Thr={thrA:F2}A, PredictiveCut={predictiveCutMs}ms, " +
-                $"MinSlope={minSlopeAperMs:F3}A/ms, Margin={safetyMarginA:F2}A, SampleMs={_sampleMs}ms",
-                "EPB");
-
-            var loopCounter = 0; // 控制调试日志频率
-
-            while (true)
-            {
-                token.ThrowIfCancellationRequested();
-
-                // —— ① 对齐节拍 —— //
-                {
-                    var now = Stopwatch.GetTimestamp();
-                    if (now < nextDue)
-                    {
-                        var ms = (int)Math.Max(0, (nextDue - now) / tickPerMs - 1);
-                        if (ms > 0) await Task.Delay(ms, token);
-                        while ((now = Stopwatch.GetTimestamp()) < nextDue)
-                        {
-                            /* 自旋 */
-                        }
-                    }
-                }
-                nextDue += _sampleMs * tickPerMs;
-
-                // —— ② 读取瞬时电流 —— //
-                var current = _readCurrent(_channel);
-                var nowTick = Stopwatch.GetTimestamp();
-
-                // —— ③ 达阈值 —— //
-                if (current + safetyMarginA >= thrA)
-                {
-                    _log.Info($"EPB[{_channel}] 达到阈值: I={current:F2}A ≥ Thr={thrA:F2}A (Margin={safetyMarginA:F2}A)",
-                        "EPB");
-                    return true;
-                }
-
-                // —— ④ 斜率预测 —— //
-                if (predictiveCutMs > 0 && hasLast)
-                {
-                    var dtMs = (nowTick - lastTick) * 1000.0 / Stopwatch.Frequency;
-                    if (dtMs > 0.05)
-                    {
-                        var slope = (current - lastI) / dtMs;
-                        if (slope >= minSlopeAperMs)
-                        {
-                            var remainA = thrA - safetyMarginA - current;
-                            var tToThrMs = remainA / slope;
-
-                            if (tToThrMs <= predictiveCutMs && tToThrMs >= 0)
-                            {
-                                _log.Warn(
-                                    $"EPB[{_channel}] 预测提前断电: I={current:F2}A, slope={slope:F3}A/ms, " +
-                                    $"remain={remainA:F2}A, tToThr={tToThrMs:F1}ms ≤ Cut={predictiveCutMs}ms",
-                                    "EPB");
-                                return true;
-                            }
-                        }
-                    }
-                }
-
-                // —— ⑤ 平台检测 —— //
-                ring[head] = current;
-                head = (head + 1) % winCap;
-                if (count < winCap) count++;
-
-                if (count == winCap && _iEmptyFwdA != 0)
-                {
-                    double min = ring[0], max = ring[0];
-                    for (var i = 1; i < winCap; i++)
-                    {
-                        var v = ring[i];
-                        if (v < min) min = v;
-                        if (v > max) max = v;
-                    }
-
-                    var range = max - min;
-
-                    if (range <= PlateauFlatRangeA && current >= _iEmptyFwdA + PlateauAboveEmptyMarginA)
-                    {
-                        _log.Warn(
-                            $"EPB[{_channel}] 检测到疑似限流平台: {PlateauWindowMs}ms 内波动≤{range:F2}A, " +
-                            $"I≈{current:F2}A（空行程≈{_iEmptyFwdA:F2}A）",
-                            "EPB");
-                        return true;
-                    }
-                }
-
-                // —— ⑥ 超时保护 —— //
-                if (ElapsedMs(tBegin) > 10_000)
-                {
-                    _log.Warn($"EPB[{_channel}] 超时: 10s 内未达到阈值 Thr={thrA:F2}A", "EPB");
-                    return false;
-                }
-
-                // —— ⑦ 更新上一帧 —— //
-                lastI = current;
-                lastTick = nowTick;
-                hasLast = true;
-
-                loopCounter++;
-            }
-        }
-
         private async Task<bool> WaitCurrentAboveAsync(
             double thrA,
             CancellationToken token,
@@ -1458,76 +952,6 @@ namespace Controller
                     _log.Warn($"EPB[{_channel}] 超时: 10s 内未达到 Thr={thrA:F2}A", "EPB");
                     return false;
                 }
-            }
-        }
-
-
-        /// <summary>
-        /// 对当前通道执行一次“预释放”：
-        /// 反向上电 → 忽略涌流 → 等待进入反向空行程（Ewma 稳定判据）→ 保持 keepMs → 断电。
-        /// 若未稳定判定到反向空行程，仍按 keepMs 定时保持（兜底），然后断电。
-        /// </summary>
-        /// <param name="keepMs">
-        /// 反向空行程保持时长（毫秒）。为 <c>null</c> 时使用 <see cref="DefaultPreReleaseKeepMs"/>。
-        /// </param>
-        /// <param name="token">取消令牌。</param>
-        /// <returns>执行是否顺利（判定到反向空行程记为 true；未判定到也会完成动作但返回 false）。</returns>
-        public async Task<bool> PreReleaseAsync(int? keepMs, CancellationToken token)
-        {
-            var holdMs = keepMs ?? _revEmptyKeepMs;
-            if (holdMs < 0) holdMs = 0;
-
-            try
-            {
-                _log.Info($"EPB[{_channel}] 预释放：开始（目标保持 {holdMs}ms）。", "EPB");
-
-                // 1) 反向上电 → 忽略涌流（去抖）
-                _do.SetEpbReverse(_channel);
-                await Task.Delay(_peakIgnoreMs, token).ConfigureAwait(false);
-
-                // 2) 判定进入反向空行程（Ewma 稳定窗口）
-                // 目标电流：优先用已学习到的 _iEmptyRevA；没有则用 -0.5A 兜底
-                var target = _iEmptyRevA != 0 ? _iEmptyRevA : -0.5;
-                var tuple = await WaitStableAroundAsync(
-                                target,
-                                -1,                // 反向
-                                _emptyBandA,
-                                _stableWinMs,
-                                token).ConfigureAwait(false);
-
-                var okRel = tuple.Item1;
-                var iEmptyRel = tuple.Item3;
-
-                if (okRel)
-                {
-                    _log.Info($"EPB[{_channel}] 预释放：已进入反向空行程，Iempty-≈{iEmptyRel:F2}A。保持 {holdMs}ms。", "EPB");
-                }
-                else
-                {
-                    _log.Warn($"EPB[{_channel}] 预释放：未稳定判定到反向空行程，仍按 {holdMs}ms 定时保持。", "EPB");
-                }
-
-                // 3) 保持 keepMs（无论是否判定成功都保持）
-                if (holdMs > 0)
-                    await Task.Delay(holdMs, token).ConfigureAwait(false);
-
-                return okRel;
-            }
-            catch (OperationCanceledException)
-            {
-                // 传递取消（上层通常会统一断电）
-                throw;
-            }
-            catch (Exception ex)
-            {
-                _log.Warn($"EPB[{_channel}] 预释放阶段异常：{ex.Message}（忽略继续）。", "EPB");
-                return false;
-            }
-            finally
-            {
-                // 4) 断电（始终）
-                _do.SetEpbOff(_channel);
-                _log.Info($"EPB[{_channel}] 预释放：完成，已断电。", "EPB");
             }
         }
 

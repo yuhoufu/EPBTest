@@ -6,7 +6,6 @@ using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
-using System.Runtime.Remoting.Channels;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -14,8 +13,8 @@ using System.Xml.Serialization;
 using Config;
 using Controller;
 using DataOperation;
+using DevExpress.UITemplates.Collection.Editors;
 using DevExpress.XtraEditors;
-using DevExpress.XtraEditors.Filtering.Templates;
 using IO.NI;
 using MtEmbTest;
 using MTEmbTest.UIHelpers;
@@ -84,8 +83,16 @@ namespace MTEmbTest
                 .Concat(new[] { "CheckP1", "CheckP2", "CheckF" })
                 .ToArray();
 
+        /// <summary>计划总次数显示（通道 → UILabel）。</summary>
+        private readonly Dictionary<int, UILabel> _planLabelByChannel = new();
+
         // —— 快速路由（"Dev#ai" -> 全局索引） —— //
         private readonly Dictionary<string, int> _route = new(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>切换开关（通道 → ToggleButton）。</summary>
+        private readonly Dictionary<int, ToggleButton> _switchByChannel =
+            new();
+
         private readonly ConcurrentQueue<byte[]> bufferA = new();
         private readonly ConcurrentQueue<byte[]> bufferB = new();
 
@@ -109,6 +116,8 @@ namespace MTEmbTest
         private readonly object graphLock = new(); //曲线更新锁
         private readonly bool IsTestConfirm = false;
         private AoController _ao;
+
+        private CancellationTokenSource _batchCts; // 批量操作取消令牌源
         private GlobalConfig _cfg;
 
         /// <summary>防止 OnFormClosing 重入执行。</summary>
@@ -133,6 +142,9 @@ namespace MTEmbTest
         private string _dataStorePath = string.Empty;
 
         private volatile bool _dirtyForRedraw; // 有新数据，需要重绘
+
+        // 落盘相关字段
+        private EpbDiskWriter _diskWriter;
         private DoController _do;
         private EpbManager _epb;
 
@@ -149,8 +161,13 @@ namespace MTEmbTest
         private bool _isCtrlPowerPressing;
         private double _latestGlobalX; // 所有通道里最新的 X（秒）
         private Timer[] _logtimers = new Timer[DeviceCount * 2];
+        private IEpbCycleRecorder _recorder;
 
         private UiConfig _uiCfg;
+
+
+        /// <summary>内存中的 12 路 EPB 记录，来源于 TestConfig.xml 的 &lt;EpbRecords&gt;。</summary>
+        private List<EpbTestRecord> _uiEpbRecords = new();
 
 
         // —— UI 刷新节流相关 —— //
@@ -190,26 +207,6 @@ namespace MTEmbTest
 
         private TestConfig testConfig;
         private TwoDeviceAiAcquirer twoDeviceAiAcquirer;
-
-        // 落盘相关字段
-        private DataOperation.EpbDiskWriter _diskWriter;
-        private DataOperation.IEpbCycleRecorder _recorder;
-
-
-
-        /// <summary>内存中的 12 路 EPB 记录，来源于 TestConfig.xml 的 &lt;EpbRecords&gt;。</summary>
-        private List<Config.EpbTestRecord> _uiEpbRecords = new List<Config.EpbTestRecord>();
-
-        /// <summary>切换开关（通道 → ToggleButton）。</summary>
-        private readonly Dictionary<int, DevExpress.UITemplates.Collection.Editors.ToggleButton> _switchByChannel
-            = new Dictionary<int, DevExpress.UITemplates.Collection.Editors.ToggleButton>();
-
-        /// <summary>计划总次数显示（通道 → UILabel）。</summary>
-        private readonly Dictionary<int, Sunny.UI.UILabel> _planLabelByChannel
-            = new Dictionary<int, Sunny.UI.UILabel>();
-
-        private CancellationTokenSource _batchCts; // 批量操作取消令牌源
-
 
 
         public FrmEpbMainMonitor()
@@ -772,7 +769,6 @@ namespace MTEmbTest
                 twoDeviceAiAcquirer.OnRawBatch += Acq_OnRawBatch; // ← 新增：订阅原始批次事件（两卡通用 ) // 2025/09/09
 
 
-
                 // epb管理器初始化
                 _epb = new EpbManager(
                     _cfg,
@@ -782,26 +778,22 @@ namespace MTEmbTest
                     logger);
 
 
-                
-                
-
                 // 1) 创建写盘器（使用 DataRetentionPolicy）
-                var policy = new DataOperation.DataRetentionPolicy
+                var policy = new DataRetentionPolicy
                 {
-                    DataStorePath = System.IO.Path.Combine(Environment.CurrentDirectory, "DataStore"), // 数据根目录
-                    FileSizeMb = 100,           // 每通道 .dat大小，单位MB，可按需改 384
-                    RetainLatestCycles = 10,            // 停止时“最新N圈”
-                    CleanupMode = "archive"      // 或 "delete"
+                    DataStorePath = Path.Combine(Environment.CurrentDirectory, "DataStore"), // 数据根目录
+                    FileSizeMb = 100, // 每通道 .dat大小，单位MB，可按需改 384
+                    RetainLatestCycles = 10, // 停止时“最新N圈”
+                    CleanupMode = "archive" // 或 "delete"
                 };
-                _diskWriter = new DataOperation.EpbDiskWriter(policy);
+                _diskWriter = new EpbDiskWriter(policy);
                 _diskWriter.StartFreeRun(1);
-                
+
 
                 // 适配器：实现 IEpbCycleRecorder，把 EpbDiskWriter 包起来
                 var recorder = new DiskWriterRecorderAdapter(_diskWriter);
 
-                
-                
+
                 // 2) 注入到 EpbManager
                 _epb.Recorder = recorder;
 
@@ -815,9 +807,9 @@ namespace MTEmbTest
 
                     foreach (var kv in currentsByEpb)
                     {
-                        int epbId = kv.Key;
+                        var epbId = kv.Key;
                         var iArr = kv.Value;
-                        var gArr = (epbId <= 6) ? p1 : p2;  // 1..6 用组1压力；7..12 用组2压力
+                        var gArr = epbId <= 6 ? p1 : p2; // 1..6 用组1压力；7..12 用组2压力
                         if (iArr == null || gArr == null) continue;
                         if (tsUtc.Length != iArr.Length || tsUtc.Length != gArr.Length) continue;
 
@@ -861,7 +853,6 @@ namespace MTEmbTest
                 #endregion
 
                 twoDeviceAiAcquirer.Start(); // 开始采集
-
 
 
                 //数据落盘相关
@@ -947,7 +938,6 @@ namespace MTEmbTest
             try
             {
                 for (var i = 0; i < 12; i++)
-                {
                     EpbGroup[i] = new ClsEPBControler
                     {
                         EpbNo = i + 1,
@@ -955,7 +945,6 @@ namespace MTEmbTest
                         //  EpbGroup[i].Cycles = 0;
                         IsEnabel = true
                     };
-                }
 
                 EpbGroup[0].CtrlJoinTest = ChkEpb1;
                 EpbGroup[1].CtrlJoinTest = ChkEpb2;
@@ -984,7 +973,7 @@ namespace MTEmbTest
                 EpbGroup[2].CtrlRunning = SwitchEpb3;
                 EpbGroup[3].CtrlRunning = SwitchEpb4;
                 EpbGroup[4].CtrlRunning = SwitchEpb5;
-                EpbGroup[5].CtrlRunning = SwitchEpb6; 
+                EpbGroup[5].CtrlRunning = SwitchEpb6;
                 EpbGroup[6].CtrlRunning = SwitchEpb7;
                 EpbGroup[7].CtrlRunning = SwitchEpb8;
                 EpbGroup[8].CtrlRunning = SwitchEpb9;
@@ -1226,7 +1215,7 @@ namespace MTEmbTest
             if (checkBox.Checked)
             {
                 // EpbGroup[index].CtrlCurrentEmb.Enabled = true; // 界面上没有这个控件，暂时注释掉
-               // EpbGroup[index].CtrlPower.Enabled = true; // 界面上没有这个控件，暂时注释
+                // EpbGroup[index].CtrlPower.Enabled = true; // 界面上没有这个控件，暂时注释
                 // EpbGroup[index].CtrlAlert.Enabled = true; // 界面上没有这个控件，暂时注释掉
                 EpbGroup[index].CtrlCycles.Enabled = true;
                 EpbGroup[index].IsEnabel = true;
@@ -1234,7 +1223,7 @@ namespace MTEmbTest
             else
             {
                 // EpbGroup[index].CtrlCurrentEmb.Enabled = false; // 界面上没有这个控件，暂时注释掉
-               // EpbGroup[index].CtrlPower.Enabled = false; // 界面上没有这个控件暂时注释
+                // EpbGroup[index].CtrlPower.Enabled = false; // 界面上没有这个控件暂时注释
                 // EpbGroup[index].CtrlAlert.Enabled = false; // 界面上没有这个控件，暂时注释掉
                 EpbGroup[index].CtrlCycles.Enabled = false;
                 // EpbGroup[index].CtrlCurrentEmb.Checked = false; // 界面上没有这个控件，暂时注释掉
@@ -1445,6 +1434,7 @@ namespace MTEmbTest
         private async void BtnStartTest_Click(object sender, EventArgs e)
         {
             #region 旧的代码
+
             /*
             try
             {
@@ -1535,9 +1525,10 @@ namespace MTEmbTest
                 MessageBox.Show($@"启动卡钳1测试失败：{ex.Message}", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
             */
+
             #endregion
 
-            int[] channels = new int[]{};
+            var channels = new int[] { };
             try
             {
                 // 4) 组装 EpbManager（把回调委托接进去）
@@ -1556,15 +1547,12 @@ namespace MTEmbTest
                 //await _epb.StartChannelAsync(4);
                 //await _epb.StartChannelAsync(5);
 
-                
-
 
                 #region 【同步起跑（电源保护）】：学习阶段同组错峰 + 正式阶段锚点对齐且同组错峰（首周期）
 
-
                 // 1) 收集勾选通道
                 var selected = new List<int>();
-                for (int chIndex = 0; chIndex < 12; chIndex++)
+                for (var chIndex = 0; chIndex < 12; chIndex++)
                 {
                     var ch = chIndex + 1;
                     if (EpbGroup[chIndex].CtrlJoinTest.Checked)
@@ -1574,36 +1562,40 @@ namespace MTEmbTest
                 if (selected.Count == 0)
                 {
                     // Create and initialize an object with message box settings.
-                    XtraMessageBoxArgs args = new XtraMessageBoxArgs()
+                    var args = new XtraMessageBoxArgs
                     {
                         Caption = "提示",
                         Text = "请至少勾选一个通道！",
-                        Buttons = new DialogResult[] { DialogResult.Yes },
-                        Icon = System.Drawing.SystemIcons.Warning,        // 警告图标
-                        DefaultButtonIndex = 0                  // 默认按钮（0=第一个）
-
+                        Buttons = new[] { DialogResult.Yes },
+                        Icon = SystemIcons.Warning, // 警告图标
+                        DefaultButtonIndex = 0 // 默认按钮（0=第一个）
                     };
                     // Assign a message box icon.
                     // Display the message box and close the application if the user clicks "Yes".
                     if (await XtraMessageBox.ShowAsync(args) == DialogResult.Yes)
-                       return;
+                        return;
                 }
 
                 // 读取自学习圈数（比如从一个文本框；没有就用 3）
-                int learnCycles = 3;
+                var learnCycles = 10;
                 // int.TryParse(TxtLearnCycles.Text, out learnCycles) 也可以
 
-                if (_batchCts != null) { _batchCts.Dispose(); _batchCts = null; }
+                if (_batchCts != null)
+                {
+                    _batchCts.Dispose();
+                    _batchCts = null;
+                }
+
                 _batchCts = new CancellationTokenSource();
 
-                 channels = selected.ToArray();       // 例如: {1,2,4,6} 或 {1..12}
+                channels = selected.ToArray(); // 例如: {1,2,4,6} 或 {1..12}
 
                 try
                 {
                     await _epb.StartBatchSynchronizedAsync(
-                        channels,            // 批量要跑的通道
-                        learnCycles,         // 自学习圈数（按你期望）
-                        _batchCts.Token      // 取消令牌（Stop 按钮用）
+                        channels, // 批量要跑的通道
+                        learnCycles, // 自学习圈数（按你期望）
+                        _batchCts.Token // 取消令牌（Stop 按钮用）
                     );
 
                     RtbInfo?.AppendText("批量启动完成：学习阶段已对齐并错峰，上线后每圈对齐运行中…\n");
@@ -1616,25 +1608,18 @@ namespace MTEmbTest
                 {
                     RtbInfo?.AppendText($"批量启动失败：{ex.Message}\n");
                 }
-                finally
-                {
-                    //启用按钮
-                }
-
-
 
                 #endregion
 
 
-
                 // UI 提示
-               // RtbInfo?.AppendText($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  > 卡钳1测试已启动\n");
+                // RtbInfo?.AppendText($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  > 卡钳1测试已启动\n");
             }
             catch (Exception ex)
             {
-                MessageBox.Show($@"启动卡钳{channels.ToString()}测试失败：{ex.Message}", @"提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show($@"启动卡钳{channels}测试失败：{ex.Message}", @"提示", MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
             }
-
         }
 
         /// <summary>
@@ -1666,16 +1651,14 @@ namespace MTEmbTest
 
             try
             {
-                _batchCts?.Cancel();   // 触发外壳的 await 停下学习/计时器工作
-                _epb.StopAll();        // 内部 DO/AO/Runner 停车
+                _batchCts?.Cancel(); // 触发外壳的 await 停下学习/计时器工作
+                _epb.StopAll(); // 内部 DO/AO/Runner 停车
                 RtbInfo?.AppendText($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  > 停止试验\n");
             }
             catch (Exception ex)
             {
                 RtbInfo?.AppendText($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  > 停止失败：{ex.Message}\n");
             }
-
-
         }
 
         #region 3) 窗体关闭：一次性解绑/停止/释放
@@ -1804,13 +1787,13 @@ namespace MTEmbTest
 
 
             // 测试
-            _diskWriter.ExportFreeRunBySamples(1,100000,Path.Combine(Environment.CurrentDirectory,@$"DataStore\EPB1-{DateTime.Now:yyyy_MM_dd-HH_mm_ss}.csv"));
+            _diskWriter.ExportFreeRunBySamples(1, 100000,
+                Path.Combine(Environment.CurrentDirectory, @$"DataStore\EPB1-{DateTime.Now:yyyy_MM_dd-HH_mm_ss}.csv"));
 
             base.OnFormClosing(e);
         }
 
         #endregion
-
 
 
         // 把全选中项做置零或清零
@@ -2461,16 +2444,12 @@ namespace MTEmbTest
                         }
 
                         if (displayCtl != null)
-                        {
                             _instantDisplayControls[g] = displayCtl;
-                            // 调试日志
-                            logger?.Info(
-                                $"控件映射成功: 全局索引{g} -> {displayCtl.Name} (设备:{ch.Device}, 通道:{ch.AiIndex}, 参数:{ch.DisplayName}, 类型:{ch.Type})");
-                        }
+                        // 调试日志
+                        // logger?.Info(
+                        //     $"控件映射成功: 全局索引{g} -> {displayCtl.Name} (设备:{ch.Device}, 通道:{ch.AiIndex}, 参数:{ch.DisplayName}, 类型:{ch.Type})");
                         else
-                        {
                             logger?.Warn($"未找到对应控件: 全局索引{g}, 参数:{ch.DisplayName}, 类型:{ch.Type}");
-                        }
                     }
                 }
 
@@ -3691,7 +3670,6 @@ namespace MTEmbTest
             }
         }
 
-        
 
         /// <summary>
         ///     根据通道类型格式化显示值
