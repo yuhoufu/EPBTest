@@ -29,7 +29,7 @@ namespace Controller
         /// <param name="channels">要启动的 EPB 通道（1..12）。例如 new[]{1,2,4,6}</param>
         /// <param name="learnCycles">自学习圈数。=0 则跳过学习。</param>
         /// <param name="token">取消令牌。</param>
-        public async Task StartBatchSynchronizedAsync(int[] channels, int learnCycles, CancellationToken token)
+        public async Task StartBatchSynchronizedAsyncOld(int[] channels, int learnCycles, CancellationToken token)
         {
             if (channels == null || channels.Length == 0)
                 throw new ArgumentException("channels 不能为空", nameof(channels));
@@ -87,6 +87,75 @@ namespace Controller
         }
 
         #endregion
+
+        #region Batch Start (Learning + Formal) with Group Anchor + Stagger Phases
+
+        /// <summary>
+        /// 批量启动 EPB 通道（学习 + 正式），每圈都对齐到“压力组锚点 + 固定相位”。<br/>
+        /// 关键增强：
+        /// <list type="number">
+        ///   <item>为每个压力组的 <c>t0</c> 预留 <see cref="AnchorWarmupMs"/> 预热裕度，确保首圈（k=0）也有正的延时。</item>
+        ///   <item>正式学习阶段内：对每个“圈 × 组”先起“液压锚点”任务，并在每个通道任务里 <c>await</c> 该任务（作为屏障）。</item>
+        ///   <item>对很小/负的 <c>delay</c> 不再直接“零等待”，而是 <c>Task.Yield()</c> 打散同刻调度，降低通道扎堆概率。</item>
+        /// </list>
+        /// </summary>
+        /// <param name="channels">要启动的 EPB 通道（1..12）。例如 new[]{1,2,4,6}</param>
+        /// <param name="learnCycles">自学习圈数。=0 则跳过学习。</param>
+        /// <param name="token">取消令牌。</param>
+        /// <remarks>
+        /// 依赖：<br/>
+        /// - <c>GroupByPressure(int[])</c>：将通道按压力组（1/2）分组。<br/>
+        /// - <c>CeilToBoundary(DateTime,int)</c>：把时间上取整到周期边界。<br/>
+        /// - <c>PreReleaseBatchStaggeredAsync</c>（可选）：你的“预释放三波错峰”方法。<br/>
+        /// - <c>RunLearningPhaseAsync</c>（见下方替换版）：圈内并发 + 相位错峰。<br/>
+        /// - <c>StartFormalPhaseTimers</c>：正式阶段的高精计时器（你已有）。<br/>
+        /// </remarks>
+        /// <exception cref="ArgumentException">当 <paramref name="channels"/> 为空时抛出。</exception>
+        public async Task StartBatchSynchronizedAsync(int[] channels, int learnCycles, CancellationToken token)
+        {
+            if (channels == null || channels.Length == 0)
+                throw new ArgumentException("channels 不能为空", nameof(channels));
+
+            // —— 1) 按压力组归类，并为每组计算“锚点零相位” t0（含预热裕度 + 周期上取整）—— //
+            var nowUtc = DateTime.UtcNow;
+            var groups = GroupByPressure(channels); // Dictionary<int, List<int>>，键为 1/2
+            var t0OfGroup = new Dictionary<int, DateTime>(); // key: PG(1/2), value: t0(UTC)
+
+            foreach (var kv in groups)
+            {
+                var pg = kv.Key;
+                var list = kv.Value;
+                if (list == null || list.Count == 0) continue;
+
+                // 预热裕度：避免首圈 k=0 时 delay ≤ 0 造成“零等待”扎堆
+                var warm = nowUtc.AddMilliseconds(AnchorWarmupMs);
+                // 上取整到下一个周期边界（使所有 pg 的 t0 对齐到统一节拍）
+                t0OfGroup[pg] = CeilToBoundary(warm, PeriodMs);
+            }
+
+            // —— 2) （可选）学习前“预释放”：三波错峰，仅做一次，避免每圈额外能耗 —— //
+            if (learnCycles > 0)
+            {
+                var all = groups.Values.SelectMany(v => v).Distinct().OrderBy(x => x).ToArray();
+                _log?.Info($"批量预释放：通道[{string.Join(",", all)}]，三波错峰，Δ={StaggerDeltaMs}ms。", "EPB");
+
+                // keepMs=null → 由 Runner 内部使用 DefaultPreReleaseKeepMs
+                await PreReleaseBatchStaggeredAsync(all, /*keepMs*/ null, /*deltaMs*/ StaggerDeltaMs, token)
+                    .ConfigureAwait(false);
+            }
+
+            // —— 3) 学习阶段：次数不多，用“每圈循环 + 锚点屏障 + 相位延时”实现稳定对齐 —— //
+            if (learnCycles > 0)
+            {
+                await RunLearningPhaseAsync(groups, t0OfGroup, learnCycles, token).ConfigureAwait(false);
+            }
+
+            // —— 4) 正式阶段：为每个通道创建对齐到“锚点+相位”的高精计时器 —— //
+            StartFormalPhaseTimers(groups, t0OfGroup, token);
+        }
+
+        #endregion
+
 
         #region 学习阶段（循环+延时：轻量且每圈对齐）
 
@@ -153,7 +222,7 @@ namespace Controller
             }
         }
 
-        private async Task RunLearningPhaseAsync(
+        private async Task RunLearningPhaseAsynOld(
             Dictionary<int, List<int>> groups,
             Dictionary<int, DateTime> t0OfGroup,
             int learnCycles,
@@ -250,6 +319,276 @@ namespace Controller
                 }
             }
         }
+
+
+        #region Learning Phase with Group Anchor Barrier + Robust Staggering
+
+        /// <summary>
+        /// 学习阶段外壳：并发“圈 × 组”，同组内按固定相位（0/Δ/2Δ）错峰起跑，每圈都与压力组锚点对齐。<br/>
+        /// 关键增强：
+        /// <list type="number">
+        ///   <item>对每个“圈 × 组”先创建 <c>HydraulicEnterAtGroupAnchorAsync</c> 任务，并在通道任务里 <c>await</c> 该任务（屏障）。</item>
+        ///   <item>对 <c>delay</c> 的处理更稳健：<c>&gt;0ms</c> 则 <c>Task.Delay</c>，否则 <c>Task.Yield()</c> 打散调度。</item>
+        ///   <item>圈尾聚合：确保仅对成功圈样本进行 <c>ApplyLearnSample</c>，圈末 <c>FinalizeLearnAggregation</c> 写回统计量。</item>
+        /// </list>
+        /// </summary>
+        /// <param name="groups">按压力组分组的通道集合（key: 1/2）。</param>
+        /// <param name="t0OfGroup">各压力组的零相位锚点（UTC）。建议由 <c>CeilToBoundary(now+AnchorWarmupMs, PeriodMs)</c> 生成。</param>
+        /// <param name="learnCycles">学习圈数（&gt;0）。</param>
+        /// <param name="token">取消令牌。</param>
+        private async Task RunLearningPhaseAsyncOld2(
+            Dictionary<int, List<int>> groups,
+            Dictionary<int, DateTime> t0OfGroup,
+            int learnCycles,
+            CancellationToken token)
+        {
+            // —— 保护：无任务直接返回 —— //
+            if (groups == null || groups.Count == 0 || learnCycles <= 0)
+                return;
+
+            // —— 1) 让所有 Runner 进入“无① + ⑧外壳收尾（学习不等尾）”模式，并开启聚合 —— //
+            foreach (var list in groups.Values)
+            {
+                var enabled = list?.OrderBy(x => x).ToList();
+                if (enabled == null || enabled.Count == 0) continue;
+
+                foreach (var ch in enabled)
+                {
+                    var r = GetRunner(ch);
+                    r.UseNoHeadPhase = true;       // 学习不做①，错峰由外层“相位”承担
+                    r.EnableTailCompensation = true; // ⑧尾部由外壳统一对齐（学习单圈不等待）
+                    r.TailMinMs = T8MinMs;
+                    r.BeginLearnAggregation();     // 清空本轮学习样本
+                }
+            }
+
+            // —— 2) 多圈学习 —— //
+            for (int k = 0; k < learnCycles; k++)
+            {
+                token.ThrowIfCancellationRequested();
+
+                // 本圈内所有“组 + 通道”的任务（并发执行）
+                var tasksAllGroups = new List<Task>();
+
+                // 遍历每个压力组
+                foreach (var kv in groups)
+                {
+                    var pg = kv.Key;          // 压力组 ID：1 或 2
+                    var list = kv.Value;      // 该组启用的通道集合
+                    if (list == null || list.Count == 0) continue;
+
+                    // 本圈该压力组的锚点时刻
+                    var t0 = t0OfGroup[pg];
+                    var tk = t0.AddMilliseconds(k * PeriodMs);
+
+                    // —— 2.1) 先起组锚点任务：作为组内通道起跑的“屏障” —— //
+                    var anchorTask = HydraulicEnterAtGroupAnchorAsync(pg, token);
+                    tasksAllGroups.Add(anchorTask); // 并入等待，便于异常汇总
+
+                    // —— 2.2) 组内通道：按“相位 0/Δ/2Δ”错峰触发“单圈学习核心” —— //
+                    var enabled = list.OrderBy(x => x).ToList();
+                    for (int i = 0; i < enabled.Count; i++)
+                    {
+                        var ch = enabled[i];
+                        var phase = IndexInPowerGroup(ch) * StaggerDeltaMs; // 0/Δ/2Δ
+                        var at = tk.AddMilliseconds(phase);
+
+                        
+
+                        // 注意：在每个通道任务内部先 await anchorTask（屏障）
+                        tasksAllGroups.Add(Task.Run(async () =>
+                        {
+                            // 组锚点屏障：确保液压先到位
+                            await anchorTask.ConfigureAwait(false);
+
+                            // 计算起跑剩余：若 >0ms 用 Delay；否则 Yield 打散
+                            var delay = at - DateTime.UtcNow;
+                            
+                                _log?.Error($"通道{ch}: tk={tk:HH:mm:ss.fff}, phase={phase}ms, at={at:HH:mm:ss.fff}, delay={delay.TotalMilliseconds}ms");
+                            
+                            var ms = (int)Math.Floor(delay.TotalMilliseconds);
+                            if (ms > 0)
+                                await Task.Delay(ms, token).ConfigureAwait(false);
+                            else
+                                await Task.Yield(); // 打散同刻调度，降低扎堆概率
+
+                            // 学习单圈核心：不做①；⑧由外壳统一收口（此处不等待）
+                            var runner = GetRunner(ch);
+                            var sample = await runner.LearnOneAlignedCoreAsync(
+                                PeriodMs, T8BaseMs, phase, T8MinMs, token
+                            ).ConfigureAwait(false);
+
+                            // 成功圈并入聚合
+                            if (sample != null)
+                                runner.ApplyLearnSample(sample);
+
+                        }, token));
+                    }
+                }
+
+                // 等待本圈所有任务结束，再进入下一圈
+                await Task.WhenAll(tasksAllGroups).ConfigureAwait(false);
+            }
+
+            // —— 3) 学习聚合结束：写回中位数/统计量 —— //
+            foreach (var list in groups.Values)
+            {
+                var enabled = list?.OrderBy(x => x).ToList();
+                if (enabled == null || enabled.Count == 0) continue;
+
+                foreach (var ch in enabled)
+                {
+                    var r = GetRunner(ch);
+                    r.FinalizeLearnAggregation();
+                }
+            }
+        }
+
+        #endregion
+
+
+        /// <summary>
+        /// 学习阶段外壳：并发“圈 × 组”，同组内按固定相位（0/Δ/2Δ）错峰起跑，每圈都与压力组锚点对齐。<br/>
+        /// 关键增强：
+        /// <list type="number">
+        ///   <item>对每个“圈 × 组”先创建 <c>HydraulicEnterAtGroupAnchorAsync</c> 任务作为屏障；</item>
+        ///   <item>若计算得到的 <c>at = tk + phase</c> 已落后于当前时刻，则按 <c>PeriodMs</c> 向前“整周期滚动”到未来（见 <see cref="RollForwardToFuture"/>）；</item>
+        ///   <item>确保首圈也不会出现负延时导致的“同刻上电”。</item>
+        /// </list>
+        /// </summary>
+        /// <param name="groups">按压力组分组的通道集合（key: 1/2）。</param>
+        /// <param name="t0OfGroup">
+        /// 各压力组的零相位锚点（UTC）。建议由 <c>CeilToBoundary(DateTime.UtcNow.AddMilliseconds(AnchorWarmupMs), PeriodMs)</c> 生成，
+        /// 以便给首圈留下预热裕度。</param>
+        /// <param name="learnCycles">学习圈数（&gt;0）。</param>
+        /// <param name="token">取消令牌。</param>
+        private async Task RunLearningPhaseAsync(
+            Dictionary<int, List<int>> groups,
+            Dictionary<int, DateTime> t0OfGroup,
+            int learnCycles,
+            CancellationToken token)
+        {
+            // —— 保护：无任务直接返回 —— //
+            if (groups == null || groups.Count == 0 || learnCycles <= 0)
+                return;
+
+            // —— 0) 让所有 Runner 进入“无① + ⑧外壳收尾（学习不等尾）”模式，并开启聚合 —— //
+            foreach (var list in groups.Values)
+            {
+                var enabled = (list == null ? null : list.OrderBy(x => x).ToList());
+                if (enabled == null || enabled.Count == 0) continue;
+
+                for (int i = 0; i < enabled.Count; i++)
+                {
+                    var ch = enabled[i];
+                    var r = GetRunner(ch);
+                    r.UseNoHeadPhase = true;          // 学习不做①，错峰由外层“相位”承担
+                    r.EnableTailCompensation = true;  // ⑧尾部由外壳统一对齐（学习单圈不等待）
+                    r.TailMinMs = T8MinMs;
+                    r.BeginLearnAggregation();        // 清空本轮学习样本
+                }
+            }
+
+            // —— 1) 多圈学习 —— //
+            for (int k = 0; k < learnCycles; k++)
+            {
+                token.ThrowIfCancellationRequested();
+                var tasksAllGroups = new List<Task>();
+
+                foreach (var kv in groups)
+                {
+                    var pg = kv.Key;                // 压力组 ID：1/2
+                    var list = kv.Value;
+                    if (list == null || list.Count == 0) continue;
+
+                    // 本圈该压力组的锚点时刻
+                    var t0 = t0OfGroup[pg];
+                    var tk = t0.AddMilliseconds(k * PeriodMs);
+
+                    // —— 1.1) 组锚点任务（屏障） —— //
+                    var anchorTask = HydraulicEnterAtGroupAnchorAsync(pg, token);
+                    tasksAllGroups.Add(anchorTask); // 并入等待，便于异常汇总
+
+                    // —— 1.2) 组内通道：相位错峰（0/Δ/2Δ）+ 过时滚动到未来 —— //
+                    var enabled = list.OrderBy(x => x).ToList();
+                    for (int i = 0; i < enabled.Count; i++)
+                    {
+                        var ch = enabled[i];
+                        var phase = IndexInPowerGroup(ch) * StaggerDeltaMs; // 0/Δ/2Δ
+                        var at = tk.AddMilliseconds(phase);
+
+                        tasksAllGroups.Add(Task.Run(async () =>
+                        {
+                            // ① 等待液压锚点到位（屏障）
+                            await anchorTask.ConfigureAwait(false);
+
+                            // ② 若 at 已过时 → 推进到未来的“下一个/下N个周期”的同相位时刻
+                            //    这样可避免负延时导致的“首圈同刻上电”
+                            var now = DateTime.UtcNow;
+                            var atFuture = RollForwardToFuture(at, now, PeriodMs, /*safetyMs:*/ 2);
+
+                            // ③ 计算剩余并等待
+                            var delay = atFuture - now;
+
+                            _log?.Error($"通道{ch}: tk={tk:HH:mm:ss.fff}, phase={phase}ms, at={at:HH:mm:ss.fff}, delay={delay.TotalMilliseconds}ms");
+
+                            var ms = (int)Math.Floor(delay.TotalMilliseconds);
+                            if (ms > 0)
+                                await Task.Delay(ms, token).ConfigureAwait(false);
+                            else
+                                await Task.Yield(); // 极小/微负：让出一次时间片，打散调度
+
+                            // ④ 执行单圈学习核心（不做①；⑧由外壳统一收口）
+                            var runner = GetRunner(ch);
+                            var sample = await runner.LearnOneAlignedCoreAsync(
+                                PeriodMs, T8BaseMs, phase, T8MinMs, token
+                            ).ConfigureAwait(false);
+
+                            if (sample != null)
+                                runner.ApplyLearnSample(sample);
+
+                        }, token));
+                    }
+                }
+
+                // 本圈所有任务结束后进入下一圈
+                await Task.WhenAll(tasksAllGroups).ConfigureAwait(false);
+            }
+
+            // —— 2) 学习聚合结束：写回中位数/统计量 —— //
+            foreach (var list in groups.Values)
+            {
+                var enabled = (list == null ? null : list.OrderBy(x => x).ToList());
+                if (enabled == null || enabled.Count == 0) continue;
+
+                for (int i = 0; i < enabled.Count; i++)
+                {
+                    var ch = enabled[i];
+                    GetRunner(ch).FinalizeLearnAggregation();
+                }
+            }
+        }
+
+        /// <summary>
+        /// 若 <paramref name="at"/> 已早于 <paramref name="now"/>（或离现在太近），
+        /// 则按 <paramref name="periodMs"/> 的整周期，把它前滚到 <c>now + safetyMs</c> 之后，
+        /// 同时保持“原有相位（相对周期边界）”不变。<br/>
+        /// 例如：at=10:00:30.350 已过时，period=5000ms（5s），则滚到 10:00:35.350/10:00:40.350/... 中的第一个 ≥ now+safetyMs 的时刻。 
+        /// </summary>
+        private static DateTime RollForwardToFuture(DateTime at, DateTime now, int periodMs, int safetyMs)
+        {
+            // 允许留一个极小的“安全裕度”，避免边界上 now≈at 导致 0/负延时
+            var refTime = now.AddMilliseconds(Math.Max(0, safetyMs));
+
+            // 未过时，原样返回
+            if (at >= refTime) return at;
+
+            // 需要滚动的毫秒差
+            var diffMs = (refTime - at).TotalMilliseconds;
+            var n = (int)Math.Ceiling(diffMs / Math.Max(1, periodMs)); // 至少滚 1 个周期
+            return at.AddMilliseconds(n * periodMs);
+        }
+
 
         #endregion
 
