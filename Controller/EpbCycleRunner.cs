@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using IO.NI;
@@ -51,8 +52,11 @@ namespace Controller
         // ★ 新增：便于调用 EpbManager 暴露的液压钩子
         private readonly EpbManager _manager;
         private readonly int _peakIgnoreMs;
+        private readonly GlobalConfig _cfg;
 
         private readonly double _posThrA;
+        private double _safetyMarginA; // 提前断电空间
+
         private readonly ReadCurrentDelegate _readCurrent;
 
         // ⑦ 反向空行程“默认保持”时长（用于“首圈已夹紧/无空行程”时的释放），单位 ms
@@ -128,6 +132,33 @@ namespace Controller
             // …你原有的赋值保持不变…
             _manager = manager; // ★ 保存 manager
         }
+
+        public EpbCycleRunner(
+            int channel,
+            int hydId,
+            ReadCurrentDelegate readCurrent,
+            DoController doController,
+            HydraulicController hydraulic,
+            double posThresholdA,
+            int holdMs,
+            int sampleMs = 2,
+            int peakIgnoreMs = 80,
+            double ewmaAlpha = 0.2,
+            double emptyBandA = 0.2,
+            int stableWinMs = 50,
+            ILogger log = null,
+            GlobalConfig cfg = null,
+            EpbManager manager = null) // ★ 新增（可选，保持兼容）
+            : this(channel, hydId, readCurrent, doController, hydraulic, posThresholdA, holdMs, sampleMs, peakIgnoreMs,
+                ewmaAlpha, emptyBandA, stableWinMs, log)
+        {
+            // …你原有的赋值保持不变…
+            _manager = manager; // ★ 保存 manager
+            _cfg = cfg;
+            _safetyMarginA = _cfg?.Test.GetEpbCurrentLimit(channel:channel).SafetyMarginA  ?? 2.0;  // SafetyMarginA为null 则设置为2
+        }
+
+
 
 
         /// <summary>
@@ -840,11 +871,11 @@ namespace Controller
 
         private async Task<bool> WaitCurrentAboveAsync(
             double thrA,
+            double safetyMarginA,
             CancellationToken token,
             int predictiveCutMs = 5,
             double minSlopeAperMs = 0.02,
             double maxSlopeAperMs = 1.0, // 斜率物理上限（A/ms）
-            double safetyMarginA = 2,
             int slopeWinSize = 10) // 滑动窗口大小
         {
             var tBegin = Stopwatch.GetTimestamp();
@@ -954,6 +985,26 @@ namespace Controller
                 }
             }
         }
+
+        private async Task<bool> WaitCurrentAboveAsync(
+            double thrA,
+            CancellationToken token,
+            int predictiveCutMs = 5,
+            double minSlopeAperMs = 0.02,
+            double maxSlopeAperMs = 1.0,
+            int slopeWinSize = 10)
+        {
+            // 直接调用原方法，使用字段 _safetyMarginA 作为参数
+            return await WaitCurrentAboveAsync(
+                thrA,
+                _safetyMarginA,  // 使用字段值
+                token,
+                predictiveCutMs,
+                minSlopeAperMs,
+                maxSlopeAperMs,
+                slopeWinSize);
+        }
+
 
 
         /// <summary>

@@ -421,6 +421,7 @@ namespace Controller
                 rcfg.EmptyBandA,
                 rcfg.StableWinMs,
                 _log,
+                _cfg,
                 this);
 
             // 缓存运行器实例

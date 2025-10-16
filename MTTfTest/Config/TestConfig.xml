@@ -166,74 +166,75 @@
 	<EpbCurrentLimits>
 		<Record>
 			<Channel>1</Channel>
-			<ForwardA>10</ForwardA>
-			<ReverseA>2</ReverseA>
+			<ForwardA>6</ForwardA>
+			<!-- 提前断电的电流值，如2.0，电流4A就开始断电 -->
+			<SafetyMarginA>2.0</SafetyMarginA>
 			<HoldMs>1000</HoldMs>
 		</Record>
 		<Record>
 			<Channel>2</Channel>
 			<ForwardA>10</ForwardA>
-			<ReverseA>6.0</ReverseA>
+			<SafetyMarginA>2.0</SafetyMarginA>
 			<HoldMs>1000</HoldMs>
 		</Record>
 		<Record>
 			<Channel>3</Channel>
-			<ForwardA>9.0</ForwardA>
-			<ReverseA>6.0</ReverseA>
+			<ForwardA>10.0</ForwardA>
+			<SafetyMarginA>2.0</SafetyMarginA>
 			<HoldMs>1000</HoldMs>
 		</Record>
 		<Record>
 			<Channel>4</Channel>
-			<ForwardA>13.0</ForwardA>
-			<ReverseA>6.0</ReverseA>
+			<ForwardA>10.0</ForwardA>
+			<SafetyMarginA>2.0</SafetyMarginA>
 			<HoldMs>1000</HoldMs>
 		</Record>
 		<Record>
 			<Channel>5</Channel>
-			<ForwardA>9.0</ForwardA>
-			<ReverseA>6.0</ReverseA>
+			<ForwardA>10.0</ForwardA>
+			<SafetyMarginA>2.0</SafetyMarginA>
 			<HoldMs>1000</HoldMs>
 		</Record>
 		<Record>
 			<Channel>6</Channel>
-			<ForwardA>9.0</ForwardA>
-			<ReverseA>6.0</ReverseA>
+			<ForwardA>10.0</ForwardA>
+			<SafetyMarginA>2.0</SafetyMarginA>
 			<HoldMs>1000</HoldMs>
 		</Record>
 		<Record>
 			<Channel>7</Channel>
 			<ForwardA>9.0</ForwardA>
-			<ReverseA>6.0</ReverseA>
+			<SafetyMarginA>2.0</SafetyMarginA>
 			<HoldMs>1000</HoldMs>
 		</Record>
 		<Record>
 			<Channel>8</Channel>
 			<ForwardA>9.0</ForwardA>
-			<ReverseA>6.0</ReverseA>
+			<SafetyMarginA>2.0</SafetyMarginA>
 			<HoldMs>1000</HoldMs>
 		</Record>
 		<Record>
 			<Channel>9</Channel>
 			<ForwardA>9.0</ForwardA>
-			<ReverseA>6.0</ReverseA>
+			<SafetyMarginA>2.0</SafetyMarginA>
 			<HoldMs>1000</HoldMs>
 		</Record>
 		<Record>
 			<Channel>10</Channel>
 			<ForwardA>9.0</ForwardA>
-			<ReverseA>6.0</ReverseA>
+			<SafetyMarginA>2.0</SafetyMarginA>
 			<HoldMs>1000</HoldMs>
 		</Record>
 		<Record>
 			<Channel>11</Channel>
 			<ForwardA>9.0</ForwardA>
-			<ReverseA>6.0</ReverseA>
+			<SafetyMarginA>2.0</SafetyMarginA>
 			<HoldMs>1000</HoldMs>
 		</Record>
 		<Record>
 			<Channel>12</Channel>
 			<ForwardA>9.0</ForwardA>
-			<ReverseA>6.0</ReverseA>
+			<SafetyMarginA>2.0</SafetyMarginA>
 			<HoldMs>1000</HoldMs>
 		</Record>
 		<!-- ... 直到 12 -->
