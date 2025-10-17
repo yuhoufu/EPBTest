@@ -57,7 +57,7 @@ namespace Controller
         private readonly double _posThrA;
         private double _safetyMarginA; // 提前断电空间
 
-        private readonly ReadCurrentDelegate _readCurrent;
+        private readonly ReadCurrentDelegate _readCurrent; // 读取瞬时电流
 
         // ⑦ 反向空行程“默认保持”时长（用于“首圈已夹紧/无空行程”时的释放），单位 ms
 
