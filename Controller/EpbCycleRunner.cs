@@ -605,10 +605,24 @@ namespace Controller
                 // 达到夹紧判据 → 立即断电并标记释放（与 Learn… 一致）
                 _do.SetEpbOff(_channel);
 
-
+                // —— 达到夹紧判据 → 断电前，安排异步封口（延时 1000ms），完成后回调日志 —— //
+                if (_acq != null)
+                {
+                    // fire-and-forget：不 await，不阻塞当前 async；回调里写日志
+                    var _ = _acq.EndEpbCurrentPeakAsync(
+                        _channel,
+                        1000, // 延时 1s：通常 ≥ 一批长度，保障后台管线 flush
+                        cutoffAfterDelay: true,
+                        token,
+                        peak =>
+                        {
+                            // 回调在后台线程，如需触发 UI 请自行 Invoke
+                            _log?.Error(
+                                $"EPB[{_channel}] 正向段峰值（忽略涌流后→断电前，窗口截止于End调用时；异步延时1s完成）：Imax={peak.MaxAmp:F3}A @ {peak.MaxAt:HH:mm:ss.fff}，Samples={peak.SampleCount}。",
+                                "EPB");
+                        });
+                }
                 
-
-
                 _log?.Info($"EPB[{_channel}] 达到夹紧阈值 {_posThrA:F2}A，已断电并标记释放。", "EPB");
                 if (_manager != null) await _manager.HydraulicMarkReleaseAsync(_channel).ConfigureAwait(false);
 
@@ -617,15 +631,6 @@ namespace Controller
                 {
                     _log?.Info($"EPB[{_channel}] ⑤保持 {_holdMs}ms。", "EPB");
                     await Task.Delay(_holdMs, token).ConfigureAwait(false);
-                }
-
-                // —— 达到夹紧判据 → 断电前，先封口并以【警告】输出峰值 —— //
-                if (_acq != null)
-                {
-                    var peak = _acq.EndEpbCurrentPeak(_channel);
-                    _log?.Error(
-                        $"EPB[{_channel}] 正向段峰值（忽略涌流后至断电前）：Imax={peak.MaxAmp:F3}A @ {peak.MaxAt:HH:mm:ss.fff}，Samples={peak.SampleCount}。",
-                        "EPB");
                 }
 
                 // ===================== ⑥ + ⑦：反向（刚性衰减 + 固定空行程） =====================

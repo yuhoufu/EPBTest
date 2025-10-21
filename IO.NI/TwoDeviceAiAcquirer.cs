@@ -13,6 +13,7 @@ using Task = System.Threading.Tasks.Task;
 using ILogger = Config.IAppLogger;
 using NLogger = Config.NullLogger;
 using static DataOperation.ClsDataFilter;
+using System.Threading.Tasks;
 
 namespace IO.NI
 {
@@ -1065,6 +1066,11 @@ namespace IO.NI
             public long SampleCount;
 
 
+
+            // —— 新增：逻辑截止时间（用于“延时封口但不扩大统计窗口”）——
+            public DateTime? CutoffLocal; // 仅纳入 tsLocal <= CutoffLocal 的样本
+
+
             /// <summary>进入捕获状态并复位统计。</summary>
             public void Arm(DateTime t0)
             {
@@ -1074,11 +1080,16 @@ namespace IO.NI
                 MaxAmp = double.NegativeInfinity;
                 MaxAt = t0;
                 SampleCount = 0;
+                CutoffLocal = null; // 清空上次的截止
             }
 
             /// <summary>纳入一个样本（全数据逐点）。</summary>
             public void Update(double amp, DateTime tsLocal)
             {
+                // 若设置了逻辑截止时间，则仅接受截止内样本
+                if (CutoffLocal.HasValue && tsLocal > CutoffLocal.Value)
+                    return;
+
                 SampleCount++;
                 if (amp > MaxAmp || SampleCount == 1)
                 {
@@ -1092,11 +1103,18 @@ namespace IO.NI
             public void Finish(DateTime tEndLocal)
             {
                 Active = false;
-                EndAt = tEndLocal;
                 if (SampleCount == 0)
                 {
                     MaxAmp = 0.0;
                     MaxAt = StartAt;
+                    EndAt = CutoffLocal ?? EndAt; // 没有样本时，EndAt 以 Cutoff 或 StartAt 标注
+                }
+                else
+                {
+                    // 若设置了 Cutoff，但最后一个样本早于 Cutoff，EndAt 保持为最后样本时间；
+                    // 若没有样本（上面已处理），或希望强制以 Cutoff 作为段尾，可按需覆盖：
+                    if (CutoffLocal.HasValue && EndAt < CutoffLocal.Value)
+                        EndAt = CutoffLocal.Value;
                 }
             }
 
@@ -1184,6 +1202,114 @@ namespace IO.NI
             _log?.Info($"EPB[{epbChannel}]（全数据）峰值捕获结束：Max={res.MaxAmp:F3}A @{res.MaxAt:HH:mm:ss.fff}，Samples={res.SampleCount}", "AI");
             return res;
         }
+
+
+        /// <summary>
+        /// （异步）结束对指定 EPB 通道的峰值捕获：
+        /// 1) 立即记录“逻辑截止时刻”（调用当下的本地时间）；
+        /// 2) 异步等待 delayMs 毫秒（给后台管线时间把已在路上的数据处理完）；
+        /// 3) 仅接受 ≤ 截止时刻 的样本；
+        /// 4) 完成封口并返回峰值结果；
+        /// 5) 如提供 onCompleted 则在后台线程回调结果（不切回 UI 线程）。
+        /// </summary>
+        public async Task<EpbCurrentPeak> EndEpbCurrentPeakAsync(
+            int epbChannel,
+            int delayMs,
+            CancellationToken token = default(CancellationToken),
+            Action<EpbCurrentPeak> onCompleted = null)
+        {
+            PeakTracker t;
+            if (!_peakTrackers.TryGetValue(epbChannel, out t))
+            {
+                var empty = new EpbCurrentPeak { Channel = epbChannel };
+                onCompleted?.Invoke(empty);
+                return empty;
+            }
+
+            // ① 记录“逻辑截止时刻”，并限制后续仅纳入 ≤ cutoff 的样本
+            DateTime cutoff = DateTime.Now;
+            lock (t.Sync)
+            {
+                // 若你已按我之前建议在 PeakTracker 中新增了 CutoffLocal 字段：
+                t.CutoffLocal = cutoff;
+            }
+
+            // ② 异步等待（不阻塞当前流程）
+            if (delayMs > 0)
+            {
+                try
+                {
+                    await Task.Delay(delayMs, token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    // 被取消也继续封口，尽量返回截止内已捕获的峰值
+                }
+            }
+
+            // ③ 真正封口并快照 —— 这里要传参！
+            EpbCurrentPeak res;
+            lock (t.Sync)
+            {
+                // 关键修正：Finish 需要一个 DateTime
+                t.Finish(t.CutoffLocal.HasValue ? t.CutoffLocal.Value : cutoff);
+                res = t.Snapshot(epbChannel);
+            }
+
+            // ④ 可选回调
+            try { onCompleted?.Invoke(res); } catch { /* 忽略回调异常 */ }
+
+            return res;
+        }
+
+
+        public async Task<EpbCurrentPeak> EndEpbCurrentPeakAsync(
+            int epbChannel,
+            int delayMs,
+            bool cutoffAfterDelay = false,// 新增：true=延时后截断；false=调用时截断（默认）
+            CancellationToken token = default,
+            Action<EpbCurrentPeak> onCompleted = null)  
+        {
+            if (!_peakTrackers.TryGetValue(epbChannel, out var t))
+            {
+                var empty = new EpbCurrentPeak { Channel = epbChannel };
+                onCompleted?.Invoke(empty);
+                return empty;
+            }
+
+            DateTime callTime = DateTime.Now;
+            lock (t.Sync)
+            {
+                if (!cutoffAfterDelay)
+                    t.CutoffLocal = callTime; // 方式A：调用当下截断
+            }
+
+            if (delayMs > 0)
+            {
+                try { await Task.Delay(delayMs, token).ConfigureAwait(false); }
+                catch (OperationCanceledException) { /* 忽略，继续封口 */ }
+            }
+
+            if (cutoffAfterDelay)
+            {
+                // 方式B：延时结束时截断（窗口更大，可能包含部分断电后的样本）
+                var afterDelay = DateTime.Now;
+                lock (t.Sync) t.CutoffLocal = afterDelay;
+            }
+
+            EpbCurrentPeak res;
+            lock (t.Sync)
+            {
+                var endAt = t.CutoffLocal ?? DateTime.Now;
+                t.Finish(endAt);
+                res = t.Snapshot(epbChannel);
+            }
+
+            try { onCompleted?.Invoke(res); } catch { }
+            return res;
+        }
+
+
 
         /// <summary>
         /// 不结束捕获，实时窥视当前峰值（基于全数据已处理到的样本）。
