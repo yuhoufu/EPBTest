@@ -77,6 +77,7 @@ namespace Controller
         private double _tFwdPeakDecayMs;
         private double _tRevEmptyMs;
         private double _tRevPeakDecayMs;
+        private readonly TwoDeviceAiAcquirer _acq; // 新增：双设备采集器引用
 
 
         public EpbCycleRunner(
@@ -138,6 +139,7 @@ namespace Controller
             int hydId,
             ReadCurrentDelegate readCurrent,
             DoController doController,
+            TwoDeviceAiAcquirer twoDeviceAiAcquirer,
             HydraulicController hydraulic,
             double posThresholdA,
             int holdMs,
@@ -156,6 +158,7 @@ namespace Controller
             _manager = manager; // ★ 保存 manager
             _cfg = cfg;
             _safetyMarginA = _cfg?.Test.GetEpbCurrentLimit(channel:channel).SafetyMarginA  ?? 2.0;  // SafetyMarginA为null 则设置为2
+            _acq = twoDeviceAiAcquirer;
         }
 
 
@@ -562,6 +565,18 @@ namespace Controller
                 _log?.Info($"EPB[{_channel}] ②正向上电，忽略涌流 {_peakIgnoreMs}ms…", "EPB");
                 await Task.Delay(_peakIgnoreMs, token).ConfigureAwait(false);
 
+                // 控制台输出
+                Console.WriteLine("正向峰值捕获开始前，，，");
+                // ——（新增）正向“有效区间”开始：启动全数据峰值捕获 —— //
+                if (_acq != null)
+                {
+                    _acq.BeginEpbCurrentPeak(_channel);
+                    _log?.Error($"EPB[{_channel}] 正向峰值捕获（全数据）已开始。", "EPB");
+                    Console.WriteLine("正向峰值捕获进行中...");
+
+                }
+
+
                 // —— 直接进入“夹紧阈值/平台/预测”判据 —— //
                 var tFwdJudgeStart = NowTicks();
                 var okClamp = await WaitCurrentAboveAsync(_posThrA, token).ConfigureAwait(false);
@@ -571,12 +586,29 @@ namespace Controller
                 {
                     _log?.Warn($"EPB[{_channel}] 正向未达到阈值/平台（Thr={_posThrA:F2}A），本轮终止。", "EPB");
                     _do.SetEpbOff(_channel);
+
+                    // ——（新增）断电后，先结束峰值捕获并以【警告】输出 —— //
+                    if (_acq != null)
+                    {
+                        var peak = _acq.EndEpbCurrentPeak(_channel);
+                        _log?.Warn(
+                            $"EPB[{_channel}] 正向未达阈值/平台（Thr={_posThrA:F2}A）。本段峰值 Imax={peak.MaxAmp:F3}A @ {peak.MaxAt:HH:mm:ss.fff}，Samples={peak.SampleCount}。",
+                            "EPB");
+                    }
+
                     if (_manager != null) await _manager.HydraulicMarkReleaseAsync(_channel).ConfigureAwait(false);
                     return false;
                 }
 
+                
+
                 // 达到夹紧判据 → 立即断电并标记释放（与 Learn… 一致）
                 _do.SetEpbOff(_channel);
+
+
+                
+
+
                 _log?.Info($"EPB[{_channel}] 达到夹紧阈值 {_posThrA:F2}A，已断电并标记释放。", "EPB");
                 if (_manager != null) await _manager.HydraulicMarkReleaseAsync(_channel).ConfigureAwait(false);
 
@@ -585,6 +617,15 @@ namespace Controller
                 {
                     _log?.Info($"EPB[{_channel}] ⑤保持 {_holdMs}ms。", "EPB");
                     await Task.Delay(_holdMs, token).ConfigureAwait(false);
+                }
+
+                // —— 达到夹紧判据 → 断电前，先封口并以【警告】输出峰值 —— //
+                if (_acq != null)
+                {
+                    var peak = _acq.EndEpbCurrentPeak(_channel);
+                    _log?.Error(
+                        $"EPB[{_channel}] 正向段峰值（忽略涌流后至断电前）：Imax={peak.MaxAmp:F3}A @ {peak.MaxAt:HH:mm:ss.fff}，Samples={peak.SampleCount}。",
+                        "EPB");
                 }
 
                 // ===================== ⑥ + ⑦：反向（刚性衰减 + 固定空行程） =====================

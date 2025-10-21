@@ -308,7 +308,7 @@ namespace Controller
         #region 可调参数（你可转为从 TestConfig 读取）
 
         /// <summary>每圈目标周期（毫秒）。必须与现有配置一致。</summary>
-        public int PeriodMs { get; set; } = 5000;
+        public int PeriodMs { get; set; } = 30000;
 
         /// <summary>组内错峰步长 Δ（毫秒）。索引 0/1/2 → 0/Δ/2Δ。</summary>
         public int StaggerDeltaMs { get; set; } = 350; // 原先120ms
@@ -412,6 +412,7 @@ namespace Controller
                 hydId,
                 _readCurrent,
                 _do,
+                _acq,
                 _hydraulic,
                 forwardA,
                 holdMs,

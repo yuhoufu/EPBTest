@@ -722,6 +722,49 @@ namespace IO.NI
                             for (int i = 0; i < n; i++) pressure2[i] = engFiltered[colP2, i];
                         }
 
+
+                        #region 获取一段时间内的最大值
+
+                        // === 基于“全数据”的峰值捕获：逐样本扫描（仅对处于捕获状态的通道进行） ===
+                        try
+                        {
+                            if (AnyPeakArmed && tsUtc != null && tsUtc.Length > 0)
+                            {
+                                foreach (var kv in currentsByEpb)
+                                {
+                                    int epb = kv.Key;              // 1..12
+                                    var data = kv.Value;           // double[n]
+                                    PeakTracker tracker;
+                                    if (!_peakTrackers.TryGetValue(epb, out tracker)) continue;
+
+                                    // 仅对“已开始捕获”的通道更新
+                                    bool active;
+                                    lock (tracker.Sync) active = tracker.Active;
+                                    if (!active) continue;
+
+                                    // 逐样本纳入峰值统计（时间转为本地时间）
+                                    for (int i = 0; i < data.Length; i++)
+                                    {
+                                        // tsUtc 与 data 一一对应
+                                        var tLocal = tsUtc[i].ToLocalTime();
+                                        var amp = data[i];
+                                        lock (tracker.Sync)
+                                        {
+                                            if (tracker.Active) tracker.Update(amp, tLocal);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            _log?.Warn($"全数据峰值捕获更新异常（已忽略）：{ex.Message}", "AI");
+                        }
+
+                        #endregion
+
+
+
                         // 4) 触发“写盘批次”事件（上层订阅后直接喂给 _diskWriter.WriteBatch）
                         OnDiskBatch?.Invoke(item.Device, tsUtc, currentsByEpb, pressure1, pressure2);
                     }
@@ -978,7 +1021,210 @@ namespace IO.NI
             public DateTime Current { get; } = Current;
             public DateTime Last { get; } = Last;
         }
+
+
+
+        #region 获取最大值相关的类和字段
+
+        /// <summary>
+        /// EPB 电流峰值结果摘要（基于“全数据”捕获）。
+        /// </summary>
+        public struct EpbCurrentPeak
+        {
+            /// <summary>EPB 物理通道（1..12）。</summary>
+            public int Channel;
+
+            /// <summary>峰值电流（A）。若期间无样本则为 0。</summary>
+            public double MaxAmp;
+
+            /// <summary>峰值发生时刻（本地时间）。</summary>
+            public DateTime MaxAt;
+
+            /// <summary>捕获开始时刻（本地时间）。</summary>
+            public DateTime StartAt;
+
+            /// <summary>捕获结束时刻（本地时间）。</summary>
+            public DateTime EndAt;
+
+            /// <summary>期间累计样本数（用于判断是否有有效样本）。</summary>
+            public long SampleCount;
+
+            /// <summary>是否仍在捕获中。</summary>
+            public bool IsActive;
+        }
+
+        /// <summary> 单通道峰值跟踪器（线程安全，基于“全数据批处理”逐样本更新）。 </summary>
+        private sealed class PeakTracker
+        {
+            public readonly object Sync = new object();
+            public bool Active;
+            public DateTime StartAt;
+            public DateTime EndAt;
+            public DateTime MaxAt;
+            public double MaxAmp;
+            public long SampleCount;
+
+
+            /// <summary>进入捕获状态并复位统计。</summary>
+            public void Arm(DateTime t0)
+            {
+                Active = true;
+                StartAt = t0;
+                EndAt = t0;
+                MaxAmp = double.NegativeInfinity;
+                MaxAt = t0;
+                SampleCount = 0;
+            }
+
+            /// <summary>纳入一个样本（全数据逐点）。</summary>
+            public void Update(double amp, DateTime tsLocal)
+            {
+                SampleCount++;
+                if (amp > MaxAmp || SampleCount == 1)
+                {
+                    MaxAmp = amp;
+                    MaxAt = tsLocal;
+                }
+                EndAt = tsLocal; // 批内最后一个样本的时间
+            }
+
+            /// <summary>结束捕获。</summary>
+            public void Finish(DateTime tEndLocal)
+            {
+                Active = false;
+                EndAt = tEndLocal;
+                if (SampleCount == 0)
+                {
+                    MaxAmp = 0.0;
+                    MaxAt = StartAt;
+                }
+            }
+
+            /// <summary>生成快照。</summary>
+            public EpbCurrentPeak Snapshot(int ch)
+            {
+                return new EpbCurrentPeak
+                {
+                    Channel = ch,
+                    MaxAmp = double.IsNegativeInfinity(MaxAmp) ? 0.0 : MaxAmp,
+                    MaxAt = MaxAt,
+                    StartAt = StartAt,
+                    EndAt = EndAt,
+                    SampleCount = SampleCount,
+                    IsActive = Active
+                };
+            }
+        }
+
+
+
+        // —— 字段：每个 EPB 通道一个峰值跟踪器 —— //
+        private readonly ConcurrentDictionary<int, PeakTracker> _peakTrackers =
+            new ConcurrentDictionary<int, PeakTracker>();
+
+        /// <summary>是否存在任意处于捕获状态的通道（用于快速短路）。</summary>
+        private bool AnyPeakArmed
+        {
+            get
+            {
+                foreach (var kv in _peakTrackers)
+                {
+                    var t = kv.Value;
+                    lock (t.Sync)
+                    {
+                        if (t.Active) return true;
+                    }
+                }
+                return false;
+            }
+        }
+
+        #endregion
+
+
+        #region 获取最大值的相关的公共方法
+
+        /// <summary>
+        /// 开始对指定 EPB 通道（1..12）进行“正向上电段”的电流峰值捕获（基于全数据）。
+        /// 建议在“下达正向上电指令”后立刻调用。
+        /// </summary>
+        /// <param name="epbChannel">EPB 物理通道（1..12）。</param>
+        public void BeginEpbCurrentPeak(int epbChannel)
+        {
+            if (epbChannel < 1 || epbChannel > 12) return;
+            var t = _peakTrackers.GetOrAdd(epbChannel, _ => new PeakTracker());
+            lock (t.Sync)
+            {
+                t.Arm(DateTime.Now);
+            }
+            _log?.Info($"EPB[{epbChannel}]（全数据）峰值捕获开始。", "AI");
+        }
+
+        /// <summary>
+        /// 结束对指定 EPB 通道的峰值捕获，并返回本段期间的峰值结果（基于全数据）。
+        /// 建议在“检测到断电/结束指令”后调用。
+        /// </summary>
+        /// <param name="epbChannel">EPB 物理通道（1..12）。</param>
+        /// <returns>峰值结果（若期间无样本，MaxAmp=0，SampleCount=0）。</returns>
+        public EpbCurrentPeak EndEpbCurrentPeak(int epbChannel)
+        {
+            var res = new EpbCurrentPeak { Channel = epbChannel };
+            PeakTracker t;
+            if (!_peakTrackers.TryGetValue(epbChannel, out t)) return res;
+
+            lock (t.Sync)
+            {
+                if (t.Active)
+                {
+                    // 若在两批之间结束，就用当前本地时刻封口
+                    t.Finish(DateTime.Now);
+                }
+                res = t.Snapshot(epbChannel);
+            }
+            _log?.Info($"EPB[{epbChannel}]（全数据）峰值捕获结束：Max={res.MaxAmp:F3}A @{res.MaxAt:HH:mm:ss.fff}，Samples={res.SampleCount}", "AI");
+            return res;
+        }
+
+        /// <summary>
+        /// 不结束捕获，实时窥视当前峰值（基于全数据已处理到的样本）。
+        /// </summary>
+        public EpbCurrentPeak PeekEpbCurrentPeak(int epbChannel)
+        {
+            PeakTracker t;
+            if (!_peakTrackers.TryGetValue(epbChannel, out t))
+                return new EpbCurrentPeak { Channel = epbChannel };
+
+            lock (t.Sync) return t.Snapshot(epbChannel);
+        }
+
+        /// <summary>
+        /// 取消并清除当前峰值捕获（本段数据作废）。
+        /// </summary>
+        public void CancelEpbCurrentPeak(int epbChannel)
+        {
+            PeakTracker t;
+            if (_peakTrackers.TryGetValue(epbChannel, out t))
+            {
+                lock (t.Sync)
+                {
+                    t.Active = false;
+                    t.SampleCount = 0;
+                    t.MaxAmp = 0.0;
+                }
+            }
+            _log?.Warn($"EPB[{epbChannel}]（全数据）峰值捕获已取消。", "AI");
+        }
+
+        #endregion
+
+
+
+
+
+
+
     }
+
 
 
 
