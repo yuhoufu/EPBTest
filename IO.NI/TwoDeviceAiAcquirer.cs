@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Buffers;
 using System.CodeDom;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -110,6 +111,26 @@ namespace IO.NI
             double sec = (now - startStamp) / (double)Stopwatch.Frequency;
             return t0.AddSeconds(sec);
         }
+
+
+        /// <summary>fast 值的来源。</summary>
+        private enum FastSource
+        {
+            /// <summary>在 DAQ 回调中：取当前批“尾部代表值”（未必滤波），用于最低延迟。</summary>
+            DaqCallback,
+
+            /// <summary>在后台 ProcessLoop：以“滤波后工程值”的最后一个样本为 fast 值。</summary>
+            ProcessLoopFilteredLast,
+
+            /// <summary>在后台 ProcessLoop：以“滤波后工程值”的批内最大值为 fast 值。</summary>
+            ProcessLoopFilteredMax,
+
+            /// <summary>在后台 ProcessLoop：以“滤波后工程值”的批内中位数为 fast 值。</summary>
+            ProcessLoopFilteredMedian
+        }
+
+        /// <summary>当前 fast 值来源选择。默认采用“后台滤波后”的结果作为 fast 值。</summary>
+        private readonly FastSource _fastSource = FastSource.ProcessLoopFilteredMax;
 
 
         public TwoDeviceAiAcquirer(
@@ -479,7 +500,8 @@ namespace IO.NI
                 OnRawBatch?.Invoke(device, raw, current, last);
 
 
-                
+
+                /* 原有的旧代码
                 #region 仅针对本设备的“电流类”通道，取最后一个样本做快速工程值换算并上报
 
                 try
@@ -527,7 +549,49 @@ namespace IO.NI
                 }
 
                 #endregion
-                
+                */
+
+
+                #region 仅针对本设备的“电流类”通道，取最后一个样本做快速工程值换算并上报
+
+                // 只有当 fast 来源选择为 DaqCallback 时，才在回调里更新 fast；
+                // 如果 fast 来源改为 ProcessLoopFiltered，则这里整段跳过，避免覆盖。
+                if (_fastSource == FastSource.DaqCallback)
+                {
+                    try
+                    {
+                        // —— 修改 fast 分支：所有通道都写入 _lastFastValue —— //
+                        var devRecs = _enabled
+                            .Where(r => r.物理通道.StartsWith(device + "/"))
+                            .OrderBy(r => r.序号)
+                            .ToList();
+
+                        var chCount = raw.GetLength(0);
+                        var lastCol = raw.GetLength(1) - 1;
+                        if (lastCol >= 0)
+                            for (var c = 0; c < chCount; c++)
+                            {
+                                var rec = devRecs[c];
+
+                                var eng = ComputeFastRepresentative(raw, c, lastCol, rec, current);
+
+                                // —— 低时延稳态快照（未必滤波） —— //
+                                eng = _fastFilter.Update(rec.参数名, eng, current);
+
+                                _lastFastValue[rec.参数名] = eng;
+
+                                var epbCh = TryParseEpbChannel(rec.参数名);
+                                if (epbCh >= 1 && epbCh <= 12)
+                                    OnFastEpbCurrent?.Invoke(epbCh, eng, current);
+                            }
+                    }
+                    catch
+                    {
+                        // 快速分支的异常不要影响主流程
+                    }
+                }
+
+                #endregion
 
 
                 // 下一轮
@@ -675,7 +739,14 @@ namespace IO.NI
 
                     // 刷新“最近值”供控制逻辑查询（**改动：写入 _lastFilteredValue**）
                     UpdateLastSnapshot(engFiltered, item.Device);
-                    
+
+                    // —— 新增：若 fast 来源切到 ProcessLoopFiltered，则在此处把“电流 fast”更新为“滤波后的最后样本” —— //
+                    /*if (_fastSource == FastSource.ProcessLoopFilteredLast)
+                    {
+                        PromoteFilteredToFastForCurrents(engFiltered, item.Device, item.Current);
+                    }*/
+                    PromoteFilteredToFastForCurrents(engFiltered, item.Device, item.Current);
+
                     #region 生成“落盘批次”并触发 OnDiskBatch（使用 engFiltered，不取绝对值） On 2025.09.16 
 
                     // ====== 生成“落盘批次”并触发 OnDiskBatch（使用 engFiltered，不取绝对值） ======
@@ -795,6 +866,139 @@ namespace IO.NI
                 _log.Error($"AI 后台处理异常：{ex}", "AI", ex);
             }
         }
+
+
+        /// <summary>
+        /// 将“滤波后的工程值矩阵（engFiltered）”中的 EPB 电流，提升为“fast 快照”
+        /// （以最后一个样本为 fast 值），并触发 <see cref="OnFastEpbCurrent"/>。
+        /// 仅对 EPB 电流生效（参数名形如 EPB#_current）；其它参数名不修改 fast。
+        /// </summary>
+        /// <param name="engFiltered">滤波后的工程值矩阵（channels x samples）。</param>
+        /// <param name="device">设备名（"Dev1" / "Dev2"）。</param>
+        /// <param name="ts">此批的代表时间戳（通常为批尾对齐时间）。</param>
+        private void PromoteFilteredToFastForCurrentsOld(double[,] engFiltered, string device, DateTime ts)
+        {
+            if (engFiltered == null) return;
+
+            // 本 device 的通道描述：与 UpdateLastSnapshot 同样的枚举顺序
+            var devRecs = _enabled
+                .Where(r => r.物理通道.StartsWith(device + "/"))
+                .OrderBy(r => r.序号)
+                .ToList();
+
+            int ch = engFiltered.GetLength(0);
+            int n = engFiltered.GetLength(1);
+            if (n <= 0) return;
+
+            // 仅 EPB 电流：提升为 fast 值 = 滤波后的最后一个样本，并触发 OnFastEpbCurrent
+            for (int c = 0; c < ch; c++)
+            {
+                var rec = devRecs[c];
+                int epb = TryParseEpbChannel(rec.参数名);
+                if (epb >= 1 && epb <= 12)
+                {
+                    double v = engFiltered[c, n - 1]; // 最后一个样本
+                    _lastFastValue[rec.参数名] = v;   // 用 filtered 覆盖 fast
+
+                    // 与回调线程版本保持一致：上报“低时延事件”，但现在是“滤波后”的快照
+                    try { OnFastEpbCurrent?.Invoke(epb, v, ts); } catch { /* 忽略订阅侧异常 */ }
+                }
+            }
+        }
+
+
+        /// <summary>
+        /// 将“滤波后的工程值矩阵（engFiltered）”中的 EPB 电流，提升为“fast 快照”。
+        /// 代表值的获取策略由 <see cref="_fastSource"/> 决定：最后样本 / 批内最大值 / 批内中位数。
+        /// 仅对 EPB 电流（形如 EPB#_current）生效，其他通道不改动。
+        /// </summary>
+        private void PromoteFilteredToFastForCurrents(double[,] engFiltered, string device, DateTime ts)
+        {
+            if (engFiltered == null) return;
+
+            var devRecs = _enabled
+                .Where(r => r.物理通道.StartsWith(device + "/"))
+                .OrderBy(r => r.序号)
+                .ToList();
+
+            int ch = engFiltered.GetLength(0);
+            int n = engFiltered.GetLength(1);
+            if (n <= 0) return;
+
+            for (int c = 0; c < ch; c++)
+            {
+                var rec = devRecs[c];
+                int epb = TryParseEpbChannel(rec.参数名);
+                if (epb < 1 || epb > 12) continue; // 只针对 EPB 电流
+
+                double v = GetRepresentative(engFiltered, c, n, _fastSource);
+
+                _lastFastValue[rec.参数名] = v;
+
+                try { OnFastEpbCurrent?.Invoke(epb, v, ts); } catch { /* 忽略订阅侧异常 */ }
+            }
+        }
+
+        /// <summary>
+        /// 按 <paramref name="source"/> 选取当前批（长度 n）的代表值：
+        /// - ProcessLoopFilteredLast   : 最后一个样本；
+        /// - ProcessLoopFilteredMax    : 批内最大值；
+        /// - ProcessLoopFilteredMedian : 批内中位数（偶数个样本取中间两数平均）；
+        /// - 其余（如 DaqCallback）    : 回退到最后一个样本（以免空值）。
+        /// </summary>
+        /// <param name="engFiltered">滤波后矩阵（channels x samples）。</param>
+        /// <param name="row">通道索引（行）。</param>
+        /// <param name="n">本批样本数。</param>
+        /// <param name="source">代表值策略。</param>
+        private static double GetRepresentative(double[,] engFiltered, int row, int n, FastSource source)
+        {
+            switch (source)
+            {
+                case FastSource.ProcessLoopFilteredMax:
+                    {
+                        double max = double.NegativeInfinity;
+                        for (int i = 0; i < n; i++)
+                        {
+                            double x = engFiltered[row, i];
+                            if (x > max) max = x;
+                        }
+                        return max;
+                    }
+
+                case FastSource.ProcessLoopFilteredMedian:
+                    {
+                        // 为避免每批都分配新数组，使用 ArrayPool<double>
+                        var pool = ArrayPool<double>.Shared;
+                        double[] buf = null;
+                        try
+                        {
+                            buf = pool.Rent(n);
+                            for (int i = 0; i < n; i++)
+                                buf[i] = engFiltered[row, i];
+
+                            // 只对前 n 个元素排序
+                            Array.Sort(buf, 0, n);
+
+                            if ((n & 1) == 1) // 奇数
+                                return buf[n / 2];
+                            else              // 偶数：取中间两数平均
+                                return 0.5 * (buf[n / 2 - 1] + buf[n / 2]);
+                        }
+                        finally
+                        {
+                            if (buf != null) pool.Return(buf, clearArray: false);
+                        }
+                    }
+
+                case FastSource.ProcessLoopFilteredLast:
+                default:
+                    return engFiltered[row, n - 1];
+            }
+        }
+
+
+
+
 
         /// <summary>
         /// 在 devRecs（本 device 的通道描述）中按多个“候选参数名”查找列索引；找不到返回 -1。

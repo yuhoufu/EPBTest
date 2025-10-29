@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using IO.NI;
@@ -78,6 +79,9 @@ namespace Controller
         private double _tRevEmptyMs;
         private double _tRevPeakDecayMs;
         private readonly TwoDeviceAiAcquirer _acq; // 新增：双设备采集器引用
+
+
+        private double _actualCutoffCurrent = 0;  // 新增：实际断电电流值（判断时监测到的值）
 
 
         public EpbCycleRunner(
@@ -618,7 +622,7 @@ namespace Controller
                         {
                             // 回调在后台线程，如需触发 UI 请自行 Invoke
                             _log?.Error(
-                                $"EPB[{_channel}] 正向段峰值（忽略涌流后→断电前，窗口截止于End调用时；异步延时1s完成）：Imax={peak.MaxAmp:F3}A @ {peak.MaxAt:HH:mm:ss.fff}，Samples={peak.SampleCount}。",
+                                $"EPB[{_channel}]，阈值：{_posThrA}A,差值：{(_posThrA - peak.MaxAmp):F3}|{(peak.MaxAmp- _actualCutoffCurrent):F3}|{(peak.MaxAmp-(_posThrA- _safetyMarginA)):F3}, 截断值：{_actualCutoffCurrent:F3}|[{_safetyMarginA}]A, 正向段峰值：Imax={peak.MaxAmp:F3}A @ {peak.MaxAt:HH:mm:ss.fff}，Samples={peak.SampleCount}。",
                                 "EPB");
                         });
                 }
@@ -915,7 +919,7 @@ namespace Controller
             }
         }
 
-        private async Task<bool> WaitCurrentAboveAsync(
+        private async Task<bool> WaitCurrentAboveAsyncOld(
             double thrA,
             double safetyMarginA,
             CancellationToken token,
@@ -1031,6 +1035,151 @@ namespace Controller
                 }
             }
         }
+
+
+        /// <summary>
+        /// （异步，方案C：高速轮询）等待通道电流达到阈值 ——
+        /// 仅依据安全裕量 <paramref name="safetyMarginA"/> 提前判定，
+        /// 不进行斜率预测，且不再对齐采样节拍；
+        /// 采用“轻量自旋 + 主动让出时间片”的高速轮询策略以降低触发延迟。
+        /// </summary>
+        /// <param name="thrA">
+        /// 触发阈值电流（A）。当 <c>current + safetyMarginA ≥ thrA</c> 时立即返回 true。
+        /// </param>
+        /// <param name="safetyMarginA">
+        /// 安全裕量（A）。用于“提前触发”判定：<c>current + safetyMarginA ≥ thrA</c>。
+        /// </param>
+        /// <param name="token">取消令牌，支持外部取消。</param>
+        /// <param name="predictiveCutMs">
+        /// 预测提前断电窗口（毫秒）。<b>方案C不使用</b>，仅为保持与旧签名一致，避免修改调用方。
+        /// </param>
+        /// <param name="minSlopeAperMs">
+        /// 最小有效斜率（A/ms）。<b>方案C不使用</b>，兼容占位。
+        /// </param>
+        /// <param name="maxSlopeAperMs">
+        /// 最大物理斜率上限（A/ms）。<b>方案C不使用</b>，兼容占位。
+        /// </param>
+        /// <param name="slopeWinSize">
+        /// 斜率滑动窗口大小。<b>方案C不使用</b>，兼容占位。
+        /// </param>
+        /// <returns>
+        /// 当在超时时间（固定 10s）内达到 <c>current + safetyMarginA ≥ thrA</c> 或检测到疑似限流平台时返回 <c>true</c>；
+        /// 否则返回 <c>false</c>。
+        /// </returns>
+        /// <remarks>
+        /// • 与“对齐采样节拍”的版本相比，本方法优先“反应速度”，触发时机不再受 `_sampleMs` 量化；
+        /// • 使用轻量自旋（<see cref="System.Threading.SpinWait"/>）+ 周期性 <c>Thread.Sleep(0)</c> 让出时间片，
+        ///   以减少 CPU 占用同时保持低延迟；
+        /// • 平台检测（环形缓冲、空载电流阈值）逻辑与原方法保持一致；
+        /// • 依赖字段/方法：<c>_readCurrent</c>、<c>_channel</c>、<c>PlateauWindowMs</c>、<c>_sampleMs</c>、
+        ///   <c>PlateauFlatRangeA</c>、<c>_iEmptyFwdA</c>、<c>PlateauAboveEmptyMarginA</c>、<c>ElapsedMs(long)</c>、<c>_log</c>。
+        /// </remarks>
+        // private async Task<bool> WaitCurrentAboveByMarginOnlyAsync(
+        private async Task<bool> WaitCurrentAboveAsync(
+            double thrA,
+            double safetyMarginA,
+            CancellationToken token,
+            int predictiveCutMs = 5,
+            double minSlopeAperMs = 0.02,
+            double maxSlopeAperMs = 1.0, // 斜率物理上限（A/ms）
+            int slopeWinSize = 10)       // 滑动窗口大小
+        {
+            // —— 为保持签名一致，这些参数在方案C中不使用 —— //
+            _ = predictiveCutMs;
+            _ = minSlopeAperMs;
+            _ = maxSlopeAperMs;
+            _ = slopeWinSize;
+
+            var tBegin = Stopwatch.GetTimestamp();
+
+            // 平台检测环形缓冲（与原方法一致）
+            var winCap = Math.Max(1, PlateauWindowMs / Math.Max(1, _sampleMs));
+            var ring = new double[winCap];
+            int count = 0, head = 0;
+
+            _log.Info(
+                $"WaitCurrentAboveByMarginOnlyAsync[C] 启动: Thr={thrA:F2}A, PredictiveCut=DISABLED, " +
+                $"Margin={safetyMarginA:F2}A, Mode=HighFreqPolling",
+                "EPB");
+
+            // —— 高速轮询策略参数 —— //
+            // 每次循环先做极轻量自旋若干步（几十微秒级），然后偶尔让出时间片，避免100%占满CPU。
+            var spinner = new System.Threading.SpinWait();
+            int loop = 0;
+
+            // 根据经验设置：自旋若干步 + 周期性 Sleep(0)；当 CPU 忙时 Sleep(0) 会把时间片让给同优先级线程。
+            const int SPIN_STEPS_PER_LOOP = 20;  // 每轮最多自旋步数（单步时间很短，数量不要太大）
+            const int YIELD_EVERY_LOOPS = 128; // 每 128 轮让出一次时间片
+            const int ASYNC_DELAY_EVERY = 2000; // 每 2000 轮异步让出（Task.Yield/Delay），降低 UI 抢占风险
+            const int ASYNC_DELAY_MS = 1;   // 极短异步延迟（1ms），避免长时间占用一个线程
+
+            while (true)
+            {
+                token.ThrowIfCancellationRequested();
+
+                // —— 读取瞬时电流 —— //
+                var current = _readCurrent(_channel);
+
+                // —— 仅依据安全裕量的直接判定（低延迟）—— //
+                if (current + safetyMarginA >= thrA)
+                {
+                    _log.Warn($"EPB[{_channel}] 达到阈值(方案C/无预测): I={current:F2}A + Margin={safetyMarginA:F2}A ≥ Thr={thrA:F2}A", "EPB");
+                    _actualCutoffCurrent = current; //
+                    return true;
+                }
+
+                // —— 平台检测（与原方法一致）—— //
+                ring[head] = current;
+                head = (head + 1) % winCap;
+                if (count < winCap) count++;
+                if (count == winCap && _iEmptyFwdA != 0)
+                {
+                    double min = ring.Min(), max = ring.Max();
+                    var range = max - min;
+
+                    if (range <= PlateauFlatRangeA && current >= _iEmptyFwdA + PlateauAboveEmptyMarginA)
+                    {
+                        _log.Warn(
+                            $"EPB[{_channel}] 疑似限流平台(方案C/无预测): {PlateauWindowMs}ms 内波动≤{range:F2}A, I≈{current:F2}A",
+                            "EPB");
+                        return true;
+                    }
+                }
+
+                // —— 超时保护（10s，与原方法一致）—— //
+                if (ElapsedMs(tBegin) > 10_000)
+                {
+                    _log.Warn($"EPB[{_channel}] 超时(方案C/无预测): 10s 内未达到 Thr={thrA:F2}A", "EPB");
+                    return false;
+                }
+
+                // —— 高速轮询轻量节流 —— //
+                // 1) 进行少量自旋（几十微秒级），降低读数间隔；
+                for (int i = 0; i < SPIN_STEPS_PER_LOOP; i++)
+                {
+                    spinner.SpinOnce(); // SpinOnce 会自适应插入短暂 Thread.Sleep(0)（当计数增大）；
+                                        // 这里选择“小步自旋 + 外层周期让出”，让行为更可控。
+                }
+
+                // 2) 周期性让出时间片，避免长时间霸占 CPU
+                loop++;
+                if ((loop % YIELD_EVERY_LOOPS) == 0)
+                {
+                    System.Threading.Thread.Sleep(0); // 让出给同优先级线程，通常<1ms
+                }
+
+                // 3) 偶尔异步让出（UI/后台都更公平），避免把整个时间片都耗在自旋上
+                if ((loop % ASYNC_DELAY_EVERY) == 0)
+                {
+                    // Task.Yield() 在 .NET Framework 4.8 可用，但为了可控，这里用极短 Delay
+                    await Task.Delay(ASYNC_DELAY_MS, token).ConfigureAwait(false);
+                }
+            }
+        }
+
+
+
+
 
         private async Task<bool> WaitCurrentAboveAsync(
             double thrA,
