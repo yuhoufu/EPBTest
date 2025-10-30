@@ -34,6 +34,33 @@ namespace Controller
         private double RevDecayLimitA = 3.0;
         #endregion
 
+        /// <summary>学习期使用的“临时裕量”（仅在学习圈内滚动更新，避免直接写回 _safetyMarginA）。</summary>
+        private double _learnMargin = double.NaN;
+
+        /// <summary>学习期的“裕量轨迹”（每圈更新一次）。</summary>
+        private readonly List<double> _marginTrace = new List<double>(32);
+
+        /// <summary>学习期的“峰值轨迹”（每圈记录，用于去异常/诊断）。</summary>
+        private readonly List<double> _peakTrace = new List<double>(32);
+
+        /// <summary>写裕量的线程安全锁（若同实例可能并发，建议保留）。</summary>
+        private readonly object _marginLock = new object();
+
+
+        /// <summary>安全裕量学习参数（可视需要暴露到配置）。</summary>
+        private static class MarginLearnDefaults
+        {
+            public const double DeadbandA = 0.05; // |err| ≤ deadband 不调参
+            public const double Kp = 0.60; // Δ = Kp * err
+            public const double MaxStepA = 0.50; // |Δ| ≤ MaxStep
+            public const double MinMarginA = 0.20; // 下限
+            public const double MaxMarginA = 5.00; // 上限
+
+            public const int WindowForFinalize = 5;   // 收敛统计：取“最后 N 圈”的窗口
+            public const double MadK = 3.0;              // MAD 去异常阈
+        }
+
+
 
         /// <summary>学习阶段：单圈结果样本。</summary>
         public sealed class LearnSample
@@ -170,7 +197,7 @@ namespace Controller
         /// </list>
         /// 若中途失败或取消，返回 <c>null</c>。
         /// </returns>
-        public async Task<LearnSample> LearnOneAlignedCoreAsync(
+        public async Task<LearnSample> LearnOneAlignedCoreAsyncOld(
             int periodMs, int tailBaseMs, int phaseMs, int tailMinMs, CancellationToken token)
         {
             // —— 进入液压建压（与正式阶段保持一致；若无需求可保持幂等）——
@@ -297,7 +324,307 @@ namespace Controller
             return sample;
         }
 
+        /// <summary>
+        /// 学习阶段的“单圈核心”（对齐外壳版，按你的新方案并加入 SafetyMargin 自学习）：
+        /// <list type="number">
+        ///   <item>正向：上电→忽略涌流→直接执行“夹紧阈值判定”（合并原②~④，不再单独判“空行程”）。</item>
+        ///   <item>达到阈值/平台/预测将触达→立即断电，并通知协调器标记释放；同步封口获取本圈峰值 <c>peak.MaxAmp</c>。</item>
+        ////  <item>用 <c>e = peak.MaxAmp - _posThrA</c> 做比例+死区+步长限幅更新 <c>_safetyMarginA</c>（峰值偏高→增大裕量；偏低→减小）。</item>
+        ///   <item>保持（⑤）按配置执行（可为 0）。</item>
+        ///   <item>反向：上电→忽略涌流→在“刚性衰减上限”内等待电流衰减至 <see cref="RevDecayLimitA"/> 以下，记录 TRevPeakDecayMs。</item>
+        ///   <item>随后不再做“空行程值+带宽”的判据，直接执行“反向固定空行程时长” <see cref="RevEmptyFixedMs"/>（⑦）。</item>
+        ///   <item>本方法不再回溯“正向空带/阈值上穿”的分界时刻，<c>TFwdEmptyMs/TClampRampMs/IEmptyFwdA/IEmptyRevA</c> 等字段置 0。</item>
+        ///   <item>⑧ 收尾仍由外壳统一按 <c>(tailBaseMs - phaseMs)</c> 收口。</item>
+        /// </list>
+        /// <para>
+        /// 【自学习策略】单圈闭环：<br/>
+        /// <c>err = peak.MaxAmp - _posThrA</c>；若 <c>|err| &gt; deadband</c>，则
+        /// <c>Δmargin = clamp(kp * err, ±maxStep)</c>，并将 <c>_safetyMarginA = clamp(_safetyMarginA + Δmargin, [min,max])</c>。<br/>
+        /// 目的：使最终峰值尽量逼近阈值 <c>_posThrA</c>（不过冲不过早）。
+        /// </para>
+        /// </summary>
+        /// <param name="periodMs">目标周期（ms）。仅用于与外壳保持一致，不在内部用于①/⑧的等待（保留签名以兼容上层）。</param>
+        /// <param name="tailBaseMs">尾段基准（旧 T8 + 旧 T1），仅用于外壳收尾时的计算；本方法不直接使用。</param>
+        /// <param name="phaseMs">当前通道相位（索引×Δ），仅用于外壳收尾；本方法不直接使用。</param>
+        /// <param name="tailMinMs">尾段最小保护（ms），仅用于外壳；本方法不直接使用。</param>
+        /// <param name="token">取消令牌。</param>
+        /// <returns>
+        /// 若学习成功，返回 <see cref="LearnSample"/>：
+        /// <list type="bullet">
+        ///   <item><c>TFwdPeakDecayMs</c>：此处记录“正向忽略涌流时长”（作为峰值衰减的等效值）。</item>
+        ///   <item><c>TFwdEmptyMs</c> = 0、<c>TClampRampMs</c> = 0（不再分段）。</item>
+        ///   <item><c>TRevPeakDecayMs</c>：反向“刚性衰减”实测（或等于上限）。</item>
+        ///   <item><c>TRevEmptyMs</c>：反向固定空行程（即 <see cref="RevEmptyFixedMs"/>）。</item>
+        ///   <item><c>IEmptyFwdA</c>、<c>IEmptyRevA</c> = 0（弃用）。</item>
+        /// </list>
+        /// 若中途失败或取消，返回 <c>null</c>。
+        /// </returns>
+        public async Task<LearnSample> LearnOneAlignedCoreAsync(
+            int periodMs, int tailBaseMs, int phaseMs, int tailMinMs, CancellationToken token)
+        {
+            // ——【自学习调参常量】（可根据机型微调；用局部常量避免破坏原方法签名）——
+            const double deadbandA = 0.05;  // 误差死区（A）：|peak - _posThrA| ≤ deadband 不调参
+            const double kp = 0.60;  // 比例系数（A/A）：Δmargin = kp * err
+            const double maxStepA = 0.50;  // 单圈最大步长（A）：|Δmargin| ≤ maxStepA
+            const double minMarginA = 0.20;  // 裕量下限（A）
+            const double maxMarginA = 5.00;  // 裕量上限（A）
 
+            // —— 进入液压建压（与正式阶段保持一致；若无需求可保持幂等）——
+            if (_manager != null)
+                await _manager.HydraulicEnterAsync(_channel, token).ConfigureAwait(false);
+
+            // ===================== 正向阶段（②~④ 合并为“直接夹紧判据”） =====================
+            // ② 正向上电并忽略涌流去抖
+            _do.SetEpbForward(_channel);
+            await Task.Delay(_peakIgnoreMs, token).ConfigureAwait(false);
+
+            // 这里的“正向峰值衰减时长”按你的新方案，取为“忽略涌流时长”的等效值。
+            var tFwdPeakDecayMs = Math.Max(0, _peakIgnoreMs);
+
+            // —— 启动峰值捕获 —— 
+            if (_acq != null)
+                _acq.BeginEpbCurrentPeak(_channel);
+
+            // —— 使用“临时学习裕量”调用判据（不要直接用 _safetyMarginA，避免被单圈扰动）——
+            double marginNow;
+            lock (_marginLock)
+            {
+                marginNow = double.IsNaN(_learnMargin) ? (_safetyMarginA > 0 ? _safetyMarginA : 2.0) : _learnMargin;
+            }
+            var tFwdJudgeStart = Stopwatch.GetTimestamp();
+            var okClamp = await WaitCurrentAboveAsync(
+                thrA: _posThrA,
+                safetyMarginA: marginNow, // ★★ 使用学习中的临时裕量
+                token: token
+            ).ConfigureAwait(false);
+            var fwdJudgeElapsedMs = (int)((Stopwatch.GetTimestamp() - tFwdJudgeStart) * 1000.0 / Stopwatch.Frequency);
+
+            // —— 达成与否都立刻断电 —— 
+            _do.SetEpbOff(_channel);
+
+            if (!okClamp)
+            {
+                _log?.Warn($"EPB[{_channel}] 正向阶段未满足夹紧判据（Margin={marginNow:F3}A），放弃本圈样本。", "EPB");
+                if (_acq != null)
+                {
+                    try { await _acq.EndEpbCurrentPeakAsync(_channel, 500, true, token).ConfigureAwait(false); } catch { }
+                }
+                return null;
+            }
+
+            // —— 通知协调器（统一释压）——
+            if (_manager != null)
+                await _manager.HydraulicMarkReleaseAsync(_channel).ConfigureAwait(false);
+
+            // —— 获取本圈峰值（同步版；若要“软等待/完全异步”，用我前条消息给你的两种方案 A/B）——
+            double peakAmp = 0.0;
+            if (_acq != null)
+            {
+                var peak = await _acq.EndEpbCurrentPeakAsync(
+                    _channel, delayMs: 1000, cutoffAfterDelay: true, token: token
+            ).ConfigureAwait(false);
+                peakAmp = peak.MaxAmp;
+            }
+            else
+            {
+                peakAmp = Math.Max(0.0, _actualCutoffCurrent);
+            }
+
+            _log?.Info(
+                $"EPB[{_channel}] 正向阶段完成：PeakIgnore={tFwdPeakDecayMs}ms, Judge≈{fwdJudgeElapsedMs}ms, " +
+                $"I_peak={peakAmp:F3}A, Thr={_posThrA:F3}A, Margin(use)={marginNow:F3}A。",
+                "EPB");
+
+            // —— ★★ 仅更新“临时学习裕量”并记录轨迹；不直接写 _safetyMarginA —— 
+            ApplySafetyMarginFromPeak(peakAmp);
+
+            // ===================== ⑤ 保持 =====================
+            if (_holdMs > 0)
+                await Task.Delay(_holdMs, token).ConfigureAwait(false);
+
+            // ===================== 反向阶段（⑥ 刚性衰减 + ⑦ 固定空行程） =====================
+            // ⑥ 反向上电并忽略涌流去抖
+            _do.SetEpbReverse(_channel);
+            await Task.Delay(_peakIgnoreMs, token).ConfigureAwait(false);
+
+            // —— 在“刚性衰减上限”内等待电流 ≤ RevDecayLimitA —— //
+            var tRevDecayStart = Stopwatch.GetTimestamp();
+            var tRevPeakDecayMs = 0;
+            var decayReached = false;
+
+            // 以 _sampleMs 为节拍进行轮询（不使用 Thread.Sleep(1) 等粗粒度等待，保持与采样节拍一致）
+            var tickPerMs = Stopwatch.Frequency / 1000.0;
+            var nextDue = Stopwatch.GetTimestamp();
+            while (true)
+            {
+                token.ThrowIfCancellationRequested();
+
+                var now = Stopwatch.GetTimestamp();
+                if (now < nextDue)
+                {
+                    // 紧凑对齐采样节拍：先轻量延时（毫秒级），再自旋等待最后几个微小 tick
+                    var ms = (int)Math.Max(0, (nextDue - now) / tickPerMs - 1);
+                    if (ms > 0) await Task.Delay(ms, token).ConfigureAwait(false);
+                    while ((now = Stopwatch.GetTimestamp()) < nextDue) { /* busy wait to align */ }
+                }
+                nextDue += (long)(Math.Max(1, _sampleMs) * tickPerMs);
+
+                var current = _readCurrent(_channel);
+                var elapsedMs = (int)((now - tRevDecayStart) * 1000.0 / Stopwatch.Frequency);
+
+                if (current <= RevDecayLimitA)
+                {
+                    decayReached = true;
+                    tRevPeakDecayMs = elapsedMs;
+                    break;
+                }
+
+                if (elapsedMs >= RevDecayRigidMaxMs)
+                {
+                    // 超过刚性上限仍未达标
+                    tRevPeakDecayMs = RevDecayRigidMaxMs;
+                    break;
+                }
+            }
+
+            if (!decayReached)
+            {
+                _log?.Warn(
+                    $"EPB[{_channel}] 反向峰值衰减未达标：限值={RevDecayLimitA:F2}A，上限={RevDecayRigidMaxMs}ms，" +
+                    $"实测≈{tRevPeakDecayMs}ms（按上限计入）。", "EPB");
+            }
+            else
+            {
+                _log?.Info(
+                    $"EPB[{_channel}] 反向峰值衰减达标：I≤{RevDecayLimitA:F2}A，TRevPeakDecay≈{tRevPeakDecayMs}ms。", "EPB");
+            }
+
+            // ⑦ 反向固定空行程：无需“空行程值 + 带宽”判据
+            await Task.Delay(Math.Max(0, RevEmptyFixedMs), token).ConfigureAwait(false);
+
+            // —— 反向断电 —— //
+            _do.SetEpbOff(_channel);
+
+            // ===================== 返回单圈样本（兼容 LearnSample 结构） =====================
+            var sample = new LearnSample
+            {
+                TFwdPeakDecayMs = tFwdPeakDecayMs,
+                TFwdEmptyMs = 0,
+                TClampRampMs = 0,
+                TRevPeakDecayMs = tRevPeakDecayMs,
+                TRevEmptyMs = Math.Max(0, RevEmptyFixedMs),
+                IEmptyFwdA = 0,
+                IEmptyRevA = 0
+            };
+
+            // 可选：记录“正向合并阶段耗时”（忽略涌流后到判定完成的时间），便于统计（不改 LearnSample 结构）
+            _log?.Info($"EPB[{_channel}] 正向合并阶段耗时（忽略后→判定完成）≈{fwdJudgeElapsedMs}ms。", "EPB");
+
+            return sample;
+        }
+
+        /// <summary>
+        /// 开始一轮“安全裕量学习”聚合：复位临时容器与“临时裕量”。
+        /// 建议在外层 Learn…（或开始批量学习）之前调用。
+        /// </summary>
+        public void BeginSafetyMarginLearning()
+        {
+            lock (_marginLock)
+            {
+                _marginTrace.Clear();
+                _peakTrace.Clear();
+                // 初值取当前运行裕量，保证第一圈就能使用合理值
+                _learnMargin = (_safetyMarginA > 0) ? _safetyMarginA : 2.0;
+            }
+        }
+
+        /// <summary>
+        /// 记录一圈的峰值，并基于该峰值对“临时裕量 _learnMargin”做闭环更新；
+        /// —— 仅更新 _learnMargin 与轨迹，不直接写 _safetyMarginA（避免被偶发样本污染最终结果）。
+        /// </summary>
+        /// <param name="peakAmp">本圈正向段的峰值（Imax）。</param>
+        private void ApplySafetyMarginFromPeak(double peakAmp)
+        {
+            // 计算误差：>0 偏高（欠切）→ 增大裕量；<0 偏低（过早）→ 减小裕量
+            var err = peakAmp - _posThrA;
+            var absErr = Math.Abs(err);
+
+            double before, after;
+            lock (_marginLock)
+            {
+                before = double.IsNaN(_learnMargin) ? (_safetyMarginA > 0 ? _safetyMarginA : 2.0) : _learnMargin;
+
+                if (absErr > MarginLearnDefaults.DeadbandA)
+                {
+                    var delta = MarginLearnDefaults.Kp * err;
+                    if (delta > 0) delta = Math.Min(delta, MarginLearnDefaults.MaxStepA);
+                    else delta = Math.Max(delta, -MarginLearnDefaults.MaxStepA);
+
+                    after = before + delta;
+                }
+                else
+                {
+                    after = before; // 死区内不调整
+                }
+
+                // 夹紧边界
+                if (after < MarginLearnDefaults.MinMarginA) after = MarginLearnDefaults.MinMarginA;
+                if (after > MarginLearnDefaults.MaxMarginA) after = MarginLearnDefaults.MaxMarginA;
+
+                _learnMargin = after;
+
+                // 轨迹记录
+                _peakTrace.Add(peakAmp);
+                _marginTrace.Add(after);
+            }
+
+            _log?.Error($"EPB[{_channel}] SafetyMargin 学习圈：Imax={peakAmp:F3}A, err={err:+0.000;-0.000;0.000}A, " +
+                       $"Margin:{before:F3}→{after:F3}A（deadband={MarginLearnDefaults.DeadbandA:F2}, " +
+                       $"Kp={MarginLearnDefaults.Kp:F2}, step≤{MarginLearnDefaults.MaxStepA:F2}）", "EPB");
+        }
+
+        /// <summary>
+        /// 结束一轮裕量学习：对 <see cref="_marginTrace"/> 做鲁棒统计，
+        /// 以“最后 N 圈窗口 + MAD 去异常 + 中位数”得到最终裕量，并一次性写回 <see cref="_safetyMarginA"/>。
+        /// 建议在批量学习结束后调用（与 FinalizeLearnAggregation 同期）。 
+        /// </summary>
+        public void FinalizeSafetyMarginLearning()
+        {
+            lock (_marginLock)
+            {
+                if (_marginTrace.Count == 0)
+                {
+                    _log?.Warn($"EPB[{_channel}] SafetyMargin 学习未产生样本，保持原值 {_safetyMarginA:F3}A。", "EPB");
+                    return;
+                }
+
+                // 仅取“最后 N 圈”的窗口，避免早期粗调影响最终值
+                var n = _marginTrace.Count;
+                var win = Math.Max(1, Math.Min(MarginLearnDefaults.WindowForFinalize, n));
+                var tail = _marginTrace.Skip(n - win).ToArray();
+
+                // MAD 去异常（以窗口中位与绝对偏差的 1.4826*median 标准化后阈值过滤）
+                var med = Median(tail);
+                var absDev = tail.Select(x => Math.Abs(x - med)).ToArray();
+                var mad = Median(absDev);
+                var sigma = (mad <= 1e-9) ? 0 : 1.4826 * mad;
+                double[] filtered;
+                if (sigma <= 0)
+                    filtered = tail; // 全部一致，直接用
+                else
+                    filtered = tail.Where(x => Math.Abs(x - med) <= MarginLearnDefaults.MadK * sigma).ToArray();
+
+                var final = (filtered.Length > 0) ? Median(filtered) : med;
+
+                // 写回 _safetyMarginA（一次性）
+                var old = _safetyMarginA;
+                _safetyMarginA = Clamp(final, MarginLearnDefaults.MinMarginA, MarginLearnDefaults.MaxMarginA);
+
+                _log?.Info(
+                    $"EPB[{_channel}] SafetyMargin 学习收敛：轨迹{_marginTrace.Count}圈，窗口后{win}圈，" +
+                    $"MADσ≈{sigma:F3}，Final≈{_safetyMarginA:F3}A（原 {old:F3}A）。", "EPB");
+            }
+        }
 
 
         /// <summary>
