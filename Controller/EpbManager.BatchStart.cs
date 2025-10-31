@@ -515,7 +515,7 @@ namespace Controller
         }
 
         /// <summary>获取指定通道的 EPB 循环运行器</summary>
-        private IEpbCycleRunner GetRunner(int channel)
+        private IEpbCycleRunner GetRunnerOld(int channel)
         {
             // 如果已有缓存，直接返回
             if (_runnerCache.TryGetValue(channel, out var cachedRunner))
@@ -575,6 +575,69 @@ namespace Controller
             return runner;
         }
 
+        /// <summary>
+        /// 获取指定通道的 EPB 循环运行器。
+        /// 注意：如果命中 _runnerCache（上一次运行留下的实例），需要重新登记到 _runners，
+        /// 以便采集回调 OnFastEpbCurrent 能再次把样本喂给该 Runner。
+        /// </summary>
+        private IEpbCycleRunner GetRunner(int channel)
+        {
+            // ① 缓存命中：把旧 Runner 重新放回 _runners（关键修复点）
+            EpbCycleRunner cachedRunner;
+            if (_runnerCache.TryGetValue(channel, out cachedRunner))
+            {
+                _runners[channel] = cachedRunner; // 重新登记，让 OnFastEpbCurrent 能找到它
+                return cachedRunner;
+            }
+
+            // ② 正在运行表命中：也放回缓存表，保持一致性
+            EpbCycleRunner existingRunner;
+            if (_runners.TryGetValue(channel, out existingRunner))
+            {
+                _runnerCache[channel] = existingRunner;
+                return existingRunner;
+            }
+
+            // ③ 都未命中：创建新 Runner（保持你现有逻辑不变，下略...）
+            var hydId = channel <= 6 ? 1 : 2;
+            var rcfg = _cfg.Test?.GetEpbRunner(channel) ?? new EpbCycleRunnerConfig();
+            var sampleMs = 2;
+
+            var limitRecord = _cfg.Test.EpbLimits
+                .FirstOrDefault(x => GetProp<int>(x, "Channel") == channel);
+            if (limitRecord == null)
+                throw new InvalidOperationException($"未配置 EPB[{channel}] 电流限值。");
+
+            var forwardA = GetProp<double>(limitRecord, "ForwardA", "PosCurrentA", "PosThresholdA", "ForwardThresholdA");
+            var holdMs = GetProp<int>(limitRecord, "HoldMs", "HoldTimeMs", "HoldDurationMs");
+            holdMs = holdMs <= 0 ? 1000 : holdMs;
+
+            var runner = new EpbCycleRunner(
+                channel,
+                hydId,
+                _readCurrent,
+                _do,
+                _acq,
+                _hydraulic,
+                forwardA,
+                holdMs,
+                sampleMs,
+                rcfg.PeakIgnoreMs,
+                rcfg.EwmaAlpha,
+                rcfg.EmptyBandA,
+                rcfg.StableWinMs,
+                _log,
+                _cfg,
+                this);
+
+            _runnerCache[channel] = runner;
+            _runners[channel] = runner; // 立即登记，保证采集回调可用
+
+            return runner;
+        }
+
+
+
         /// <summary>获取指定通道的高精计时器（必须在 StartChannelAsync 后调用）</summary>
         private HighPrecisionTimer GetTimer(int ch, int periodMs, OverrunPolicy overrunPolicy)
         {
@@ -582,12 +645,13 @@ namespace Controller
             if (_timers.TryGetValue(ch, out var existingTimer))
                 return existingTimer;
 
+            /*// 暂时注释
             // 如果缓存中存在，则返回并放入 _timers 字典
             if (_timerCache.TryGetValue(ch, out var cachedTimer))
             {
                 _timers[ch] = cachedTimer;
                 return cachedTimer;
-            }
+            }*/
 
             // 创建新的 HighPrecisionTimer 实例
             // 使用与 StartChannelAsync 相同的参数和创建方式

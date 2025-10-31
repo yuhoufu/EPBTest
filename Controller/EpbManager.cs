@@ -416,7 +416,7 @@ namespace Controller
             if (_timers.TryGetValue(channel, out var t)) t.Resume();
         }
 
-        public void StopChannel(int channel)
+        public void StopChannelOld(int channel)
         {
             if (_timers.TryGetValue(channel, out var t)) t.Stop();
             _timers.Remove(channel);
@@ -429,11 +429,67 @@ namespace Controller
 
             _do.SetEpbOff(channel); // 安全落位
         }
-
-        public void StopAll()
+        
+        public void StopAllOld()
         {
             foreach (var ch in _timers.Keys.ToArray()) StopChannel(ch);
         }
+
+        /// <summary>
+        /// 停止指定通道：
+        /// 1) 停止并移除当前轮正在使用的计时器；
+        /// 2) 同时清理计时器缓存（不再复用旧实例）；
+        /// 3) 移除运行器与其缓存；
+        /// 4) 落位并做必要的收尾。
+        /// </summary>
+        public void StopChannel(int channel)
+        {
+            // —— 停止“当前轮”的计时器 —— //
+            HighPrecisionTimer t;
+            if (_timers.TryGetValue(channel, out t))
+            {
+                try { t.Stop(); } catch { /* 忽略 Stop 异常 */ }
+                _timers.Remove(channel);
+            }
+
+            // —— 同步清理“缓存计时器”，只 Stop + Remove，不做 Dispose（类型未实现 IDisposable）—— //
+            HighPrecisionTimer cached;
+            if (_timerCache.TryGetValue(channel, out cached))
+            {
+                try { cached.Stop(); } catch { /* 忽略 */ }
+                _timerCache.Remove(channel);   // 关键：不要留下以免二次启动被误复用
+            }
+
+            // —— Runner 同样清理：运行表与缓存表都移除 —— //
+            _runners.Remove(channel);
+            _runnerCache.Remove(channel);
+
+            // —— 安全落位与收尾（按你现有逻辑调整）—— //
+            try { Recorder?.FlushRecent(channel, 10); } catch { /* 忽略 */ }
+            try { _do.SetEpbOff(channel); } catch { /* 忽略 */ }
+        }
+
+
+        /// <summary>
+        /// 停止所有通道：依次调用 <see cref="StopChannel"/> ，
+        /// 并做一次兜底清空，确保下一次开始是“干净环境”。 
+        /// </summary>
+        public void StopAll()
+        {
+            var keys = _timers.Keys.ToArray(); // 拷贝快照，避免枚举期间修改
+            for (int i = 0; i < keys.Length; i++)
+                StopChannel(keys[i]);
+
+            // 兜底清空（防御式）
+            _timers.Clear();
+            _runnerCache.Clear();
+            _timerCache.Clear();
+            _runners.Clear();
+        }
+
+
+
+
 
         // —— 反射兜底读取配置字段（兼容不同旧配置命名）—— //
         private static T GetProp<T>(object obj, string name)
