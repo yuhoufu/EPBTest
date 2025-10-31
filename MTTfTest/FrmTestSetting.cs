@@ -1,25 +1,18 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.ComponentModel;
 using System.Data;
-using System.Drawing;
+using System.IO;
 using System.Linq;
-using System.Runtime.Remoting.Channels;
-using System.Text;
-using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.Xml;
 using System.Xml.Linq;
-using System.IO;
-using static System.Windows.Forms.VisualStyles.VisualStyleElement;
-using ZlgCanComm;
-using DataOperation;
 using System.Xml.Serialization;
-using System.Runtime.Remoting.Messaging;
+using DataOperation;
+using Sunny.UI;
 
 namespace MtEmbTest
 {
-    public partial class FrmTestSetting: Form
+    public partial class FrmTestSetting : Form
     {
         public FrmTestSetting()
         {
@@ -28,62 +21,66 @@ namespace MtEmbTest
 
         private void BtnSaveCommand_Click(object sender, EventArgs e)
         {
-
-
             try
             {
                 short ClampPositionValue;
-                if (string.IsNullOrEmpty(TxtClampPosition.Text) || !short.TryParse(TxtClampPosition.Text, out ClampPositionValue))
+                if (string.IsNullOrEmpty(TxtClampPosition.Text) ||
+                    !short.TryParse(TxtClampPosition.Text, out ClampPositionValue))
                 {
                     MessageBox.Show("ClampPosition 输入无效，输入不能为空且必须为数字！");
                     return;
                 }
 
                 short ClampSpeedValue;
-                if (string.IsNullOrEmpty(TxtClampSpeed.Text) || !short.TryParse(TxtClampSpeed.Text, out ClampSpeedValue))
+                if (string.IsNullOrEmpty(TxtClampSpeed.Text) ||
+                    !short.TryParse(TxtClampSpeed.Text, out ClampSpeedValue))
                 {
                     MessageBox.Show("ClampSpeed 输入无效，输入不能为空且必须为数字！");
                     return;
                 }
 
                 byte ClampModReqValue;
-                if (string.IsNullOrEmpty(TxtClampModReq.Text) || !byte.TryParse(TxtClampModReq.Text, out ClampModReqValue))
+                if (string.IsNullOrEmpty(TxtClampModReq.Text) ||
+                    !byte.TryParse(TxtClampModReq.Text, out ClampModReqValue))
                 {
                     MessageBox.Show("ClampModReq 输入无效，输入不能为空且必须为数字！");
                     return;
                 }
 
                 short ClampTorqueValue;
-                if (string.IsNullOrEmpty(TxtClampTorque.Text) || !short.TryParse(TxtClampTorque.Text, out ClampTorqueValue))
+                if (string.IsNullOrEmpty(TxtClampTorque.Text) ||
+                    !short.TryParse(TxtClampTorque.Text, out ClampTorqueValue))
                 {
                     MessageBox.Show("ClampTorque 输入无效，输入不能为空且必须为数字！");
                     return;
                 }
 
                 byte ClampNormalModeValue;
-                if (string.IsNullOrEmpty(TxtClampNormalMode.Text) || !byte.TryParse(TxtClampNormalMode.Text, out ClampNormalModeValue))
+                if (string.IsNullOrEmpty(TxtClampNormalMode.Text) ||
+                    !byte.TryParse(TxtClampNormalMode.Text, out ClampNormalModeValue))
                 {
                     MessageBox.Show("ClampNormalMode 输入无效，输入不能为空且必须为数字！");
                     return;
                 }
 
                 short ClampForceValue;
-                if (string.IsNullOrEmpty(TxtClampForce.Text) || !short.TryParse(TxtClampForce.Text, out ClampForceValue))
+                if (string.IsNullOrEmpty(TxtClampForce.Text) ||
+                    !short.TryParse(TxtClampForce.Text, out ClampForceValue))
                 {
                     MessageBox.Show("ClampForce 输入无效，输入不能为空且必须为数字！");
                     return;
                 }
 
-                if (ClampForceValue<0|| ClampForceValue>32767)
+                if (ClampForceValue < 0 || ClampForceValue > 32767)
                 {
                     MessageBox.Show("ClampForce 输入为无效值！");
                     return;
                 }
 
 
-
                 byte ClampEnableValue;
-                if (string.IsNullOrEmpty(TxtClampEnable.Text) || !byte.TryParse(TxtClampEnable.Text, out ClampEnableValue))
+                if (string.IsNullOrEmpty(TxtClampEnable.Text) ||
+                    !byte.TryParse(TxtClampEnable.Text, out ClampEnableValue))
                 {
                     MessageBox.Show("ClampEnable 输入无效，输入不能为空且必须为数字！");
                     return;
@@ -96,58 +93,65 @@ namespace MtEmbTest
                 }
 
 
-
                 ushort ClampForceReqValue;
-                if (string.IsNullOrEmpty(TxtClampForceReq.Text) || !ushort.TryParse(TxtClampForceReq.Text, out ClampForceReqValue))
+                if (string.IsNullOrEmpty(TxtClampForceReq.Text) ||
+                    !ushort.TryParse(TxtClampForceReq.Text, out ClampForceReqValue))
                 {
                     MessageBox.Show("ClampForceReq 输入无效，输入不能为空且必须为数字！");
                     return;
                 }
 
                 short ReleasePositionValue;
-                if (string.IsNullOrEmpty(TxtReleasePosition.Text) || !short.TryParse(TxtReleasePosition.Text, out ReleasePositionValue))
+                if (string.IsNullOrEmpty(TxtReleasePosition.Text) ||
+                    !short.TryParse(TxtReleasePosition.Text, out ReleasePositionValue))
                 {
                     MessageBox.Show("ReleasePosition 输入无效，输入不能为空且必须为数字！");
                     return;
                 }
 
                 short ReleaseSpeedValue;
-                if (string.IsNullOrEmpty(TxtReleaseSpeed.Text) || !short.TryParse(TxtReleaseSpeed.Text, out ReleaseSpeedValue))
+                if (string.IsNullOrEmpty(TxtReleaseSpeed.Text) ||
+                    !short.TryParse(TxtReleaseSpeed.Text, out ReleaseSpeedValue))
                 {
                     MessageBox.Show("ReleaseSpeed 输入无效，输入不能为空且必须为数字！");
                     return;
                 }
 
                 byte ReleaseModeReqValue;
-                if (string.IsNullOrEmpty(TxtReleaseModeReq.Text) || !byte.TryParse(TxtReleaseModeReq.Text, out ReleaseModeReqValue))
+                if (string.IsNullOrEmpty(TxtReleaseModeReq.Text) ||
+                    !byte.TryParse(TxtReleaseModeReq.Text, out ReleaseModeReqValue))
                 {
                     MessageBox.Show("ReleaseModeReq 输入无效，输入不能为空且必须为数字！");
                     return;
                 }
 
                 short ReleaseTorqueValue;
-                if (string.IsNullOrEmpty(TxtReleaseTorque.Text) || !short.TryParse(TxtReleaseTorque.Text, out ReleaseTorqueValue))
+                if (string.IsNullOrEmpty(TxtReleaseTorque.Text) ||
+                    !short.TryParse(TxtReleaseTorque.Text, out ReleaseTorqueValue))
                 {
                     MessageBox.Show("ReleaseTorque 输入无效，输入不能为空且必须为数字！");
                     return;
                 }
 
                 byte ReleaseNormalModeValue;
-                if (string.IsNullOrEmpty(TxtReleaseNormalMode.Text) || !byte.TryParse(TxtReleaseNormalMode.Text, out ReleaseNormalModeValue))
+                if (string.IsNullOrEmpty(TxtReleaseNormalMode.Text) ||
+                    !byte.TryParse(TxtReleaseNormalMode.Text, out ReleaseNormalModeValue))
                 {
                     MessageBox.Show("ReleaseNormalMode 输入无效，输入不能为空且必须为数字！");
                     return;
                 }
 
                 short ReleaseForceValue;
-                if (string.IsNullOrEmpty(TxtReleaseForce.Text) || !short.TryParse(TxtReleaseForce.Text, out ReleaseForceValue))
+                if (string.IsNullOrEmpty(TxtReleaseForce.Text) ||
+                    !short.TryParse(TxtReleaseForce.Text, out ReleaseForceValue))
                 {
                     MessageBox.Show("ReleaseForce 输入无效，输入不能为空且必须为数字！");
                     return;
                 }
 
                 byte ReleaseEnableValue;
-                if (string.IsNullOrEmpty(TxtReleaseEnable.Text) || !byte.TryParse(TxtReleaseEnable.Text, out ReleaseEnableValue))
+                if (string.IsNullOrEmpty(TxtReleaseEnable.Text) ||
+                    !byte.TryParse(TxtReleaseEnable.Text, out ReleaseEnableValue))
                 {
                     MessageBox.Show("ReleaseEnable 输入无效，输入不能为空且必须为数字！");
                     return;
@@ -160,9 +164,9 @@ namespace MtEmbTest
                 }
 
 
-
                 ushort ReleaseForceReqValue;
-                if (string.IsNullOrEmpty(TxtReleaseForceReq.Text) || !ushort.TryParse(TxtReleaseForceReq.Text, out ReleaseForceReqValue))
+                if (string.IsNullOrEmpty(TxtReleaseForceReq.Text) ||
+                    !ushort.TryParse(TxtReleaseForceReq.Text, out ReleaseForceReqValue))
                 {
                     MessageBox.Show("ReleaseForceReq 输入无效，输入不能为空且必须为数字！");
                     return;
@@ -218,18 +222,12 @@ namespace MtEmbTest
                 ClsGlobal.ReleaseForceReq = ReleaseForceReqValue;
 
                 MessageBox.Show("保存成功！");
-
             }
 
-            catch(Exception ex)
+            catch (Exception ex)
             {
                 MessageBox.Show(ex.Message);
             }
-
-
-
-
-
         }
 
         private void FrmTestSetting_Load(object sender, EventArgs e)
@@ -260,30 +258,18 @@ namespace MtEmbTest
                 TxtDRate.Text = ClsGlobal.DRate.ToString();
                 TxtARate.Text = ClsGlobal.ARate.ToString();
                 TxtCardNo.Text = ClsGlobal.CardNo.ToString();
-              //  TxtFrameID.Text = ClsGlobal.SendFrameID;
+                //  TxtFrameID.Text = ClsGlobal.SendFrameID;
                 TxtMsgInterval.Text = ClsGlobal.MsgInterval.ToString();
                 ChkResistorEnabel.Checked = ClsGlobal.ResistorEnabel == 1;
                 ComProtocol.SelectedIndex = ClsGlobal.Protocol;
                 ComFrameType.SelectedIndex = ClsGlobal.FrameType;
 
 
+                LoadDaqAiToGridView(Environment.CurrentDirectory + @"\Config\AIConfig.xml");
 
 
-
-              
-
-
-                LoadDaqAiToGridView(System.Environment.CurrentDirectory + @"\Config\AIConfig.xml");
-
-                LoadEMBControlsToDataGridView(dgvEmbControl);
-
-
-            
-               LoadTestConfigFromXml(TxtTestCycle, TxtTestStandard, TxtTestName, TxtTestTarget,
-                              TxtStoreDir, TxtTestMan, RtbDesc, TxtAlertLimit, ComboTestEnvir);
-
-
-
+                LoadTestConfigFromXml(TxtTestCycle, TxtTestStandard, TxtTestName, TxtTestTarget,
+                    TxtStoreDir, TxtTestMan, RtbDesc, TxtAlertLimit, ComboTestEnvir);
             }
 
             catch (Exception ex)
@@ -292,85 +278,12 @@ namespace MtEmbTest
             }
         }
 
-        public void LoadEMBControlsToDataGridView(DataGridView dgvEmbControl)
-        {
-            try
-            {
-                // 创建DataTable结构
-                DataTable dt = new DataTable();
-                dt.Columns.Add("名称", typeof(string));
-                dt.Columns.Add("型号", typeof(string));
-                dt.Columns.Add("产品编号", typeof(string));
-                dt.Columns.Add("方向", typeof(string));
-
-                // 加载XML文件
-                string xmlPath = Path.Combine(Environment.CurrentDirectory, @"Config\EMBControl.XML");
-                XDocument xdoc = XDocument.Load(xmlPath);
-
-                // 解析XML数据
-                foreach (XElement emb in xdoc.Descendants("EMB"))
-                {
-                    dt.Rows.Add(
-                        (string)emb.Element("名称"),
-                        (string)emb.Element("型号"),
-                        (string)emb.Element("产品编号"),
-                        (string)emb.Element("方向")
-                    );
-                }
-
-                // 配置DataGridView
-                dgvEmbControl.AutoGenerateColumns = false;
-                dgvEmbControl.DataSource = dt;
-                dgvEmbControl.Columns.Clear();
-
-                // 名称列（只读）
-                dgvEmbControl.Columns.Add(new DataGridViewTextBoxColumn
-                {
-                    DataPropertyName = "名称",
-                    HeaderText = "名称",
-                    ReadOnly = true
-                });
-
-                // 型号列
-                dgvEmbControl.Columns.Add(new DataGridViewTextBoxColumn
-                {
-                    DataPropertyName = "型号",
-                    HeaderText = "型号"
-                });
-
-                // 产品编号列
-                dgvEmbControl.Columns.Add(new DataGridViewTextBoxColumn
-                {
-                    DataPropertyName = "产品编号",
-                    HeaderText = "产品编号"
-                });
-
-                // 方向列（下拉框）
-                DataGridViewComboBoxColumn dirCol = new DataGridViewComboBoxColumn
-                {
-                    DataPropertyName = "方向",
-                    HeaderText = "方向",
-                    Items = { "FL", "FR", "RL", "RR" }, // 预设方向选项
-                  
-                };
-                dgvEmbControl.Columns.Add(dirCol);
-
-                // 样式设置
-                dgvEmbControl.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
-                //dgvEmbControl.ColumnHeadersHeight = 70;
-                //dgvEmbControl.RowTemplate.Height = 70;
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"加载EMB配置失败: {ex.Message}");
-            }
-        }
 
         public void SaveEMBControlsToXML(DataGridView dgvEmbControl)
         {
             try
             {
-                DataTable dt = (DataTable)dgvEmbControl.DataSource;
+                var dt = (DataTable)dgvEmbControl.DataSource;
                 if (dt == null || dt.Rows.Count == 0)
                 {
                     MessageBox.Show("没有需要保存的数据");
@@ -391,7 +304,7 @@ namespace MtEmbTest
                     }
 
                     // 验证方向有效性
-                    string direction = row["方向"].ToString().Trim();
+                    var direction = row["方向"].ToString().Trim();
                     if (!validDirections.Contains(direction))
                     {
                         MessageBox.Show($"无效的方向值: {direction}");
@@ -402,7 +315,7 @@ namespace MtEmbTest
                 }
 
                 // 验证名称
-                var requiredNames = new HashSet<string> { "EMB1"};
+                var requiredNames = new HashSet<string> { "EMB1" };
 
                 if (names.Count != 1 ||
                     names.Distinct().Count() != 1 ||
@@ -413,7 +326,7 @@ namespace MtEmbTest
                 }
 
                 // 构建XML结构
-                XElement root = new XElement("EMBControl",
+                var root = new XElement("EMBControl",
                     from row in dt.AsEnumerable()
                     select new XElement("EMB",
                         new XElement("名称", row["名称"]),
@@ -424,9 +337,8 @@ namespace MtEmbTest
                 );
 
                 // 保存文件
-                string xmlPath = Path.Combine(Environment.CurrentDirectory, @"Config\EMBControl.XML");
+                var xmlPath = Path.Combine(Environment.CurrentDirectory, @"Config\EMBControl.XML");
                 File.WriteAllText(xmlPath, root.ToString());
-              
             }
             catch (Exception ex)
             {
@@ -437,13 +349,11 @@ namespace MtEmbTest
 
         private void LoadDaqAiToGridView(string filePath)
         {
-           
             try
             {
-
                 if (File.Exists(filePath))
                 {
-                    DataTable dt = new DataTable();
+                    var dt = new DataTable();
                     dt.Columns.Add("序号", typeof(int));
                     dt.Columns.Add("物理通道", typeof(string));
                     dt.Columns.Add("参数名", typeof(string));
@@ -454,13 +364,13 @@ namespace MtEmbTest
                     dt.Columns.Add("是否启用", typeof(bool));
                     dt.Columns.Add("零位漂移", typeof(string));
 
-                    XmlDocument xmlDoc = new XmlDocument();
+                    var xmlDoc = new XmlDocument();
                     xmlDoc.Load(filePath);
-                    XmlNodeList records = xmlDoc.SelectNodes("//Records");
+                    var records = xmlDoc.SelectNodes("//Records");
 
                     foreach (XmlNode record in records)
                     {
-                        DataRow row = dt.NewRow();
+                        var row = dt.NewRow();
                         row["序号"] = int.Parse(record["序号"].InnerText);
                         row["物理通道"] = record["物理通道"].InnerText;
                         row["参数名"] = record["参数名"].InnerText;
@@ -476,28 +386,26 @@ namespace MtEmbTest
                     dgvDaqAI.DataSource = dt;
 
                     // 设置参数类型列为 ComboBox 列
-                    DataGridViewComboBoxColumn comboBoxColumn = new DataGridViewComboBoxColumn();
+                    var comboBoxColumn = new DataGridViewComboBoxColumn();
                     comboBoxColumn.Name = "参数类型";
                     comboBoxColumn.DataPropertyName = "参数类型";
                     comboBoxColumn.HeaderText = "参数类型";
                     comboBoxColumn.Items.Add("电流");
-                    comboBoxColumn.Items.Add("扭矩");
-                    comboBoxColumn.Items.Add("压力");
-                    comboBoxColumn.Items.Add("距离");
-                    comboBoxColumn.Items.Add("");
+                    comboBoxColumn.Items.Add("管路压力");
+                    comboBoxColumn.Items.Add("夹紧力");
                     // 可根据实际情况添加更多参数类型选项
-                    int index = dgvDaqAI.Columns["参数类型"].Index;
+                    var index = dgvDaqAI.Columns["参数类型"].Index;
                     dgvDaqAI.Columns.RemoveAt(index);
                     dgvDaqAI.Columns.Insert(index, comboBoxColumn);
 
                     // 设置是否启用列为 CheckBox 列
-                    DataGridViewCheckBoxColumn checkBoxColumn = new DataGridViewCheckBoxColumn();
+                    var checkBoxColumn = new DataGridViewCheckBoxColumn();
                     checkBoxColumn.Name = "是否启用";
                     checkBoxColumn.DataPropertyName = "是否启用";
                     checkBoxColumn.HeaderText = "是否启用";
-                      index = dgvDaqAI.Columns["是否启用"].Index;
-                     dgvDaqAI.Columns.RemoveAt(index);
-                     dgvDaqAI.Columns.Insert(index, checkBoxColumn);
+                    index = dgvDaqAI.Columns["是否启用"].Index;
+                    dgvDaqAI.Columns.RemoveAt(index);
+                    dgvDaqAI.Columns.Insert(index, checkBoxColumn);
 
                     dgvDaqAI.ColumnHeadersHeight = 60;
                     dgvDaqAI.RowTemplate.Height = 60;
@@ -517,7 +425,7 @@ namespace MtEmbTest
                     dgvDaqAI.Columns[8].Visible = false;
                 }
             }
-            catch(Exception ex)
+            catch (Exception ex)
             {
                 MessageBox.Show("读入DAQ AI配置出错：" + ex.Message);
             }
@@ -528,53 +436,50 @@ namespace MtEmbTest
             // string filePath = "AIConfig.XML";
             try
             {
-                XmlDocument xmlDoc = new XmlDocument();
-                XmlElement root = xmlDoc.CreateElement("AIConfigDetail");
+                var xmlDoc = new XmlDocument();
+                var root = xmlDoc.CreateElement("AIConfigDetail");
                 xmlDoc.AppendChild(root);
 
-                DataTable dt = (DataTable)dgvDaqAI.DataSource;
-
-               
-
+                var dt = (DataTable)dgvDaqAI.DataSource;
 
 
                 foreach (DataRow row in dt.Rows)
                 {
-                    XmlElement record = xmlDoc.CreateElement("Records");
+                    var record = xmlDoc.CreateElement("Records");
 
-                    XmlElement id = xmlDoc.CreateElement("序号");
+                    var id = xmlDoc.CreateElement("序号");
                     id.InnerText = row["序号"].ToString();
                     record.AppendChild(id);
 
-                    XmlElement physicalChannel = xmlDoc.CreateElement("物理通道");
+                    var physicalChannel = xmlDoc.CreateElement("物理通道");
                     physicalChannel.InnerText = row["物理通道"].ToString();
                     record.AppendChild(physicalChannel);
 
-                    XmlElement paramName = xmlDoc.CreateElement("参数名");
+                    var paramName = xmlDoc.CreateElement("参数名");
                     paramName.InnerText = row["参数名"].ToString();
                     record.AppendChild(paramName);
 
-                    XmlElement unit = xmlDoc.CreateElement("单位");
+                    var unit = xmlDoc.CreateElement("单位");
                     unit.InnerText = row["单位"].ToString();
                     record.AppendChild(unit);
 
-                    XmlElement slope = xmlDoc.CreateElement("变换斜率");
+                    var slope = xmlDoc.CreateElement("变换斜率");
                     slope.InnerText = row["变换斜率"].ToString();
                     record.AppendChild(slope);
 
-                    XmlElement intercept = xmlDoc.CreateElement("变换截距");
+                    var intercept = xmlDoc.CreateElement("变换截距");
                     intercept.InnerText = row["变换截距"].ToString();
                     record.AppendChild(intercept);
 
-                    XmlElement paramType = xmlDoc.CreateElement("参数类型");
+                    var paramType = xmlDoc.CreateElement("参数类型");
                     paramType.InnerText = row["参数类型"].ToString();
                     record.AppendChild(paramType);
 
-                    XmlElement isEnabled = xmlDoc.CreateElement("是否启用");
+                    var isEnabled = xmlDoc.CreateElement("是否启用");
                     isEnabled.InnerText = (bool)row["是否启用"] ? "1" : "0";
                     record.AppendChild(isEnabled);
 
-                    XmlElement ZeroValue = xmlDoc.CreateElement("零位漂移");
+                    var ZeroValue = xmlDoc.CreateElement("零位漂移");
                     ZeroValue.InnerText = row["零位漂移"].ToString();
                     record.AppendChild(ZeroValue);
 
@@ -592,13 +497,9 @@ namespace MtEmbTest
         }
 
 
-
-
-
-
         private void BtnSaveDaqAI_Click(object sender, EventArgs e)
         {
-            SaveDaqAIToXML(System.Environment.CurrentDirectory + @"\Config\AIConfig.xml");
+            SaveDaqAIToXML(Environment.CurrentDirectory + @"\Config\AIConfig.xml");
         }
 
         private void BtnSaveTest_Click(object sender, EventArgs e)
@@ -606,8 +507,7 @@ namespace MtEmbTest
             SaveEMBControlsToXML(dgvEmbControl);
 
 
-
-           SaveTestConfigToXml(TxtTestCycle, TxtTestStandard, TxtTestName, TxtTestTarget,
+            SaveTestConfigToXml(TxtTestCycle, TxtTestStandard, TxtTestName, TxtTestTarget,
                 TxtStoreDir, TxtTestMan, RtbDesc, TxtAlertLimit, ComboTestEnvir);
 
             int dRateValue;
@@ -632,7 +532,6 @@ namespace MtEmbTest
             }
 
 
-
             int msgIntervalValue;
             if (string.IsNullOrEmpty(TxtMsgInterval.Text) || !int.TryParse(TxtMsgInterval.Text, out msgIntervalValue))
             {
@@ -641,7 +540,8 @@ namespace MtEmbTest
             }
 
             int resistorEnabelValue;
-            if (string.IsNullOrEmpty(ChkResistorEnabel.Checked ? "1" : "0") || !int.TryParse(ChkResistorEnabel.Checked ? "1" : "0", out resistorEnabelValue))
+            if (string.IsNullOrEmpty(ChkResistorEnabel.Checked ? "1" : "0") ||
+                !int.TryParse(ChkResistorEnabel.Checked ? "1" : "0", out resistorEnabelValue))
             {
                 MessageBox.Show("ResistorEnabel 输入无效，输入不能为空且必须为数字！");
                 return;
@@ -653,6 +553,7 @@ namespace MtEmbTest
                 MessageBox.Show("Protocol 输入无效，请选择一个选项！");
                 return;
             }
+
             protocolValue = ComProtocol.SelectedIndex;
 
             int frameTypeValue;
@@ -661,6 +562,7 @@ namespace MtEmbTest
                 MessageBox.Show("FrameType 输入无效，请选择一个选项！");
                 return;
             }
+
             frameTypeValue = ComFrameType.SelectedIndex;
 
             // 统一进行保存配置和赋值操作
@@ -673,7 +575,6 @@ namespace MtEmbTest
             ConfigOperation.SaveOneItem("CardNo", TxtCardNo.Text);
             ClsGlobal.CardNo = cardNoValue;
 
-           
 
             ConfigOperation.SaveOneItem("MsgInterval", TxtMsgInterval.Text);
             ClsGlobal.MsgInterval = msgIntervalValue;
@@ -689,26 +590,18 @@ namespace MtEmbTest
 
 
             MessageBox.Show("保存成功！");
-
-
-
-
-
-
-
-
         }
 
 
-        public void SaveTestConfigToXml(Sunny.UI.UITextBox txtTestCycle,
-                     Sunny.UI.UITextBox txtTestStandard,
-                     Sunny.UI.UITextBox txtTestName,
-                     Sunny.UI.UITextBox txtTestTarget,
-                     Sunny.UI.UITextBox txtStoreDir,
-                     Sunny.UI.UITextBox txtTestMan,
-                     Sunny.UI.UIRichTextBox rtbDesc,
-                     Sunny.UI.UITextBox txtAlertLimit,
-                     Sunny.UI.UIComboBox comboTestEnvir)
+        public void SaveTestConfigToXml(UITextBox txtTestCycle,
+            UITextBox txtTestStandard,
+            UITextBox txtTestName,
+            UITextBox txtTestTarget,
+            UITextBox txtStoreDir,
+            UITextBox txtTestMan,
+            UIRichTextBox rtbDesc,
+            UITextBox txtAlertLimit,
+            UIComboBox comboTestEnvir)
         {
             var config = new TestConfig
             {
@@ -720,7 +613,7 @@ namespace MtEmbTest
                 TestMan = txtTestMan.Text,
                 Description = rtbDesc.Text,
                 AlertLimit = txtAlertLimit.Text,
-                TestEnvir=comboTestEnvir.Text
+                TestEnvir = comboTestEnvir.Text
             };
 
             SaveTestConfigToFile(config);
@@ -731,7 +624,7 @@ namespace MtEmbTest
         {
             var serializer = new XmlSerializer(typeof(TestConfig));
 
-            string xmlPath = Path.Combine(Environment.CurrentDirectory, @"Config\TestConfig.xml");
+            var xmlPath = Path.Combine(Environment.CurrentDirectory, @"Config\TestConfig.xml");
 
             using (var writer = new StreamWriter(xmlPath))
             {
@@ -740,18 +633,17 @@ namespace MtEmbTest
         }
 
         // 显式控件参数加载方式
-        public void LoadTestConfigFromXml(Sunny.UI.UITextBox txtTestCycle,
-                               Sunny.UI.UITextBox txtTestStandard,
-                               Sunny.UI.UITextBox txtTestName,
-                               Sunny.UI.UITextBox txtTestTarget,
-                               Sunny.UI.UITextBox txtStoreDir,
-                               Sunny.UI.UITextBox txtTestMan,
-                               Sunny.UI.UIRichTextBox rtbDesc,
-                               Sunny.UI.UITextBox txtAlertLimit,
-                               Sunny.UI.UIComboBox comboTestEnvir)
+        public void LoadTestConfigFromXml(UITextBox txtTestCycle,
+            UITextBox txtTestStandard,
+            UITextBox txtTestName,
+            UITextBox txtTestTarget,
+            UITextBox txtStoreDir,
+            UITextBox txtTestMan,
+            UIRichTextBox rtbDesc,
+            UITextBox txtAlertLimit,
+            UIComboBox comboTestEnvir)
         {
-
-            string xmlPath = Path.Combine(Environment.CurrentDirectory, @"Config\TestConfig.xml");
+            var xmlPath = Path.Combine(Environment.CurrentDirectory, @"Config\TestConfig.xml");
 
 
             if (!File.Exists(xmlPath)) return;
@@ -767,8 +659,7 @@ namespace MtEmbTest
             txtTestMan.Text = config.TestMan;
             rtbDesc.Text = config.Description;
             txtAlertLimit.Text = config.AlertLimit;
-            comboTestEnvir.Text=config.TestEnvir;
-
+            comboTestEnvir.Text = config.TestEnvir;
         }
 
 
@@ -778,7 +669,7 @@ namespace MtEmbTest
             {
                 var serializer = new XmlSerializer(typeof(TestConfig));
 
-                string xmlPath = Path.Combine(Environment.CurrentDirectory, @"Config\TestConfig.xml");
+                var xmlPath = Path.Combine(Environment.CurrentDirectory, @"Config\TestConfig.xml");
 
                 using (var reader = new StreamReader(xmlPath))
                 {
@@ -798,8 +689,8 @@ namespace MtEmbTest
             {
                 // 对话框基础设置
                 folderDialog.Description = "请选择存储目录";
-              //  folderDialog.UseDescriptionForTitle = true;  // 将描述作为窗口标题
-                folderDialog.ShowNewFolderButton = true;      // 允许新建文件夹
+                //  folderDialog.UseDescriptionForTitle = true;  // 将描述作为窗口标题
+                folderDialog.ShowNewFolderButton = true; // 允许新建文件夹
 
                 // 可选：设置初始目录（默认从"我的电脑"开始）
                 folderDialog.RootFolder = Environment.SpecialFolder.MyComputer;
@@ -822,16 +713,18 @@ namespace MtEmbTest
 
         private void ComboTestEnvir_SelectedIndexChanged(object sender, EventArgs e)
         {
-            if(ComboTestEnvir.Text=="常温")
+            if (ComboTestEnvir.Text == "常温")
             {
                 TxtTestCycle.Text = "0.278";
                 TxtTestTarget.Text = "500000";
             }
+
             if (ComboTestEnvir.Text == "高温")
             {
                 TxtTestCycle.Text = "0.278";
                 TxtTestTarget.Text = "210000";
             }
+
             if (ComboTestEnvir.Text == "低温")
             {
                 TxtTestCycle.Text = "0.167";
@@ -841,8 +734,8 @@ namespace MtEmbTest
 
         private void dgvEmbControl_DataBindingComplete(object sender, DataGridViewBindingCompleteEventArgs e)
         {
-          //  dgvEmbControl.CurrentCell = null;
-          //  dgvEmbControl.SelectedIndex = -1;
+            //  dgvEmbControl.CurrentCell = null;
+            //  dgvEmbControl.SelectedIndex = -1;
         }
     }
 }
