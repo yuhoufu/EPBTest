@@ -255,21 +255,13 @@ namespace MtEmbTest
                 TxtReleaseForceReq.Text = ClsGlobal.ReleaseForceReq.ToString();
 
 
-                TxtDRate.Text = ClsGlobal.DRate.ToString();
-                TxtARate.Text = ClsGlobal.ARate.ToString();
-                TxtCardNo.Text = ClsGlobal.CardNo.ToString();
-                //  TxtFrameID.Text = ClsGlobal.SendFrameID;
-                TxtMsgInterval.Text = ClsGlobal.MsgInterval.ToString();
-                ChkResistorEnabel.Checked = ClsGlobal.ResistorEnabel == 1;
-                ComProtocol.SelectedIndex = ClsGlobal.Protocol;
-                ComFrameType.SelectedIndex = ClsGlobal.FrameType;
 
 
                 LoadDaqAiToGridView(Environment.CurrentDirectory + @"\Config\AIConfig.xml");
 
 
-                LoadTestConfigFromXml(TxtTestCycle, TxtTestStandard, TxtTestName, TxtTestTarget,
-                    TxtStoreDir, TxtTestMan, RtbDesc, TxtAlertLimit, ComboTestEnvir);
+                LoadTestConfigFromXml(TxtTestCycle, TxtTestName, TxtTestTarget,
+                    TxtStoreDir, TxtTestMan, RtbDesc);
             }
 
             catch (Exception ex)
@@ -507,113 +499,30 @@ namespace MtEmbTest
             SaveEMBControlsToXML(dgvEmbControl);
 
 
-            SaveTestConfigToXml(TxtTestCycle, TxtTestStandard, TxtTestName, TxtTestTarget,
-                TxtStoreDir, TxtTestMan, RtbDesc, TxtAlertLimit, ComboTestEnvir);
+            SaveTestConfigToXml(TxtTestCycle, TxtTestName, TxtTestTarget,
+                TxtStoreDir, TxtTestMan, RtbDesc);
 
-            int dRateValue;
-            if (string.IsNullOrEmpty(TxtDRate.Text) || !int.TryParse(TxtDRate.Text, out dRateValue))
-            {
-                MessageBox.Show("DRate 输入无效，输入不能为空且必须为数字！");
-                return;
-            }
-
-            int aRateValue;
-            if (string.IsNullOrEmpty(TxtARate.Text) || !int.TryParse(TxtARate.Text, out aRateValue))
-            {
-                MessageBox.Show("ARate 输入无效，输入不能为空且必须为数字！");
-                return;
-            }
-
-            int cardNoValue;
-            if (string.IsNullOrEmpty(TxtCardNo.Text) || !int.TryParse(TxtCardNo.Text, out cardNoValue))
-            {
-                MessageBox.Show("CardNo 输入无效，输入不能为空且必须为数字！");
-                return;
-            }
-
-
-            int msgIntervalValue;
-            if (string.IsNullOrEmpty(TxtMsgInterval.Text) || !int.TryParse(TxtMsgInterval.Text, out msgIntervalValue))
-            {
-                MessageBox.Show("MsgInterval 输入无效，输入不能为空且必须为数字！");
-                return;
-            }
-
-            int resistorEnabelValue;
-            if (string.IsNullOrEmpty(ChkResistorEnabel.Checked ? "1" : "0") ||
-                !int.TryParse(ChkResistorEnabel.Checked ? "1" : "0", out resistorEnabelValue))
-            {
-                MessageBox.Show("ResistorEnabel 输入无效，输入不能为空且必须为数字！");
-                return;
-            }
-
-            int protocolValue;
-            if (ComProtocol.SelectedIndex < 0)
-            {
-                MessageBox.Show("Protocol 输入无效，请选择一个选项！");
-                return;
-            }
-
-            protocolValue = ComProtocol.SelectedIndex;
-
-            int frameTypeValue;
-            if (ComFrameType.SelectedIndex < 0)
-            {
-                MessageBox.Show("FrameType 输入无效，请选择一个选项！");
-                return;
-            }
-
-            frameTypeValue = ComFrameType.SelectedIndex;
-
-            // 统一进行保存配置和赋值操作
-            ConfigOperation.SaveOneItem("DRate", TxtDRate.Text);
-            ClsGlobal.DRate = dRateValue;
-
-            ConfigOperation.SaveOneItem("ARate", TxtARate.Text);
-            ClsGlobal.ARate = aRateValue;
-
-            ConfigOperation.SaveOneItem("CardNo", TxtCardNo.Text);
-            ClsGlobal.CardNo = cardNoValue;
-
-
-            ConfigOperation.SaveOneItem("MsgInterval", TxtMsgInterval.Text);
-            ClsGlobal.MsgInterval = msgIntervalValue;
-
-            ConfigOperation.SaveOneItem("ResistorEnabel", resistorEnabelValue.ToString());
-            ClsGlobal.ResistorEnabel = resistorEnabelValue;
-
-            ConfigOperation.SaveOneItem("Protocol", protocolValue.ToString());
-            ClsGlobal.Protocol = protocolValue;
-
-            ConfigOperation.SaveOneItem("FrameType", frameTypeValue.ToString());
-            ClsGlobal.FrameType = frameTypeValue;
-
+          
 
             MessageBox.Show("保存成功！");
         }
 
 
         public void SaveTestConfigToXml(UITextBox txtTestCycle,
-            UITextBox txtTestStandard,
             UITextBox txtTestName,
             UITextBox txtTestTarget,
             UITextBox txtStoreDir,
             UITextBox txtTestMan,
-            UIRichTextBox rtbDesc,
-            UITextBox txtAlertLimit,
-            UIComboBox comboTestEnvir)
+            UIRichTextBox rtbDesc)
         {
             var config = new TestConfig
             {
                 TestCycle = txtTestCycle.Text,
-                TestStandard = txtTestStandard.Text,
                 TestName = txtTestName.Text,
                 TestTarget = txtTestTarget.Text,
                 StoreDir = txtStoreDir.Text,
                 TestMan = txtTestMan.Text,
                 Description = rtbDesc.Text,
-                AlertLimit = txtAlertLimit.Text,
-                TestEnvir = comboTestEnvir.Text
             };
 
             SaveTestConfigToFile(config);
@@ -634,14 +543,11 @@ namespace MtEmbTest
 
         // 显式控件参数加载方式
         public void LoadTestConfigFromXml(UITextBox txtTestCycle,
-            UITextBox txtTestStandard,
             UITextBox txtTestName,
             UITextBox txtTestTarget,
             UITextBox txtStoreDir,
             UITextBox txtTestMan,
-            UIRichTextBox rtbDesc,
-            UITextBox txtAlertLimit,
-            UIComboBox comboTestEnvir)
+            UIRichTextBox rtbDesc)
         {
             var xmlPath = Path.Combine(Environment.CurrentDirectory, @"Config\TestConfig.xml");
 
@@ -652,14 +558,11 @@ namespace MtEmbTest
             if (config == null) return;
 
             txtTestCycle.Text = config.TestCycle;
-            txtTestStandard.Text = config.TestStandard;
             txtTestName.Text = config.TestName;
             txtTestTarget.Text = config.TestTarget;
             txtStoreDir.Text = config.StoreDir;
             txtTestMan.Text = config.TestMan;
             rtbDesc.Text = config.Description;
-            txtAlertLimit.Text = config.AlertLimit;
-            comboTestEnvir.Text = config.TestEnvir;
         }
 
 
@@ -713,23 +616,6 @@ namespace MtEmbTest
 
         private void ComboTestEnvir_SelectedIndexChanged(object sender, EventArgs e)
         {
-            if (ComboTestEnvir.Text == "常温")
-            {
-                TxtTestCycle.Text = "0.278";
-                TxtTestTarget.Text = "500000";
-            }
-
-            if (ComboTestEnvir.Text == "高温")
-            {
-                TxtTestCycle.Text = "0.278";
-                TxtTestTarget.Text = "210000";
-            }
-
-            if (ComboTestEnvir.Text == "低温")
-            {
-                TxtTestCycle.Text = "0.167";
-                TxtTestTarget.Text = "10000";
-            }
         }
 
         private void dgvEmbControl_DataBindingComplete(object sender, DataGridViewBindingCompleteEventArgs e)
