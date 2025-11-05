@@ -650,6 +650,8 @@ namespace Controller
                 // 以采样节拍对齐（与 Learn… 保持一致）
                 var tickPerMs = Stopwatch.Frequency / 1000.0;
                 var nextDue = Stopwatch.GetTimestamp();
+                //double lastCurrentAbs = 0;
+                double lastCurrent = 0;
 
                 while (true)
                 {
@@ -668,8 +670,13 @@ namespace Controller
 
                     nextDue += (long)(Math.Max(1, _sampleMs) * tickPerMs);
 
-                    var current = _readCurrent(_channel);
+                    
+                    var current = _readCurrent(_channel); // 需要取绝对值 😒
                     var elapsedMs = MsBetween(tRevDecayStart, NowTicks());
+
+                    lastCurrent = current;
+                    current = Math.Abs(current);
+                   
 
                     if (current <= RevDecayLimitA)
                     {
@@ -686,12 +693,12 @@ namespace Controller
                 }
 
                 if (!decayReached)
-                    _log?.Warn(
-                        $"EPB[{_channel}] 反向峰值衰减未达标：限值={RevDecayLimitA:F2}A，上限={RevDecayRigidMaxMs}ms，实测≈{tRevPeakDecayMs}ms（按上限计入）。",
+                    _log?.Info(
+                        $"EPB[{_channel}] 反向峰值衰减未达标：当前值={lastCurrent:F3},限值={RevDecayLimitA:F2}A，上限={RevDecayRigidMaxMs}ms，实测≈{tRevPeakDecayMs}ms（按上限计入）。",
                         "EPB");
                 else
                     _log?.Info(
-                        $"EPB[{_channel}] 反向峰值衰减达标：I≤{RevDecayLimitA:F2}A，TRevPeakDecay≈{tRevPeakDecayMs}ms。",
+                        $"EPB[{_channel}] 反向峰值衰减达标：当前值={lastCurrent:F3},I≤{RevDecayLimitA:F2}A，TRevPeakDecay≈{tRevPeakDecayMs}ms。",
                         "EPB");
 
                 // —— 反向固定空行程（不再做带宽判据） —— //

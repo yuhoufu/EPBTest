@@ -20,12 +20,12 @@ namespace Controller
         /// 在反向忽略涌流后，最多等待该时长以观察电流是否衰减到 <see cref="RevDecayLimitA"/> 以下；
         /// 若未达标则按超时处理并记告警。
         /// </summary>
-        private int RevDecayRigidMaxMs = 120; // 建议现场可配：80~150ms
+        private int RevDecayRigidMaxMs = 1000; // 建议现场可配：80~150ms 120
 
         /// <summary>
         /// 反向固定空行程时长（ms）。不再用“空行程值+带宽”判据，仅做固定时间推进。
         /// </summary>
-        private int RevEmptyFixedMs = 1000; // 你提出的默认值
+        private int RevEmptyFixedMs = 2000; // 你提出的默认值
 
         /// <summary>
         /// 反向电流“衰减限值”（A）。用于判定“峰值已衰减到足够低”
@@ -37,7 +37,7 @@ namespace Controller
         /// <summary>学习期使用的“临时裕量”（仅在学习圈内滚动更新，避免直接写回 _safetyMarginA）。</summary>
         private double _learnMargin = double.NaN;
 
-        /// <summary>学习期的“裕量轨迹”（每圈更新一次）。</summary>
+        /// <summary>学习期的“裕量轨迹”（每圈更新一次）。</summary> 
         private readonly List<double> _marginTrace = new List<double>(32);
 
         /// <summary>学习期的“峰值轨迹”（每圈记录，用于去异常/诊断）。</summary>
