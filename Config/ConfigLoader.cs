@@ -5,7 +5,6 @@ using System.IO;
 using System.Linq;
 using System.Xml;
 using Config;
-using Utils;
 
 namespace Config
 {
@@ -65,304 +64,84 @@ namespace Config
         public int StaggerMs { get; set; }
         public List<int> Members { get; } = new();
     }
+}
 
-    public sealed class EpbLimit
+
+public enum OverrunPolicy
+{
+    RunToCompletionSkipMissed,
+    SkipNextIfOverrun,
+    AlignToWallClock,
+    Throw
+}
+
+public sealed class TestConfig
+{
+    public string TestName { get; set; }
+    public int TestTarget { get; set; }
+    public double TestCycleHz { get; set; } // 每秒次数
+    public string StoreDir { get; set; }
+    public OverrunPolicy OverrunPolicy { get; set; } = OverrunPolicy.RunToCompletionSkipMissed;
+
+    public List<HydraulicItem> Hydraulics { get; } = new();
+    public List<ElectricalGroup> Groups { get; } = new();
+
+    /// <summary>周期毫秒（由 TestCycleHz 推导），例如 10Hz => 100ms。</summary>
+    public int PeriodMs => (int)Math.Round(1000.0 * Math.Max(TestCycleHz, 0.001));
+
+
+    // ======= 新增：EPB 试验记录集合 =======
+    /// <summary>
+    ///     12 条 EPB 记录（通道 1..12）。通常由 ConfigLoader 从 XML 读取或第一次启动时 EnsureEpbRecords() 初始化。
+    ///     每个记录包含：Id, StartTime, LatestStartTime, RunTime(字符串), TotalCount, RunCount, Status。
+    /// </summary>
+    public List<EpbTestRecord> EpbRecords { get; } = new();
+
+
+    /// <summary>
+    ///     确保 EpbRecords 至少包含 1..12 的记录（按 Id 升序），并返回集合引用。
+    ///     调用场景：首次加载配置后补齐，或需要访问某通道记录时使用。
+    ///     备注：此方法不会覆盖已有记录（保留 Loader 从 XML 读取的值）。
+    /// </summary>
+    public List<EpbTestRecord> EnsureEpbRecords(int expectedCount = 12)
     {
-        public int Channel { get; set; }
-        public double ForwardA { get; set; }
-        public double SafetyMarginA { get; set; }
+        // 若已存在且数量合适则直接返回（但仍保证包含 1..expectedCount 的 id）
+        // 需要 using System.Linq;
+        var present = new HashSet<int>(EpbRecords.Select(r => r.Id));
 
-        // 夹紧的时长，ms
-        public int HoldMs { get; set; }
+        for (var id = 1; id <= expectedCount; id++)
+            if (!present.Contains(id))
+                EpbRecords.Add(EpbTestRecord.CreateDefault(id));
+
+        // 保持稳定顺序：按 Id 升序
+        EpbRecords.Sort((a, b) => a.Id.CompareTo(b.Id));
+        return EpbRecords;
     }
 
-    public sealed class EpbCycleRunnerConfig
+    /// <summary>获取指定通道的记录（不存在时自动创建并返回）。channel 范围期望 1..12。</summary>
+    public EpbTestRecord GetEpbRecord(int channel)
     {
-        /// <summary>上电涌流忽略时间（ms）。建议：80–150，默认 100。</summary>
-        public int PeakIgnoreMs { get; set; } = 100;
-
-        /// <summary>空行程电流稳定带宽（A）。建议：0.15–0.30，默认 0.20。</summary>
-        public double EmptyBandA { get; set; } = 0.20;
-
-        /// <summary>判稳窗口（ms）。建议：50–100，默认 50。</summary>
-        public int StableWinMs { get; set; } = 50;
-
-        /// <summary>EWMA 灵敏度（0~1）。建议：0.15–0.30，默认 0.20。</summary>
-        public double EwmaAlpha { get; set; } = 0.20;
-
-        /// <summary>正向空行程均值（A）。默认 0.63。</summary>
-        public double EmptyCurrentForwardA { get; set; } = 0.63;
-
-        /// <summary>反向空行程均值（A）。默认 -0.70。</summary>
-        public double EmptyCurrentReverseA { get; set; } = -0.70;
-
-        /// <summary>
-        ///     （可选）自学习圈数。未配置则由上层决定；配置后用于启动前的自学习。
-        /// </summary>
-        public int? LearnCycles { get; set; }
-
-        /// <summary>复制当前配置。</summary>
-        public EpbCycleRunnerConfig Clone()
+        if (channel <= 0) throw new ArgumentOutOfRangeException(nameof(channel));
+        EnsureEpbRecords();
+        var r = EpbRecords.Find(x => x.Id == channel);
+        if (r == null)
         {
-            return (EpbCycleRunnerConfig)MemberwiseClone();
-        }
-
-        /// <summary>
-        ///     用 <paramref name="overrides" /> 覆写当前实例中的非空/有效字段（只对设置过的字段生效）。
-        /// </summary>
-        public void ApplyOverridesFrom(EpbCycleRunnerConfig overrides)
-        {
-            if (overrides == null) return;
-            // 逐项覆写：数值型若与默认同值也允许覆写（由上层决定何为“默认”）
-            PeakIgnoreMs = overrides.PeakIgnoreMs != default ? overrides.PeakIgnoreMs : PeakIgnoreMs;
-            EmptyBandA = overrides.EmptyBandA != default ? overrides.EmptyBandA : EmptyBandA;
-            StableWinMs = overrides.StableWinMs != default ? overrides.StableWinMs : StableWinMs;
-            EwmaAlpha = overrides.EwmaAlpha != default ? overrides.EwmaAlpha : EwmaAlpha;
-            if (overrides.EmptyCurrentForwardA != default) EmptyCurrentForwardA = overrides.EmptyCurrentForwardA;
-            if (overrides.EmptyCurrentReverseA != default) EmptyCurrentReverseA = overrides.EmptyCurrentReverseA;
-            if (overrides.LearnCycles.HasValue) LearnCycles = overrides.LearnCycles;
-        }
-    }
-
-
-    public enum OverrunPolicy
-    {
-        RunToCompletionSkipMissed,
-        SkipNextIfOverrun,
-        AlignToWallClock,
-        Throw
-    }
-
-    public sealed class TestConfig
-    {
-        public string TestName { get; set; }
-        public int TestTarget { get; set; }
-        public double TestCycleHz { get; set; } // 每秒次数
-        public string StoreDir { get; set; }
-        public OverrunPolicy OverrunPolicy { get; set; } = OverrunPolicy.RunToCompletionSkipMissed;
-
-        public List<HydraulicItem> Hydraulics { get; } = new();
-        public List<EpbLimit> EpbLimits { get; } = new();
-        public List<ElectricalGroup> Groups { get; } = new();
-
-        /// <summary>周期毫秒（由 TestCycleHz 推导），例如 10Hz => 100ms。</summary>
-        public int PeriodMs => (int)Math.Round(1000.0 * Math.Max(TestCycleHz, 0.001));
-
-        public EpbCycleRunnerConfig EpbCycleRunner { get; set; } = new();
-
-        /// <summary>每通道覆写参数（仅写差异项）。Key=EPB 通道 1..12。</summary>
-        public Dictionary<int, EpbCycleRunnerConfig> EpbRunnerOverrides { get; } = new();
-
-
-        // ======= 新增：EPB 试验记录集合 =======
-        /// <summary>
-        ///     12 条 EPB 记录（通道 1..12）。通常由 ConfigLoader 从 XML 读取或第一次启动时 EnsureEpbRecords() 初始化。
-        ///     每个记录包含：Id, StartTime, LatestStartTime, RunTime(字符串), TotalCount, RunCount, Status。
-        /// </summary>
-        public List<EpbTestRecord> EpbRecords { get; } = new();
-
-        // —— 内部：供 Loader 写入的“显式 Defaults”缓存（有则优先于根级） —— //
-        internal EpbCycleRunnerConfig _defaultsFromXml;
-
-
-        /// <summary>
-        ///     确保 EpbRecords 至少包含 1..12 的记录（按 Id 升序），并返回集合引用。
-        ///     调用场景：首次加载配置后补齐，或需要访问某通道记录时使用。
-        ///     备注：此方法不会覆盖已有记录（保留 Loader 从 XML 读取的值）。
-        /// </summary>
-        public List<EpbTestRecord> EnsureEpbRecords(int expectedCount = 12)
-        {
-            // 若已存在且数量合适则直接返回（但仍保证包含 1..expectedCount 的 id）
-            // 需要 using System.Linq;
-            var present = new HashSet<int>(EpbRecords.Select(r => r.Id));
-
-            for (var id = 1; id <= expectedCount; id++)
-                if (!present.Contains(id))
-                    EpbRecords.Add(EpbTestRecord.CreateDefault(id));
-
-            // 保持稳定顺序：按 Id 升序
+            r = EpbTestRecord.CreateDefault(channel);
+            EpbRecords.Add(r);
             EpbRecords.Sort((a, b) => a.Id.CompareTo(b.Id));
-            return EpbRecords;
         }
 
-        /// <summary>获取指定通道的记录（不存在时自动创建并返回）。channel 范围期望 1..12。</summary>
-        public EpbTestRecord GetEpbRecord(int channel)
-        {
-            if (channel <= 0) throw new ArgumentOutOfRangeException(nameof(channel));
-            EnsureEpbRecords();
-            var r = EpbRecords.Find(x => x.Id == channel);
-            if (r == null)
-            {
-                r = EpbTestRecord.CreateDefault(channel);
-                EpbRecords.Add(r);
-                EpbRecords.Sort((a, b) => a.Id.CompareTo(b.Id));
-            }
+        return r;
+    }
 
-            return r;
-        }
-
-        /// <summary>
-        ///     将指定通道记录重置为初始状态（不删除记录，仅重置字段）。
-        ///     线程安全说明：若多个线程可能同时修改记录，请上层加锁或改为并发安全实现。
-        /// </summary>
-        public void ResetEpbRecord(int channel)
-        {
-            var r = GetEpbRecord(channel);
-            r.Reset();
-        }
-
-
-        /// <summary>
-        ///     取得某通道的“合并后”参数：PerChannel 覆写 &gt; Defaults(若存在) &gt; 全局根级。
-        /// </summary>
-        /// <param name="channel">EPB 通道 1..12。</param>
-        public EpbCycleRunnerConfig GetEpbRunner(int channel)
-        {
-            // 基于全局克隆
-            var merged = EpbCycleRunner?.Clone() ?? new EpbCycleRunnerConfig();
-
-            // 若 loader 已把 <Defaults> 合过来，EpbCycleRunner 就等于 Defaults；
-            // 这里仍保留一次覆盖（防御性）：
-            if (_defaultsFromXml != null)
-                merged.ApplyOverridesFrom(_defaultsFromXml);
-
-            // 最后应用每通道覆写
-            if (EpbRunnerOverrides.TryGetValue(channel, out var ov))
-                merged.ApplyOverridesFrom(ov);
-
-            // 软边界钳制（与现实现一致）
-            merged.PeakIgnoreMs = NumericUtils.Clamp(merged.PeakIgnoreMs, 0, 1000);
-            merged.StableWinMs = NumericUtils.Clamp(merged.StableWinMs, 10, 1000);
-            merged.EmptyBandA = NumericUtils.Clamp(merged.EmptyBandA, 0.0, 5.0);
-            merged.EwmaAlpha = NumericUtils.Clamp(merged.EwmaAlpha, 0.0, 1.0);
-
-            return merged;
-        }
-
-        #region EPB 电流限值查询
-
-        /// <summary>
-        /// 按通道获取 EPB 电流限值（返回 <see cref="EpbLimit"/>）。
-        /// 优先级：
-        /// ① 命中 <c>EpbLimits</c> 中该通道的专属记录；
-        /// ② 若存在 <c>Channel &lt;= 0</c> 的“全局/通配”记录则回退使用；
-        /// ③ 都没有时，用调用者给定的默认参数构造一个 <see cref="EpbLimit"/> 返回。
-        /// </summary>
-        /// <param name="channel">EPB 通道号（通常 1..12）。必须为正整数。</param>
-        /// <param name="defaultForwardA">
-        /// 未命中任何配置时使用的正向限值（A）。默认 0。
-        /// </param>
-        /// <param name="defaultSafetyMarginA">
-        /// 未命中任何配置时使用的安全余量（A）。默认 0。
-        /// </param>
-        /// <param name="defaultHoldMs">
-        /// 未命中任何配置时使用的保持时长（ms）。默认 0。
-        /// </param>
-        /// <returns>
-        /// 返回一个 <see cref="EpbLimit"/> 实例：
-        /// - 若命中专属/全局配置，则其值来自配置；
-        /// - 否则返回以默认参数构造的实例（其 <c>Channel</c> 会被设置为 <paramref name="channel"/>）。
-        /// </returns>
-        /// <exception cref="ArgumentOutOfRangeException">
-        /// 当 <paramref name="channel"/> &lt;= 0 时抛出。
-        /// </exception>
-        public EpbLimit GetEpbCurrentLimit(
-            int channel,
-            double defaultForwardA = 0,
-            double defaultSafetyMarginA = 0,
-            int defaultHoldMs = 0)
-        {
-            if (channel <= 0)
-                throw new ArgumentOutOfRangeException(nameof(channel), "channel 应为正整数（通常 1..12）。");
-
-            // ① 尝试查找“通道专属”配置（完全匹配 Channel）
-            // 假设 TestConfig 内已有：public List<EpbLimit> EpbLimits { get; set; }
-            // 以及 EpbLimit 定义含：Channel、ForwardA、SafetyMarginA、HoldMs 等字段/属性。
-            var perChannel = (EpbLimits != null)
-                ? EpbLimits.FirstOrDefault(x => x != null && x.Channel == channel)
-                : null;
-            if (perChannel != null)
-                return perChannel;
-
-            // ② 回退到“全局/通配”配置（约定：Channel <= 0 表示适用于所有未显式配置的通道）
-            var global = (EpbLimits != null)
-                ? EpbLimits.FirstOrDefault(x => x != null && x.Channel <= 0)
-                : null;
-            if (global != null)
-            {
-                // 注意：直接返回全局对象意味着其 Channel 可能为 0/负数；
-                // 若你希望上层拿到的 Channel 即为本次查询的通道号，可克隆一个副本并覆盖 Channel。
-                return new EpbLimit
-                {
-                    Channel = channel,                 // 覆盖为当前查询的通道
-                    ForwardA = global.ForwardA,
-                    SafetyMarginA = global.SafetyMarginA,
-                    HoldMs = global.HoldMs
-                };
-            }
-
-            // ③ 最后用默认参数构造并返回
-            return new EpbLimit
-            {
-                Channel = channel,
-                ForwardA = defaultForwardA,
-                SafetyMarginA = defaultSafetyMarginA,
-                HoldMs = defaultHoldMs
-            };
-        }
-
-        /// <summary>
-        /// 仅查询是否存在“专属/全局”的 EPB 电流限值配置。
-        /// 命中即返回 <c>true</c> 且 <paramref name="limit"/> 为找到的配置（若为全局，会克隆并把 <c>Channel</c> 覆盖为查询通道）；
-        /// 未命中返回 <c>false</c> 且 <paramref name="limit"/> 为 <c>null</c>（不造默认值）。</summary>
-        /// <param name="channel">EPB 通道号（通常 1..12）。必须为正整数。</param>
-        /// <param name="limit">输出参数，命中时返回对应的 <see cref="EpbLimit"/>；未命中则为 <c>null</c>。</param>
-        /// <returns>命中（专属或全局）返回 <c>true</c>，否则 <c>false</c>。</returns>
-        /// <exception cref="ArgumentOutOfRangeException">
-        /// 当 <paramref name="channel"/> &lt;= 0 时抛出。
-        /// </exception>
-        public bool TryGetEpbCurrentLimit(int channel, out EpbLimit limit)
-        {
-            if (channel <= 0)
-                throw new ArgumentOutOfRangeException(nameof(channel), "channel 应为正整数（通常 1..12）。");
-
-            limit = null;
-
-            // 尝试专属
-            var perChannel = (EpbLimits != null)
-                ? EpbLimits.FirstOrDefault(x => x != null && x.Channel == channel)
-                : null;
-            if (perChannel != null)
-            {
-                limit = perChannel;
-                return true;
-            }
-
-            // 尝试全局
-            var global = (EpbLimits != null)
-                ? EpbLimits.FirstOrDefault(x => x != null && x.Channel <= 0)
-                : null;
-            if (global != null)
-            {
-                // 仍然返回一个副本并覆盖 Channel，避免上层误读为 0 通道
-                limit = new EpbLimit
-                {
-                    Channel = channel,
-                    ForwardA = global.ForwardA,
-                    SafetyMarginA = global.SafetyMarginA,
-                    HoldMs = global.HoldMs
-                };
-                return true;
-            }
-
-            return false;
-        }
-
-        #endregion
-
-
-
-
+    /// <summary>
+    ///     将指定通道记录重置为初始状态（不删除记录，仅重置字段）。
+    ///     线程安全说明：若多个线程可能同时修改记录，请上层加锁或改为并发安全实现。
+    /// </summary>
+    public void ResetEpbRecord(int channel)
+    {
+        var r = GetEpbRecord(channel);
+        r.Reset();
     }
 }
 
@@ -538,14 +317,6 @@ public static class ConfigLoader
             cfg.Hydraulics.Add(h);
         }
 
-        foreach (XmlNode n in doc.SelectNodes(@"//TestConfig/EpbCurrentLimits/Record"))
-            cfg.EpbLimits.Add(new EpbLimit
-            {
-                Channel = GetInt(n, "Channel", -1),
-                ForwardA = GetDouble(n, "ForwardA", 0),
-                SafetyMarginA = GetDouble(n, "SafetyMarginA", 0),
-                HoldMs = GetInt(n, "HoldMs", 0)
-            });
 
         foreach (XmlNode n in doc.SelectNodes("//TestConfig/ElectricalGroups/Group"))
         {
@@ -560,75 +331,6 @@ public static class ConfigLoader
                 if (int.TryParse(s.Trim(), out var ch))
                     g.Members.Add(ch);
             if (g.Id > 0 && g.Members.Count > 0) cfg.Groups.Add(g);
-        }
-
-        // 读取 EpbCycleRunnerConfig
-        var epbNode = doc.SelectSingleNode("//TestConfig/EpbCycleRunnerConfig");
-        if (epbNode != null)
-        {
-            // 1) 先按“根级字段”作为全局（老格式兼容）
-            cfg.EpbCycleRunner = new EpbCycleRunnerConfig
-            {
-                PeakIgnoreMs = GetInt(epbNode, "PeakIgnoreMs", 100),
-                EmptyBandA = GetDouble(epbNode, "EmptyBandA", 0.20),
-                StableWinMs = GetInt(epbNode, "StableWinMs", 50),
-                EwmaAlpha = GetDouble(epbNode, "EwmaAlpha", 0.20),
-                EmptyCurrentForwardA = GetDouble(epbNode, "EmptyCurrentForwardA", 0.63),
-                EmptyCurrentReverseA = GetDouble(epbNode, "EmptyCurrentReverseA", -0.70),
-                // 新增可选 LearnCycles
-                LearnCycles = TryGetNullableInt(epbNode, "LearnCycles")
-            };
-
-            // 2) 若存在 <Defaults>，读取并缓存到 TestConfig._defaultsFromXml，然后合入全局
-            var defaultsNode = epbNode.SelectSingleNode("Defaults");
-            if (defaultsNode != null)
-            {
-                var def = new EpbCycleRunnerConfig
-                {
-                    PeakIgnoreMs = GetInt(defaultsNode, "PeakIgnoreMs", cfg.EpbCycleRunner.PeakIgnoreMs),
-                    EmptyBandA = GetDouble(defaultsNode, "EmptyBandA", cfg.EpbCycleRunner.EmptyBandA),
-                    StableWinMs = GetInt(defaultsNode, "StableWinMs", cfg.EpbCycleRunner.StableWinMs),
-                    EwmaAlpha = GetDouble(defaultsNode, "EwmaAlpha", cfg.EpbCycleRunner.EwmaAlpha),
-                    EmptyCurrentForwardA = GetDouble(defaultsNode, "EmptyCurrentForwardA",
-                        cfg.EpbCycleRunner.EmptyCurrentForwardA),
-                    EmptyCurrentReverseA = GetDouble(defaultsNode, "EmptyCurrentReverseA",
-                        cfg.EpbCycleRunner.EmptyCurrentReverseA),
-                    LearnCycles = TryGetNullableInt(defaultsNode, "LearnCycles") ?? cfg.EpbCycleRunner.LearnCycles
-                };
-                cfg._defaultsFromXml = def;
-
-                // 合并到全局
-                cfg.EpbCycleRunner = def.Clone();
-            }
-
-            // 3) 读取 <PerChannel>/<Record>
-            foreach (XmlNode r in epbNode.SelectNodes("PerChannel/Record"))
-            {
-                var ch = GetInt(r, "Channel", -1);
-                if (ch <= 0) continue;
-
-                var ov = new EpbCycleRunnerConfig
-                {
-                    PeakIgnoreMs = GetInt(r, "PeakIgnoreMs", 0), // 0 表示不覆写
-                    EmptyBandA = GetDouble(r, "EmptyBandA", 0),
-                    StableWinMs = GetInt(r, "StableWinMs", 0),
-                    EwmaAlpha = GetDouble(r, "EwmaAlpha", 0),
-                    EmptyCurrentForwardA = GetDouble(r, "EmptyCurrentForwardA", 0),
-                    EmptyCurrentReverseA = GetDouble(r, "EmptyCurrentReverseA", 0),
-                    LearnCycles = TryGetNullableInt(r, "LearnCycles")
-                };
-                cfg.EpbRunnerOverrides[ch] = ov;
-            }
-
-            // 4) 软边界（保留你现有的友好防御）
-            cfg.EpbCycleRunner.PeakIgnoreMs = Math.Max(0, Math.Min(cfg.EpbCycleRunner.PeakIgnoreMs, 1000));
-            cfg.EpbCycleRunner.StableWinMs = Math.Max(10, Math.Min(cfg.EpbCycleRunner.StableWinMs, 1000));
-            cfg.EpbCycleRunner.EmptyBandA = Math.Max(0.0, Math.Min(cfg.EpbCycleRunner.EmptyBandA, 5.0));
-            cfg.EpbCycleRunner.EwmaAlpha = Math.Max(0.0, Math.Min(cfg.EpbCycleRunner.EwmaAlpha, 1.0));
-        }
-        else
-        {
-            cfg.EpbCycleRunner = new EpbCycleRunnerConfig();
         }
 
 
