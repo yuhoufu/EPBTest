@@ -174,7 +174,7 @@ namespace MtEmbTest
                 ClsGlobal.CanRecvTimeSpanMillSecs = double.Parse(ConfigOperation.SetOneItem("CanRecvTimeSpanMillSecs"));
                 ClsGlobal.XDuration = double.Parse(ConfigOperation.SetOneItem("XDuration"));
                 ClsGlobal.FileChangeMinutes = double.Parse(ConfigOperation.SetOneItem("FileChangeMinutes"));
-                ClsGlobal.DaqFrequency = double.Parse(ConfigOperation.SetOneItem("DaqFrequency"));
+                ClsGlobal.DaqFrequency = double.Parse(ConfigOperation.SetOneItem("DaqFrequency")); // 全局采样率设置
                 ClsGlobal.SamplesPerChannel = int.Parse(ConfigOperation.SetOneItem("SamplesPerChannel"));
 
                 ClsGlobal.VppmWorkMode = ConfigOperation.SetOneItem("VppmWorkMode");
