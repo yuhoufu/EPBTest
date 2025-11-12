@@ -94,9 +94,6 @@ namespace Controller
             int holdMs,
             int sampleMs = 2,
             int peakIgnoreMs = 80,
-            double ewmaAlpha = 0.2,
-            double emptyBandA = 0.2,
-            int stableWinMs = 50,
             ILogger log = null)
         {
             _channel = channel;
@@ -108,9 +105,6 @@ namespace Controller
             _holdMs = Math.Max(0, holdMs);
             _sampleMs = Math.Max(1, sampleMs);
             _peakIgnoreMs = Math.Max(0, peakIgnoreMs);
-            _ewmaAlpha = Clamp(ewmaAlpha, 0.01, 0.9);
-            _emptyBandA = Math.Max(0.02, emptyBandA);
-            _stableWinMs = Math.Max(10, stableWinMs);
             _log = log ?? NLogger.Instance;
         }
 
@@ -126,13 +120,10 @@ namespace Controller
             int holdMs,
             int sampleMs = 2,
             int peakIgnoreMs = 80,
-            double ewmaAlpha = 0.2,
-            double emptyBandA = 0.2,
-            int stableWinMs = 50,
             ILogger log = null,
             EpbManager manager = null) // ★ 新增（可选，保持兼容）
             : this(channel, hydId, readCurrent, doController, hydraulic, posThresholdA, holdMs, sampleMs, peakIgnoreMs,
-                ewmaAlpha, emptyBandA, stableWinMs, log)
+                log)
         {
             // …你原有的赋值保持不变…
             _manager = manager; // ★ 保存 manager
@@ -149,19 +140,16 @@ namespace Controller
             int holdMs,
             int sampleMs = 2,
             int peakIgnoreMs = 80,
-            double ewmaAlpha = 0.2,
-            double emptyBandA = 0.2,
-            int stableWinMs = 50,
             ILogger log = null,
             GlobalConfig cfg = null,
             EpbManager manager = null) // ★ 新增（可选，保持兼容）
             : this(channel, hydId, readCurrent, doController, hydraulic, posThresholdA, holdMs, sampleMs, peakIgnoreMs,
-                ewmaAlpha, emptyBandA, stableWinMs, log)
+                log)
         {
             // …你原有的赋值保持不变…
             _manager = manager; // ★ 保存 manager
             _cfg = cfg;
-            _safetyMarginA = _cfg?.Test.GetEpbCurrentLimit(channel:channel).SafetyMarginA  ?? 2.0;  // SafetyMarginA为null 则设置为2
+            _safetyMarginA = _cfg?.Test.EpbCycleRunner.GetRunnerChannel(channel).SafetyMarginA  ?? 2.0;  // SafetyMarginA为null 则设置为2
             _acq = twoDeviceAiAcquirer;
         }
 

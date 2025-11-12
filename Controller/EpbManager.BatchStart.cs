@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Config;
+using Config.Models;
 using Timing;
 
 namespace Controller
@@ -514,67 +515,7 @@ namespace Controller
             r.TailMinMs = T8MinMs;
         }
 
-        /// <summary>获取指定通道的 EPB 循环运行器</summary>
-        private IEpbCycleRunner GetRunnerOld(int channel)
-        {
-            // 如果已有缓存，直接返回
-            if (_runnerCache.TryGetValue(channel, out var cachedRunner))
-                return cachedRunner;
-
-            // 如果已经在 _runners 字典中存在，则返回并缓存
-            if (_runners.TryGetValue(channel, out var existingRunner))
-            {
-                _runnerCache[channel] = existingRunner;
-                return existingRunner;
-            }
-
-            // 创建新的 EpbCycleRunner 实例
-            var hydId = channel <= 6 ? 1 : 2;
-
-            // 获取配置
-            var rcfg = _cfg.Test?.GetEpbRunner(channel) ?? new EpbCycleRunnerConfig();
-            var sampleMs = 2;
-
-            var limitRecord = _cfg.Test.EpbLimits
-                .FirstOrDefault(x => GetProp<int>(x, "Channel") == channel);
-            if (limitRecord == null)
-                throw new InvalidOperationException($"未配置 EPB[{channel}] 电流限值。");
-
-            var forwardA = GetProp<double>(limitRecord, "ForwardA", "PosCurrentA", "PosThresholdA",
-                "ForwardThresholdA");
-            var holdMs = GetProp<int>(limitRecord, "HoldMs", "HoldTimeMs", "HoldDurationMs");
-
-            // 如果 holdMs 为 null、0 或无效值，则设置为默认值 1000ms
-            holdMs = holdMs <= 0 ? 1000 : holdMs;
-
-            // 创建新的运行器实例
-            var runner = new EpbCycleRunner(
-                channel,
-                hydId,
-                _readCurrent,
-                _do,
-                _acq,
-                _hydraulic,
-                forwardA,
-                holdMs,
-                sampleMs,
-                rcfg.PeakIgnoreMs,
-                rcfg.EwmaAlpha,
-                rcfg.EmptyBandA,
-                rcfg.StableWinMs,
-                _log,
-                _cfg,
-                this);
-
-            // 缓存运行器实例
-            _runnerCache[channel] = runner;
-
-            // 同时放入 _runners 字典以保持一致性
-            _runners[channel] = runner;
-
-            return runner;
-        }
-
+        
         /// <summary>
         /// 获取指定通道的 EPB 循环运行器。
         /// 注意：如果命中 _runnerCache（上一次运行留下的实例），需要重新登记到 _runners，
@@ -600,16 +541,15 @@ namespace Controller
 
             // ③ 都未命中：创建新 Runner（保持你现有逻辑不变，下略...）
             var hydId = channel <= 6 ? 1 : 2;
-            var rcfg = _cfg.Test?.GetEpbRunner(channel) ?? new EpbCycleRunnerConfig();
+            // var rcfg = _cfg.Test?.GetEpbRunner(channel) ?? new EpbCycleRunnerConfig();
+            var rcfg = _cfg.Test?.EpbCycleRunner.GetRunnerChannel(channel);
+
+
+
             var sampleMs = 2;
 
-            var limitRecord = _cfg.Test.EpbLimits
-                .FirstOrDefault(x => GetProp<int>(x, "Channel") == channel);
-            if (limitRecord == null)
-                throw new InvalidOperationException($"未配置 EPB[{channel}] 电流限值。");
-
-            var forwardA = GetProp<double>(limitRecord, "ForwardA", "PosCurrentA", "PosThresholdA", "ForwardThresholdA");
-            var holdMs = GetProp<int>(limitRecord, "HoldMs", "HoldTimeMs", "HoldDurationMs");
+            var forwardA = rcfg.ForwardA;
+            var holdMs = rcfg.HoldMs;
             holdMs = holdMs <= 0 ? 1000 : holdMs;
 
             var runner = new EpbCycleRunner(
@@ -623,9 +563,6 @@ namespace Controller
                 holdMs,
                 sampleMs,
                 rcfg.PeakIgnoreMs,
-                rcfg.EwmaAlpha,
-                rcfg.EmptyBandA,
-                rcfg.StableWinMs,
                 _log,
                 _cfg,
                 this);

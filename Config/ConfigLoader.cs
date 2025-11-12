@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Xml;
 using Config;
+using Config.Models;
 
 namespace Config
 {
@@ -85,6 +86,12 @@ public sealed class TestConfig
 
     public List<HydraulicItem> Hydraulics { get; } = new();
     public List<ElectricalGroup> Groups { get; } = new();
+
+    /// <summary>
+    /// 新版 EPB 循环配置（仅每通道记录）。从 TestConfig.xml 的 &lt;EpbCycleRunnerConfig&gt; 读取。
+    /// </summary>
+    public EpbCycleRunnerConfig EpbCycleRunner { get; set; } = new EpbCycleRunnerConfig();
+
 
     /// <summary>周期毫秒（由 TestCycleHz 推导），例如 10Hz => 100ms。</summary>
     public int PeriodMs => (int)Math.Round(1000.0 * Math.Max(TestCycleHz, 0.001));
@@ -354,6 +361,48 @@ public static class ConfigLoader
 
             cfg.EpbRecords.Add(r);
         }
+
+        #region 解析读取EpbCycleRunnerConfig
+
+
+        // ===== 仅解析新版 <EpbCycleRunnerConfig>/<Record> =====
+        cfg.EpbCycleRunner = new EpbCycleRunnerConfig();
+
+        foreach (XmlNode r in doc.SelectNodes("//TestConfig/EpbCycleRunnerConfig/Record"))
+        {
+            var ch = GetInt(r, "Channel", -1);
+            if (ch <= 0) continue;
+
+            var item = new EpbCycleRunnerConfig.Record
+            {
+                Channel = ch,
+                Name = GetString(r, "Name", null),
+                ForwardA = GetDouble(r, "ForwardA", 0),
+                SafetyMarginA = GetDouble(r, "SafetyMarginA", 0),
+                FwdOnLimitMs = GetInt(r, "FwdOnLimitMs", 0),
+                HoldMs = GetInt(r, "HoldMs", 0),
+                RevDecayLimitA = GetDouble(r, "RevDecayLimitA", 0),
+                RevDecayRigidMaxMs = GetInt(r, "RevDecayRigidMaxMs", 0),
+                RevEmptyFixedMs = GetInt(r, "RevEmptyFixedMs", 0),
+                PreReleaseKeepMs = TryGetNullableInt(r, "PreReleaseKeepMs"),
+                PeakIgnoreMs = GetInt(r, "PeakIgnoreMs",0)
+            };
+
+            // 软边界钳制（防御性）
+            item.FwdOnLimitMs = Math.Max(0, item.FwdOnLimitMs);
+            item.HoldMs = Math.Max(0, item.HoldMs);
+            item.RevDecayRigidMaxMs = Math.Max(0, item.RevDecayRigidMaxMs);
+            item.RevEmptyFixedMs = Math.Max(0, item.RevEmptyFixedMs);
+
+            cfg.EpbCycleRunner.Channels[ch] = item; // 覆盖写入
+        }
+
+        #endregion
+
+
+
+
+
 
         // 辅助（DateTime 解析）
         static DateTime? TryParseDateTime(string s)

@@ -205,7 +205,7 @@ namespace MTEmbTest
         private DateTime runBegin;
 
 
-        private TestConfig testConfig;
+        private DataOperation.TestConfig testConfig;
         private TwoDeviceAiAcquirer twoDeviceAiAcquirer;
 
 
@@ -871,43 +871,8 @@ namespace MTEmbTest
             }
         }
 
-        public void LoadTestConfigFromXml()
-        {
-            var xmlPath = Path.Combine(Environment.CurrentDirectory, @"Config\TestConfig.xml");
-
-
-            if (!File.Exists(xmlPath)) return;
-
-            testConfig = LoadTestConfigFromFile();
-
-            testConfig.TestSpan = 1.0 / double.Parse(testConfig.TestCycle);
-
-            if (testConfig == null) return;
-
-            TxtTargetCycles.Text = testConfig.TestTarget;
-            //TxtTestStandard.Text = testConfig.TestStandard; // 界面删除了，注释
-            TxtTestName.Text = testConfig.TestName;
-            TxtTestCycleTime.Text = testConfig.TestCycle;
-        }
-
-        private TestConfig LoadTestConfigFromFile()
-        {
-            try
-            {
-                var serializer = new XmlSerializer(typeof(TestConfig));
-
-                var xmlPath = Path.Combine(Environment.CurrentDirectory, @"Config\TestConfig.xml");
-
-                using (var reader = new StreamReader(xmlPath))
-                {
-                    return (TestConfig)serializer.Deserialize(reader);
-                }
-            }
-            catch
-            {
-                return new TestConfig(); // 返回空配置避免异常
-            }
-        }
+        
+        
 
         private void MakeCurveMapping()
         {

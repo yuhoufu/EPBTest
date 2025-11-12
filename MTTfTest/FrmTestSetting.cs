@@ -517,12 +517,12 @@ namespace MtEmbTest
         {
             var config = new TestConfig
             {
-                TestCycle = txtTestCycle.Text,
+                // TestCycle = txtTestCycle.Text,
                 TestName = txtTestName.Text,
-                TestTarget = txtTestTarget.Text,
+                // TestTarget = txtTestTarget.Text,
                 StoreDir = txtStoreDir.Text,
-                TestMan = txtTestMan.Text,
-                Description = rtbDesc.Text,
+                // TestMan = txtTestMan.Text,
+                // Description = rtbDesc.Text,
             };
 
             SaveTestConfigToFile(config);
@@ -557,12 +557,12 @@ namespace MtEmbTest
             var config = LoadTestConfigFromFile();
             if (config == null) return;
 
-            txtTestCycle.Text = config.TestCycle;
+            // txtTestCycle.Text = config.TestCycle;
             txtTestName.Text = config.TestName;
-            txtTestTarget.Text = config.TestTarget;
+            // txtTestTarget.Text = config.TestTarget;
             txtStoreDir.Text = config.StoreDir;
-            txtTestMan.Text = config.TestMan;
-            rtbDesc.Text = config.Description;
+            // txtTestMan.Text = config.TestMan;
+            // rtbDesc.Text = config.Description;
         }
 
 

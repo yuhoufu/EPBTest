@@ -15,6 +15,7 @@
 		<!-- 其他可选：RunToCompletionSkipMissed/SkipNextIfOverrun / AlignToWallClock / Throw -->
 	</Timer>
 
+
 	<EpbRecords>
 		<Record>
 			<Id>1</Id>
@@ -126,6 +127,7 @@
 		</Record>
 	</EpbRecords>
 
+
 	<!-- 液压是否参与：开关按液压编号整体控制（1 控 1~6；2 控 7~12） -->
 	<Hydraulics>
 		<Hydraulic>
@@ -159,7 +161,85 @@
 			<Members>7,8,9,10,11,12</Members>
 		</Hydraulic>
 	</Hydraulics>
-	
+
+	<!-- EPB 电流阈值（正/反），用于“到达即换向/关闭” -->
+	<EpbCurrentLimits>
+		<Record>
+			<Channel>1</Channel>
+			<ForwardA>6</ForwardA>
+			<!-- 提前断电的电流值，如2.0，电流4A就开始断电 -->
+			<SafetyMarginA>2.0</SafetyMarginA>
+			<HoldMs>1000</HoldMs>
+		</Record>
+		<Record>
+			<Channel>2</Channel>
+			<ForwardA>10</ForwardA>
+			<SafetyMarginA>2.0</SafetyMarginA>
+			<HoldMs>1000</HoldMs>
+		</Record>
+		<Record>
+			<Channel>3</Channel>
+			<ForwardA>10.0</ForwardA>
+			<SafetyMarginA>2.0</SafetyMarginA>
+			<HoldMs>1000</HoldMs>
+		</Record>
+		<Record>
+			<Channel>4</Channel>
+			<ForwardA>10.0</ForwardA>
+			<SafetyMarginA>2.0</SafetyMarginA>
+			<HoldMs>1000</HoldMs>
+		</Record>
+		<Record>
+			<Channel>5</Channel>
+			<ForwardA>10.0</ForwardA>
+			<SafetyMarginA>2.0</SafetyMarginA>
+			<HoldMs>1000</HoldMs>
+		</Record>
+		<Record>
+			<Channel>6</Channel>
+			<ForwardA>10.0</ForwardA>
+			<SafetyMarginA>2.0</SafetyMarginA>
+			<HoldMs>1000</HoldMs>
+		</Record>
+		<Record>
+			<Channel>7</Channel>
+			<ForwardA>9.0</ForwardA>
+			<SafetyMarginA>2.0</SafetyMarginA>
+			<HoldMs>1000</HoldMs>
+		</Record>
+		<Record>
+			<Channel>8</Channel>
+			<ForwardA>9.0</ForwardA>
+			<SafetyMarginA>2.0</SafetyMarginA>
+			<HoldMs>1000</HoldMs>
+		</Record>
+		<Record>
+			<Channel>9</Channel>
+			<ForwardA>9.0</ForwardA>
+			<SafetyMarginA>2.0</SafetyMarginA>
+			<HoldMs>1000</HoldMs>
+		</Record>
+		<Record>
+			<Channel>10</Channel>
+			<ForwardA>9.0</ForwardA>
+			<SafetyMarginA>2.0</SafetyMarginA>
+			<HoldMs>1000</HoldMs>
+		</Record>
+		<Record>
+			<Channel>11</Channel>
+			<ForwardA>9.0</ForwardA>
+			<SafetyMarginA>2.0</SafetyMarginA>
+			<HoldMs>1000</HoldMs>
+		</Record>
+		<Record>
+			<Channel>12</Channel>
+			<ForwardA>9.0</ForwardA>
+			<SafetyMarginA>2.0</SafetyMarginA>
+			<HoldMs>1000</HoldMs>
+		</Record>
+		<!-- ... 直到 12 -->
+	</EpbCurrentLimits>
+
 	<!-- ===== EPB 循环参数（新版） ===== -->
 	<EpbCycleRunnerConfig>
 		<Record>
@@ -173,7 +253,6 @@
 			<RevDecayRigidMaxMs>1000</RevDecayRigidMaxMs>
 			<RevEmptyFixedMs>2000</RevEmptyFixedMs>
 			<PreReleaseKeepMs>500</PreReleaseKeepMs>
-			<PeakIgnoreMs>100</PeakIgnoreMs>
 		</Record>
 		<Record>
 			<Channel>2</Channel>
@@ -186,7 +265,6 @@
 			<RevDecayRigidMaxMs>1000</RevDecayRigidMaxMs>
 			<RevEmptyFixedMs>2000</RevEmptyFixedMs>
 			<PreReleaseKeepMs>500</PreReleaseKeepMs>
-			<PeakIgnoreMs>100</PeakIgnoreMs>
 		</Record>
 		<Record>
 			<Channel>3</Channel>
@@ -199,7 +277,6 @@
 			<RevDecayRigidMaxMs>1000</RevDecayRigidMaxMs>
 			<RevEmptyFixedMs>2000</RevEmptyFixedMs>
 			<PreReleaseKeepMs>500</PreReleaseKeepMs>
-			<PeakIgnoreMs>100</PeakIgnoreMs>
 		</Record>
 		<Record>
 			<Channel>4</Channel>
@@ -212,7 +289,6 @@
 			<RevDecayRigidMaxMs>1000</RevDecayRigidMaxMs>
 			<RevEmptyFixedMs>2000</RevEmptyFixedMs>
 			<PreReleaseKeepMs>500</PreReleaseKeepMs>
-			<PeakIgnoreMs>100</PeakIgnoreMs>
 		</Record>
 		<Record>
 			<Channel>5</Channel>
@@ -225,7 +301,6 @@
 			<RevDecayRigidMaxMs>1000</RevDecayRigidMaxMs>
 			<RevEmptyFixedMs>2000</RevEmptyFixedMs>
 			<PreReleaseKeepMs>500</PreReleaseKeepMs>
-			<PeakIgnoreMs>100</PeakIgnoreMs>
 		</Record>
 		<Record>
 			<Channel>6</Channel>
@@ -238,7 +313,6 @@
 			<RevDecayRigidMaxMs>1000</RevDecayRigidMaxMs>
 			<RevEmptyFixedMs>2000</RevEmptyFixedMs>
 			<PreReleaseKeepMs>500</PreReleaseKeepMs>
-			<PeakIgnoreMs>100</PeakIgnoreMs>
 		</Record>
 		<Record>
 			<Channel>7</Channel>
@@ -251,7 +325,6 @@
 			<RevDecayRigidMaxMs>1000</RevDecayRigidMaxMs>
 			<RevEmptyFixedMs>2000</RevEmptyFixedMs>
 			<PreReleaseKeepMs>500</PreReleaseKeepMs>
-			<PeakIgnoreMs>100</PeakIgnoreMs>
 		</Record>
 		<Record>
 			<Channel>8</Channel>
@@ -264,7 +337,6 @@
 			<RevDecayRigidMaxMs>1000</RevDecayRigidMaxMs>
 			<RevEmptyFixedMs>2000</RevEmptyFixedMs>
 			<PreReleaseKeepMs>500</PreReleaseKeepMs>
-			<PeakIgnoreMs>100</PeakIgnoreMs>
 		</Record>
 		<Record>
 			<Channel>9</Channel>
@@ -277,7 +349,6 @@
 			<RevDecayRigidMaxMs>1000</RevDecayRigidMaxMs>
 			<RevEmptyFixedMs>2000</RevEmptyFixedMs>
 			<PreReleaseKeepMs>500</PreReleaseKeepMs>
-			<PeakIgnoreMs>100</PeakIgnoreMs>
 		</Record>
 		<Record>
 			<Channel>10</Channel>
@@ -290,7 +361,6 @@
 			<RevDecayRigidMaxMs>1000</RevDecayRigidMaxMs>
 			<RevEmptyFixedMs>2000</RevEmptyFixedMs>
 			<PreReleaseKeepMs>500</PreReleaseKeepMs>
-			<PeakIgnoreMs>100</PeakIgnoreMs>
 		</Record>
 		<Record>
 			<Channel>11</Channel>
@@ -303,7 +373,6 @@
 			<RevDecayRigidMaxMs>1000</RevDecayRigidMaxMs>
 			<RevEmptyFixedMs>2000</RevEmptyFixedMs>
 			<PreReleaseKeepMs>500</PreReleaseKeepMs>
-			<PeakIgnoreMs>100</PeakIgnoreMs>
 		</Record>
 		<Record>
 			<Channel>12</Channel>
@@ -316,12 +385,8 @@
 			<RevDecayRigidMaxMs>1000</RevDecayRigidMaxMs>
 			<RevEmptyFixedMs>2000</RevEmptyFixedMs>
 			<PreReleaseKeepMs>500</PreReleaseKeepMs>
-			<PeakIgnoreMs>100</PeakIgnoreMs>
 		</Record>
 	</EpbCycleRunnerConfig>
-
-
-
 
 	<!-- 同组电控起始错峰，仅针对“电控”步骤；不同组可同时起 -->
 	<ElectricalGroups>
@@ -347,5 +412,127 @@
 			<Members>10,11,12</Members>
 		</Group>
 	</ElectricalGroups>
+
+	<!--
+    ===== EPB 循环控制器（EpbCycleRunner） =====
+    参数意义与建议范围（来自2025-08-20 CSV 实测 + 经验）：
+      PeakIgnoreMs           : 上电涌流忽略时间；建议 80–150 ms，默认 100 ms
+      EmptyBandA             : 空行程电流稳定带宽；建议 0.15–0.30 A，默认 0.20 A
+      StableWinMs            : 判定“空行程稳定”的最小持续时间；建议 50–100 ms，默认 50 ms
+      EwmaAlpha              : EWMA 一阶低通的灵敏度；建议 0.15–0.30，默认 0.20
+      EmptyCurrentForwardA   : 正向空行程均值（本次实测 ~ +0.63 A）
+      EmptyCurrentReverseA   : 反向空行程均值（本次实测 ~ -0.70 A）
+    调参建议：
+      - 若现场噪声偏大：适度↑ EmptyBandA 或 ↑ StableWinMs
+      - 若峰值拖尾较长：适度↑ PeakIgnoreMs
+      - 若响应偏慢：适度↑ EwmaAlpha（同时注意抗噪能力降低）
+  -->
+	<EpbCycleRunnerConfigOld>
+		<!-- ① 全局默认，老格式仍兼容（直接写在根上） -->
+		<PeakIgnoreMs>100</PeakIgnoreMs>
+		<EmptyBandA>0.20</EmptyBandA>
+		<StableWinMs>50</StableWinMs>
+		<EwmaAlpha>0.20</EwmaAlpha>
+		<EmptyCurrentForwardA>0.63</EmptyCurrentForwardA>
+		<EmptyCurrentReverseA>-0.70</EmptyCurrentReverseA>
+		<!-- 可选：新增 LearnCycles；不写则不改变你现有逻辑 -->
+		<LearnCycles>5</LearnCycles>
+
+		<!-- ②（推荐的新写法）显式 Defaults，清晰表达默认集；与根上的字段等价，二者都支持，优先级：PerChannel > Defaults > 根上 -->
+		<Defaults>
+			<PeakIgnoreMs>100</PeakIgnoreMs>
+			<EmptyBandA>0.20</EmptyBandA>
+			<StableWinMs>50</StableWinMs>
+			<EwmaAlpha>0.20</EwmaAlpha>
+			<EmptyCurrentForwardA>0.63</EmptyCurrentForwardA>
+			<EmptyCurrentReverseA>-0.70</EmptyCurrentReverseA>
+			<LearnCycles>5</LearnCycles>
+		</Defaults>
+
+		<!-- ③ 每通道覆写（仅填差异项即可） -->
+		<PerChannel>
+			<!--<Record>
+				<Channel>1</Channel>
+				<PeakIgnoreMs>120</PeakIgnoreMs>
+				<EmptyBandA>0.25</EmptyBandA>
+				<LearnCycles>3</LearnCycles>
+			</Record>-->
+
+			<Record>
+				<Channel>1</Channel>
+
+				<!-- 空行程稳态电流（中心值） -->
+				<EmptyCurrentForwardA>0.60</EmptyCurrentForwardA>
+				<EmptyCurrentReverseA>-0.70</EmptyCurrentReverseA>
+
+				<!-- 结合噪声水平，略收窄带宽，降低误判；保留原先 120ms 的上电忽略 -->
+				<EmptyBandA>0.25</EmptyBandA>
+				<PeakIgnoreMs>120</PeakIgnoreMs>
+				<StableWinMs>60</StableWinMs>
+				<EwmaAlpha>0.20</EwmaAlpha>
+			</Record>
+			<Record>
+				<Channel>2</Channel>
+
+				<!-- 空行程稳态电流（中心值） -->
+				<EmptyCurrentForwardA>0.60</EmptyCurrentForwardA>
+				<EmptyCurrentReverseA>-0.70</EmptyCurrentReverseA>
+
+				<!-- 结合噪声水平，略收窄带宽，降低误判；保留原先 120ms 的上电忽略 -->
+				<EmptyBandA>0.25</EmptyBandA>
+				<PeakIgnoreMs>120</PeakIgnoreMs>
+				<StableWinMs>60</StableWinMs>
+				<EwmaAlpha>0.20</EwmaAlpha>
+			</Record>
+			<!-- EPB3：正向≈ +1.20A；反向≈ -1.45A（噪声较大，带宽稍放宽） -->
+			<Record>
+				<Channel>3</Channel>
+			</Record>
+			<!-- EPB4：正向≈ +1.15A；反向≈ -1.05A -->
+			<Record>
+				<Channel>4</Channel>
+				<EmptyCurrentForwardA>1.20</EmptyCurrentForwardA>
+				<EmptyCurrentReverseA>-1.45</EmptyCurrentReverseA>
+				<EmptyBandA>0.25</EmptyBandA>
+				<StableWinMs>60</StableWinMs>
+				<PeakIgnoreMs>100</PeakIgnoreMs>
+				<EwmaAlpha>0.20</EwmaAlpha>
+			</Record>
+
+			<!-- EPB4：正向≈ +1.15A；反向≈ -1.05A -->
+			<Record>
+				<Channel>5</Channel>
+				<EmptyCurrentForwardA>1.15</EmptyCurrentForwardA>
+				<EmptyCurrentReverseA>-1.05</EmptyCurrentReverseA>
+				<EmptyBandA>0.22</EmptyBandA>
+				<StableWinMs>60</StableWinMs>
+				<PeakIgnoreMs>100</PeakIgnoreMs>
+				<EwmaAlpha>0.20</EwmaAlpha>
+			</Record>
+			<Record>
+				<Channel>6</Channel>
+			</Record>
+			<Record>
+				<Channel>7</Channel>
+			</Record>
+			<Record>
+				<Channel>8</Channel>
+			</Record>
+			<Record>
+				<Channel>9</Channel>
+			</Record>
+			<Record>
+				<Channel>10</Channel>
+			</Record>
+			<Record>
+				<Channel>11</Channel>
+			</Record>
+			<Record>
+				<Channel>12</Channel>
+			</Record>
+		</PerChannel>
+	</EpbCycleRunnerConfigOld>
+
+
 
 </TestConfig>

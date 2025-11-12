@@ -49,6 +49,7 @@
     <Compile Include="EpbTestRecord.cs" />
     <Compile Include="ConfigLoader.cs" />
     <Compile Include="IAppLogger.cs" />
+    <Compile Include="Models\EpbCycleRunnerConfig.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="EpbTestRecordStore.cs" />
     <Compile Include="UiConfig.cs" />
@@ -59,5 +60,6 @@
       <Name>Utils</Name>
     </ProjectReference>
   </ItemGroup>
+  <ItemGroup />
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>
