@@ -43,7 +43,7 @@
             this.uiTableLayoutPanel8 = new Sunny.UI.UITableLayoutPanel();
             this.uiGroupBox5 = new Sunny.UI.UIGroupBox();
             this.uiTableLayoutPanel10 = new Sunny.UI.UITableLayoutPanel();
-            this.dgvEmbControl = new Sunny.UI.UIDataGridView();
+            this.dgvEpbRunnerCfgControl = new Sunny.UI.UIDataGridView();
             this.uiGroupBox7 = new Sunny.UI.UIGroupBox();
             this.uiTableLayoutPanel11 = new Sunny.UI.UITableLayoutPanel();
             this.TxtTestMan = new Sunny.UI.UITextBox();
@@ -119,7 +119,7 @@
             this.uiTableLayoutPanel8.SuspendLayout();
             this.uiGroupBox5.SuspendLayout();
             this.uiTableLayoutPanel10.SuspendLayout();
-            ((System.ComponentModel.ISupportInitialize)(this.dgvEmbControl)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.dgvEpbRunnerCfgControl)).BeginInit();
             this.uiGroupBox7.SuspendLayout();
             this.uiTableLayoutPanel11.SuspendLayout();
             this.tabPageDAQAI.SuspendLayout();
@@ -217,7 +217,7 @@
             this.uiTableLayoutPanel10.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 20F));
             this.uiTableLayoutPanel10.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 20F));
             this.uiTableLayoutPanel10.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 40F));
-            this.uiTableLayoutPanel10.Controls.Add(this.dgvEmbControl, 1, 1);
+            this.uiTableLayoutPanel10.Controls.Add(this.dgvEpbRunnerCfgControl, 1, 1);
             this.uiTableLayoutPanel10.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiTableLayoutPanel10.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiTableLayoutPanel10.Location = new System.Drawing.Point(0, 32);
@@ -238,15 +238,15 @@
             this.uiTableLayoutPanel10.TabIndex = 1;
             this.uiTableLayoutPanel10.TagString = null;
             // 
-            // dgvEmbControl
+            // dgvEpbRunnerCfgControl
             // 
-            this.dgvEmbControl.AllowUserToAddRows = false;
-            this.dgvEmbControl.AllowUserToDeleteRows = false;
+            this.dgvEpbRunnerCfgControl.AllowUserToAddRows = false;
+            this.dgvEpbRunnerCfgControl.AllowUserToDeleteRows = false;
             dataGridViewCellStyle11.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(235)))), ((int)(((byte)(243)))), ((int)(((byte)(255)))));
             dataGridViewCellStyle11.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.dgvEmbControl.AlternatingRowsDefaultCellStyle = dataGridViewCellStyle11;
-            this.dgvEmbControl.BackgroundColor = System.Drawing.Color.White;
-            this.dgvEmbControl.ColumnHeadersBorderStyle = System.Windows.Forms.DataGridViewHeaderBorderStyle.Single;
+            this.dgvEpbRunnerCfgControl.AlternatingRowsDefaultCellStyle = dataGridViewCellStyle11;
+            this.dgvEpbRunnerCfgControl.BackgroundColor = System.Drawing.Color.White;
+            this.dgvEpbRunnerCfgControl.ColumnHeadersBorderStyle = System.Windows.Forms.DataGridViewHeaderBorderStyle.Single;
             dataGridViewCellStyle12.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
             dataGridViewCellStyle12.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
             dataGridViewCellStyle12.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
@@ -254,9 +254,9 @@
             dataGridViewCellStyle12.SelectionBackColor = System.Drawing.SystemColors.Highlight;
             dataGridViewCellStyle12.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
             dataGridViewCellStyle12.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
-            this.dgvEmbControl.ColumnHeadersDefaultCellStyle = dataGridViewCellStyle12;
-            this.dgvEmbControl.ColumnHeadersHeight = 35;
-            this.uiTableLayoutPanel10.SetColumnSpan(this.dgvEmbControl, 3);
+            this.dgvEpbRunnerCfgControl.ColumnHeadersDefaultCellStyle = dataGridViewCellStyle12;
+            this.dgvEpbRunnerCfgControl.ColumnHeadersHeight = 35;
+            this.uiTableLayoutPanel10.SetColumnSpan(this.dgvEpbRunnerCfgControl, 3);
             dataGridViewCellStyle13.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleLeft;
             dataGridViewCellStyle13.BackColor = System.Drawing.SystemColors.Window;
             dataGridViewCellStyle13.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
@@ -264,13 +264,13 @@
             dataGridViewCellStyle13.SelectionBackColor = System.Drawing.SystemColors.Highlight;
             dataGridViewCellStyle13.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
             dataGridViewCellStyle13.WrapMode = System.Windows.Forms.DataGridViewTriState.False;
-            this.dgvEmbControl.DefaultCellStyle = dataGridViewCellStyle13;
-            this.dgvEmbControl.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.dgvEmbControl.EnableHeadersVisualStyles = false;
-            this.dgvEmbControl.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.dgvEmbControl.GridColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            this.dgvEmbControl.Location = new System.Drawing.Point(43, 13);
-            this.dgvEmbControl.Name = "dgvEmbControl";
+            this.dgvEpbRunnerCfgControl.DefaultCellStyle = dataGridViewCellStyle13;
+            this.dgvEpbRunnerCfgControl.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.dgvEpbRunnerCfgControl.EnableHeadersVisualStyles = false;
+            this.dgvEpbRunnerCfgControl.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.dgvEpbRunnerCfgControl.GridColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.dgvEpbRunnerCfgControl.Location = new System.Drawing.Point(43, 13);
+            this.dgvEpbRunnerCfgControl.Name = "dgvEpbRunnerCfgControl";
             dataGridViewCellStyle14.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleLeft;
             dataGridViewCellStyle14.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(235)))), ((int)(((byte)(243)))), ((int)(((byte)(255)))));
             dataGridViewCellStyle14.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
@@ -278,18 +278,18 @@
             dataGridViewCellStyle14.SelectionBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
             dataGridViewCellStyle14.SelectionForeColor = System.Drawing.Color.White;
             dataGridViewCellStyle14.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
-            this.dgvEmbControl.RowHeadersDefaultCellStyle = dataGridViewCellStyle14;
-            this.dgvEmbControl.RowHeadersWidth = 30;
+            this.dgvEpbRunnerCfgControl.RowHeadersDefaultCellStyle = dataGridViewCellStyle14;
+            this.dgvEpbRunnerCfgControl.RowHeadersWidth = 30;
             dataGridViewCellStyle15.BackColor = System.Drawing.Color.White;
             dataGridViewCellStyle15.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.dgvEmbControl.RowsDefaultCellStyle = dataGridViewCellStyle15;
-            this.uiTableLayoutPanel10.SetRowSpan(this.dgvEmbControl, 8);
-            this.dgvEmbControl.RowTemplate.Height = 35;
-            this.dgvEmbControl.SelectedIndex = -1;
-            this.dgvEmbControl.Size = new System.Drawing.Size(814, 577);
-            this.dgvEmbControl.StripeOddColor = System.Drawing.Color.FromArgb(((int)(((byte)(235)))), ((int)(((byte)(243)))), ((int)(((byte)(255)))));
-            this.dgvEmbControl.TabIndex = 20;
-            this.dgvEmbControl.DataBindingComplete += new System.Windows.Forms.DataGridViewBindingCompleteEventHandler(this.dgvEmbControl_DataBindingComplete);
+            this.dgvEpbRunnerCfgControl.RowsDefaultCellStyle = dataGridViewCellStyle15;
+            this.uiTableLayoutPanel10.SetRowSpan(this.dgvEpbRunnerCfgControl, 8);
+            this.dgvEpbRunnerCfgControl.RowTemplate.Height = 35;
+            this.dgvEpbRunnerCfgControl.SelectedIndex = -1;
+            this.dgvEpbRunnerCfgControl.Size = new System.Drawing.Size(814, 577);
+            this.dgvEpbRunnerCfgControl.StripeOddColor = System.Drawing.Color.FromArgb(((int)(((byte)(235)))), ((int)(((byte)(243)))), ((int)(((byte)(255)))));
+            this.dgvEpbRunnerCfgControl.TabIndex = 20;
+            this.dgvEpbRunnerCfgControl.DataBindingComplete += new System.Windows.Forms.DataGridViewBindingCompleteEventHandler(this.dgvEmbControl_DataBindingComplete);
             // 
             // uiGroupBox7
             // 
@@ -1512,7 +1512,7 @@
             this.uiTableLayoutPanel8.ResumeLayout(false);
             this.uiGroupBox5.ResumeLayout(false);
             this.uiTableLayoutPanel10.ResumeLayout(false);
-            ((System.ComponentModel.ISupportInitialize)(this.dgvEmbControl)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.dgvEpbRunnerCfgControl)).EndInit();
             this.uiGroupBox7.ResumeLayout(false);
             this.uiTableLayoutPanel11.ResumeLayout(false);
             this.tabPageDAQAI.ResumeLayout(false);
@@ -1608,6 +1608,6 @@
         private Sunny.UI.UITextBox TxtTestMan;
         private Sunny.UI.UIRichTextBox RtbDesc;
         private Sunny.UI.UIButton BtnFindDir;
-        private Sunny.UI.UIDataGridView dgvEmbControl;
+        private Sunny.UI.UIDataGridView dgvEpbRunnerCfgControl;
     }
 }

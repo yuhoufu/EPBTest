@@ -496,7 +496,7 @@ namespace MtEmbTest
 
         private void BtnSaveTest_Click(object sender, EventArgs e)
         {
-            SaveEMBControlsToXML(dgvEmbControl);
+            SaveEMBControlsToXML(dgvEpbRunnerCfgControl);
 
 
             SaveTestConfigToXml(TxtTestCycle, TxtTestName, TxtTestTarget,
@@ -620,8 +620,8 @@ namespace MtEmbTest
 
         private void dgvEmbControl_DataBindingComplete(object sender, DataGridViewBindingCompleteEventArgs e)
         {
-            //  dgvEmbControl.CurrentCell = null;
-            //  dgvEmbControl.SelectedIndex = -1;
+            //  dgvEpbRunnerCfgControl.CurrentCell = null;
+            //  dgvEpbRunnerCfgControl.SelectedIndex = -1;
         }
     }
 }
