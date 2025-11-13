@@ -1,16 +1,17 @@
-﻿using System;
+﻿using Controller;
+using CustomTcpClient;
+using DataOperation;
+using IO.NI;
+using MTEmbTest;
+using MTEmbTest.Properties;
+using System;
+using System.Collections.Concurrent;
 using System.Drawing;
 using System.IO.Ports;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
-using Controller;
-using CustomTcpClient;
-using DataOperation;
-using IO.NI;
-using MTEmbTest;
-using MTEmbTest.Properties;
 
 namespace MtEmbTest
 {
@@ -18,6 +19,21 @@ namespace MtEmbTest
     {
         public bool[] IsPowerConnect = { false };
         private readonly AsyncTcpClient[] powerClient = new AsyncTcpClient[1];
+
+        #region 软件配置相关
+
+        public FormLoggerAdapter Logger;
+        private ConcurrentQueue<string> LogInformation = new();
+        private ConcurrentQueue<string> LogError = new();
+        private ConcurrentQueue<string> LogWarn = new();
+        private ConcurrentQueue<byte[]> readyReadBuffer;
+        private const int MaxErrors = 100000;
+        private const int MaxInfos = 100000;
+        private const int MaxWarns = 100000;
+        public GlobalConfig Cfg;
+
+        #endregion
+        
 
         public Main_Frm()
         {
@@ -104,6 +120,14 @@ namespace MtEmbTest
 
         private void Main_Frm_Load(object sender, EventArgs e)
         {
+            // 初始化日志系统
+            Logger = new FormLoggerAdapter(MaxInfos, MaxWarns, MaxErrors,
+                LogInformation, LogWarn, LogError, this);
+
+            // 加载配置文件
+            Cfg = ConfigLoader.LoadAll($@"{Environment.CurrentDirectory}\Config", Logger);
+
+
             try
             {
                 ClsGlobal.ClampCount = int.Parse(ConfigOperation.SetOneItem("ClampCount"));
@@ -313,7 +337,7 @@ namespace MtEmbTest
                 }
 
 
-            var Setting = new FrmTestSetting();
+            var Setting = new FrmTestSetting(Cfg);
             var ScrHeight = Screen.PrimaryScreen.Bounds.Height;
             var ScrWidth = Screen.PrimaryScreen.Bounds.Width;
             Setting.Height = ScrHeight * 7 / 10;

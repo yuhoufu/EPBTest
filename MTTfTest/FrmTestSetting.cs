@@ -1,5 +1,11 @@
-﻿using System;
+﻿using Config.Models;
+using DataOperation;
+using MTEmbTest;
+using Sunny.UI;
+using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Data;
 using System.IO;
 using System.Linq;
@@ -7,15 +13,18 @@ using System.Windows.Forms;
 using System.Xml;
 using System.Xml.Linq;
 using System.Xml.Serialization;
-using DataOperation;
-using Sunny.UI;
+using MTEmbTest.Models;
 
 namespace MtEmbTest
 {
     public partial class FrmTestSetting : Form
     {
-        public FrmTestSetting()
+        private GlobalConfig _cfg; // 全部配置对象
+        private readonly BindingList<EpbRow> _epbRows = new BindingList<EpbRow>();
+
+        public FrmTestSetting(GlobalConfig cfg)
         {
+            _cfg = cfg;
             InitializeComponent();
         }
 
@@ -232,6 +241,21 @@ namespace MtEmbTest
 
         private void FrmTestSetting_Load(object sender, EventArgs e)
         {
+
+            // // 1) 通过 MdiParent 拿到父窗体引用
+            // if (this.MdiParent is Main_Frm main)
+            // {
+            //     // 2) 访问父窗体的 public 属性
+            //     _cfg = main.Cfg;
+            // }
+            // // else
+            // // {
+            // //     // 不是 MDI 子窗体或父窗体类型不对
+            // // }
+            BindEpbRunnerGridFromConfig();
+
+
+
             try
             {
                 // 赋值 Clamp 相关变量到对应 TextBox
@@ -268,6 +292,84 @@ namespace MtEmbTest
             {
                 MessageBox.Show(ex.Message);
             }
+        }
+
+
+
+        private void BindEpbRunnerGridFromConfig()
+        {
+            _epbRows.Clear();
+
+            // —— 直接使用 ConfigLoader 解析好的结果 —— //
+            var dict = _cfg?.Test?.EpbCycleRunner?.Channels;
+            if (dict == null) return;
+
+            // 通道 1..12 都填一行（缺失时给空默认）
+            for (int ch = 1; ch <= 12; ch++)
+            {
+                EpbCycleRunnerConfig.Record r;
+                dict.TryGetValue(ch, out r);
+
+                _epbRows.Add(new EpbRow
+                {
+                    Channel = ch,
+                    Name = r != null ? r.Name : $"EPB{ch}",
+                    ForwardA = r != null ? r.ForwardA : 0,
+                    SafetyMarginA = r != null ? r.SafetyMarginA : 0,
+                    FwdOnLimitMs = r != null ? r.FwdOnLimitMs : 0,
+                    HoldMs = r != null ? r.HoldMs : 0,
+                    RevDecayLimitA = r != null ? r.RevDecayLimitA : 0,
+                    RevDecayRigidMaxMs = r != null ? r.RevDecayRigidMaxMs : 0,
+                    RevEmptyFixedMs = r != null ? r.RevEmptyFixedMs : 0,
+                    PreReleaseKeepMs = r != null ? r.PreReleaseKeepMs : (int?)null,
+                    PeakIgnoreMs = r != null ? r.PeakIgnoreMs : 0
+                });
+            }
+
+            dgvEpbRunnerCfgControl.AutoGenerateColumns = false;
+            dgvEpbRunnerCfgControl.DataSource = _epbRows;
+            // 列构造你已按上一版加过；没有就按上一条消息里的 AddCol 片段生成一次即可
+
+            // 仅首次构造列
+            if (dgvEpbRunnerCfgControl.Columns.Count == 0)
+            {
+                // 工具：快速添加文本列
+                DataGridViewTextBoxColumn AddCol(string dataProperty, string header, int width = 90, bool readOnly = false)
+                {
+                    var c = new DataGridViewTextBoxColumn
+                    {
+                        DataPropertyName = dataProperty,
+                        HeaderText = header,
+                        Width = width,
+                        ReadOnly = readOnly,
+                        SortMode = DataGridViewColumnSortMode.NotSortable,
+                        AutoSizeMode = DataGridViewAutoSizeColumnMode.None
+                    };
+                    dgvEpbRunnerCfgControl.Columns.Add(c);
+                    return c;
+                }
+
+                AddCol(nameof(EpbRow.Channel), "通道", 60, true);
+                AddCol(nameof(EpbRow.Name), "名称", 80, false);
+                AddCol(nameof(EpbRow.ForwardA), "电流阈值(A)", 100);
+                AddCol(nameof(EpbRow.SafetyMarginA), "提前断电值(A)", 110);
+                AddCol(nameof(EpbRow.FwdOnLimitMs), "正上限时长(ms)", 120);
+                AddCol(nameof(EpbRow.HoldMs), "夹紧保持(ms)", 110);
+                AddCol(nameof(EpbRow.RevDecayLimitA), "反向衰减限(A)", 120);
+                AddCol(nameof(EpbRow.RevDecayRigidMaxMs), "反衰限制时长(ms)", 140);
+                AddCol(nameof(EpbRow.RevEmptyFixedMs), "反向固定空行程(ms)", 160);
+                AddCol(nameof(EpbRow.PreReleaseKeepMs), "预释放维持(ms)", 120);
+                AddCol(nameof(EpbRow.PeakIgnoreMs), "峰值忽略(ms)", 110);
+
+                dgvEpbRunnerCfgControl.RowHeadersWidth = 40;
+                dgvEpbRunnerCfgControl.AllowUserToAddRows = false;
+                dgvEpbRunnerCfgControl.AllowUserToDeleteRows = false;
+                dgvEpbRunnerCfgControl.AllowUserToResizeRows = false;
+                dgvEpbRunnerCfgControl.MultiSelect = false;
+                dgvEpbRunnerCfgControl.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
+                dgvEpbRunnerCfgControl.EditMode = DataGridViewEditMode.EditOnEnter;
+            }
+
         }
 
 

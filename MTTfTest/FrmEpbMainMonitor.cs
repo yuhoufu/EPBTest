@@ -193,10 +193,10 @@ namespace MTEmbTest
         private DateTime lastGraphyTime = DateTime.Now;
 
 
-        private ConcurrentQueue<string> LogError = new();
 
         public FormLoggerAdapter logger;
         private ConcurrentQueue<string> LogInformation = new();
+        private ConcurrentQueue<string> LogError = new();
         private ConcurrentQueue<string> LogWarn = new();
         private ConcurrentQueue<byte[]> readyReadBuffer;
 
