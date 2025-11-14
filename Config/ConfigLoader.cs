@@ -80,7 +80,7 @@ public sealed class TestConfig
 {
     public string TestName { get; set; }
     public int TestTarget { get; set; }
-    public double TestCycleHz { get; set; } // 每秒次数
+    public double TestPeriod { get; set; } // 每秒次数
     public string StoreDir { get; set; }
 
     /// <summary>
@@ -107,8 +107,8 @@ public sealed class TestConfig
     public EpbCycleRunnerConfig EpbCycleRunner { get; set; } = new();
 
 
-    /// <summary>周期毫秒（由 TestCycleHz 推导），例如 10Hz => 100ms。</summary>
-    public int PeriodMs => (int)Math.Round(1000.0 * Math.Max(TestCycleHz, 0.001));
+    /// <summary>周期毫秒（由 TestPeriod 推导），例如 10Hz => 100ms。</summary>
+    public int PeriodMs => (int)Math.Round(1000.0 * Math.Max(TestPeriod, 0.001));
 
 
     // ======= 新增：EPB 试验记录集合 =======
@@ -309,7 +309,7 @@ public static class ConfigLoader
 
         cfg.TestName = GetString(doc, "//TestConfig/Basic/TestName", "EPB");
         cfg.TestTarget = (int)GetDouble(doc, "//TestConfig/Basic/TestTarget", 1);
-        cfg.TestCycleHz = GetDouble(doc, "//TestConfig/Basic/TestCycle", 10); // Hz
+        cfg.TestPeriod = GetDouble(doc, "//TestConfig/Basic/TestCycle", 10); // Hz
         cfg.Owner = GetString(doc, "//TestConfig/Basic/Owner", "None");
         cfg.Description = GetString(doc, "//TestConfig/Basic/Description", "None");
         cfg.StoreDir = GetString(doc, "//TestConfig/Basic/StoreDir", "D:\\EPB_Data");
@@ -601,7 +601,7 @@ public static class ConfigLoader
         {
             SetChild(basic, "TestName", cfg.TestName);
             SetChild(basic, "TestTarget", cfg.TestTarget.ToString());
-            SetChild(basic, "TestCycle", cfg.TestCycleHz.ToString(CultureInfo.InvariantCulture));
+            SetChild(basic, "TestCycle", cfg.TestPeriod.ToString(CultureInfo.InvariantCulture));
             SetChild(basic, "StoreDir", cfg.StoreDir);
 
             SetChild(basic, "Owner", cfg.Owner);
