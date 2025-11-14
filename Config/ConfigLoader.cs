@@ -603,6 +603,9 @@ public static class ConfigLoader
             SetChild(basic, "TestTarget", cfg.TestTarget.ToString());
             SetChild(basic, "TestCycle", cfg.TestCycleHz.ToString(CultureInfo.InvariantCulture));
             SetChild(basic, "StoreDir", cfg.StoreDir);
+
+            SetChild(basic, "Owner", cfg.Owner);
+            SetChild(basic, "Description", cfg.Description);
         }
 
         // ===============================
@@ -649,6 +652,7 @@ public static class ConfigLoader
         doc.Save(tmp);
         if (File.Exists(path)) File.Replace(tmp, path, null);
         else File.Move(tmp, path);
+        return;
 
         // local helper
         static void SetChild(XmlElement parent, string name, string value)
@@ -656,7 +660,7 @@ public static class ConfigLoader
             var node = parent.SelectSingleNode(name) as XmlElement;
             if (node == null)
             {
-                node = parent.OwnerDocument.CreateElement(name);
+                node = parent.OwnerDocument!.CreateElement(name);
                 parent.AppendChild(node);
             }
 

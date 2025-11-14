@@ -1,4 +1,7 @@
-﻿using System;
+﻿using Config.Models;
+using MTEmbTest.Models;
+using Sunny.UI;
+using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Data;
@@ -9,8 +12,6 @@ using System.Windows.Forms;
 using System.Xml;
 using System.Xml.Linq;
 using System.Xml.Serialization;
-using MTEmbTest.Models;
-using Sunny.UI;
 
 namespace MtEmbTest
 {
@@ -688,36 +689,97 @@ namespace MtEmbTest
 
         private void BtnSaveTest_Click(object sender, EventArgs e)
         {
-            SaveEMBControlsToXML(dgvEpbRunnerCfgControl);
-
-
-            SaveTestConfigToXml(TxtTestCycle, TxtTestName, TxtTestTarget,
-                TxtStoreDir, TxtTestMan, RtbDesc);
-
-
-            MessageBox.Show("保存成功！");
-        }
-
-
-        public void SaveTestConfigToXml(UITextBox txtTestCycle,
-            UITextBox txtTestName,
-            UITextBox txtTestTarget,
-            UITextBox txtStoreDir,
-            UITextBox txtTestMan,
-            UIRichTextBox rtbDesc)
-        {
-            var config = new TestConfig
+            try
             {
-                // TestCycle = txtTestCycle.Text,
-                TestName = txtTestName.Text,
-                // TestTarget = txtTestTarget.Text,
-                StoreDir = txtStoreDir.Text
-                // TestMan = txtTestMan.Text,
-                // Description = rtbDesc.Text,
-            };
+                // 1) 写回 Basic 信息（周期、名称、目录、负责人等）
+                PushBasicInfoBackToConfig();
 
-            SaveTestConfigToFile(config);
+                // 2) 写回 EPB 循环参数（12 个通道）
+                PushGridBackToConfig();
+
+                // 3) 保存 TestConfig.xml（只改 Basic + EpbCycleRunnerConfig 小节，其余保持不变）
+                var cfgDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Config");
+                var testPath = Path.Combine(cfgDir, "TestConfig.xml");
+                ConfigLoader.SaveTest(testPath,_cfg.Test);
+
+                MessageBox.Show(@"保存成功！", @"提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(@"保存失败：\r\n" + ex.Message, @"错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
+
+        /// <summary>
+        /// 将网格当前数据写回到 _global.Test.EpbCycleRunner.Channels 字典中。
+        /// </summary>
+        private void PushGridBackToConfig()
+        {
+            if (_cfg?.Test?.EpbCycleRunner == null) return;
+            
+            var dict = _cfg.Test.EpbCycleRunner.Channels;
+            dict.Clear();
+            foreach (var r in _epbRows.OrderBy(x => x.Channel))
+            {
+                var item = new EpbCycleRunnerConfig.Record
+                {
+                    Channel = r.Channel,
+                    Name = r.Name,
+                    ForwardA = r.ForwardA,
+                    SafetyMarginA = r.SafetyMarginA,
+                    FwdOnLimitMs = Math.Max(0, r.FwdOnLimitMs),
+                    HoldMs = Math.Max(0, r.HoldMs),
+                    RevDecayLimitA = r.RevDecayLimitA,
+                    RevDecayRigidMaxMs = Math.Max(0, r.RevDecayRigidMaxMs),
+                    RevEmptyFixedMs = Math.Max(0, r.RevEmptyFixedMs),
+                    PreReleaseKeepMs = r.PreReleaseKeepMs,
+                    PeakIgnoreMs = Math.Max(0, r.PeakIgnoreMs)
+                };
+                dict[r.Channel] = item;
+            }
+        }
+
+        /// <summary>
+        /// 将基本信息写回到配置对象中（带健壮性校验）。
+        /// </summary>
+        private void PushBasicInfoBackToConfig()
+        {
+            if (_cfg?.Test == null) return;
+
+            // —— 1) TestCycleHz —— //
+            if (int.TryParse(TxtTestCycle.Text.Trim(), out var cycleHz) && cycleHz > 0)
+                _cfg.Test.TestCycleHz = cycleHz;
+            else
+                _cfg.Test.TestCycleHz = 1;   // 安全默认值
+
+            // —— 2) TestName —— //
+            _cfg.Test.TestName = (TxtTestName.Text ?? "").Trim();
+
+            // —— 3) TestTarget —— //
+            if (int.TryParse(TxtTestTarget.Text.Trim(), out var target) && target > 0)
+                _cfg.Test.TestTarget = target;
+            else
+                _cfg.Test.TestTarget = 1;   // 默认 1 次
+
+            // —— 4) StoreDir —— //
+            var dir = (TxtStoreDir.Text ?? "").Trim();
+            if (string.IsNullOrWhiteSpace(dir) || dir.IndexOfAny(Path.GetInvalidPathChars()) >= 0)
+            {
+                // 如果用户输入的目录不合法，回退到原值或默认路径
+                dir = _cfg.Test.StoreDir ?? Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Data");
+            }
+            _cfg.Test.StoreDir = dir;
+
+            // —— 5) Owner —— //
+            _cfg.Test.Owner = (TxtTestMan.Text ?? "").Trim();
+
+            // —— 6) Description —— //
+            _cfg.Test.Description = RtbDesc.Text ?? "";
+        }
+
+
+
+        
 
         // 统一保存逻辑
         private void SaveTestConfigToFile(TestConfig config)
