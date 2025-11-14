@@ -82,15 +82,29 @@ public sealed class TestConfig
     public int TestTarget { get; set; }
     public double TestCycleHz { get; set; } // 每秒次数
     public string StoreDir { get; set; }
+
+    /// <summary>
+    ///     试验负责人姓名，例如 “张三”。
+    ///     用于生成报告、日志标记、任务责任人记录等。
+    /// </summary>
+    public string Owner { get; set; } = string.Empty;
+
+    /// <summary>
+    ///     此测试的描述信息（备注），例如测试目的、工况说明等。
+    ///     可用于界面展示和自动生成报告。
+    /// </summary>
+    public string Description { get; set; } = string.Empty;
+
+
     public OverrunPolicy OverrunPolicy { get; set; } = OverrunPolicy.RunToCompletionSkipMissed;
 
     public List<HydraulicItem> Hydraulics { get; } = new();
     public List<ElectricalGroup> Groups { get; } = new();
 
     /// <summary>
-    /// 新版 EPB 循环配置（仅每通道记录）。从 TestConfig.xml 的 &lt;EpbCycleRunnerConfig&gt; 读取。
+    ///     新版 EPB 循环配置（仅每通道记录）。从 TestConfig.xml 的 &lt;EpbCycleRunnerConfig&gt; 读取。
     /// </summary>
-    public EpbCycleRunnerConfig EpbCycleRunner { get; set; } = new EpbCycleRunnerConfig();
+    public EpbCycleRunnerConfig EpbCycleRunner { get; set; } = new();
 
 
     /// <summary>周期毫秒（由 TestCycleHz 推导），例如 10Hz => 100ms。</summary>
@@ -271,7 +285,7 @@ public static class ConfigLoader
             if (r.Enabled && r.Channel > 0) cfg.Epb.Add(r);
         }
 
-        foreach (XmlNode n in doc.SelectNodes("//DOConfig/Pressure/Record"))
+        foreach (XmlNode n in doc.SelectNodes("//DOConfig/Pressure/Record")!)
         {
             var r = new DoPressureRecord
             {
@@ -296,6 +310,8 @@ public static class ConfigLoader
         cfg.TestName = GetString(doc, "//TestConfig/Basic/TestName", "EPB");
         cfg.TestTarget = (int)GetDouble(doc, "//TestConfig/Basic/TestTarget", 1);
         cfg.TestCycleHz = GetDouble(doc, "//TestConfig/Basic/TestCycle", 10); // Hz
+        cfg.Owner = GetString(doc, "//TestConfig/Basic/Owner", "None");
+        cfg.Description = GetString(doc, "//TestConfig/Basic/Description", "None");
         cfg.StoreDir = GetString(doc, "//TestConfig/Basic/StoreDir", "D:\\EPB_Data");
 
 
@@ -303,7 +319,7 @@ public static class ConfigLoader
         if (!Enum.TryParse(policyText, out OverrunPolicy pol)) pol = OverrunPolicy.RunToCompletionSkipMissed;
         cfg.OverrunPolicy = pol;
 
-        foreach (XmlNode n in doc.SelectNodes("//TestConfig/Hydraulics/Hydraulic"))
+        foreach (XmlNode n in doc.SelectNodes("//TestConfig/Hydraulics/Hydraulic")!)
         {
             var h = new HydraulicItem
             {
@@ -325,7 +341,7 @@ public static class ConfigLoader
         }
 
 
-        foreach (XmlNode n in doc.SelectNodes("//TestConfig/ElectricalGroups/Group"))
+        foreach (XmlNode n in doc.SelectNodes("//TestConfig/ElectricalGroups/Group")!)
         {
             var g = new ElectricalGroup
             {
@@ -364,7 +380,6 @@ public static class ConfigLoader
 
         #region 解析读取EpbCycleRunnerConfig
 
-
         // ===== 仅解析新版 <EpbCycleRunnerConfig>/<Record> =====
         cfg.EpbCycleRunner = new EpbCycleRunnerConfig();
 
@@ -385,7 +400,7 @@ public static class ConfigLoader
                 RevDecayRigidMaxMs = GetInt(r, "RevDecayRigidMaxMs", 0),
                 RevEmptyFixedMs = GetInt(r, "RevEmptyFixedMs", 0),
                 PreReleaseKeepMs = TryGetNullableInt(r, "PreReleaseKeepMs"),
-                PeakIgnoreMs = GetInt(r, "PeakIgnoreMs",0)
+                PeakIgnoreMs = GetInt(r, "PeakIgnoreMs", 0)
             };
 
             // 软边界钳制（防御性）
@@ -398,10 +413,6 @@ public static class ConfigLoader
         }
 
         #endregion
-
-
-
-
 
 
         // 辅助（DateTime 解析）
@@ -572,6 +583,85 @@ public static class ConfigLoader
     public static void SaveUI(UiConfig cfg)
     {
         SaveUI(null, cfg);
+    }
+
+    public static void SaveTest(string path, TestConfig cfg)
+    {
+        var doc = new XmlDocument();
+        doc.Load(path);
+
+        var root = doc.SelectSingleNode("/TestConfig") as XmlElement;
+        if (root == null)
+            throw new InvalidOperationException("TestConfig.xml 缺少 <TestConfig> 根节点");
+
+        // ===============================
+        // 1) 保存 Basic
+        // ===============================
+        if (root.SelectSingleNode("Basic") is XmlElement basic)
+        {
+            SetChild(basic, "TestName", cfg.TestName);
+            SetChild(basic, "TestTarget", cfg.TestTarget.ToString());
+            SetChild(basic, "TestCycle", cfg.TestCycleHz.ToString(CultureInfo.InvariantCulture));
+            SetChild(basic, "StoreDir", cfg.StoreDir);
+        }
+
+        // ===============================
+        // 2) 保存 EpbCycleRunnerConfig（12条Record）
+        // ===============================
+        var epbNode = root.SelectSingleNode("EpbCycleRunnerConfig");
+        if (epbNode != null) root.RemoveChild(epbNode);
+
+        epbNode = doc.CreateElement("EpbCycleRunnerConfig");
+
+        foreach (var ch in cfg.EpbCycleRunner.Channels.Keys.OrderBy(x => x))
+        {
+            var it = cfg.EpbCycleRunner.Channels[ch];
+            var rec = doc.CreateElement("Record");
+
+            void Add(string name, string value)
+            {
+                var n = doc.CreateElement(name);
+                n.InnerText = value ?? "";
+                rec.AppendChild(n);
+            }
+
+            Add("Channel", it.Channel.ToString());
+            Add("Name", it.Name);
+            Add("ForwardA", it.ForwardA.ToString(CultureInfo.InvariantCulture));
+            Add("SafetyMarginA", it.SafetyMarginA.ToString(CultureInfo.InvariantCulture));
+            Add("FwdOnLimitMs", it.FwdOnLimitMs.ToString());
+            Add("HoldMs", it.HoldMs.ToString());
+            Add("RevDecayLimitA", it.RevDecayLimitA.ToString(CultureInfo.InvariantCulture));
+            Add("RevDecayRigidMaxMs", it.RevDecayRigidMaxMs.ToString());
+            Add("RevEmptyFixedMs", it.RevEmptyFixedMs.ToString());
+            Add("PreReleaseKeepMs", it.PreReleaseKeepMs?.ToString() ?? "");
+            Add("PeakIgnoreMs", it.PeakIgnoreMs.ToString());
+
+            epbNode.AppendChild(rec);
+        }
+
+        root.AppendChild(epbNode);
+
+        // ===============================
+        // 3) Save to file with temp
+        // ===============================
+        var tmp = path + ".tmp";
+        doc.Save(tmp);
+        if (File.Exists(path)) File.Replace(tmp, path, null);
+        else File.Move(tmp, path);
+
+        // local helper
+        static void SetChild(XmlElement parent, string name, string value)
+        {
+            var node = parent.SelectSingleNode(name) as XmlElement;
+            if (node == null)
+            {
+                node = parent.OwnerDocument.CreateElement(name);
+                parent.AppendChild(node);
+            }
+
+            node.InnerText = value ?? "";
+        }
     }
 
 

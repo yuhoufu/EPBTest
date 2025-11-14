@@ -1,12 +1,8 @@
-﻿using Config.Models;
-using DataOperation;
-using MTEmbTest;
-using Sunny.UI;
-using System;
-using System.Collections.Concurrent;
+﻿using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Data;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Windows.Forms;
@@ -14,13 +10,14 @@ using System.Xml;
 using System.Xml.Linq;
 using System.Xml.Serialization;
 using MTEmbTest.Models;
+using Sunny.UI;
 
 namespace MtEmbTest
 {
     public partial class FrmTestSetting : Form
     {
-        private GlobalConfig _cfg; // 全部配置对象
-        private readonly BindingList<EpbRow> _epbRows = new BindingList<EpbRow>();
+        private readonly BindingList<EpbRow> _epbRows = new();
+        private readonly GlobalConfig _cfg; // 全部配置对象
 
         public FrmTestSetting(GlobalConfig cfg)
         {
@@ -241,7 +238,6 @@ namespace MtEmbTest
 
         private void FrmTestSetting_Load(object sender, EventArgs e)
         {
-
             // // 1) 通过 MdiParent 拿到父窗体引用
             // if (this.MdiParent is Main_Frm main)
             // {
@@ -253,8 +249,6 @@ namespace MtEmbTest
             // //     // 不是 MDI 子窗体或父窗体类型不对
             // // }
             BindEpbRunnerGridFromConfig();
-
-
 
             try
             {
@@ -278,9 +272,6 @@ namespace MtEmbTest
                 TxtReleaseEnable.Text = ClsGlobal.ReleaseEnable.ToString();
                 TxtReleaseForceReq.Text = ClsGlobal.ReleaseForceReq.ToString();
 
-
-
-
                 LoadDaqAiToGridView(Environment.CurrentDirectory + @"\Config\AIConfig.xml");
 
 
@@ -295,7 +286,6 @@ namespace MtEmbTest
         }
 
 
-
         private void BindEpbRunnerGridFromConfig()
         {
             _epbRows.Clear();
@@ -305,52 +295,52 @@ namespace MtEmbTest
             if (dict == null) return;
 
             // 通道 1..12 都填一行（缺失时给空默认）
-            for (int ch = 1; ch <= 12; ch++)
+            for (var ch = 1; ch <= 12; ch++)
             {
-                EpbCycleRunnerConfig.Record r;
-                dict.TryGetValue(ch, out r);
+                dict.TryGetValue(ch, out var r);
 
                 _epbRows.Add(new EpbRow
                 {
                     Channel = ch,
                     Name = r != null ? r.Name : $"EPB{ch}",
-                    ForwardA = r != null ? r.ForwardA : 0,
-                    SafetyMarginA = r != null ? r.SafetyMarginA : 0,
-                    FwdOnLimitMs = r != null ? r.FwdOnLimitMs : 0,
-                    HoldMs = r != null ? r.HoldMs : 0,
-                    RevDecayLimitA = r != null ? r.RevDecayLimitA : 0,
-                    RevDecayRigidMaxMs = r != null ? r.RevDecayRigidMaxMs : 0,
-                    RevEmptyFixedMs = r != null ? r.RevEmptyFixedMs : 0,
-                    PreReleaseKeepMs = r != null ? r.PreReleaseKeepMs : (int?)null,
-                    PeakIgnoreMs = r != null ? r.PeakIgnoreMs : 0
+                    ForwardA = r?.ForwardA ?? 0,
+                    SafetyMarginA = r?.SafetyMarginA ?? 0,
+                    FwdOnLimitMs = r?.FwdOnLimitMs ?? 0,
+                    HoldMs = r?.HoldMs ?? 0,
+                    RevDecayLimitA = r?.RevDecayLimitA ?? 0,
+                    RevDecayRigidMaxMs = r?.RevDecayRigidMaxMs ?? 0,
+                    RevEmptyFixedMs = r?.RevEmptyFixedMs ?? 0,
+                    PreReleaseKeepMs = r?.PreReleaseKeepMs,
+                    PeakIgnoreMs = r?.PeakIgnoreMs ?? 0
                 });
             }
 
             dgvEpbRunnerCfgControl.AutoGenerateColumns = false;
             dgvEpbRunnerCfgControl.DataSource = _epbRows;
-            // 列构造你已按上一版加过；没有就按上一条消息里的 AddCol 片段生成一次即可
+
 
             // 仅首次构造列
             if (dgvEpbRunnerCfgControl.Columns.Count == 0)
             {
                 // 工具：快速添加文本列
-                DataGridViewTextBoxColumn AddCol(string dataProperty, string header, int width = 90, bool readOnly = false)
+                DataGridViewTextBoxColumn AddCol(string dataProperty, string header, int width = 90,
+                    bool readOnly = false)
                 {
                     var c = new DataGridViewTextBoxColumn
                     {
                         DataPropertyName = dataProperty,
                         HeaderText = header,
-                        Width = width,
+                        //Width = width, // 暂时注释宽度
                         ReadOnly = readOnly,
-                        SortMode = DataGridViewColumnSortMode.NotSortable,
-                        AutoSizeMode = DataGridViewAutoSizeColumnMode.None
+                        SortMode = DataGridViewColumnSortMode.NotSortable
+                        //AutoSizeMode = DataGridViewAutoSizeColumnMode.None
                     };
                     dgvEpbRunnerCfgControl.Columns.Add(c);
                     return c;
                 }
 
                 AddCol(nameof(EpbRow.Channel), "通道", 80, true);
-                AddCol(nameof(EpbRow.Name), "名称", 125, false);
+                AddCol(nameof(EpbRow.Name), "名称", 125);
                 AddCol(nameof(EpbRow.ForwardA), "电流阈值(A)", 187);
                 AddCol(nameof(EpbRow.SafetyMarginA), "提前断电值(A)", 237);
                 AddCol(nameof(EpbRow.FwdOnLimitMs), "正上限时长(ms)", 249);
@@ -361,6 +351,10 @@ namespace MtEmbTest
                 AddCol(nameof(EpbRow.PreReleaseKeepMs), "预释放维持(ms)", 233);
                 AddCol(nameof(EpbRow.PeakIgnoreMs), "峰值忽略(ms)", 212);
 
+
+                // 整体按内容自动调整列宽
+                dgvEpbRunnerCfgControl.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.AllCells;
+
                 dgvEpbRunnerCfgControl.RowHeadersWidth = 40;
                 dgvEpbRunnerCfgControl.AllowUserToAddRows = false;
                 dgvEpbRunnerCfgControl.AllowUserToDeleteRows = false;
@@ -370,13 +364,101 @@ namespace MtEmbTest
                 dgvEpbRunnerCfgControl.EditMode = DataGridViewEditMode.EditOnEnter;
 
                 // —— 设置表头与内容居中 —— //
-                dgvEpbRunnerCfgControl.ColumnHeadersDefaultCellStyle.Alignment = DataGridViewContentAlignment.MiddleCenter;
+                dgvEpbRunnerCfgControl.ColumnHeadersDefaultCellStyle.Alignment =
+                    DataGridViewContentAlignment.MiddleCenter;
                 dgvEpbRunnerCfgControl.DefaultCellStyle.Alignment = DataGridViewContentAlignment.MiddleCenter;
+            }
+        }
 
+        private void BindEpbRunnerGridFromConfigNew()
+        {
+            _epbRows.Clear();
 
+            var dict = _cfg?.Test?.EpbCycleRunner?.Channels;
+            if (dict == null) return;
 
+            for (var ch = 1; ch <= 12; ch++)
+            {
+                dict.TryGetValue(ch, out var r);
+
+                _epbRows.Add(new EpbRow
+                {
+                    Channel = ch,
+                    Name = r != null ? r.Name : $"EPB{ch}",
+                    ForwardA = r?.ForwardA ?? 0,
+                    SafetyMarginA = r?.SafetyMarginA ?? 0,
+                    FwdOnLimitMs = r?.FwdOnLimitMs ?? 0,
+                    HoldMs = r?.HoldMs ?? 0,
+                    RevDecayLimitA = r?.RevDecayLimitA ?? 0,
+                    RevDecayRigidMaxMs = r?.RevDecayRigidMaxMs ?? 0,
+                    RevEmptyFixedMs = r?.RevEmptyFixedMs ?? 0,
+                    PreReleaseKeepMs = r?.PreReleaseKeepMs,
+                    PeakIgnoreMs = r?.PeakIgnoreMs ?? 0
+                });
             }
 
+            dgvEpbRunnerCfgControl.AutoGenerateColumns = false;
+            dgvEpbRunnerCfgControl.DataSource = _epbRows;
+
+            if (dgvEpbRunnerCfgControl.Columns.Count == 0)
+            {
+                // 整体按比例填充，而不是固定像素
+                dgvEpbRunnerCfgControl.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
+
+                /// <summary>
+                /// 按“比例”添加一列，而不是固定像素。
+                /// </summary>
+                /// <param name="dataProperty">绑定的属性名（EpbRow.xx）。</param>
+                /// <param name="header">列头文本。</param>
+                /// <param name="fillWeight">
+                /// 列的相对宽度权重。所有列的 FillWeight 之和为 100% 的宽度，
+                /// 值越大，该列占用的宽度比例越大。
+                /// </param>
+                /// <param name="readOnly">是否只读。</param>
+                /// <returns>创建好的列对象。</returns>
+                DataGridViewTextBoxColumn AddCol(string dataProperty, string header, float fillWeight,
+                    bool readOnly = false)
+                {
+                    var c = new DataGridViewTextBoxColumn
+                    {
+                        DataPropertyName = dataProperty,
+                        HeaderText = header,
+                        ReadOnly = readOnly,
+                        SortMode = DataGridViewColumnSortMode.NotSortable,
+
+                        // 关键：使用 Fill 模式 + FillWeight
+                        AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill,
+                        FillWeight = fillWeight
+                    };
+                    dgvEpbRunnerCfgControl.Columns.Add(c);
+                    return c;
+                }
+
+                // 下面这些 FillWeight 是按照你原来像素宽度的比例换算出来的（大概等比例）
+                AddCol(nameof(EpbRow.Channel), "通道", 34f, true);
+                AddCol(nameof(EpbRow.Name), "名称", 53f);
+                AddCol(nameof(EpbRow.ForwardA), "电流阈值(A)", 80f);
+                AddCol(nameof(EpbRow.SafetyMarginA), "提前断电值(A)", 101f);
+                AddCol(nameof(EpbRow.FwdOnLimitMs), "正上限时长(ms)", 106f);
+                AddCol(nameof(EpbRow.HoldMs), "夹紧保持(ms)", 90f);
+                AddCol(nameof(EpbRow.RevDecayLimitA), "反向衰减限(A)", 92f);
+                AddCol(nameof(EpbRow.RevDecayRigidMaxMs), "反衰限制时长(ms)", 122f);
+                AddCol(nameof(EpbRow.RevEmptyFixedMs), "反向固定空行程(ms)", 132f);
+                AddCol(nameof(EpbRow.PreReleaseKeepMs), "预释放维持(ms)", 99f);
+                AddCol(nameof(EpbRow.PeakIgnoreMs), "峰值忽略(ms)", 90f);
+
+                dgvEpbRunnerCfgControl.RowHeadersWidth = 40;
+                dgvEpbRunnerCfgControl.AllowUserToAddRows = false;
+                dgvEpbRunnerCfgControl.AllowUserToDeleteRows = false;
+                dgvEpbRunnerCfgControl.AllowUserToResizeRows = false;
+                dgvEpbRunnerCfgControl.MultiSelect = false;
+                dgvEpbRunnerCfgControl.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
+                dgvEpbRunnerCfgControl.EditMode = DataGridViewEditMode.EditOnEnter;
+
+                dgvEpbRunnerCfgControl.ColumnHeadersDefaultCellStyle.Alignment =
+                    DataGridViewContentAlignment.MiddleCenter;
+                dgvEpbRunnerCfgControl.DefaultCellStyle.Alignment = DataGridViewContentAlignment.MiddleCenter;
+            }
         }
 
 
@@ -472,6 +554,7 @@ namespace MtEmbTest
                     foreach (XmlNode record in records)
                     {
                         var row = dt.NewRow();
+
                         row["序号"] = int.Parse(record["序号"].InnerText);
                         row["物理通道"] = record["物理通道"].InnerText;
                         row["参数名"] = record["参数名"].InnerText;
@@ -611,7 +694,6 @@ namespace MtEmbTest
             SaveTestConfigToXml(TxtTestCycle, TxtTestName, TxtTestTarget,
                 TxtStoreDir, TxtTestMan, RtbDesc);
 
-          
 
             MessageBox.Show("保存成功！");
         }
@@ -629,7 +711,7 @@ namespace MtEmbTest
                 // TestCycle = txtTestCycle.Text,
                 TestName = txtTestName.Text,
                 // TestTarget = txtTestTarget.Text,
-                StoreDir = txtStoreDir.Text,
+                StoreDir = txtStoreDir.Text
                 // TestMan = txtTestMan.Text,
                 // Description = rtbDesc.Text,
             };
@@ -658,20 +740,17 @@ namespace MtEmbTest
             UITextBox txtTestMan,
             UIRichTextBox rtbDesc)
         {
-            var xmlPath = Path.Combine(Environment.CurrentDirectory, @"Config\TestConfig.xml");
+            // var xmlPath = Path.Combine(Environment.CurrentDirectory, @"Config\TestConfig.xml");
+            //
+            //
+            // if (!File.Exists(xmlPath)) return;
 
-
-            if (!File.Exists(xmlPath)) return;
-
-            var config = LoadTestConfigFromFile();
-            if (config == null) return;
-
-            // txtTestCycle.Text = config.TestCycle;
-            txtTestName.Text = config.TestName;
-            // txtTestTarget.Text = config.TestTarget;
-            txtStoreDir.Text = config.StoreDir;
-            // txtTestMan.Text = config.TestMan;
-            // rtbDesc.Text = config.Description;
+            txtTestCycle.Text = _cfg.Test.TestCycleHz.ToString(CultureInfo.CurrentCulture);
+            txtTestName.Text = _cfg.Test.TestName;
+            txtTestTarget.Text = _cfg.Test.TestTarget.ToString();
+            txtStoreDir.Text = _cfg.Test.StoreDir;
+            txtTestMan.Text = _cfg.Test.Owner; // TestMan 对应 Owner，测试员、负责人等
+            rtbDesc.Text = _cfg.Test.Description; // 描述
         }
 
 
