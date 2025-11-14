@@ -1661,6 +1661,7 @@ namespace MTEmbTest
             }
             catch
             {
+                // ignored
             }
 
             // 3) 解绑采集事件并停止采集（按你的实例名/事件名修改）
@@ -1675,6 +1676,7 @@ namespace MTEmbTest
                     }
                     catch
                     {
+                        // ignored
                     }
 
                     try
@@ -1683,6 +1685,7 @@ namespace MTEmbTest
                     }
                     catch
                     {
+                        // ignored
                     }
 
                     try
@@ -1691,6 +1694,7 @@ namespace MTEmbTest
                     }
                     catch
                     {
+                        // ignored
                     }
 
                     twoDeviceAiAcquirer = null;
@@ -1698,6 +1702,7 @@ namespace MTEmbTest
             }
             catch
             {
+                // ignored
             }
 
             // 4) 停止并释放落盘定时器，并做最后一次 Flush on 2025/09/09
@@ -1714,6 +1719,7 @@ namespace MTEmbTest
                     }
                     catch
                     {
+                        // ignored
                     }
                 }
 
@@ -1751,9 +1757,44 @@ namespace MTEmbTest
             }
 
 
-            // 测试
-            _diskWriter.ExportFreeRunBySamples(1, 100000,
-                Path.Combine(Environment.CurrentDirectory, @$"DataStore\EPB1-{DateTime.Now:yyyy_MM_dd-HH_mm_ss}.csv"));
+            // // 测试
+            // _diskWriter.ExportFreeRunBySamples(1, 100000,
+            //     Path.Combine(Environment.CurrentDirectory, @$"DataStore\EPB1-{DateTime.Now:yyyy_MM_dd-HH_mm_ss}.csv"));
+
+
+            try
+            {
+                // 5) 关闭并释放落盘器（非常关键）：
+                //    EpbDiskWriter 内部持有 MemoryMappedFile 和 SQLite 连接，如果不 Dispose，
+                //    对应的 EPB*_sliding.dat 文件会一直被当前进程独占，导致下次 new 时打不开。
+                var writer = _diskWriter;
+                _diskWriter = null; // 提前置空，防止后续误用
+
+                if (writer != null)
+                {
+                    // 如果你确实需要在窗体关闭时导出一份 Free-Run 数据，
+                    // 可以保留下面这段导出逻辑；不需要的话可以整体删掉。
+                    try
+                    {
+                        var exportPath = Path.Combine(
+                            Environment.CurrentDirectory,
+                            $@"DataStore\EPB1-{DateTime.Now:yyyy_MM_dd-HH_mm_ss}.csv");
+
+                        writer.ExportFreeRunBySamples(1, 100000, exportPath);
+                    }
+                    catch
+                    {
+                        // 关闭阶段导出失败可以忽略，避免影响主流程
+                    }
+
+                    // 真正释放文件句柄和内存映射
+                    writer.Dispose();
+                }
+            }
+            catch
+            {
+                /* 关闭阶段忽略单次失败 */
+            }
 
             base.OnFormClosing(e);
         }
