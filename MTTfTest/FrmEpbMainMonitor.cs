@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -730,7 +731,7 @@ namespace MTEmbTest
                 //StartListen();
                 MakeCurveMapping();
                 //MakeDirectionMapping();
-                //LoadTestConfigFromXml(); // 已更改，暂时注释 2025/08/20
+                LoadTestConfigToUI(); 
                 //LoadEMBHandlerAndFrameNo();
 
                 RtbInfo.Invoke(new SetTextCallback(SetInfoText), "1. 编辑试验信息并确认");
@@ -871,9 +872,37 @@ namespace MTEmbTest
             }
         }
 
-        
-        
+        /// <summary>
+        /// 将 TestConfig 内容加载到 UI（带空值保护 + 派生值 + Led 显示更新）
+        /// </summary>
+        private void LoadTestConfigToUI()
+        {
+            try
+            {
+                if (_cfg?.Test == null)
+                {
+                    MessageBox.Show(@"TestConfig 尚未加载！", @"提示",
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
 
+                var test = _cfg.Test;
+
+                // ====  文本框显示基本参数 ===========================================
+                TxtTestName.Text = test.TestName ?? string.Empty;
+                TxtTestCycleTime.Text = test.TestPeriod.ToString(CultureInfo.InvariantCulture);
+                TxtTargetCycles.Text = test.TestTarget.ToString(CultureInfo.InvariantCulture);
+                
+                // ====  UI 提示 =====================================================
+                RtbInfo?.AppendText($"[{DateTime.Now:HH:mm:ss.fff}] 已加载试验配置。\n");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($@"加载试验配置失败：{ex.Message}",
+                    @"错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+        
         private void MakeCurveMapping()
         {
             curveDictionary.Clear();

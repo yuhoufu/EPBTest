@@ -746,11 +746,11 @@ namespace MtEmbTest
         {
             if (_cfg?.Test == null) return;
 
-            // —— 1) TestCycleHz —— //
+            // —— 1) TestPeriod —— //
             if (int.TryParse(TxtTestCycle.Text.Trim(), out var cycleHz) && cycleHz > 0)
-                _cfg.Test.TestCycleHz = cycleHz;
+                _cfg.Test.TestPeriod = cycleHz;
             else
-                _cfg.Test.TestCycleHz = 1;   // 安全默认值
+                _cfg.Test.TestPeriod = 1;   // 安全默认值
 
             // —— 2) TestName —— //
             _cfg.Test.TestName = (TxtTestName.Text ?? "").Trim();
@@ -807,7 +807,7 @@ namespace MtEmbTest
             //
             // if (!File.Exists(xmlPath)) return;
 
-            txtTestCycle.Text = _cfg.Test.TestCycleHz.ToString(CultureInfo.CurrentCulture);
+            txtTestCycle.Text = _cfg.Test.TestPeriod.ToString(CultureInfo.CurrentCulture);
             txtTestName.Text = _cfg.Test.TestName;
             txtTestTarget.Text = _cfg.Test.TestTarget.ToString();
             txtStoreDir.Text = _cfg.Test.StoreDir;
