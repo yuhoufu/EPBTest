@@ -29,21 +29,21 @@
         private void InitializeComponent()
         {
             this.components = new System.ComponentModel.Container();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle16 = new System.Windows.Forms.DataGridViewCellStyle();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle17 = new System.Windows.Forms.DataGridViewCellStyle();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle18 = new System.Windows.Forms.DataGridViewCellStyle();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle19 = new System.Windows.Forms.DataGridViewCellStyle();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle20 = new System.Windows.Forms.DataGridViewCellStyle();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle21 = new System.Windows.Forms.DataGridViewCellStyle();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle22 = new System.Windows.Forms.DataGridViewCellStyle();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle23 = new System.Windows.Forms.DataGridViewCellStyle();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle24 = new System.Windows.Forms.DataGridViewCellStyle();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle25 = new System.Windows.Forms.DataGridViewCellStyle();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle26 = new System.Windows.Forms.DataGridViewCellStyle();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle27 = new System.Windows.Forms.DataGridViewCellStyle();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle28 = new System.Windows.Forms.DataGridViewCellStyle();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle29 = new System.Windows.Forms.DataGridViewCellStyle();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle30 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle1 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle2 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle3 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle4 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle5 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle6 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle7 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle8 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle9 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle10 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle11 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle12 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle13 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle14 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle15 = new System.Windows.Forms.DataGridViewCellStyle();
             System.ComponentModel.ComponentResourceManager resources = new System.ComponentModel.ComponentResourceManager(typeof(FrmEpbMainMonitor));
             this.uiTextBox1 = new Sunny.UI.UITextBox();
             this.uiLabel29 = new Sunny.UI.UILabel();
@@ -225,6 +225,9 @@
             this.uiLabel23 = new Sunny.UI.UILabel();
             this.uiLabel24 = new Sunny.UI.UILabel();
             this.uiLabel25 = new Sunny.UI.UILabel();
+            this.SwitchEpb4 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
+            this.SwitchEpb5 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
+            this.SwitchEpb6 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
             this.uiTableLayoutPanel12 = new Sunny.UI.UITableLayoutPanel();
             this.LabEpb7 = new Sunny.UI.UILabel();
             this.LabEpb8 = new Sunny.UI.UILabel();
@@ -232,6 +235,9 @@
             this.uiLabel20 = new Sunny.UI.UILabel();
             this.uiLabel21 = new Sunny.UI.UILabel();
             this.uiLabel22 = new Sunny.UI.UILabel();
+            this.SwitchEpb7 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
+            this.SwitchEpb9 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
+            this.SwitchEpb8 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
             this.uiTableLayoutPanel13 = new Sunny.UI.UITableLayoutPanel();
             this.LabEpb10 = new Sunny.UI.UILabel();
             this.LabEpb11 = new Sunny.UI.UILabel();
@@ -239,6 +245,9 @@
             this.uiLabel26 = new Sunny.UI.UILabel();
             this.uiLabel27 = new Sunny.UI.UILabel();
             this.uiLabel28 = new Sunny.UI.UILabel();
+            this.SwitchEpb11 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
+            this.SwitchEpb12 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
+            this.SwitchEpb10 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
             this.uiPanel2 = new Sunny.UI.UIPanel();
             this.uiPanel3 = new Sunny.UI.UIPanel();
             this.uiPanel4 = new Sunny.UI.UIPanel();
@@ -249,6 +258,9 @@
             this.uiLabel4 = new Sunny.UI.UILabel();
             this.uiLabel5 = new Sunny.UI.UILabel();
             this.uiLabel6 = new Sunny.UI.UILabel();
+            this.SwitchEpb1 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
+            this.SwitchEpb2 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
+            this.SwitchEpb3 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
             this.SwitchEmb2 = new Sunny.UI.UISwitch();
             this.SwitchEmb3 = new Sunny.UI.UISwitch();
             this.uiLabel17 = new Sunny.UI.UILabel();
@@ -293,18 +305,6 @@
             this.uiPanel6 = new Sunny.UI.UIPanel();
             this.ClearZeroButton = new DevExpress.XtraEditors.SimpleButton();
             this.ZeroButton = new DevExpress.XtraEditors.SimpleButton();
-            this.SwitchEpb4 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchEpb5 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchEpb6 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchEpb7 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchEpb9 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchEpb8 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchEpb11 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchEpb12 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchEpb10 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchEpb1 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchEpb2 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
-            this.SwitchEpb3 = new DevExpress.UITemplates.Collection.Editors.ToggleButton();
             ((System.ComponentModel.ISupportInitialize)(this.dgvRealData)).BeginInit();
             this.uiGroupCurve.SuspendLayout();
             this.uiTableLayoutPanel18.SuspendLayout();
@@ -446,29 +446,29 @@
             // 
             this.dgvRealData.AllowUserToAddRows = false;
             this.dgvRealData.AllowUserToDeleteRows = false;
-            dataGridViewCellStyle16.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
-            dataGridViewCellStyle16.BackColor = System.Drawing.Color.WhiteSmoke;
-            dataGridViewCellStyle16.Font = new System.Drawing.Font("Arial Narrow", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.dgvRealData.AlternatingRowsDefaultCellStyle = dataGridViewCellStyle16;
+            dataGridViewCellStyle1.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+            dataGridViewCellStyle1.BackColor = System.Drawing.Color.WhiteSmoke;
+            dataGridViewCellStyle1.Font = new System.Drawing.Font("Arial Narrow", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.dgvRealData.AlternatingRowsDefaultCellStyle = dataGridViewCellStyle1;
             this.dgvRealData.BackgroundColor = System.Drawing.Color.White;
             this.dgvRealData.ColumnHeadersBorderStyle = System.Windows.Forms.DataGridViewHeaderBorderStyle.Single;
-            dataGridViewCellStyle17.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
-            dataGridViewCellStyle17.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            dataGridViewCellStyle17.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            dataGridViewCellStyle17.ForeColor = System.Drawing.Color.White;
-            dataGridViewCellStyle17.SelectionBackColor = System.Drawing.SystemColors.Highlight;
-            dataGridViewCellStyle17.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
-            dataGridViewCellStyle17.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
-            this.dgvRealData.ColumnHeadersDefaultCellStyle = dataGridViewCellStyle17;
+            dataGridViewCellStyle2.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+            dataGridViewCellStyle2.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            dataGridViewCellStyle2.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            dataGridViewCellStyle2.ForeColor = System.Drawing.Color.White;
+            dataGridViewCellStyle2.SelectionBackColor = System.Drawing.SystemColors.Highlight;
+            dataGridViewCellStyle2.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
+            dataGridViewCellStyle2.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
+            this.dgvRealData.ColumnHeadersDefaultCellStyle = dataGridViewCellStyle2;
             this.dgvRealData.ColumnHeadersHeight = 35;
-            dataGridViewCellStyle18.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleLeft;
-            dataGridViewCellStyle18.BackColor = System.Drawing.SystemColors.Window;
-            dataGridViewCellStyle18.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            dataGridViewCellStyle18.ForeColor = System.Drawing.SystemColors.ControlText;
-            dataGridViewCellStyle18.SelectionBackColor = System.Drawing.SystemColors.Highlight;
-            dataGridViewCellStyle18.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
-            dataGridViewCellStyle18.WrapMode = System.Windows.Forms.DataGridViewTriState.False;
-            this.dgvRealData.DefaultCellStyle = dataGridViewCellStyle18;
+            dataGridViewCellStyle3.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleLeft;
+            dataGridViewCellStyle3.BackColor = System.Drawing.SystemColors.Window;
+            dataGridViewCellStyle3.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            dataGridViewCellStyle3.ForeColor = System.Drawing.SystemColors.ControlText;
+            dataGridViewCellStyle3.SelectionBackColor = System.Drawing.SystemColors.Highlight;
+            dataGridViewCellStyle3.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
+            dataGridViewCellStyle3.WrapMode = System.Windows.Forms.DataGridViewTriState.False;
+            this.dgvRealData.DefaultCellStyle = dataGridViewCellStyle3;
             this.dgvRealData.Dock = System.Windows.Forms.DockStyle.Fill;
             this.dgvRealData.EnableHeadersVisualStyles = false;
             this.dgvRealData.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
@@ -476,19 +476,19 @@
             this.dgvRealData.Location = new System.Drawing.Point(391, 423);
             this.dgvRealData.Margin = new System.Windows.Forms.Padding(2);
             this.dgvRealData.Name = "dgvRealData";
-            dataGridViewCellStyle19.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
-            dataGridViewCellStyle19.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(235)))), ((int)(((byte)(243)))), ((int)(((byte)(255)))));
-            dataGridViewCellStyle19.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            dataGridViewCellStyle19.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            dataGridViewCellStyle19.SelectionBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            dataGridViewCellStyle19.SelectionForeColor = System.Drawing.Color.White;
-            dataGridViewCellStyle19.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
-            this.dgvRealData.RowHeadersDefaultCellStyle = dataGridViewCellStyle19;
+            dataGridViewCellStyle4.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+            dataGridViewCellStyle4.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(235)))), ((int)(((byte)(243)))), ((int)(((byte)(255)))));
+            dataGridViewCellStyle4.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            dataGridViewCellStyle4.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            dataGridViewCellStyle4.SelectionBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            dataGridViewCellStyle4.SelectionForeColor = System.Drawing.Color.White;
+            dataGridViewCellStyle4.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
+            this.dgvRealData.RowHeadersDefaultCellStyle = dataGridViewCellStyle4;
             this.dgvRealData.RowHeadersWidth = 30;
-            dataGridViewCellStyle20.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
-            dataGridViewCellStyle20.BackColor = System.Drawing.Color.Lavender;
-            dataGridViewCellStyle20.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.dgvRealData.RowsDefaultCellStyle = dataGridViewCellStyle20;
+            dataGridViewCellStyle5.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+            dataGridViewCellStyle5.BackColor = System.Drawing.Color.Lavender;
+            dataGridViewCellStyle5.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.dgvRealData.RowsDefaultCellStyle = dataGridViewCellStyle5;
             this.dgvRealData.RowTemplate.Height = 35;
             this.dgvRealData.SelectedIndex = -1;
             this.dgvRealData.Size = new System.Drawing.Size(347, 201);
@@ -961,29 +961,29 @@
             // 
             this.uiDataGridView1.AllowUserToAddRows = false;
             this.uiDataGridView1.AllowUserToDeleteRows = false;
-            dataGridViewCellStyle21.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
-            dataGridViewCellStyle21.BackColor = System.Drawing.Color.WhiteSmoke;
-            dataGridViewCellStyle21.Font = new System.Drawing.Font("Arial Narrow", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.uiDataGridView1.AlternatingRowsDefaultCellStyle = dataGridViewCellStyle21;
+            dataGridViewCellStyle6.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+            dataGridViewCellStyle6.BackColor = System.Drawing.Color.WhiteSmoke;
+            dataGridViewCellStyle6.Font = new System.Drawing.Font("Arial Narrow", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiDataGridView1.AlternatingRowsDefaultCellStyle = dataGridViewCellStyle6;
             this.uiDataGridView1.BackgroundColor = System.Drawing.Color.White;
             this.uiDataGridView1.ColumnHeadersBorderStyle = System.Windows.Forms.DataGridViewHeaderBorderStyle.Single;
-            dataGridViewCellStyle22.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
-            dataGridViewCellStyle22.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            dataGridViewCellStyle22.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            dataGridViewCellStyle22.ForeColor = System.Drawing.Color.White;
-            dataGridViewCellStyle22.SelectionBackColor = System.Drawing.SystemColors.Highlight;
-            dataGridViewCellStyle22.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
-            dataGridViewCellStyle22.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
-            this.uiDataGridView1.ColumnHeadersDefaultCellStyle = dataGridViewCellStyle22;
+            dataGridViewCellStyle7.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+            dataGridViewCellStyle7.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            dataGridViewCellStyle7.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            dataGridViewCellStyle7.ForeColor = System.Drawing.Color.White;
+            dataGridViewCellStyle7.SelectionBackColor = System.Drawing.SystemColors.Highlight;
+            dataGridViewCellStyle7.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
+            dataGridViewCellStyle7.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
+            this.uiDataGridView1.ColumnHeadersDefaultCellStyle = dataGridViewCellStyle7;
             this.uiDataGridView1.ColumnHeadersHeight = 35;
-            dataGridViewCellStyle23.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleLeft;
-            dataGridViewCellStyle23.BackColor = System.Drawing.SystemColors.Window;
-            dataGridViewCellStyle23.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            dataGridViewCellStyle23.ForeColor = System.Drawing.SystemColors.ControlText;
-            dataGridViewCellStyle23.SelectionBackColor = System.Drawing.SystemColors.Highlight;
-            dataGridViewCellStyle23.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
-            dataGridViewCellStyle23.WrapMode = System.Windows.Forms.DataGridViewTriState.False;
-            this.uiDataGridView1.DefaultCellStyle = dataGridViewCellStyle23;
+            dataGridViewCellStyle8.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleLeft;
+            dataGridViewCellStyle8.BackColor = System.Drawing.SystemColors.Window;
+            dataGridViewCellStyle8.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            dataGridViewCellStyle8.ForeColor = System.Drawing.SystemColors.ControlText;
+            dataGridViewCellStyle8.SelectionBackColor = System.Drawing.SystemColors.Highlight;
+            dataGridViewCellStyle8.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
+            dataGridViewCellStyle8.WrapMode = System.Windows.Forms.DataGridViewTriState.False;
+            this.uiDataGridView1.DefaultCellStyle = dataGridViewCellStyle8;
             this.uiDataGridView1.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiDataGridView1.EnableHeadersVisualStyles = false;
             this.uiDataGridView1.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
@@ -991,19 +991,19 @@
             this.uiDataGridView1.Location = new System.Drawing.Point(391, 423);
             this.uiDataGridView1.Margin = new System.Windows.Forms.Padding(2);
             this.uiDataGridView1.Name = "uiDataGridView1";
-            dataGridViewCellStyle24.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
-            dataGridViewCellStyle24.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(235)))), ((int)(((byte)(243)))), ((int)(((byte)(255)))));
-            dataGridViewCellStyle24.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            dataGridViewCellStyle24.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            dataGridViewCellStyle24.SelectionBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            dataGridViewCellStyle24.SelectionForeColor = System.Drawing.Color.White;
-            dataGridViewCellStyle24.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
-            this.uiDataGridView1.RowHeadersDefaultCellStyle = dataGridViewCellStyle24;
+            dataGridViewCellStyle9.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+            dataGridViewCellStyle9.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(235)))), ((int)(((byte)(243)))), ((int)(((byte)(255)))));
+            dataGridViewCellStyle9.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            dataGridViewCellStyle9.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            dataGridViewCellStyle9.SelectionBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            dataGridViewCellStyle9.SelectionForeColor = System.Drawing.Color.White;
+            dataGridViewCellStyle9.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
+            this.uiDataGridView1.RowHeadersDefaultCellStyle = dataGridViewCellStyle9;
             this.uiDataGridView1.RowHeadersWidth = 30;
-            dataGridViewCellStyle25.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
-            dataGridViewCellStyle25.BackColor = System.Drawing.Color.Lavender;
-            dataGridViewCellStyle25.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.uiDataGridView1.RowsDefaultCellStyle = dataGridViewCellStyle25;
+            dataGridViewCellStyle10.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+            dataGridViewCellStyle10.BackColor = System.Drawing.Color.Lavender;
+            dataGridViewCellStyle10.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiDataGridView1.RowsDefaultCellStyle = dataGridViewCellStyle10;
             this.uiTableLayoutPanel25.SetRowSpan(this.uiDataGridView1, 5);
             this.uiDataGridView1.RowTemplate.Height = 35;
             this.uiDataGridView1.SelectedIndex = -1;
@@ -1823,29 +1823,29 @@
             // 
             this.uiDataGridView2.AllowUserToAddRows = false;
             this.uiDataGridView2.AllowUserToDeleteRows = false;
-            dataGridViewCellStyle26.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
-            dataGridViewCellStyle26.BackColor = System.Drawing.Color.WhiteSmoke;
-            dataGridViewCellStyle26.Font = new System.Drawing.Font("Arial Narrow", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.uiDataGridView2.AlternatingRowsDefaultCellStyle = dataGridViewCellStyle26;
+            dataGridViewCellStyle11.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+            dataGridViewCellStyle11.BackColor = System.Drawing.Color.WhiteSmoke;
+            dataGridViewCellStyle11.Font = new System.Drawing.Font("Arial Narrow", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiDataGridView2.AlternatingRowsDefaultCellStyle = dataGridViewCellStyle11;
             this.uiDataGridView2.BackgroundColor = System.Drawing.Color.White;
             this.uiDataGridView2.ColumnHeadersBorderStyle = System.Windows.Forms.DataGridViewHeaderBorderStyle.Single;
-            dataGridViewCellStyle27.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
-            dataGridViewCellStyle27.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            dataGridViewCellStyle27.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            dataGridViewCellStyle27.ForeColor = System.Drawing.Color.White;
-            dataGridViewCellStyle27.SelectionBackColor = System.Drawing.SystemColors.Highlight;
-            dataGridViewCellStyle27.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
-            dataGridViewCellStyle27.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
-            this.uiDataGridView2.ColumnHeadersDefaultCellStyle = dataGridViewCellStyle27;
+            dataGridViewCellStyle12.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+            dataGridViewCellStyle12.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            dataGridViewCellStyle12.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            dataGridViewCellStyle12.ForeColor = System.Drawing.Color.White;
+            dataGridViewCellStyle12.SelectionBackColor = System.Drawing.SystemColors.Highlight;
+            dataGridViewCellStyle12.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
+            dataGridViewCellStyle12.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
+            this.uiDataGridView2.ColumnHeadersDefaultCellStyle = dataGridViewCellStyle12;
             this.uiDataGridView2.ColumnHeadersHeight = 35;
-            dataGridViewCellStyle28.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleLeft;
-            dataGridViewCellStyle28.BackColor = System.Drawing.SystemColors.Window;
-            dataGridViewCellStyle28.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            dataGridViewCellStyle28.ForeColor = System.Drawing.SystemColors.ControlText;
-            dataGridViewCellStyle28.SelectionBackColor = System.Drawing.SystemColors.Highlight;
-            dataGridViewCellStyle28.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
-            dataGridViewCellStyle28.WrapMode = System.Windows.Forms.DataGridViewTriState.False;
-            this.uiDataGridView2.DefaultCellStyle = dataGridViewCellStyle28;
+            dataGridViewCellStyle13.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleLeft;
+            dataGridViewCellStyle13.BackColor = System.Drawing.SystemColors.Window;
+            dataGridViewCellStyle13.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            dataGridViewCellStyle13.ForeColor = System.Drawing.SystemColors.ControlText;
+            dataGridViewCellStyle13.SelectionBackColor = System.Drawing.SystemColors.Highlight;
+            dataGridViewCellStyle13.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
+            dataGridViewCellStyle13.WrapMode = System.Windows.Forms.DataGridViewTriState.False;
+            this.uiDataGridView2.DefaultCellStyle = dataGridViewCellStyle13;
             this.uiDataGridView2.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiDataGridView2.EnableHeadersVisualStyles = false;
             this.uiDataGridView2.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
@@ -1853,19 +1853,19 @@
             this.uiDataGridView2.Location = new System.Drawing.Point(391, 423);
             this.uiDataGridView2.Margin = new System.Windows.Forms.Padding(2);
             this.uiDataGridView2.Name = "uiDataGridView2";
-            dataGridViewCellStyle29.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
-            dataGridViewCellStyle29.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(235)))), ((int)(((byte)(243)))), ((int)(((byte)(255)))));
-            dataGridViewCellStyle29.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            dataGridViewCellStyle29.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            dataGridViewCellStyle29.SelectionBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            dataGridViewCellStyle29.SelectionForeColor = System.Drawing.Color.White;
-            dataGridViewCellStyle29.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
-            this.uiDataGridView2.RowHeadersDefaultCellStyle = dataGridViewCellStyle29;
+            dataGridViewCellStyle14.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+            dataGridViewCellStyle14.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(235)))), ((int)(((byte)(243)))), ((int)(((byte)(255)))));
+            dataGridViewCellStyle14.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            dataGridViewCellStyle14.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            dataGridViewCellStyle14.SelectionBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            dataGridViewCellStyle14.SelectionForeColor = System.Drawing.Color.White;
+            dataGridViewCellStyle14.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
+            this.uiDataGridView2.RowHeadersDefaultCellStyle = dataGridViewCellStyle14;
             this.uiDataGridView2.RowHeadersWidth = 30;
-            dataGridViewCellStyle30.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
-            dataGridViewCellStyle30.BackColor = System.Drawing.Color.Lavender;
-            dataGridViewCellStyle30.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.uiDataGridView2.RowsDefaultCellStyle = dataGridViewCellStyle30;
+            dataGridViewCellStyle15.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+            dataGridViewCellStyle15.BackColor = System.Drawing.Color.Lavender;
+            dataGridViewCellStyle15.Font = new System.Drawing.Font("Arial", 8.872038F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiDataGridView2.RowsDefaultCellStyle = dataGridViewCellStyle15;
             this.uiTableLayoutPanel34.SetRowSpan(this.uiDataGridView2, 5);
             this.uiDataGridView2.RowTemplate.Height = 35;
             this.uiDataGridView2.SelectedIndex = -1;
@@ -3716,6 +3716,54 @@
             this.uiLabel25.Text = "EPB 06";
             this.uiLabel25.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
             // 
+            // SwitchEpb4
+            // 
+            this.SwitchEpb4.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb4.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb4.Appearance.Options.UseBackColor = true;
+            this.SwitchEpb4.Appearance.Options.UseForeColor = true;
+            this.SwitchEpb4.CheckedText = "RUN";
+            this.SwitchEpb4.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.SwitchEpb4.HtmlTemplate.Styles = resources.GetString("SwitchEpb4.HtmlTemplate.Styles");
+            this.SwitchEpb4.Location = new System.Drawing.Point(130, 3);
+            this.SwitchEpb4.Name = "SwitchEpb4";
+            this.SwitchEpb4.Size = new System.Drawing.Size(121, 111);
+            this.SwitchEpb4.TabIndex = 38;
+            this.SwitchEpb4.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
+            this.SwitchEpb4.UncheckedText = "STOP";
+            // 
+            // SwitchEpb5
+            // 
+            this.SwitchEpb5.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb5.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb5.Appearance.Options.UseBackColor = true;
+            this.SwitchEpb5.Appearance.Options.UseForeColor = true;
+            this.SwitchEpb5.CheckedText = "RUN";
+            this.SwitchEpb5.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.SwitchEpb5.HtmlTemplate.Styles = resources.GetString("SwitchEpb5.HtmlTemplate.Styles");
+            this.SwitchEpb5.Location = new System.Drawing.Point(130, 120);
+            this.SwitchEpb5.Name = "SwitchEpb5";
+            this.SwitchEpb5.Size = new System.Drawing.Size(121, 111);
+            this.SwitchEpb5.TabIndex = 38;
+            this.SwitchEpb5.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
+            this.SwitchEpb5.UncheckedText = "STOP";
+            // 
+            // SwitchEpb6
+            // 
+            this.SwitchEpb6.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb6.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb6.Appearance.Options.UseBackColor = true;
+            this.SwitchEpb6.Appearance.Options.UseForeColor = true;
+            this.SwitchEpb6.CheckedText = "RUN";
+            this.SwitchEpb6.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.SwitchEpb6.HtmlTemplate.Styles = resources.GetString("SwitchEpb6.HtmlTemplate.Styles");
+            this.SwitchEpb6.Location = new System.Drawing.Point(130, 237);
+            this.SwitchEpb6.Name = "SwitchEpb6";
+            this.SwitchEpb6.Size = new System.Drawing.Size(121, 112);
+            this.SwitchEpb6.TabIndex = 38;
+            this.SwitchEpb6.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
+            this.SwitchEpb6.UncheckedText = "STOP";
+            // 
             // uiTableLayoutPanel12
             // 
             this.uiTableLayoutPanel12.ColumnCount = 4;
@@ -3815,6 +3863,54 @@
             this.uiLabel22.Text = "EPB 09";
             this.uiLabel22.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
             // 
+            // SwitchEpb7
+            // 
+            this.SwitchEpb7.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb7.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb7.Appearance.Options.UseBackColor = true;
+            this.SwitchEpb7.Appearance.Options.UseForeColor = true;
+            this.SwitchEpb7.CheckedText = "RUN";
+            this.SwitchEpb7.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.SwitchEpb7.HtmlTemplate.Styles = resources.GetString("SwitchEpb7.HtmlTemplate.Styles");
+            this.SwitchEpb7.Location = new System.Drawing.Point(130, 3);
+            this.SwitchEpb7.Name = "SwitchEpb7";
+            this.SwitchEpb7.Size = new System.Drawing.Size(121, 111);
+            this.SwitchEpb7.TabIndex = 38;
+            this.SwitchEpb7.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
+            this.SwitchEpb7.UncheckedText = "STOP";
+            // 
+            // SwitchEpb9
+            // 
+            this.SwitchEpb9.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb9.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb9.Appearance.Options.UseBackColor = true;
+            this.SwitchEpb9.Appearance.Options.UseForeColor = true;
+            this.SwitchEpb9.CheckedText = "RUN";
+            this.SwitchEpb9.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.SwitchEpb9.HtmlTemplate.Styles = resources.GetString("SwitchEpb9.HtmlTemplate.Styles");
+            this.SwitchEpb9.Location = new System.Drawing.Point(130, 237);
+            this.SwitchEpb9.Name = "SwitchEpb9";
+            this.SwitchEpb9.Size = new System.Drawing.Size(121, 112);
+            this.SwitchEpb9.TabIndex = 38;
+            this.SwitchEpb9.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
+            this.SwitchEpb9.UncheckedText = "STOP";
+            // 
+            // SwitchEpb8
+            // 
+            this.SwitchEpb8.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb8.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb8.Appearance.Options.UseBackColor = true;
+            this.SwitchEpb8.Appearance.Options.UseForeColor = true;
+            this.SwitchEpb8.CheckedText = "RUN";
+            this.SwitchEpb8.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.SwitchEpb8.HtmlTemplate.Styles = resources.GetString("SwitchEpb8.HtmlTemplate.Styles");
+            this.SwitchEpb8.Location = new System.Drawing.Point(130, 120);
+            this.SwitchEpb8.Name = "SwitchEpb8";
+            this.SwitchEpb8.Size = new System.Drawing.Size(121, 111);
+            this.SwitchEpb8.TabIndex = 38;
+            this.SwitchEpb8.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
+            this.SwitchEpb8.UncheckedText = "STOP";
+            // 
             // uiTableLayoutPanel13
             // 
             this.uiTableLayoutPanel13.ColumnCount = 4;
@@ -3913,6 +4009,54 @@
             this.uiLabel28.TabIndex = 37;
             this.uiLabel28.Text = "EPB 12";
             this.uiLabel28.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // SwitchEpb11
+            // 
+            this.SwitchEpb11.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb11.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb11.Appearance.Options.UseBackColor = true;
+            this.SwitchEpb11.Appearance.Options.UseForeColor = true;
+            this.SwitchEpb11.CheckedText = "RUN";
+            this.SwitchEpb11.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.SwitchEpb11.HtmlTemplate.Styles = resources.GetString("SwitchEpb11.HtmlTemplate.Styles");
+            this.SwitchEpb11.Location = new System.Drawing.Point(130, 120);
+            this.SwitchEpb11.Name = "SwitchEpb11";
+            this.SwitchEpb11.Size = new System.Drawing.Size(121, 111);
+            this.SwitchEpb11.TabIndex = 38;
+            this.SwitchEpb11.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
+            this.SwitchEpb11.UncheckedText = "STOP";
+            // 
+            // SwitchEpb12
+            // 
+            this.SwitchEpb12.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb12.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb12.Appearance.Options.UseBackColor = true;
+            this.SwitchEpb12.Appearance.Options.UseForeColor = true;
+            this.SwitchEpb12.CheckedText = "RUN";
+            this.SwitchEpb12.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.SwitchEpb12.HtmlTemplate.Styles = resources.GetString("SwitchEpb12.HtmlTemplate.Styles");
+            this.SwitchEpb12.Location = new System.Drawing.Point(130, 237);
+            this.SwitchEpb12.Name = "SwitchEpb12";
+            this.SwitchEpb12.Size = new System.Drawing.Size(121, 112);
+            this.SwitchEpb12.TabIndex = 38;
+            this.SwitchEpb12.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
+            this.SwitchEpb12.UncheckedText = "STOP";
+            // 
+            // SwitchEpb10
+            // 
+            this.SwitchEpb10.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb10.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb10.Appearance.Options.UseBackColor = true;
+            this.SwitchEpb10.Appearance.Options.UseForeColor = true;
+            this.SwitchEpb10.CheckedText = "RUN";
+            this.SwitchEpb10.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.SwitchEpb10.HtmlTemplate.Styles = resources.GetString("SwitchEpb10.HtmlTemplate.Styles");
+            this.SwitchEpb10.Location = new System.Drawing.Point(130, 3);
+            this.SwitchEpb10.Name = "SwitchEpb10";
+            this.SwitchEpb10.Size = new System.Drawing.Size(121, 111);
+            this.SwitchEpb10.TabIndex = 38;
+            this.SwitchEpb10.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
+            this.SwitchEpb10.UncheckedText = "STOP";
             // 
             // uiPanel2
             // 
@@ -4064,6 +4208,54 @@
             this.uiLabel6.TabIndex = 37;
             this.uiLabel6.Text = "EPB 03";
             this.uiLabel6.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // SwitchEpb1
+            // 
+            this.SwitchEpb1.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb1.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb1.Appearance.Options.UseBackColor = true;
+            this.SwitchEpb1.Appearance.Options.UseForeColor = true;
+            this.SwitchEpb1.CheckedText = "RUN";
+            this.SwitchEpb1.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.SwitchEpb1.HtmlTemplate.Styles = resources.GetString("SwitchEpb1.HtmlTemplate.Styles");
+            this.SwitchEpb1.Location = new System.Drawing.Point(130, 3);
+            this.SwitchEpb1.Name = "SwitchEpb1";
+            this.SwitchEpb1.Size = new System.Drawing.Size(121, 111);
+            this.SwitchEpb1.TabIndex = 38;
+            this.SwitchEpb1.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
+            this.SwitchEpb1.UncheckedText = "STOP";
+            // 
+            // SwitchEpb2
+            // 
+            this.SwitchEpb2.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb2.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb2.Appearance.Options.UseBackColor = true;
+            this.SwitchEpb2.Appearance.Options.UseForeColor = true;
+            this.SwitchEpb2.CheckedText = "RUN";
+            this.SwitchEpb2.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.SwitchEpb2.HtmlTemplate.Styles = resources.GetString("SwitchEpb2.HtmlTemplate.Styles");
+            this.SwitchEpb2.Location = new System.Drawing.Point(130, 120);
+            this.SwitchEpb2.Name = "SwitchEpb2";
+            this.SwitchEpb2.Size = new System.Drawing.Size(121, 111);
+            this.SwitchEpb2.TabIndex = 38;
+            this.SwitchEpb2.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
+            this.SwitchEpb2.UncheckedText = "STOP";
+            // 
+            // SwitchEpb3
+            // 
+            this.SwitchEpb3.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb3.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
+            this.SwitchEpb3.Appearance.Options.UseBackColor = true;
+            this.SwitchEpb3.Appearance.Options.UseForeColor = true;
+            this.SwitchEpb3.CheckedText = "RUN";
+            this.SwitchEpb3.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.SwitchEpb3.HtmlTemplate.Styles = resources.GetString("SwitchEpb3.HtmlTemplate.Styles");
+            this.SwitchEpb3.Location = new System.Drawing.Point(130, 237);
+            this.SwitchEpb3.Name = "SwitchEpb3";
+            this.SwitchEpb3.Size = new System.Drawing.Size(121, 112);
+            this.SwitchEpb3.TabIndex = 38;
+            this.SwitchEpb3.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
+            this.SwitchEpb3.UncheckedText = "STOP";
             // 
             // SwitchEmb2
             // 
@@ -4744,198 +4936,6 @@
             this.ZeroButton.TabIndex = 0;
             this.ZeroButton.Text = "置零";
             this.ZeroButton.Click += new System.EventHandler(this.ZeroButton_Click);
-            // 
-            // SwitchEpb4
-            // 
-            this.SwitchEpb4.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb4.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb4.Appearance.Options.UseBackColor = true;
-            this.SwitchEpb4.Appearance.Options.UseForeColor = true;
-            this.SwitchEpb4.CheckedText = "RUN";
-            this.SwitchEpb4.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchEpb4.HtmlTemplate.Styles = resources.GetString("SwitchEpb4.HtmlTemplate.Styles");
-            this.SwitchEpb4.Location = new System.Drawing.Point(130, 3);
-            this.SwitchEpb4.Name = "SwitchEpb4";
-            this.SwitchEpb4.Size = new System.Drawing.Size(121, 111);
-            this.SwitchEpb4.TabIndex = 38;
-            this.SwitchEpb4.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchEpb4.UncheckedText = "STOP";
-            // 
-            // SwitchEpb5
-            // 
-            this.SwitchEpb5.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb5.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb5.Appearance.Options.UseBackColor = true;
-            this.SwitchEpb5.Appearance.Options.UseForeColor = true;
-            this.SwitchEpb5.CheckedText = "RUN";
-            this.SwitchEpb5.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchEpb5.HtmlTemplate.Styles = resources.GetString("SwitchEpb5.HtmlTemplate.Styles");
-            this.SwitchEpb5.Location = new System.Drawing.Point(130, 120);
-            this.SwitchEpb5.Name = "SwitchEpb5";
-            this.SwitchEpb5.Size = new System.Drawing.Size(121, 111);
-            this.SwitchEpb5.TabIndex = 38;
-            this.SwitchEpb5.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchEpb5.UncheckedText = "STOP";
-            // 
-            // SwitchEpb6
-            // 
-            this.SwitchEpb6.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb6.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb6.Appearance.Options.UseBackColor = true;
-            this.SwitchEpb6.Appearance.Options.UseForeColor = true;
-            this.SwitchEpb6.CheckedText = "RUN";
-            this.SwitchEpb6.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchEpb6.HtmlTemplate.Styles = resources.GetString("SwitchEpb6.HtmlTemplate.Styles");
-            this.SwitchEpb6.Location = new System.Drawing.Point(130, 237);
-            this.SwitchEpb6.Name = "SwitchEpb6";
-            this.SwitchEpb6.Size = new System.Drawing.Size(121, 112);
-            this.SwitchEpb6.TabIndex = 38;
-            this.SwitchEpb6.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchEpb6.UncheckedText = "STOP";
-            // 
-            // SwitchEpb7
-            // 
-            this.SwitchEpb7.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb7.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb7.Appearance.Options.UseBackColor = true;
-            this.SwitchEpb7.Appearance.Options.UseForeColor = true;
-            this.SwitchEpb7.CheckedText = "RUN";
-            this.SwitchEpb7.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchEpb7.HtmlTemplate.Styles = resources.GetString("SwitchEpb7.HtmlTemplate.Styles");
-            this.SwitchEpb7.Location = new System.Drawing.Point(130, 3);
-            this.SwitchEpb7.Name = "SwitchEpb7";
-            this.SwitchEpb7.Size = new System.Drawing.Size(121, 111);
-            this.SwitchEpb7.TabIndex = 38;
-            this.SwitchEpb7.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchEpb7.UncheckedText = "STOP";
-            // 
-            // SwitchEpb9
-            // 
-            this.SwitchEpb9.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb9.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb9.Appearance.Options.UseBackColor = true;
-            this.SwitchEpb9.Appearance.Options.UseForeColor = true;
-            this.SwitchEpb9.CheckedText = "RUN";
-            this.SwitchEpb9.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchEpb9.HtmlTemplate.Styles = resources.GetString("SwitchEpb9.HtmlTemplate.Styles");
-            this.SwitchEpb9.Location = new System.Drawing.Point(130, 237);
-            this.SwitchEpb9.Name = "SwitchEpb9";
-            this.SwitchEpb9.Size = new System.Drawing.Size(121, 112);
-            this.SwitchEpb9.TabIndex = 38;
-            this.SwitchEpb9.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchEpb9.UncheckedText = "STOP";
-            // 
-            // SwitchEpb8
-            // 
-            this.SwitchEpb8.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb8.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb8.Appearance.Options.UseBackColor = true;
-            this.SwitchEpb8.Appearance.Options.UseForeColor = true;
-            this.SwitchEpb8.CheckedText = "RUN";
-            this.SwitchEpb8.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchEpb8.HtmlTemplate.Styles = resources.GetString("SwitchEpb8.HtmlTemplate.Styles");
-            this.SwitchEpb8.Location = new System.Drawing.Point(130, 120);
-            this.SwitchEpb8.Name = "SwitchEpb8";
-            this.SwitchEpb8.Size = new System.Drawing.Size(121, 111);
-            this.SwitchEpb8.TabIndex = 38;
-            this.SwitchEpb8.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchEpb8.UncheckedText = "STOP";
-            // 
-            // SwitchEpb11
-            // 
-            this.SwitchEpb11.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb11.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb11.Appearance.Options.UseBackColor = true;
-            this.SwitchEpb11.Appearance.Options.UseForeColor = true;
-            this.SwitchEpb11.CheckedText = "RUN";
-            this.SwitchEpb11.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchEpb11.HtmlTemplate.Styles = resources.GetString("SwitchEpb11.HtmlTemplate.Styles");
-            this.SwitchEpb11.Location = new System.Drawing.Point(130, 120);
-            this.SwitchEpb11.Name = "SwitchEpb11";
-            this.SwitchEpb11.Size = new System.Drawing.Size(121, 111);
-            this.SwitchEpb11.TabIndex = 38;
-            this.SwitchEpb11.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchEpb11.UncheckedText = "STOP";
-            // 
-            // SwitchEpb12
-            // 
-            this.SwitchEpb12.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb12.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb12.Appearance.Options.UseBackColor = true;
-            this.SwitchEpb12.Appearance.Options.UseForeColor = true;
-            this.SwitchEpb12.CheckedText = "RUN";
-            this.SwitchEpb12.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchEpb12.HtmlTemplate.Styles = resources.GetString("SwitchEpb12.HtmlTemplate.Styles");
-            this.SwitchEpb12.Location = new System.Drawing.Point(130, 237);
-            this.SwitchEpb12.Name = "SwitchEpb12";
-            this.SwitchEpb12.Size = new System.Drawing.Size(121, 112);
-            this.SwitchEpb12.TabIndex = 38;
-            this.SwitchEpb12.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchEpb12.UncheckedText = "STOP";
-            // 
-            // SwitchEpb10
-            // 
-            this.SwitchEpb10.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb10.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb10.Appearance.Options.UseBackColor = true;
-            this.SwitchEpb10.Appearance.Options.UseForeColor = true;
-            this.SwitchEpb10.CheckedText = "RUN";
-            this.SwitchEpb10.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchEpb10.HtmlTemplate.Styles = resources.GetString("SwitchEpb10.HtmlTemplate.Styles");
-            this.SwitchEpb10.Location = new System.Drawing.Point(130, 3);
-            this.SwitchEpb10.Name = "SwitchEpb10";
-            this.SwitchEpb10.Size = new System.Drawing.Size(121, 111);
-            this.SwitchEpb10.TabIndex = 38;
-            this.SwitchEpb10.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchEpb10.UncheckedText = "STOP";
-            // 
-            // SwitchEpb1
-            // 
-            this.SwitchEpb1.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb1.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb1.Appearance.Options.UseBackColor = true;
-            this.SwitchEpb1.Appearance.Options.UseForeColor = true;
-            this.SwitchEpb1.CheckedText = "RUN";
-            this.SwitchEpb1.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchEpb1.HtmlTemplate.Styles = resources.GetString("SwitchEpb1.HtmlTemplate.Styles");
-            this.SwitchEpb1.Location = new System.Drawing.Point(130, 3);
-            this.SwitchEpb1.Name = "SwitchEpb1";
-            this.SwitchEpb1.Size = new System.Drawing.Size(121, 111);
-            this.SwitchEpb1.TabIndex = 38;
-            this.SwitchEpb1.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchEpb1.UncheckedText = "STOP";
-            // 
-            // SwitchEpb2
-            // 
-            this.SwitchEpb2.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb2.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb2.Appearance.Options.UseBackColor = true;
-            this.SwitchEpb2.Appearance.Options.UseForeColor = true;
-            this.SwitchEpb2.CheckedText = "RUN";
-            this.SwitchEpb2.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchEpb2.HtmlTemplate.Styles = resources.GetString("SwitchEpb2.HtmlTemplate.Styles");
-            this.SwitchEpb2.Location = new System.Drawing.Point(130, 120);
-            this.SwitchEpb2.Name = "SwitchEpb2";
-            this.SwitchEpb2.Size = new System.Drawing.Size(121, 111);
-            this.SwitchEpb2.TabIndex = 38;
-            this.SwitchEpb2.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchEpb2.UncheckedText = "STOP";
-            // 
-            // SwitchEpb3
-            // 
-            this.SwitchEpb3.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb3.Appearance.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(243)))), ((int)(((byte)(249)))), ((int)(((byte)(255)))));
-            this.SwitchEpb3.Appearance.Options.UseBackColor = true;
-            this.SwitchEpb3.Appearance.Options.UseForeColor = true;
-            this.SwitchEpb3.CheckedText = "RUN";
-            this.SwitchEpb3.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.SwitchEpb3.HtmlTemplate.Styles = resources.GetString("SwitchEpb3.HtmlTemplate.Styles");
-            this.SwitchEpb3.Location = new System.Drawing.Point(130, 237);
-            this.SwitchEpb3.Name = "SwitchEpb3";
-            this.SwitchEpb3.Size = new System.Drawing.Size(121, 112);
-            this.SwitchEpb3.TabIndex = 38;
-            this.SwitchEpb3.TextPosition = DevExpress.UITemplates.Collection.Editors.ToggleButton.Position.Inside;
-            this.SwitchEpb3.UncheckedText = "STOP";
             // 
             // FrmEpbMainMonitor
             // 
