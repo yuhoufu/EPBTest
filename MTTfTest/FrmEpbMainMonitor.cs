@@ -1009,7 +1009,7 @@ namespace MTEmbTest
 
                 for (var i = 0; i < 12; i++)
                 {
-                    EpbGroup[i].CtrlRunning.Enabled = false; //单个启动按钮设为不允许，启动之后才允许
+                    //EpbGroup[i].CtrlRunning.Enabled = false; //单个启动按钮设为不允许，启动之后才允许
                     var index = i;
                     EpbGroup[i].CtrlJoinTest.CheckedChanged += (sender, e) => JoinEmbChanged(sender, e, index);
 
@@ -1018,7 +1018,7 @@ namespace MTEmbTest
 
                     EpbGroup[i].CtrlRunning.CheckedChanged += (sender, e) =>
                     {
-                        RuningStatusChanged(sender, ((UISwitch)sender).Active, index);
+                        RuningStatusChanged(sender, ((ToggleButton)sender).Checked, index);
                     };
 
                     EpbGroup[i].CtrlRunning.Click += (sender, e) => RunningClick(sender, e, index);
@@ -1042,11 +1042,12 @@ namespace MTEmbTest
 
         private void RunningClick(object sender, EventArgs e, int index)
         {
-            if (!EpbGroup[index].CtrlPower.Checked && EpbGroup[index].CtrlRunning.Checked) //运行状态
+            // 暂时注释处理
+            /*if (!EpbGroup[index].CtrlPower.Checked && EpbGroup[index].CtrlRunning.Checked) //运行状态
             {
                 MessageBox.Show(@"请先打开电源！");
                 EpbGroup[index].CtrlRunning.Checked = false;
-            }
+            }*/
         }
 
 
@@ -1227,16 +1228,16 @@ namespace MTEmbTest
 
         private void RuningStatusChanged(object sender, bool value, int index)
         {
-            if (value)
-                StartEmbControlTimer(index);
-            // EpbGroup[index].CtrlAlert.OffCenterColor = Color.FromArgb(140, 140, 140);
-            // EpbGroup[index].CtrlAlert.OffColor = Color.FromArgb(140, 140, 140);
-            // EpbGroup[index].CtrlAlert.OnCenterColor = Color.Lime;
-            // EpbGroup[index].CtrlAlert.OnColor = Color.Lime;
-            // EpbGroup[index].CtrlAlert.State = UILightState.Blink;
-            else
-                StopEmbControlTimer(index);
-            // EpbGroup[index].CtrlAlert.State = UILightState.On;
+            // if (value)
+            //     // StartEmbControlTimer(index); // 启动指定通道
+            // // EpbGroup[index].CtrlAlert.OffCenterColor = Color.FromArgb(140, 140, 140);
+            // // EpbGroup[index].CtrlAlert.OffColor = Color.FromArgb(140, 140, 140);
+            // // EpbGroup[index].CtrlAlert.OnCenterColor = Color.Lime;
+            // // EpbGroup[index].CtrlAlert.OnColor = Color.Lime;
+            // // EpbGroup[index].CtrlAlert.State = UILightState.Blink;
+            // else
+            //     // StopEmbControlTimer(index); // 停止指定通道
+            // // EpbGroup[index].CtrlAlert.State = UILightState.On;
         }
 
         private void BtnTest_Click(object sender, EventArgs e)
