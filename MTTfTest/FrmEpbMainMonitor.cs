@@ -10,7 +10,6 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
-using System.Xml.Serialization;
 using Config;
 using Controller;
 using DataOperation;
@@ -24,7 +23,6 @@ using Sunny.UI;
 using ZedGraph;
 using Task = NationalInstruments.DAQmx.Task;
 //using AsyncListener;
-using TestConfig = DataOperation.TestConfig;
 using Timer = System.Threading.Timer;
 
 // ReSharper disable AsyncVoidLambda
@@ -192,12 +190,11 @@ namespace MTEmbTest
 
 
         private DateTime lastGraphyTime = DateTime.Now;
-
+        private ConcurrentQueue<string> LogError = new();
 
 
         public FormLoggerAdapter logger;
         private ConcurrentQueue<string> LogInformation = new();
-        private ConcurrentQueue<string> LogError = new();
         private ConcurrentQueue<string> LogWarn = new();
         private ConcurrentQueue<byte[]> readyReadBuffer;
 
@@ -731,7 +728,7 @@ namespace MTEmbTest
                 //StartListen();
                 MakeCurveMapping();
                 //MakeDirectionMapping();
-                LoadTestConfigToUI(); 
+                LoadTestConfigToUI();
                 //LoadEMBHandlerAndFrameNo();
 
                 RtbInfo.Invoke(new SetTextCallback(SetInfoText), "1. 编辑试验信息并确认");
@@ -873,7 +870,7 @@ namespace MTEmbTest
         }
 
         /// <summary>
-        /// 将 TestConfig 内容加载到 UI（带空值保护 + 派生值 + Led 显示更新）
+        ///     将 TestConfig 内容加载到 UI（带空值保护 + 派生值 + Led 显示更新）
         /// </summary>
         private void LoadTestConfigToUI()
         {
@@ -892,7 +889,7 @@ namespace MTEmbTest
                 TxtTestName.Text = test.TestName ?? string.Empty;
                 TxtTestCycleTime.Text = test.TestPeriod.ToString(CultureInfo.InvariantCulture);
                 TxtTargetCycles.Text = test.TestTarget.ToString(CultureInfo.InvariantCulture);
-                
+
                 // ====  UI 提示 =====================================================
                 RtbInfo?.AppendText($"[{DateTime.Now:HH:mm:ss.fff}] 已加载试验配置。\n");
             }
@@ -902,7 +899,7 @@ namespace MTEmbTest
                     @"错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
-        
+
         private void MakeCurveMapping()
         {
             curveDictionary.Clear();
@@ -1551,7 +1548,10 @@ namespace MTEmbTest
                 {
                     var ch = chIndex + 1;
                     if (EpbGroup[chIndex].CtrlJoinTest.Checked)
+                    {
                         selected.Add(ch);
+                        EpbGroup[chIndex].CtrlRunning.Checked = true; // 启动按钮设为允许
+                    }
                 }
 
                 if (selected.Count == 0)
@@ -1571,7 +1571,7 @@ namespace MTEmbTest
                         return;
                 }
 
-                // 读取自学习圈数（比如从一个文本框；没有就用 3）
+                // 读取自学习圈数（比如从一个文本框；没有就用3）
                 var learnCycles = 10;
                 // int.TryParse(TxtLearnCycles.Text, out learnCycles) 也可以
 
@@ -1642,6 +1642,13 @@ namespace MTEmbTest
             }*/
 
             #endregion
+
+            // 关闭所有通道
+            for (var chIndex = 0; chIndex < 12; chIndex++)
+            {
+                var ch = chIndex + 1;
+                EpbGroup[chIndex].CtrlRunning.Checked = false; // 启动按钮设为允许
+            }
 
 
             try
