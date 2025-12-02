@@ -1572,7 +1572,8 @@ namespace MTEmbTest
                 }
 
                 // 读取自学习圈数（比如从一个文本框；没有就用3）
-                var learnCycles = 10;
+                var learnCycles = _cfg.Test.LearnCycles;
+                
                 // int.TryParse(TxtLearnCycles.Text, out learnCycles) 也可以
 
                 if (_batchCts != null)

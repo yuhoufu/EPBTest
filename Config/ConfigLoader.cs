@@ -78,6 +78,8 @@ public enum OverrunPolicy
 
 public sealed class TestConfig
 {
+   
+
     public string TestName { get; set; }
     public int TestTarget { get; set; }
     public double TestPeriod { get; set; } // 每秒次数
@@ -94,6 +96,10 @@ public sealed class TestConfig
     ///     可用于界面展示和自动生成报告。
     /// </summary>
     public string Description { get; set; } = string.Empty;
+
+
+    // 自学习圈数
+    public int LearnCycles { get; set; } = 10;
 
 
     public OverrunPolicy OverrunPolicy { get; set; } = OverrunPolicy.RunToCompletionSkipMissed;
@@ -310,6 +316,7 @@ public static class ConfigLoader
         cfg.TestName = GetString(doc, "//TestConfig/Basic/TestName", "EPB");
         cfg.TestTarget = (int)GetDouble(doc, "//TestConfig/Basic/TestTarget", 1);
         cfg.TestPeriod = GetDouble(doc, "//TestConfig/Basic/TestCycle", 10); // Hz
+        cfg.LearnCycles = GetInt(doc, "//TestConfig/Basic/LearnCycle", 5); // 自学习圈数，默认5
         cfg.Owner = GetString(doc, "//TestConfig/Basic/Owner", "None");
         cfg.Description = GetString(doc, "//TestConfig/Basic/Description", "None");
         cfg.StoreDir = GetString(doc, "//TestConfig/Basic/StoreDir", "D:\\EPB_Data");
@@ -358,7 +365,7 @@ public static class ConfigLoader
 
 
         // 读取 EpbRecords（若存在）
-        foreach (XmlNode n in doc.SelectNodes("//TestConfig/EpbRecords/Record"))
+        foreach (XmlNode n in doc.SelectNodes("//TestConfig/EpbRecords/Record")!)
         {
             var r = new EpbTestRecord
             {
