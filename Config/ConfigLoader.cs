@@ -82,7 +82,11 @@ public sealed class TestConfig
 
     public string TestName { get; set; }
     public int TestTarget { get; set; }
-    public double TestPeriod { get; set; } // 每秒次数
+    public double TestPeriod { get; set; } // 每一圈的控制周期，单位秒
+
+    /// <summary>周期毫秒（由 TestPeriod 推导），例如 10Hz => 100ms。</summary>
+    public int PeriodMs => (int)Math.Round(1000.0 * Math.Max(TestPeriod, 0.001));
+
     public string StoreDir { get; set; }
 
     /// <summary>
@@ -113,8 +117,6 @@ public sealed class TestConfig
     public EpbCycleRunnerConfig EpbCycleRunner { get; set; } = new();
 
 
-    /// <summary>周期毫秒（由 TestPeriod 推导），例如 10Hz => 100ms。</summary>
-    public int PeriodMs => (int)Math.Round(1000.0 * Math.Max(TestPeriod, 0.001));
 
 
     // ======= 新增：EPB 试验记录集合 =======
@@ -315,7 +317,7 @@ public static class ConfigLoader
 
         cfg.TestName = GetString(doc, "//TestConfig/Basic/TestName", "EPB");
         cfg.TestTarget = (int)GetDouble(doc, "//TestConfig/Basic/TestTarget", 1);
-        cfg.TestPeriod = GetDouble(doc, "//TestConfig/Basic/TestCycle", 10); // Hz
+        cfg.TestPeriod = GetDouble(doc, "//TestConfig/Basic/TestCycle", 10); // 每圈时长，s
         cfg.LearnCycles = GetInt(doc, "//TestConfig/Basic/LearnCycle", 5); // 自学习圈数，默认5
         cfg.Owner = GetString(doc, "//TestConfig/Basic/Owner", "None");
         cfg.Description = GetString(doc, "//TestConfig/Basic/Description", "None");

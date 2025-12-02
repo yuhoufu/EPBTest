@@ -97,6 +97,11 @@ namespace Controller
             _log = log ?? NullLogger.Instance;
             _acq = acq;
 
+            // 从cfg中获取控制参数；
+            PeriodMs = cfg.Test.PeriodMs;
+
+
+
             // —— 订阅“低时延电流样本”并转发给对应 Runner —— //
             _acq.OnFastEpbCurrent += (ch, amps, ts) =>
             {

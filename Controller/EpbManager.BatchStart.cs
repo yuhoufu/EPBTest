@@ -126,6 +126,9 @@ namespace Controller
 
                     var timer = GetTimer(ch, PeriodMs, OverrunPolicy.AlignToWallClock);
 
+                    
+
+
                     // —— 计时器每圈工作（cycleIndex 从 1 开始） —— //
                     _ = timer.StartAsync(
                         int.MaxValue,
@@ -453,7 +456,7 @@ namespace Controller
         public int PeriodMs { get; set; } = 30000;
 
         /// <summary>组内错峰步长 Δ（毫秒）。索引 0/1/2 → 0/Δ/2Δ。</summary>
-        public int StaggerDeltaMs { get; set; } = 350; // 原先120ms
+        public int StaggerDeltaMs { get; set; } = 350; // 原先120ms 暂时在程序里写死
 
         /// <summary>将旧①“头部未上电”的时间并入⑧后的“尾段基准时长”（毫秒）。</summary>
         public int T8BaseMs { get; set; } = 800;
@@ -544,11 +547,9 @@ namespace Controller
             // var rcfg = _cfg.Test?.GetEpbRunner(channel) ?? new EpbCycleRunnerConfig();
             var rcfg = _cfg.Test?.EpbCycleRunner.GetRunnerChannel(channel);
 
-
-
+            // 从config中获取具体运行参数
             var sampleMs = 2;
-
-            var forwardA = rcfg.ForwardA;
+            var forwardA = rcfg!.ForwardA;
             var holdMs = rcfg.HoldMs;
             holdMs = holdMs <= 0 ? 1000 : holdMs;
 
