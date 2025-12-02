@@ -98,7 +98,8 @@ namespace Controller
             _acq = acq;
 
             // 从cfg中获取控制参数；
-            PeriodMs = cfg.Test.PeriodMs;
+            PeriodMs = cfg.Test.PeriodMs; // 周期时长
+            TestCycle = cfg.Test.TestTarget; // 总周期数
 
 
 

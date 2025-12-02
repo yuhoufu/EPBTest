@@ -109,6 +109,8 @@ namespace Controller
                 var t0 = t0OfGroup[pg];
                 var enabled = list.OrderBy(x => x).ToList();
 
+                var runs = TestCycle; // 正式阶段总圈数（可调）
+
                 foreach (var ch in enabled)
                 {
                     var phase = IndexInPowerGroup(ch) * StaggerDeltaMs;
@@ -131,7 +133,7 @@ namespace Controller
 
                     // —— 计时器每圈工作（cycleIndex 从 1 开始） —— //
                     _ = timer.StartAsync(
-                        int.MaxValue,
+                        repeat: runs, // 总圈数
                         initialDelay,
                         async (cycleIndex, ct) =>
                         {
@@ -451,6 +453,9 @@ namespace Controller
         #endregion
 
         #region 可调参数（你可转为从 TestConfig 读取）
+
+        /// <summary>试验总循环次数</summary>
+        public int TestCycle { get; set; } = 100;
 
         /// <summary>每圈目标周期（毫秒）。必须与现有配置一致。</summary>
         public int PeriodMs { get; set; } = 30000;
