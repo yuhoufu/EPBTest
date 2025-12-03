@@ -25,15 +25,15 @@ namespace Config
         public string PhysicalChannel { get; set; }
         public double ScaleK { get; set; } = 1.0;
         public double Offset { get; set; }
-        public List<(double Percent, double Pressure)> PercentToPressure { get; } = new();
+        public List<(double Voltage, double Pressure)> VoltageToPressure { get; } = new();
     }
 
     public sealed class AoConfig
     {
         public double MinVoltage { get; set; }
         public double MaxVoltage { get; set; } = 10;
-        public double MinPercent { get; set; }
-        public double MaxPercent { get; set; } = 100;
+        public double MinPressure { get; set; }
+        public double MaxPressure { get; set; } = 100;
         public Dictionary<string, AoDevice> Devices { get; } = new(StringComparer.OrdinalIgnoreCase);
     }
 
@@ -248,8 +248,8 @@ public static class ConfigLoader
 
         cfg.MinVoltage = GetDouble(doc, "//AOConfig/MinVoltage", 0);
         cfg.MaxVoltage = GetDouble(doc, "//AOConfig/MaxVoltage", 10);
-        cfg.MinPercent = GetDouble(doc, "//AOConfig/MinPercent", 0);
-        cfg.MaxPercent = GetDouble(doc, "//AOConfig/MaxPercent", 100);
+        cfg.MinPressure = GetDouble(doc, "//AOConfig/MinPressure", 0);
+        cfg.MaxPressure = GetDouble(doc, "//AOConfig/MaxPressure", 100);
 
         foreach (XmlNode n in doc.SelectNodes("//AOConfig/Devices/Device")!)
         {
@@ -260,8 +260,8 @@ public static class ConfigLoader
                 ScaleK = GetDouble(n, "ScaleK", 1.0),
                 Offset = GetDouble(n, "Offset", 0.0)
             };
-            foreach (XmlNode p in n.SelectNodes("PercentToPressureTable/Point")!)
-                d.PercentToPressure.Add((GetDouble(p, "Percent", 0), GetDouble(p, "Pressure", 0)));
+            foreach (XmlNode p in n.SelectNodes("VoltageToPressureTable/Point")!)
+                d.VoltageToPressure.Add((GetDouble(p, "Voltage", 0), GetDouble(p, "Pressure", 0)));
 
             if (!string.IsNullOrEmpty(d.Name)) cfg.Devices[d.Name] = d;
         }

@@ -142,7 +142,7 @@
 			<!-- ByPressure / ByDuration / Either -->
 			<SetPercent>100</SetPercent>
 			<!-- AO 百分比 -->
-			<PressureThresholdBar>30.0</PressureThresholdBar>
+			<PressureThresholdBar>100</PressureThresholdBar>
 			<DurationMs>800</DurationMs>
 			<!-- 模式含时长时使用 -->
 			<HoldAfterReachedMs>0</HoldAfterReachedMs>
@@ -158,7 +158,7 @@
 			<Enabled>true</Enabled>
 			<Mode>ByPressure</Mode>
 			<SetPercent>100</SetPercent>
-			<PressureThresholdBar>18.0</PressureThresholdBar>
+			<PressureThresholdBar>100</PressureThresholdBar>
 			<DurationMs>0</DurationMs>
 			<HoldAfterReachedMs>200</HoldAfterReachedMs>
 			<PressureDoId>2</PressureDoId>

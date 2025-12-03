@@ -53,7 +53,7 @@ namespace IO.NI
                     _writers[dev.Name] = writer;
 
                     // 初始化为 0%
-                    WritePercent(dev.Name, 0);
+                    WritePressure(dev.Name, 0);
                 }
                 catch (Exception ex)
                 {
@@ -73,7 +73,7 @@ namespace IO.NI
             if (!_cfg.Devices.TryGetValue(deviceName, out var dev)) return false;
 
             // 限幅
-            percent = Math.Max(_cfg.MinPercent, Math.Min(_cfg.MaxPercent, percent));
+            percent = Math.Max(_cfg.MinPressure, Math.Min(_cfg.MaxPressure, percent));
 
             // 转电压
             double v = (percent * (_cfg.MaxVoltage - _cfg.MinVoltage) / 100.0) + _cfg.MinVoltage;
@@ -93,6 +93,42 @@ namespace IO.NI
         }
 
         /// <summary>
+        /// 按压力写入电压。
+        /// </summary>
+        public bool WritePressure(string deviceName, double pressure)
+        {
+            if (!_writers.TryGetValue(deviceName, out var writer)) return false;
+            if (!_cfg.Devices.TryGetValue(deviceName, out var dev)) return false;
+
+            // 限幅
+            pressure = Math.Min(Math.Max(pressure, _cfg.MinPressure), _cfg.MaxPressure);
+
+
+            // 转电压
+            double v = (pressure - dev.Offset) / dev.ScaleK;
+
+            try
+            {
+                writer.WriteSingleSample(true, v);
+                _log.Info($"AO[{deviceName}] 输出压力 {pressure:F1}% -> 电压 {v:F2} V", "AO");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _log.Error($"AO[{deviceName}] 输出失败：{ex.Message}", "AO", ex);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// 异步写入百分比。
+        /// </summary>
+        public Task<bool> SetPressureAsync(string deviceName, double percent)
+        {
+            return Task.Run(() => WritePressure(deviceName, percent));
+        }
+
+        /// <summary>
         /// 异步写入百分比。
         /// </summary>
         public Task<bool> SetPercentAsync(string deviceName, double percent)
@@ -107,7 +143,7 @@ namespace IO.NI
         {
             foreach (var name in _writers.Keys)
             {
-                WritePercent(name, 0);
+                WritePressure(name, 0);
             }
             _log.Info("AO 所有通道已复位为 0%。", "AO");
         }

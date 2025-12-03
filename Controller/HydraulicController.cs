@@ -97,7 +97,7 @@ namespace Controller
                     return false;
                 }
 
-                if (!_ao.WritePercent(aoDevName, item.SetPercent))
+                if (!_ao.WritePressure(aoDevName, item.SetPercent))
                 {
                     _log.Error($"液压[{hydId}] AO 输出失败。", "液压");
                     _do.SetPressure(hydId, false);
@@ -134,7 +134,7 @@ namespace Controller
 
                 try
                 {
-                    _ao.WritePercent(aoDevName, 0);
+                    _ao.WritePressure(aoDevName, 0);
                 }
                 catch
                 {
@@ -181,8 +181,8 @@ namespace Controller
                 _log.Info($"液压[{hydId}] 启动，设定={item.SetPercent:F1}% 模式={item.Mode}", "液压");
 
                 // Step 2: 输出 AO 百分比（由 AoController 内部做限幅与电压换算）
-                // 同步版：WritePercent；如需无阻塞可改用 await _ao.SetPercentAsync(...)
-                if (!_ao.WritePercent(aoDevName, item.SetPercent))
+                // 同步版：WritePressure；如需无阻塞可改用 await _ao.SetPressureAsync(...)
+                if (!_ao.WritePressure(aoDevName, item.SetPercent))
                 {
                     _log.Error($"液压[{hydId}] AO 输出失败（设备={aoDevName} 百分比={item.SetPercent:F1}%）。", "液压");
                     return false;
@@ -288,7 +288,7 @@ namespace Controller
 
                 try
                 {
-                    _ao.WritePercent(aoDevName, 0);
+                    _ao.WritePressure(aoDevName, 0);
                 }
                 catch
                 {

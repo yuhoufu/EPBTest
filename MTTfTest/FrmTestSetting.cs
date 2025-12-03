@@ -863,20 +863,11 @@ namespace MtEmbTest
                 }
             }
         }
-
-        private void ComboTestEnvir_SelectedIndexChanged(object sender, EventArgs e)
-        {
-        }
-
         private void dgvEmbControl_DataBindingComplete(object sender, DataGridViewBindingCompleteEventArgs e)
         {
             //  dgvEpbRunnerCfgControl.CurrentCell = null;
             //  dgvEpbRunnerCfgControl.SelectedIndex = -1;
         }
 
-        private void checkEdit1_CheckedChanged(object sender, EventArgs e)
-        {
-
-        }
     }
 }

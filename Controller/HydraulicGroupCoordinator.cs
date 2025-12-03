@@ -174,7 +174,7 @@ namespace Controller
                         try
                         {
                             var dev = hydId == 1 ? "Cylinder1" : "Cylinder2";
-                            _ao.WritePercent(dev, 0);
+                            _ao.WritePressure(dev, 0);
                         }
                         catch
                         {
@@ -235,7 +235,7 @@ namespace Controller
                     try
                     {
                         var dev = hydId == 1 ? "Cylinder1" : "Cylinder2";
-                        _ao?.WritePercent(dev, 0);
+                        _ao?.WritePressure(dev, 0);
                     }
                     catch
                     {
@@ -272,7 +272,7 @@ namespace Controller
                 return;
             }
 
-            if (!_ao.WritePercent(dev, item.SetPercent))
+            if (!_ao.WritePressure(dev, item.SetPercent))
             {
                 _log.Error($"液压[{hydId}] AO 输出失败（Fallback）。", "液压协调");
                 return;
