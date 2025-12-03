@@ -873,5 +873,10 @@ namespace MtEmbTest
             //  dgvEpbRunnerCfgControl.CurrentCell = null;
             //  dgvEpbRunnerCfgControl.SelectedIndex = -1;
         }
+
+        private void checkEdit1_CheckedChanged(object sender, EventArgs e)
+        {
+
+        }
     }
 }
