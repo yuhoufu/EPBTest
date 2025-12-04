@@ -721,6 +721,9 @@ namespace MTEmbTest
                 _cfg = ConfigLoader.LoadAll($@"{Environment.CurrentDirectory}\Config", logger);
 
 
+                // 初始化 EPB 控制器的记录
+                InitializeEpbRecords();
+
                 LoadEpbController(); // 暂时注释
 
                 // 初始化曲线
@@ -867,6 +870,27 @@ namespace MTEmbTest
             {
                 MessageBox.Show(@"初始化错误 : " + ex.Message);
             }
+        }
+
+        /// <summary>
+        /// 初始化EPB控制器的记录
+        /// </summary>
+        /// <exception cref="NotImplementedException"></exception>
+        private void InitializeEpbRecords()
+        {
+            _uiEpbRecords = new List<EpbTestRecord>();
+            
+            // 从_cfg.Test.EpbRecords 中加载
+            if (_cfg?.Test?.EpbRecords != null)
+            {
+                foreach (var record in _cfg.Test.EpbRecords)
+                {
+                    _uiEpbRecords.Add(record);
+                }
+            }
+
+            
+
         }
 
         /// <summary>
@@ -1573,7 +1597,7 @@ namespace MTEmbTest
 
                 // 读取自学习圈数（比如从一个文本框；没有就用3）
                 var learnCycles = _cfg.Test.LearnCycles;
-                
+
                 // int.TryParse(TxtLearnCycles.Text, out learnCycles) 也可以
 
                 if (_batchCts != null)
@@ -3716,7 +3740,6 @@ namespace MTEmbTest
 
         private void comboBoxEdit1_SelectedIndexChanged(object sender, EventArgs e)
         {
-
         }
 
 

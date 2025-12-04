@@ -111,6 +111,7 @@
     <Reference Include="DevExpress.XtraBars.v24.2" />
     <Reference Include="DevExpress.XtraTreeList.v24.2" />
     <Reference Include="DevExpress.Mvvm.v24.2" />
+    <Reference Include="EntityFramework" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="AxisRangeDialog.cs">
@@ -223,6 +224,34 @@
     <EmbeddedResource Include="Assets\CSS\ToggleButton.css" />
     <Compile Include="UIHelpers\LedAutoSizer.cs" />
     <Compile Include="Utilities\HtmlCssAsset.cs" />
+    <Compile Include="Editors\ChipButton.cs">
+      <SubType>Component</SubType>
+    </Compile>
+    <EmbeddedResource Include="Assets\Toolbox\ChipButton.bmp" />
+    <EmbeddedResource Include="Assets\HTML\ChipButton.html" />
+    <EmbeddedResource Include="Assets\CSS\ChipButton.css" />
+    <Compile Include="Images\UIElements.cs" />
+    <EmbeddedResource Include="Assets\SVG\UIElements\Check.svg" />
+    <EmbeddedResource Include="Assets\SVG\UIElements\Close.svg" />
+    <EmbeddedResource Include="Assets\SVG\UIElements\Copy.svg" />
+    <EmbeddedResource Include="Assets\SVG\UIElements\DropDown.svg" />
+    <EmbeddedResource Include="Assets\SVG\UIElements\Hide.svg" />
+    <EmbeddedResource Include="Assets\SVG\UIElements\Info.svg" />
+    <EmbeddedResource Include="Assets\SVG\UIElements\Search.svg" />
+    <EmbeddedResource Include="Assets\SVG\UIElements\Show.svg" />
+    <Compile Include="Editors\ChipGroup.cs">
+      <SubType>Component</SubType>
+    </Compile>
+    <EmbeddedResource Include="Assets\Toolbox\ChipGroup.bmp" />
+    <Compile Include="Editors\Base\DesignerActions.cs" />
+    <Compile Include="Editors\Base\ChipGroupBase.cs">
+      <SubType>Component</SubType>
+    </Compile>
+    <Compile Include="Editors\Base\ItemBase.cs" />
+    <Compile Include="Editors\Chip.cs" />
+    <Compile Include="Components\Base\ItemsSelector.cs" />
+    <EmbeddedResource Include="Assets\HTML\ChipGroup.html" />
+    <EmbeddedResource Include="Assets\CSS\ChipGroup.css" />
   </ItemGroup>
   <ItemGroup>
     <None Include="App.config" />
