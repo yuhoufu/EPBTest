@@ -78,8 +78,6 @@ public enum OverrunPolicy
 
 public sealed class TestConfig
 {
-   
-
     public string TestName { get; set; }
     public int TestTarget { get; set; }
     public double TestPeriod { get; set; } // 每一圈的控制周期，单位秒
@@ -115,8 +113,6 @@ public sealed class TestConfig
     ///     新版 EPB 循环配置（仅每通道记录）。从 TestConfig.xml 的 &lt;EpbCycleRunnerConfig&gt; 读取。
     /// </summary>
     public EpbCycleRunnerConfig EpbCycleRunner { get; set; } = new();
-
-
 
 
     // ======= 新增：EPB 试验记录集合 =======
@@ -177,12 +173,11 @@ public sealed class TestConfig
 
     public HydraulicItem GetHydraulicItemById(int id)
     {
-        return Hydraulics.FirstOrDefault(h => h.Id == id) ?? throw new InvalidOperationException($"HydraulicItem with id {id} not found.");
+        return Hydraulics.FirstOrDefault(h => h.Id == id) ??
+               throw new InvalidOperationException($"HydraulicItem with id {id} not found.");
     }
 
     #endregion
-
-
 }
 
 public sealed class DoEpbRecord
@@ -605,7 +600,7 @@ public static class ConfigLoader
     {
         SaveUI(null, cfg);
     }
-
+    
     public static void SaveTest(string path, TestConfig cfg)
     {
         var doc = new XmlDocument();
@@ -623,14 +618,129 @@ public static class ConfigLoader
             SetChild(basic, "TestName", cfg.TestName);
             SetChild(basic, "TestTarget", cfg.TestTarget.ToString());
             SetChild(basic, "TestCycle", cfg.TestPeriod.ToString(CultureInfo.InvariantCulture));
+            SetChild(basic, "LearnCycle", cfg.LearnCycles.ToString());
             SetChild(basic, "StoreDir", cfg.StoreDir);
-
             SetChild(basic, "Owner", cfg.Owner);
             SetChild(basic, "Description", cfg.Description);
         }
 
         // ===============================
-        // 2) 保存 EpbCycleRunnerConfig（12条Record）
+        // 2) 保存 Timer/OverrunPolicy
+        // ===============================
+        var timerNode = root.SelectSingleNode("Timer");
+        if (timerNode == null)
+        {
+            timerNode = doc.CreateElement("Timer");
+            root.AppendChild(timerNode);
+        }
+
+        if (timerNode is XmlElement timer)
+        {
+            SetChild(timer, "OverrunPolicy", cfg.OverrunPolicy.ToString());
+        }
+
+        // ===============================
+        // 3) 保存 Hydraulics（液压配置）
+        // ===============================
+        var hydraulicsNode = root.SelectSingleNode("Hydraulics");
+        if (hydraulicsNode != null) root.RemoveChild(hydraulicsNode);
+
+        hydraulicsNode = doc.CreateElement("Hydraulics");
+
+        foreach (var hydraulic in cfg.Hydraulics.OrderBy(h => h.Id))
+        {
+            var hydraulicNode = doc.CreateElement("Hydraulic");
+
+            void AddHydraulicElement(string name, string value)
+            {
+                var n = doc.CreateElement(name);
+                n.InnerText = value ?? "";
+                hydraulicNode.AppendChild(n);
+            }
+
+            AddHydraulicElement("Id", hydraulic.Id.ToString());
+            AddHydraulicElement("Enabled", hydraulic.Enabled ? "true" : "false");
+            AddHydraulicElement("Mode", hydraulic.Mode.ToString());
+            AddHydraulicElement("SetPercent", hydraulic.SetPercent.ToString(CultureInfo.InvariantCulture));
+            AddHydraulicElement("PressureThresholdBar", hydraulic.PressureThresholdBar.ToString());
+            AddHydraulicElement("DurationMs", hydraulic.DurationMs.ToString());
+            AddHydraulicElement("HoldAfterReachedMs", hydraulic.HoldAfterReachedMs.ToString());
+            AddHydraulicElement("PressureDoId", hydraulic.PressureDoId.ToString());
+
+            // 保存 Members
+            var membersText = string.Join(",", hydraulic.Members.OrderBy(x => x));
+            AddHydraulicElement("Members", membersText);
+
+            hydraulicsNode.AppendChild(hydraulicNode);
+        }
+
+        root.AppendChild(hydraulicsNode);
+
+        // ===============================
+        // 4) 保存 ElectricalGroups（电气组配置）
+        // ===============================
+        var groupsNode = root.SelectSingleNode("ElectricalGroups");
+        if (groupsNode != null) root.RemoveChild(groupsNode);
+
+        groupsNode = doc.CreateElement("ElectricalGroups");
+
+        foreach (var group in cfg.Groups.OrderBy(g => g.Id))
+        {
+            var groupNode = doc.CreateElement("Group");
+
+            void AddGroupElement(string name, string value)
+            {
+                var n = doc.CreateElement(name);
+                n.InnerText = value ?? "";
+                groupNode.AppendChild(n);
+            }
+
+            AddGroupElement("Id", group.Id.ToString());
+            AddGroupElement("StaggerMs", group.StaggerMs.ToString());
+
+            // 保存 Members
+            var membersText = string.Join(",", group.Members.OrderBy(x => x));
+            AddGroupElement("Members", membersText);
+
+            groupsNode.AppendChild(groupNode);
+        }
+
+        root.AppendChild(groupsNode);
+
+        // ===============================
+        // 5) 保存 EpbRecords（EPB测试记录）
+        // ===============================
+        var epbRecordsNode = root.SelectSingleNode("EpbRecords");
+        if (epbRecordsNode != null) root.RemoveChild(epbRecordsNode);
+
+        epbRecordsNode = doc.CreateElement("EpbRecords");
+
+        foreach (var record in cfg.EpbRecords.OrderBy(r => r.Id))
+        {
+            var recordNode = doc.CreateElement("Record");
+
+            void AddRecordElement(string name, string value)
+            {
+                var n = doc.CreateElement(name);
+                n.InnerText = value ?? "";
+                recordNode.AppendChild(n);
+            }
+
+            AddRecordElement("Id", record.Id.ToString());
+            AddRecordElement("StartTime", record.StartTime?.ToString("yyyy-MM-dd HH:mm:ss") ?? "");
+            AddRecordElement("LatestStartTime", record.LatestStartTime?.ToString("yyyy-MM-dd HH:mm:ss") ?? "");
+            AddRecordElement("RunTime", record.RunTime ?? "");
+            AddRecordElement("TotalCount", record.TotalCount.ToString());
+            AddRecordElement("RunCount", record.RunCount.ToString());
+            AddRecordElement("Status", record.Status.ToString());
+
+            epbRecordsNode.AppendChild(recordNode);
+        }
+
+        root.AppendChild(epbRecordsNode);
+
+        // ===============================
+        // 6) 保存 EpbCycleRunnerConfig（12条Record）
         // ===============================
         var epbNode = root.SelectSingleNode("EpbCycleRunnerConfig");
         if (epbNode != null) root.RemoveChild(epbNode);
@@ -667,7 +777,7 @@ public static class ConfigLoader
         root.AppendChild(epbNode);
 
         // ===============================
-        // 3) Save to file with temp
+        // 7) Save to file with temp
         // ===============================
         var tmp = path + ".tmp";
         doc.Save(tmp);
