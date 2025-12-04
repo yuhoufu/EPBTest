@@ -1,0 +1,22 @@
+﻿<!--templates-->
+<template id="chip-template">
+    <div class="content">
+        <img class="icon" src="${Item.Icon}" />
+        <span class="caption">${Item.Caption}</span>
+    </div>
+</template>
+<template id="chip-check-template">
+    <div class="content">
+        <img class="check" src="${Item.Check}" />
+        <span class="caption">${Item.Caption}</span>
+    </div>
+</template>
+<!--templates-->
+<div class="container">
+    <div id="header" class="header">
+        <span class="header-label">${Text}</span>
+    </div>
+    <items-selector id="selector" class="chip-group"
+                    ItemClass="chip-group-item">
+    </items-selector>
+</div>
