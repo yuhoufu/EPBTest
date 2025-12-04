@@ -120,7 +120,7 @@ public sealed class TestConfig
     ///     12 条 EPB 记录（通道 1..12）。通常由 ConfigLoader 从 XML 读取或第一次启动时 EnsureEpbRecords() 初始化。
     ///     每个记录包含：Id, StartTime, LatestStartTime, RunTime(字符串), TotalCount, RunCount, Status。
     /// </summary>
-    public List<EpbTestRecord> EpbRecords { get; } = new();
+    public List<EpbTestRecord> EpbRecords { get; set; } = new();
 
 
     /// <summary>

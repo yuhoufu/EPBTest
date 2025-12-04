@@ -3714,6 +3714,11 @@ namespace MTEmbTest
             }
         }
 
+        private void comboBoxEdit1_SelectedIndexChanged(object sender, EventArgs e)
+        {
+
+        }
+
 
         /// <summary>
         ///     根据通道类型格式化显示值
