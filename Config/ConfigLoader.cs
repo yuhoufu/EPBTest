@@ -43,7 +43,7 @@ namespace Config
         public bool Enabled { get; set; }
         public HydraulicMode Mode { get; set; }
         public double SetPercent { get; set; }
-        public double PressureThresholdBar { get; set; }
+        public int PressureThresholdBar { get; set; }
         public int DurationMs { get; set; }
         public int HoldAfterReachedMs { get; set; }
         public int PressureDoId { get; set; }
@@ -172,6 +172,17 @@ public sealed class TestConfig
         var r = GetEpbRecord(channel);
         r.Reset();
     }
+
+    #region 压力相关
+
+    public HydraulicItem GetHydraulicItemById(int id)
+    {
+        return Hydraulics.FirstOrDefault(h => h.Id == id) ?? throw new InvalidOperationException($"HydraulicItem with id {id} not found.");
+    }
+
+    #endregion
+
+
 }
 
 public sealed class DoEpbRecord
@@ -336,7 +347,7 @@ public static class ConfigLoader
                 Enabled = GetBool(n, "Enabled", true),
                 Mode = ParseMode(GetString(n, "Mode", "ByPressure")),
                 SetPercent = GetDouble(n, "SetPercent", 30),
-                PressureThresholdBar = GetDouble(n, "PressureThresholdBar", 20),
+                PressureThresholdBar = (int)GetDouble(n, "PressureThresholdBar", 20),
                 DurationMs = GetInt(n, "DurationMs", 0),
                 HoldAfterReachedMs = GetInt(n, "HoldAfterReachedMs", 0),
                 PressureDoId = GetInt(n, "PressureDoId", 1)

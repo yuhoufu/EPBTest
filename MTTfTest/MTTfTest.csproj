@@ -160,6 +160,7 @@
       <DependentUpon>Main_Frm.cs</DependentUpon>
     </Compile>
     <Compile Include="Models\EpbRow.cs" />
+    <Compile Include="Models\PressureSetting.cs" />
     <Compile Include="Models\TestConfig.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />

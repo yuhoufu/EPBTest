@@ -66,14 +66,14 @@
             this.uiPanel1 = new Sunny.UI.UIPanel();
             this.uiTableLayoutPanel5 = new Sunny.UI.UITableLayoutPanel();
             this.panelControl2 = new DevExpress.XtraEditors.PanelControl();
-            this.checkEdit1 = new DevExpress.XtraEditors.CheckEdit();
-            this.textEdit1 = new DevExpress.XtraEditors.TextEdit();
-            this.textEdit2 = new DevExpress.XtraEditors.TextEdit();
+            this.checkEditPressure1To6 = new DevExpress.XtraEditors.CheckEdit();
+            this.textEditPressureValue1To6 = new DevExpress.XtraEditors.TextEdit();
+            this.textEditPressureValue7To12 = new DevExpress.XtraEditors.TextEdit();
             this.labelControl1 = new DevExpress.XtraEditors.LabelControl();
             this.labelControl2 = new DevExpress.XtraEditors.LabelControl();
             this.panelControl1 = new DevExpress.XtraEditors.PanelControl();
             this.panelControl3 = new DevExpress.XtraEditors.PanelControl();
-            this.checkEdit2 = new DevExpress.XtraEditors.CheckEdit();
+            this.checkEditPressure7To12 = new DevExpress.XtraEditors.CheckEdit();
             this.tabPageDAQAI = new System.Windows.Forms.TabPage();
             this.uiTableLayoutPanel7 = new Sunny.UI.UITableLayoutPanel();
             this.BtnSaveDaqAI = new Sunny.UI.UIButton();
@@ -141,13 +141,13 @@
             this.uiTableLayoutPanel5.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)(this.panelControl2)).BeginInit();
             this.panelControl2.SuspendLayout();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit1.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit1.Properties)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit2.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEditPressure1To6.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEditPressureValue1To6.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEditPressureValue7To12.Properties)).BeginInit();
             ((System.ComponentModel.ISupportInitialize)(this.panelControl1)).BeginInit();
             ((System.ComponentModel.ISupportInitialize)(this.panelControl3)).BeginInit();
             this.panelControl3.SuspendLayout();
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit2.Properties)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEditPressure7To12.Properties)).BeginInit();
             this.tabPageDAQAI.SuspendLayout();
             this.uiTableLayoutPanel7.SuspendLayout();
             this.uiGroupBox6.SuspendLayout();
@@ -677,8 +677,8 @@
             this.uiTableLayoutPanel5.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 40F));
             this.uiTableLayoutPanel5.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 20F));
             this.uiTableLayoutPanel5.Controls.Add(this.panelControl2, 1, 1);
-            this.uiTableLayoutPanel5.Controls.Add(this.textEdit1, 1, 2);
-            this.uiTableLayoutPanel5.Controls.Add(this.textEdit2, 5, 2);
+            this.uiTableLayoutPanel5.Controls.Add(this.textEditPressureValue1To6, 1, 2);
+            this.uiTableLayoutPanel5.Controls.Add(this.textEditPressureValue7To12, 5, 2);
             this.uiTableLayoutPanel5.Controls.Add(this.labelControl1, 2, 2);
             this.uiTableLayoutPanel5.Controls.Add(this.labelControl2, 6, 2);
             this.uiTableLayoutPanel5.Controls.Add(this.panelControl1, 4, 1);
@@ -701,7 +701,7 @@
             this.panelControl2.Appearance.Options.UseBackColor = true;
             this.panelControl2.BorderStyle = DevExpress.XtraEditors.Controls.BorderStyles.NoBorder;
             this.uiTableLayoutPanel5.SetColumnSpan(this.panelControl2, 2);
-            this.panelControl2.Controls.Add(this.checkEdit1);
+            this.panelControl2.Controls.Add(this.checkEditPressure1To6);
             this.panelControl2.Dock = System.Windows.Forms.DockStyle.Fill;
             this.panelControl2.Location = new System.Drawing.Point(21, 21);
             this.panelControl2.Margin = new System.Windows.Forms.Padding(1);
@@ -710,38 +710,46 @@
             this.panelControl2.Size = new System.Drawing.Size(332, 51);
             this.panelControl2.TabIndex = 5;
             // 
-            // checkEdit1
+            // checkEditPressure1To6
             // 
-            this.checkEdit1.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.checkEdit1.Location = new System.Drawing.Point(5, 5);
-            this.checkEdit1.Margin = new System.Windows.Forms.Padding(1);
-            this.checkEdit1.Name = "checkEdit1";
-            this.checkEdit1.Properties.AllowFocused = false;
-            this.checkEdit1.Properties.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            this.checkEdit1.Properties.Appearance.ForeColor = System.Drawing.Color.White;
-            this.checkEdit1.Properties.Appearance.Options.UseBackColor = true;
-            this.checkEdit1.Properties.Appearance.Options.UseForeColor = true;
-            this.checkEdit1.Properties.Caption = "1-6";
-            this.checkEdit1.Size = new System.Drawing.Size(322, 41);
-            this.checkEdit1.TabIndex = 1;
+            this.checkEditPressure1To6.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.checkEditPressure1To6.Location = new System.Drawing.Point(5, 5);
+            this.checkEditPressure1To6.Margin = new System.Windows.Forms.Padding(1);
+            this.checkEditPressure1To6.Name = "checkEditPressure1To6";
+            this.checkEditPressure1To6.Properties.AllowFocused = false;
+            this.checkEditPressure1To6.Properties.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.checkEditPressure1To6.Properties.Appearance.ForeColor = System.Drawing.Color.White;
+            this.checkEditPressure1To6.Properties.Appearance.Options.UseBackColor = true;
+            this.checkEditPressure1To6.Properties.Appearance.Options.UseForeColor = true;
+            this.checkEditPressure1To6.Properties.Caption = "1-6";
+            this.checkEditPressure1To6.Size = new System.Drawing.Size(322, 41);
+            this.checkEditPressure1To6.TabIndex = 1;
             // 
-            // textEdit1
+            // textEditPressureValue1To6
             // 
-            this.textEdit1.Dock = System.Windows.Forms.DockStyle.Top;
-            this.textEdit1.Location = new System.Drawing.Point(26, 79);
-            this.textEdit1.Margin = new System.Windows.Forms.Padding(6);
-            this.textEdit1.Name = "textEdit1";
-            this.textEdit1.Size = new System.Drawing.Size(155, 44);
-            this.textEdit1.TabIndex = 2;
+            this.textEditPressureValue1To6.Dock = System.Windows.Forms.DockStyle.Top;
+            this.textEditPressureValue1To6.EditValue = ((short)(30));
+            this.textEditPressureValue1To6.Location = new System.Drawing.Point(26, 79);
+            this.textEditPressureValue1To6.Margin = new System.Windows.Forms.Padding(6);
+            this.textEditPressureValue1To6.Name = "textEditPressureValue1To6";
+            this.textEditPressureValue1To6.Properties.MaskSettings.Set("MaskManagerType", typeof(DevExpress.Data.Mask.NumericMaskManager));
+            this.textEditPressureValue1To6.Properties.MaskSettings.Set("MaskManagerSignature", "allowNull=False");
+            this.textEditPressureValue1To6.Properties.MaskSettings.Set("mask", "d");
+            this.textEditPressureValue1To6.Size = new System.Drawing.Size(155, 44);
+            this.textEditPressureValue1To6.TabIndex = 2;
             // 
-            // textEdit2
+            // textEditPressureValue7To12
             // 
-            this.textEdit2.Dock = System.Windows.Forms.DockStyle.Top;
-            this.textEdit2.Location = new System.Drawing.Point(420, 79);
-            this.textEdit2.Margin = new System.Windows.Forms.Padding(6);
-            this.textEdit2.Name = "textEdit2";
-            this.textEdit2.Size = new System.Drawing.Size(155, 44);
-            this.textEdit2.TabIndex = 2;
+            this.textEditPressureValue7To12.Dock = System.Windows.Forms.DockStyle.Top;
+            this.textEditPressureValue7To12.EditValue = ((short)(30));
+            this.textEditPressureValue7To12.Location = new System.Drawing.Point(420, 79);
+            this.textEditPressureValue7To12.Margin = new System.Windows.Forms.Padding(6);
+            this.textEditPressureValue7To12.Name = "textEditPressureValue7To12";
+            this.textEditPressureValue7To12.Properties.MaskSettings.Set("MaskManagerType", typeof(DevExpress.Data.Mask.NumericMaskManager));
+            this.textEditPressureValue7To12.Properties.MaskSettings.Set("MaskManagerSignature", "allowNull=False");
+            this.textEditPressureValue7To12.Properties.MaskSettings.Set("mask", "d");
+            this.textEditPressureValue7To12.Size = new System.Drawing.Size(155, 44);
+            this.textEditPressureValue7To12.TabIndex = 2;
             // 
             // labelControl1
             // 
@@ -782,7 +790,7 @@
             this.panelControl3.Appearance.Options.UseBackColor = true;
             this.panelControl3.BorderStyle = DevExpress.XtraEditors.Controls.BorderStyles.NoBorder;
             this.uiTableLayoutPanel5.SetColumnSpan(this.panelControl3, 2);
-            this.panelControl3.Controls.Add(this.checkEdit2);
+            this.panelControl3.Controls.Add(this.checkEditPressure7To12);
             this.panelControl3.Dock = System.Windows.Forms.DockStyle.Fill;
             this.panelControl3.Location = new System.Drawing.Point(416, 22);
             this.panelControl3.Margin = new System.Windows.Forms.Padding(2);
@@ -791,20 +799,20 @@
             this.panelControl3.Size = new System.Drawing.Size(330, 49);
             this.panelControl3.TabIndex = 5;
             // 
-            // checkEdit2
+            // checkEditPressure7To12
             // 
-            this.checkEdit2.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.checkEdit2.Location = new System.Drawing.Point(5, 5);
-            this.checkEdit2.Margin = new System.Windows.Forms.Padding(1);
-            this.checkEdit2.Name = "checkEdit2";
-            this.checkEdit2.Properties.AllowFocused = false;
-            this.checkEdit2.Properties.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            this.checkEdit2.Properties.Appearance.ForeColor = System.Drawing.Color.White;
-            this.checkEdit2.Properties.Appearance.Options.UseBackColor = true;
-            this.checkEdit2.Properties.Appearance.Options.UseForeColor = true;
-            this.checkEdit2.Properties.Caption = "7-12";
-            this.checkEdit2.Size = new System.Drawing.Size(320, 39);
-            this.checkEdit2.TabIndex = 1;
+            this.checkEditPressure7To12.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.checkEditPressure7To12.Location = new System.Drawing.Point(5, 5);
+            this.checkEditPressure7To12.Margin = new System.Windows.Forms.Padding(1);
+            this.checkEditPressure7To12.Name = "checkEditPressure7To12";
+            this.checkEditPressure7To12.Properties.AllowFocused = false;
+            this.checkEditPressure7To12.Properties.Appearance.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            this.checkEditPressure7To12.Properties.Appearance.ForeColor = System.Drawing.Color.White;
+            this.checkEditPressure7To12.Properties.Appearance.Options.UseBackColor = true;
+            this.checkEditPressure7To12.Properties.Appearance.Options.UseForeColor = true;
+            this.checkEditPressure7To12.Properties.Caption = "7-12";
+            this.checkEditPressure7To12.Size = new System.Drawing.Size(320, 39);
+            this.checkEditPressure7To12.TabIndex = 1;
             // 
             // tabPageDAQAI
             // 
@@ -1755,13 +1763,13 @@
             this.uiTableLayoutPanel5.PerformLayout();
             ((System.ComponentModel.ISupportInitialize)(this.panelControl2)).EndInit();
             this.panelControl2.ResumeLayout(false);
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit1.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit1.Properties)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.textEdit2.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEditPressure1To6.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEditPressureValue1To6.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.textEditPressureValue7To12.Properties)).EndInit();
             ((System.ComponentModel.ISupportInitialize)(this.panelControl1)).EndInit();
             ((System.ComponentModel.ISupportInitialize)(this.panelControl3)).EndInit();
             this.panelControl3.ResumeLayout(false);
-            ((System.ComponentModel.ISupportInitialize)(this.checkEdit2.Properties)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.checkEditPressure7To12.Properties)).EndInit();
             this.tabPageDAQAI.ResumeLayout(false);
             this.uiTableLayoutPanel7.ResumeLayout(false);
             this.uiGroupBox6.ResumeLayout(false);
@@ -1860,14 +1868,14 @@
         private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel4;
         private Sunny.UI.UIPanel uiPanel1;
         private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel5;
-        private DevExpress.XtraEditors.TextEdit textEdit1;
-        private DevExpress.XtraEditors.TextEdit textEdit2;
+        private DevExpress.XtraEditors.TextEdit textEditPressureValue1To6;
+        private DevExpress.XtraEditors.TextEdit textEditPressureValue7To12;
         private DevExpress.XtraEditors.LabelControl labelControl1;
         private DevExpress.XtraEditors.LabelControl labelControl2;
         private DevExpress.XtraEditors.PanelControl panelControl1;
         private DevExpress.XtraEditors.PanelControl panelControl2;
-        private DevExpress.XtraEditors.CheckEdit checkEdit1;
+        private DevExpress.XtraEditors.CheckEdit checkEditPressure1To6;
         private DevExpress.XtraEditors.PanelControl panelControl3;
-        private DevExpress.XtraEditors.CheckEdit checkEdit2;
+        private DevExpress.XtraEditors.CheckEdit checkEditPressure7To12;
     }
 }

@@ -1,4 +1,4 @@
-﻿﻿using Config.Models;
+﻿using Config.Models;
 using MTEmbTest.Models;
 using Sunny.UI;
 using System;
@@ -12,6 +12,7 @@ using System.Windows.Forms;
 using System.Xml;
 using System.Xml.Linq;
 using System.Xml.Serialization;
+using DevExpress.Data.Helpers;
 
 namespace MtEmbTest
 {
@@ -19,10 +20,12 @@ namespace MtEmbTest
     {
         private readonly BindingList<EpbRow> _epbRows = new();
         private readonly GlobalConfig _cfg; // 全部配置对象
+        private List<PressureSettingControl> _pressureSettings; // 压力设置
 
         public FrmTestSetting(GlobalConfig cfg)
         {
             _cfg = cfg;
+            _pressureSettings = new List<PressureSettingControl>(); // 初始化
             InitializeComponent();
         }
 
@@ -251,6 +254,8 @@ namespace MtEmbTest
             // // }
             BindEpbRunnerGridFromConfig();
 
+           
+
             try
             {
                 // 赋值 Clamp 相关变量到对应 TextBox
@@ -278,6 +283,12 @@ namespace MtEmbTest
 
                 LoadTestConfigFromXml(TxtTestCycle, TxtTestName, TxtTestTarget,
                     TxtStoreDir, TxtTestMan, RtbDesc);
+
+                // 压力设置相关-开始
+                InitializePressureSettings();
+
+                // 压力设置导入到界面
+                LoadDefaultValues(); // 从cfg配置中导入；
             }
 
             catch (Exception ex)
@@ -700,7 +711,7 @@ namespace MtEmbTest
                 // 3) 保存 TestConfig.xml（只改 Basic + EpbCycleRunnerConfig 小节，其余保持不变）
                 var cfgDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Config");
                 var testPath = Path.Combine(cfgDir, "TestConfig.xml");
-                ConfigLoader.SaveTest(testPath,_cfg.Test);
+                ConfigLoader.SaveTest(testPath, _cfg.Test);
 
                 MessageBox.Show(@"保存成功！", @"提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
@@ -716,7 +727,7 @@ namespace MtEmbTest
         private void PushGridBackToConfig()
         {
             if (_cfg?.Test?.EpbCycleRunner == null) return;
-            
+
             var dict = _cfg.Test.EpbCycleRunner.Channels;
             dict.Clear();
             foreach (var r in _epbRows.OrderBy(x => x.Channel))
@@ -750,7 +761,7 @@ namespace MtEmbTest
             if (int.TryParse(TxtTestCycle.Text.Trim(), out var cycleHz) && cycleHz > 0)
                 _cfg.Test.TestPeriod = cycleHz;
             else
-                _cfg.Test.TestPeriod = 1;   // 安全默认值
+                _cfg.Test.TestPeriod = 1; // 安全默认值
 
             // —— 2) TestName —— //
             _cfg.Test.TestName = (TxtTestName.Text ?? "").Trim();
@@ -759,7 +770,7 @@ namespace MtEmbTest
             if (int.TryParse(TxtTestTarget.Text.Trim(), out var target) && target > 0)
                 _cfg.Test.TestTarget = target;
             else
-                _cfg.Test.TestTarget = 1;   // 默认 1 次
+                _cfg.Test.TestTarget = 1; // 默认 1 次
 
             // —— 4) StoreDir —— //
             var dir = (TxtStoreDir.Text ?? "").Trim();
@@ -768,6 +779,7 @@ namespace MtEmbTest
                 // 如果用户输入的目录不合法，回退到原值或默认路径
                 dir = _cfg.Test.StoreDir ?? Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Data");
             }
+
             _cfg.Test.StoreDir = dir;
 
             // —— 5) Owner —— //
@@ -777,9 +789,6 @@ namespace MtEmbTest
             _cfg.Test.Description = RtbDesc.Text ?? "";
         }
 
-
-
-        
 
         // 统一保存逻辑
         private void SaveTestConfigToFile(TestConfig config)
@@ -815,6 +824,273 @@ namespace MtEmbTest
             rtbDesc.Text = _cfg.Test.Description; // 描述
         }
 
+        
+        #region 压力设置相关
+
+        private void InitializePressureSettings()
+        {
+            // 清空列表
+            _pressureSettings.Clear();
+
+            // 添加EPB压力设置 (Id=1)
+            var epb1To6Pressure = new PressureSettingControl(
+                id: 1,
+                name: "EPB1-6的压力",
+                enableCheckEdit: checkEditPressure1To6,
+                pressureTextEdit: textEditPressureValue1To6,
+                unit: "bar"
+            );
+            _pressureSettings.Add(epb1To6Pressure);
+
+            // 添加辅助压力设置 (Id=2)
+            var epb7To12Pressure = new PressureSettingControl(
+                id: 2,
+                name: "EPB7-12的压力",
+                enableCheckEdit: checkEditPressure7To12,
+                pressureTextEdit: textEditPressureValue7To12,
+                unit: "bar"
+            );
+            _pressureSettings.Add(epb7To12Pressure);
+
+            // 可以继续添加更多压力设置...
+            // var thirdPressure = new PressureSettingControl(3, "第三压力", checkEdit3, textEdit3);
+            // _pressureSettings.Add(thirdPressure);
+        }
+
+        // 加载默认值
+        private void LoadDefaultValues()
+        {
+            try
+            {
+                // 使用 _cfg.Test.GetHydraulicItemById(id) 获取 HydraulicItem
+                // 分别获取id为1和2的HydraulicItem
+
+                // 获取ID为1的HydraulicItem
+                var hydraulicItem1 = _cfg.Test.GetHydraulicItemById(1);
+                if (hydraulicItem1 != null)
+                {
+                    var epb1To6Setting = GetPressureSettingById(1);
+                    if (epb1To6Setting != null)
+                    {
+                        // 设置压力值
+                        epb1To6Setting.SetPressure(
+                            pressure: (int)hydraulicItem1.PressureThresholdBar,
+                            enable: hydraulicItem1.Enabled
+                        );
+
+                        // 可选：在界面上显示相关信息
+                        System.Diagnostics.Debug.WriteLine($"加载EPB1-6压力: ID={hydraulicItem1.Id}, " +
+                                                           $"Enabled={hydraulicItem1.Enabled}, " +
+                                                           $"Pressure={hydraulicItem1.PressureThresholdBar} bar");
+                    }
+                    else
+                    {
+                        System.Diagnostics.Debug.WriteLine($"警告: 未找到ID=1的压力设置控件");
+                    }
+                }
+                else
+                {
+                    System.Diagnostics.Debug.WriteLine($"警告: 未找到ID=1的HydraulicItem，使用默认值");
+                    // 如果没有找到配置，使用硬编码的默认值
+                    var epb1To6Setting = GetPressureSettingById(1);
+                    if (epb1To6Setting != null)
+                    {
+                        epb1To6Setting.SetPressure(30, true); // 默认30bar，启用
+                    }
+                }
+
+                // 获取ID为2的HydraulicItem
+                var hydraulicItem2 = _cfg.Test.GetHydraulicItemById(2);
+                if (hydraulicItem2 != null)
+                {
+                    var epb7To12Setting = GetPressureSettingById(2);
+                    if (epb7To12Setting != null)
+                    {
+                        // 设置压力值
+                        epb7To12Setting.SetPressure(
+                            pressure: hydraulicItem2.PressureThresholdBar,
+                            enable: hydraulicItem2.Enabled
+                        );
+
+                        // 可选：在界面上显示相关信息
+                        System.Diagnostics.Debug.WriteLine($"加载EPB7-12压力: ID={hydraulicItem2.Id}, " +
+                                                           $"Enabled={hydraulicItem2.Enabled}, " +
+                                                           $"Pressure={hydraulicItem2.PressureThresholdBar} bar");
+                    }
+                    else
+                    {
+                        System.Diagnostics.Debug.WriteLine($"警告: 未找到ID=2的压力设置控件");
+                    }
+                }
+                else
+                {
+                    System.Diagnostics.Debug.WriteLine($"警告: 未找到ID=2的HydraulicItem，使用默认值");
+                    // 如果没有找到配置，使用硬编码的默认值
+                    var epb7To12Setting = GetPressureSettingById(2);
+                    if (epb7To12Setting != null)
+                    {
+                        epb7To12Setting.SetPressure(15, true); // 默认15bar，启用
+                    }
+                }
+
+                // 可选：验证加载的数据
+                ValidateLoadedData();
+
+                // 更新界面显示
+                //DisplayCurrentSettings();
+            }
+            catch (Exception ex)
+            {
+                // 记录异常并使用默认值
+                System.Diagnostics.Debug.WriteLine($"加载压力设置时发生错误: {ex.Message}");
+
+                // 发生异常时使用硬编码默认值
+                UseHardcodedDefaults();
+            }
+        }
+
+        // 验证加载的数据
+        private void ValidateLoadedData()
+        {
+            var validationRules = new Dictionary<int, (int min, int max)>
+            {
+                { 1, (0, 200) }, // EPB1-6压力范围 0-200
+                { 2, (0, 200) } // EPB7-12压力范围 0-200
+            };
+
+            foreach (var setting in _pressureSettings)
+            {
+                if (setting.IsEnabled)
+                {
+                    if (validationRules.ContainsKey(setting.Id))
+                    {
+                        var (min, max) = validationRules[setting.Id];
+                        if (!setting.ValidatePressure(min, max))
+                        {
+                            System.Diagnostics.Debug.WriteLine(
+                                $"警告: ID={setting.Id}的压力值{setting.PressureValue}超出范围({min}-{max})");
+
+                            // 可选：自动修正到范围内的值
+                            if (setting.PressureValue < min)
+                            {
+                                setting.PressureValue = min;
+                            }
+                            else if (setting.PressureValue > max)
+                            {
+                                setting.PressureValue = max;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 使用硬编码的默认值
+        private void UseHardcodedDefaults()
+        {
+            foreach (var setting in _pressureSettings)
+            {
+                switch (setting.Id)
+                {
+                    case 1:
+                        setting.SetPressure(30, true); // EPB1-6默认值
+                        break;
+                    case 2:
+                        setting.SetPressure(15, true); // EPB7-12默认值
+                        break;
+                    default:
+                        setting.SetPressure(0, false); // 其他ID使用默认值
+                        break;
+                }
+            }
+        }
+
+        // 批量加载所有HydraulicItem到压力设置
+        private void LoadAllHydraulicItems()
+        {
+            // 这个方法可以用于批量加载所有HydraulicItem
+            for (int id = 1; id <= 2; id++) // 假设有2个，可以根据实际情况调整
+            {
+                var hydraulicItem = _cfg.Test.GetHydraulicItemById(id);
+                if (hydraulicItem != null)
+                {
+                    var pressureSetting = GetPressureSettingById(id);
+                    if (pressureSetting != null)
+                    {
+                        pressureSetting.SetPressure(
+                            hydraulicItem.PressureThresholdBar,
+                            hydraulicItem.Enabled
+                        );
+                    }
+                }
+            }
+        }
+
+        // 获取HydraulicItem并更新压力设置的方法
+        private bool TryLoadHydraulicItemToPressureSetting(int hydraulicId)
+        {
+            try
+            {
+                var hydraulicItem = _cfg.Test.GetHydraulicItemById(hydraulicId);
+                if (hydraulicItem == null)
+                {
+                    System.Diagnostics.Debug.WriteLine($"未找到ID={hydraulicId}的HydraulicItem");
+                    return false;
+                }
+
+                var pressureSetting = GetPressureSettingById(hydraulicId);
+                if (pressureSetting == null)
+                {
+                    System.Diagnostics.Debug.WriteLine($"未找到ID={hydraulicId}对应的压力设置控件");
+                    return false;
+                }
+
+                pressureSetting.SetPressure(
+                    hydraulicItem.PressureThresholdBar,
+                    hydraulicItem.Enabled
+                );
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"加载HydraulicItem ID={hydraulicId}时出错: {ex.Message}");
+                return false;
+            }
+        }
+
+        #region 压力相关的辅助方法
+
+        // 通过Id获取压力设置
+        private PressureSettingControl GetPressureSettingById(int id)
+        {
+            return _pressureSettings.FirstOrDefault(p => p.Id == id);
+        }
+
+        // 通过Name获取压力设置
+        private PressureSettingControl GetPressureSettingByName(string name)
+        {
+            return _pressureSettings.FirstOrDefault(p => p.Name == name);
+        }
+
+        // 获取所有启用的压力设置
+        private List<PressureSettingControl> GetEnabledSettings()
+        {
+            return _pressureSettings.Where(p => p.IsEnabled).ToList();
+        }
+
+        // 获取所有有效的压力设置
+        private List<PressureSettingControl> GetValidSettings()
+        {
+            return _pressureSettings.Where(p => p.IsValid).ToList();
+        }
+
+
+
+        #endregion
+
+        #endregion
+
 
         private TestConfig LoadTestConfigFromFile()
         {
@@ -834,6 +1110,7 @@ namespace MtEmbTest
                 return new TestConfig(); // 返回空配置避免异常
             }
         }
+
 
         private void BtnFindDir_Click(object sender, EventArgs e)
         {
@@ -863,11 +1140,11 @@ namespace MtEmbTest
                 }
             }
         }
+
         private void dgvEmbControl_DataBindingComplete(object sender, DataGridViewBindingCompleteEventArgs e)
         {
             //  dgvEpbRunnerCfgControl.CurrentCell = null;
             //  dgvEpbRunnerCfgControl.SelectedIndex = -1;
         }
-
     }
 }
