@@ -167,6 +167,8 @@ namespace MTEmbTest
 
         /// <summary>内存中的 12 路 EPB 记录，来源于 TestConfig.xml 的 &lt;EpbRecords&gt;。</summary>
         private List<EpbTestRecord> _uiEpbRecords = new();
+        // 加一个锁，避免未来多线程回调时踩踏）
+        private readonly object _epbRecordsLock = new object();
 
 
         // —— UI 刷新节流相关 —— //
@@ -778,6 +780,9 @@ namespace MTEmbTest
                     twoDeviceAiAcquirer,
                     logger);
 
+                // ★ 新增：订阅 EPB 单圈完成事件，用于更新 _uiEpbRecords
+                _epb.ChannelCycleCompleted += OnEpbChannelCycleCompleted;
+
 
                 // 1) 创建写盘器（使用 DataRetentionPolicy）
                 var policy = new DataRetentionPolicy
@@ -873,25 +878,105 @@ namespace MTEmbTest
         }
 
         /// <summary>
-        /// 初始化EPB控制器的记录
+        /// 初始化 EPB 控制器的试验记录列表：
+        /// 1) 从 <see cref="_cfg.Test.EpbRecords" /> 加载已有记录；
+        /// 2) 确保 1..12 每个通道至少有一条 <see cref="EpbTestRecord" /> 记录；
+        /// 3) 后续运行中所有更新都针对 <see cref="_uiEpbRecords" />。
         /// </summary>
-        /// <exception cref="NotImplementedException"></exception>
         private void InitializeEpbRecords()
         {
             _uiEpbRecords = new List<EpbTestRecord>();
-            
-            // 从_cfg.Test.EpbRecords 中加载
-            if (_cfg?.Test?.EpbRecords != null)
+
+            // 1) 从配置加载
+            var cfgRecords = _cfg?.Test?.EpbRecords;
+            if (cfgRecords != null)
             {
-                foreach (var record in _cfg.Test.EpbRecords)
+                foreach (var record in cfgRecords)
                 {
-                    _uiEpbRecords.Add(record);
+                    if (record != null)
+                        _uiEpbRecords.Add(record);
                 }
             }
 
-            
+            // 2) 补齐 1..12 的默认记录（如果缺少）
+            for (var id = 1; id <= 12; id++)
+            {
+                if (_uiEpbRecords.Find(r => r.Id == id) == null)
+                {
+                    _uiEpbRecords.Add(EpbTestRecord.CreateDefault(id));
+                }
+            }
 
+            // 3) 按通道排序一下，便于 UI 显示
+            _uiEpbRecords.Sort((a, b) => a.Id.CompareTo(b.Id));
         }
+
+
+        /// <summary>
+        /// 确保并返回指定通道的试验记录：
+        /// 如果列表中不存在，则创建默认记录并加入列表。
+        /// </summary>
+        /// <param name="id">EPB 通道 Id（1..12）。</param>
+        /// <returns>该通道对应的 <see cref="EpbTestRecord" /> 实例。</returns>
+        private EpbTestRecord EnsureEpbRecord(int id)
+        {
+            lock (_epbRecordsLock)
+            {
+                var rec = _uiEpbRecords.Find(r => r.Id == id);
+                if (rec != null)
+                    return rec;
+
+                rec = EpbTestRecord.CreateDefault(id);
+                rec.Id = id;
+                _uiEpbRecords.Add(rec);
+                return rec;
+            }
+        }
+
+        /// <summary>
+        /// 来自 EpbManager 的“单圈完成”事件回调：
+        /// 在这里把每个 EPB 的运行圈数同步到 _uiEpbRecords。
+        /// </summary>
+        /// <param name="channel">EPB 通道号（1..12）。</param>
+        /// <param name="sessionRunCount">
+        /// 本次试验 Session 内的圈数（从 1 开始），
+        /// 如无需要可仅用于日志，不参与计算。
+        /// </param>
+        private void OnEpbChannelCycleCompleted(int channel, int sessionRunCount)
+        {
+            // —— 确保在 UI 线程更新控件/列表 —— //
+            if (InvokeRequired)
+            {
+                try
+                {
+                    BeginInvoke(new Action<int, int>(OnEpbChannelCycleCompleted), channel, sessionRunCount);
+                }
+                catch
+                {
+                    // 窗口正在关闭等情况，忽略即可
+                }
+
+                return;
+            }
+
+            if (_uiEpbRecords == null) return;
+
+            // 根据 Id 找到对应记录（也可以用数组按 channel-1 直接索引）
+            var record = _uiEpbRecords.FirstOrDefault(r => r.Id == channel);
+            if (record == null)
+                return;
+
+            // ✅ 这里的策略：
+            // 1）EpbCycleRunner 内部用“初始 RunCount + SessionRunCount”做判断；
+            // 2）UI 侧只关心“总完成次数”，所以每完成一圈就把 RunCount++。
+            //    这样最终 _uiEpbRecords.RunCount == 初始 RunCount + 本次新增圈数。
+            record.RunCount++;
+
+            // 如果你有某个 Label/文本框显示圈数，可以在这里顺便更新：
+            // 例：EpbGroup[channel - 1].CtrlCycles.Text = record.RunCount.ToString();
+            // 或者更新某个 SunnyUI / DevExpress 网格等。
+        }
+
 
         /// <summary>
         ///     将 TestConfig 内容加载到 UI（带空值保护 + 派生值 + Led 显示更新）
@@ -1679,7 +1764,7 @@ namespace MTEmbTest
             try
             {
                 _batchCts?.Cancel(); // 触发外壳的 await 停下学习/计时器工作
-                _epb.StopAll(); // 内部 DO/AO/Runner 停车
+                _epb.StopAll(); // 内部 DO/AO/Runner 停止
                 RtbInfo?.AppendText($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  > 停止试验\n");
             }
             catch (Exception ex)
@@ -1857,6 +1942,22 @@ namespace MTEmbTest
             {
                 /* 关闭阶段忽略单次失败 */
             }
+
+            #region 解绑ChannelCycleCompleted事件
+
+            try
+            {
+                if (_epb != null)
+                {
+                    _epb.ChannelCycleCompleted -= OnEpbChannelCycleCompleted;
+                }
+            }
+            catch
+            {
+                // 忽略异常
+            }
+
+            #endregion
 
             base.OnFormClosing(e);
         }

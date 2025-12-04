@@ -21,6 +21,17 @@ namespace Controller
         private readonly Dictionary<int, EpbCycleRunner> _runnerCache = new();
         private readonly Dictionary<int, HighPrecisionTimer> _timerCache = new();
 
+        /// <summary>
+        /// 对外暴露的“EPB 单圈完成”事件。
+        /// 参数 1：EPB 通道号（1..12）；
+        /// 参数 2：本次试验 Session 内已经完成的圈数（从 1 开始）。
+        /// </summary>
+        public event Action<int, int> ChannelCycleCompleted;
+
+
+
+
+
 
         #region 对外主入口 Batch Start (Learning + Formal) with Group Anchor + Stagger Phases
 
@@ -523,11 +534,12 @@ namespace Controller
             r.TailMinMs = T8MinMs;
         }
 
-        
+
         /// <summary>
         /// 获取指定通道的 EPB 循环运行器。
         /// 注意：如果命中 _runnerCache（上一次运行留下的实例），需要重新登记到 _runners，
         /// 以便采集回调 OnFastEpbCurrent 能再次把样本喂给该 Runner。
+        /// 同时在此处确保事件订阅已建立（避免重复绑定）。 
         /// </summary>
         private IEpbCycleRunner GetRunner(int channel)
         {
@@ -536,6 +548,7 @@ namespace Controller
             if (_runnerCache.TryGetValue(channel, out cachedRunner))
             {
                 _runners[channel] = cachedRunner; // 重新登记，让 OnFastEpbCurrent 能找到它
+                AttachRunnerEvents(cachedRunner);
                 return cachedRunner;
             }
 
@@ -544,15 +557,14 @@ namespace Controller
             if (_runners.TryGetValue(channel, out existingRunner))
             {
                 _runnerCache[channel] = existingRunner;
+                AttachRunnerEvents(existingRunner);
                 return existingRunner;
             }
 
-            // ③ 都未命中：创建新 Runner（保持你现有逻辑不变，下略...）
+            // ③ 都未命中：创建新 Runner
             var hydId = channel <= 6 ? 1 : 2;
-            // var rcfg = _cfg.Test?.GetEpbRunner(channel) ?? new EpbCycleRunnerConfig();
             var rcfg = _cfg.Test?.EpbCycleRunner.GetRunnerChannel(channel);
 
-            // 从config中获取具体运行参数
             var sampleMs = 2;
             var forwardA = rcfg!.ForwardA;
             var holdMs = rcfg.HoldMs;
@@ -576,7 +588,23 @@ namespace Controller
             _runnerCache[channel] = runner;
             _runners[channel] = runner; // 立即登记，保证采集回调可用
 
+            AttachRunnerEvents(runner);
+
             return runner;
+        }
+
+
+        /// <summary>
+        /// 统一为 Runner 绑定单圈完成事件（防重复绑定）。 
+        /// </summary>
+        /// <param name="runner">具体的 EPB 循环运行器实例。</param>
+        private void AttachRunnerEvents(EpbCycleRunner runner)
+        {
+            if (runner == null) return;
+
+            // 先解绑一次，避免重复订阅造成事件被触发多次
+            runner.ChannelCycleCompleted -= OnRunnerChannelCycleCompleted;
+            runner.ChannelCycleCompleted += OnRunnerChannelCycleCompleted;
         }
 
 
@@ -628,6 +656,21 @@ namespace Controller
         }
 
         #endregion
+
+
+        /// <summary>
+        /// Runner 内部单圈完成时回调到此方法，再转发给外部订阅者（例如 FrmEpbMainMonitor）。
+        /// </summary>
+        /// <param name="channel">EPB 通道号（1..12）。</param>
+        /// <param name="sessionRunCount">本次试验 Session 内的运行次数（从 1 开始）。</param>
+        private void OnRunnerChannelCycleCompleted(int channel, int sessionRunCount)
+        {
+            // 直接转发给 Manager 自己的事件
+            ChannelCycleCompleted?.Invoke(channel, sessionRunCount);
+        }
+
+
+
     }
 
     #region 对接所需接口（如果你的类型名不同，请改成你的）

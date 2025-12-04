@@ -322,7 +322,14 @@ namespace Controller
             }
 
             // —— Runner 同样清理：运行表与缓存表都移除 —— //
-            _runners.Remove(channel);
+            EpbCycleRunner runnerObj;
+            if (_runners.TryGetValue(channel, out runnerObj))
+            {
+                // 退出前解绑事件，防止潜在内存泄漏
+                runnerObj.ChannelCycleCompleted -= OnRunnerChannelCycleCompleted;
+
+                _runners.Remove(channel);
+            }
             _runnerCache.Remove(channel);
 
             // —— 安全落位与收尾（按你现有逻辑调整）—— //

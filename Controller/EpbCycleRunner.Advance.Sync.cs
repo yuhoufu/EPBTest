@@ -34,6 +34,24 @@ namespace Controller
         private double RevDecayLimitA = 3.0;
         #endregion
 
+        /// <summary>
+        ///     单通道完成一个循环时触发的事件。
+        ///     参数依次为：EPB 通道号（1..12）、已完成总圈数。
+        /// </summary>
+        public event Action<int, int> ChannelCycleCompleted;
+
+        /// <summary>
+        /// 试验前已有的累计运行次数（从 <see cref="EpbTestRecord.RunCount"/> 传入）。
+        /// 初始化时赋值，之后整个周期内不再修改。
+        /// </summary>
+        //private readonly int _initialRunCount;
+
+        /// <summary>
+        /// 本次试验过程中新增的运行次数（从 0 开始，每完成一圈加 1）。
+        /// </summary>
+        private int _sessionRunCount = 0;
+
+
         /// <summary>学习期使用的“临时裕量”（仅在学习圈内滚动更新，避免直接写回 _safetyMarginA）。</summary>
         private double _learnMargin = double.NaN;
 
@@ -647,6 +665,13 @@ namespace Controller
             // 如果你的旧方法是 RunOneAsync(periodMs, token[, ...])，此处直接调用即可。
             // 关键点：旧方法里若还有①/⑧的等待，不影响我们“外壳”收尾，后面的 deadline 仍会统一结束点。
             var ok = await RunOneAsync(periodMs, token).ConfigureAwait(false);
+
+            if (ok) // 成功完成一圈
+            {
+                // 该通道完成了第 n 圈：
+                 _sessionRunCount++;
+                ChannelCycleCompleted?.Invoke(_channel, _sessionRunCount++); // 通知外部，完成一圈
+            }
 
             // —— 2) 计算“迟到量”（lateness）：实际耗时 - (periodMs - tailBaseMs) —— //
             // 理解：假设旧流程内部已经用掉了 (periodMs - 旧T8) 的时间（粗略近似），我们在⑧中要扣回 phase，
