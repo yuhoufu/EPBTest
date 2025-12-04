@@ -97,7 +97,7 @@ namespace Controller
                     return false;
                 }
 
-                if (!_ao.WritePressure(aoDevName, item.SetPercent))
+                if (!_ao.WritePressure(aoDevName, item.PressureThresholdBar))
                 {
                     _log.Error($"液压[{hydId}] AO 输出失败。", "液压");
                     _do.SetPressure(hydId, false);
@@ -105,7 +105,7 @@ namespace Controller
                     return false;
                 }
 
-                _log.Info($"液压[{hydId}] 建压并保持：{item.SetPercent:F1}%（HoldUntilRelease）", "液压");
+                _log.Info($"液压[{hydId}] 建压并保持：{item.PressureThresholdBar:F1}%（HoldUntilRelease）", "液压");
 
                 using var reg = token.Register(() => tcs.TrySetCanceled(token));
                 await tcs.Task; // 等待外部 Release()
@@ -178,13 +178,13 @@ namespace Controller
                     return false;
                 }
 
-                _log.Info($"液压[{hydId}] 启动，设定={item.SetPercent:F1}% 模式={item.Mode}", "液压");
+                _log.Info($"液压[{hydId}] 启动，设定={item.PressureThresholdBar:F1}% 模式={item.Mode}", "液压");
 
                 // Step 2: 输出 AO 百分比（由 AoController 内部做限幅与电压换算）
                 // 同步版：WritePressure；如需无阻塞可改用 await _ao.SetPressureAsync(...)
-                if (!_ao.WritePressure(aoDevName, item.SetPercent))
+                if (!_ao.WritePressure(aoDevName, item.PressureThresholdBar))
                 {
-                    _log.Error($"液压[{hydId}] AO 输出失败（设备={aoDevName} 百分比={item.SetPercent:F1}%）。", "液压");
+                    _log.Error($"液压[{hydId}] AO 输出失败（设备={aoDevName} 压力={item.PressureThresholdBar:F1}%）。", "液压");
                     return false;
                 }
 

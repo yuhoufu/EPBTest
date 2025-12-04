@@ -272,7 +272,7 @@ namespace Controller
                 return;
             }
 
-            if (!_ao.WritePressure(dev, item.SetPercent))
+            if (!_ao.WritePressure(dev, item.PressureThresholdBar))
             {
                 _log.Error($"液压[{hydId}] AO 输出失败（Fallback）。", "液压协调");
                 return;
