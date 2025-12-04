@@ -716,11 +716,12 @@ namespace MtEmbTest
                 var testPath = Path.Combine(cfgDir, "TestConfig.xml");
                 ConfigLoader.SaveTest(testPath, _cfg.Test);
 
-                MessageBox.Show(@"保存成功！", @"提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                XtraMessageBox.Show("保存成功", "提示",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (Exception ex)
             {
-                MessageBox.Show(@"保存失败：\r\n" + ex.Message, @"错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                XtraMessageBox.Show(@"保存失败：\r\n" + ex.Message, @"错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
@@ -1085,12 +1086,12 @@ namespace MtEmbTest
                 // 可选：调用保存配置的方法
                 // _cfg.Test.SaveHydraulicItems();
 
-                XtraMessageBox.Show("压力设置保存成功", "提示",
-                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                /*XtraMessageBox.Show("压力设置保存成功", "提示",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);*/
             }
             catch (Exception ex)
             {
-                XtraMessageBox.Show($"保存失败: {ex.Message}", "错误",
+                XtraMessageBox.Show($"压力设置，修改失败: {ex.Message}", "错误",
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
