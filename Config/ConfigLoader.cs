@@ -507,10 +507,11 @@ public static class ConfigLoader
         var doc = new XmlDocument();
         doc.Load(path);
 
+        // ReSharper disable once PossibleNullReferenceException
         foreach (XmlNode formNode in doc.SelectNodes("/UiConfig/*"))
         {
             var form = cfg.GetOrAddForm(formNode.Name);
-            foreach (XmlNode n in formNode.SelectNodes("./Controls/Control"))
+            foreach (XmlNode n in formNode.SelectNodes("./Controls/Control")!)
             {
                 var name = n.Attributes?["Name"]?.Value?.Trim();
                 if (string.IsNullOrEmpty(name)) continue;

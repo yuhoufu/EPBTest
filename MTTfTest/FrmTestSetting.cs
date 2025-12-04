@@ -13,6 +13,7 @@ using System.Xml;
 using System.Xml.Linq;
 using System.Xml.Serialization;
 using DevExpress.Data.Helpers;
+using DevExpress.XtraEditors;
 
 namespace MtEmbTest
 {
@@ -254,7 +255,6 @@ namespace MtEmbTest
             // // }
             BindEpbRunnerGridFromConfig();
 
-           
 
             try
             {
@@ -702,13 +702,16 @@ namespace MtEmbTest
         {
             try
             {
-                // 1) 写回 Basic 信息（周期、名称、目录、负责人等）
-                PushBasicInfoBackToConfig();
+                // 1) 写回 Basic 信息（周期、名称、目录、负责人等）到 _cfg
+                PushBasicInfoToConfig();
 
-                // 2) 写回 EPB 循环参数（12 个通道）
-                PushGridBackToConfig();
+                // 2) 写回 EPB 循环参数（12 个通道）到 _cfg
+                PushEpbCycleRunnerToConfig();
 
-                // 3) 保存 TestConfig.xml（只改 Basic + EpbCycleRunnerConfig 小节，其余保持不变）
+                // 3) 写回液压配置（EPB1-6 和 EPB7-12 的压力设置）到 _cfg
+                PushHydraulicSettingsToConfig();
+
+                // 4) 保存 TestConfig.xml（包含 Basic、EpbCycleRunnerConfig、Hydraulics 等全部配置）
                 var cfgDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Config");
                 var testPath = Path.Combine(cfgDir, "TestConfig.xml");
                 ConfigLoader.SaveTest(testPath, _cfg.Test);
@@ -724,7 +727,7 @@ namespace MtEmbTest
         /// <summary>
         /// 将网格当前数据写回到 _global.Test.EpbCycleRunner.Channels 字典中。
         /// </summary>
-        private void PushGridBackToConfig()
+        private void PushEpbCycleRunnerToConfig()
         {
             if (_cfg?.Test?.EpbCycleRunner == null) return;
 
@@ -753,7 +756,7 @@ namespace MtEmbTest
         /// <summary>
         /// 将基本信息写回到配置对象中（带健壮性校验）。
         /// </summary>
-        private void PushBasicInfoBackToConfig()
+        private void PushBasicInfoToConfig()
         {
             if (_cfg?.Test == null) return;
 
@@ -824,7 +827,7 @@ namespace MtEmbTest
             rtbDesc.Text = _cfg.Test.Description; // 描述
         }
 
-        
+
         #region 压力设置相关
 
         private void InitializePressureSettings()
@@ -1059,6 +1062,39 @@ namespace MtEmbTest
             }
         }
 
+        // 保存当前设置回HydraulicItem；写回_cfg
+        private void PushHydraulicSettingsToConfig()
+        {
+            try
+            {
+                foreach (var pressureSetting in _pressureSettings)
+                {
+                    var hydraulicItem = _cfg.Test.GetHydraulicItemById(pressureSetting.Id);
+                    if (hydraulicItem != null)
+                    {
+                        // 更新HydraulicItem的值
+                        hydraulicItem.Enabled = pressureSetting.IsEnabled;
+                        hydraulicItem.PressureThresholdBar = pressureSetting.PressureValue;
+
+                        System.Diagnostics.Debug.WriteLine($"保存压力设置: ID={pressureSetting.Id}, " +
+                                                           $"Enabled={pressureSetting.IsEnabled}, " +
+                                                           $"Pressure={pressureSetting.PressureValue} bar");
+                    }
+                }
+
+                // 可选：调用保存配置的方法
+                // _cfg.Test.SaveHydraulicItems();
+
+                XtraMessageBox.Show("压力设置保存成功", "提示",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                XtraMessageBox.Show($"保存失败: {ex.Message}", "错误",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
         #region 压力相关的辅助方法
 
         // 通过Id获取压力设置
@@ -1084,8 +1120,6 @@ namespace MtEmbTest
         {
             return _pressureSettings.Where(p => p.IsValid).ToList();
         }
-
-
 
         #endregion
 
