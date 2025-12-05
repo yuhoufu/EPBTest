@@ -63,6 +63,9 @@ namespace MTEmbTest
         private const int UI_TARGET_FPS = 25; // 目标帧率
 
 
+        private readonly System.Windows.Forms.Timer _autoSaveTimer = new System.Windows.Forms.Timer();
+
+
         #region 概览区域相关属性、字段
 
         /// <summary>
@@ -181,6 +184,8 @@ namespace MTEmbTest
 
         // 加一个锁，避免未来多线程回调时踩踏）
         private readonly object _epbRecordsLock = new object();
+
+
 
 
         // —— UI 刷新节流相关 —— //
@@ -740,6 +745,11 @@ namespace MTEmbTest
                 // 初始化通道记录概览区域
                 InitEpbSummaryPanel();
 
+                // 30 秒自动保存一次（30,000 毫秒）
+                _autoSaveTimer.Interval = 30000;
+                _autoSaveTimer.Tick += AutoSaveTimer_Tick;
+                _autoSaveTimer.Start();
+
 
                 LoadEpbController(); // 
 
@@ -936,6 +946,8 @@ namespace MTEmbTest
             {
                 rec.InitializeOnLoad(DateTime.Now);
             }
+
+           
         }
 
 
@@ -971,47 +983,43 @@ namespace MTEmbTest
         /// </param>
         private void OnEpbChannelCycleCompleted(int channel, int sessionRunCount)
         {
-            // —— 确保在 UI 线程更新控件/列表 —— //
+            // —— 1) UI 线程同步 —— //
             if (InvokeRequired)
             {
                 try
                 {
                     BeginInvoke(new Action<int, int>(OnEpbChannelCycleCompleted), channel, sessionRunCount);
                 }
-                catch
-                {
-                    // 窗口正在关闭等情况，忽略即可
-                }
-
+                catch { }
                 return;
             }
 
-            if (_uiEpbRecords == null) return;
-
-            // 根据 Id 找到对应记录（也可以用数组按 channel-1 直接索引）
-            var record = _uiEpbRecords.FirstOrDefault(r => r.Id == channel);
-            if (record == null)
+            if (_uiEpbRecords == null)
                 return;
 
-            // ✅ 这里的策略：
-            // 1）EpbCycleRunner 内部用“初始 RunCount + SessionRunCount”做判断；
-            // 2）UI 侧只关心“总完成次数”，所以每完成一圈就把 RunCount++。
-            //    这样最终 _uiEpbRecords.RunCount == 初始 RunCount + 本次新增圈数。
-            // now 通常用 DateTime.Now
-            record.IncrementCycleAndUpdateTime(DateTime.Now);
-            //record.RunCount++;
-            EpbGroup[record.Id - 1].CtrlCycles.Text = record.RunCount.ToString();
+            // —— 2) 用锁保护记录访问 —— //
+            EpbTestRecord record;
 
-            // 若当前通道正好是下拉框选中的那个
+            lock (_epbRecordsLock)
+            {
+                record = _uiEpbRecords.FirstOrDefault(r => r.Id == channel);
+                if (record == null)
+                    return;
+
+                // 更新运行时间 + RunCount + LatestStartTime
+                record.IncrementCycleAndUpdateTime(DateTime.Now);
+            }
+
+            // —— 3) 更新左侧 EPBGroup —— //
+            EpbGroup[channel - 1].CtrlCycles.Text = record.RunCount.ToString();
+
+            // —— 4) 下拉框右侧面板选中时刷新 —— //
             if (record.Id == _currentEpbSummaryChannel)
             {
                 UpdateEpbSummaryPanel(record);
             }
 
-
-            // 如果你有某个 Label/文本框显示圈数，可以在这里顺便更新：
-            // 例：EpbGroup[channel - 1].CtrlCycles.Text = record.RunCount.ToString();
-            // 或者更新某个 SunnyUI / DevExpress 网格等。
+            // —— ⚠️ 取消实时保存，改为“定时自动保存” —— //
         }
 
 
@@ -1952,6 +1960,29 @@ namespace MTEmbTest
             // // 测试
             // _diskWriter.ExportFreeRunBySamples(1, 100000,
             //     Path.Combine(Environment.CurrentDirectory, @$"DataStore\EPB1-{DateTime.Now:yyyy_MM_dd-HH_mm_ss}.csv"));
+            
+            // 结束自动定时保存器 
+            try
+            {
+                // —— 1) 停止自动保存定时器 —— //
+                if (_autoSaveTimer != null)
+                {
+                    _autoSaveTimer.Stop();
+                    _autoSaveTimer.Tick -= AutoSaveTimer_Tick; // 清理事件
+                }
+
+                // —— 2) 最终保存一次（兜底）—— //
+                lock (_epbRecordsLock)
+                {
+                    FlushUiEpbRecordsToConfig();
+                }
+                SaveEpbRecordsToTestConfigSafe();
+            }
+            catch (Exception ex)
+            {
+                logger?.Warn("关闭窗口时保存 EPB 记录失败：" + ex.Message, "EPB");
+            }
+
 
 
             try
@@ -2323,6 +2354,75 @@ namespace MTEmbTest
                     break;
             }
         }
+
+        /// <summary>
+        /// 将界面维护的 <see cref="_uiEpbRecords"/> 写回到底层配置
+        /// <see>
+        ///     <cref>_cfg.Test.EpbRecords</cref>
+        /// </see>
+        /// 中。
+        /// </summary>
+        /// <remarks>
+        /// - 仅负责内存对象之间的同步，不负责写入磁盘；
+        /// - 调用方若需落盘，请再调用 <see>
+        ///     <cref>SaveEpbRecordsToTestConfigSafe</cref>
+        /// </see>
+        /// 。
+        /// </remarks>
+        private void FlushUiEpbRecordsToConfig()
+        {
+            if (_cfg?.Test == null) return;
+
+            lock (_epbRecordsLock)
+            {
+                var target = _cfg.Test.EpbRecords;
+                target.Clear();
+
+                // 按通道号排序后写回，保证 XML 中顺序规整（1..12）
+                foreach (var r in _uiEpbRecords.OrderBy(x => x.Id))
+                {
+                    // 这里直接把引用放回去即可：
+                    // _uiEpbRecords 本身就是 EpbTestRecord 对象列表，不必再克隆
+                    target.Add(r);
+                }
+            }
+        }
+        /// <summary>
+        /// 把当前 UI 侧 EPB 记录回写到 <see cref="_cfg.Test.EpbRecords"/>，
+        /// 并尝试保存到 Config\TestConfig.xml。
+        /// </summary>
+        private void SaveEpbRecordsToTestConfigSafe()
+        {
+            if (_cfg?.Test == null) return;
+
+            try
+            {
+                // 1) 先把 _uiEpbRecords 写回 _cfg.Test.EpbRecords
+                FlushUiEpbRecordsToConfig();
+
+                // 2) 再调用 ConfigLoader 统一保存（内部负责拼 TestConfig.xml 路径）
+                ConfigLoader.SaveTest(_cfg.Test);
+            }
+            catch (Exception ex)
+            {
+                // 不因为保存失败干扰试验，只打个日志
+                logger?.Warn("保存 EPB 试验记录到 TestConfig.xml 失败: " + ex.Message, "配置");
+            }
+        }
+
+        private void AutoSaveTimer_Tick(object sender, EventArgs e)
+        {
+            // 使用 lock 确保与 OnEpbChannelCycleCompleted 并发安全
+            lock (_epbRecordsLock)
+            {
+                FlushUiEpbRecordsToConfig();
+            }
+
+            SaveEpbRecordsToTestConfigSafe();
+        }
+
+
+
 
         #endregion
 

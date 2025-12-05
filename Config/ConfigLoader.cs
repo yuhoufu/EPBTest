@@ -799,6 +799,22 @@ public static class ConfigLoader
         }
     }
 
+    /// <summary>
+    /// 使用默认的 Config\TestConfig.xml 保存试验配置（包括 EpbRecords）。
+    /// </summary>
+    /// <param name="cfg">要保存的试验配置对象。</param>
+    public static void SaveTest(TestConfig cfg)
+    {
+        if (cfg == null) throw new ArgumentNullException(nameof(cfg));
+
+        // 与 LoadAll 一样，默认使用当前目录下的 Config 目录
+        var configDir = Path.Combine(Environment.CurrentDirectory, "Config");
+        Directory.CreateDirectory(configDir);
+
+        var testPath = Path.Combine(configDir, "TestConfig.xml");
+        SaveTest(testPath, cfg);
+    }
+
 
     // ========== Update ==========
     public static void UpdateUIChecked(string path, UiConfig cfg, string formName, string ctrlName, bool isChecked,
