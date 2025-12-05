@@ -139,23 +139,26 @@ namespace Controller
 
                     var timer = GetTimer(ch, PeriodMs, OverrunPolicy.AlignToWallClock);
 
-                    
 
 
+
+                    // —— 计时器每圈工作（cycleIndex 从 1 开始） —— //
                     // —— 计时器每圈工作（cycleIndex 从 1 开始） —— //
                     _ = timer.StartAsync(
                         repeat: runs, // 总圈数
                         initialDelay,
                         async (cycleIndex, ct) =>
                         {
-                            // 1) 在本圈锚点时刻为该压力组建压（协调器要幂等）
-                            await HydraulicEnterAtGroupAnchorAsync(pg, ct).ConfigureAwait(false);
+                            // 1) 在本圈锚点时刻为该压力组建压：
+                            //    对本组所有参与通道调用 EnterElectricalPhaseAsync，
+                            //    这样 HydraulicGroupCoordinator 能正确维护 InFlight 集合。
+                            await HydraulicEnterAtGroupAnchorAsync(pg, enabled, ct).ConfigureAwait(false);
 
                             // 2) 计算本圈的绝对“硬截止”时刻（用于 Runner 保证统一收尾）
                             var k = cycleIndex - 1;
                             var deadlineUtc = t0.AddMilliseconds((k + 1) * PeriodMs);
 
-                            // 3) 跑一圈（Runner 内部不做①；在⑧中扣回相位，并以 deadline 收尾）
+                            // 3) 跑一圈（对齐外壳版）
                             return await runner.RunOneAlignedAsync(
                                 PeriodMs,
                                 T8BaseMs,
@@ -236,12 +239,13 @@ namespace Controller
                     var t0 = t0OfGroup[pg];
                     var tk = t0.AddMilliseconds(k * PeriodMs);
 
-                    // —— 1.1) 组锚点任务（屏障） —— //
-                    var anchorTask = HydraulicEnterAtGroupAnchorAsync(pg, token);
-                    tasksAllGroups.Add(anchorTask); // 并入等待，便于异常汇总
-
                     // —— 1.2) 组内通道：相位错峰（0/Δ/2Δ）+ 过时滚动到未来 —— //
                     var enabled = list.OrderBy(x => x).ToList();
+
+                    // —— 1.1) 组锚点任务（屏障） —— //
+                    var anchorTask = HydraulicEnterAtGroupAnchorAsync(pg, enabled, token);
+                    tasksAllGroups.Add(anchorTask); // 并入等待，便于异常汇总
+
                     for (var i = 0; i < enabled.Count; i++)
                     {
                         var ch = enabled[i];
@@ -250,17 +254,14 @@ namespace Controller
 
                         tasksAllGroups.Add(Task.Run(async () =>
                         {
-                            // ① 等待液压锚点到位（屏障）
+                            // ① 等待液压锚点到位（屏障：确保本组已经建压 + 所有通道已登记 InFlight）
                             await anchorTask.ConfigureAwait(false);
 
-                            // ② 若 at 已过时 → 推进到未来的“下一个/下N个周期”的同相位时刻
-                            //    这样可避免负延时导致的“首圈同刻上电”
+                            // ② 若 at 已过时 → 推进到未来
                             var now = DateTime.UtcNow;
                             var atFuture = RollForwardToFuture(at, now, PeriodMs, /*safetyMs:*/ 2);
 
-                            // ③ 计算剩余并等待
                             var delay = atFuture - now;
-
                             _log?.Error(
                                 $"通道{ch}: tk={tk:HH:mm:ss.fff}, phase={phase}ms, at={at:HH:mm:ss.fff}, delay={delay.TotalMilliseconds}ms");
 
@@ -268,9 +269,9 @@ namespace Controller
                             if (ms > 0)
                                 await Task.Delay(ms, token).ConfigureAwait(false);
                             else
-                                await Task.Yield(); // 极小/微负：让出一次时间片，打散调度
+                                await Task.Yield();
 
-                            // ④ 执行单圈学习核心（不做①；⑧由外壳统一收口）
+                            // ③ 正常执行学习核心
                             var runner = GetRunner(ch);
                             var sample = await runner.LearnOneAlignedCoreAsync(
                                 PeriodMs, T8BaseMs, phase, T8MinMs, token
@@ -369,12 +370,13 @@ namespace Controller
                     var t0 = t0OfGroup[pg];
                     var tk = t0.AddMilliseconds(k * PeriodMs);
 
-                    // —— 1.1) 组锚点任务（屏障） —— //
-                    var anchorTask = HydraulicEnterAtGroupAnchorAsync(pg, token);
-                    tasksAllGroups.Add(anchorTask); // 并入等待，便于异常汇总
-
                     // —— 1.2) 组内通道：相位错峰（0/Δ/2Δ）+ 过时滚动到未来 —— //
                     var enabled = list.OrderBy(x => x).ToList();
+
+                    // —— 1.1) 组锚点任务（屏障） —— //
+                    var anchorTask = HydraulicEnterAtGroupAnchorAsync(pg, enabled, token);
+                    tasksAllGroups.Add(anchorTask); // 并入等待，便于异常汇总
+
                     for (var i = 0; i < enabled.Count; i++)
                     {
                         var ch = enabled[i];
@@ -383,17 +385,14 @@ namespace Controller
 
                         tasksAllGroups.Add(Task.Run(async () =>
                         {
-                            // ① 等待液压锚点到位（屏障）
+                            // ① 等待液压锚点到位（屏障：确保本组已经建压 + 所有通道已登记 InFlight）
                             await anchorTask.ConfigureAwait(false);
 
-                            // ② 若 at 已过时 → 推进到未来的“下一个/下N个周期”的同相位时刻
+                            // ② 若 at 已过时 → 推进到未来
                             var now = DateTime.UtcNow;
                             var atFuture = RollForwardToFuture(at, now, PeriodMs, /*safetyMs:*/ 2);
 
-                            // ③ 计算剩余并等待
                             var delay = atFuture - now;
-
-                            // 这里你之前用 Error 打日志，我保持一致
                             _log?.Error(
                                 $"通道{ch}: tk={tk:HH:mm:ss.fff}, phase={phase}ms, at={at:HH:mm:ss.fff}, delay={delay.TotalMilliseconds}ms");
 
@@ -401,16 +400,16 @@ namespace Controller
                             if (ms > 0)
                                 await Task.Delay(ms, token).ConfigureAwait(false);
                             else
-                                await Task.Yield(); // 极小/微负：让出一次时间片，打散调度
+                                await Task.Yield();
 
-                            // ④ 执行单圈学习核心（不做①；⑧由外壳统一收口）
+                            // ③ 正常执行学习核心
                             var runner = GetRunner(ch);
                             var sample = await runner.LearnOneAlignedCoreAsync(
                                 PeriodMs, T8BaseMs, phase, T8MinMs, token
                             ).ConfigureAwait(false);
 
                             if (sample != null)
-                                runner.ApplyLearnSample(sample); // 你已有的学习样本聚合（非 SafetyMargin）
+                                runner.ApplyLearnSample(sample);
                         }, token));
                     }
                 }
@@ -638,7 +637,7 @@ namespace Controller
         /// <summary>
         ///     在"压力组锚点"触发建压保持（每圈一次）。协调器内部需幂等，覆盖 0/Δ/2Δ 三波上电窗口。
         /// </summary>
-        private Task HydraulicEnterAtGroupAnchorAsync(int pressureGroupId, CancellationToken token)
+        private Task HydraulicEnterAtGroupAnchorAsyncOld(int pressureGroupId, CancellationToken token)
         {
             // 如果有液压协调器，调用其锚点进入方法
             if (_hydCoordinator != null) return _hydCoordinator.EnterElectricalPhaseAsync(pressureGroupId, token);
@@ -654,6 +653,63 @@ namespace Controller
             _log.Warn($"压力组[{pressureGroupId}] 无可用液压控制器，跳过建压保持", "液压协调");
             return Task.CompletedTask;
         }
+
+        /// <summary>
+        /// 在指定压力组的“锚点时刻”触发建压保持。
+        /// 调用策略：
+        /// <list type="number">
+        ///     <item>根据 <paramref name="pressureGroupId"/> + <paramref name="channelsInGroup"/> 过滤出本组中实际参与的 EPB 通道；</item>
+        ///     <item>对每个通道调用一次 <see cref="HydraulicGroupCoordinator.EnterElectricalPhaseAsync(int,CancellationToken)"/>；</item>
+        ///     <item>
+        ///         <b>协调器内部是幂等的</b>：同一液压组第一次调用会真正建压，后续通道只是在
+        ///         InFlight 集合中登记自己，供统一释放时使用。
+        ///     </item>
+        /// </list>
+        /// </summary>
+        /// <param name="pressureGroupId">压力组编号：1 表示 1..6，2 表示 7..12。</param>
+        /// <param name="channelsInGroup">本压力组内，本轮实际参与的 EPB 通道列表。</param>
+        /// <param name="token">取消令牌。</param>
+        private Task HydraulicEnterAtGroupAnchorAsync(
+            int pressureGroupId,
+            IReadOnlyList<int> channelsInGroup,
+            CancellationToken token)
+        {
+            if (_hydCoordinator == null)
+            {
+                _log.Warn($"压力组[{pressureGroupId}] 无可用液压协调器，跳过建压保持", "液压协调");
+                return Task.CompletedTask;
+            }
+
+            if (channelsInGroup == null || channelsInGroup.Count == 0)
+                return Task.CompletedTask;
+
+            // 保险起见，再按 pressureGroupId 过滤一遍
+            var channelList = channelsInGroup
+                .Where(ch =>
+                    (pressureGroupId == 1 && ch >= 1 && ch <= 6) ||
+                    (pressureGroupId == 2 && ch >= 7 && ch <= 12))
+                .Distinct()
+                .ToArray();
+
+            if (channelList.Length == 0)
+                return Task.CompletedTask;
+
+            var tasks = new List<Task>(channelList.Length);
+
+            foreach (var ch in channelList)
+            {
+                // 注意：这里传入的是“真实 EPB 通道号”，
+                // HydraulicGroupCoordinator 会用它来：
+                //  1) 找到 hydId；
+                //  2) 将该通道加入 InFlight 集合；
+                //  3) 仅在第一次进入该 hydId 时触发 BuildAndHold。
+                tasks.Add(_hydCoordinator.EnterElectricalPhaseAsync(ch, token));
+            }
+
+            // 多个通道的建压/登记并行完成
+            return Task.WhenAll(tasks);
+        }
+
 
         #endregion
 
