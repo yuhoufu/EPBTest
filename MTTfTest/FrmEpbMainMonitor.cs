@@ -167,6 +167,7 @@ namespace MTEmbTest
 
         /// <summary>内存中的 12 路 EPB 记录，来源于 TestConfig.xml 的 &lt;EpbRecords&gt;。</summary>
         private List<EpbTestRecord> _uiEpbRecords = new();
+
         // 加一个锁，避免未来多线程回调时踩踏）
         private readonly object _epbRecordsLock = new object();
 
@@ -726,7 +727,7 @@ namespace MTEmbTest
                 // 初始化 EPB 控制器的记录
                 InitializeEpbRecords();
 
-                LoadEpbController(); // 暂时注释
+                LoadEpbController(); // 
 
                 // 初始化曲线
                 InitializeCurve();
@@ -770,6 +771,13 @@ namespace MTEmbTest
                 twoDeviceAiAcquirer.OnEngBatch += Acq_OnEngBatch; // 订阅工程值批次到达事件
 
                 twoDeviceAiAcquirer.OnRawBatch += Acq_OnRawBatch; // ← 新增：订阅原始批次事件（两卡通用 ) // 2025/09/09
+
+                // 使用循环初始所有EpbGroup中的CtrlCycles
+                foreach (var epbGroup in EpbGroup)
+                {
+                    var epbRecord = EnsureEpbRecord(epbGroup.EpbNo);
+                    epbGroup.CtrlCycles.Text = epbRecord.RunCount.ToString();
+                }
 
 
                 // epb管理器初始化
@@ -971,6 +979,8 @@ namespace MTEmbTest
             // 2）UI 侧只关心“总完成次数”，所以每完成一圈就把 RunCount++。
             //    这样最终 _uiEpbRecords.RunCount == 初始 RunCount + 本次新增圈数。
             record.RunCount++;
+            EpbGroup[record.Id - 1].CtrlCycles.Text = record.RunCount.ToString();
+
 
             // 如果你有某个 Label/文本框显示圈数，可以在这里顺便更新：
             // 例：EpbGroup[channel - 1].CtrlCycles.Text = record.RunCount.ToString();
