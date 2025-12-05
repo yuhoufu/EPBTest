@@ -159,7 +159,8 @@ public sealed class TestConfig
         return r;
     }
 
-    /// <summary>
+    //EpbTestRecord.cs 中暂未实现Reset(),暂时注释；
+    /*/// <summary>
     ///     将指定通道记录重置为初始状态（不删除记录，仅重置字段）。
     ///     线程安全说明：若多个线程可能同时修改记录，请上层加锁或改为并发安全实现。
     /// </summary>
@@ -167,7 +168,7 @@ public sealed class TestConfig
     {
         var r = GetEpbRecord(channel);
         r.Reset();
-    }
+    }*/
 
     #region 压力相关
 

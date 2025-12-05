@@ -7,6 +7,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -60,6 +61,17 @@ namespace MTEmbTest
         private const int DeviceCount = 6; // 共6个设备
         private const string FormKey = "FrmEpbMainMonitor";
         private const int UI_TARGET_FPS = 25; // 目标帧率
+
+
+        #region 概览区域相关属性、字段
+
+        /// <summary>
+        /// 当前在“EPB 概览”区域中选中的 EPB 通道号（1..12；0 表示未选）。
+        /// </summary>
+        private int _currentEpbSummaryChannel = 0;
+        
+
+        #endregion
 
         // 修改为动态从配置构建通道映射
         private static readonly ChannelDef[] _allChs = BuildChannelsFromConfig();
@@ -726,6 +738,11 @@ namespace MTEmbTest
 
                 // 初始化 EPB 控制器的记录
                 InitializeEpbRecords();
+                // 初始化通道记录概览区域
+                InitEpbSummaryPanel();
+
+
+
 
                 LoadEpbController(); // 
 
@@ -917,6 +934,11 @@ namespace MTEmbTest
 
             // 3) 按通道排序一下，便于 UI 显示
             _uiEpbRecords.Sort((a, b) => a.Id.CompareTo(b.Id));
+
+            foreach (var rec in _uiEpbRecords)
+            {
+                rec.InitializeOnLoad(DateTime.Now);
+            }
         }
 
 
@@ -978,8 +1000,16 @@ namespace MTEmbTest
             // 1）EpbCycleRunner 内部用“初始 RunCount + SessionRunCount”做判断；
             // 2）UI 侧只关心“总完成次数”，所以每完成一圈就把 RunCount++。
             //    这样最终 _uiEpbRecords.RunCount == 初始 RunCount + 本次新增圈数。
-            record.RunCount++;
+            // now 通常用 DateTime.Now
+            record.IncrementCycleAndUpdateTime(DateTime.Now);
+            //record.RunCount++;
             EpbGroup[record.Id - 1].CtrlCycles.Text = record.RunCount.ToString();
+            
+            // 若当前通道正好是下拉框选中的那个
+            if (record.Id == _currentEpbSummaryChannel)
+            {
+                UpdateEpbSummaryPanel(record);
+            }
 
 
             // 如果你有某个 Label/文本框显示圈数，可以在这里顺便更新：
@@ -1726,6 +1756,16 @@ namespace MTEmbTest
 
                 #endregion
 
+                // 点击“开始试验”按钮时 更新相关通道；
+                foreach (var channel in selected)
+                {
+                    var record = EnsureEpbRecord(channel);
+                    record.MarkTestStarted(DateTime.Now);
+                    UpdateEpbSummaryPanel(record);
+                }
+
+                
+
 
                 // UI 提示
                 // RtbInfo?.AppendText($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  > 卡钳1测试已启动\n");
@@ -2084,6 +2124,215 @@ namespace MTEmbTest
             public bool IsActive { get; set; }
         }
 
+        #region EPB 概览区域 相关方法
+
+        /// <summary>
+        /// 初始化 EPB 概览区域：
+        /// 1. 用 _uiEpbRecords 填充下拉框；
+        /// 2. 默认选中第一个通道并刷新 Led / 进度条 / 状态灯。
+        /// </summary>
+        private void InitEpbSummaryPanel()
+        {
+            // 保护：没有记录就直接返回
+            if (_uiEpbRecords == null || _uiEpbRecords.Count == 0)
+                return;
+
+            // 清空原有项目
+            comboBoxEditCurrentRecord.Properties.Items.Clear();
+
+            // 按通道号排序后填入下拉框
+            foreach (var rec in _uiEpbRecords.OrderBy(r => r.Id))
+            {
+                // 显示文本你可以自己定，这里用 EPB-1、EPB-2 ...
+                string displayText = $"EPB-{rec.Id}";
+                comboBoxEditCurrentRecord.Properties.Items.Add(displayText);
+            }
+
+            // 防止重复绑定事件
+            comboBoxEditCurrentRecord.SelectedIndexChanged -= comboBoxEditCurrentRecord_SelectedIndexChanged;
+
+            // 如果有项目，默认选中第一项
+            if (comboBoxEditCurrentRecord.Properties.Items.Count > 0)
+            {
+                comboBoxEditCurrentRecord.SelectedIndex = 0;
+            }
+
+            // 重新绑定事件
+            comboBoxEditCurrentRecord.SelectedIndexChanged += comboBoxEditCurrentRecord_SelectedIndexChanged;
+
+            // 根据默认选中的项刷新一遍显示
+            RefreshSummaryByComboSelection();
+        }
+
+        /// <summary>
+        /// 概览区域下拉框选中变化：
+        /// 解析选中的文本得到 EPB 通道号，然后刷新显示。
+        /// </summary>
+        private void comboBoxEditCurrentRecord_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            RefreshSummaryByComboSelection();
+        }
+
+        /// <summary>
+        /// 根据下拉框当前选项，解析出 EPB 通道号，并调用 <see>
+        ///     <cref>UpdateEpbSummaryPanel</cref>
+        /// </see>
+        /// 刷新显示。
+        /// </summary>
+        private void RefreshSummaryByComboSelection()
+        {
+            // —— 1) 基本安全检查 —— //
+            if (comboBoxEditCurrentRecord == null ||
+                comboBoxEditCurrentRecord.Properties == null ||
+                comboBoxEditCurrentRecord.Properties.Items == null)
+            {
+                return;
+            }
+
+            // 未选中任何项：清空显示即可
+            if (comboBoxEditCurrentRecord.SelectedIndex < 0)
+            {
+                _currentEpbSummaryChannel = 0;
+                ClearEpbSummaryPanel();
+                return;
+            }
+
+            var selectedObj = comboBoxEditCurrentRecord.SelectedItem;
+            if (selectedObj == null)
+            {
+                _currentEpbSummaryChannel = 0;
+                ClearEpbSummaryPanel();
+                return;
+            }
+
+            var selectedText = selectedObj.ToString();
+            if (string.IsNullOrWhiteSpace(selectedText))
+            {
+                _currentEpbSummaryChannel = 0;
+                ClearEpbSummaryPanel();
+                return;
+            }
+
+            // —— 2) 从文本中解析通道号 —— //
+            // 允许 "EPB-1" / "EPB1" / "EPB 01" 等格式：取最后一段数字
+            Match lastDigitMatch = null;
+            var matches = Regex.Matches(selectedText, @"\d+");
+            if (matches.Count > 0)
+            {
+                lastDigitMatch = matches[matches.Count - 1];
+            }
+
+            int channelId;
+            if (lastDigitMatch == null || !int.TryParse(lastDigitMatch.Value, out channelId))
+            {
+                // 文本里根本没有数字，防御性处理：清空显示
+                _currentEpbSummaryChannel = 0;
+                ClearEpbSummaryPanel();
+                return;
+            }
+
+            // 这里可以根据实际通道范围做一次限幅，例如 1..12
+            if (channelId < 1 || channelId > 12)
+            {
+                _currentEpbSummaryChannel = 0;
+                ClearEpbSummaryPanel();
+                return;
+            }
+
+            // —— 3) 更新当前选中通道并刷新显示 —— //
+            _currentEpbSummaryChannel = channelId;
+            var curRecord = EnsureEpbRecord(channelId);
+
+            UpdateEpbSummaryPanel(curRecord);
+        }
+
+        /// <summary>
+        /// 清空 EPB 概览区域显示，用于“未选中”或解析失败的情况。
+        /// </summary>
+        private void ClearEpbSummaryPanel()
+        {
+            // ② 运行时间
+            LedRunTime.Text = "00D 00H 00M";
+
+            // ③ 完成次数
+            LedRunCycles.Text = "0";
+
+            // ④ 剩余次数
+            LedLastCycles.Text = "0";
+
+            // ⑤ 进度条
+            ProcBar.Value = 0;
+
+            // ⑥ 状态灯（灰色熄灭）
+            uiLightStatus.OnCenterColor = Color.Gray;
+            uiLightStatus.OnColor = Color.Gray;
+            uiLightStatus.State = UILightState.Off;
+        }
+
+
+
+    /// <summary>
+    /// 根据指定 EPB 通道的试验记录，刷新：
+    /// ② LedRunTime    – 运行时间
+    /// ③ LedRunCycles  – 完成次数
+    /// ④ LedLastCycles – 剩余次数
+    /// ⑤ ProcBar       – 进度条
+    /// ⑥ uiLightStatus   – 状态灯(运行=绿闪；报警=红闪；其他=灰色常灭)
+    /// </summary>
+    /// <param name="record">EPB 通道记录（1..12）。</param>
+    private void UpdateEpbSummaryPanel(EpbTestRecord record)
+        {
+            if (record == null) return;
+
+            // === ② LedRunTime 显示 "00D 00H 00M" ===
+            LedRunTime.Text = EpbTestRecord.FormatDHM(record.RunTimeSpan);
+
+            // === ③ 完成次数 ===
+            LedRunCycles.Text = record.RunCount.ToString();
+
+            // === ④ 剩余次数 ===
+            int total = record.TotalCount > 0 ? record.TotalCount : (_cfg?.Test?.TestTarget ?? 0);
+            int left = Math.Max(0, total - record.RunCount);
+            LedLastCycles.Text = left.ToString();
+
+            // === ⑤ 进度条百分比 ===
+            int percent = (total > 0) ?
+                (int)Math.Round(record.RunCount * 100.0 / total) : 0;
+
+            percent = Math.Max(0, Math.Min(100, percent));
+            ProcBar.Value = percent;
+
+            // === ⑥ 状态灯 ===
+            switch (record.Status)
+            {
+                case EpbTestStatus.Running:
+                    uiLightStatus.OnCenterColor = Color.LimeGreen;
+                    uiLightStatus.OnColor = Color.LimeGreen;
+                    uiLightStatus.State = UILightState.Blink;
+                    break;
+
+                case EpbTestStatus.Alarm:
+                    uiLightStatus.OnCenterColor = Color.Red;
+                    uiLightStatus.OnColor = Color.Red;
+                    uiLightStatus.State = UILightState.Blink;
+                    break;
+
+                case EpbTestStatus.Completed:
+                    uiLightStatus.OnCenterColor = Color.DodgerBlue;
+                    uiLightStatus.OnColor = Color.DodgerBlue;
+                    uiLightStatus.State = UILightState.On;
+                    break;
+
+                default:
+                    uiLightStatus.OnCenterColor = Color.Gray;
+                    uiLightStatus.OnColor = Color.Gray;
+                    uiLightStatus.State = UILightState.Off;
+                    break;
+            }
+        }
+
+
+        #endregion
         #region 曲线处理相关变量
 
         private LineItem curveForce;
@@ -3849,9 +4098,13 @@ namespace MTEmbTest
             }
         }
 
-        private void comboBoxEdit1_SelectedIndexChanged(object sender, EventArgs e)
+        private void uiTableLayoutPanel15_Paint(object sender, PaintEventArgs e)
         {
+
         }
+
+
+
 
 
         /// <summary>
