@@ -388,8 +388,7 @@ public static class ConfigLoader
 
             // 状态解析（容错）
             var st = GetString(n, "Status", "NotStarted");
-            if (Enum.TryParse<EpbTestStatus>(st, out var status)) r.Status = status;
-            else r.Status = EpbTestStatus.NotStarted;
+            r.Status = Enum.TryParse<EpbTestStatus>(st, out var status) ? status : EpbTestStatus.NotStarted;
 
             cfg.EpbRecords.Add(r);
         }
