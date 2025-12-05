@@ -69,7 +69,6 @@ namespace MTEmbTest
         /// 当前在“EPB 概览”区域中选中的 EPB 通道号（1..12；0 表示未选）。
         /// </summary>
         private int _currentEpbSummaryChannel = 0;
-        
 
         #endregion
 
@@ -742,8 +741,6 @@ namespace MTEmbTest
                 InitEpbSummaryPanel();
 
 
-
-
                 LoadEpbController(); // 
 
                 // 初始化曲线
@@ -1004,7 +1001,7 @@ namespace MTEmbTest
             record.IncrementCycleAndUpdateTime(DateTime.Now);
             //record.RunCount++;
             EpbGroup[record.Id - 1].CtrlCycles.Text = record.RunCount.ToString();
-            
+
             // 若当前通道正好是下拉框选中的那个
             if (record.Id == _currentEpbSummaryChannel)
             {
@@ -1764,8 +1761,6 @@ namespace MTEmbTest
                     UpdateEpbSummaryPanel(record);
                 }
 
-                
-
 
                 // UI 提示
                 // RtbInfo?.AppendText($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  > 卡钳1测试已启动\n");
@@ -2270,17 +2265,16 @@ namespace MTEmbTest
         }
 
 
-
-    /// <summary>
-    /// 根据指定 EPB 通道的试验记录，刷新：
-    /// ② LedRunTime    – 运行时间
-    /// ③ LedRunCycles  – 完成次数
-    /// ④ LedLastCycles – 剩余次数
-    /// ⑤ ProcBar       – 进度条
-    /// ⑥ uiLightStatus   – 状态灯(运行=绿闪；报警=红闪；其他=灰色常灭)
-    /// </summary>
-    /// <param name="record">EPB 通道记录（1..12）。</param>
-    private void UpdateEpbSummaryPanel(EpbTestRecord record)
+        /// <summary>
+        /// 根据指定 EPB 通道的试验记录，刷新：
+        /// ② LedRunTime    – 运行时间
+        /// ③ LedRunCycles  – 完成次数
+        /// ④ LedLastCycles – 剩余次数
+        /// ⑤ ProcBar       – 进度条
+        /// ⑥ uiLightStatus   – 状态灯(运行=绿闪；报警=红闪；其他=灰色常灭)
+        /// </summary>
+        /// <param name="record">EPB 通道记录（1..12）。</param>
+        private void UpdateEpbSummaryPanel(EpbTestRecord record)
         {
             if (record == null) return;
 
@@ -2296,8 +2290,7 @@ namespace MTEmbTest
             LedLastCycles.Text = left.ToString();
 
             // === ⑤ 进度条百分比 ===
-            int percent = (total > 0) ?
-                (int)Math.Round(record.RunCount * 100.0 / total) : 0;
+            int percent = (total > 0) ? (int)Math.Round(record.RunCount * 100.0 / total) : 0;
 
             percent = Math.Max(0, Math.Min(100, percent));
             ProcBar.Value = percent;
@@ -2331,8 +2324,8 @@ namespace MTEmbTest
             }
         }
 
-
         #endregion
+
         #region 曲线处理相关变量
 
         private LineItem curveForce;
@@ -4100,11 +4093,7 @@ namespace MTEmbTest
 
         private void uiTableLayoutPanel15_Paint(object sender, PaintEventArgs e)
         {
-
         }
-
-
-
 
 
         /// <summary>
