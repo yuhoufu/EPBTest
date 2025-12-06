@@ -825,7 +825,7 @@ namespace MTEmbTest
                     CleanupMode = "archive" // 或 "delete"
                 };
                 _diskWriter = new EpbDiskWriter(policy);
-                _diskWriter.StartFreeRun(1);
+                _diskWriter.StartFreeRun(1); // 暂时注释
 
 
                 // 适配器：实现 IEpbCycleRecorder，把 EpbDiskWriter 包起来
