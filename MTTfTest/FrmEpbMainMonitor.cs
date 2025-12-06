@@ -832,28 +832,11 @@ namespace MTEmbTest
                 var recorder = new DiskWriterRecorderAdapter(_diskWriter);
 
 
-                // 2) 注入到 EpbManager
+                // 2) 注入到 EpbManager，数据落盘由 EpbManager 控制
                 _epb.Recorder = recorder;
 
 
-                // 4) 订阅“写盘批次”事件（采集层 → 批量喂入落盘器）
-                //    这要求 TwoDeviceAiAcquirer 已按我们给的方案增加 OnDiskBatch 事件
-                twoDeviceAiAcquirer.OnDiskBatch += (device, tsUtc, currentsByEpb, p1, p2) =>
-                {
-                    // 参数基本校验（防御）
-                    if (tsUtc == null || currentsByEpb == null) return;
-
-                    foreach (var kv in currentsByEpb)
-                    {
-                        var epbId = kv.Key;
-                        var iArr = kv.Value;
-                        var gArr = epbId <= 6 ? p1 : p2; // 1..6 用组1压力；7..12 用组2压力
-                        if (iArr == null || gArr == null) continue;
-                        if (tsUtc.Length != iArr.Length || tsUtc.Length != gArr.Length) continue;
-
-                        _diskWriter.WriteBatch(epbId, tsUtc, iArr, gArr);
-                    }
-                };
+                
 
                 #region 曲线勾选控件相关
 
