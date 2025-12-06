@@ -277,24 +277,6 @@ namespace Controller
             if (_timers.TryGetValue(channel, out var t)) t.Resume();
         }
 
-        public void StopChannelOld(int channel)
-        {
-            if (_timers.TryGetValue(channel, out var t)) t.Stop();
-            _timers.Remove(channel);
-
-            // —— 新增：移除 Runner —— //
-            _runners.Remove(channel);
-
-            // —— 新增：停止时强制把最近 N=10 圈落盘（含常开圈0）
-            Recorder?.FlushRecent(channel, 10);
-
-            _do.SetEpbOff(channel); // 安全落位
-        }
-        
-        public void StopAllOld()
-        {
-            foreach (var ch in _timers.Keys.ToArray()) StopChannel(ch);
-        }
 
         /// <summary>
         /// 停止指定通道：
