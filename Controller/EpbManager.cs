@@ -44,39 +44,7 @@ namespace Controller
         private readonly DateTime _wallBaseUtc = DateTime.UtcNow;
         private readonly HydraulicGroupCoordinator _hydCoordinator; // ★ 新增：液压组协调器
 
-        public EpbManager(
-            GlobalConfig cfg,
-            DoController doController,
-            HydraulicController hydraulic,
-            EpbCycleRunner.ReadCurrentDelegate readCurrent,
-            IAppLogger log = null)
-        {
-            _cfg = cfg ?? throw new ArgumentNullException(nameof(cfg));
-            _do = doController ?? throw new ArgumentNullException(nameof(doController));
-            _hydraulic = hydraulic ?? throw new ArgumentNullException(nameof(hydraulic));
-            _readCurrent = readCurrent ?? (_ => 0.0);
-            _log = log ?? NullLogger.Instance;
-
-            // ★ 尝试创建协调器（此构造器拿不到 AO 和读压委托；仅当你的 HydraulicController 内部提供 BeginHold / RequestRelease 时才可用）
-            //   若暂时拿不到 AO/读压，可先传 null；协调器将使用 HydraulicController 的保持/释放能力。
-            try
-            {
-                _hydCoordinator = new HydraulicGroupCoordinator(
-                    _cfg.Test,
-                    _cfg.DO,
-                    _do,
-                    null, // 没有也没关系：协调器优先走 HydraulicController 的保持模式
-                    null, // 无 AO 也可：不会走 Fallback
-                    _hydraulic,
-                    _log);
-            }
-            catch (Exception ex)
-            {
-                _log.Warn($"液压组协调器初始化（构造器1）失败：{ex.Message}。将跳过“组内统一释压”增强逻辑。", "液压协调");
-                _hydCoordinator = null;
-            }
-        }
-
+        
         public EpbManager(
             GlobalConfig cfg,
             DoController doController,
@@ -515,9 +483,8 @@ namespace Controller
             var tasks = new List<Task>();
             var enabled = channels.Distinct().OrderBy(x => x).ToArray();
 
-            for (int i = 0; i < enabled.Length; i++)
+            foreach (var ch in enabled)
             {
-                var ch = enabled[i];
                 var runner = GetRunner(ch); // 你在 BatchStart.cs 中实现的对接
 
                 // 若 keepMs==null，runner 内部会使用 DefaultPreReleaseKeepMs
