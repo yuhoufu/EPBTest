@@ -1409,10 +1409,10 @@ namespace MTEmbTest
             // 打开所有epb
             //for (var i = 0; i < 12; i++) _do.SetEpb(i + 1, toggleSwitch1.IsOn);
 
-            if (toggleSwitch1.IsOn)
-                await _epb.StartChannelAsync(4);
-            else
-                _epb.StopChannel(4);
+            // if (toggleSwitch1.IsOn)
+            //     await _epb.StartChannelAsync(4);
+            // else
+            //     _epb.StopChannel(4);
 
             // 打开气缸测试
             // _ao.SetPercent("Cylinder1", 50); // => ~5V

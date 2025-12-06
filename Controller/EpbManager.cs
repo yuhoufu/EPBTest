@@ -154,7 +154,6 @@ namespace Controller
             return _hydCoordinator?.EnterElectricalPhaseAsync(channel, token) ?? Task.CompletedTask;
         }
 
-
         /// <summary>
         ///     释放液压
         /// </summary>
