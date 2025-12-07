@@ -825,7 +825,7 @@ namespace MTEmbTest
                     CleanupMode = "archive" // 或 "delete"
                 };
                 _diskWriter = new EpbDiskWriter(policy);
-                _diskWriter.StartFreeRun(1); // 暂时注释
+                //_diskWriter.StartFreeRun(1); // 暂时注释
 
 
                 // 适配器：实现 IEpbCycleRecorder，把 EpbDiskWriter 包起来
@@ -834,8 +834,6 @@ namespace MTEmbTest
 
                 // 2) 注入到 EpbManager，数据落盘由 EpbManager 控制
                 _epb.Recorder = recorder;
-
-
                 
 
                 #region 曲线勾选控件相关
@@ -973,7 +971,11 @@ namespace MTEmbTest
                 {
                     BeginInvoke(new Action<int, int>(OnEpbChannelCycleCompleted), channel, sessionRunCount);
                 }
-                catch { }
+                catch
+                {
+                    // ignored
+                }
+
                 return;
             }
 
@@ -991,6 +993,16 @@ namespace MTEmbTest
 
                 // 更新运行时间 + RunCount + LatestStartTime
                 record.IncrementCycleAndUpdateTime(DateTime.Now);
+
+                if (record.Status == EpbTestStatus.Completed) // 已完成
+                {
+                    _epb.StopChannel(record.Id);  // 停止该通道试验
+
+                    // ====  UI 提示 =====================================================
+                    RtbInfo?.AppendText($"[{DateTime.Now:HH:mm:ss.fff}] EPB-{record.Id} 已完成试验。\n");
+                }
+
+
             }
 
             // —— 3) 更新左侧 EPBGroup —— //
@@ -1000,6 +1012,7 @@ namespace MTEmbTest
             if (record.Id == _currentEpbSummaryChannel)
             {
                 UpdateEpbSummaryPanel(record);
+
             }
 
             // —— ⚠️ 取消实时保存，改为“定时自动保存” —— //
