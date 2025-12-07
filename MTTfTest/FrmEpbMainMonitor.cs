@@ -1995,11 +1995,11 @@ namespace MTEmbTest
                     // 可以保留下面这段导出逻辑；不需要的话可以整体删掉。
                     try
                     {
-                        var exportPath = Path.Combine(
-                            Environment.CurrentDirectory,
-                            $@"DataStore\EPB1-{DateTime.Now:yyyy_MM_dd-HH_mm_ss}.csv");
-
-                        writer.ExportFreeRunBySamples(1, 100000, exportPath);
+                        // var exportPath = Path.Combine(
+                        //     Environment.CurrentDirectory,
+                        //     $@"DataStore\EPB1-{DateTime.Now:yyyy_MM_dd-HH_mm_ss}.csv");
+                        //
+                        // writer.ExportFreeRunBySamples(1, 100000, exportPath);
                     }
                     catch
                     {
