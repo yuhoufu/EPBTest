@@ -36,6 +36,16 @@ public sealed class DataRetentionPolicy
     /// <summary>数据根目录（默认 "DataStore"）。</summary>
     public string DataStorePath { get; set; } = "DataStore";
 
+    /// <summary>
+    ///     索引与导出文件根目录（默认 null：与 <see cref="DataStorePath"/> 相同）。
+    ///     <list type="bullet">
+    ///         <item>1. <c>index.db</c> 会放在此目录下。</item>
+    ///         <item>2. Archive/Latest 导出的 CSV/BIN 子目录也在此目录下。</item>
+    ///         <item>3. 若为空或空白，则回退到 <see cref="DataStorePath"/>。</item>
+    ///     </list>
+    /// </summary>
+    public string IndexAndExportPath { get; set; }
+
     /// <summary>SQLite 索引文件名（默认 "index.db"）。</summary>
     public string IndexDbFile { get; set; } = "index.db";
 }
@@ -126,6 +136,7 @@ public sealed class EpbDiskWriter : IDisposable
     #region 字段
 
     private readonly string _rootDir;
+    private readonly string _indexDir;  // 索引与导出用的根目录（index.db、Archive、Latest）
     private readonly long _fileBytes;
     private readonly DataRetentionPolicy _policy;
 
@@ -158,15 +169,29 @@ public sealed class EpbDiskWriter : IDisposable
     {
         _policy = policy ?? throw new ArgumentNullException(nameof(policy));
 
+        // —— 1) .dat 环形文件所在根目录 —— //
         _rootDir = Path.GetFullPath(_policy.DataStorePath ?? "DataStore");
         Directory.CreateDirectory(_rootDir);
 
+        // —— 2) 索引 + 导出（index.db、Archive、Latest）所在根目录 —— //
+        if (string.IsNullOrWhiteSpace(_policy.IndexAndExportPath))
+        {
+            // 没配的话就与 DataStorePath 相同，保持兼容老行为
+            _indexDir = _rootDir;
+        }
+        else
+        {
+            _indexDir = Path.GetFullPath(_policy.IndexAndExportPath);
+            Directory.CreateDirectory(_indexDir);
+        }
+
         _fileBytes = Math.Max(1, _policy.FileSizeMb) * 1024L * 1024L;
 
-        // SQLite 连接
-        var dbPath = Path.Combine(_rootDir, _policy.IndexDbFile ?? "index.db");
+        // SQLite 连接：index.db 放在 _indexDir 下
+        var dbPath = Path.Combine(_indexDir, _policy.IndexDbFile ?? "index.db");
         var needInit = !File.Exists(dbPath);
-        _conn = new SQLiteConnection($"Data Source={dbPath};Pooling=True;Journal Mode=WAL;Synchronous=Normal");
+        _conn = new SQLiteConnection(
+            $"Data Source={dbPath};Pooling=True;Journal Mode=WAL;Synchronous=Normal");
         _conn.Open();
         if (needInit) InitSchema();
 
@@ -262,6 +287,15 @@ public sealed class EpbDiskWriter : IDisposable
 
     /// <summary>
     ///     标记一个通道的“正式试验圈”开始；后续写入将打上该圈号（优先于 Free-Run）。
+    ///     <list type="number">
+    ///         <item>1. <paramref name="cycleNumber"/> 应在当前 index.db 中对该通道保持全局唯一。</item>
+    ///         <item>2. 若重用已存在的圈号，将触发 SQLite 唯一约束异常。</item>
+    ///         <item>3. 建议上层在新试验开始前调用 <see>
+    ///                 <cref>GetLastCycleNumber</cref>
+    ///             </see>
+    ///             ，
+    ///                以 <c>last + 1</c> 作为本次试验的起始圈号。</item>
+    ///     </list>
     /// </summary>
     public void BeginCycle(int epbId, int cycleNumber, DateTime startUtc)
     {
@@ -371,6 +405,7 @@ public sealed class EpbDiskWriter : IDisposable
     }
 
     /// <summary>
+    /// 基本为弃用状态
     ///     立即对某通道执行“最新 N 圈”保留。
     ///     action: delete（删索引）/ archive（导出 CSV+BIN 后删索引）。
     /// </summary>
@@ -384,7 +419,7 @@ public sealed class EpbDiskWriter : IDisposable
 
         if (action == "archive")
         {
-            var dir = Path.Combine(_rootDir, "Archive", $"EPB{epbId}");
+            var dir = Path.Combine(_indexDir, "Archive", $"EPB{epbId}");
             Directory.CreateDirectory(dir);
 
             foreach (var cy in purgeList)
@@ -429,7 +464,7 @@ public sealed class EpbDiskWriter : IDisposable
             return;
 
         // 与 Archive 区分开，新建 Latest 目录
-        var dir = Path.Combine(_rootDir, "Latest", $"EPB{epbId}");
+        var dir = Path.Combine(_indexDir, "Latest", $"EPB{epbId}");
         Directory.CreateDirectory(dir);
 
         // 以圈开始时间命名子目录，便于回放/检索
@@ -633,6 +668,31 @@ public sealed class EpbDiskWriter : IDisposable
         }
     }
 
+    /// <summary>
+    ///     查询指定 EPB 通道当前已存在的“最大正式圈号”（cycle_number），仅统计 CycleNumber &gt; 0。
+    ///     后续在 EpbManager 里开启新试验时，就可以（举例）：
+    ///     // 每个通道单独算一个“起始圈号基准”
+    ///     var last = _diskWriter.GetLastCycleNumber(ch);
+    ///     var baseCycle = last;         // 这次试验第1圈就是 baseCycle + 1
+    ///     然后把 runner 的 _sessionRunCount 写成 baseCycle + n，再传给 BeginCycle/CompleteCycle
+    /// </summary>
+    /// <param name="epbId">EPB 通道号（1..12）。</param>
+    /// <returns>若无正式圈记录，则返回 0。</returns>
+    public int GetLastCycleNumber(int epbId)
+    {
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = $@"
+SELECT COALESCE(MAX(cycle_number), 0)
+  FROM {TABLE_CYCLES}
+ WHERE epb_id=@e
+   AND cycle_number > 0";
+        cmd.Parameters.AddWithValue("@e", epbId);
+        var obj = cmd.ExecuteScalar();
+        return Convert.ToInt32(obj);
+    }
+
+
+
     /// <summary>设置“立即停止并保留最新 N 圈”（上层在 StopChannel 前可调用）。</summary>
     public void StopNowAndPersist(int epbId, int keepLatestN = 10, string action = "archive")
     {
@@ -782,22 +842,23 @@ CREATE INDEX IF NOT EXISTS idx_cycles_epb ON {TABLE_CYCLES}(epb_id, cycle_number
         cmd.ExecuteNonQuery();
     }
 
+    /// <summary>
+    ///     写入某圈的起始信息。调用方需保证同一 epbId 上的 cycleNumber 全局唯一（不复用旧圈号）。<br/>
+    ///     若传入已存在的 circleNumber，将抛出约束异常（用于提示上层逻辑错误）。
+    /// </summary>
     private void UpsertCycleStart(int epbId, int cycleNumber, DateTime startUtc, long startRecordIndex)
     {
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = $@"
 INSERT INTO {TABLE_CYCLES}(epb_id, cycle_number, start_time, start_position, status, sample_count)
-VALUES(@e,@c,@st,@pos,'running',0)
-ON CONFLICT(epb_id,cycle_number) DO UPDATE SET
-  start_time     = COALESCE({TABLE_CYCLES}.start_time,     excluded.start_time),
-  start_position = COALESCE({TABLE_CYCLES}.start_position, excluded.start_position),
-  status='running'";
+VALUES(@e,@c,@st,@pos,'running',0);";
         cmd.Parameters.AddWithValue("@e", epbId);
         cmd.Parameters.AddWithValue("@c", cycleNumber);
         cmd.Parameters.AddWithValue("@st", startUtc.ToLocalTime().ToString("o"));
         cmd.Parameters.AddWithValue("@pos", startRecordIndex);
         cmd.ExecuteNonQuery();
     }
+
 
     private void UpdateCycleProgress(int epbId, int cycleNumber, int sampleCount, DateTime lastUtc)
     {
@@ -962,6 +1023,9 @@ public interface IEpbCycleRecorder
     ///     Free-Run（Cycle=0）不在此范围，若需要可单独调用导出 API。
     /// </summary>
     void FlushRecent(int epbId, int lastNCycles);
+
+
+    int GetLastCycleNumber(int ch);
 }
 
 /// <summary>
@@ -1004,6 +1068,16 @@ public sealed class DiskWriterRecorderAdapter : IEpbCycleRecorder
     /// <param name="lastNCycles">要导出的圈数（最近 N 圈）。</param>
     public void FlushRecent(int epbId, int lastNCycles)
         => _writer.ExportLatestCyclesNow(epbId, Math.Max(1, lastNCycles));
+
+    /// <summary>
+    ///  查询指定 EPB 通道当前已存在的“最大正式圈号”（cycle_number），仅统计 CycleNumber &gt; 0。
+    /// </summary>
+    /// <param name="ch"></param>
+    /// <returns></returns>
+    public int GetLastCycleNumber(int ch)
+    {
+        return _writer.GetLastCycleNumber(ch);
+    }
 
 
     public void CompleteCycle(int epbId, int cycleNumber, int finalN, DateTime endUtc)

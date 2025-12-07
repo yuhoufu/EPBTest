@@ -135,6 +135,10 @@ namespace Controller
 
                     var timer = GetTimer(ch, PeriodMs, OverrunPolicy.AlignToWallClock);
 
+                    // 每个通道单独算一个“起始圈号基准”
+                    var last = Recorder?.GetLastCycleNumber(ch);
+                    var baseCycle = last ?? 0;   // 这次试验第1圈就是 baseCycle + 1
+
 
                     // —— 计时器每圈工作（cycleIndex 从 1 开始） —— //
                     _ = timer.StartAsync(
@@ -152,7 +156,7 @@ namespace Controller
                             var deadlineUtc = t0.AddMilliseconds((k + 1) * PeriodMs);
 
                             // 2.5) ★ 圈开始：通知 Recorder
-                            Recorder?.BeginCycle(ch, cycleIndex, DateTime.UtcNow);
+                            Recorder?.BeginCycle(ch, cycleIndex + baseCycle, DateTime.UtcNow);
 
 
                             // 3) 跑一圈（对齐外壳版）
