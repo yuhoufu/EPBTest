@@ -431,13 +431,14 @@ public sealed class EpbDiskWriter : IDisposable
         var dir = Path.Combine(_rootDir, "Latest", $"EPB{epbId}");
         Directory.CreateDirectory(dir);
 
+        // 以圈开始时间命名子目录，便于回放/检索
+        // var tsFolder = cy.StartTimeUtc.ToLocalTime().ToString("yyyyMMdd_HHmmss");
+        var tsFolder = DateTime.Now.ToLocalTime().ToString(@"yyyyMMdd_HHmmss");
+        var subDir = Path.Combine(dir, tsFolder);
+        Directory.CreateDirectory(subDir);
+
         foreach (var cy in latestList)
         {
-            // 以圈开始时间命名子目录，便于回放/检索
-            var tsFolder = cy.StartTimeUtc.ToLocalTime().ToString("yyyyMMdd_HHmmss");
-            var subDir = Path.Combine(dir, tsFolder);
-            Directory.CreateDirectory(subDir);
-
             // CSV 文件（圈号升序）
             var csv = Path.Combine(subDir, $"EPB{epbId}_Cycle_{cy.CycleNumber:D6}.csv");
             ExportCycleToCsv(epbId, cy, csv);
