@@ -255,6 +255,9 @@ namespace MtEmbTest
             // // }
             BindEpbRunnerGridFromConfig();
 
+            //TabSetting.GetPage(2).Visible = false; // 暂时不显示第3个界面
+            TabSetting.TabPages.Remove(tabPageCommand); // 暂时移除tabPageCommand
+
 
             try
             {
