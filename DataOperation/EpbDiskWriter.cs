@@ -291,17 +291,18 @@ public sealed class EpbDiskWriter : IDisposable
             s.CurrentCycle = null;
             s.CurrentSampleIndex = 0;
 
+            // 注释掉，不去处理旧的记录
             // 处理 StopTrigger=EndOfCurrentCycle 或 AfterKMoreCycles
-            if (s.StopTrigger == StopTrigger.EndOfCurrentCycle)
-            {
-                PersistLatestCyclesNow(epbId, s.StopKeepLatestN, s.StopAction);
-            }
-            else if (s.StopTrigger == StopTrigger.AfterKMoreCycles)
-            {
-                s.StopAfterK = Math.Max(0, s.StopAfterK - 1);
-                if (s.StopAfterK == 0)
-                    PersistLatestCyclesNow(epbId, s.StopKeepLatestN, s.StopAction);
-            }
+            // if (s.StopTrigger == StopTrigger.EndOfCurrentCycle)
+            // {
+            //     PersistLatestCyclesNow(epbId, s.StopKeepLatestN, s.StopAction);
+            // }
+            // else if (s.StopTrigger == StopTrigger.AfterKMoreCycles)
+            // {
+            //     s.StopAfterK = Math.Max(0, s.StopAfterK - 1);
+            //     if (s.StopAfterK == 0)
+            //         PersistLatestCyclesNow(epbId, s.StopKeepLatestN, s.StopAction);
+            // }
         }
     }
 
