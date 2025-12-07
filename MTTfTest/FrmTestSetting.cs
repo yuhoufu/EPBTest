@@ -284,7 +284,7 @@ namespace MtEmbTest
                 LoadDaqAiToGridView(Environment.CurrentDirectory + @"\Config\AIConfig.xml");
 
 
-                LoadTestConfigFromXml(TxtTestCycle, TxtTestName, TxtTestTarget,
+                LoadTestConfigFromXml(TxtTestCycle, TxtTestName, TxtTestTarget, uiCheckBoxIsSameCycleForAllEpb,
                     TxtStoreDir, TxtTestMan, RtbDesc);
 
                 // 压力设置相关-开始
@@ -779,6 +779,10 @@ namespace MtEmbTest
             else
                 _cfg.Test.TestTarget = 1; // 默认 1 次
 
+            // —— 3.5) IsSameCycleForAllEpb —— //
+
+            _cfg.Test.IsSameCycleForAllEpb = uiCheckBoxIsSameCycleForAllEpb.Checked; 
+
             // —— 4) StoreDir —— //
             var dir = (TxtStoreDir.Text ?? "").Trim();
             if (string.IsNullOrWhiteSpace(dir) || dir.IndexOfAny(Path.GetInvalidPathChars()) >= 0)
@@ -814,6 +818,7 @@ namespace MtEmbTest
         public void LoadTestConfigFromXml(UITextBox txtTestCycle,
             UITextBox txtTestName,
             UITextBox txtTestTarget,
+            UICheckBox checkIsSameCycleForAllEpb,
             UITextBox txtStoreDir,
             UITextBox txtTestMan,
             UIRichTextBox rtbDesc)
@@ -826,6 +831,7 @@ namespace MtEmbTest
             txtTestCycle.Text = _cfg.Test.TestPeriod.ToString(CultureInfo.CurrentCulture);
             txtTestName.Text = _cfg.Test.TestName;
             txtTestTarget.Text = _cfg.Test.TestTarget.ToString();
+            checkIsSameCycleForAllEpb.Checked = _cfg.Test.IsSameCycleForAllEpb;
             txtStoreDir.Text = _cfg.Test.StoreDir;
             txtTestMan.Text = _cfg.Test.Owner; // TestMan 对应 Owner，测试员、负责人等
             rtbDesc.Text = _cfg.Test.Description; // 描述
