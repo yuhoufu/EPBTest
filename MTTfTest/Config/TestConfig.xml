@@ -5,10 +5,13 @@
 		<TestName>EPB_Fatigue</TestName>
 		<!-- 周期次数 -->
 		<TestTarget>10</TestTarget>
+		<!-- 是否所有EPB使用相同的周期次数：true-是 false-否 -->
+		<IsSameCycleForAllEpb>true</IsSameCycleForAllEpb>
 		<!-- 试验周期 s，例：10 表示 10s -->
 		<TestCycle>10</TestCycle>
 		<!--自学习周期-->
 		<LearnCycle>10</LearnCycle>
+		
 
 		<StoreDir>D:\EPB_Data</StoreDir>
 

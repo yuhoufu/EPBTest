@@ -80,6 +80,8 @@ public sealed class TestConfig
 {
     public string TestName { get; set; }
     public int TestTarget { get; set; }
+    public bool IsSameCycleForAllEpb { get; set; }
+
     public double TestPeriod { get; set; } // 每一圈的控制周期，单位秒
 
     /// <summary>周期毫秒（由 TestPeriod 推导），例如 10Hz => 100ms。</summary>
@@ -324,6 +326,7 @@ public static class ConfigLoader
 
         cfg.TestName = GetString(doc, "//TestConfig/Basic/TestName", "EPB");
         cfg.TestTarget = (int)GetDouble(doc, "//TestConfig/Basic/TestTarget", 1);
+        cfg.IsSameCycleForAllEpb = GetBool(doc, "//TestConfig/Basic/IsSameCycleForAllEpb", true); // 是否所有EPB使用相同的周期次数：true-是 false-否
         cfg.TestPeriod = GetDouble(doc, "//TestConfig/Basic/TestCycle", 10); // 每圈时长，s
         cfg.LearnCycles = GetInt(doc, "//TestConfig/Basic/LearnCycle", 5); // 自学习圈数，默认5
         cfg.Owner = GetString(doc, "//TestConfig/Basic/Owner", "None");
@@ -617,6 +620,7 @@ public static class ConfigLoader
         {
             SetChild(basic, "TestName", cfg.TestName);
             SetChild(basic, "TestTarget", cfg.TestTarget.ToString());
+            SetChild(basic, "IsSameCycleForAllEpb", cfg.IsSameCycleForAllEpb ? "true" : "false");
             SetChild(basic, "TestCycle", cfg.TestPeriod.ToString(CultureInfo.InvariantCulture));
             SetChild(basic, "LearnCycle", cfg.LearnCycles.ToString());
             SetChild(basic, "StoreDir", cfg.StoreDir);
