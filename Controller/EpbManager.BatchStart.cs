@@ -171,7 +171,7 @@ namespace Controller
 
                             // 4) ★ 圈结束：从 Recorder 拿当前圈样本数
                             var finalN = Recorder?.GetCurrentCycleSampleCount(ch) ?? 0;
-                            Recorder?.CompleteCycle(ch, cycleIndex, finalN, DateTime.UtcNow);
+                            Recorder?.CompleteCycle(ch, cycleIndex + baseCycle, finalN, DateTime.UtcNow);
 
                             return ok;
 
