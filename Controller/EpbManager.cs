@@ -96,6 +96,13 @@ namespace Controller
                     if (currents == null || currents.Length == 0)
                         continue;
 
+                    // === ★ 电流取绝对值（不修改原数组，避免影响其它模块） ===
+                    var absCurrents = new double[currents.Length];
+                    for (int i = 0; i < currents.Length; i++)
+                    {
+                        absCurrents[i] = Math.Abs(currents[i]);
+                    }
+
                     // 1..6 → 压力组1，7..12 → 压力组2
                     double[] pressure = null;
                     if (epbId >= 1 && epbId <= 6)
@@ -108,13 +115,13 @@ namespace Controller
                         pressure = new double[currents.Length];
 
                     // 对齐长度：取三者最小值
-                    var n = Math.Min(tsUtc.Length, Math.Min(currents.Length, pressure.Length));
+                    var n = Math.Min(tsUtc.Length, Math.Min(absCurrents.Length, pressure.Length));
                     if (n <= 0)
                         continue;
 
-                    if (n == tsUtc.Length && n == currents.Length && n == pressure.Length)
+                    if (n == tsUtc.Length && n == absCurrents.Length && n == pressure.Length)
                     {
-                        recorder.WriteBatch(epbId, tsUtc, currents, pressure);
+                        recorder.WriteBatch(epbId, tsUtc, absCurrents, pressure);
                     }
                     else
                     {
@@ -123,13 +130,14 @@ namespace Controller
                         var prBuf = new double[n];
 
                         Array.Copy(tsUtc, tsBuf, n);
-                        Array.Copy(currents, curBuf, n);
+                        Array.Copy(absCurrents, curBuf, n);
                         Array.Copy(pressure, prBuf, n);
 
                         recorder.WriteBatch(epbId, tsBuf, curBuf, prBuf);
                     }
                 }
             };
+
 
             #endregion
 
