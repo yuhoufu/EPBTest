@@ -820,6 +820,7 @@ namespace MTEmbTest
                 var policy = new DataRetentionPolicy
                 {
                     DataStorePath = Path.Combine(Environment.CurrentDirectory, "DataStore"), // 数据根目录
+                    IndexAndExportPath = Path.Combine(_cfg.Test.StoreDir, _cfg.Test.TestName), // 索引和导出目录
                     FileSizeMb = 100, // 每通道 .dat大小，单位MB，可按需改 384
                     RetainLatestCycles = 10, // 停止时“最新N圈”
                     CleanupMode = "archive" // 或 "delete"
