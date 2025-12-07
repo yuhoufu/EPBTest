@@ -29,10 +29,6 @@ namespace Controller
         public event Action<int, int> ChannelCycleCompleted;
 
 
-
-
-
-
         #region 对外主入口 Batch Start (Learning + Formal) with Group Anchor + Stagger Phases
 
         /// <summary>
@@ -140,9 +136,6 @@ namespace Controller
                     var timer = GetTimer(ch, PeriodMs, OverrunPolicy.AlignToWallClock);
 
 
-
-
-                    // —— 计时器每圈工作（cycleIndex 从 1 开始） —— //
                     // —— 计时器每圈工作（cycleIndex 从 1 开始） —— //
                     _ = timer.StartAsync(
                         repeat: runs, // 总圈数
@@ -158,8 +151,12 @@ namespace Controller
                             var k = cycleIndex - 1;
                             var deadlineUtc = t0.AddMilliseconds((k + 1) * PeriodMs);
 
+                            // 2.5) ★ 圈开始：通知 Recorder
+                            Recorder?.BeginCycle(ch, cycleIndex, DateTime.UtcNow);
+
+
                             // 3) 跑一圈（对齐外壳版）
-                            return await runner.RunOneAlignedAsync(
+                            var ok = await runner.RunOneAlignedAsync(
                                 PeriodMs,
                                 T8BaseMs,
                                 phase,
@@ -167,6 +164,13 @@ namespace Controller
                                 deadlineUtc,
                                 ct
                             ).ConfigureAwait(false);
+
+                            // 4) ★ 圈结束：从 Recorder 拿当前圈样本数
+                            var finalN = Recorder?.GetCurrentCycleSampleCount(ch) ?? 0;
+                            Recorder?.CompleteCycle(ch, cycleIndex, finalN, DateTime.UtcNow);
+
+                            return ok;
+
                         });
                 }
             }
@@ -176,7 +180,6 @@ namespace Controller
 
 
         #region 学习阶段（循环+延时：轻量且每圈对齐）
-
 
         /// <summary>
         ///     学习阶段外壳：并发“圈 × 组”，同组内按固定相位（0/Δ/2Δ）错峰起跑，每圈都与压力组锚点对齐。<br />
@@ -216,8 +219,8 @@ namespace Controller
                     var ch = enabled[i];
                     var r = GetRunner(ch);
 
-                    r.UseNoHeadPhase = true;          // 学习不做①，错峰由外层“相位”承担
-                    r.EnableTailCompensation = true;  // ⑧尾部由外壳统一对齐（学习单圈不等待）
+                    r.UseNoHeadPhase = true; // 学习不做①，错峰由外层“相位”承担
+                    r.EnableTailCompensation = true; // ⑧尾部由外壳统一对齐（学习单圈不等待）
                     r.TailMinMs = T8MinMs;
 
                     // 原有：开始“学习样本聚合”（时间/阶段统计用）
@@ -313,7 +316,6 @@ namespace Controller
                 }
             }
         }
-
 
 
         /// <summary>
@@ -483,7 +485,6 @@ namespace Controller
         }
 
 
-
         /// <summary>获取指定通道的高精计时器（必须在 StartChannelAsync 后调用）</summary>
         private HighPrecisionTimer GetTimer(int ch, int periodMs, OverrunPolicy overrunPolicy)
         {
@@ -510,7 +511,7 @@ namespace Controller
             return timer;
         }
 
-        
+
         /// <summary>
         /// 在指定压力组的“锚点时刻”触发建压保持。
         /// 调用策略：
@@ -567,7 +568,6 @@ namespace Controller
             return Task.WhenAll(tasks);
         }
 
-
         #endregion
 
 
@@ -581,9 +581,6 @@ namespace Controller
             // 直接转发给 Manager 自己的事件
             ChannelCycleCompleted?.Invoke(channel, sessionRunCount);
         }
-
-
-
     }
 
     #region 对接所需接口（如果你的类型名不同，请改成你的）

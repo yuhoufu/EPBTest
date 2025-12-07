@@ -44,7 +44,7 @@ namespace Controller
         private readonly DateTime _wallBaseUtc = DateTime.UtcNow;
         private readonly HydraulicGroupCoordinator _hydCoordinator; // ★ 新增：液压组协调器
 
-        
+
         public EpbManager(
             GlobalConfig cfg,
             DoController doController,
@@ -52,12 +52,11 @@ namespace Controller
             TwoDeviceAiAcquirer acq,
             IAppLogger log = null)
         {
-            if (cfg == null) throw new ArgumentNullException(nameof(cfg));
-            if (doController == null) throw new ArgumentNullException(nameof(doController));
-            if (aoController == null) throw new ArgumentNullException(nameof(aoController));
-            if (acq == null) throw new ArgumentNullException(nameof(acq));
+            _do = doController ?? throw new ArgumentNullException(nameof(doController));
+            _ao = aoController ?? throw new ArgumentNullException(nameof(aoController));
+            _acq = acq ?? throw new ArgumentNullException(nameof(acq));
+            _cfg = cfg ?? throw new ArgumentNullException(nameof(cfg));
 
-            _cfg = cfg;
             _do = doController;
             _ao = aoController;
             //_readCurrent = acq.ReadCurrent;
@@ -70,7 +69,6 @@ namespace Controller
             TestCycle = cfg.Test.TestTarget; // 总周期数
 
 
-
             // —— 订阅“低时延电流样本”并转发给对应 Runner —— //
             _acq.OnFastEpbCurrent += (ch, amps, ts) =>
             {
@@ -80,6 +78,61 @@ namespace Controller
                     r.FeedCurrentSample(ch, tick, amps);
                 }
             };
+
+            #region 写盘批次桥接：TwoDeviceAiAcquirer → IEpbCycleRecorder
+
+            // —— 写盘批次桥接：TwoDeviceAiAcquirer → IEpbCycleRecorder —— //
+            _acq.OnDiskBatch += (device, tsUtc, currentsByEpb, pressureGroup1, pressureGroup2) =>
+            {
+                var recorder = Recorder;
+                if (recorder == null) return;
+                if (tsUtc == null || tsUtc.Length == 0) return;
+                if (currentsByEpb == null || currentsByEpb.Count == 0) return;
+
+                foreach (var kvp in currentsByEpb)
+                {
+                    var epbId = kvp.Key; // 1..12
+                    var currents = kvp.Value; // 电流数组
+                    if (currents == null || currents.Length == 0)
+                        continue;
+
+                    // 1..6 → 压力组1，7..12 → 压力组2
+                    double[] pressure = null;
+                    if (epbId >= 1 && epbId <= 6)
+                        pressure = pressureGroup1;
+                    else if (epbId >= 7 && epbId <= 12)
+                        pressure = pressureGroup2;
+
+                    // 没有压力时，用 0 填充数组，仍然让电流落盘
+                    if (pressure == null || pressure.Length == 0)
+                        pressure = new double[currents.Length];
+
+                    // 对齐长度：取三者最小值
+                    var n = Math.Min(tsUtc.Length, Math.Min(currents.Length, pressure.Length));
+                    if (n <= 0)
+                        continue;
+
+                    if (n == tsUtc.Length && n == currents.Length && n == pressure.Length)
+                    {
+                        recorder.WriteBatch(epbId, tsUtc, currents, pressure);
+                    }
+                    else
+                    {
+                        var tsBuf = new DateTime[n];
+                        var curBuf = new double[n];
+                        var prBuf = new double[n];
+
+                        Array.Copy(tsUtc, tsBuf, n);
+                        Array.Copy(currents, curBuf, n);
+                        Array.Copy(pressure, prBuf, n);
+
+                        recorder.WriteBatch(epbId, tsBuf, curBuf, prBuf);
+                    }
+                }
+            };
+
+            #endregion
+
 
             _hydraulic = new HydraulicController(
                 _do,
@@ -147,13 +200,12 @@ namespace Controller
             var rcfg = _cfg.Test?.EpbCycleRunner.GetRunnerChannel(channel);
 
 
-
             var periodMs = _cfg.Test.PeriodMs;
             var sampleMs = 2;
 
 
             var forwardA = rcfg.ForwardA;
-            var holdMs = rcfg.HoldMs;                             
+            var holdMs = rcfg.HoldMs;
 
             // 如果 holdMs 为 null、0 或无效值，则设置为默认值 1000ms
             holdMs = holdMs <= 0 ? 1000 : holdMs; // 设置为 1000ms（1秒），可根据实际需要调整，调试使用
@@ -233,7 +285,7 @@ namespace Controller
                 return ok;
             });
         }
-        
+
         public void PauseChannel(int channel)
         {
             if (_timers.TryGetValue(channel, out var t)) t.Pause();
@@ -258,7 +310,15 @@ namespace Controller
             HighPrecisionTimer t;
             if (_timers.TryGetValue(channel, out t))
             {
-                try { t.Stop(); } catch { /* 忽略 Stop 异常 */ }
+                try
+                {
+                    t.Stop();
+                }
+                catch
+                {
+                    /* 忽略 Stop 异常 */
+                }
+
                 _timers.Remove(channel);
             }
 
@@ -266,8 +326,16 @@ namespace Controller
             HighPrecisionTimer cached;
             if (_timerCache.TryGetValue(channel, out cached))
             {
-                try { cached.Stop(); } catch { /* 忽略 */ }
-                _timerCache.Remove(channel);   // 关键：不要留下以免二次启动被误复用
+                try
+                {
+                    cached.Stop();
+                }
+                catch
+                {
+                    /* 忽略 */
+                }
+
+                _timerCache.Remove(channel); // 关键：不要留下以免二次启动被误复用
             }
 
             // —— Runner 同样清理：运行表与缓存表都移除 —— //
@@ -279,11 +347,27 @@ namespace Controller
 
                 _runners.Remove(channel);
             }
+
             _runnerCache.Remove(channel);
 
             // —— 安全落位与收尾（按你现有逻辑调整）—— //
-            try { Recorder?.FlushRecent(channel, 10); } catch { /* 忽略 */ }
-            try { _do.SetEpbOff(channel); } catch { /* 忽略 */ }
+            try
+            {
+                Recorder?.FlushRecent(channel, 10);
+            }
+            catch
+            {
+                /* 忽略 */
+            }
+
+            try
+            {
+                _do.SetEpbOff(channel);
+            }
+            catch
+            {
+                /* 忽略 */
+            }
         }
 
 
@@ -303,9 +387,6 @@ namespace Controller
             _timerCache.Clear();
             _runners.Clear();
         }
-
-
-
 
 
         // —— 反射兜底读取配置字段（兼容不同旧配置命名）—— //
@@ -456,8 +537,6 @@ namespace Controller
         #endregion
 
 
-
-
         #region 卡钳预释放
 
         /// <summary>
@@ -498,7 +577,8 @@ namespace Controller
         /// （可选增强）按“电源组相位 0/Δ/2Δ”三波错峰执行批量预释放。
         /// 当你担心同时反向上电电流过大时使用。
         /// </summary>
-        public async Task PreReleaseBatchStaggeredAsync(int[] channels, int? keepMs, int deltaMs, CancellationToken token)
+        public async Task PreReleaseBatchStaggeredAsync(int[] channels, int? keepMs, int deltaMs,
+            CancellationToken token)
         {
             if (channels == null || channels.Length == 0)
                 throw new ArgumentException("channels 不能为空。", nameof(channels));
@@ -546,6 +626,5 @@ namespace Controller
         }
 
         #endregion
-
     }
 }
