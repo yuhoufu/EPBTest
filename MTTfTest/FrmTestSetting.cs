@@ -314,6 +314,20 @@ namespace MtEmbTest
             {
                 dict.TryGetValue(ch, out var r);
 
+                // 新增：从 EpbRecords 里拿该通道的目标次数
+                int targetTotal = 0;
+                if (_cfg?.Test != null)
+                {
+                    // 确保记录存在
+                    var rec = _cfg.Test.GetEpbRecord(ch); // TestConfig.GetEpbRecord(...) 已经有实现:contentReference[oaicite:1]{index=1}
+                    if (rec != null)
+                        targetTotal = rec.TotalCount;
+
+                    // 若你希望“所有 EPB 共用 TestTarget” 时，初始显示统一值，可以加这一句：
+                    if (targetTotal <= 0 && _cfg.Test.IsSameCycleForAllEpb)
+                        targetTotal = _cfg.Test.TestTarget;
+                }
+
                 _epbRows.Add(new EpbRow
                 {
                     Channel = ch,
@@ -326,7 +340,9 @@ namespace MtEmbTest
                     RevDecayRigidMaxMs = r?.RevDecayRigidMaxMs ?? 0,
                     RevEmptyFixedMs = r?.RevEmptyFixedMs ?? 0,
                     PreReleaseKeepMs = r?.PreReleaseKeepMs,
-                    PeakIgnoreMs = r?.PeakIgnoreMs ?? 0
+                    PeakIgnoreMs = r?.PeakIgnoreMs ?? 0,
+                    // ★ 额外：目标次数
+                    TargetTotalCount = targetTotal
                 });
             }
 
@@ -356,6 +372,8 @@ namespace MtEmbTest
 
                 AddCol(nameof(EpbRow.Channel), "通道", 80, true);
                 AddCol(nameof(EpbRow.Name), "名称", 125);
+                // ★ 新增一列：目标次数
+                AddCol(nameof(EpbRow.TargetTotalCount), "目标次数", 120);
                 AddCol(nameof(EpbRow.ForwardA), "电流阈值(A)", 187);
                 AddCol(nameof(EpbRow.SafetyMarginA), "提前断电值(A)", 237);
                 AddCol(nameof(EpbRow.FwdOnLimitMs), "正上限时长(ms)", 249);
@@ -461,6 +479,8 @@ namespace MtEmbTest
                 AddCol(nameof(EpbRow.RevEmptyFixedMs), "反向固定空行程(ms)", 132f);
                 AddCol(nameof(EpbRow.PreReleaseKeepMs), "预释放维持(ms)", 99f);
                 AddCol(nameof(EpbRow.PeakIgnoreMs), "峰值忽略(ms)", 90f);
+                // ★ 新增：每个 EPB 的目标次数
+                AddCol(nameof(EpbRow.TargetTotalCount), "目标次数", 80f);
 
                 dgvEpbRunnerCfgControl.RowHeadersWidth = 40;
                 dgvEpbRunnerCfgControl.AllowUserToAddRows = false;
@@ -708,6 +728,9 @@ namespace MtEmbTest
                 // 1) 写回 Basic 信息（周期、名称、目录、负责人等）到 _cfg
                 PushBasicInfoToConfig();
 
+                // ★ 1.5) 写回每个 EPB 的目标次数到 EpbRecords
+                PushEpbTargetCountsToConfig();
+
                 // 2) 写回 EPB 循环参数（12 个通道）到 _cfg
                 PushEpbCycleRunnerToConfig();
 
@@ -756,6 +779,28 @@ namespace MtEmbTest
                 dict[r.Channel] = item;
             }
         }
+
+        /// <summary>
+        /// 将每个 EPB 的目标次数写回到 _cfg.Test.EpbRecords[].TotalCount。
+        /// </summary>
+        private void PushEpbTargetCountsToConfig()
+        {
+            if (_cfg?.Test == null) return;
+
+            // 确保 1..12 的记录存在
+            _cfg.Test.EnsureEpbRecords(12);
+
+            foreach (var row in _epbRows)
+            {
+                var rec = _cfg.Test.GetEpbRecord(row.Channel);
+                if (rec == null) continue;
+
+                // 防御性：不允许负数
+                rec.TotalCount = Math.Max(0, row.TargetTotalCount);
+            }
+        }
+
+
 
         /// <summary>
         /// 将基本信息写回到配置对象中（带健壮性校验）。

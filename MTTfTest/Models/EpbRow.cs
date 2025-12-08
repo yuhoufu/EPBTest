@@ -43,5 +43,10 @@ namespace MTEmbTest.Models
 
         /// <summary>忽略峰值的抑制窗口 ms（启动后前 Xms 不做峰值统计）。</summary>
         public int PeakIgnoreMs { get; set; }
+
+        /// <summary>
+        /// 每个 EPB 的目标次数，对应 Test.EpbRecords[x].TotalCount。
+        /// </summary>
+        public int TargetTotalCount { get; set; }
     }
 }
