@@ -116,7 +116,8 @@ namespace Controller
                 var t0 = t0OfGroup[pg];
                 var enabled = list.OrderBy(x => x).ToList();
 
-                var runs = TestCycle; // 正式阶段总圈数（可调）
+               
+
 
                 foreach (var ch in enabled)
                 {
@@ -139,7 +140,8 @@ namespace Controller
                     var last = Recorder?.GetLastCycleNumber(ch);
                     var baseCycle = last ?? 0;   // 这次试验第1圈就是 baseCycle + 1
 
-
+                    var runs = EpbTestCycle[ch]; // 正式阶段总圈数（可调）
+                    
                     // —— 计时器每圈工作（cycleIndex 从 1 开始） —— //
                     _ = timer.StartAsync(
                         repeat: runs, // 总圈数
@@ -348,6 +350,8 @@ namespace Controller
 
         /// <summary>试验总循环次数</summary>
         public int TestCycle { get; set; } = 100;
+
+        public Dictionary<int, int> EpbTestCycle { get; set; } = new Dictionary<int, int>();
 
         /// <summary>每圈目标周期（毫秒）。必须与现有配置一致。</summary>
         public int PeriodMs { get; set; } = 30000;

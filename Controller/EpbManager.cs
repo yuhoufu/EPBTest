@@ -68,6 +68,16 @@ namespace Controller
             PeriodMs = cfg.Test.PeriodMs; // 周期时长
             TestCycle = cfg.Test.TestTarget; // 总周期数
 
+            // 添加每个epb通道的目标次数
+            foreach (var epbRecord in cfg.Test.EpbRecords)
+            {
+
+                EpbTestCycle!.Add(epbRecord.Id,epbRecord.TotalCount);
+                
+            }
+            
+
+
 
             // —— 订阅“低时延电流样本”并转发给对应 Runner —— //
             _acq.OnFastEpbCurrent += (ch, amps, ts) =>

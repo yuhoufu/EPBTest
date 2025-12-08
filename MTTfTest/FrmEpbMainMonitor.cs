@@ -186,8 +186,6 @@ namespace MTEmbTest
         private readonly object _epbRecordsLock = new object();
 
 
-
-
         // —— UI 刷新节流相关 —— //
         private System.Windows.Forms.Timer _uiTimer;
         private ConcurrentQueue<byte[]> activeWriteBuffer;
@@ -835,7 +833,7 @@ namespace MTEmbTest
 
                 // 2) 注入到 EpbManager，数据落盘由 EpbManager 控制
                 _epb.Recorder = recorder;
-                
+
 
                 #region 曲线勾选控件相关
 
@@ -901,6 +899,9 @@ namespace MTEmbTest
         {
             _uiEpbRecords = new List<EpbTestRecord>();
 
+            var targetCyclesFromBasic = _cfg.Test.TestTarget; // 
+
+
             // 1) 从配置加载
             var cfgRecords = _cfg?.Test?.EpbRecords;
             if (cfgRecords != null)
@@ -908,7 +909,12 @@ namespace MTEmbTest
                 foreach (var record in cfgRecords)
                 {
                     if (record != null)
+                    {
+                        // 如果IsSameCycleForAllEpb为true，则TotalCount赋值为_cfg.Test.TestTarget;
+                        if (_cfg.Test.IsSameCycleForAllEpb) record.TotalCount = targetCyclesFromBasic;
+
                         _uiEpbRecords.Add(record);
+                    }
                 }
             }
 
@@ -928,8 +934,6 @@ namespace MTEmbTest
             {
                 rec.InitializeOnLoad(DateTime.Now);
             }
-
-           
         }
 
 
@@ -997,13 +1001,11 @@ namespace MTEmbTest
 
                 if (record.Status == EpbTestStatus.Completed) // 已完成
                 {
-                    _epb.StopChannel(record.Id);  // 停止该通道试验
+                    _epb.StopChannel(record.Id); // 停止该通道试验
 
                     // ====  UI 提示 =====================================================
                     RtbInfo?.AppendText($"[{DateTime.Now:HH:mm:ss.fff}] EPB-{record.Id} 已完成试验。\n");
                 }
-
-
             }
 
             // —— 3) 更新左侧 EPBGroup —— //
@@ -1013,7 +1015,6 @@ namespace MTEmbTest
             if (record.Id == _currentEpbSummaryChannel)
             {
                 UpdateEpbSummaryPanel(record);
-
             }
 
             // —— ⚠️ 取消实时保存，改为“定时自动保存” —— //
@@ -1040,6 +1041,9 @@ namespace MTEmbTest
                 TxtTestName.Text = test.TestName ?? string.Empty;
                 TxtTestCycleTime.Text = test.TestPeriod.ToString(CultureInfo.InvariantCulture);
                 TxtTargetCycles.Text = test.TestTarget.ToString(CultureInfo.InvariantCulture);
+
+                //—— IsSameCycleForAllEpb —— //
+                uiCheckBoxIsSameCycleForAllEpb.Checked = test.IsSameCycleForAllEpb;
 
                 // ====  UI 提示 =====================================================
                 RtbInfo?.AppendText($"[{DateTime.Now:HH:mm:ss.fff}] 已加载试验配置。\n");
@@ -1689,8 +1693,6 @@ namespace MTEmbTest
                 // await _epb.StartChannelAsync(2);
                 //await _epb.StartChannelAsync(4);
                 //await _epb.StartChannelAsync(5);
-
-
                 #region 【同步起跑（电源保护）】：学习阶段同组错峰 + 正式阶段锚点对齐且同组错峰（首周期）
 
                 // 1) 收集勾选通道
@@ -1957,7 +1959,7 @@ namespace MTEmbTest
             // // 测试
             // _diskWriter.ExportFreeRunBySamples(1, 100000,
             //     Path.Combine(Environment.CurrentDirectory, @$"DataStore\EPB1-{DateTime.Now:yyyy_MM_dd-HH_mm_ss}.csv"));
-            
+
             // 结束自动定时保存器 
             try
             {
@@ -1973,13 +1975,13 @@ namespace MTEmbTest
                 {
                     FlushUiEpbRecordsToConfig();
                 }
+
                 SaveEpbRecordsToTestConfigSafe();
             }
             catch (Exception ex)
             {
                 logger?.Warn("关闭窗口时保存 EPB 记录失败：" + ex.Message, "EPB");
             }
-
 
 
             try
@@ -2384,6 +2386,7 @@ namespace MTEmbTest
                 }
             }
         }
+
         /// <summary>
         /// 把当前 UI 侧 EPB 记录回写到 <see cref="_cfg.Test.EpbRecords"/>，
         /// 并尝试保存到 Config\TestConfig.xml。
@@ -2417,9 +2420,6 @@ namespace MTEmbTest
 
             SaveEpbRecordsToTestConfigSafe();
         }
-
-
-
 
         #endregion
 
