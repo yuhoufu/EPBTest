@@ -22,6 +22,11 @@ namespace Config
         public int Id { get; set; }
 
         /// <summary>
+        /// EPB 通道 启用
+        /// </summary>
+        public bool Enabled { get; set; }
+
+        /// <summary>
         /// 首次开始时间（可为 null）。用于记录最初的开始时间。
         /// <para>序列化/保存时的文本格式建议使用 "yyyy-MM-dd HH:mm:ss"（由外部负责格式化）。</para>
         /// </summary>
@@ -89,6 +94,7 @@ namespace Config
             return new EpbTestRecord
             {
                 Id = id,
+                Enabled = false, // 默认启用该通道（如有需要可由外部 UI/配置关闭）
                 StartTime = null,
                 LatestStartTime = null,
                 RunTime = FormatTimeSpan(TimeSpan.Zero),

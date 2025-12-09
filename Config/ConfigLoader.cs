@@ -382,6 +382,7 @@ public static class ConfigLoader
             var r = new EpbTestRecord
             {
                 Id = GetInt(n, "Id", -1),
+                Enabled = GetBool(n, "Enabled", false),
                 StartTime = TryParseDateTime(GetString(n, "StartTime", null)),
                 LatestStartTime = TryParseDateTime(GetString(n, "LatestStartTime", null)),
                 RunTime = GetString(n, "RunTime", FormatTimeSpan(TimeSpan.Zero)),
@@ -731,6 +732,7 @@ public static class ConfigLoader
             }
 
             AddRecordElement("Id", record.Id.ToString());
+            AddRecordElement("Enabled", record.Enabled.ToString());
             AddRecordElement("StartTime", record.StartTime?.ToString("yyyy-MM-dd HH:mm:ss") ?? "");
             AddRecordElement("LatestStartTime", record.LatestStartTime?.ToString("yyyy-MM-dd HH:mm:ss") ?? "");
             AddRecordElement("RunTime", record.RunTime ?? "");
