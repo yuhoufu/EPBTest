@@ -216,21 +216,63 @@ public sealed class EpbDiskWriter : IDisposable
         }
     }
 
-    /// <inheritdoc />
+    /// <summary>
+    /// 释放 EpbDiskWriter：
+    /// <list type="bullet">
+    ///     <item>1. 依次释放 12 路内存映射视图和文件；</item>
+    ///     <item>2. 关闭并释放 SQLite 连接；</item>
+    ///     <item>3. 调用 <see cref="SQLiteConnection.ClearAllPools"/>，
+    ///         确保 SQLite 连接池中的句柄也完全释放，
+    ///         这样外部就可以安全删除 index.db 文件。</item>
+    /// </list>
+    /// </summary>
     public void Dispose()
     {
         if (_disposed) return;
         _disposed = true;
 
+        // 1) 关闭 12 路内存映射视图和文件
         for (var ch = 1; ch <= EPB_COUNT; ch++)
         {
-            _views[ch]?.Dispose();
-            _mmfs[ch]?.Dispose();
+            try
+            {
+                _views[ch]?.Dispose();
+            }
+            catch
+            {
+                // 关闭阶段忽略单个通道失败
+            }
+
+            try
+            {
+                _mmfs[ch]?.Dispose();
+            }
+            catch
+            {
+                // 关闭阶段忽略单个通道失败
+            }
+
             _views[ch] = null;
             _mmfs[ch] = null;
         }
 
-        _conn?.Dispose();
+        // 2) 关闭并释放 SQLite 连接
+        try
+        {
+            if (_conn != null)
+            {
+                // 显式 Close 再 Dispose，保证连接状态正确
+                _conn.Close();
+                _conn.Dispose();
+            }
+        }
+        finally
+        {
+            // 3) 非常关键：清空 SQLite 连接池，释放 index.db 的文件句柄
+            //    否则即使调用了 Dispose，连接池中的物理连接仍然可能占用数据库文件，
+            //    导致其它地方 File.Delete("index.db") 失败。
+            SQLiteConnection.ClearAllPools();
+        }
     }
 
     #endregion
