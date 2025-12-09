@@ -19,7 +19,7 @@ namespace Controller
         /// <summary>
         ///     获取“预释放”阶段默认保持时长（ms），等于原始字段 <c>_revEmptyKeepMs</c>。
         /// </summary>
-        public int DefaultPreReleaseKeepMs { get; } = 500;
+        public int DefaultPreReleaseKeepMs { get; } = 1500;
 
         private const double PlateauAboveEmptyMarginA = 0.8;
         private const int PlateauWindowMs = 150;
@@ -81,7 +81,7 @@ namespace Controller
         private readonly TwoDeviceAiAcquirer _acq; // 新增：双设备采集器引用
 
 
-        private double _actualCutoffCurrent = 0; // 新增：实际断电电流值（判断时监测到的值）
+        private double _actualCutoffCurrent = 0;  // 新增：实际断电电流值（判断时监测到的值）
 
 
         public EpbCycleRunner(
@@ -149,13 +149,11 @@ namespace Controller
             // …你原有的赋值保持不变…
             _manager = manager; // ★ 保存 manager
             _cfg = cfg;
-            _safetyMarginA =
-                _cfg?.Test.EpbCycleRunner.GetRunnerChannel(channel).SafetyMarginA ?? 2.0; // SafetyMarginA为null 则设置为2
+            _safetyMarginA = _cfg?.Test.EpbCycleRunner.GetRunnerChannel(channel).SafetyMarginA  ?? 2.0;  // SafetyMarginA为null 则设置为2
             _acq = twoDeviceAiAcquirer;
-
-            DefaultPreReleaseKeepMs = _cfg?.Test.EpbCycleRunner.GetRunnerChannel(channel).PreReleaseKeepMs ?? 500; // 预释放保持时长
-
         }
+
+
 
 
         /// <summary>
@@ -189,8 +187,7 @@ namespace Controller
                     -1, // 反向
                     _emptyBandA,
                     _stableWinMs,
-                    token,
-                    holdMs).ConfigureAwait(false);
+                    token).ConfigureAwait(false);
 
                 var okRel = tuple.Item1;
                 var iEmptyRel = tuple.Item3;
@@ -568,6 +565,7 @@ namespace Controller
                     _acq.BeginEpbCurrentPeak(_channel);
                     _log?.Error($"EPB[{_channel}] 正向峰值捕获（全数据）已开始。", "EPB");
                     Console.WriteLine("正向峰值捕获进行中...");
+
                 }
 
 
@@ -594,6 +592,7 @@ namespace Controller
                     return false;
                 }
 
+                
 
                 // 达到夹紧判据 → 立即断电并标记释放（与 Learn… 一致）
                 _do.SetEpbOff(_channel);
@@ -611,11 +610,11 @@ namespace Controller
                         {
                             // 回调在后台线程，如需触发 UI 请自行 Invoke
                             _log?.Error(
-                                $"EPB[{_channel}]，阈值：{_posThrA}A,差值：{(_posThrA - peak.MaxAmp):F3}|{(peak.MaxAmp - _actualCutoffCurrent):F3}|{(peak.MaxAmp - (_posThrA - _safetyMarginA)):F3}, 截断值：{_actualCutoffCurrent:F3}|[{_safetyMarginA}]A, 正向段峰值：Imax={peak.MaxAmp:F3}A @ {peak.MaxAt:HH:mm:ss.fff}，Samples={peak.SampleCount}。",
+                                $"EPB[{_channel}]，阈值：{_posThrA}A,差值：{(_posThrA - peak.MaxAmp):F3}|{(peak.MaxAmp- _actualCutoffCurrent):F3}|{(peak.MaxAmp-(_posThrA- _safetyMarginA)):F3}, 截断值：{_actualCutoffCurrent:F3}|[{_safetyMarginA}]A, 正向段峰值：Imax={peak.MaxAmp:F3}A @ {peak.MaxAt:HH:mm:ss.fff}，Samples={peak.SampleCount}。",
                                 "EPB");
                         });
                 }
-
+                
                 _log?.Info($"EPB[{_channel}] 达到夹紧阈值 {_posThrA:F2}A，已断电并标记释放。", "EPB");
                 if (_manager != null) await _manager.HydraulicMarkReleaseAsync(_channel).ConfigureAwait(false);
 
@@ -659,13 +658,13 @@ namespace Controller
 
                     nextDue += (long)(Math.Max(1, _sampleMs) * tickPerMs);
 
-
+                    
                     var current = _readCurrent(_channel); // 需要取绝对值 😒
                     var elapsedMs = MsBetween(tRevDecayStart, NowTicks());
 
                     lastCurrent = current;
                     current = Math.Abs(current);
-
+                   
 
                     if (current <= RevDecayLimitA)
                     {
@@ -1080,8 +1079,7 @@ namespace Controller
             int predictiveCutMs = 5,
             double minSlopeAperMs = 0.02,
             double maxSlopeAperMs = 1.0, // 斜率物理上限（A/ms）
-            int slopeWinSize = 10
-            ) // 滑动窗口大小
+            int slopeWinSize = 10)       // 滑动窗口大小
         {
             // —— 为保持签名一致，这些参数在方案C中不使用 —— //
             _ = predictiveCutMs;
@@ -1107,10 +1105,10 @@ namespace Controller
             int loop = 0;
 
             // 根据经验设置：自旋若干步 + 周期性 Sleep(0)；当 CPU 忙时 Sleep(0) 会把时间片让给同优先级线程。
-            const int SPIN_STEPS_PER_LOOP = 20; // 每轮最多自旋步数（单步时间很短，数量不要太大）
+            const int SPIN_STEPS_PER_LOOP = 20;  // 每轮最多自旋步数（单步时间很短，数量不要太大）
             const int YIELD_EVERY_LOOPS = 128; // 每 128 轮让出一次时间片
             const int ASYNC_DELAY_EVERY = 2000; // 每 2000 轮异步让出（Task.Yield/Delay），降低 UI 抢占风险
-            const int ASYNC_DELAY_MS = 1; // 极短异步延迟（1ms），避免长时间占用一个线程
+            const int ASYNC_DELAY_MS = 1;   // 极短异步延迟（1ms），避免长时间占用一个线程
 
             while (true)
             {
@@ -1122,9 +1120,7 @@ namespace Controller
                 // —— 仅依据安全裕量的直接判定（低延迟）—— //
                 if (current + safetyMarginA >= thrA)
                 {
-                    _log.Warn(
-                        $"EPB[{_channel}] 达到阈值(方案C/无预测): I={current:F2}A + Margin={safetyMarginA:F2}A ≥ Thr={thrA:F2}A",
-                        "EPB");
+                    _log.Warn($"EPB[{_channel}] 达到阈值(方案C/无预测): I={current:F2}A + Margin={safetyMarginA:F2}A ≥ Thr={thrA:F2}A", "EPB");
                     _actualCutoffCurrent = current; //
                     return true;
                 }
@@ -1147,12 +1143,10 @@ namespace Controller
                     }
                 }
 
-                int maxWaitMs = _cfg?.Test.EpbCycleRunner.GetRunnerChannel(_channel).FwdOnLimitMs ?? 5_000;
-
                 // —— 超时保护（10s，与原方法一致）—— //
-                if (ElapsedMs(tBegin) > maxWaitMs)
+                if (ElapsedMs(tBegin) > 10_000)
                 {
-                    _log.Warn($"EPB[{_channel}] 超时(方案C/无预测): {maxWaitMs/1000}s 内未达到 Thr={thrA:F2}A", "EPB");
+                    _log.Warn($"EPB[{_channel}] 超时(方案C/无预测): 10s 内未达到 Thr={thrA:F2}A", "EPB");
                     return false;
                 }
 
@@ -1161,7 +1155,7 @@ namespace Controller
                 for (int i = 0; i < SPIN_STEPS_PER_LOOP; i++)
                 {
                     spinner.SpinOnce(); // SpinOnce 会自适应插入短暂 Thread.Sleep(0)（当计数增大）；
-                    // 这里选择“小步自旋 + 外层周期让出”，让行为更可控。
+                                        // 这里选择“小步自旋 + 外层周期让出”，让行为更可控。
                 }
 
                 // 2) 周期性让出时间片，避免长时间霸占 CPU
@@ -1181,6 +1175,9 @@ namespace Controller
         }
 
 
+
+
+
         private async Task<bool> WaitCurrentAboveAsync(
             double thrA,
             CancellationToken token,
@@ -1192,7 +1189,7 @@ namespace Controller
             // 直接调用原方法，使用字段 _safetyMarginA 作为参数
             return await WaitCurrentAboveAsync(
                 thrA,
-                _safetyMarginA, // 使用字段值
+                _safetyMarginA,  // 使用字段值
                 token,
                 predictiveCutMs,
                 minSlopeAperMs,
@@ -1200,7 +1197,7 @@ namespace Controller
                 slopeWinSize);
         }
 
-      
+
 
         /// <summary>
         ///     以与 <see cref="WaitCurrentAboveAsync" /> 相同的“对齐采样节拍”方式，
