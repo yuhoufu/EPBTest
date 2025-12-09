@@ -293,8 +293,8 @@ namespace Config
         /// </summary>
         public void ResetKeepTotalCount()
         {
-            StartTime = null;
-            LatestStartTime = null;
+            StartTime = DateTime.Now;
+            LatestStartTime = DateTime.Now;
             RunTimeSpan = TimeSpan.Zero;
             RunCount = 0;
             Status = EpbTestStatus.NotStarted;

@@ -734,8 +734,22 @@ namespace MTEmbTest
                 //给处理序号和通道号字典赋值
 
 
-                // 1) 加载全局配置（AO/DO/Test）
-                _cfg = ConfigLoader.LoadAll($@"{Environment.CurrentDirectory}\Config", logger);
+                // 1) 先加载“软件默认 Config”下的配置（主要为了拿到 TestName / StoreDir 以及硬件配置）
+                var defaultConfigDir = Path.Combine(Environment.CurrentDirectory, "Config");
+                var defaultCfg = ConfigLoader.LoadAll(defaultConfigDir, logger);
+
+                // 2) 根据默认 TestConfig 推算“项目 Config\TestConfig.xml”
+                //    若该项目已有配置：直接加载；否则创建一份并清零 EpbRecords 进度
+                var projectTest = ConfigLoader.EnsureProjectTestConfig(defaultCfg, logger);
+
+                // 3) 用“项目 TestConfig”替换默认配置中的 Test 部分，
+                //    这样后续代码统一使用 _cfg.Test 即表示“当前项目”的试验配置和进度
+                defaultCfg.Test = projectTest;
+                _cfg = defaultCfg;
+
+                // 4) 确保默认 Config\TestConfig.xml 中也同步了 Basic 和 TotalCount（但进度清零）
+                //    方便下次启动软件时，仍然能通过默认配置推算出当前项目路径。
+                ConfigLoader.UpdateDefaultTestFromProject(projectTest, logger);
 
 
                 // 初始化 EPB 控制器的记录
@@ -2391,7 +2405,7 @@ namespace MTEmbTest
         /// 把当前 UI 侧 EPB 记录回写到 <see cref="_cfg.Test.EpbRecords"/>，
         /// 并尝试保存到 Config\TestConfig.xml。
         /// </summary>
-        private void SaveEpbRecordsToTestConfigSafe()
+        private void SaveEpbRecordsToTestConfigSafeOld()
         {
             if (_cfg?.Test == null) return;
 
@@ -2409,6 +2423,48 @@ namespace MTEmbTest
                 logger?.Warn("保存 EPB 试验记录到 TestConfig.xml 失败: " + ex.Message, "配置");
             }
         }
+
+
+        /// <summary>
+        /// 把当前 UI 侧 EPB 记录回写到 <see cref="_cfg.Test.EpbRecords"/>，
+        /// 并尝试保存到“项目”下的 Config\TestConfig.xml。
+        /// </summary>
+        private void SaveEpbRecordsToTestConfigSafe()
+        {
+            if (_cfg?.Test == null) return;
+
+            try
+            {
+                // 1) 先把 _uiEpbRecords 写回 _cfg.Test.EpbRecords
+                FlushUiEpbRecordsToConfig();
+
+                // 2) 计算“项目配置”的 TestConfig.xml 路径：
+                //    约定：项目 Config 目录 = StoreDir\TestName\Config
+                //          项目 TestConfig = StoreDir\TestName\Config\TestConfig.xml
+                var projectPath = ConfigLoader.GetProjectTestConfigPath(
+                    _cfg.Test.StoreDir,
+                    _cfg.Test.TestName);
+
+                if (!string.IsNullOrEmpty(projectPath) && File.Exists(projectPath))
+                {
+                    // 优先写入“项目专用”的 TestConfig.xml（带运行进度）
+                    ConfigLoader.SaveTest(projectPath, _cfg.Test);
+                }
+                else
+                {
+                    // 若项目路径无效或文件不存在（极端情况/旧项目），
+                    // 退回到旧逻辑：写入软件默认 Config\TestConfig.xml
+                    // （保证兼容性，但正常情况下不会走到这里）
+                    ConfigLoader.SaveTest(_cfg.Test);
+                }
+            }
+            catch (Exception ex)
+            {
+                // 不因为保存失败干扰试验，只打个日志
+                logger?.Warn("保存 EPB 试验记录到项目 TestConfig.xml 失败: " + ex.Message, "配置");
+            }
+        }
+
 
         private void AutoSaveTimer_Tick(object sender, EventArgs e)
         {

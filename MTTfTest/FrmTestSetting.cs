@@ -1,4 +1,8 @@
-﻿using Config.Models;
+﻿using Config;
+using Config.Models;
+using DevExpress.Data.Helpers;
+using DevExpress.XtraEditors;
+using MTEmbTest;
 using MTEmbTest.Models;
 using Sunny.UI;
 using System;
@@ -12,8 +16,6 @@ using System.Windows.Forms;
 using System.Xml;
 using System.Xml.Linq;
 using System.Xml.Serialization;
-using DevExpress.Data.Helpers;
-using DevExpress.XtraEditors;
 
 namespace MtEmbTest
 {
@@ -22,6 +24,7 @@ namespace MtEmbTest
         private readonly BindingList<EpbRow> _epbRows = new();
         private readonly GlobalConfig _cfg; // 全部配置对象
         private List<PressureSettingControl> _pressureSettings; // 压力设置
+        public FormLoggerAdapter logger;
 
         public FrmTestSetting(GlobalConfig cfg)
         {
@@ -241,6 +244,12 @@ namespace MtEmbTest
             }
         }
 
+        /// <summary>
+        /// 设置窗口加载时：
+        /// 1) 使用当前 _cfg.Test 填充界面；
+        /// 2) 根据 _cfg.Test.TestName + StoreDir 计算项目路径，
+        ///    如果该项目下还没有 Config\TestConfig.xml，则从默认 Config 拷贝一份过去。
+        /// </summary>
         private void FrmTestSetting_Load(object sender, EventArgs e)
         {
             // // 1) 通过 MdiParent 拿到父窗体引用
@@ -281,11 +290,27 @@ namespace MtEmbTest
                 TxtReleaseEnable.Text = ClsGlobal.ReleaseEnable.ToString();
                 TxtReleaseForceReq.Text = ClsGlobal.ReleaseForceReq.ToString();
 
+
+
                 LoadDaqAiToGridView(Environment.CurrentDirectory + @"\Config\AIConfig.xml");
 
 
                 LoadTestConfigFromXml(TxtTestCycle, TxtTestName, TxtTestTarget, uiCheckBoxIsSameCycleForAllEpb,
                     TxtStoreDir, TxtTestMan, RtbDesc);
+
+                // —— 2) 根据“默认配置中的项目信息”初始化项目 Config 目录 —— //
+                try
+                {
+                    EnsureProjectTestConfigExists();
+                }
+                catch (Exception ex)
+                {
+                    XtraMessageBox.Show(
+                        @"初始化项目配置失败：\r\n" + ex.Message,
+                        @"错误",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Error);
+                }
 
                 // 压力设置相关-开始
                 InitializePressureSettings();
@@ -721,7 +746,7 @@ namespace MtEmbTest
             SaveDaqAIToXML(Environment.CurrentDirectory + @"\Config\AIConfig.xml");
         }
 
-        private void BtnSaveTest_Click(object sender, EventArgs e)
+        private void BtnSaveTest_ClickOld(object sender, EventArgs e)
         {
             try
             {
@@ -750,6 +775,213 @@ namespace MtEmbTest
                 XtraMessageBox.Show(@"保存失败：\r\n" + ex.Message, @"错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
+
+        /// <summary>
+        ///     “保存试验配置”按钮点击事件。
+        ///     实现的功能：
+        ///     <list type="number">
+        ///         <item>1. 将界面上的基本信息和 EPB 参数写回到 <see cref="_cfg.Test"/>；</item>
+        ///         <item>2. 根据旧/新 TestName + StoreDir 判断是否“切换项目”；</item>
+        ///         <item>3. 若新项目路径下已存在配置，提示用户选择：
+        ///             <list type="bullet">
+        ///                 <item>“是”：切换到已有项目（加载其 TestConfig 和运行进度）；</item>
+        ///                 <item>“否”：以当前界面设置覆盖保存到该项目（视为重命名或新建，EPB 进度会清零）。</item>
+        ///             </list>
+        ///         </item>
+        ///         <item>4. 始终将当前项目配置保存到“项目 Config\TestConfig.xml”；</item>
+        ///         <item>5. 同步更新“软件默认 Config\TestConfig.xml”，
+        ///             其中仅同步 TotalCount，其他进度保持为“全新的模板”。</item>
+        ///     </list>
+        /// </summary>
+        private void BtnSaveTest_ClickOld2(object sender, EventArgs e)
+        {
+            try
+            {
+                if (_cfg?.Test == null)
+                {
+                    MessageBox.Show(@"内部配置对象为空，无法保存试验配置。", @"错误",
+                        MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+
+                // —— 1) 保存前先记录“旧项目名”和“旧存储路径”，用于判断是否切换项目 —— //
+                var oldTestName = _cfg.Test.TestName;
+                var oldStoreDir = _cfg.Test.StoreDir;
+
+                // —— 2) 将界面上的 Basic / EPB 相关参数回写到 _cfg.Test —— //
+                PushBasicInfoToConfig();   // TestName / TestCycle / StoreDir / Owner / Description ...
+                PushEpbCycleRunnerToConfig();    // EpbCycleRunner + 每通道目标次数（写到 EpbRecords.TotalCount）
+
+                // —— 3) 计算新项目的路径（根目录 + Config + TestConfig.xml） —— //
+                var newStoreDir = _cfg.Test.StoreDir;
+                var newTestName = _cfg.Test.TestName;
+
+                var projectRoot = ConfigLoader.GetProjectRootDir(newStoreDir, newTestName);
+                var projectConfigDir = ConfigLoader.GetProjectConfigDir(newStoreDir, newTestName);
+                var projectTestPath = ConfigLoader.GetProjectTestConfigPath(newStoreDir, newTestName);
+
+                if (string.IsNullOrEmpty(projectRoot) || string.IsNullOrEmpty(projectConfigDir) ||
+                    string.IsNullOrEmpty(projectTestPath))
+                {
+                    MessageBox.Show(@"StoreDir 或 TestName 为空，无法生成项目 Config 路径，请检查输入。", @"错误",
+                        MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+
+                // —— 4) 判断项目是否发生变化（项目名或存储路径） —— //
+                var projectChanged =
+                    !string.Equals(oldTestName, newTestName, StringComparison.OrdinalIgnoreCase) ||
+                    !string.Equals(oldStoreDir, newStoreDir, StringComparison.OrdinalIgnoreCase);
+
+                if (projectChanged && File.Exists(projectTestPath))
+                {
+                    // ===============================
+                    // 情况 A：改了项目名/路径，且新路径下“已经存在配置”
+                    // ===============================
+                    var msg =
+                        $"检测到目标项目路径下已存在配置文件：\r\n{projectTestPath}\r\n\r\n" +
+                        "你可以选择：\r\n" +
+                        "【是】→ 切换到该项目（加载该项目原有的 TestConfig 和运行进度）；\r\n" +
+                        "【否】→ 以当前界面设置覆盖保存到该项目（视为重命名或新建，EPB 进度将被清零）。";
+
+                    var dr = MessageBox.Show(msg, @"项目已存在", MessageBoxButtons.YesNoCancel,
+                        MessageBoxIcon.Question);
+
+                    if (dr == DialogResult.Cancel)
+                        return;
+
+                    if (dr == DialogResult.Yes)
+                    {
+                        // —— A1：切换到已有项目 —— //
+                        var loaded = ConfigLoader.LoadTest(projectTestPath,logger);
+                        _cfg.Test = loaded;
+
+                        // 同步默认配置（只带 TotalCount，进度清零）
+                        ConfigLoader.UpdateDefaultTestFromProject(_cfg.Test);
+
+                        // 刷新界面显示
+                        LoadTestConfigFromXml(TxtTestCycle, TxtTestName, TxtTestTarget,
+                            uiCheckBoxIsSameCycleForAllEpb, TxtStoreDir, TxtTestMan, RtbDesc);
+                        BindEpbRunnerGridFromConfig();
+
+                        MessageBox.Show(@"已切换到已有项目配置。", @"提示",
+                            MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        return;
+                    }
+
+                    // —— A2：DialogResult.No → 视为“重命名/新建项目”，以当前界面设置覆盖保存到该项目 —— //
+                    _cfg.Test.EnsureEpbRecords();
+                    foreach (var rec in _cfg.Test.EpbRecords)
+                    {
+                        // 清零运行进度，但保留目标次数 TotalCount
+                        rec.ResetKeepTotalCount();
+                    }
+                }
+                else
+                {
+                    // ===============================
+                    // 情况 B：未改路径 / 新路径下尚无配置
+                    // ===============================
+                    if (projectChanged)
+                    {
+                        // 新项目：需要从旧项目“干干净净”开始，清零运行进度
+                        _cfg.Test.EnsureEpbRecords();
+                        foreach (var rec in _cfg.Test.EpbRecords)
+                        {
+                            rec.ResetKeepTotalCount();
+                        }
+                    }
+                    // 若 projectChanged == false：继续当前项目，不清零进度，直接保存即可。
+                }
+
+                // —— 5) 保存当前项目 TestConfig 到“项目 Config\TestConfig.xml” —— //
+                if (!Directory.Exists(projectConfigDir))
+                    Directory.CreateDirectory(projectConfigDir);
+
+                ConfigLoader.SaveTest(projectTestPath, _cfg.Test);
+
+                // —— 6) 同步更新“软件默认 Config\TestConfig.xml”（仅 TotalCount，进度清零） —— //
+                ConfigLoader.UpdateDefaultTestFromProject(_cfg.Test);
+
+                MessageBox.Show(@"保存成功！", @"提示",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(@"保存试验配置失败：" + ex.Message, @"错误",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+
+        private void BtnSaveTest_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                if (_cfg?.Test == null)
+                {
+                    XtraMessageBox.Show(@"当前试验配置为空，无法保存！", @"错误",
+                        MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+
+                // —— 0) 保存前先记住原来的项目标识（用于判断是否“切换到新项目”） —— //
+                var oldStoreDir = _cfg.Test.StoreDir ?? string.Empty;
+                var oldTestName = _cfg.Test.TestName ?? string.Empty;
+
+                // —— 1) 写回 Basic 信息（周期、名称、目录、负责人等）到 _cfg —— //
+                PushBasicInfoToConfig();
+
+                // ★ 1.5) 写回每个 EPB 的目标次数到 EpbRecords —— //
+                PushEpbTargetCountsToConfig();
+
+                // —— 2) 写回 EPB 循环参数（12 个通道）到 _cfg —— //
+                PushEpbCycleRunnerToConfig();
+
+                // —— 3) 写回液压配置（EPB1-6 和 EPB7-12 的压力设置）到 _cfg —— //
+                PushHydraulicSettingsToConfig();
+
+                // —— 4) 判断是否“项目名 / 存储路径”发生了变化 —— //
+                var newStoreDir = _cfg.Test.StoreDir ?? string.Empty;
+                var newTestName = _cfg.Test.TestName ?? string.Empty;
+
+                var isProjectChanged =
+                    !string.Equals(oldStoreDir, newStoreDir, StringComparison.OrdinalIgnoreCase) ||
+                    !string.Equals(oldTestName, newTestName, StringComparison.OrdinalIgnoreCase);
+
+                if (isProjectChanged)
+                {
+                    // 视为创建了一个全新的项目：清零运行进度，只保留每个 EPB 的目标次数
+                    ResetEpbRecordsRuntimeStateKeepTotalCount();
+                }
+
+                // —— 5) 先保存到“软件默认”的 Config\TestConfig.xml —— //
+                var defaultTestPath = GetDefaultTestConfigPath();
+                ConfigLoader.SaveTest(defaultTestPath, _cfg.Test);
+
+                // —— 6) 再保存到“项目专用”的 Config\TestConfig.xml —— //
+                var projectTestPath = GetProjectTestConfigPath();
+                if (!string.IsNullOrEmpty(projectTestPath))
+                {
+                    // 如果是新项目，这里会拷贝一份默认 TestConfig 作为基础文件，避免“找不到文件”的异常
+                    EnsureProjectTestConfigExists();
+
+                    // 覆盖写入当前项目配置（包含 EpbRecords 的全部信息）
+                    ConfigLoader.SaveTest(projectTestPath, _cfg.Test);
+                }
+
+                XtraMessageBox.Show("保存成功", "提示",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                XtraMessageBox.Show(
+                    @"保存试验配置失败：\r\n" + ex.Message,
+                    @"错误",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
 
         /// <summary>
         /// 将网格当前数据写回到 _global.Test.EpbCycleRunner.Channels 字典中。
@@ -844,6 +1076,101 @@ namespace MtEmbTest
             // —— 6) Description —— //
             _cfg.Test.Description = RtbDesc.Text ?? "";
         }
+
+        /// <summary>
+        /// 获取“软件默认”的 TestConfig.xml 完整路径：
+        ///   .\Config\TestConfig.xml
+        /// </summary>
+        private static string GetDefaultTestConfigPath()
+        {
+            var cfgDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Config");
+            // 确保目录存在
+            Directory.CreateDirectory(cfgDir);
+            return Path.Combine(cfgDir, "TestConfig.xml");
+        }
+
+        /// <summary>
+        /// 根据当前 _cfg.Test 的 StoreDir + TestName 计算“项目专用”的 TestConfig.xml 路径：
+        ///   {StoreDir}\{TestName}\Config\TestConfig.xml
+        /// </summary>
+        private string GetProjectTestConfigPath()
+        {
+            if (_cfg?.Test == null)
+                return null;
+
+            // —— 存储根目录 —— //
+            var storeDir = string.IsNullOrWhiteSpace(_cfg.Test.StoreDir)
+                ? Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Data")
+                : _cfg.Test.StoreDir.Trim();
+
+            // —— 项目名称 —— //
+            var projectName = string.IsNullOrWhiteSpace(_cfg.Test.TestName)
+                ? "DefaultProject"
+                : _cfg.Test.TestName.Trim();
+
+            var projectRoot = Path.Combine(storeDir, projectName);
+            var projectConfigDir = Path.Combine(projectRoot, "Config");
+
+            // 这里就先把目录建好（不存在则创建）
+            Directory.CreateDirectory(projectConfigDir);
+
+            return Path.Combine(projectConfigDir, "TestConfig.xml");
+        }
+
+        /// <summary>
+        /// 确保“当前项目”的 Config\TestConfig.xml 存在。
+        /// 如果不存在，则从“默认 Config\TestConfig.xml” 拷贝一份作为模板。
+        /// 只负责“有 / 没有文件”这一件事，不改动 _cfg。
+        /// </summary>
+        private void EnsureProjectTestConfigExists()
+        {
+            var defaultTestPath = GetDefaultTestConfigPath();
+            var projectTestPath = GetProjectTestConfigPath();
+
+            if (string.IsNullOrEmpty(projectTestPath))
+                return;
+
+            // 目录由 GetProjectTestConfigPath 中保证
+
+            if (!File.Exists(projectTestPath))
+            {
+                if (!File.Exists(defaultTestPath))
+                    throw new FileNotFoundException("默认 TestConfig.xml 不存在。", defaultTestPath);
+
+                // 第一次创建某个项目的配置：直接以默认配置为模板拷贝过去
+                File.Copy(defaultTestPath, projectTestPath, overwrite: false);
+            }
+        }
+
+        /// <summary>
+        /// 针对当前 _cfg.Test，将 1..12 通道的“运行进度”清零，只保留 TotalCount（目标次数）。<br/>
+        /// 用于：用户修改了 TestName / StoreDir，等于创建一个全新的项目时。
+        /// </summary>
+        private void ResetEpbRecordsRuntimeStateKeepTotalCount()
+        {
+            if (_cfg?.Test == null)
+                return;
+
+            // 确保 1..12 都有记录
+            _cfg.Test.EnsureEpbRecords(12);
+
+            foreach (var rec in _cfg.Test.EpbRecords)
+            {
+                var total = rec.TotalCount; // 先记住目标次数
+
+                // 清零运行状态
+                rec.RunCount = 0;
+                rec.Status = EpbTestStatus.NotStarted;
+                rec.StartTime = null;
+                rec.LatestStartTime = null;
+                rec.RunTime = "0";
+
+                // 再把目标次数写回去
+                rec.TotalCount = Math.Max(0, total);
+            }
+        }
+
+
 
 
         // 统一保存逻辑
@@ -1235,5 +1562,97 @@ namespace MtEmbTest
             //  dgvEpbRunnerCfgControl.CurrentCell = null;
             //  dgvEpbRunnerCfgControl.SelectedIndex = -1;
         }
+
+        /// <summary>
+        /// “重置所有EPB进度”按钮点击事件：
+        /// <list type="number">
+        ///     <item>1. 先把界面上的设置写回到 <see cref="_cfg.Test"/>；</item>
+        ///     <item>2. 将 1..12 通道的 EPB 记录运行进度全部清零，保留目标次数 TotalCount；</item>
+        ///     <item>3. 把重置后的配置保存到软件默认的 Config\TestConfig.xml；</item>
+        ///     <item>4. 额外删除当前“项目目录”下的 index.db 文件（StoreDir\TestName\index.db），
+        ///         避免索引数据库里仍保留旧的累计次数。</item>
+        /// </summary>
+        private void uiButtonResetEpbRecord_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                if (_cfg?.Test == null)
+                {
+                    MessageBox.Show(@"当前试验配置为空，无法重置 EPB 进度！",
+                        @"错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+
+                // ===== 1) 先把界面当前内容写回 _cfg.Test，避免丢失用户刚改的配置 =====
+                // 基础信息：试验名、周期、目标次数、存储路径、负责人、描述等
+                PushBasicInfoToConfig();
+
+                // EPB 目标次数：把表格中的“目标次数”写回到 _cfg.Test.EpbRecords.TotalCount
+                PushEpbTargetCountsToConfig();
+
+                // EPB 循环参数：正向限流、提前断电、保持时间等
+                PushEpbCycleRunnerToConfig();
+
+                // 液压压力设置：EPB1-6 和 7-12 的目标压力
+                PushHydraulicSettingsToConfig();
+
+                // ===== 2) 清零所有 EPB 的运行进度，仅保留 TotalCount =====
+                // 确保 1..12 通道的记录都存在
+                _cfg.Test.EnsureEpbRecords(12);
+
+                foreach (var rec in _cfg.Test.EpbRecords)
+                {
+                    // 该方法会：
+                    //   StartTime / LatestStartTime 置空
+                    //   RunTimeSpan 置零
+                    //   RunCount = 0
+                    //   Status = NotStarted
+                    //   但不会改动 Id / TotalCount
+                    rec.ResetKeepTotalCount();
+                }
+
+                // ===== 3) 保存到“软件默认” Config\TestConfig.xml（模板配置，进度为 0） =====
+                var cfgDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Config");
+                Directory.CreateDirectory(cfgDir);
+                var defaultTestPath = Path.Combine(cfgDir, "TestConfig.xml");
+                ConfigLoader.SaveTest(defaultTestPath, _cfg.Test);
+
+                // ===== 4) 删除当前项目目录下的 index.db（如果存在） =====
+                // 项目根目录约定：StoreDir\TestName
+                var storeDir = (_cfg.Test.StoreDir ?? string.Empty).Trim();
+                var testName = (_cfg.Test.TestName ?? string.Empty).Trim();
+
+                if (!string.IsNullOrEmpty(storeDir) && !string.IsNullOrEmpty(testName))
+                {
+                    var projectRoot = Path.Combine(storeDir, testName);
+                    var indexDbPath = Path.Combine(projectRoot, "index.db");
+
+                    try
+                    {
+                        if (File.Exists(indexDbPath))
+                        {
+                            File.Delete(indexDbPath);
+                        }
+                    }
+                    catch (Exception exDel)
+                    {
+                        // 删除失败不影响整体逻辑，只做提示
+                        MessageBox.Show(
+                            @"已重置 EPB 进度，但删除项目 index.db 失败：\r\n" + exDel.Message,
+                            @"警告", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        return;
+                    }
+                }
+
+                MessageBox.Show(@"已重置所有 EPB 进度，并保存配置 / 清理项目 index.db。",
+                    @"提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(@"重置 EPB 进度失败：" + ex.Message,
+                    @"错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
     }
 }
