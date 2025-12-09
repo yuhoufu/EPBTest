@@ -1018,8 +1018,8 @@ namespace MtEmbTest
             catch (Exception ex)
             {
                 XtraMessageBox.Show(
-                    @"保存试验配置失败：\r\n" + ex.Message,
-                    @"错误",
+                    $"保存试验配置失败：\r\n{ex.Message}",
+                    "错误",
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
