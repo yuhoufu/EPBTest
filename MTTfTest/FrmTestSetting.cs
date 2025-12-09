@@ -10,6 +10,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Data;
+using System.Drawing;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -36,6 +37,7 @@ namespace MtEmbTest
 
         public FrmTestSetting(GlobalConfig cfg)
         {
+            this.Size = new Size(1415, 780); // 设置窗体大小，适合在客户机子上运行,
             logger = new FormLoggerAdapter(MaxInfos, MaxWarns, MaxErrors,
                 LogInformation, LogWarn, LogError, this);
             // 重新获取cfg
@@ -44,6 +46,36 @@ namespace MtEmbTest
             
             _pressureSettings = new List<PressureSettingControl>(); // 初始化
             InitializeComponent();
+            // // 在Load事件中设置
+            // this.Load += (s, e) => {
+            //     this.Size = new Size(1415, 780);
+            //     //this.CenterToParent();  // 居中到父窗体
+            //     this.StartPosition = FormStartPosition.Manual;
+            //     this.Location = new Point(20, 85);
+            // };
+
+            // 只在非高分屏中设置固定布局
+            this.Load += (s, e) =>
+            {
+                // 检查当前屏幕DPI
+                var screen = Screen.FromControl(this);
+                bool isHighDpi = IsHighDpiScreen(screen);
+
+                if (!isHighDpi)
+                {
+                    this.Size = new Size(1415, 780);
+                    this.StartPosition = FormStartPosition.Manual;
+                    this.Location = new Point(20, 80);
+                }
+            };
+        }
+        private bool IsHighDpiScreen(Screen screen)
+        {
+            // 获取屏幕DPI
+            using (Graphics g = Graphics.FromHwnd(IntPtr.Zero))
+            {
+                return g.DpiX > 96;
+            }
         }
 
         /// <summary>
