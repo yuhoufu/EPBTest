@@ -75,6 +75,7 @@
             this.panelControl1 = new DevExpress.XtraEditors.PanelControl();
             this.panelControl3 = new DevExpress.XtraEditors.PanelControl();
             this.checkEditPressure7To12 = new DevExpress.XtraEditors.CheckEdit();
+            this.uiButtonResetEpbRecord = new Sunny.UI.UIButton();
             this.tabPageDAQAI = new System.Windows.Forms.TabPage();
             this.uiTableLayoutPanel7 = new Sunny.UI.UITableLayoutPanel();
             this.BtnSaveDaqAI = new Sunny.UI.UIButton();
@@ -206,6 +207,7 @@
             this.uiTableLayoutPanel8.Controls.Add(this.uiGroupBox7, 1, 1);
             this.uiTableLayoutPanel8.Controls.Add(this.BtnSaveTest, 3, 4);
             this.uiTableLayoutPanel8.Controls.Add(this.uiGroupBox3, 3, 2);
+            this.uiTableLayoutPanel8.Controls.Add(this.uiButtonResetEpbRecord, 1, 4);
             this.uiTableLayoutPanel8.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiTableLayoutPanel8.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiTableLayoutPanel8.Location = new System.Drawing.Point(0, 0);
@@ -822,6 +824,20 @@
             this.checkEditPressure7To12.Properties.Caption = "7-12";
             this.checkEditPressure7To12.Size = new System.Drawing.Size(370, 21);
             this.checkEditPressure7To12.TabIndex = 1;
+            // 
+            // uiButtonResetEpbRecord
+            // 
+            this.uiButtonResetEpbRecord.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.uiButtonResetEpbRecord.Dock = System.Windows.Forms.DockStyle.Right;
+            this.uiButtonResetEpbRecord.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.uiButtonResetEpbRecord.Location = new System.Drawing.Point(292, 887);
+            this.uiButtonResetEpbRecord.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiButtonResetEpbRecord.Name = "uiButtonResetEpbRecord";
+            this.uiButtonResetEpbRecord.Size = new System.Drawing.Size(318, 49);
+            this.uiButtonResetEpbRecord.TabIndex = 2;
+            this.uiButtonResetEpbRecord.Text = "重置所有EPB进度";
+            this.uiButtonResetEpbRecord.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiButtonResetEpbRecord.Click += new System.EventHandler(this.uiButtonResetEpbRecord_Click);
             // 
             // tabPageDAQAI
             // 
@@ -1887,5 +1903,6 @@
         private DevExpress.XtraEditors.PanelControl panelControl3;
         private DevExpress.XtraEditors.CheckEdit checkEditPressure7To12;
         private Sunny.UI.UICheckBox uiCheckBoxIsSameCycleForAllEpb;
+        private Sunny.UI.UIButton uiButtonResetEpbRecord;
     }
 }
