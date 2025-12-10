@@ -1927,6 +1927,10 @@ namespace MtEmbTest
                     ConfigLoader.SaveTest(projectTestPath, _cfg.Test);
                 }
 
+                // ===== 3.5) 更新界面的EPB状态和进度 =====
+                RefreshEpbProgressViewsFromConfig();
+
+
                 // ===== 4) 同步更新“软件默认 Config\TestConfig.xml”（仅同步 TotalCount，进度清零）=====
                 // 这样默认配置始终是“干净模板”，只记录最后一次项目的目标次数和基本信息。
                 ConfigLoader.UpdateDefaultTestFromProject(_cfg.Test);
