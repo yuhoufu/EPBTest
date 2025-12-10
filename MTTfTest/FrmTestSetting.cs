@@ -35,6 +35,29 @@ namespace MtEmbTest
         private ConcurrentQueue<string> LogError = new();
         private ConcurrentQueue<byte[]> readyReadBuffer;
 
+        /// <summary>
+        /// 设置页中“EPB 状态及进度”区域每个通道对应的一组控件。
+        /// </summary>
+        private sealed class EpbProgressView
+        {
+            /// <summary>EPB 通道号（1..12）。</summary>
+            public int ChannelId { get; set; }
+
+            /// <summary>启用复选框（uiCheckBoxEpbXEnabled）。</summary>
+            public UICheckBox CheckBox { get; set; }
+
+            /// <summary>状态灯（uiLightStatusX）。</summary>
+            public UILight StatusLight { get; set; }
+
+            /// <summary>进度标签（uiLabelProgressX）。</summary>
+            public UILabel ProgressLabel { get; set; }
+        }
+
+        /// <summary>
+        /// 12 路 EPB 在设置页中的控件映射表。
+        /// </summary>
+        private EpbProgressView[] _epbProgressViews;
+
         public FrmTestSetting(GlobalConfig cfg)
         {
             this.Size = new Size(1415, 780); // 设置窗体大小，适合在客户机子上运行,
@@ -105,6 +128,186 @@ namespace MtEmbTest
             // 3) 当前窗体后续一律使用“项目配置”
             _cfg.Test = projectTest;
         }
+
+        #region EPB 状态及进度面板
+
+        /// <summary>
+        /// 初始化 1..12 通道在设置页中的控件映射，
+        /// 并给启用勾选框挂上颜色联动事件。
+        /// </summary>
+        private void InitializeEpbProgressViews()
+        {
+            _epbProgressViews = new[]
+            {
+            new EpbProgressView { ChannelId = 1,  CheckBox = uiCheckBoxEpb1Enabled,  StatusLight = uiLightStatus1,  ProgressLabel = uiLabelProgress1 },
+            new EpbProgressView { ChannelId = 2,  CheckBox = uiCheckBoxEpb2Enabled,  StatusLight = uiLightStatus2,  ProgressLabel = uiLabelProgress2 },
+            new EpbProgressView { ChannelId = 3,  CheckBox = uiCheckBoxEpb3Enabled,  StatusLight = uiLightStatus3,  ProgressLabel = uiLabelProgress3 },
+            new EpbProgressView { ChannelId = 4,  CheckBox = uiCheckBoxEpb4Enabled,  StatusLight = uiLightStatus4,  ProgressLabel = uiLabelProgress4 },
+            new EpbProgressView { ChannelId = 5,  CheckBox = uiCheckBoxEpb5Enabled,  StatusLight = uiLightStatus5,  ProgressLabel = uiLabelProgress5 },
+            new EpbProgressView { ChannelId = 6,  CheckBox = uiCheckBoxEpb6Enabled,  StatusLight = uiLightStatus6,  ProgressLabel = uiLabelProgress6 },
+            new EpbProgressView { ChannelId = 7,  CheckBox = uiCheckBoxEpb7Enabled,  StatusLight = uiLightStatus7,  ProgressLabel = uiLabelProgress7 },
+            new EpbProgressView { ChannelId = 8,  CheckBox = uiCheckBoxEpb8Enabled,  StatusLight = uiLightStatus8,  ProgressLabel = uiLabelProgress8 },
+            new EpbProgressView { ChannelId = 9,  CheckBox = uiCheckBoxEpb9Enabled,  StatusLight = uiLightStatus9,  ProgressLabel = uiLabelProgress9 },
+            new EpbProgressView { ChannelId = 10, CheckBox = uiCheckBoxEpb10Enabled, StatusLight = uiLightStatus10, ProgressLabel = uiLabelProgress10 },
+            new EpbProgressView { ChannelId = 11, CheckBox = uiCheckBoxEpb11Enabled, StatusLight = uiLightStatus11, ProgressLabel = uiLabelProgress11 },
+            new EpbProgressView { ChannelId = 12, CheckBox = uiCheckBoxEpb12Enabled, StatusLight = uiLightStatus12, ProgressLabel = uiLabelProgress12 }
+        };
+
+            // 给所有启用复选框加颜色联动事件
+            foreach (var v in _epbProgressViews)
+            {
+                if (v.CheckBox == null) continue;
+
+                // 先移除一次，防止重复订阅
+                v.CheckBox.CheckedChanged -= UiCheckBoxEpbEnabled_CheckedChanged;
+                v.CheckBox.CheckedChanged += UiCheckBoxEpbEnabled_CheckedChanged;
+            }
+        }
+
+        /// <summary>
+        /// 启用复选框勾选状态改变时：仅负责切换 CheckBox 的颜色，
+        /// （可选）顺便把状态写回 _cfg.Test.EpbRecords。
+        /// </summary>
+        private void UiCheckBoxEpbEnabled_CheckedChanged(object sender, EventArgs e)
+        {
+            if (sender is not UICheckBox cb)
+                return;
+
+            // 1) 更新颜色
+            UpdateEpbEnabledCheckColor(cb);
+
+            // 2) 可选：把启用状态写回配置
+            if (_cfg?.Test == null || _epbProgressViews == null) return;
+
+            var view = _epbProgressViews.FirstOrDefault(v => v.CheckBox == cb);
+            if (view == null) return;
+
+            var rec = _cfg.Test.GetEpbRecord(view.ChannelId);
+            if (rec != null)
+            {
+                rec.Enabled = cb.Checked;
+            }
+        }
+
+        /// <summary>
+        /// 根据勾选状态修改 CheckBox 的颜色：
+        /// 勾选=绿色；未勾选=灰色。
+        /// </summary>
+        private static void UpdateEpbEnabledCheckColor(UICheckBox cb)
+        {
+            if (cb == null) return;
+
+            cb.CheckBoxColor = cb.Checked
+                ? Color.FromArgb(110, 190, 40)   // 绿色（和状态灯保持一致风格）
+                : Color.FromArgb(140, 140, 140); // 灰色
+        }
+
+        /// <summary>
+        /// 使用当前 _cfg.Test.EpbRecords 刷新“EPB 状态及进度”面板。
+        /// </summary>
+        private void RefreshEpbProgressViewsFromConfig()
+        {
+            if (_cfg?.Test == null || _epbProgressViews == null)
+                return;
+
+            // 确保 1..12 记录存在
+            _cfg.Test.EnsureEpbRecords(12);
+
+            foreach (var view in _epbProgressViews)
+            {
+                var rec = _cfg.Test.GetEpbRecord(view.ChannelId);
+                if (rec == null) continue;
+
+                ApplyEpbRecordToProgressView(rec, view);
+            }
+        }
+
+        /// <summary>
+        /// 将单个 EPB 通道的记录应用到设置页的 3 个控件：
+        /// 启用勾选框 / 状态灯 / 进度标签。
+        /// </summary>
+        private void ApplyEpbRecordToProgressView(EpbTestRecord record, EpbProgressView view)
+        {
+            if (record == null || view == null) return;
+
+            // 1) 启用勾选框
+            if (view.CheckBox != null)
+            {
+                // 暂时取消事件，避免赋值时触发回写逻辑
+                view.CheckBox.CheckedChanged -= UiCheckBoxEpbEnabled_CheckedChanged;
+
+                view.CheckBox.Checked = record.Enabled;
+                UpdateEpbEnabledCheckColor(view.CheckBox);
+
+                // 恢复事件
+                view.CheckBox.CheckedChanged += UiCheckBoxEpbEnabled_CheckedChanged;
+            }
+
+            // 2) 进度标签：格式 "已运行/剩余"，例如 "10/90"
+            if (view.ProgressLabel != null)
+            {
+                // 计算总目标次数：
+                // 优先用每通道单独的 TotalCount；
+                // 若为 0 并且启用“所有 EPB 共用 TestTarget”，则回退到 TestTarget。
+                int total = record.TotalCount;
+                if (total <= 0 && _cfg.Test.IsSameCycleForAllEpb)
+                {
+                    total = _cfg.Test.TestTarget;
+                }
+
+                if (total < 0) total = 0;
+                int left = Math.Max(0, total - record.RunCount);
+
+                view.ProgressLabel.Text = $"{record.RunCount}/{left}";
+            }
+
+            // 3) 状态灯：参考 FrmEpbMainMonitor.UpdateEpbSummaryPanel
+            if (view.StatusLight != null)
+            {
+                UpdateEpbStatusLight(view.StatusLight, record.Status);
+            }
+        }
+
+        /// <summary>
+        /// 按 EPB 试验状态更新状态灯外观。
+        /// 逻辑与 FrmEpbMainMonitor.UpdateEpbSummaryPanel 中的 uiLightStatus 保持一致：
+        /// Running  = 绿闪；Alarm = 红闪；Completed = 蓝常亮；其他 = 灰常灭。
+        /// </summary>
+        private static void UpdateEpbStatusLight(UILight light, EpbTestStatus status)
+        {
+            if (light == null) return;
+
+            switch (status)
+            {
+                case EpbTestStatus.Running:
+                    light.OnCenterColor = Color.LimeGreen;
+                    light.OnColor = Color.LimeGreen;
+                    light.State = UILightState.Blink;
+                    break;
+
+                case EpbTestStatus.Alarm:
+                    light.OnCenterColor = Color.Red;
+                    light.OnColor = Color.Red;
+                    light.State = UILightState.Blink;
+                    break;
+
+                case EpbTestStatus.Completed:
+                    light.OnCenterColor = Color.DodgerBlue;
+                    light.OnColor = Color.DodgerBlue;
+                    light.State = UILightState.On;
+                    break;
+
+                default:
+                    light.OnCenterColor = Color.Gray;
+                    light.OnColor = Color.Gray;
+                    light.State = UILightState.Off;
+                    break;
+            }
+        }
+
+        #endregion
+
+
 
 
 
@@ -384,6 +587,12 @@ namespace MtEmbTest
 
                 // 压力设置导入到界面
                 LoadDefaultValues(); // 从cfg配置中导入；
+
+                // —— 初始化并刷新“EPB 状态及进度”面板 —— //
+                InitializeEpbProgressViews();
+                RefreshEpbProgressViewsFromConfig();
+
+
             }
 
             catch (Exception ex)

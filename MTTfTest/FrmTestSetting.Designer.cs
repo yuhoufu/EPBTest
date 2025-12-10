@@ -78,6 +78,61 @@
             this.uiButtonResetEpbRecord = new Sunny.UI.UIButton();
             this.uiGroupBox4 = new Sunny.UI.UIGroupBox();
             this.uiTableLayoutPanel12 = new Sunny.UI.UITableLayoutPanel();
+            this.uiPanel13 = new Sunny.UI.UIPanel();
+            this.uiTableLayoutPanel23 = new Sunny.UI.UITableLayoutPanel();
+            this.uiLabelProgress12 = new Sunny.UI.UILabel();
+            this.uiCheckBoxEpb12Enabled = new Sunny.UI.UICheckBox();
+            this.uiLightStatus12 = new Sunny.UI.UILight();
+            this.uiPanel12 = new Sunny.UI.UIPanel();
+            this.uiTableLayoutPanel22 = new Sunny.UI.UITableLayoutPanel();
+            this.uiLabelProgress11 = new Sunny.UI.UILabel();
+            this.uiCheckBoxEpb11Enabled = new Sunny.UI.UICheckBox();
+            this.uiLightStatus11 = new Sunny.UI.UILight();
+            this.uiPanel11 = new Sunny.UI.UIPanel();
+            this.uiTableLayoutPanel21 = new Sunny.UI.UITableLayoutPanel();
+            this.uiLabelProgress10 = new Sunny.UI.UILabel();
+            this.uiCheckBoxEpb10Enabled = new Sunny.UI.UICheckBox();
+            this.uiLightStatus10 = new Sunny.UI.UILight();
+            this.uiPanel10 = new Sunny.UI.UIPanel();
+            this.uiTableLayoutPanel20 = new Sunny.UI.UITableLayoutPanel();
+            this.uiLabelProgress9 = new Sunny.UI.UILabel();
+            this.uiCheckBoxEpb9Enabled = new Sunny.UI.UICheckBox();
+            this.uiLightStatus9 = new Sunny.UI.UILight();
+            this.uiPanel9 = new Sunny.UI.UIPanel();
+            this.uiTableLayoutPanel19 = new Sunny.UI.UITableLayoutPanel();
+            this.uiLabelProgress8 = new Sunny.UI.UILabel();
+            this.uiCheckBoxEpb8Enabled = new Sunny.UI.UICheckBox();
+            this.uiLightStatus8 = new Sunny.UI.UILight();
+            this.uiPanel8 = new Sunny.UI.UIPanel();
+            this.uiTableLayoutPanel18 = new Sunny.UI.UITableLayoutPanel();
+            this.uiLabelProgress7 = new Sunny.UI.UILabel();
+            this.uiCheckBoxEpb7Enabled = new Sunny.UI.UICheckBox();
+            this.uiLightStatus7 = new Sunny.UI.UILight();
+            this.uiPanel7 = new Sunny.UI.UIPanel();
+            this.uiTableLayoutPanel17 = new Sunny.UI.UITableLayoutPanel();
+            this.uiLabelProgress6 = new Sunny.UI.UILabel();
+            this.uiCheckBoxEpb6Enabled = new Sunny.UI.UICheckBox();
+            this.uiLightStatus6 = new Sunny.UI.UILight();
+            this.uiPanel6 = new Sunny.UI.UIPanel();
+            this.uiTableLayoutPanel16 = new Sunny.UI.UITableLayoutPanel();
+            this.uiLabelProgress5 = new Sunny.UI.UILabel();
+            this.uiCheckBoxEpb5Enabled = new Sunny.UI.UICheckBox();
+            this.uiLightStatus5 = new Sunny.UI.UILight();
+            this.uiPanel5 = new Sunny.UI.UIPanel();
+            this.uiTableLayoutPanel15 = new Sunny.UI.UITableLayoutPanel();
+            this.uiLabelProgress4 = new Sunny.UI.UILabel();
+            this.uiCheckBoxEpb4Enabled = new Sunny.UI.UICheckBox();
+            this.uiLightStatus4 = new Sunny.UI.UILight();
+            this.uiPanel4 = new Sunny.UI.UIPanel();
+            this.uiTableLayoutPanel14 = new Sunny.UI.UITableLayoutPanel();
+            this.uiLabelProgress3 = new Sunny.UI.UILabel();
+            this.uiCheckBoxEpb3Enabled = new Sunny.UI.UICheckBox();
+            this.uiLightStatus3 = new Sunny.UI.UILight();
+            this.uiPanel2 = new Sunny.UI.UIPanel();
+            this.uiTableLayoutPanel6 = new Sunny.UI.UITableLayoutPanel();
+            this.uiLabelProgress2 = new Sunny.UI.UILabel();
+            this.uiCheckBoxEpb2Enabled = new Sunny.UI.UICheckBox();
+            this.uiLightStatus2 = new Sunny.UI.UILight();
             this.uiPanel3 = new Sunny.UI.UIPanel();
             this.uiTableLayoutPanel13 = new Sunny.UI.UITableLayoutPanel();
             this.uiLabelProgress1 = new Sunny.UI.UILabel();
@@ -136,61 +191,6 @@
             this.uiLabel11 = new Sunny.UI.UILabel();
             this.uiLabel12 = new Sunny.UI.UILabel();
             this.BtnSaveCommand = new Sunny.UI.UIButton();
-            this.uiPanel2 = new Sunny.UI.UIPanel();
-            this.uiTableLayoutPanel6 = new Sunny.UI.UITableLayoutPanel();
-            this.uiLabelProgress2 = new Sunny.UI.UILabel();
-            this.uiCheckBoxEpb2Enabled = new Sunny.UI.UICheckBox();
-            this.uiLightStatus2 = new Sunny.UI.UILight();
-            this.uiPanel4 = new Sunny.UI.UIPanel();
-            this.uiTableLayoutPanel14 = new Sunny.UI.UITableLayoutPanel();
-            this.uiLabelProgress3 = new Sunny.UI.UILabel();
-            this.uiCheckBoxEpb3Enabled = new Sunny.UI.UICheckBox();
-            this.uiLightStatus3 = new Sunny.UI.UILight();
-            this.uiPanel5 = new Sunny.UI.UIPanel();
-            this.uiTableLayoutPanel15 = new Sunny.UI.UITableLayoutPanel();
-            this.uiLabelProgress4 = new Sunny.UI.UILabel();
-            this.uiCheckBoxEpb4Enabled = new Sunny.UI.UICheckBox();
-            this.uiLightStatus4 = new Sunny.UI.UILight();
-            this.uiPanel6 = new Sunny.UI.UIPanel();
-            this.uiTableLayoutPanel16 = new Sunny.UI.UITableLayoutPanel();
-            this.uiLabelProgress5 = new Sunny.UI.UILabel();
-            this.uiCheckBoxEpb5Enabled = new Sunny.UI.UICheckBox();
-            this.uiLightStatus5 = new Sunny.UI.UILight();
-            this.uiPanel7 = new Sunny.UI.UIPanel();
-            this.uiTableLayoutPanel17 = new Sunny.UI.UITableLayoutPanel();
-            this.uiLabelProgress6 = new Sunny.UI.UILabel();
-            this.uiCheckBoxEpb6Enabled = new Sunny.UI.UICheckBox();
-            this.uiLightStatus6 = new Sunny.UI.UILight();
-            this.uiPanel8 = new Sunny.UI.UIPanel();
-            this.uiTableLayoutPanel18 = new Sunny.UI.UITableLayoutPanel();
-            this.uiLabelProgress7 = new Sunny.UI.UILabel();
-            this.uiCheckBoxEpb7Enabled = new Sunny.UI.UICheckBox();
-            this.uiLightStatus7 = new Sunny.UI.UILight();
-            this.uiPanel9 = new Sunny.UI.UIPanel();
-            this.uiTableLayoutPanel19 = new Sunny.UI.UITableLayoutPanel();
-            this.uiLabelProgress8 = new Sunny.UI.UILabel();
-            this.uiCheckBoxEpb8Enabled = new Sunny.UI.UICheckBox();
-            this.uiLightStatus8 = new Sunny.UI.UILight();
-            this.uiPanel10 = new Sunny.UI.UIPanel();
-            this.uiTableLayoutPanel20 = new Sunny.UI.UITableLayoutPanel();
-            this.uiLabelProgress9 = new Sunny.UI.UILabel();
-            this.uiCheckBoxEpb9Enabled = new Sunny.UI.UICheckBox();
-            this.uiLightStatus9 = new Sunny.UI.UILight();
-            this.uiPanel11 = new Sunny.UI.UIPanel();
-            this.uiTableLayoutPanel21 = new Sunny.UI.UITableLayoutPanel();
-            this.uiLabelProgress10 = new Sunny.UI.UILabel();
-            this.uiCheckBoxEpb10Enabled = new Sunny.UI.UICheckBox();
-            this.uiLightStatus10 = new Sunny.UI.UILight();
-            this.uiPanel12 = new Sunny.UI.UIPanel();
-            this.uiTableLayoutPanel22 = new Sunny.UI.UITableLayoutPanel();
-            this.uiLabelProgress11 = new Sunny.UI.UILabel();
-            this.uiCheckBoxEpb11Enabled = new Sunny.UI.UICheckBox();
-            this.uiLightStatus11 = new Sunny.UI.UILight();
-            this.uiPanel13 = new Sunny.UI.UIPanel();
-            this.uiTableLayoutPanel23 = new Sunny.UI.UITableLayoutPanel();
-            this.uiLabelProgress12 = new Sunny.UI.UILabel();
-            this.uiCheckBoxEpb12Enabled = new Sunny.UI.UICheckBox();
-            this.uiLightStatus12 = new Sunny.UI.UILight();
             this.TabSetting.SuspendLayout();
             this.tabPageTestSetting.SuspendLayout();
             this.uiTableLayoutPanel8.SuspendLayout();
@@ -214,6 +214,28 @@
             ((System.ComponentModel.ISupportInitialize)(this.checkEditPressure7To12.Properties)).BeginInit();
             this.uiGroupBox4.SuspendLayout();
             this.uiTableLayoutPanel12.SuspendLayout();
+            this.uiPanel13.SuspendLayout();
+            this.uiTableLayoutPanel23.SuspendLayout();
+            this.uiPanel12.SuspendLayout();
+            this.uiTableLayoutPanel22.SuspendLayout();
+            this.uiPanel11.SuspendLayout();
+            this.uiTableLayoutPanel21.SuspendLayout();
+            this.uiPanel10.SuspendLayout();
+            this.uiTableLayoutPanel20.SuspendLayout();
+            this.uiPanel9.SuspendLayout();
+            this.uiTableLayoutPanel19.SuspendLayout();
+            this.uiPanel8.SuspendLayout();
+            this.uiTableLayoutPanel18.SuspendLayout();
+            this.uiPanel7.SuspendLayout();
+            this.uiTableLayoutPanel17.SuspendLayout();
+            this.uiPanel6.SuspendLayout();
+            this.uiTableLayoutPanel16.SuspendLayout();
+            this.uiPanel5.SuspendLayout();
+            this.uiTableLayoutPanel15.SuspendLayout();
+            this.uiPanel4.SuspendLayout();
+            this.uiTableLayoutPanel14.SuspendLayout();
+            this.uiPanel2.SuspendLayout();
+            this.uiTableLayoutPanel6.SuspendLayout();
             this.uiPanel3.SuspendLayout();
             this.uiTableLayoutPanel13.SuspendLayout();
             this.tabPageDAQAI.SuspendLayout();
@@ -227,28 +249,6 @@
             this.uiTableLayoutPanel3.SuspendLayout();
             this.uiGroupBox1.SuspendLayout();
             this.uiTableLayoutPanel1.SuspendLayout();
-            this.uiPanel2.SuspendLayout();
-            this.uiTableLayoutPanel6.SuspendLayout();
-            this.uiPanel4.SuspendLayout();
-            this.uiTableLayoutPanel14.SuspendLayout();
-            this.uiPanel5.SuspendLayout();
-            this.uiTableLayoutPanel15.SuspendLayout();
-            this.uiPanel6.SuspendLayout();
-            this.uiTableLayoutPanel16.SuspendLayout();
-            this.uiPanel7.SuspendLayout();
-            this.uiTableLayoutPanel17.SuspendLayout();
-            this.uiPanel8.SuspendLayout();
-            this.uiTableLayoutPanel18.SuspendLayout();
-            this.uiPanel9.SuspendLayout();
-            this.uiTableLayoutPanel19.SuspendLayout();
-            this.uiPanel10.SuspendLayout();
-            this.uiTableLayoutPanel20.SuspendLayout();
-            this.uiPanel11.SuspendLayout();
-            this.uiTableLayoutPanel21.SuspendLayout();
-            this.uiPanel12.SuspendLayout();
-            this.uiTableLayoutPanel22.SuspendLayout();
-            this.uiPanel13.SuspendLayout();
-            this.uiTableLayoutPanel23.SuspendLayout();
             this.SuspendLayout();
             // 
             // TabSetting
@@ -962,6 +962,864 @@
             this.uiTableLayoutPanel12.TabIndex = 11;
             this.uiTableLayoutPanel12.TagString = null;
             // 
+            // uiPanel13
+            // 
+            this.uiPanel13.Controls.Add(this.uiTableLayoutPanel23);
+            this.uiPanel13.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiPanel13.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiPanel13.Location = new System.Drawing.Point(496, 326);
+            this.uiPanel13.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.uiPanel13.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiPanel13.Name = "uiPanel13";
+            this.uiPanel13.Size = new System.Drawing.Size(239, 97);
+            this.uiPanel13.TabIndex = 19;
+            this.uiPanel13.Text = null;
+            this.uiPanel13.TextAlignment = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiTableLayoutPanel23
+            // 
+            this.uiTableLayoutPanel23.ColumnCount = 3;
+            this.uiTableLayoutPanel23.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 30F));
+            this.uiTableLayoutPanel23.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 23.75F));
+            this.uiTableLayoutPanel23.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 46.25F));
+            this.uiTableLayoutPanel23.Controls.Add(this.uiLabelProgress12, 2, 0);
+            this.uiTableLayoutPanel23.Controls.Add(this.uiCheckBoxEpb12Enabled, 0, 0);
+            this.uiTableLayoutPanel23.Controls.Add(this.uiLightStatus12, 1, 0);
+            this.uiTableLayoutPanel23.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTableLayoutPanel23.Location = new System.Drawing.Point(0, 0);
+            this.uiTableLayoutPanel23.Name = "uiTableLayoutPanel23";
+            this.uiTableLayoutPanel23.RowCount = 1;
+            this.uiTableLayoutPanel23.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100F));
+            this.uiTableLayoutPanel23.Size = new System.Drawing.Size(239, 97);
+            this.uiTableLayoutPanel23.TabIndex = 0;
+            this.uiTableLayoutPanel23.TagString = null;
+            // 
+            // uiLabelProgress12
+            // 
+            this.uiLabelProgress12.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabelProgress12.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLabelProgress12.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiLabelProgress12.Location = new System.Drawing.Point(130, 0);
+            this.uiLabelProgress12.Name = "uiLabelProgress12";
+            this.uiLabelProgress12.Size = new System.Drawing.Size(106, 97);
+            this.uiLabelProgress12.TabIndex = 4;
+            this.uiLabelProgress12.Text = "100/9999";
+            this.uiLabelProgress12.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiCheckBoxEpb12Enabled
+            // 
+            this.uiCheckBoxEpb12Enabled.CheckBoxColor = System.Drawing.Color.FromArgb(((int)(((byte)(140)))), ((int)(((byte)(140)))), ((int)(((byte)(140)))));
+            this.uiCheckBoxEpb12Enabled.CheckBoxSize = 18;
+            this.uiCheckBoxEpb12Enabled.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.uiCheckBoxEpb12Enabled.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiCheckBoxEpb12Enabled.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiCheckBoxEpb12Enabled.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiCheckBoxEpb12Enabled.Location = new System.Drawing.Point(3, 3);
+            this.uiCheckBoxEpb12Enabled.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiCheckBoxEpb12Enabled.Name = "uiCheckBoxEpb12Enabled";
+            this.uiCheckBoxEpb12Enabled.Radius = 1;
+            this.uiCheckBoxEpb12Enabled.RectSize = 2;
+            this.uiCheckBoxEpb12Enabled.Size = new System.Drawing.Size(65, 91);
+            this.uiCheckBoxEpb12Enabled.Style = Sunny.UI.UIStyle.Custom;
+            this.uiCheckBoxEpb12Enabled.TabIndex = 0;
+            this.uiCheckBoxEpb12Enabled.Text = "12";
+            // 
+            // uiLightStatus12
+            // 
+            this.uiLightStatus12.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.uiLightStatus12.CenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
+            this.uiLightStatus12.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLightStatus12.Location = new System.Drawing.Point(89, 38);
+            this.uiLightStatus12.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiLightStatus12.Name = "uiLightStatus12";
+            this.uiLightStatus12.OffCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(140)))), ((int)(((byte)(140)))), ((int)(((byte)(140)))));
+            this.uiLightStatus12.OnCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
+            this.uiLightStatus12.Radius = 0;
+            this.uiLightStatus12.Shape = Sunny.UI.UIShape.Square;
+            this.uiLightStatus12.Size = new System.Drawing.Size(20, 20);
+            this.uiLightStatus12.TabIndex = 2;
+            this.uiLightStatus12.Text = "uiLight1";
+            // 
+            // uiPanel12
+            // 
+            this.uiPanel12.Controls.Add(this.uiTableLayoutPanel22);
+            this.uiPanel12.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiPanel12.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiPanel12.Location = new System.Drawing.Point(250, 326);
+            this.uiPanel12.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.uiPanel12.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiPanel12.Name = "uiPanel12";
+            this.uiPanel12.Size = new System.Drawing.Size(238, 97);
+            this.uiPanel12.TabIndex = 18;
+            this.uiPanel12.Text = null;
+            this.uiPanel12.TextAlignment = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiTableLayoutPanel22
+            // 
+            this.uiTableLayoutPanel22.ColumnCount = 3;
+            this.uiTableLayoutPanel22.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 30F));
+            this.uiTableLayoutPanel22.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 23.75F));
+            this.uiTableLayoutPanel22.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 46.25F));
+            this.uiTableLayoutPanel22.Controls.Add(this.uiLabelProgress11, 2, 0);
+            this.uiTableLayoutPanel22.Controls.Add(this.uiCheckBoxEpb11Enabled, 0, 0);
+            this.uiTableLayoutPanel22.Controls.Add(this.uiLightStatus11, 1, 0);
+            this.uiTableLayoutPanel22.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTableLayoutPanel22.Location = new System.Drawing.Point(0, 0);
+            this.uiTableLayoutPanel22.Name = "uiTableLayoutPanel22";
+            this.uiTableLayoutPanel22.RowCount = 1;
+            this.uiTableLayoutPanel22.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100F));
+            this.uiTableLayoutPanel22.Size = new System.Drawing.Size(238, 97);
+            this.uiTableLayoutPanel22.TabIndex = 0;
+            this.uiTableLayoutPanel22.TagString = null;
+            // 
+            // uiLabelProgress11
+            // 
+            this.uiLabelProgress11.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabelProgress11.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLabelProgress11.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiLabelProgress11.Location = new System.Drawing.Point(130, 0);
+            this.uiLabelProgress11.Name = "uiLabelProgress11";
+            this.uiLabelProgress11.Size = new System.Drawing.Size(105, 97);
+            this.uiLabelProgress11.TabIndex = 4;
+            this.uiLabelProgress11.Text = "100/9999";
+            this.uiLabelProgress11.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiCheckBoxEpb11Enabled
+            // 
+            this.uiCheckBoxEpb11Enabled.CheckBoxColor = System.Drawing.Color.FromArgb(((int)(((byte)(140)))), ((int)(((byte)(140)))), ((int)(((byte)(140)))));
+            this.uiCheckBoxEpb11Enabled.CheckBoxSize = 18;
+            this.uiCheckBoxEpb11Enabled.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.uiCheckBoxEpb11Enabled.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiCheckBoxEpb11Enabled.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiCheckBoxEpb11Enabled.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiCheckBoxEpb11Enabled.Location = new System.Drawing.Point(3, 3);
+            this.uiCheckBoxEpb11Enabled.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiCheckBoxEpb11Enabled.Name = "uiCheckBoxEpb11Enabled";
+            this.uiCheckBoxEpb11Enabled.Radius = 1;
+            this.uiCheckBoxEpb11Enabled.RectSize = 2;
+            this.uiCheckBoxEpb11Enabled.Size = new System.Drawing.Size(65, 91);
+            this.uiCheckBoxEpb11Enabled.Style = Sunny.UI.UIStyle.Custom;
+            this.uiCheckBoxEpb11Enabled.TabIndex = 0;
+            this.uiCheckBoxEpb11Enabled.Text = "11";
+            // 
+            // uiLightStatus11
+            // 
+            this.uiLightStatus11.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.uiLightStatus11.CenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
+            this.uiLightStatus11.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLightStatus11.Location = new System.Drawing.Point(89, 38);
+            this.uiLightStatus11.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiLightStatus11.Name = "uiLightStatus11";
+            this.uiLightStatus11.OffCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(140)))), ((int)(((byte)(140)))), ((int)(((byte)(140)))));
+            this.uiLightStatus11.OnCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
+            this.uiLightStatus11.Radius = 0;
+            this.uiLightStatus11.Shape = Sunny.UI.UIShape.Square;
+            this.uiLightStatus11.Size = new System.Drawing.Size(20, 20);
+            this.uiLightStatus11.TabIndex = 2;
+            this.uiLightStatus11.Text = "uiLight1";
+            // 
+            // uiPanel11
+            // 
+            this.uiPanel11.Controls.Add(this.uiTableLayoutPanel21);
+            this.uiPanel11.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiPanel11.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiPanel11.Location = new System.Drawing.Point(4, 326);
+            this.uiPanel11.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.uiPanel11.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiPanel11.Name = "uiPanel11";
+            this.uiPanel11.Size = new System.Drawing.Size(238, 97);
+            this.uiPanel11.TabIndex = 17;
+            this.uiPanel11.Text = null;
+            this.uiPanel11.TextAlignment = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiTableLayoutPanel21
+            // 
+            this.uiTableLayoutPanel21.ColumnCount = 3;
+            this.uiTableLayoutPanel21.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 30F));
+            this.uiTableLayoutPanel21.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 23.75F));
+            this.uiTableLayoutPanel21.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 46.25F));
+            this.uiTableLayoutPanel21.Controls.Add(this.uiLabelProgress10, 2, 0);
+            this.uiTableLayoutPanel21.Controls.Add(this.uiCheckBoxEpb10Enabled, 0, 0);
+            this.uiTableLayoutPanel21.Controls.Add(this.uiLightStatus10, 1, 0);
+            this.uiTableLayoutPanel21.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTableLayoutPanel21.Location = new System.Drawing.Point(0, 0);
+            this.uiTableLayoutPanel21.Name = "uiTableLayoutPanel21";
+            this.uiTableLayoutPanel21.RowCount = 1;
+            this.uiTableLayoutPanel21.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100F));
+            this.uiTableLayoutPanel21.Size = new System.Drawing.Size(238, 97);
+            this.uiTableLayoutPanel21.TabIndex = 0;
+            this.uiTableLayoutPanel21.TagString = null;
+            // 
+            // uiLabelProgress10
+            // 
+            this.uiLabelProgress10.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabelProgress10.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLabelProgress10.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiLabelProgress10.Location = new System.Drawing.Point(130, 0);
+            this.uiLabelProgress10.Name = "uiLabelProgress10";
+            this.uiLabelProgress10.Size = new System.Drawing.Size(105, 97);
+            this.uiLabelProgress10.TabIndex = 4;
+            this.uiLabelProgress10.Text = "100/9999";
+            this.uiLabelProgress10.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiCheckBoxEpb10Enabled
+            // 
+            this.uiCheckBoxEpb10Enabled.CheckBoxColor = System.Drawing.Color.FromArgb(((int)(((byte)(140)))), ((int)(((byte)(140)))), ((int)(((byte)(140)))));
+            this.uiCheckBoxEpb10Enabled.CheckBoxSize = 18;
+            this.uiCheckBoxEpb10Enabled.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.uiCheckBoxEpb10Enabled.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiCheckBoxEpb10Enabled.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiCheckBoxEpb10Enabled.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiCheckBoxEpb10Enabled.Location = new System.Drawing.Point(3, 3);
+            this.uiCheckBoxEpb10Enabled.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiCheckBoxEpb10Enabled.Name = "uiCheckBoxEpb10Enabled";
+            this.uiCheckBoxEpb10Enabled.Radius = 1;
+            this.uiCheckBoxEpb10Enabled.RectSize = 2;
+            this.uiCheckBoxEpb10Enabled.Size = new System.Drawing.Size(65, 91);
+            this.uiCheckBoxEpb10Enabled.Style = Sunny.UI.UIStyle.Custom;
+            this.uiCheckBoxEpb10Enabled.TabIndex = 0;
+            this.uiCheckBoxEpb10Enabled.Text = "10";
+            // 
+            // uiLightStatus10
+            // 
+            this.uiLightStatus10.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.uiLightStatus10.CenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
+            this.uiLightStatus10.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLightStatus10.Location = new System.Drawing.Point(89, 38);
+            this.uiLightStatus10.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiLightStatus10.Name = "uiLightStatus10";
+            this.uiLightStatus10.OffCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(140)))), ((int)(((byte)(140)))), ((int)(((byte)(140)))));
+            this.uiLightStatus10.OnCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
+            this.uiLightStatus10.Radius = 0;
+            this.uiLightStatus10.Shape = Sunny.UI.UIShape.Square;
+            this.uiLightStatus10.Size = new System.Drawing.Size(20, 20);
+            this.uiLightStatus10.TabIndex = 2;
+            this.uiLightStatus10.Text = "uiLight1";
+            // 
+            // uiPanel10
+            // 
+            this.uiPanel10.Controls.Add(this.uiTableLayoutPanel20);
+            this.uiPanel10.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiPanel10.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiPanel10.Location = new System.Drawing.Point(496, 219);
+            this.uiPanel10.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.uiPanel10.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiPanel10.Name = "uiPanel10";
+            this.uiPanel10.Size = new System.Drawing.Size(239, 97);
+            this.uiPanel10.TabIndex = 16;
+            this.uiPanel10.Text = null;
+            this.uiPanel10.TextAlignment = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiTableLayoutPanel20
+            // 
+            this.uiTableLayoutPanel20.ColumnCount = 3;
+            this.uiTableLayoutPanel20.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 30F));
+            this.uiTableLayoutPanel20.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 23.75F));
+            this.uiTableLayoutPanel20.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 46.25F));
+            this.uiTableLayoutPanel20.Controls.Add(this.uiLabelProgress9, 2, 0);
+            this.uiTableLayoutPanel20.Controls.Add(this.uiCheckBoxEpb9Enabled, 0, 0);
+            this.uiTableLayoutPanel20.Controls.Add(this.uiLightStatus9, 1, 0);
+            this.uiTableLayoutPanel20.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTableLayoutPanel20.Location = new System.Drawing.Point(0, 0);
+            this.uiTableLayoutPanel20.Name = "uiTableLayoutPanel20";
+            this.uiTableLayoutPanel20.RowCount = 1;
+            this.uiTableLayoutPanel20.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100F));
+            this.uiTableLayoutPanel20.Size = new System.Drawing.Size(239, 97);
+            this.uiTableLayoutPanel20.TabIndex = 0;
+            this.uiTableLayoutPanel20.TagString = null;
+            // 
+            // uiLabelProgress9
+            // 
+            this.uiLabelProgress9.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabelProgress9.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLabelProgress9.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiLabelProgress9.Location = new System.Drawing.Point(130, 0);
+            this.uiLabelProgress9.Name = "uiLabelProgress9";
+            this.uiLabelProgress9.Size = new System.Drawing.Size(106, 97);
+            this.uiLabelProgress9.TabIndex = 4;
+            this.uiLabelProgress9.Text = "100/9999";
+            this.uiLabelProgress9.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiCheckBoxEpb9Enabled
+            // 
+            this.uiCheckBoxEpb9Enabled.CheckBoxColor = System.Drawing.Color.FromArgb(((int)(((byte)(140)))), ((int)(((byte)(140)))), ((int)(((byte)(140)))));
+            this.uiCheckBoxEpb9Enabled.CheckBoxSize = 18;
+            this.uiCheckBoxEpb9Enabled.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.uiCheckBoxEpb9Enabled.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiCheckBoxEpb9Enabled.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiCheckBoxEpb9Enabled.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiCheckBoxEpb9Enabled.Location = new System.Drawing.Point(3, 3);
+            this.uiCheckBoxEpb9Enabled.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiCheckBoxEpb9Enabled.Name = "uiCheckBoxEpb9Enabled";
+            this.uiCheckBoxEpb9Enabled.Radius = 1;
+            this.uiCheckBoxEpb9Enabled.RectSize = 2;
+            this.uiCheckBoxEpb9Enabled.Size = new System.Drawing.Size(65, 91);
+            this.uiCheckBoxEpb9Enabled.Style = Sunny.UI.UIStyle.Custom;
+            this.uiCheckBoxEpb9Enabled.TabIndex = 0;
+            this.uiCheckBoxEpb9Enabled.Text = "9";
+            // 
+            // uiLightStatus9
+            // 
+            this.uiLightStatus9.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.uiLightStatus9.CenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
+            this.uiLightStatus9.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLightStatus9.Location = new System.Drawing.Point(89, 38);
+            this.uiLightStatus9.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiLightStatus9.Name = "uiLightStatus9";
+            this.uiLightStatus9.OffCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(140)))), ((int)(((byte)(140)))), ((int)(((byte)(140)))));
+            this.uiLightStatus9.OnCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
+            this.uiLightStatus9.Radius = 0;
+            this.uiLightStatus9.Shape = Sunny.UI.UIShape.Square;
+            this.uiLightStatus9.Size = new System.Drawing.Size(20, 20);
+            this.uiLightStatus9.TabIndex = 2;
+            this.uiLightStatus9.Text = "uiLight1";
+            // 
+            // uiPanel9
+            // 
+            this.uiPanel9.Controls.Add(this.uiTableLayoutPanel19);
+            this.uiPanel9.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiPanel9.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiPanel9.Location = new System.Drawing.Point(250, 219);
+            this.uiPanel9.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.uiPanel9.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiPanel9.Name = "uiPanel9";
+            this.uiPanel9.Size = new System.Drawing.Size(238, 97);
+            this.uiPanel9.TabIndex = 15;
+            this.uiPanel9.Text = null;
+            this.uiPanel9.TextAlignment = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiTableLayoutPanel19
+            // 
+            this.uiTableLayoutPanel19.ColumnCount = 3;
+            this.uiTableLayoutPanel19.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 30F));
+            this.uiTableLayoutPanel19.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 23.75F));
+            this.uiTableLayoutPanel19.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 46.25F));
+            this.uiTableLayoutPanel19.Controls.Add(this.uiLabelProgress8, 2, 0);
+            this.uiTableLayoutPanel19.Controls.Add(this.uiCheckBoxEpb8Enabled, 0, 0);
+            this.uiTableLayoutPanel19.Controls.Add(this.uiLightStatus8, 1, 0);
+            this.uiTableLayoutPanel19.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTableLayoutPanel19.Location = new System.Drawing.Point(0, 0);
+            this.uiTableLayoutPanel19.Name = "uiTableLayoutPanel19";
+            this.uiTableLayoutPanel19.RowCount = 1;
+            this.uiTableLayoutPanel19.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100F));
+            this.uiTableLayoutPanel19.Size = new System.Drawing.Size(238, 97);
+            this.uiTableLayoutPanel19.TabIndex = 0;
+            this.uiTableLayoutPanel19.TagString = null;
+            // 
+            // uiLabelProgress8
+            // 
+            this.uiLabelProgress8.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabelProgress8.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLabelProgress8.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiLabelProgress8.Location = new System.Drawing.Point(130, 0);
+            this.uiLabelProgress8.Name = "uiLabelProgress8";
+            this.uiLabelProgress8.Size = new System.Drawing.Size(105, 97);
+            this.uiLabelProgress8.TabIndex = 4;
+            this.uiLabelProgress8.Text = "100/9999";
+            this.uiLabelProgress8.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiCheckBoxEpb8Enabled
+            // 
+            this.uiCheckBoxEpb8Enabled.CheckBoxColor = System.Drawing.Color.FromArgb(((int)(((byte)(140)))), ((int)(((byte)(140)))), ((int)(((byte)(140)))));
+            this.uiCheckBoxEpb8Enabled.CheckBoxSize = 18;
+            this.uiCheckBoxEpb8Enabled.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.uiCheckBoxEpb8Enabled.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiCheckBoxEpb8Enabled.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiCheckBoxEpb8Enabled.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiCheckBoxEpb8Enabled.Location = new System.Drawing.Point(3, 3);
+            this.uiCheckBoxEpb8Enabled.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiCheckBoxEpb8Enabled.Name = "uiCheckBoxEpb8Enabled";
+            this.uiCheckBoxEpb8Enabled.Radius = 1;
+            this.uiCheckBoxEpb8Enabled.RectSize = 2;
+            this.uiCheckBoxEpb8Enabled.Size = new System.Drawing.Size(65, 91);
+            this.uiCheckBoxEpb8Enabled.Style = Sunny.UI.UIStyle.Custom;
+            this.uiCheckBoxEpb8Enabled.TabIndex = 0;
+            this.uiCheckBoxEpb8Enabled.Text = "8";
+            // 
+            // uiLightStatus8
+            // 
+            this.uiLightStatus8.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.uiLightStatus8.CenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
+            this.uiLightStatus8.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLightStatus8.Location = new System.Drawing.Point(89, 38);
+            this.uiLightStatus8.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiLightStatus8.Name = "uiLightStatus8";
+            this.uiLightStatus8.OffCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(140)))), ((int)(((byte)(140)))), ((int)(((byte)(140)))));
+            this.uiLightStatus8.OnCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
+            this.uiLightStatus8.Radius = 0;
+            this.uiLightStatus8.Shape = Sunny.UI.UIShape.Square;
+            this.uiLightStatus8.Size = new System.Drawing.Size(20, 20);
+            this.uiLightStatus8.TabIndex = 2;
+            this.uiLightStatus8.Text = "uiLight1";
+            // 
+            // uiPanel8
+            // 
+            this.uiPanel8.Controls.Add(this.uiTableLayoutPanel18);
+            this.uiPanel8.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiPanel8.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiPanel8.Location = new System.Drawing.Point(4, 219);
+            this.uiPanel8.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.uiPanel8.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiPanel8.Name = "uiPanel8";
+            this.uiPanel8.Size = new System.Drawing.Size(238, 97);
+            this.uiPanel8.TabIndex = 14;
+            this.uiPanel8.Text = null;
+            this.uiPanel8.TextAlignment = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiTableLayoutPanel18
+            // 
+            this.uiTableLayoutPanel18.ColumnCount = 3;
+            this.uiTableLayoutPanel18.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 30F));
+            this.uiTableLayoutPanel18.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 23.75F));
+            this.uiTableLayoutPanel18.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 46.25F));
+            this.uiTableLayoutPanel18.Controls.Add(this.uiLabelProgress7, 2, 0);
+            this.uiTableLayoutPanel18.Controls.Add(this.uiCheckBoxEpb7Enabled, 0, 0);
+            this.uiTableLayoutPanel18.Controls.Add(this.uiLightStatus7, 1, 0);
+            this.uiTableLayoutPanel18.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTableLayoutPanel18.Location = new System.Drawing.Point(0, 0);
+            this.uiTableLayoutPanel18.Name = "uiTableLayoutPanel18";
+            this.uiTableLayoutPanel18.RowCount = 1;
+            this.uiTableLayoutPanel18.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100F));
+            this.uiTableLayoutPanel18.Size = new System.Drawing.Size(238, 97);
+            this.uiTableLayoutPanel18.TabIndex = 0;
+            this.uiTableLayoutPanel18.TagString = null;
+            // 
+            // uiLabelProgress7
+            // 
+            this.uiLabelProgress7.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabelProgress7.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLabelProgress7.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiLabelProgress7.Location = new System.Drawing.Point(130, 0);
+            this.uiLabelProgress7.Name = "uiLabelProgress7";
+            this.uiLabelProgress7.Size = new System.Drawing.Size(105, 97);
+            this.uiLabelProgress7.TabIndex = 4;
+            this.uiLabelProgress7.Text = "100/9999";
+            this.uiLabelProgress7.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiCheckBoxEpb7Enabled
+            // 
+            this.uiCheckBoxEpb7Enabled.CheckBoxColor = System.Drawing.Color.FromArgb(((int)(((byte)(140)))), ((int)(((byte)(140)))), ((int)(((byte)(140)))));
+            this.uiCheckBoxEpb7Enabled.CheckBoxSize = 18;
+            this.uiCheckBoxEpb7Enabled.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.uiCheckBoxEpb7Enabled.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiCheckBoxEpb7Enabled.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiCheckBoxEpb7Enabled.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiCheckBoxEpb7Enabled.Location = new System.Drawing.Point(3, 3);
+            this.uiCheckBoxEpb7Enabled.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiCheckBoxEpb7Enabled.Name = "uiCheckBoxEpb7Enabled";
+            this.uiCheckBoxEpb7Enabled.Radius = 1;
+            this.uiCheckBoxEpb7Enabled.RectSize = 2;
+            this.uiCheckBoxEpb7Enabled.Size = new System.Drawing.Size(65, 91);
+            this.uiCheckBoxEpb7Enabled.Style = Sunny.UI.UIStyle.Custom;
+            this.uiCheckBoxEpb7Enabled.TabIndex = 0;
+            this.uiCheckBoxEpb7Enabled.Text = "7";
+            // 
+            // uiLightStatus7
+            // 
+            this.uiLightStatus7.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.uiLightStatus7.CenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
+            this.uiLightStatus7.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLightStatus7.Location = new System.Drawing.Point(89, 38);
+            this.uiLightStatus7.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiLightStatus7.Name = "uiLightStatus7";
+            this.uiLightStatus7.OffCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(140)))), ((int)(((byte)(140)))), ((int)(((byte)(140)))));
+            this.uiLightStatus7.OnCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
+            this.uiLightStatus7.Radius = 0;
+            this.uiLightStatus7.Shape = Sunny.UI.UIShape.Square;
+            this.uiLightStatus7.Size = new System.Drawing.Size(20, 20);
+            this.uiLightStatus7.TabIndex = 2;
+            this.uiLightStatus7.Text = "uiLight1";
+            // 
+            // uiPanel7
+            // 
+            this.uiPanel7.Controls.Add(this.uiTableLayoutPanel17);
+            this.uiPanel7.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiPanel7.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiPanel7.Location = new System.Drawing.Point(496, 112);
+            this.uiPanel7.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.uiPanel7.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiPanel7.Name = "uiPanel7";
+            this.uiPanel7.Size = new System.Drawing.Size(239, 97);
+            this.uiPanel7.TabIndex = 13;
+            this.uiPanel7.Text = null;
+            this.uiPanel7.TextAlignment = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiTableLayoutPanel17
+            // 
+            this.uiTableLayoutPanel17.ColumnCount = 3;
+            this.uiTableLayoutPanel17.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 30F));
+            this.uiTableLayoutPanel17.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 23.75F));
+            this.uiTableLayoutPanel17.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 46.25F));
+            this.uiTableLayoutPanel17.Controls.Add(this.uiLabelProgress6, 2, 0);
+            this.uiTableLayoutPanel17.Controls.Add(this.uiCheckBoxEpb6Enabled, 0, 0);
+            this.uiTableLayoutPanel17.Controls.Add(this.uiLightStatus6, 1, 0);
+            this.uiTableLayoutPanel17.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTableLayoutPanel17.Location = new System.Drawing.Point(0, 0);
+            this.uiTableLayoutPanel17.Name = "uiTableLayoutPanel17";
+            this.uiTableLayoutPanel17.RowCount = 1;
+            this.uiTableLayoutPanel17.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100F));
+            this.uiTableLayoutPanel17.Size = new System.Drawing.Size(239, 97);
+            this.uiTableLayoutPanel17.TabIndex = 0;
+            this.uiTableLayoutPanel17.TagString = null;
+            // 
+            // uiLabelProgress6
+            // 
+            this.uiLabelProgress6.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabelProgress6.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLabelProgress6.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiLabelProgress6.Location = new System.Drawing.Point(130, 0);
+            this.uiLabelProgress6.Name = "uiLabelProgress6";
+            this.uiLabelProgress6.Size = new System.Drawing.Size(106, 97);
+            this.uiLabelProgress6.TabIndex = 4;
+            this.uiLabelProgress6.Text = "100/9999";
+            this.uiLabelProgress6.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiCheckBoxEpb6Enabled
+            // 
+            this.uiCheckBoxEpb6Enabled.CheckBoxColor = System.Drawing.Color.FromArgb(((int)(((byte)(140)))), ((int)(((byte)(140)))), ((int)(((byte)(140)))));
+            this.uiCheckBoxEpb6Enabled.CheckBoxSize = 18;
+            this.uiCheckBoxEpb6Enabled.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.uiCheckBoxEpb6Enabled.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiCheckBoxEpb6Enabled.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiCheckBoxEpb6Enabled.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiCheckBoxEpb6Enabled.Location = new System.Drawing.Point(3, 3);
+            this.uiCheckBoxEpb6Enabled.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiCheckBoxEpb6Enabled.Name = "uiCheckBoxEpb6Enabled";
+            this.uiCheckBoxEpb6Enabled.Radius = 1;
+            this.uiCheckBoxEpb6Enabled.RectSize = 2;
+            this.uiCheckBoxEpb6Enabled.Size = new System.Drawing.Size(65, 91);
+            this.uiCheckBoxEpb6Enabled.Style = Sunny.UI.UIStyle.Custom;
+            this.uiCheckBoxEpb6Enabled.TabIndex = 0;
+            this.uiCheckBoxEpb6Enabled.Text = "6";
+            // 
+            // uiLightStatus6
+            // 
+            this.uiLightStatus6.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.uiLightStatus6.CenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
+            this.uiLightStatus6.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLightStatus6.Location = new System.Drawing.Point(89, 38);
+            this.uiLightStatus6.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiLightStatus6.Name = "uiLightStatus6";
+            this.uiLightStatus6.OffCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(140)))), ((int)(((byte)(140)))), ((int)(((byte)(140)))));
+            this.uiLightStatus6.OnCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
+            this.uiLightStatus6.Radius = 0;
+            this.uiLightStatus6.Shape = Sunny.UI.UIShape.Square;
+            this.uiLightStatus6.Size = new System.Drawing.Size(20, 20);
+            this.uiLightStatus6.TabIndex = 2;
+            this.uiLightStatus6.Text = "uiLight1";
+            // 
+            // uiPanel6
+            // 
+            this.uiPanel6.Controls.Add(this.uiTableLayoutPanel16);
+            this.uiPanel6.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiPanel6.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiPanel6.Location = new System.Drawing.Point(250, 112);
+            this.uiPanel6.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.uiPanel6.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiPanel6.Name = "uiPanel6";
+            this.uiPanel6.Size = new System.Drawing.Size(238, 97);
+            this.uiPanel6.TabIndex = 12;
+            this.uiPanel6.Text = null;
+            this.uiPanel6.TextAlignment = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiTableLayoutPanel16
+            // 
+            this.uiTableLayoutPanel16.ColumnCount = 3;
+            this.uiTableLayoutPanel16.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 30F));
+            this.uiTableLayoutPanel16.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 23.75F));
+            this.uiTableLayoutPanel16.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 46.25F));
+            this.uiTableLayoutPanel16.Controls.Add(this.uiLabelProgress5, 2, 0);
+            this.uiTableLayoutPanel16.Controls.Add(this.uiCheckBoxEpb5Enabled, 0, 0);
+            this.uiTableLayoutPanel16.Controls.Add(this.uiLightStatus5, 1, 0);
+            this.uiTableLayoutPanel16.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTableLayoutPanel16.Location = new System.Drawing.Point(0, 0);
+            this.uiTableLayoutPanel16.Name = "uiTableLayoutPanel16";
+            this.uiTableLayoutPanel16.RowCount = 1;
+            this.uiTableLayoutPanel16.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100F));
+            this.uiTableLayoutPanel16.Size = new System.Drawing.Size(238, 97);
+            this.uiTableLayoutPanel16.TabIndex = 0;
+            this.uiTableLayoutPanel16.TagString = null;
+            // 
+            // uiLabelProgress5
+            // 
+            this.uiLabelProgress5.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabelProgress5.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLabelProgress5.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiLabelProgress5.Location = new System.Drawing.Point(130, 0);
+            this.uiLabelProgress5.Name = "uiLabelProgress5";
+            this.uiLabelProgress5.Size = new System.Drawing.Size(105, 97);
+            this.uiLabelProgress5.TabIndex = 4;
+            this.uiLabelProgress5.Text = "100/9999";
+            this.uiLabelProgress5.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiCheckBoxEpb5Enabled
+            // 
+            this.uiCheckBoxEpb5Enabled.CheckBoxColor = System.Drawing.Color.FromArgb(((int)(((byte)(140)))), ((int)(((byte)(140)))), ((int)(((byte)(140)))));
+            this.uiCheckBoxEpb5Enabled.CheckBoxSize = 18;
+            this.uiCheckBoxEpb5Enabled.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.uiCheckBoxEpb5Enabled.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiCheckBoxEpb5Enabled.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiCheckBoxEpb5Enabled.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiCheckBoxEpb5Enabled.Location = new System.Drawing.Point(3, 3);
+            this.uiCheckBoxEpb5Enabled.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiCheckBoxEpb5Enabled.Name = "uiCheckBoxEpb5Enabled";
+            this.uiCheckBoxEpb5Enabled.Radius = 1;
+            this.uiCheckBoxEpb5Enabled.RectSize = 2;
+            this.uiCheckBoxEpb5Enabled.Size = new System.Drawing.Size(65, 91);
+            this.uiCheckBoxEpb5Enabled.Style = Sunny.UI.UIStyle.Custom;
+            this.uiCheckBoxEpb5Enabled.TabIndex = 0;
+            this.uiCheckBoxEpb5Enabled.Text = "5";
+            // 
+            // uiLightStatus5
+            // 
+            this.uiLightStatus5.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.uiLightStatus5.CenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
+            this.uiLightStatus5.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLightStatus5.Location = new System.Drawing.Point(89, 38);
+            this.uiLightStatus5.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiLightStatus5.Name = "uiLightStatus5";
+            this.uiLightStatus5.OffCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(140)))), ((int)(((byte)(140)))), ((int)(((byte)(140)))));
+            this.uiLightStatus5.OnCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
+            this.uiLightStatus5.Radius = 0;
+            this.uiLightStatus5.Shape = Sunny.UI.UIShape.Square;
+            this.uiLightStatus5.Size = new System.Drawing.Size(20, 20);
+            this.uiLightStatus5.TabIndex = 2;
+            this.uiLightStatus5.Text = "uiLight1";
+            // 
+            // uiPanel5
+            // 
+            this.uiPanel5.Controls.Add(this.uiTableLayoutPanel15);
+            this.uiPanel5.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiPanel5.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiPanel5.Location = new System.Drawing.Point(4, 112);
+            this.uiPanel5.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.uiPanel5.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiPanel5.Name = "uiPanel5";
+            this.uiPanel5.Size = new System.Drawing.Size(238, 97);
+            this.uiPanel5.TabIndex = 11;
+            this.uiPanel5.Text = null;
+            this.uiPanel5.TextAlignment = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiTableLayoutPanel15
+            // 
+            this.uiTableLayoutPanel15.ColumnCount = 3;
+            this.uiTableLayoutPanel15.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 30F));
+            this.uiTableLayoutPanel15.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 23.75F));
+            this.uiTableLayoutPanel15.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 46.25F));
+            this.uiTableLayoutPanel15.Controls.Add(this.uiLabelProgress4, 2, 0);
+            this.uiTableLayoutPanel15.Controls.Add(this.uiCheckBoxEpb4Enabled, 0, 0);
+            this.uiTableLayoutPanel15.Controls.Add(this.uiLightStatus4, 1, 0);
+            this.uiTableLayoutPanel15.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTableLayoutPanel15.Location = new System.Drawing.Point(0, 0);
+            this.uiTableLayoutPanel15.Name = "uiTableLayoutPanel15";
+            this.uiTableLayoutPanel15.RowCount = 1;
+            this.uiTableLayoutPanel15.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100F));
+            this.uiTableLayoutPanel15.Size = new System.Drawing.Size(238, 97);
+            this.uiTableLayoutPanel15.TabIndex = 0;
+            this.uiTableLayoutPanel15.TagString = null;
+            // 
+            // uiLabelProgress4
+            // 
+            this.uiLabelProgress4.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabelProgress4.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLabelProgress4.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiLabelProgress4.Location = new System.Drawing.Point(130, 0);
+            this.uiLabelProgress4.Name = "uiLabelProgress4";
+            this.uiLabelProgress4.Size = new System.Drawing.Size(105, 97);
+            this.uiLabelProgress4.TabIndex = 4;
+            this.uiLabelProgress4.Text = "100/9999";
+            this.uiLabelProgress4.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiCheckBoxEpb4Enabled
+            // 
+            this.uiCheckBoxEpb4Enabled.CheckBoxColor = System.Drawing.Color.FromArgb(((int)(((byte)(140)))), ((int)(((byte)(140)))), ((int)(((byte)(140)))));
+            this.uiCheckBoxEpb4Enabled.CheckBoxSize = 18;
+            this.uiCheckBoxEpb4Enabled.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.uiCheckBoxEpb4Enabled.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiCheckBoxEpb4Enabled.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiCheckBoxEpb4Enabled.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiCheckBoxEpb4Enabled.Location = new System.Drawing.Point(3, 3);
+            this.uiCheckBoxEpb4Enabled.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiCheckBoxEpb4Enabled.Name = "uiCheckBoxEpb4Enabled";
+            this.uiCheckBoxEpb4Enabled.Radius = 1;
+            this.uiCheckBoxEpb4Enabled.RectSize = 2;
+            this.uiCheckBoxEpb4Enabled.Size = new System.Drawing.Size(65, 91);
+            this.uiCheckBoxEpb4Enabled.Style = Sunny.UI.UIStyle.Custom;
+            this.uiCheckBoxEpb4Enabled.TabIndex = 0;
+            this.uiCheckBoxEpb4Enabled.Text = "4";
+            // 
+            // uiLightStatus4
+            // 
+            this.uiLightStatus4.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.uiLightStatus4.CenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
+            this.uiLightStatus4.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLightStatus4.Location = new System.Drawing.Point(89, 38);
+            this.uiLightStatus4.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiLightStatus4.Name = "uiLightStatus4";
+            this.uiLightStatus4.OffCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(140)))), ((int)(((byte)(140)))), ((int)(((byte)(140)))));
+            this.uiLightStatus4.OnCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
+            this.uiLightStatus4.Radius = 0;
+            this.uiLightStatus4.Shape = Sunny.UI.UIShape.Square;
+            this.uiLightStatus4.Size = new System.Drawing.Size(20, 20);
+            this.uiLightStatus4.TabIndex = 2;
+            this.uiLightStatus4.Text = "uiLight1";
+            // 
+            // uiPanel4
+            // 
+            this.uiPanel4.Controls.Add(this.uiTableLayoutPanel14);
+            this.uiPanel4.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiPanel4.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiPanel4.Location = new System.Drawing.Point(496, 5);
+            this.uiPanel4.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.uiPanel4.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiPanel4.Name = "uiPanel4";
+            this.uiPanel4.Size = new System.Drawing.Size(239, 97);
+            this.uiPanel4.TabIndex = 10;
+            this.uiPanel4.Text = null;
+            this.uiPanel4.TextAlignment = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiTableLayoutPanel14
+            // 
+            this.uiTableLayoutPanel14.ColumnCount = 3;
+            this.uiTableLayoutPanel14.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 30F));
+            this.uiTableLayoutPanel14.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 23.75F));
+            this.uiTableLayoutPanel14.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 46.25F));
+            this.uiTableLayoutPanel14.Controls.Add(this.uiLabelProgress3, 2, 0);
+            this.uiTableLayoutPanel14.Controls.Add(this.uiCheckBoxEpb3Enabled, 0, 0);
+            this.uiTableLayoutPanel14.Controls.Add(this.uiLightStatus3, 1, 0);
+            this.uiTableLayoutPanel14.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTableLayoutPanel14.Location = new System.Drawing.Point(0, 0);
+            this.uiTableLayoutPanel14.Name = "uiTableLayoutPanel14";
+            this.uiTableLayoutPanel14.RowCount = 1;
+            this.uiTableLayoutPanel14.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100F));
+            this.uiTableLayoutPanel14.Size = new System.Drawing.Size(239, 97);
+            this.uiTableLayoutPanel14.TabIndex = 0;
+            this.uiTableLayoutPanel14.TagString = null;
+            // 
+            // uiLabelProgress3
+            // 
+            this.uiLabelProgress3.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabelProgress3.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLabelProgress3.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiLabelProgress3.Location = new System.Drawing.Point(130, 0);
+            this.uiLabelProgress3.Name = "uiLabelProgress3";
+            this.uiLabelProgress3.Size = new System.Drawing.Size(106, 97);
+            this.uiLabelProgress3.TabIndex = 4;
+            this.uiLabelProgress3.Text = "100/9999";
+            this.uiLabelProgress3.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiCheckBoxEpb3Enabled
+            // 
+            this.uiCheckBoxEpb3Enabled.CheckBoxColor = System.Drawing.Color.FromArgb(((int)(((byte)(140)))), ((int)(((byte)(140)))), ((int)(((byte)(140)))));
+            this.uiCheckBoxEpb3Enabled.CheckBoxSize = 18;
+            this.uiCheckBoxEpb3Enabled.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.uiCheckBoxEpb3Enabled.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiCheckBoxEpb3Enabled.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiCheckBoxEpb3Enabled.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiCheckBoxEpb3Enabled.Location = new System.Drawing.Point(3, 3);
+            this.uiCheckBoxEpb3Enabled.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiCheckBoxEpb3Enabled.Name = "uiCheckBoxEpb3Enabled";
+            this.uiCheckBoxEpb3Enabled.Radius = 1;
+            this.uiCheckBoxEpb3Enabled.RectSize = 2;
+            this.uiCheckBoxEpb3Enabled.Size = new System.Drawing.Size(65, 91);
+            this.uiCheckBoxEpb3Enabled.Style = Sunny.UI.UIStyle.Custom;
+            this.uiCheckBoxEpb3Enabled.TabIndex = 0;
+            this.uiCheckBoxEpb3Enabled.Text = "3";
+            // 
+            // uiLightStatus3
+            // 
+            this.uiLightStatus3.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.uiLightStatus3.CenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
+            this.uiLightStatus3.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLightStatus3.Location = new System.Drawing.Point(89, 38);
+            this.uiLightStatus3.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiLightStatus3.Name = "uiLightStatus3";
+            this.uiLightStatus3.OffCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(140)))), ((int)(((byte)(140)))), ((int)(((byte)(140)))));
+            this.uiLightStatus3.OnCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
+            this.uiLightStatus3.Radius = 0;
+            this.uiLightStatus3.Shape = Sunny.UI.UIShape.Square;
+            this.uiLightStatus3.Size = new System.Drawing.Size(20, 20);
+            this.uiLightStatus3.TabIndex = 2;
+            this.uiLightStatus3.Text = "uiLight1";
+            // 
+            // uiPanel2
+            // 
+            this.uiPanel2.Controls.Add(this.uiTableLayoutPanel6);
+            this.uiPanel2.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiPanel2.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiPanel2.Location = new System.Drawing.Point(250, 5);
+            this.uiPanel2.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.uiPanel2.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiPanel2.Name = "uiPanel2";
+            this.uiPanel2.Size = new System.Drawing.Size(238, 97);
+            this.uiPanel2.TabIndex = 9;
+            this.uiPanel2.Text = null;
+            this.uiPanel2.TextAlignment = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiTableLayoutPanel6
+            // 
+            this.uiTableLayoutPanel6.ColumnCount = 3;
+            this.uiTableLayoutPanel6.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 30F));
+            this.uiTableLayoutPanel6.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 23.75F));
+            this.uiTableLayoutPanel6.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 46.25F));
+            this.uiTableLayoutPanel6.Controls.Add(this.uiLabelProgress2, 2, 0);
+            this.uiTableLayoutPanel6.Controls.Add(this.uiCheckBoxEpb2Enabled, 0, 0);
+            this.uiTableLayoutPanel6.Controls.Add(this.uiLightStatus2, 1, 0);
+            this.uiTableLayoutPanel6.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiTableLayoutPanel6.Location = new System.Drawing.Point(0, 0);
+            this.uiTableLayoutPanel6.Name = "uiTableLayoutPanel6";
+            this.uiTableLayoutPanel6.RowCount = 1;
+            this.uiTableLayoutPanel6.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100F));
+            this.uiTableLayoutPanel6.Size = new System.Drawing.Size(238, 97);
+            this.uiTableLayoutPanel6.TabIndex = 0;
+            this.uiTableLayoutPanel6.TagString = null;
+            // 
+            // uiLabelProgress2
+            // 
+            this.uiLabelProgress2.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiLabelProgress2.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLabelProgress2.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiLabelProgress2.Location = new System.Drawing.Point(130, 0);
+            this.uiLabelProgress2.Name = "uiLabelProgress2";
+            this.uiLabelProgress2.Size = new System.Drawing.Size(105, 97);
+            this.uiLabelProgress2.TabIndex = 4;
+            this.uiLabelProgress2.Text = "100/9999";
+            this.uiLabelProgress2.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            // 
+            // uiCheckBoxEpb2Enabled
+            // 
+            this.uiCheckBoxEpb2Enabled.CheckBoxColor = System.Drawing.Color.FromArgb(((int)(((byte)(140)))), ((int)(((byte)(140)))), ((int)(((byte)(140)))));
+            this.uiCheckBoxEpb2Enabled.CheckBoxSize = 18;
+            this.uiCheckBoxEpb2Enabled.Cursor = System.Windows.Forms.Cursors.Hand;
+            this.uiCheckBoxEpb2Enabled.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.uiCheckBoxEpb2Enabled.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiCheckBoxEpb2Enabled.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            this.uiCheckBoxEpb2Enabled.Location = new System.Drawing.Point(3, 3);
+            this.uiCheckBoxEpb2Enabled.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiCheckBoxEpb2Enabled.Name = "uiCheckBoxEpb2Enabled";
+            this.uiCheckBoxEpb2Enabled.Radius = 1;
+            this.uiCheckBoxEpb2Enabled.RectSize = 2;
+            this.uiCheckBoxEpb2Enabled.Size = new System.Drawing.Size(65, 91);
+            this.uiCheckBoxEpb2Enabled.Style = Sunny.UI.UIStyle.Custom;
+            this.uiCheckBoxEpb2Enabled.TabIndex = 0;
+            this.uiCheckBoxEpb2Enabled.Text = "2";
+            // 
+            // uiLightStatus2
+            // 
+            this.uiLightStatus2.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.uiLightStatus2.CenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
+            this.uiLightStatus2.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.uiLightStatus2.Location = new System.Drawing.Point(89, 38);
+            this.uiLightStatus2.MinimumSize = new System.Drawing.Size(1, 1);
+            this.uiLightStatus2.Name = "uiLightStatus2";
+            this.uiLightStatus2.OffCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(140)))), ((int)(((byte)(140)))), ((int)(((byte)(140)))));
+            this.uiLightStatus2.OnCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
+            this.uiLightStatus2.Radius = 0;
+            this.uiLightStatus2.Shape = Sunny.UI.UIShape.Square;
+            this.uiLightStatus2.Size = new System.Drawing.Size(20, 20);
+            this.uiLightStatus2.TabIndex = 2;
+            this.uiLightStatus2.Text = "uiLight1";
+            // 
             // uiPanel3
             // 
             this.uiPanel3.Controls.Add(this.uiTableLayoutPanel13);
@@ -1032,6 +1890,7 @@
             this.uiLightStatus1.Location = new System.Drawing.Point(89, 38);
             this.uiLightStatus1.MinimumSize = new System.Drawing.Size(1, 1);
             this.uiLightStatus1.Name = "uiLightStatus1";
+            this.uiLightStatus1.OffCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(140)))), ((int)(((byte)(140)))), ((int)(((byte)(140)))));
             this.uiLightStatus1.OnCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
             this.uiLightStatus1.Radius = 0;
             this.uiLightStatus1.Shape = Sunny.UI.UIShape.Square;
@@ -1963,853 +2822,6 @@
             this.BtnSaveCommand.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
             this.BtnSaveCommand.Click += new System.EventHandler(this.BtnSaveCommand_Click);
             // 
-            // uiPanel2
-            // 
-            this.uiPanel2.Controls.Add(this.uiTableLayoutPanel6);
-            this.uiPanel2.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiPanel2.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiPanel2.Location = new System.Drawing.Point(250, 5);
-            this.uiPanel2.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
-            this.uiPanel2.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiPanel2.Name = "uiPanel2";
-            this.uiPanel2.Size = new System.Drawing.Size(238, 97);
-            this.uiPanel2.TabIndex = 9;
-            this.uiPanel2.Text = null;
-            this.uiPanel2.TextAlignment = System.Drawing.ContentAlignment.MiddleCenter;
-            // 
-            // uiTableLayoutPanel6
-            // 
-            this.uiTableLayoutPanel6.ColumnCount = 3;
-            this.uiTableLayoutPanel6.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 30F));
-            this.uiTableLayoutPanel6.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 23.75F));
-            this.uiTableLayoutPanel6.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 46.25F));
-            this.uiTableLayoutPanel6.Controls.Add(this.uiLabelProgress2, 2, 0);
-            this.uiTableLayoutPanel6.Controls.Add(this.uiCheckBoxEpb2Enabled, 0, 0);
-            this.uiTableLayoutPanel6.Controls.Add(this.uiLightStatus2, 1, 0);
-            this.uiTableLayoutPanel6.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel6.Location = new System.Drawing.Point(0, 0);
-            this.uiTableLayoutPanel6.Name = "uiTableLayoutPanel6";
-            this.uiTableLayoutPanel6.RowCount = 1;
-            this.uiTableLayoutPanel6.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100F));
-            this.uiTableLayoutPanel6.Size = new System.Drawing.Size(238, 97);
-            this.uiTableLayoutPanel6.TabIndex = 0;
-            this.uiTableLayoutPanel6.TagString = null;
-            // 
-            // uiLabelProgress2
-            // 
-            this.uiLabelProgress2.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiLabelProgress2.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiLabelProgress2.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabelProgress2.Location = new System.Drawing.Point(130, 0);
-            this.uiLabelProgress2.Name = "uiLabelProgress2";
-            this.uiLabelProgress2.Size = new System.Drawing.Size(105, 97);
-            this.uiLabelProgress2.TabIndex = 4;
-            this.uiLabelProgress2.Text = "100/9999";
-            this.uiLabelProgress2.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
-            // 
-            // uiCheckBoxEpb2Enabled
-            // 
-            this.uiCheckBoxEpb2Enabled.CheckBoxColor = System.Drawing.Color.FromArgb(((int)(((byte)(140)))), ((int)(((byte)(140)))), ((int)(((byte)(140)))));
-            this.uiCheckBoxEpb2Enabled.CheckBoxSize = 18;
-            this.uiCheckBoxEpb2Enabled.Cursor = System.Windows.Forms.Cursors.Hand;
-            this.uiCheckBoxEpb2Enabled.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiCheckBoxEpb2Enabled.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiCheckBoxEpb2Enabled.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiCheckBoxEpb2Enabled.Location = new System.Drawing.Point(3, 3);
-            this.uiCheckBoxEpb2Enabled.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiCheckBoxEpb2Enabled.Name = "uiCheckBoxEpb2Enabled";
-            this.uiCheckBoxEpb2Enabled.Radius = 1;
-            this.uiCheckBoxEpb2Enabled.RectSize = 2;
-            this.uiCheckBoxEpb2Enabled.Size = new System.Drawing.Size(65, 91);
-            this.uiCheckBoxEpb2Enabled.Style = Sunny.UI.UIStyle.Custom;
-            this.uiCheckBoxEpb2Enabled.TabIndex = 0;
-            this.uiCheckBoxEpb2Enabled.Text = "2";
-            // 
-            // uiLightStatus2
-            // 
-            this.uiLightStatus2.Anchor = System.Windows.Forms.AnchorStyles.None;
-            this.uiLightStatus2.CenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
-            this.uiLightStatus2.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiLightStatus2.Location = new System.Drawing.Point(89, 38);
-            this.uiLightStatus2.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiLightStatus2.Name = "uiLightStatus2";
-            this.uiLightStatus2.OnCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
-            this.uiLightStatus2.Radius = 0;
-            this.uiLightStatus2.Shape = Sunny.UI.UIShape.Square;
-            this.uiLightStatus2.Size = new System.Drawing.Size(20, 20);
-            this.uiLightStatus2.TabIndex = 2;
-            this.uiLightStatus2.Text = "uiLight1";
-            // 
-            // uiPanel4
-            // 
-            this.uiPanel4.Controls.Add(this.uiTableLayoutPanel14);
-            this.uiPanel4.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiPanel4.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiPanel4.Location = new System.Drawing.Point(496, 5);
-            this.uiPanel4.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
-            this.uiPanel4.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiPanel4.Name = "uiPanel4";
-            this.uiPanel4.Size = new System.Drawing.Size(239, 97);
-            this.uiPanel4.TabIndex = 10;
-            this.uiPanel4.Text = null;
-            this.uiPanel4.TextAlignment = System.Drawing.ContentAlignment.MiddleCenter;
-            // 
-            // uiTableLayoutPanel14
-            // 
-            this.uiTableLayoutPanel14.ColumnCount = 3;
-            this.uiTableLayoutPanel14.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 30F));
-            this.uiTableLayoutPanel14.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 23.75F));
-            this.uiTableLayoutPanel14.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 46.25F));
-            this.uiTableLayoutPanel14.Controls.Add(this.uiLabelProgress3, 2, 0);
-            this.uiTableLayoutPanel14.Controls.Add(this.uiCheckBoxEpb3Enabled, 0, 0);
-            this.uiTableLayoutPanel14.Controls.Add(this.uiLightStatus3, 1, 0);
-            this.uiTableLayoutPanel14.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel14.Location = new System.Drawing.Point(0, 0);
-            this.uiTableLayoutPanel14.Name = "uiTableLayoutPanel14";
-            this.uiTableLayoutPanel14.RowCount = 1;
-            this.uiTableLayoutPanel14.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100F));
-            this.uiTableLayoutPanel14.Size = new System.Drawing.Size(239, 97);
-            this.uiTableLayoutPanel14.TabIndex = 0;
-            this.uiTableLayoutPanel14.TagString = null;
-            // 
-            // uiLabelProgress3
-            // 
-            this.uiLabelProgress3.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiLabelProgress3.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiLabelProgress3.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabelProgress3.Location = new System.Drawing.Point(130, 0);
-            this.uiLabelProgress3.Name = "uiLabelProgress3";
-            this.uiLabelProgress3.Size = new System.Drawing.Size(106, 97);
-            this.uiLabelProgress3.TabIndex = 4;
-            this.uiLabelProgress3.Text = "100/9999";
-            this.uiLabelProgress3.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
-            // 
-            // uiCheckBoxEpb3Enabled
-            // 
-            this.uiCheckBoxEpb3Enabled.CheckBoxColor = System.Drawing.Color.FromArgb(((int)(((byte)(140)))), ((int)(((byte)(140)))), ((int)(((byte)(140)))));
-            this.uiCheckBoxEpb3Enabled.CheckBoxSize = 18;
-            this.uiCheckBoxEpb3Enabled.Cursor = System.Windows.Forms.Cursors.Hand;
-            this.uiCheckBoxEpb3Enabled.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiCheckBoxEpb3Enabled.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiCheckBoxEpb3Enabled.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiCheckBoxEpb3Enabled.Location = new System.Drawing.Point(3, 3);
-            this.uiCheckBoxEpb3Enabled.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiCheckBoxEpb3Enabled.Name = "uiCheckBoxEpb3Enabled";
-            this.uiCheckBoxEpb3Enabled.Radius = 1;
-            this.uiCheckBoxEpb3Enabled.RectSize = 2;
-            this.uiCheckBoxEpb3Enabled.Size = new System.Drawing.Size(65, 91);
-            this.uiCheckBoxEpb3Enabled.Style = Sunny.UI.UIStyle.Custom;
-            this.uiCheckBoxEpb3Enabled.TabIndex = 0;
-            this.uiCheckBoxEpb3Enabled.Text = "3";
-            // 
-            // uiLightStatus3
-            // 
-            this.uiLightStatus3.Anchor = System.Windows.Forms.AnchorStyles.None;
-            this.uiLightStatus3.CenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
-            this.uiLightStatus3.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiLightStatus3.Location = new System.Drawing.Point(89, 38);
-            this.uiLightStatus3.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiLightStatus3.Name = "uiLightStatus3";
-            this.uiLightStatus3.OnCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
-            this.uiLightStatus3.Radius = 0;
-            this.uiLightStatus3.Shape = Sunny.UI.UIShape.Square;
-            this.uiLightStatus3.Size = new System.Drawing.Size(20, 20);
-            this.uiLightStatus3.TabIndex = 2;
-            this.uiLightStatus3.Text = "uiLight1";
-            // 
-            // uiPanel5
-            // 
-            this.uiPanel5.Controls.Add(this.uiTableLayoutPanel15);
-            this.uiPanel5.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiPanel5.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiPanel5.Location = new System.Drawing.Point(4, 112);
-            this.uiPanel5.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
-            this.uiPanel5.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiPanel5.Name = "uiPanel5";
-            this.uiPanel5.Size = new System.Drawing.Size(238, 97);
-            this.uiPanel5.TabIndex = 11;
-            this.uiPanel5.Text = null;
-            this.uiPanel5.TextAlignment = System.Drawing.ContentAlignment.MiddleCenter;
-            // 
-            // uiTableLayoutPanel15
-            // 
-            this.uiTableLayoutPanel15.ColumnCount = 3;
-            this.uiTableLayoutPanel15.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 30F));
-            this.uiTableLayoutPanel15.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 23.75F));
-            this.uiTableLayoutPanel15.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 46.25F));
-            this.uiTableLayoutPanel15.Controls.Add(this.uiLabelProgress4, 2, 0);
-            this.uiTableLayoutPanel15.Controls.Add(this.uiCheckBoxEpb4Enabled, 0, 0);
-            this.uiTableLayoutPanel15.Controls.Add(this.uiLightStatus4, 1, 0);
-            this.uiTableLayoutPanel15.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel15.Location = new System.Drawing.Point(0, 0);
-            this.uiTableLayoutPanel15.Name = "uiTableLayoutPanel15";
-            this.uiTableLayoutPanel15.RowCount = 1;
-            this.uiTableLayoutPanel15.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100F));
-            this.uiTableLayoutPanel15.Size = new System.Drawing.Size(238, 97);
-            this.uiTableLayoutPanel15.TabIndex = 0;
-            this.uiTableLayoutPanel15.TagString = null;
-            // 
-            // uiLabelProgress4
-            // 
-            this.uiLabelProgress4.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiLabelProgress4.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiLabelProgress4.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabelProgress4.Location = new System.Drawing.Point(130, 0);
-            this.uiLabelProgress4.Name = "uiLabelProgress4";
-            this.uiLabelProgress4.Size = new System.Drawing.Size(105, 97);
-            this.uiLabelProgress4.TabIndex = 4;
-            this.uiLabelProgress4.Text = "100/9999";
-            this.uiLabelProgress4.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
-            // 
-            // uiCheckBoxEpb4Enabled
-            // 
-            this.uiCheckBoxEpb4Enabled.CheckBoxColor = System.Drawing.Color.FromArgb(((int)(((byte)(140)))), ((int)(((byte)(140)))), ((int)(((byte)(140)))));
-            this.uiCheckBoxEpb4Enabled.CheckBoxSize = 18;
-            this.uiCheckBoxEpb4Enabled.Cursor = System.Windows.Forms.Cursors.Hand;
-            this.uiCheckBoxEpb4Enabled.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiCheckBoxEpb4Enabled.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiCheckBoxEpb4Enabled.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiCheckBoxEpb4Enabled.Location = new System.Drawing.Point(3, 3);
-            this.uiCheckBoxEpb4Enabled.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiCheckBoxEpb4Enabled.Name = "uiCheckBoxEpb4Enabled";
-            this.uiCheckBoxEpb4Enabled.Radius = 1;
-            this.uiCheckBoxEpb4Enabled.RectSize = 2;
-            this.uiCheckBoxEpb4Enabled.Size = new System.Drawing.Size(65, 91);
-            this.uiCheckBoxEpb4Enabled.Style = Sunny.UI.UIStyle.Custom;
-            this.uiCheckBoxEpb4Enabled.TabIndex = 0;
-            this.uiCheckBoxEpb4Enabled.Text = "4";
-            // 
-            // uiLightStatus4
-            // 
-            this.uiLightStatus4.Anchor = System.Windows.Forms.AnchorStyles.None;
-            this.uiLightStatus4.CenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
-            this.uiLightStatus4.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiLightStatus4.Location = new System.Drawing.Point(89, 38);
-            this.uiLightStatus4.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiLightStatus4.Name = "uiLightStatus4";
-            this.uiLightStatus4.OnCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
-            this.uiLightStatus4.Radius = 0;
-            this.uiLightStatus4.Shape = Sunny.UI.UIShape.Square;
-            this.uiLightStatus4.Size = new System.Drawing.Size(20, 20);
-            this.uiLightStatus4.TabIndex = 2;
-            this.uiLightStatus4.Text = "uiLight1";
-            // 
-            // uiPanel6
-            // 
-            this.uiPanel6.Controls.Add(this.uiTableLayoutPanel16);
-            this.uiPanel6.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiPanel6.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiPanel6.Location = new System.Drawing.Point(250, 112);
-            this.uiPanel6.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
-            this.uiPanel6.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiPanel6.Name = "uiPanel6";
-            this.uiPanel6.Size = new System.Drawing.Size(238, 97);
-            this.uiPanel6.TabIndex = 12;
-            this.uiPanel6.Text = null;
-            this.uiPanel6.TextAlignment = System.Drawing.ContentAlignment.MiddleCenter;
-            // 
-            // uiTableLayoutPanel16
-            // 
-            this.uiTableLayoutPanel16.ColumnCount = 3;
-            this.uiTableLayoutPanel16.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 30F));
-            this.uiTableLayoutPanel16.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 23.75F));
-            this.uiTableLayoutPanel16.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 46.25F));
-            this.uiTableLayoutPanel16.Controls.Add(this.uiLabelProgress5, 2, 0);
-            this.uiTableLayoutPanel16.Controls.Add(this.uiCheckBoxEpb5Enabled, 0, 0);
-            this.uiTableLayoutPanel16.Controls.Add(this.uiLightStatus5, 1, 0);
-            this.uiTableLayoutPanel16.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel16.Location = new System.Drawing.Point(0, 0);
-            this.uiTableLayoutPanel16.Name = "uiTableLayoutPanel16";
-            this.uiTableLayoutPanel16.RowCount = 1;
-            this.uiTableLayoutPanel16.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100F));
-            this.uiTableLayoutPanel16.Size = new System.Drawing.Size(238, 97);
-            this.uiTableLayoutPanel16.TabIndex = 0;
-            this.uiTableLayoutPanel16.TagString = null;
-            // 
-            // uiLabelProgress5
-            // 
-            this.uiLabelProgress5.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiLabelProgress5.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiLabelProgress5.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabelProgress5.Location = new System.Drawing.Point(130, 0);
-            this.uiLabelProgress5.Name = "uiLabelProgress5";
-            this.uiLabelProgress5.Size = new System.Drawing.Size(105, 97);
-            this.uiLabelProgress5.TabIndex = 4;
-            this.uiLabelProgress5.Text = "100/9999";
-            this.uiLabelProgress5.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
-            // 
-            // uiCheckBoxEpb5Enabled
-            // 
-            this.uiCheckBoxEpb5Enabled.CheckBoxColor = System.Drawing.Color.FromArgb(((int)(((byte)(140)))), ((int)(((byte)(140)))), ((int)(((byte)(140)))));
-            this.uiCheckBoxEpb5Enabled.CheckBoxSize = 18;
-            this.uiCheckBoxEpb5Enabled.Cursor = System.Windows.Forms.Cursors.Hand;
-            this.uiCheckBoxEpb5Enabled.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiCheckBoxEpb5Enabled.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiCheckBoxEpb5Enabled.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiCheckBoxEpb5Enabled.Location = new System.Drawing.Point(3, 3);
-            this.uiCheckBoxEpb5Enabled.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiCheckBoxEpb5Enabled.Name = "uiCheckBoxEpb5Enabled";
-            this.uiCheckBoxEpb5Enabled.Radius = 1;
-            this.uiCheckBoxEpb5Enabled.RectSize = 2;
-            this.uiCheckBoxEpb5Enabled.Size = new System.Drawing.Size(65, 91);
-            this.uiCheckBoxEpb5Enabled.Style = Sunny.UI.UIStyle.Custom;
-            this.uiCheckBoxEpb5Enabled.TabIndex = 0;
-            this.uiCheckBoxEpb5Enabled.Text = "5";
-            // 
-            // uiLightStatus5
-            // 
-            this.uiLightStatus5.Anchor = System.Windows.Forms.AnchorStyles.None;
-            this.uiLightStatus5.CenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
-            this.uiLightStatus5.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiLightStatus5.Location = new System.Drawing.Point(89, 38);
-            this.uiLightStatus5.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiLightStatus5.Name = "uiLightStatus5";
-            this.uiLightStatus5.OnCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
-            this.uiLightStatus5.Radius = 0;
-            this.uiLightStatus5.Shape = Sunny.UI.UIShape.Square;
-            this.uiLightStatus5.Size = new System.Drawing.Size(20, 20);
-            this.uiLightStatus5.TabIndex = 2;
-            this.uiLightStatus5.Text = "uiLight1";
-            // 
-            // uiPanel7
-            // 
-            this.uiPanel7.Controls.Add(this.uiTableLayoutPanel17);
-            this.uiPanel7.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiPanel7.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiPanel7.Location = new System.Drawing.Point(496, 112);
-            this.uiPanel7.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
-            this.uiPanel7.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiPanel7.Name = "uiPanel7";
-            this.uiPanel7.Size = new System.Drawing.Size(239, 97);
-            this.uiPanel7.TabIndex = 13;
-            this.uiPanel7.Text = null;
-            this.uiPanel7.TextAlignment = System.Drawing.ContentAlignment.MiddleCenter;
-            // 
-            // uiTableLayoutPanel17
-            // 
-            this.uiTableLayoutPanel17.ColumnCount = 3;
-            this.uiTableLayoutPanel17.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 30F));
-            this.uiTableLayoutPanel17.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 23.75F));
-            this.uiTableLayoutPanel17.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 46.25F));
-            this.uiTableLayoutPanel17.Controls.Add(this.uiLabelProgress6, 2, 0);
-            this.uiTableLayoutPanel17.Controls.Add(this.uiCheckBoxEpb6Enabled, 0, 0);
-            this.uiTableLayoutPanel17.Controls.Add(this.uiLightStatus6, 1, 0);
-            this.uiTableLayoutPanel17.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel17.Location = new System.Drawing.Point(0, 0);
-            this.uiTableLayoutPanel17.Name = "uiTableLayoutPanel17";
-            this.uiTableLayoutPanel17.RowCount = 1;
-            this.uiTableLayoutPanel17.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100F));
-            this.uiTableLayoutPanel17.Size = new System.Drawing.Size(239, 97);
-            this.uiTableLayoutPanel17.TabIndex = 0;
-            this.uiTableLayoutPanel17.TagString = null;
-            // 
-            // uiLabelProgress6
-            // 
-            this.uiLabelProgress6.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiLabelProgress6.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiLabelProgress6.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabelProgress6.Location = new System.Drawing.Point(130, 0);
-            this.uiLabelProgress6.Name = "uiLabelProgress6";
-            this.uiLabelProgress6.Size = new System.Drawing.Size(106, 97);
-            this.uiLabelProgress6.TabIndex = 4;
-            this.uiLabelProgress6.Text = "100/9999";
-            this.uiLabelProgress6.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
-            // 
-            // uiCheckBoxEpb6Enabled
-            // 
-            this.uiCheckBoxEpb6Enabled.CheckBoxColor = System.Drawing.Color.FromArgb(((int)(((byte)(140)))), ((int)(((byte)(140)))), ((int)(((byte)(140)))));
-            this.uiCheckBoxEpb6Enabled.CheckBoxSize = 18;
-            this.uiCheckBoxEpb6Enabled.Cursor = System.Windows.Forms.Cursors.Hand;
-            this.uiCheckBoxEpb6Enabled.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiCheckBoxEpb6Enabled.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiCheckBoxEpb6Enabled.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiCheckBoxEpb6Enabled.Location = new System.Drawing.Point(3, 3);
-            this.uiCheckBoxEpb6Enabled.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiCheckBoxEpb6Enabled.Name = "uiCheckBoxEpb6Enabled";
-            this.uiCheckBoxEpb6Enabled.Radius = 1;
-            this.uiCheckBoxEpb6Enabled.RectSize = 2;
-            this.uiCheckBoxEpb6Enabled.Size = new System.Drawing.Size(65, 91);
-            this.uiCheckBoxEpb6Enabled.Style = Sunny.UI.UIStyle.Custom;
-            this.uiCheckBoxEpb6Enabled.TabIndex = 0;
-            this.uiCheckBoxEpb6Enabled.Text = "6";
-            // 
-            // uiLightStatus6
-            // 
-            this.uiLightStatus6.Anchor = System.Windows.Forms.AnchorStyles.None;
-            this.uiLightStatus6.CenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
-            this.uiLightStatus6.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiLightStatus6.Location = new System.Drawing.Point(89, 38);
-            this.uiLightStatus6.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiLightStatus6.Name = "uiLightStatus6";
-            this.uiLightStatus6.OnCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
-            this.uiLightStatus6.Radius = 0;
-            this.uiLightStatus6.Shape = Sunny.UI.UIShape.Square;
-            this.uiLightStatus6.Size = new System.Drawing.Size(20, 20);
-            this.uiLightStatus6.TabIndex = 2;
-            this.uiLightStatus6.Text = "uiLight1";
-            // 
-            // uiPanel8
-            // 
-            this.uiPanel8.Controls.Add(this.uiTableLayoutPanel18);
-            this.uiPanel8.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiPanel8.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiPanel8.Location = new System.Drawing.Point(4, 219);
-            this.uiPanel8.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
-            this.uiPanel8.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiPanel8.Name = "uiPanel8";
-            this.uiPanel8.Size = new System.Drawing.Size(238, 97);
-            this.uiPanel8.TabIndex = 14;
-            this.uiPanel8.Text = null;
-            this.uiPanel8.TextAlignment = System.Drawing.ContentAlignment.MiddleCenter;
-            // 
-            // uiTableLayoutPanel18
-            // 
-            this.uiTableLayoutPanel18.ColumnCount = 3;
-            this.uiTableLayoutPanel18.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 30F));
-            this.uiTableLayoutPanel18.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 23.75F));
-            this.uiTableLayoutPanel18.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 46.25F));
-            this.uiTableLayoutPanel18.Controls.Add(this.uiLabelProgress7, 2, 0);
-            this.uiTableLayoutPanel18.Controls.Add(this.uiCheckBoxEpb7Enabled, 0, 0);
-            this.uiTableLayoutPanel18.Controls.Add(this.uiLightStatus7, 1, 0);
-            this.uiTableLayoutPanel18.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel18.Location = new System.Drawing.Point(0, 0);
-            this.uiTableLayoutPanel18.Name = "uiTableLayoutPanel18";
-            this.uiTableLayoutPanel18.RowCount = 1;
-            this.uiTableLayoutPanel18.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100F));
-            this.uiTableLayoutPanel18.Size = new System.Drawing.Size(238, 97);
-            this.uiTableLayoutPanel18.TabIndex = 0;
-            this.uiTableLayoutPanel18.TagString = null;
-            // 
-            // uiLabelProgress7
-            // 
-            this.uiLabelProgress7.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiLabelProgress7.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiLabelProgress7.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabelProgress7.Location = new System.Drawing.Point(130, 0);
-            this.uiLabelProgress7.Name = "uiLabelProgress7";
-            this.uiLabelProgress7.Size = new System.Drawing.Size(105, 97);
-            this.uiLabelProgress7.TabIndex = 4;
-            this.uiLabelProgress7.Text = "100/9999";
-            this.uiLabelProgress7.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
-            // 
-            // uiCheckBoxEpb7Enabled
-            // 
-            this.uiCheckBoxEpb7Enabled.CheckBoxColor = System.Drawing.Color.FromArgb(((int)(((byte)(140)))), ((int)(((byte)(140)))), ((int)(((byte)(140)))));
-            this.uiCheckBoxEpb7Enabled.CheckBoxSize = 18;
-            this.uiCheckBoxEpb7Enabled.Cursor = System.Windows.Forms.Cursors.Hand;
-            this.uiCheckBoxEpb7Enabled.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiCheckBoxEpb7Enabled.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiCheckBoxEpb7Enabled.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiCheckBoxEpb7Enabled.Location = new System.Drawing.Point(3, 3);
-            this.uiCheckBoxEpb7Enabled.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiCheckBoxEpb7Enabled.Name = "uiCheckBoxEpb7Enabled";
-            this.uiCheckBoxEpb7Enabled.Radius = 1;
-            this.uiCheckBoxEpb7Enabled.RectSize = 2;
-            this.uiCheckBoxEpb7Enabled.Size = new System.Drawing.Size(65, 91);
-            this.uiCheckBoxEpb7Enabled.Style = Sunny.UI.UIStyle.Custom;
-            this.uiCheckBoxEpb7Enabled.TabIndex = 0;
-            this.uiCheckBoxEpb7Enabled.Text = "7";
-            // 
-            // uiLightStatus7
-            // 
-            this.uiLightStatus7.Anchor = System.Windows.Forms.AnchorStyles.None;
-            this.uiLightStatus7.CenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
-            this.uiLightStatus7.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiLightStatus7.Location = new System.Drawing.Point(89, 38);
-            this.uiLightStatus7.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiLightStatus7.Name = "uiLightStatus7";
-            this.uiLightStatus7.OnCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
-            this.uiLightStatus7.Radius = 0;
-            this.uiLightStatus7.Shape = Sunny.UI.UIShape.Square;
-            this.uiLightStatus7.Size = new System.Drawing.Size(20, 20);
-            this.uiLightStatus7.TabIndex = 2;
-            this.uiLightStatus7.Text = "uiLight1";
-            // 
-            // uiPanel9
-            // 
-            this.uiPanel9.Controls.Add(this.uiTableLayoutPanel19);
-            this.uiPanel9.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiPanel9.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiPanel9.Location = new System.Drawing.Point(250, 219);
-            this.uiPanel9.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
-            this.uiPanel9.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiPanel9.Name = "uiPanel9";
-            this.uiPanel9.Size = new System.Drawing.Size(238, 97);
-            this.uiPanel9.TabIndex = 15;
-            this.uiPanel9.Text = null;
-            this.uiPanel9.TextAlignment = System.Drawing.ContentAlignment.MiddleCenter;
-            // 
-            // uiTableLayoutPanel19
-            // 
-            this.uiTableLayoutPanel19.ColumnCount = 3;
-            this.uiTableLayoutPanel19.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 30F));
-            this.uiTableLayoutPanel19.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 23.75F));
-            this.uiTableLayoutPanel19.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 46.25F));
-            this.uiTableLayoutPanel19.Controls.Add(this.uiLabelProgress8, 2, 0);
-            this.uiTableLayoutPanel19.Controls.Add(this.uiCheckBoxEpb8Enabled, 0, 0);
-            this.uiTableLayoutPanel19.Controls.Add(this.uiLightStatus8, 1, 0);
-            this.uiTableLayoutPanel19.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel19.Location = new System.Drawing.Point(0, 0);
-            this.uiTableLayoutPanel19.Name = "uiTableLayoutPanel19";
-            this.uiTableLayoutPanel19.RowCount = 1;
-            this.uiTableLayoutPanel19.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100F));
-            this.uiTableLayoutPanel19.Size = new System.Drawing.Size(238, 97);
-            this.uiTableLayoutPanel19.TabIndex = 0;
-            this.uiTableLayoutPanel19.TagString = null;
-            // 
-            // uiLabelProgress8
-            // 
-            this.uiLabelProgress8.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiLabelProgress8.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiLabelProgress8.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabelProgress8.Location = new System.Drawing.Point(130, 0);
-            this.uiLabelProgress8.Name = "uiLabelProgress8";
-            this.uiLabelProgress8.Size = new System.Drawing.Size(105, 97);
-            this.uiLabelProgress8.TabIndex = 4;
-            this.uiLabelProgress8.Text = "100/9999";
-            this.uiLabelProgress8.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
-            // 
-            // uiCheckBoxEpb8Enabled
-            // 
-            this.uiCheckBoxEpb8Enabled.CheckBoxColor = System.Drawing.Color.FromArgb(((int)(((byte)(140)))), ((int)(((byte)(140)))), ((int)(((byte)(140)))));
-            this.uiCheckBoxEpb8Enabled.CheckBoxSize = 18;
-            this.uiCheckBoxEpb8Enabled.Cursor = System.Windows.Forms.Cursors.Hand;
-            this.uiCheckBoxEpb8Enabled.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiCheckBoxEpb8Enabled.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiCheckBoxEpb8Enabled.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiCheckBoxEpb8Enabled.Location = new System.Drawing.Point(3, 3);
-            this.uiCheckBoxEpb8Enabled.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiCheckBoxEpb8Enabled.Name = "uiCheckBoxEpb8Enabled";
-            this.uiCheckBoxEpb8Enabled.Radius = 1;
-            this.uiCheckBoxEpb8Enabled.RectSize = 2;
-            this.uiCheckBoxEpb8Enabled.Size = new System.Drawing.Size(65, 91);
-            this.uiCheckBoxEpb8Enabled.Style = Sunny.UI.UIStyle.Custom;
-            this.uiCheckBoxEpb8Enabled.TabIndex = 0;
-            this.uiCheckBoxEpb8Enabled.Text = "8";
-            // 
-            // uiLightStatus8
-            // 
-            this.uiLightStatus8.Anchor = System.Windows.Forms.AnchorStyles.None;
-            this.uiLightStatus8.CenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
-            this.uiLightStatus8.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiLightStatus8.Location = new System.Drawing.Point(89, 38);
-            this.uiLightStatus8.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiLightStatus8.Name = "uiLightStatus8";
-            this.uiLightStatus8.OnCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
-            this.uiLightStatus8.Radius = 0;
-            this.uiLightStatus8.Shape = Sunny.UI.UIShape.Square;
-            this.uiLightStatus8.Size = new System.Drawing.Size(20, 20);
-            this.uiLightStatus8.TabIndex = 2;
-            this.uiLightStatus8.Text = "uiLight1";
-            // 
-            // uiPanel10
-            // 
-            this.uiPanel10.Controls.Add(this.uiTableLayoutPanel20);
-            this.uiPanel10.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiPanel10.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiPanel10.Location = new System.Drawing.Point(496, 219);
-            this.uiPanel10.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
-            this.uiPanel10.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiPanel10.Name = "uiPanel10";
-            this.uiPanel10.Size = new System.Drawing.Size(239, 97);
-            this.uiPanel10.TabIndex = 16;
-            this.uiPanel10.Text = null;
-            this.uiPanel10.TextAlignment = System.Drawing.ContentAlignment.MiddleCenter;
-            // 
-            // uiTableLayoutPanel20
-            // 
-            this.uiTableLayoutPanel20.ColumnCount = 3;
-            this.uiTableLayoutPanel20.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 30F));
-            this.uiTableLayoutPanel20.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 23.75F));
-            this.uiTableLayoutPanel20.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 46.25F));
-            this.uiTableLayoutPanel20.Controls.Add(this.uiLabelProgress9, 2, 0);
-            this.uiTableLayoutPanel20.Controls.Add(this.uiCheckBoxEpb9Enabled, 0, 0);
-            this.uiTableLayoutPanel20.Controls.Add(this.uiLightStatus9, 1, 0);
-            this.uiTableLayoutPanel20.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel20.Location = new System.Drawing.Point(0, 0);
-            this.uiTableLayoutPanel20.Name = "uiTableLayoutPanel20";
-            this.uiTableLayoutPanel20.RowCount = 1;
-            this.uiTableLayoutPanel20.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100F));
-            this.uiTableLayoutPanel20.Size = new System.Drawing.Size(239, 97);
-            this.uiTableLayoutPanel20.TabIndex = 0;
-            this.uiTableLayoutPanel20.TagString = null;
-            // 
-            // uiLabelProgress9
-            // 
-            this.uiLabelProgress9.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiLabelProgress9.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiLabelProgress9.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabelProgress9.Location = new System.Drawing.Point(130, 0);
-            this.uiLabelProgress9.Name = "uiLabelProgress9";
-            this.uiLabelProgress9.Size = new System.Drawing.Size(106, 97);
-            this.uiLabelProgress9.TabIndex = 4;
-            this.uiLabelProgress9.Text = "100/9999";
-            this.uiLabelProgress9.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
-            // 
-            // uiCheckBoxEpb9Enabled
-            // 
-            this.uiCheckBoxEpb9Enabled.CheckBoxColor = System.Drawing.Color.FromArgb(((int)(((byte)(140)))), ((int)(((byte)(140)))), ((int)(((byte)(140)))));
-            this.uiCheckBoxEpb9Enabled.CheckBoxSize = 18;
-            this.uiCheckBoxEpb9Enabled.Cursor = System.Windows.Forms.Cursors.Hand;
-            this.uiCheckBoxEpb9Enabled.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiCheckBoxEpb9Enabled.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiCheckBoxEpb9Enabled.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiCheckBoxEpb9Enabled.Location = new System.Drawing.Point(3, 3);
-            this.uiCheckBoxEpb9Enabled.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiCheckBoxEpb9Enabled.Name = "uiCheckBoxEpb9Enabled";
-            this.uiCheckBoxEpb9Enabled.Radius = 1;
-            this.uiCheckBoxEpb9Enabled.RectSize = 2;
-            this.uiCheckBoxEpb9Enabled.Size = new System.Drawing.Size(65, 91);
-            this.uiCheckBoxEpb9Enabled.Style = Sunny.UI.UIStyle.Custom;
-            this.uiCheckBoxEpb9Enabled.TabIndex = 0;
-            this.uiCheckBoxEpb9Enabled.Text = "9";
-            // 
-            // uiLightStatus9
-            // 
-            this.uiLightStatus9.Anchor = System.Windows.Forms.AnchorStyles.None;
-            this.uiLightStatus9.CenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
-            this.uiLightStatus9.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiLightStatus9.Location = new System.Drawing.Point(89, 38);
-            this.uiLightStatus9.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiLightStatus9.Name = "uiLightStatus9";
-            this.uiLightStatus9.OnCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
-            this.uiLightStatus9.Radius = 0;
-            this.uiLightStatus9.Shape = Sunny.UI.UIShape.Square;
-            this.uiLightStatus9.Size = new System.Drawing.Size(20, 20);
-            this.uiLightStatus9.TabIndex = 2;
-            this.uiLightStatus9.Text = "uiLight1";
-            // 
-            // uiPanel11
-            // 
-            this.uiPanel11.Controls.Add(this.uiTableLayoutPanel21);
-            this.uiPanel11.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiPanel11.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiPanel11.Location = new System.Drawing.Point(4, 326);
-            this.uiPanel11.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
-            this.uiPanel11.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiPanel11.Name = "uiPanel11";
-            this.uiPanel11.Size = new System.Drawing.Size(238, 97);
-            this.uiPanel11.TabIndex = 17;
-            this.uiPanel11.Text = null;
-            this.uiPanel11.TextAlignment = System.Drawing.ContentAlignment.MiddleCenter;
-            // 
-            // uiTableLayoutPanel21
-            // 
-            this.uiTableLayoutPanel21.ColumnCount = 3;
-            this.uiTableLayoutPanel21.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 30F));
-            this.uiTableLayoutPanel21.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 23.75F));
-            this.uiTableLayoutPanel21.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 46.25F));
-            this.uiTableLayoutPanel21.Controls.Add(this.uiLabelProgress10, 2, 0);
-            this.uiTableLayoutPanel21.Controls.Add(this.uiCheckBoxEpb10Enabled, 0, 0);
-            this.uiTableLayoutPanel21.Controls.Add(this.uiLightStatus10, 1, 0);
-            this.uiTableLayoutPanel21.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel21.Location = new System.Drawing.Point(0, 0);
-            this.uiTableLayoutPanel21.Name = "uiTableLayoutPanel21";
-            this.uiTableLayoutPanel21.RowCount = 1;
-            this.uiTableLayoutPanel21.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100F));
-            this.uiTableLayoutPanel21.Size = new System.Drawing.Size(238, 97);
-            this.uiTableLayoutPanel21.TabIndex = 0;
-            this.uiTableLayoutPanel21.TagString = null;
-            // 
-            // uiLabelProgress10
-            // 
-            this.uiLabelProgress10.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiLabelProgress10.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiLabelProgress10.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabelProgress10.Location = new System.Drawing.Point(130, 0);
-            this.uiLabelProgress10.Name = "uiLabelProgress10";
-            this.uiLabelProgress10.Size = new System.Drawing.Size(105, 97);
-            this.uiLabelProgress10.TabIndex = 4;
-            this.uiLabelProgress10.Text = "100/9999";
-            this.uiLabelProgress10.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
-            // 
-            // uiCheckBoxEpb10Enabled
-            // 
-            this.uiCheckBoxEpb10Enabled.CheckBoxColor = System.Drawing.Color.FromArgb(((int)(((byte)(140)))), ((int)(((byte)(140)))), ((int)(((byte)(140)))));
-            this.uiCheckBoxEpb10Enabled.CheckBoxSize = 18;
-            this.uiCheckBoxEpb10Enabled.Cursor = System.Windows.Forms.Cursors.Hand;
-            this.uiCheckBoxEpb10Enabled.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiCheckBoxEpb10Enabled.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiCheckBoxEpb10Enabled.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiCheckBoxEpb10Enabled.Location = new System.Drawing.Point(3, 3);
-            this.uiCheckBoxEpb10Enabled.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiCheckBoxEpb10Enabled.Name = "uiCheckBoxEpb10Enabled";
-            this.uiCheckBoxEpb10Enabled.Radius = 1;
-            this.uiCheckBoxEpb10Enabled.RectSize = 2;
-            this.uiCheckBoxEpb10Enabled.Size = new System.Drawing.Size(65, 91);
-            this.uiCheckBoxEpb10Enabled.Style = Sunny.UI.UIStyle.Custom;
-            this.uiCheckBoxEpb10Enabled.TabIndex = 0;
-            this.uiCheckBoxEpb10Enabled.Text = "10";
-            // 
-            // uiLightStatus10
-            // 
-            this.uiLightStatus10.Anchor = System.Windows.Forms.AnchorStyles.None;
-            this.uiLightStatus10.CenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
-            this.uiLightStatus10.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiLightStatus10.Location = new System.Drawing.Point(89, 38);
-            this.uiLightStatus10.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiLightStatus10.Name = "uiLightStatus10";
-            this.uiLightStatus10.OnCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
-            this.uiLightStatus10.Radius = 0;
-            this.uiLightStatus10.Shape = Sunny.UI.UIShape.Square;
-            this.uiLightStatus10.Size = new System.Drawing.Size(20, 20);
-            this.uiLightStatus10.TabIndex = 2;
-            this.uiLightStatus10.Text = "uiLight1";
-            // 
-            // uiPanel12
-            // 
-            this.uiPanel12.Controls.Add(this.uiTableLayoutPanel22);
-            this.uiPanel12.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiPanel12.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiPanel12.Location = new System.Drawing.Point(250, 326);
-            this.uiPanel12.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
-            this.uiPanel12.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiPanel12.Name = "uiPanel12";
-            this.uiPanel12.Size = new System.Drawing.Size(238, 97);
-            this.uiPanel12.TabIndex = 18;
-            this.uiPanel12.Text = null;
-            this.uiPanel12.TextAlignment = System.Drawing.ContentAlignment.MiddleCenter;
-            // 
-            // uiTableLayoutPanel22
-            // 
-            this.uiTableLayoutPanel22.ColumnCount = 3;
-            this.uiTableLayoutPanel22.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 30F));
-            this.uiTableLayoutPanel22.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 23.75F));
-            this.uiTableLayoutPanel22.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 46.25F));
-            this.uiTableLayoutPanel22.Controls.Add(this.uiLabelProgress11, 2, 0);
-            this.uiTableLayoutPanel22.Controls.Add(this.uiCheckBoxEpb11Enabled, 0, 0);
-            this.uiTableLayoutPanel22.Controls.Add(this.uiLightStatus11, 1, 0);
-            this.uiTableLayoutPanel22.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel22.Location = new System.Drawing.Point(0, 0);
-            this.uiTableLayoutPanel22.Name = "uiTableLayoutPanel22";
-            this.uiTableLayoutPanel22.RowCount = 1;
-            this.uiTableLayoutPanel22.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100F));
-            this.uiTableLayoutPanel22.Size = new System.Drawing.Size(238, 97);
-            this.uiTableLayoutPanel22.TabIndex = 0;
-            this.uiTableLayoutPanel22.TagString = null;
-            // 
-            // uiLabelProgress11
-            // 
-            this.uiLabelProgress11.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiLabelProgress11.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiLabelProgress11.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabelProgress11.Location = new System.Drawing.Point(130, 0);
-            this.uiLabelProgress11.Name = "uiLabelProgress11";
-            this.uiLabelProgress11.Size = new System.Drawing.Size(105, 97);
-            this.uiLabelProgress11.TabIndex = 4;
-            this.uiLabelProgress11.Text = "100/9999";
-            this.uiLabelProgress11.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
-            // 
-            // uiCheckBoxEpb11Enabled
-            // 
-            this.uiCheckBoxEpb11Enabled.CheckBoxColor = System.Drawing.Color.FromArgb(((int)(((byte)(140)))), ((int)(((byte)(140)))), ((int)(((byte)(140)))));
-            this.uiCheckBoxEpb11Enabled.CheckBoxSize = 18;
-            this.uiCheckBoxEpb11Enabled.Cursor = System.Windows.Forms.Cursors.Hand;
-            this.uiCheckBoxEpb11Enabled.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiCheckBoxEpb11Enabled.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiCheckBoxEpb11Enabled.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiCheckBoxEpb11Enabled.Location = new System.Drawing.Point(3, 3);
-            this.uiCheckBoxEpb11Enabled.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiCheckBoxEpb11Enabled.Name = "uiCheckBoxEpb11Enabled";
-            this.uiCheckBoxEpb11Enabled.Radius = 1;
-            this.uiCheckBoxEpb11Enabled.RectSize = 2;
-            this.uiCheckBoxEpb11Enabled.Size = new System.Drawing.Size(65, 91);
-            this.uiCheckBoxEpb11Enabled.Style = Sunny.UI.UIStyle.Custom;
-            this.uiCheckBoxEpb11Enabled.TabIndex = 0;
-            this.uiCheckBoxEpb11Enabled.Text = "11";
-            // 
-            // uiLightStatus11
-            // 
-            this.uiLightStatus11.Anchor = System.Windows.Forms.AnchorStyles.None;
-            this.uiLightStatus11.CenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
-            this.uiLightStatus11.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiLightStatus11.Location = new System.Drawing.Point(89, 38);
-            this.uiLightStatus11.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiLightStatus11.Name = "uiLightStatus11";
-            this.uiLightStatus11.OnCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
-            this.uiLightStatus11.Radius = 0;
-            this.uiLightStatus11.Shape = Sunny.UI.UIShape.Square;
-            this.uiLightStatus11.Size = new System.Drawing.Size(20, 20);
-            this.uiLightStatus11.TabIndex = 2;
-            this.uiLightStatus11.Text = "uiLight1";
-            // 
-            // uiPanel13
-            // 
-            this.uiPanel13.Controls.Add(this.uiTableLayoutPanel23);
-            this.uiPanel13.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiPanel13.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiPanel13.Location = new System.Drawing.Point(496, 326);
-            this.uiPanel13.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
-            this.uiPanel13.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiPanel13.Name = "uiPanel13";
-            this.uiPanel13.Size = new System.Drawing.Size(239, 97);
-            this.uiPanel13.TabIndex = 19;
-            this.uiPanel13.Text = null;
-            this.uiPanel13.TextAlignment = System.Drawing.ContentAlignment.MiddleCenter;
-            // 
-            // uiTableLayoutPanel23
-            // 
-            this.uiTableLayoutPanel23.ColumnCount = 3;
-            this.uiTableLayoutPanel23.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 30F));
-            this.uiTableLayoutPanel23.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 23.75F));
-            this.uiTableLayoutPanel23.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 46.25F));
-            this.uiTableLayoutPanel23.Controls.Add(this.uiLabelProgress12, 2, 0);
-            this.uiTableLayoutPanel23.Controls.Add(this.uiCheckBoxEpb12Enabled, 0, 0);
-            this.uiTableLayoutPanel23.Controls.Add(this.uiLightStatus12, 1, 0);
-            this.uiTableLayoutPanel23.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiTableLayoutPanel23.Location = new System.Drawing.Point(0, 0);
-            this.uiTableLayoutPanel23.Name = "uiTableLayoutPanel23";
-            this.uiTableLayoutPanel23.RowCount = 1;
-            this.uiTableLayoutPanel23.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100F));
-            this.uiTableLayoutPanel23.Size = new System.Drawing.Size(239, 97);
-            this.uiTableLayoutPanel23.TabIndex = 0;
-            this.uiTableLayoutPanel23.TagString = null;
-            // 
-            // uiLabelProgress12
-            // 
-            this.uiLabelProgress12.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiLabelProgress12.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiLabelProgress12.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiLabelProgress12.Location = new System.Drawing.Point(130, 0);
-            this.uiLabelProgress12.Name = "uiLabelProgress12";
-            this.uiLabelProgress12.Size = new System.Drawing.Size(106, 97);
-            this.uiLabelProgress12.TabIndex = 4;
-            this.uiLabelProgress12.Text = "100/9999";
-            this.uiLabelProgress12.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
-            // 
-            // uiCheckBoxEpb12Enabled
-            // 
-            this.uiCheckBoxEpb12Enabled.CheckBoxColor = System.Drawing.Color.FromArgb(((int)(((byte)(140)))), ((int)(((byte)(140)))), ((int)(((byte)(140)))));
-            this.uiCheckBoxEpb12Enabled.CheckBoxSize = 18;
-            this.uiCheckBoxEpb12Enabled.Cursor = System.Windows.Forms.Cursors.Hand;
-            this.uiCheckBoxEpb12Enabled.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.uiCheckBoxEpb12Enabled.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiCheckBoxEpb12Enabled.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            this.uiCheckBoxEpb12Enabled.Location = new System.Drawing.Point(3, 3);
-            this.uiCheckBoxEpb12Enabled.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiCheckBoxEpb12Enabled.Name = "uiCheckBoxEpb12Enabled";
-            this.uiCheckBoxEpb12Enabled.Radius = 1;
-            this.uiCheckBoxEpb12Enabled.RectSize = 2;
-            this.uiCheckBoxEpb12Enabled.Size = new System.Drawing.Size(65, 91);
-            this.uiCheckBoxEpb12Enabled.Style = Sunny.UI.UIStyle.Custom;
-            this.uiCheckBoxEpb12Enabled.TabIndex = 0;
-            this.uiCheckBoxEpb12Enabled.Text = "12";
-            // 
-            // uiLightStatus12
-            // 
-            this.uiLightStatus12.Anchor = System.Windows.Forms.AnchorStyles.None;
-            this.uiLightStatus12.CenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
-            this.uiLightStatus12.Font = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.uiLightStatus12.Location = new System.Drawing.Point(89, 38);
-            this.uiLightStatus12.MinimumSize = new System.Drawing.Size(1, 1);
-            this.uiLightStatus12.Name = "uiLightStatus12";
-            this.uiLightStatus12.OnCenterColor = System.Drawing.Color.FromArgb(((int)(((byte)(110)))), ((int)(((byte)(190)))), ((int)(((byte)(40)))));
-            this.uiLightStatus12.Radius = 0;
-            this.uiLightStatus12.Shape = Sunny.UI.UIShape.Square;
-            this.uiLightStatus12.Size = new System.Drawing.Size(20, 20);
-            this.uiLightStatus12.TabIndex = 2;
-            this.uiLightStatus12.Text = "uiLight1";
-            // 
             // FrmTestSetting
             // 
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.None;
@@ -2843,6 +2855,28 @@
             ((System.ComponentModel.ISupportInitialize)(this.checkEditPressure7To12.Properties)).EndInit();
             this.uiGroupBox4.ResumeLayout(false);
             this.uiTableLayoutPanel12.ResumeLayout(false);
+            this.uiPanel13.ResumeLayout(false);
+            this.uiTableLayoutPanel23.ResumeLayout(false);
+            this.uiPanel12.ResumeLayout(false);
+            this.uiTableLayoutPanel22.ResumeLayout(false);
+            this.uiPanel11.ResumeLayout(false);
+            this.uiTableLayoutPanel21.ResumeLayout(false);
+            this.uiPanel10.ResumeLayout(false);
+            this.uiTableLayoutPanel20.ResumeLayout(false);
+            this.uiPanel9.ResumeLayout(false);
+            this.uiTableLayoutPanel19.ResumeLayout(false);
+            this.uiPanel8.ResumeLayout(false);
+            this.uiTableLayoutPanel18.ResumeLayout(false);
+            this.uiPanel7.ResumeLayout(false);
+            this.uiTableLayoutPanel17.ResumeLayout(false);
+            this.uiPanel6.ResumeLayout(false);
+            this.uiTableLayoutPanel16.ResumeLayout(false);
+            this.uiPanel5.ResumeLayout(false);
+            this.uiTableLayoutPanel15.ResumeLayout(false);
+            this.uiPanel4.ResumeLayout(false);
+            this.uiTableLayoutPanel14.ResumeLayout(false);
+            this.uiPanel2.ResumeLayout(false);
+            this.uiTableLayoutPanel6.ResumeLayout(false);
             this.uiPanel3.ResumeLayout(false);
             this.uiTableLayoutPanel13.ResumeLayout(false);
             this.tabPageDAQAI.ResumeLayout(false);
@@ -2857,28 +2891,6 @@
             this.uiTableLayoutPanel3.ResumeLayout(false);
             this.uiGroupBox1.ResumeLayout(false);
             this.uiTableLayoutPanel1.ResumeLayout(false);
-            this.uiPanel2.ResumeLayout(false);
-            this.uiTableLayoutPanel6.ResumeLayout(false);
-            this.uiPanel4.ResumeLayout(false);
-            this.uiTableLayoutPanel14.ResumeLayout(false);
-            this.uiPanel5.ResumeLayout(false);
-            this.uiTableLayoutPanel15.ResumeLayout(false);
-            this.uiPanel6.ResumeLayout(false);
-            this.uiTableLayoutPanel16.ResumeLayout(false);
-            this.uiPanel7.ResumeLayout(false);
-            this.uiTableLayoutPanel17.ResumeLayout(false);
-            this.uiPanel8.ResumeLayout(false);
-            this.uiTableLayoutPanel18.ResumeLayout(false);
-            this.uiPanel9.ResumeLayout(false);
-            this.uiTableLayoutPanel19.ResumeLayout(false);
-            this.uiPanel10.ResumeLayout(false);
-            this.uiTableLayoutPanel20.ResumeLayout(false);
-            this.uiPanel11.ResumeLayout(false);
-            this.uiTableLayoutPanel21.ResumeLayout(false);
-            this.uiPanel12.ResumeLayout(false);
-            this.uiTableLayoutPanel22.ResumeLayout(false);
-            this.uiPanel13.ResumeLayout(false);
-            this.uiTableLayoutPanel23.ResumeLayout(false);
             this.ResumeLayout(false);
 
         }
