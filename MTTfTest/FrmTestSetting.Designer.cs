@@ -28,16 +28,16 @@
         /// </summary>
         private void InitializeComponent()
         {
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle1 = new System.Windows.Forms.DataGridViewCellStyle();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle2 = new System.Windows.Forms.DataGridViewCellStyle();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle3 = new System.Windows.Forms.DataGridViewCellStyle();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle4 = new System.Windows.Forms.DataGridViewCellStyle();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle5 = new System.Windows.Forms.DataGridViewCellStyle();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle6 = new System.Windows.Forms.DataGridViewCellStyle();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle7 = new System.Windows.Forms.DataGridViewCellStyle();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle8 = new System.Windows.Forms.DataGridViewCellStyle();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle9 = new System.Windows.Forms.DataGridViewCellStyle();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle10 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle21 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle22 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle23 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle24 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle25 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle26 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle27 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle28 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle29 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle30 = new System.Windows.Forms.DataGridViewCellStyle();
             this.TabSetting = new Sunny.UI.UITabControl();
             this.tabPageTestSetting = new System.Windows.Forms.TabPage();
             this.uiTableLayoutPanel8 = new Sunny.UI.UITableLayoutPanel();
@@ -48,7 +48,6 @@
             this.uiTableLayoutPanel11 = new Sunny.UI.UITableLayoutPanel();
             this.TxtTestMan = new Sunny.UI.UITextBox();
             this.TxtTestCycle = new Sunny.UI.UITextBox();
-            this.TxtTestName = new Sunny.UI.UITextBox();
             this.TxtTestTarget = new Sunny.UI.UITextBox();
             this.uiLabel25 = new Sunny.UI.UILabel();
             this.uiLabel27 = new Sunny.UI.UILabel();
@@ -191,6 +190,7 @@
             this.uiLabel11 = new Sunny.UI.UILabel();
             this.uiLabel12 = new Sunny.UI.UILabel();
             this.BtnSaveCommand = new Sunny.UI.UIButton();
+            this.TxtTestName = new Sunny.UI.UIComboBox();
             this.TabSetting.SuspendLayout();
             this.tabPageTestSetting.SuspendLayout();
             this.uiTableLayoutPanel8.SuspendLayout();
@@ -363,47 +363,47 @@
             // 
             this.dgvEpbRunnerCfgControl.AllowUserToAddRows = false;
             this.dgvEpbRunnerCfgControl.AllowUserToDeleteRows = false;
-            dataGridViewCellStyle1.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(235)))), ((int)(((byte)(243)))), ((int)(((byte)(255)))));
-            dataGridViewCellStyle1.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.dgvEpbRunnerCfgControl.AlternatingRowsDefaultCellStyle = dataGridViewCellStyle1;
+            dataGridViewCellStyle21.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(235)))), ((int)(((byte)(243)))), ((int)(((byte)(255)))));
+            dataGridViewCellStyle21.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.dgvEpbRunnerCfgControl.AlternatingRowsDefaultCellStyle = dataGridViewCellStyle21;
             this.dgvEpbRunnerCfgControl.BackgroundColor = System.Drawing.Color.White;
             this.dgvEpbRunnerCfgControl.ColumnHeadersBorderStyle = System.Windows.Forms.DataGridViewHeaderBorderStyle.Single;
-            dataGridViewCellStyle2.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
-            dataGridViewCellStyle2.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            dataGridViewCellStyle2.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            dataGridViewCellStyle2.ForeColor = System.Drawing.Color.White;
-            dataGridViewCellStyle2.SelectionBackColor = System.Drawing.SystemColors.Highlight;
-            dataGridViewCellStyle2.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
-            dataGridViewCellStyle2.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
-            this.dgvEpbRunnerCfgControl.ColumnHeadersDefaultCellStyle = dataGridViewCellStyle2;
+            dataGridViewCellStyle22.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+            dataGridViewCellStyle22.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            dataGridViewCellStyle22.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            dataGridViewCellStyle22.ForeColor = System.Drawing.Color.White;
+            dataGridViewCellStyle22.SelectionBackColor = System.Drawing.SystemColors.Highlight;
+            dataGridViewCellStyle22.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
+            dataGridViewCellStyle22.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
+            this.dgvEpbRunnerCfgControl.ColumnHeadersDefaultCellStyle = dataGridViewCellStyle22;
             this.dgvEpbRunnerCfgControl.ColumnHeadersHeight = 35;
             this.uiTableLayoutPanel10.SetColumnSpan(this.dgvEpbRunnerCfgControl, 3);
-            dataGridViewCellStyle3.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleLeft;
-            dataGridViewCellStyle3.BackColor = System.Drawing.SystemColors.Window;
-            dataGridViewCellStyle3.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            dataGridViewCellStyle3.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            dataGridViewCellStyle3.SelectionBackColor = System.Drawing.SystemColors.Highlight;
-            dataGridViewCellStyle3.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
-            dataGridViewCellStyle3.WrapMode = System.Windows.Forms.DataGridViewTriState.False;
-            this.dgvEpbRunnerCfgControl.DefaultCellStyle = dataGridViewCellStyle3;
+            dataGridViewCellStyle23.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleLeft;
+            dataGridViewCellStyle23.BackColor = System.Drawing.SystemColors.Window;
+            dataGridViewCellStyle23.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            dataGridViewCellStyle23.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            dataGridViewCellStyle23.SelectionBackColor = System.Drawing.SystemColors.Highlight;
+            dataGridViewCellStyle23.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
+            dataGridViewCellStyle23.WrapMode = System.Windows.Forms.DataGridViewTriState.False;
+            this.dgvEpbRunnerCfgControl.DefaultCellStyle = dataGridViewCellStyle23;
             this.dgvEpbRunnerCfgControl.Dock = System.Windows.Forms.DockStyle.Fill;
             this.dgvEpbRunnerCfgControl.EnableHeadersVisualStyles = false;
             this.dgvEpbRunnerCfgControl.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
             this.dgvEpbRunnerCfgControl.GridColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
             this.dgvEpbRunnerCfgControl.Location = new System.Drawing.Point(8, 8);
             this.dgvEpbRunnerCfgControl.Name = "dgvEpbRunnerCfgControl";
-            dataGridViewCellStyle4.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleLeft;
-            dataGridViewCellStyle4.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(235)))), ((int)(((byte)(243)))), ((int)(((byte)(255)))));
-            dataGridViewCellStyle4.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            dataGridViewCellStyle4.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            dataGridViewCellStyle4.SelectionBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            dataGridViewCellStyle4.SelectionForeColor = System.Drawing.Color.White;
-            dataGridViewCellStyle4.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
-            this.dgvEpbRunnerCfgControl.RowHeadersDefaultCellStyle = dataGridViewCellStyle4;
+            dataGridViewCellStyle24.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleLeft;
+            dataGridViewCellStyle24.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(235)))), ((int)(((byte)(243)))), ((int)(((byte)(255)))));
+            dataGridViewCellStyle24.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            dataGridViewCellStyle24.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            dataGridViewCellStyle24.SelectionBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            dataGridViewCellStyle24.SelectionForeColor = System.Drawing.Color.White;
+            dataGridViewCellStyle24.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
+            this.dgvEpbRunnerCfgControl.RowHeadersDefaultCellStyle = dataGridViewCellStyle24;
             this.dgvEpbRunnerCfgControl.RowHeadersWidth = 30;
-            dataGridViewCellStyle5.BackColor = System.Drawing.Color.White;
-            dataGridViewCellStyle5.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.dgvEpbRunnerCfgControl.RowsDefaultCellStyle = dataGridViewCellStyle5;
+            dataGridViewCellStyle25.BackColor = System.Drawing.Color.White;
+            dataGridViewCellStyle25.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.dgvEpbRunnerCfgControl.RowsDefaultCellStyle = dataGridViewCellStyle25;
             this.uiTableLayoutPanel10.SetRowSpan(this.dgvEpbRunnerCfgControl, 8);
             this.dgvEpbRunnerCfgControl.RowTemplate.Height = 35;
             this.dgvEpbRunnerCfgControl.SelectedIndex = -1;
@@ -437,7 +437,6 @@
             this.uiTableLayoutPanel11.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 40F));
             this.uiTableLayoutPanel11.Controls.Add(this.TxtTestMan, 2, 3);
             this.uiTableLayoutPanel11.Controls.Add(this.TxtTestCycle, 2, 1);
-            this.uiTableLayoutPanel11.Controls.Add(this.TxtTestName, 2, 0);
             this.uiTableLayoutPanel11.Controls.Add(this.TxtTestTarget, 2, 2);
             this.uiTableLayoutPanel11.Controls.Add(this.uiLabel25, 1, 0);
             this.uiTableLayoutPanel11.Controls.Add(this.uiLabel27, 1, 1);
@@ -450,6 +449,7 @@
             this.uiTableLayoutPanel11.Controls.Add(this.TxtStoreDir, 2, 4);
             this.uiTableLayoutPanel11.Controls.Add(this.BtnFindDir, 3, 4);
             this.uiTableLayoutPanel11.Controls.Add(this.uiCheckBoxIsSameCycleForAllEpb, 3, 2);
+            this.uiTableLayoutPanel11.Controls.Add(this.TxtTestName, 2, 0);
             this.uiTableLayoutPanel11.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiTableLayoutPanel11.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.uiTableLayoutPanel11.Location = new System.Drawing.Point(0, 32);
@@ -479,59 +479,51 @@
             this.TxtTestMan.ShowText = false;
             this.TxtTestMan.Size = new System.Drawing.Size(301, 67);
             this.TxtTestMan.TabIndex = 3;
-            this.TxtTestMan.Text = "0";
             this.TxtTestMan.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
-            this.TxtTestMan.Watermark = "";
+            this.TxtTestMan.Watermark = "输入负责人";
             // 
             // TxtTestCycle
             // 
             this.TxtTestCycle.Cursor = System.Windows.Forms.Cursors.IBeam;
             this.TxtTestCycle.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.TxtTestCycle.DoubleValue = 5D;
             this.TxtTestCycle.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.TxtTestCycle.IntValue = 5;
             this.TxtTestCycle.Location = new System.Drawing.Point(307, 82);
             this.TxtTestCycle.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.TxtTestCycle.Maximum = 60D;
+            this.TxtTestCycle.Minimum = 5D;
             this.TxtTestCycle.MinimumSize = new System.Drawing.Size(1, 16);
             this.TxtTestCycle.Name = "TxtTestCycle";
             this.TxtTestCycle.Padding = new System.Windows.Forms.Padding(5);
             this.TxtTestCycle.ShowText = false;
             this.TxtTestCycle.Size = new System.Drawing.Size(301, 67);
             this.TxtTestCycle.TabIndex = 4;
-            this.TxtTestCycle.Text = "0";
+            this.TxtTestCycle.Text = "5";
             this.TxtTestCycle.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
-            this.TxtTestCycle.Watermark = "";
-            // 
-            // TxtTestName
-            // 
-            this.TxtTestName.Cursor = System.Windows.Forms.Cursors.IBeam;
-            this.TxtTestName.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.TxtTestName.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.TxtTestName.Location = new System.Drawing.Point(307, 5);
-            this.TxtTestName.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
-            this.TxtTestName.MinimumSize = new System.Drawing.Size(1, 16);
-            this.TxtTestName.Name = "TxtTestName";
-            this.TxtTestName.Padding = new System.Windows.Forms.Padding(5);
-            this.TxtTestName.ShowText = false;
-            this.TxtTestName.Size = new System.Drawing.Size(301, 67);
-            this.TxtTestName.TabIndex = 2;
-            this.TxtTestName.Text = "0";
-            this.TxtTestName.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
-            this.TxtTestName.Watermark = "";
+            this.TxtTestCycle.Type = Sunny.UI.UITextBox.UIEditType.Integer;
+            this.TxtTestCycle.Watermark = "输入周期：5~60s";
             // 
             // TxtTestTarget
             // 
             this.TxtTestTarget.Cursor = System.Windows.Forms.Cursors.IBeam;
             this.TxtTestTarget.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.TxtTestTarget.DoubleValue = 10D;
             this.TxtTestTarget.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.TxtTestTarget.IntValue = 10;
             this.TxtTestTarget.Location = new System.Drawing.Point(307, 159);
             this.TxtTestTarget.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.TxtTestTarget.Minimum = 1D;
             this.TxtTestTarget.MinimumSize = new System.Drawing.Size(1, 16);
             this.TxtTestTarget.Name = "TxtTestTarget";
             this.TxtTestTarget.Padding = new System.Windows.Forms.Padding(5);
             this.TxtTestTarget.ShowText = false;
             this.TxtTestTarget.Size = new System.Drawing.Size(301, 67);
             this.TxtTestTarget.TabIndex = 3;
+            this.TxtTestTarget.Text = "10";
             this.TxtTestTarget.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
-            this.TxtTestTarget.Watermark = "";
+            this.TxtTestTarget.Type = Sunny.UI.UITextBox.UIEditType.Integer;
+            this.TxtTestTarget.Watermark = "请输入目标次数";
             // 
             // uiLabel25
             // 
@@ -649,7 +641,7 @@
             this.TxtStoreDir.TabIndex = 3;
             this.TxtStoreDir.Text = "0";
             this.TxtStoreDir.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
-            this.TxtStoreDir.Watermark = "";
+            this.TxtStoreDir.Watermark = "选择存储路径";
             // 
             // BtnFindDir
             // 
@@ -1996,47 +1988,47 @@
             // 
             // dgvDaqAI
             // 
-            dataGridViewCellStyle6.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(235)))), ((int)(((byte)(243)))), ((int)(((byte)(255)))));
-            dataGridViewCellStyle6.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.dgvDaqAI.AlternatingRowsDefaultCellStyle = dataGridViewCellStyle6;
+            dataGridViewCellStyle26.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(235)))), ((int)(((byte)(243)))), ((int)(((byte)(255)))));
+            dataGridViewCellStyle26.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.dgvDaqAI.AlternatingRowsDefaultCellStyle = dataGridViewCellStyle26;
             this.dgvDaqAI.BackgroundColor = System.Drawing.Color.White;
             this.dgvDaqAI.ColumnHeadersBorderStyle = System.Windows.Forms.DataGridViewHeaderBorderStyle.Single;
-            dataGridViewCellStyle7.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
-            dataGridViewCellStyle7.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            dataGridViewCellStyle7.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            dataGridViewCellStyle7.ForeColor = System.Drawing.Color.White;
-            dataGridViewCellStyle7.SelectionBackColor = System.Drawing.SystemColors.Highlight;
-            dataGridViewCellStyle7.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
-            dataGridViewCellStyle7.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
-            this.dgvDaqAI.ColumnHeadersDefaultCellStyle = dataGridViewCellStyle7;
+            dataGridViewCellStyle27.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleCenter;
+            dataGridViewCellStyle27.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            dataGridViewCellStyle27.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            dataGridViewCellStyle27.ForeColor = System.Drawing.Color.White;
+            dataGridViewCellStyle27.SelectionBackColor = System.Drawing.SystemColors.Highlight;
+            dataGridViewCellStyle27.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
+            dataGridViewCellStyle27.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
+            this.dgvDaqAI.ColumnHeadersDefaultCellStyle = dataGridViewCellStyle27;
             this.dgvDaqAI.ColumnHeadersHeight = 35;
             this.uiTableLayoutPanel9.SetColumnSpan(this.dgvDaqAI, 3);
-            dataGridViewCellStyle8.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleLeft;
-            dataGridViewCellStyle8.BackColor = System.Drawing.SystemColors.Window;
-            dataGridViewCellStyle8.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            dataGridViewCellStyle8.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            dataGridViewCellStyle8.SelectionBackColor = System.Drawing.SystemColors.Highlight;
-            dataGridViewCellStyle8.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
-            dataGridViewCellStyle8.WrapMode = System.Windows.Forms.DataGridViewTriState.False;
-            this.dgvDaqAI.DefaultCellStyle = dataGridViewCellStyle8;
+            dataGridViewCellStyle28.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleLeft;
+            dataGridViewCellStyle28.BackColor = System.Drawing.SystemColors.Window;
+            dataGridViewCellStyle28.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            dataGridViewCellStyle28.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            dataGridViewCellStyle28.SelectionBackColor = System.Drawing.SystemColors.Highlight;
+            dataGridViewCellStyle28.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
+            dataGridViewCellStyle28.WrapMode = System.Windows.Forms.DataGridViewTriState.False;
+            this.dgvDaqAI.DefaultCellStyle = dataGridViewCellStyle28;
             this.dgvDaqAI.Dock = System.Windows.Forms.DockStyle.Fill;
             this.dgvDaqAI.EnableHeadersVisualStyles = false;
             this.dgvDaqAI.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
             this.dgvDaqAI.GridColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
             this.dgvDaqAI.Location = new System.Drawing.Point(43, 53);
             this.dgvDaqAI.Name = "dgvDaqAI";
-            dataGridViewCellStyle9.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleLeft;
-            dataGridViewCellStyle9.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(235)))), ((int)(((byte)(243)))), ((int)(((byte)(255)))));
-            dataGridViewCellStyle9.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            dataGridViewCellStyle9.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
-            dataGridViewCellStyle9.SelectionBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
-            dataGridViewCellStyle9.SelectionForeColor = System.Drawing.Color.White;
-            dataGridViewCellStyle9.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
-            this.dgvDaqAI.RowHeadersDefaultCellStyle = dataGridViewCellStyle9;
+            dataGridViewCellStyle29.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleLeft;
+            dataGridViewCellStyle29.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(235)))), ((int)(((byte)(243)))), ((int)(((byte)(255)))));
+            dataGridViewCellStyle29.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            dataGridViewCellStyle29.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(48)))), ((int)(((byte)(48)))), ((int)(((byte)(48)))));
+            dataGridViewCellStyle29.SelectionBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(160)))), ((int)(((byte)(255)))));
+            dataGridViewCellStyle29.SelectionForeColor = System.Drawing.Color.White;
+            dataGridViewCellStyle29.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
+            this.dgvDaqAI.RowHeadersDefaultCellStyle = dataGridViewCellStyle29;
             this.dgvDaqAI.RowHeadersWidth = 90;
-            dataGridViewCellStyle10.BackColor = System.Drawing.Color.White;
-            dataGridViewCellStyle10.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.dgvDaqAI.RowsDefaultCellStyle = dataGridViewCellStyle10;
+            dataGridViewCellStyle30.BackColor = System.Drawing.Color.White;
+            dataGridViewCellStyle30.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.dgvDaqAI.RowsDefaultCellStyle = dataGridViewCellStyle30;
             this.uiTableLayoutPanel9.SetRowSpan(this.dgvDaqAI, 8);
             this.dgvDaqAI.RowTemplate.Height = 35;
             this.dgvDaqAI.SelectedIndex = -1;
@@ -2822,6 +2814,25 @@
             this.BtnSaveCommand.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
             this.BtnSaveCommand.Click += new System.EventHandler(this.BtnSaveCommand_Click);
             // 
+            // TxtTestName
+            // 
+            this.TxtTestName.DataSource = null;
+            this.TxtTestName.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.TxtTestName.FillColor = System.Drawing.Color.White;
+            this.TxtTestName.Font = new System.Drawing.Font("宋体", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.TxtTestName.ItemHoverColor = System.Drawing.Color.FromArgb(((int)(((byte)(155)))), ((int)(((byte)(200)))), ((int)(((byte)(255)))));
+            this.TxtTestName.ItemSelectForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(235)))), ((int)(((byte)(243)))), ((int)(((byte)(255)))));
+            this.TxtTestName.Location = new System.Drawing.Point(307, 5);
+            this.TxtTestName.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.TxtTestName.MinimumSize = new System.Drawing.Size(63, 0);
+            this.TxtTestName.Name = "TxtTestName";
+            this.TxtTestName.Padding = new System.Windows.Forms.Padding(0, 0, 30, 2);
+            this.TxtTestName.Size = new System.Drawing.Size(301, 67);
+            this.TxtTestName.SymbolSize = 24;
+            this.TxtTestName.TabIndex = 24;
+            this.TxtTestName.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
+            this.TxtTestName.Watermark = "请输入项目名";
+            // 
             // FrmTestSetting
             // 
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.None;
@@ -2958,7 +2969,6 @@
         private Sunny.UI.UIGroupBox uiGroupBox7;
         private Sunny.UI.UITableLayoutPanel uiTableLayoutPanel11;
         private Sunny.UI.UITextBox TxtTestCycle;
-        private Sunny.UI.UITextBox TxtTestName;
         private Sunny.UI.UITextBox TxtTestTarget;
         private Sunny.UI.UILabel uiLabel25;
         private Sunny.UI.UILabel uiLabel27;
@@ -3050,5 +3060,6 @@
         private Sunny.UI.UILabel uiLabelProgress2;
         private Sunny.UI.UICheckBox uiCheckBoxEpb2Enabled;
         private Sunny.UI.UILight uiLightStatus2;
+        private Sunny.UI.UIComboBox TxtTestName;
     }
 }

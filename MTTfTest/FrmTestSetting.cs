@@ -1472,7 +1472,7 @@ namespace MtEmbTest
 
         // 显式控件参数加载方式
         public void LoadTestConfigFromXml(UITextBox txtTestCycle,
-            UITextBox txtTestName,
+            UIComboBox txtTestName,
             UITextBox txtTestTarget,
             UICheckBox checkIsSameCycleForAllEpb,
             UITextBox txtStoreDir,
