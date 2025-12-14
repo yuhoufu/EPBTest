@@ -14,6 +14,8 @@ using System.Drawing;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.Xml;
 using System.Xml.Linq;
@@ -34,6 +36,36 @@ namespace MtEmbTest
         private ConcurrentQueue<string> LogWarn = new();
         private ConcurrentQueue<string> LogError = new();
         private ConcurrentQueue<byte[]> readyReadBuffer;
+
+        /// <summary>
+        /// 界面是否正在执行耗时操作（扫描目录/切换项目/保存配置）。
+        /// 用于防止重复点击导致重入与卡死。
+        /// </summary>
+        private int _busy;
+
+        /// <summary>
+        /// 扫描项目列表的取消令牌源（切换存储路径时取消上一次扫描）。
+        /// </summary>
+        private CancellationTokenSource _scanCts;
+
+        /// <summary>
+        /// 标记：本次“试验名失焦(Leave)”是否发生了项目切换。
+        /// 若为 true，则下一次保存按钮点击会被拦截（避免切换后立刻保存）。
+        /// </summary>
+        private bool _switchedByTestNameLeave;
+
+        /// <summary>
+        /// 记录触发切换的目标试验名称，仅用于提示信息。
+        /// </summary>
+        private string _switchedToTestName;
+
+
+        /// <summary>
+        /// 记录试验名称获得焦点时的原始内容，
+        /// 用于在用户取消切换项目时还原文本。
+        /// </summary>
+        private string _testNameBeforeEdit;
+
 
         /// <summary>
         /// 设置页中“EPB 状态及进度”区域每个通道对应的一组控件。
@@ -307,6 +339,19 @@ namespace MtEmbTest
 
         #endregion
 
+        /// <summary>
+        /// 设置页面忙碌状态：禁用关键输入，避免重入；
+        /// 只在 UI 线程调用。
+        /// </summary>
+        private void SetBusy(bool busy)
+        {
+            BtnSaveTest.Enabled = !busy;
+            BtnFindDir.Enabled = !busy;
+            TxtTestName.Enabled = !busy;
+            TxtStoreDir.Enabled = !busy;
+
+            Cursor = busy ? Cursors.WaitCursor : Cursors.Default;
+        }
 
 
 
@@ -528,7 +573,7 @@ namespace MtEmbTest
         /// 2) 根据 _cfg.Test.TestName + StoreDir 计算项目路径，
         ///    如果该项目下还没有 Config\TestConfig.xml，则从默认 Config 拷贝一份过去。
         /// </summary>
-        private void FrmTestSetting_Load(object sender, EventArgs e)
+        private async void FrmTestSetting_Load(object sender, EventArgs e)
         {
             // // 1) 通过 MdiParent 拿到父窗体引用
             // if (this.MdiParent is Main_Frm main)
@@ -578,10 +623,34 @@ namespace MtEmbTest
                 LoadDaqAiToGridView(Environment.CurrentDirectory + @"\Config\AIConfig.xml");
 
 
+                #region 和试验配置导入刷新有关
+
                 // ★★ 用“项目配置”填充基本信息 UI ★★
                 LoadTestConfigFromXml(TxtTestCycle, TxtTestName, TxtTestTarget,
                     uiCheckBoxIsSameCycleForAllEpb, TxtStoreDir, TxtTestMan, RtbDesc);
-                
+
+                // ★★ 用“项目配置”填充基本信息 UI ★★
+                LoadTestConfigFromXml(TxtTestCycle, TxtTestName, TxtTestTarget,
+                    uiCheckBoxIsSameCycleForAllEpb, TxtStoreDir, TxtTestMan, RtbDesc);
+
+                // ==== 刷新试验名称下拉框列表（扫描当前存储路径下已有项目） ==== //
+                await RefreshTestNameComboItemsAsync();
+
+                // 绑定试验名称输入框的 Enter / Leave 事件：
+                // Enter：记录原始名称；
+                // Leave：校验非法字符 + 检测重名项目并提示是否切换。
+                TxtTestName.Enter -= TxtTestName_Enter;
+                TxtTestName.Enter += TxtTestName_Enter;
+                TxtTestName.Leave -= TxtTestName_Leave;
+                TxtTestName.Leave += TxtTestName_Leave;
+
+                #endregion
+
+                // 压力设置相关-开始
+                InitializePressureSettings();
+
+
+
                 // 压力设置相关-开始
                 InitializePressureSettings();
 
@@ -1190,21 +1259,27 @@ namespace MtEmbTest
         }
 
         /// <summary>
-        /// “保存试验配置”按钮点击事件。
-        /// 实现的功能：
+        /// 保存试验配置按钮：
         /// <list type="number">
-        ///     <item>1. 将界面上的基本信息、EPB 参数、压力参数写回到 <see cref="_cfg.Test"/>（当前项目配置）；</item>
-        ///     <item>2. 若 TestName / StoreDir 发生变化，视为新项目，清零运行进度，仅保留目标次数；</item>
-        ///     <item>3. 将当前项目配置保存到“项目专用”的 Config\TestConfig.xml；</item>
-        ///     <item>4. 调用 <see cref="ConfigLoader.UpdateDefaultTestFromProject"/>，
-        ///         用项目配置刷新“软件默认 Config\TestConfig.xml”（仅同步总次数和 Basic，
-        ///         进度保持初始化状态，两个日期更新为当前日期）。</item>
+        ///     <item>1) 校验试验名称（非空、无非法路径字符）。</item>
+        ///     <item>2) 将界面输入写回到 <see cref="_cfg.Test"/>。</item>
+        ///     <item>3) 判断是否切换到新项目（StoreDir/TestName 变化则清零运行进度，仅保留 TotalCount）。</item>
+        ///     <item>4) 后台线程执行耗时 IO：确保项目配置文件存在 → 保存项目配置 → 同步更新默认模板配置。</item>
+        ///     <item>5) 回到 UI 线程刷新“EPB 状态及进度”面板。</item>
         /// </list>
         /// </summary>
-        private void BtnSaveTest_Click(object sender, EventArgs e)
+        private async void BtnSaveTest_Click(object sender, EventArgs e)
         {
+            Console.WriteLine("BtnSaveTest_Click........");
+
+            // —— 防重入（避免连点/重入导致重复保存、UI 卡死） —— //
+            if (System.Threading.Interlocked.Exchange(ref _busy, 1) == 1)
+                return;
+
             try
             {
+                SetBusy(true);
+
                 if (_cfg?.Test == null)
                 {
                     XtraMessageBox.Show(@"当前试验配置为空，无法保存！", @"错误",
@@ -1212,14 +1287,44 @@ namespace MtEmbTest
                     return;
                 }
 
+                #region 0.5) 校验试验名称不能为空且合法
+
+                var testNameText = (TxtTestName.Text ?? string.Empty).Trim();
+                if (string.IsNullOrEmpty(testNameText))
+                {
+                    XtraMessageBox.Show(
+                        @"试验名称不能为空，请输入新项目名称或从下拉列表选择已有项目。",
+                        @"提示",
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+
+                    TxtTestName.Focus();
+                    TxtTestName.SelectAll();
+                    return;
+                }
+
+                if (testNameText.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+                {
+                    XtraMessageBox.Show(
+                        @"试验名称中包含 Windows 不允许的字符，请重新输入。",
+                        @"试验名称非法",
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+
+                    TxtTestName.Focus();
+                    TxtTestName.SelectAll();
+                    return;
+                }
+
+                #endregion
+
                 // —— 0) 保存前先记住原来的项目标识（用于判断是否“切换到新项目”） —— //
                 var oldStoreDir = _cfg.Test.StoreDir ?? string.Empty;
                 var oldTestName = _cfg.Test.TestName ?? string.Empty;
 
                 // —— 1) 写回 Basic 信息（周期、名称、目录、负责人等）到 _cfg —— //
+                // 注意：这些操作访问 UI 控件，必须在 UI 线程执行
                 PushBasicInfoToConfig();
 
-                // ★ 1.5) 写回每个 EPB 的目标次数到 EpbRecords —— //
+                // —— 1.5) 写回每个 EPB 的目标次数到 EpbRecords —— //
                 PushEpbTargetCountsToConfig();
 
                 // —— 2) 写回 EPB 循环参数（12 个通道）到 _cfg —— //
@@ -1242,19 +1347,33 @@ namespace MtEmbTest
                     ResetEpbRecordsRuntimeStateKeepTotalCount();
                 }
 
-                // —— 5) 先保存到“项目专用”的 Config\TestConfig.xml —— //
-                var projectTestPath = GetProjectTestConfigPath();
-                if (!string.IsNullOrEmpty(projectTestPath))
+                // —— 5/6) 后台线程执行耗时 IO：避免阻塞 UI 线程导致卡死 —— //
+                var cfgSnapshot = _cfg.Test; // 捕获引用（同一对象），确保后台保存用的就是当前配置
+                await Task.Run(() =>
                 {
-                    // GetProjectTestConfigPath 内部已确保目录存在
-                    ConfigLoader.SaveTest(projectTestPath, _cfg.Test);
-                }
+                    // ★关键：确保项目 TestConfig.xml 文件存在（不存在就从默认模板复制）★
+                    // 这个步骤包含磁盘 IO，放到后台线程执行
+                    EnsureProjectTestConfigExists();
 
-                // —— 6) 再根据“项目配置”更新“软件默认 Config\TestConfig.xml”（模板） —— //
-                ConfigLoader.UpdateDefaultTestFromProject(_cfg.Test, logger);
+                    // 先 Ensure 再取路径：新项目名时才不会出现“文件不存在”
+                    var projectTestPath = GetProjectTestConfigPath();
+                    if (!string.IsNullOrEmpty(projectTestPath))
+                    {
+                        ConfigLoader.SaveTest(projectTestPath, cfgSnapshot);
+                    }
+
+                    // 根据“项目配置”更新“软件默认 Config\TestConfig.xml”（模板）
+                    ConfigLoader.UpdateDefaultTestFromProject(cfgSnapshot, logger);
+                });
+
+                // —— 7) 保存后刷新“EPB 状态及进度”面板（必须回到 UI 线程） —— //
+                // 使设置页中的“EPB 启用/状态灯/已运行/剩余”等信息与最新配置保持一致。
+                RefreshEpbProgressViewsFromConfig();
 
                 XtraMessageBox.Show("保存成功", "提示",
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
+
+                Console.WriteLine("BtnSaveTest_Click_End........");
             }
             catch (Exception ex)
             {
@@ -1263,7 +1382,13 @@ namespace MtEmbTest
                     "错误",
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
+            finally
+            {
+                SetBusy(false);
+                System.Threading.Interlocked.Exchange(ref _busy, 0);
+            }
         }
+
 
 
 
@@ -1400,6 +1525,142 @@ namespace MtEmbTest
 
             return Path.Combine(projectConfigDir, "TestConfig.xml");
         }
+
+        /// <summary>
+        /// 根据当前存储路径 <see cref="TxtStoreDir"/>，
+        /// 扫描其中所有包含 Config\TestConfig.xml 的子目录，
+        /// 并将子目录名称填充到 <see cref="TxtTestName"/> 的下拉列表中。
+        /// </summary>
+        private void RefreshTestNameComboItems()
+        {
+            // 先清空原有项
+            TxtTestName.Items.Clear();
+
+            var storeDir = (TxtStoreDir.Text ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(storeDir) || !Directory.Exists(storeDir))
+                return;
+
+            try
+            {
+                var dirs = Directory.GetDirectories(storeDir);
+                Array.Sort(dirs, StringComparer.OrdinalIgnoreCase);
+
+                foreach (var dir in dirs)
+                {
+                    var projectName = Path.GetFileName(dir);
+                    if (string.IsNullOrEmpty(projectName))
+                        continue;
+
+                    var configPath = Path.Combine(dir, "Config", "TestConfig.xml");
+                    if (File.Exists(configPath))
+                    {
+                        // Sunny.UI.UIComboBox 继承自 ComboBox，Items 为 object 集合
+                        if (!TxtTestName.Items.Contains(projectName))
+                        {
+                            TxtTestName.Items.Add(projectName);
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // LIST 失败不影响主流程，这里不弹框，避免打扰操作
+                // 如需调试可以在此处写日志。
+            }
+        }
+
+        /// <summary>
+        /// 异步刷新试验名称下拉列表：后台线程扫描 {StoreDir}\*\Config\TestConfig.xml，
+        /// 扫描完成后回到 UI 线程更新 TxtTestName.Items。
+        /// </summary>
+        private async Task RefreshTestNameComboItemsAsync()
+        {
+            var storeDir = (TxtStoreDir.Text ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(storeDir) || !Directory.Exists(storeDir))
+            {
+                TxtTestName.Items.Clear();
+                return;
+            }
+
+            // 取消上一轮扫描，避免“换路径后上一轮还在跑”
+            if (_scanCts != null)
+            {
+                try { _scanCts.Cancel(); } catch { /* ignore */ }
+                try { _scanCts.Dispose(); } catch { /* ignore */ }
+            }
+            _scanCts = new CancellationTokenSource();
+            var token = _scanCts.Token;
+
+            string[] names;
+
+            try
+            {
+                // 后台扫描：千万别在 UI 线程做
+                names = await Task.Run(() =>
+                {
+                    var list = new List<string>();
+
+                    // Directory.GetDirectories 在目录巨大/网络盘时非常慢
+                    var dirs = Directory.GetDirectories(storeDir);
+                    Array.Sort(dirs, StringComparer.OrdinalIgnoreCase);
+
+                    foreach (var dir in dirs)
+                    {
+                        token.ThrowIfCancellationRequested();
+
+                        var projectName = Path.GetFileName(dir);
+                        if (string.IsNullOrEmpty(projectName)) continue;
+
+                        var configPath = Path.Combine(dir, "Config", "TestConfig.xml");
+                        if (File.Exists(configPath))
+                        {
+                            list.Add(projectName);
+                        }
+                    }
+
+                    return list.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+                }, token);
+            }
+            catch (OperationCanceledException)
+            {
+                return; // 被取消就直接退出
+            }
+            catch
+            {
+                // 扫描失败不弹框，避免打扰；必要时你可以 logger.Error(...)
+                return;
+            }
+
+            // 回到 UI 线程更新控件
+            TxtTestName.Items.Clear();
+            foreach (var n in names)
+                TxtTestName.Items.Add(n);
+        }
+
+
+
+        /// <summary>
+        /// 判断当前存储路径下是否存在指定名称的项目目录。
+        /// 条件：{StoreDir}\{testName}\Config\TestConfig.xml 存在。
+        /// </summary>
+        /// <param name="testName">待检查的试验名称/项目名。</param>
+        /// <returns>存在返回 true，否则 false。</returns>
+        private bool ProjectExistsInCurrentStoreDir(string testName)
+        {
+            var name = (testName ?? string.Empty).Trim();
+            if (string.IsNullOrEmpty(name))
+                return false;
+
+            var storeDir = (TxtStoreDir.Text ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(storeDir) || !Directory.Exists(storeDir))
+                return false;
+
+            var projectRoot = Path.Combine(storeDir, name);
+            var configPath = Path.Combine(projectRoot, "Config", "TestConfig.xml");
+            return File.Exists(configPath);
+        }
+
+
 
         /// <summary>
         /// 确保“当前项目”的 Config\TestConfig.xml 存在。
@@ -1810,35 +2071,171 @@ namespace MtEmbTest
                 return new TestConfig(); // 返回空配置避免异常
             }
         }
-
-
-        private void BtnFindDir_Click(object sender, EventArgs e)
+        
+        /// <summary>
+        /// “存储路径选择”按钮点击事件：
+        /// 1. 让用户选择新的存储路径；
+        /// 2. 若路径发生变化，则：
+        ///    a) 刷新 TxtTestName 下拉列表中的项目名称；
+        ///    b) 清空当前试验名称并将焦点移到 TxtTestName，
+        ///       提示用户输入新项目名称或选择已有项目。
+        /// </summary>
+        private async void BtnFindDir_Click(object sender, EventArgs e)
         {
-            // 创建文件夹选择对话框
-            using (var folderDialog = new FolderBrowserDialog())
+            var oldDir = (TxtStoreDir.Text ?? string.Empty).Trim();
+
+            using (var fd = new FolderBrowserDialog())
             {
-                // 对话框基础设置
-                folderDialog.Description = "请选择存储目录";
-                //  folderDialog.UseDescriptionForTitle = true;  // 将描述作为窗口标题
-                folderDialog.ShowNewFolderButton = true; // 允许新建文件夹
+                fd.Description = @"请选择存储路径";
+                fd.SelectedPath = string.IsNullOrWhiteSpace(oldDir)
+                    ? AppDomain.CurrentDomain.BaseDirectory
+                    : oldDir;
 
-                // 可选：设置初始目录（默认从"我的电脑"开始）
-                folderDialog.RootFolder = Environment.SpecialFolder.MyComputer;
-
-                // 显示对话框并处理结果
-                if (folderDialog.ShowDialog() == DialogResult.OK)
+                if (fd.ShowDialog() == DialogResult.OK)
                 {
-                    // 获取选择的路径并显示到文本框
-                    TxtStoreDir.Text = folderDialog.SelectedPath;
-
-                    // 可选：立即验证路径有效性
-                    if (!Directory.Exists(TxtStoreDir.Text))
+                    var path = fd.SelectedPath;
+                    if (!Directory.Exists(path))
                     {
-                        MessageBox.Show("路径不存在，请重新选择！");
-                        TxtStoreDir.Clear();
+                        MessageBox.Show(@"所选路径不存在，请重新选择。", @"错误",
+                            MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        return;
+                    }
+
+                    // 仅在路径真正发生变化时才执行后续逻辑
+                    if (!string.Equals(oldDir, path, StringComparison.OrdinalIgnoreCase))
+                    {
+                        TxtStoreDir.Text = path;
+
+                        // 1) 刷新“试验名称”下拉列表
+                        await RefreshTestNameComboItemsAsync();
+
+                        // 2) 清空名称并聚焦，让用户决定“新建 or 切换”
+                        TxtTestName.Text = string.Empty;
+                        TxtTestName.SelectedIndex = -1;
+                        TxtTestName.Focus();
+
+                        MessageBox.Show(
+                            @"存储路径已更换，请在“试验名称”中输入新项目名称，" +
+                            @"或从下拉列表中选择该路径下已有的项目。",
+                            @"提示",
+                            MessageBoxButtons.OK, MessageBoxIcon.Information);
                     }
                 }
             }
+        }
+
+
+        /// <summary>
+        /// 试验名称输入框获得焦点时：
+        /// 记录当前文本内容，用于后续在用户选择“否，不切换项目”时恢复。
+        /// </summary>
+        private void TxtTestName_Enter(object sender, EventArgs e)
+        {
+            _testNameBeforeEdit = TxtTestName.Text;
+            BtnSaveTest.Enabled = false; // 禁用保存按钮，防止误操作
+        }
+
+        /// <summary>
+        /// 试验名称输入框失去焦点时：
+        /// 1) 校验名称中是否包含非法路径字符；
+        /// 2) 若名称与当前存储路径下已有项目重名，则提示是否切换到该项目。
+        /// </summary>
+        private async void TxtTestName_Leave(object sender, EventArgs e)
+        {
+            var newName = (TxtTestName.Text ?? string.Empty).Trim();
+            Console.WriteLine("TxtTestName_Leave........");
+
+            // 空名称在保存时统一拦截，这里不强制
+            if (string.IsNullOrEmpty(newName))
+            {
+                return;
+            }
+
+            // 1) 文件/文件夹名非法字符校验
+            if (newName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+            {
+                MessageBox.Show(
+                    @"试验名称中包含 Windows 不允许的字符，请重新输入。",
+                    @"试验名称非法",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+
+                TxtTestName.Text = _testNameBeforeEdit ?? string.Empty;
+                TxtTestName.Focus();
+                TxtTestName.SelectAll();
+                return;
+            }
+
+            // 2) 当前路径下是否已有同名项目（且不是“当前项目本身”）
+            var currentCfgName = _cfg?.Test?.TestName ?? string.Empty;
+            var isSameAsOld = string.Equals(newName, currentCfgName, StringComparison.OrdinalIgnoreCase);
+
+            if (!isSameAsOld && ProjectExistsInCurrentStoreDir(newName))
+            {
+                var msg =
+                    $"当前存储路径下已存在名为“{newName}”的项目。\r\n\r\n" +
+                    "是否切换到该项目？\r\n\r\n" +
+                    "【是】→ 立即切换到该项目，当前界面未保存的修改将丢失；\r\n" +
+                    "【否】→ 保持原试验名称，如需新建项目请更换一个未使用的名称。";
+
+                var dr = MessageBox.Show(msg, @"项目已存在",
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+
+                if (dr == DialogResult.Yes)
+                {
+                    // —— 切换项目：更新 _cfg.Test 标识，然后重新加载项目配置 —— //
+                    try
+                    {
+                        if (_cfg?.Test == null)
+                            return;
+
+                        _cfg.Test.StoreDir = (TxtStoreDir.Text ?? string.Empty).Trim();
+                        _cfg.Test.TestName = newName;
+
+                        // 基于新的 StoreDir + TestName 确保项目配置存在并加载
+                        var projectTest = ConfigLoader.EnsureProjectTestConfig(_cfg, logger);
+                        _cfg.Test = projectTest;
+
+                        // 用项目配置刷新默认模板（仅 Basic + TotalCount，进度清零）
+                        ConfigLoader.UpdateDefaultTestFromProject(projectTest, logger);
+
+                        // 用最新项目配置刷新界面
+                        LoadTestConfigFromXml(
+                            TxtTestCycle, TxtTestName, TxtTestTarget,
+                            uiCheckBoxIsSameCycleForAllEpb,
+                            TxtStoreDir, TxtTestMan, RtbDesc);
+
+                        BindEpbRunnerGridFromConfig();
+                        await RefreshTestNameComboItemsAsync();
+                        RefreshEpbProgressViewsFromConfig();
+
+                        MessageBox.Show(@"已切换到已有项目配置。", @"提示",
+                            MessageBoxButtons.OK, MessageBoxIcon.Information);
+
+                        // ★ 标记：本次失焦触发了切换，下一次保存按钮点击需要拦截 ★
+                        _switchedByTestNameLeave = true;
+                        _switchedToTestName = newName;
+
+
+                    }
+                    catch (Exception exSwitch)
+                    {
+                        MessageBox.Show(
+                            @"切换到已有项目失败：" + exSwitch.Message,
+                            @"错误",
+                            MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    }
+                }
+                else
+                {
+                    // 否 → 还原原名称
+                    TxtTestName.Text = _testNameBeforeEdit ?? string.Empty;
+                    TxtTestName.Focus();
+                    TxtTestName.SelectAll();
+                }
+            }
+            Console.WriteLine("TxtTestName_Leave_End........");
+            BtnSaveTest.Enabled = true; // 恢复保存按钮
         }
 
         private void dgvEmbControl_DataBindingComplete(object sender, DataGridViewBindingCompleteEventArgs e)
