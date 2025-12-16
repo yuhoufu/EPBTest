@@ -1270,7 +1270,7 @@ namespace MtEmbTest
         /// </summary>
         private async void BtnSaveTest_Click(object sender, EventArgs e)
         {
-            Console.WriteLine("BtnSaveTest_Click........");
+           
 
             // —— 防重入（避免连点/重入导致重复保存、UI 卡死） —— //
             if (System.Threading.Interlocked.Exchange(ref _busy, 1) == 1)
@@ -1373,7 +1373,6 @@ namespace MtEmbTest
                 XtraMessageBox.Show("保存成功", "提示",
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
 
-                Console.WriteLine("BtnSaveTest_Click_End........");
             }
             catch (Exception ex)
             {
@@ -2143,7 +2142,6 @@ namespace MtEmbTest
         private async void TxtTestName_Leave(object sender, EventArgs e)
         {
             var newName = (TxtTestName.Text ?? string.Empty).Trim();
-            Console.WriteLine("TxtTestName_Leave........");
 
             // 空名称在保存时统一拦截，这里不强制
             if (string.IsNullOrEmpty(newName))
@@ -2234,7 +2232,6 @@ namespace MtEmbTest
                     TxtTestName.SelectAll();
                 }
             }
-            Console.WriteLine("TxtTestName_Leave_End........");
             BtnSaveTest.Enabled = true; // 恢复保存按钮
         }
 
