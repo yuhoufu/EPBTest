@@ -115,10 +115,7 @@ namespace Controller
 
                 var t0 = t0OfGroup[pg];
                 var enabled = list.OrderBy(x => x).ToList();
-
-               
-
-
+                
                 foreach (var ch in enabled)
                 {
                     var phase = IndexInPowerGroup(ch) * StaggerDeltaMs;
