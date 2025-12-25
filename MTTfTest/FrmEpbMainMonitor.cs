@@ -1707,6 +1707,7 @@ namespace MTEmbTest
                 // await _epb.StartChannelAsync(2);
                 //await _epb.StartChannelAsync(4);
                 //await _epb.StartChannelAsync(5);
+
                 #region 【同步起跑（电源保护）】：学习阶段同组错峰 + 正式阶段锚点对齐且同组错峰（首周期）
 
                 // 1) 收集勾选通道
@@ -1740,6 +1741,21 @@ namespace MTEmbTest
 
                 // 读取自学习圈数（比如从一个文本框；没有就用3）
                 var learnCycles = _cfg.Test.LearnCycles;
+
+
+                #region 重新给每个通道的执行次数赋值
+
+                Dictionary<int, int> epbTestCycle = new Dictionary<int, int>();
+                // 添加每个epb通道的目标次数
+                foreach (var epbRecord in _cfg.Test.EpbRecords)
+                {
+                    epbTestCycle!.Add(epbRecord.Id, epbRecord.TotalCount - epbRecord.RunCount); // 需要能够每次开始由总次数-已运行次数
+                }
+
+                _epb.EpbTestCycle = epbTestCycle;
+
+                #endregion 
+
 
                 // int.TryParse(TxtLearnCycles.Text, out learnCycles) 也可以
 

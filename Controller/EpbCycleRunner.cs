@@ -1152,7 +1152,7 @@ namespace Controller
 
                 int maxWaitMs = _cfg?.Test.EpbCycleRunner.GetRunnerChannel(_channel).FwdOnLimitMs ?? 5_000;
 
-                // —— 超时保护（10s，与原方法一致）—— //
+                // —— 超时保护—— //
                 if (ElapsedMs(tBegin) > maxWaitMs)
                 {
                     _log.Warn($"EPB[{_channel}] 超时(方案C/无预测): {maxWaitMs/1000}s 内未达到 Thr={thrA:F2}A", "EPB");

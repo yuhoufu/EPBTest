@@ -72,7 +72,7 @@ namespace Controller
             foreach (var epbRecord in cfg.Test.EpbRecords)
             {
 
-                EpbTestCycle!.Add(epbRecord.Id,epbRecord.TotalCount);
+                EpbTestCycle!.Add(epbRecord.Id,epbRecord.TotalCount - epbRecord.RunCount);  // 需要能够每次开始由总次数-已运行次数
                 
             }
             
