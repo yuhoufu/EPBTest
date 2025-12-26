@@ -16,6 +16,7 @@ EpbManager (12卡钳编排)
 ### 关键模块职责
 - **Controller/**: `EpbManager`统一编排，`EpbCycleRunner`实现单卡钳状态机和电流判断逻辑
 - **IO.NI/**: `TwoDeviceAiAcquirer`双设备AI采集，`DoController`数字输出，`AoController`模拟输出
+- **（新增）报警子系统**：泓格 M-7055D 通过 RS-485 控制报警灯/蜂鸣器（不走 `DoController`）
 - **DataOperation/**: 数据处理、CAN解析（`ClsDbcParser`）、落盘（`EpbDiskWriter`）
 - **Config/**: XML配置加载，`GlobalConfig`聚合所有配置，`EpbTestRecord`单卡钳状态
 - **MTTfTest/**: WinForms界面，`FrmEpbMainMonitor`主监控，`FrmTestSetting`参数设置
@@ -64,6 +65,10 @@ XML配置位于`MTTfTest/Config/`：
 - `AIConfig.xml` - 模拟输入通道定义
 - `DOConfig.xml` - 数字输出（EPB正/反向、液压开关）
 - `AOConfig.xml` - 模拟输出（液压压力设定）
+
+报警相关（新增，独立于 NI/DO）：
+- `Config/AlarmConfig.xml` - 泓格 M-7055D 串口参数、EPB→DO 映射、单点/全关指令帧（含 CRC）
+- 设计与联调说明：`开发日志/报警系统（泓格M-7055D_RS-485）设计与联调.md`
 
 ## 第三方依赖
 - **NationalInstruments.DAQmx** - 必须安装NI驱动
