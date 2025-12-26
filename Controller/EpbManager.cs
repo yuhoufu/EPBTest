@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -53,6 +54,157 @@ namespace Controller
 
         private readonly SemaphoreSlim _alarmSnapshotGate = new(1, 1);
         private readonly Dictionary<int, DateTime> _lastAlarmSnapshotUtcByChannel = new();
+
+        // 报警触发“立即停机”去重：避免同一通道短时间内重复 Stop
+        private readonly ConcurrentDictionary<int, byte> _alarmStopRequested = new();
+
+        // 通道级“硬停机”取消源：用于中断当前圈内仍在运行的异步流程（Delay/等待判据等）
+        private readonly ConcurrentDictionary<int, CancellationTokenSource> _stopCtsByChannel = new();
+
+        // ★ 当前仍参与“液压组判定”的通道集合：用于把“报警停机/提前结束”的通道排除出释压条件
+        // 说明：
+        // - 批量对齐启动中，液压建压锚点每圈会对“参与通道”调用 EnterElectricalPhaseAsync 并登记 InFlight。
+        // - 若某通道报警停机或提前结束，但仍被重复登记进 InFlight，则会阻塞其它正常通道到达“电压释放点”后的统一释压。
+        // - 因此这里维护一个并发集合，确保每圈只登记“仍在跑/仍参与本轮判定”的通道。
+        private readonly ConcurrentDictionary<int, byte> _hydraulicParticipants = new();
+
+        /// <summary>
+        ///     将指定通道标记为“参与液压判定”。
+        /// </summary>
+        /// <param name="channel">EPB 通道号（1..12）。</param>
+        /// <remarks>
+        ///     该集合用于批量对齐启动的“建压锚点”过滤：只有参与者才会被登记进
+        ///     <see cref="HydraulicGroupCoordinator"/> 的 InFlight，从而避免报警停机/提前结束通道影响释压条件。
+        /// </remarks>
+        private void MarkHydraulicParticipant(int channel)
+        {
+            _hydraulicParticipants[channel] = 0;
+        }
+
+        /// <summary>
+        ///     将指定通道从“参与液压判定”集合中移除。
+        /// </summary>
+        /// <param name="channel">EPB 通道号（1..12）。</param>
+        /// <remarks>
+        ///     触发场景：
+        ///     <list type="bullet">
+        ///         <item>报警触发快速停机；</item>
+        ///         <item>人工停止；</item>
+        ///         <item>该通道自然完成全部圈数（批量模式下各通道圈数可能不同）。</item>
+        ///     </list>
+        ///     移除后，该通道不会再被纳入后续每圈的 InFlight 登记，因此不会阻塞其它正常通道的释压。
+        /// </remarks>
+        private void UnmarkHydraulicParticipant(int channel)
+        {
+            _hydraulicParticipants.TryRemove(channel, out _);
+        }
+
+        /// <summary>
+        ///     判断指定通道是否仍参与液压判定。
+        /// </summary>
+        /// <param name="channel">EPB 通道号（1..12）。</param>
+        private bool IsHydraulicParticipant(int channel)
+        {
+            return _hydraulicParticipants.ContainsKey(channel);
+        }
+
+
+        /// <summary>
+        ///     通道“自然完成全部圈数”后的统一收尾：
+        ///     <list type="number">
+        ///         <item>将通道从“液压判定参与者”集合中移除，避免影响其它通道释压；</item>
+        ///         <item>将通道从运行字典（Timer/Runner）中移除，避免被误判为仍在运行；</item>
+        ///         <item>执行安全落位：断电 + 请求液压释放；</item>
+        ///         <item>导出最近10圈（FlushRecent），满足“停止即存最近10圈”的现场要求。</item>
+        ///     </list>
+        /// </summary>
+        /// <param name="channel">EPB 通道号（1..12）。</param>
+        /// <remarks>
+        ///     该方法用于两种运行模式：
+        ///     <list type="bullet">
+        ///         <item>单通道 StartChannelAsync 的自然完成；</item>
+        ///         <item>批量对齐启动（BatchStart）中某通道 runs 不一致导致的提前完成。</item>
+        ///     </list>
+        ///     注意：这里不会调用 Timer.Stop()；因为调用时机在“最后一圈回调”内，计时器即将自然退出。
+        /// </remarks>
+        private void FinalizeChannelAfterNaturalCompletion(int channel)
+        {
+            // 1) 先从液压判定参与者中移除
+            UnmarkHydraulicParticipant(channel);
+
+            // 2) 取消并释放硬停机 CTS（该通道已完成）
+            try { CancelStopCts(channel); } catch { /* ignore */ }
+
+            // 3) 从运行表移除：避免后续逻辑（例如“导出所有运行通道”）误把它当成仍在运行
+            try { _timers.Remove(channel); } catch { /* ignore */ }
+            try { _timerCache.Remove(channel); } catch { /* ignore */ }
+
+            if (_runners.TryGetValue(channel, out var runnerObj))
+            {
+                try
+                {
+                    runnerObj.ChannelCycleCompleted -= OnRunnerChannelCycleCompleted;
+                    runnerObj.AlarmRaised -= OnRunnerAlarmRaised;
+                }
+                catch
+                {
+                    // ignore
+                }
+
+                try { _runners.Remove(channel); } catch { /* ignore */ }
+            }
+
+            try { _runnerCache.Remove(channel); } catch { /* ignore */ }
+
+            // 4) 安全落位：断电 + 请求液压释放
+            try { _do.SetEpbOff(channel); } catch { /* ignore */ }
+            try { _ = HydraulicMarkReleaseAsync(channel); } catch { /* ignore */ }
+
+            // 5) 停止即存最近10圈：不阻塞当前线程
+            try
+            {
+                var recorder = Recorder;
+                if (recorder != null)
+                    _ = Task.Run(() =>
+                    {
+                        try { recorder.FlushRecent(channel, 10); } catch { /* ignore */ }
+                    });
+            }
+            catch
+            {
+                // ignore
+            }
+        }
+
+        /// <summary>
+        /// 为指定通道创建新的“硬停机”取消源；若已存在则先取消并释放旧实例。
+        /// </summary>
+        /// <param name="channel">EPB 通道号（1..12）。</param>
+        /// <returns>新的取消源实例。</returns>
+        private CancellationTokenSource RenewStopCts(int channel)
+        {
+            if (_stopCtsByChannel.TryRemove(channel, out var old))
+            {
+                try { old.Cancel(); } catch { /* ignore */ }
+                try { old.Dispose(); } catch { /* ignore */ }
+            }
+
+            var cts = new CancellationTokenSource();
+            _stopCtsByChannel[channel] = cts;
+            return cts;
+        }
+
+        /// <summary>
+        /// 取消并移除指定通道的“硬停机”取消源。
+        /// </summary>
+        private void CancelStopCts(int channel)
+        {
+            if (_stopCtsByChannel.TryRemove(channel, out var cts))
+            {
+                try { cts.Cancel(); } catch { /* ignore */ }
+                try { cts.Dispose(); } catch { /* ignore */ }
+            }
+        }
 
 
         public EpbManager(
@@ -222,6 +374,12 @@ namespace Controller
                 return;
             }
 
+            // 若上一次因报警触发过停机，这里允许重新启动
+            _alarmStopRequested.TryRemove(channel, out _);
+
+            // 本次启动为该通道刷新“硬停机”取消源
+            var stopCts = RenewStopCts(channel);
+
             var hydId = channel <= 6 ? 1 : 2;
 
             //var rcfg = _cfg.Test?.EpbCycleRunner ?? new EpbCycleRunnerConfig();
@@ -255,6 +413,9 @@ namespace Controller
 
             var timer = new HighPrecisionTimer(periodMs, _cfg.Test.OverrunPolicy, _log);
             _timers[channel] = timer;
+
+            // 标记为“参与液压判定”（用于后续批量建压锚点过滤；单通道模式也保持一致）
+            MarkHydraulicParticipant(channel);
 
             // 峰值超限报警增量阈值（可配；<=0 表示禁用）
             var overshootDeltaA = 0.0;
@@ -311,8 +472,11 @@ namespace Controller
                 }
             }
 
-            timer.StartAsync(_cfg.Test.TestTarget, staggerMs, async (i, token) =>
+            _ = timer.StartAsync(_cfg.Test.TestTarget, staggerMs, async (i, token) =>
             {
+                using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, stopCts.Token);
+                var ct = linked.Token;
+
                 _log.Info($"EPB[{channel}] 周期 {i}/{_cfg.Test.TestTarget} 开始。", "EPB");
 
 
@@ -320,11 +484,15 @@ namespace Controller
                 Recorder?.BeginCycle(channel, i, DateTime.UtcNow);
 
 
-                var ok = await runner.RunOneAsync(periodMs, token).ConfigureAwait(false);
+                var ok = await runner.RunOneAsync(periodMs, ct).ConfigureAwait(false);
 
                 // —— 新增：圈结束（取本圈累计样本数做 finalN；若 Recorder 为 null 则 finalN=0）
                 var finalN = Recorder?.GetCurrentCycleSampleCount(channel) ?? 0;
                 Recorder?.CompleteCycle(channel, i, finalN, DateTime.UtcNow);
+
+                // 若本通道自然完成最后一圈，则做统一收尾（含“停止即存最近10圈”）
+                if (i >= _cfg.Test.TestTarget)
+                    FinalizeChannelAfterNaturalCompletion(channel);
 
                 _log.Info($"EPB[{channel}] 周期 {i}/{_cfg.Test.TestTarget} {(ok ? "完成" : "失败")}", "EPB");
                 return ok;
@@ -351,6 +519,12 @@ namespace Controller
         /// </summary>
         public void StopChannel(int channel)
         {
+            // 该通道停止后不再参与液压判定
+            UnmarkHydraulicParticipant(channel);
+
+            // 先取消“硬停机”Token，尽快中断当前圈内仍在运行的异步逻辑
+            try { CancelStopCts(channel); } catch { /* ignore */ }
+
             // —— 停止“当前轮”的计时器 —— //
             HighPrecisionTimer t;
             if (_timers.TryGetValue(channel, out t))
@@ -383,6 +557,25 @@ namespace Controller
                 _timerCache.Remove(channel); // 关键：不要留下以免二次启动被误复用
             }
 
+            // —— 安全落位（优先）：尽快断电并请求液压释放 —— //
+            try
+            {
+                _do.SetEpbOff(channel);
+            }
+            catch
+            {
+                /* 忽略 */
+            }
+
+            try
+            {
+                _ = HydraulicMarkReleaseAsync(channel);
+            }
+            catch
+            {
+                /* 忽略 */
+            }
+
             // —— Runner 同样清理：运行表与缓存表都移除 —— //
             EpbCycleRunner runnerObj;
             if (_runners.TryGetValue(channel, out runnerObj))
@@ -396,7 +589,7 @@ namespace Controller
 
             _runnerCache.Remove(channel);
 
-            // —— 安全落位与收尾（按你现有逻辑调整）—— //
+            // —— 收尾：落盘导出（Stop 场景保留原逻辑）—— //
             try
             {
                 Recorder?.FlushRecent(channel, 10);
@@ -405,14 +598,75 @@ namespace Controller
             {
                 /* 忽略 */
             }
+        }
 
+
+        /// <summary>
+        /// 报警触发时的“快速停机”：
+        /// - 立即停止该通道计时器（不再进入下一圈）；
+        /// - 立即断电并请求液压释放；
+        /// - 清理 Runner 引用，避免采集回调继续喂样本；
+        /// - 不做任何耗时导出（快照导出在报警链路中单独处理）。
+        /// </summary>
+        /// <param name="channel">EPB 通道号（1..12）。</param>
+        private void StopChannelOnAlarm(int channel)
+        {
+            // 报警停机：立即从“参与液压判定”集合中移除，防止其阻塞其它通道释压
+            UnmarkHydraulicParticipant(channel);
+
+            // 先取消“硬停机”Token，尽快中断当前圈内仍在运行的异步逻辑
+            try { CancelStopCts(channel); } catch { /* ignore */ }
+
+            // —— 停止“当前轮”的计时器 —— //
+            if (_timers.TryGetValue(channel, out var t))
+            {
+                try { t.Stop(); } catch { /* ignore */ }
+                _timers.Remove(channel);
+            }
+
+            // —— 同步清理“缓存计时器” —— //
+            if (_timerCache.TryGetValue(channel, out var cached))
+            {
+                try { cached.Stop(); } catch { /* ignore */ }
+                _timerCache.Remove(channel);
+            }
+
+            // —— 安全落位：立即断电 + 请求液压释放 —— //
+            try { _do.SetEpbOff(channel); } catch { /* ignore */ }
+            try { _ = HydraulicMarkReleaseAsync(channel); } catch { /* ignore */ }
+
+            // —— 清理 Runner（避免继续喂样本/回调）—— //
+            if (_runners.TryGetValue(channel, out var runnerObj))
+            {
+                try
+                {
+                    runnerObj.ChannelCycleCompleted -= OnRunnerChannelCycleCompleted;
+                    runnerObj.AlarmRaised -= OnRunnerAlarmRaised;
+                }
+                catch
+                {
+                    // ignore
+                }
+
+                _runners.Remove(channel);
+            }
+
+            _runnerCache.Remove(channel);
+
+            // —— 现场要求：停止即存最近10圈 ——
+            // 说明：报警停机路径不应阻塞 Runner/定时器线程，因此这里用后台任务异步 Flush。
             try
             {
-                _do.SetEpbOff(channel);
+                var recorder = Recorder;
+                if (recorder != null)
+                    _ = Task.Run(() =>
+                    {
+                        try { recorder.FlushRecent(channel, 10); } catch { /* ignore */ }
+                    });
             }
             catch
             {
-                /* 忽略 */
+                // ignore
             }
         }
 
@@ -422,6 +676,17 @@ namespace Controller
             // 不阻塞 Runner/定时器线程
             _ = Task.Run(async () =>
             {
+                // ① 报警通道立即停机（去重，避免重复 Stop）
+                try
+                {
+                    if (_alarmStopRequested.TryAdd(channel, 0))
+                        StopChannelOnAlarm(channel);
+                }
+                catch
+                {
+                    // ignore
+                }
+
                 try
                 {
                     if (Alarm != null)
@@ -486,6 +751,11 @@ namespace Controller
                 {
                     running = Array.Empty<int>();
                 }
+
+                // 可能在报警回调里已先 StopChannelOnAlarm 导致 _timers 不再包含报警通道；
+                // 但快照必须包含报警通道本身，因此这里补回。
+                if (!running.Contains(alarmChannel))
+                    running = running.Concat(new[] { alarmChannel }).ToArray();
 
                 foreach (var ch in running)
                 {
@@ -636,18 +906,25 @@ namespace Controller
         {
             var result = new Dictionary<int, int>();
 
-            // 先按“组”分类
-            var buckets = new Dictionary<ElectricalGroup?, List<int>>();
+            // 先按“组”分类：无组通道单独一个桶（避免使用可空引用类型注解）
+            var buckets = new Dictionary<ElectricalGroup, List<int>>();
+            var ungrouped = new List<int>();
             foreach (var ch in selected)
             {
-                groupByChannel.TryGetValue(ch, out var grp); // grp 可能为 null（无组）
-                if (!buckets.TryGetValue(grp, out var list))
+                if (groupByChannel.TryGetValue(ch, out var grp) && grp != null)
                 {
-                    list = new List<int>();
-                    buckets[grp] = list;
-                }
+                    if (!buckets.TryGetValue(grp, out var list))
+                    {
+                        list = new List<int>();
+                        buckets[grp] = list;
+                    }
 
-                list.Add(ch);
+                    list.Add(ch);
+                }
+                else
+                {
+                    ungrouped.Add(ch);
+                }
             }
 
             // 每个桶内部按升序重新编号
@@ -657,6 +934,10 @@ namespace Controller
                 for (var i = 0; i < list.Count; i++)
                     result[list[i]] = i;
             }
+
+            // 无组通道索引统一为 0
+            foreach (var ch in ungrouped)
+                result[ch] = 0;
 
             return result;
         }

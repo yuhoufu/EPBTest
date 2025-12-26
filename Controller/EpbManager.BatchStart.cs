@@ -131,6 +131,12 @@ namespace Controller
                     var runner = GetRunner(ch);
                     PrepareRunnerForNoHeadAndTailCompensation(ch);
 
+                    // 标记为“参与液压判定”：本批次运行中将用于过滤建压锚点的 InFlight 登记
+                    MarkHydraulicParticipant(ch);
+
+                    // 本次启动为该通道刷新“硬停机”取消源
+                    var stopCts = RenewStopCts(ch);
+
                     var timer = GetTimer(ch, PeriodMs, OverrunPolicy.AlignToWallClock);
 
                     // 每个通道单独算一个“起始圈号基准”
@@ -145,10 +151,14 @@ namespace Controller
                         initialDelay,
                         async (cycleIndex, ct) =>
                         {
+                            using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, stopCts.Token);
+                            var token = linked.Token;
+
                             // 1) 在本圈锚点时刻为该压力组建压：
                             //    对本组所有参与通道调用 EnterElectricalPhaseAsync，
                             //    这样 HydraulicGroupCoordinator 能正确维护 InFlight 集合。
-                            await HydraulicEnterAtGroupAnchorAsync(pg, enabled, ct).ConfigureAwait(false);
+                            var participants = GetHydraulicParticipantsInPressureGroupSnapshot(pg, enabled);
+                            await HydraulicEnterAtGroupAnchorAsync(pg, participants, token).ConfigureAwait(false);
 
                             // 2) 计算本圈的绝对“硬截止”时刻（用于 Runner 保证统一收尾）
                             var k = cycleIndex - 1;
@@ -165,18 +175,73 @@ namespace Controller
                                 phase,
                                 T8MinMs,
                                 deadlineUtc,
-                                ct
+                                token
                             ).ConfigureAwait(false);
 
                             // 4) ★ 圈结束：从 Recorder 拿当前圈样本数
                             var finalN = Recorder?.GetCurrentCycleSampleCount(ch) ?? 0;
                             Recorder?.CompleteCycle(ch, cycleIndex + baseCycle, finalN, DateTime.UtcNow);
 
+                            // 若该通道自然完成最后一圈：统一收尾（含“停止即存最近10圈”），
+                            // 并从运行集合中移除，避免影响其它仍在运行通道的逻辑。
+                            if (cycleIndex >= runs)
+                                FinalizeChannelAfterNaturalCompletion(ch);
+
                             return ok;
 
                         });
                 }
             }
+        }
+
+        /// <summary>
+        ///     从指定压力组的候选通道中，筛选出“当前仍参与液压判定”的通道快照。
+        /// </summary>
+        /// <param name="pressureGroupId">压力组编号：1 表示 1..6，2 表示 7..12。</param>
+        /// <param name="candidateChannels">
+        ///     候选通道列表（通常是本批次启动时该压力组的 enabled 通道集合）。
+        /// </param>
+        /// <returns>
+        ///     当前快照下仍参与该压力组液压判定的通道列表。
+        ///     若全部已停止/结束，则返回空列表（此时不会触发建压登记）。
+        /// </returns>
+        /// <remarks>
+        ///     业务背景：
+        ///     <list type="bullet">
+        ///         <item>报警停机的通道必须被排除，否则会被重复登记进 InFlight 并阻塞释压；</item>
+        ///         <item>同批次中各通道圈数可能不同，提前结束的通道同样必须排除；</item>
+        ///         <item>该方法只做快照过滤，不做任何 IO，线程安全。</item>
+        ///     </list>
+        /// </remarks>
+        private IReadOnlyList<int> GetHydraulicParticipantsInPressureGroupSnapshot(
+            int pressureGroupId,
+            IReadOnlyList<int> candidateChannels)
+        {
+            if (candidateChannels == null || candidateChannels.Count == 0)
+                return Array.Empty<int>();
+
+            var list = new List<int>(candidateChannels.Count);
+            for (var i = 0; i < candidateChannels.Count; i++)
+            {
+                var ch = candidateChannels[i];
+                if (pressureGroupId == 1)
+                {
+                    if (ch < 1 || ch > 6) continue;
+                }
+                else if (pressureGroupId == 2)
+                {
+                    if (ch < 7 || ch > 12) continue;
+                }
+                else
+                {
+                    continue;
+                }
+
+                if (IsHydraulicParticipant(ch))
+                    list.Add(ch);
+            }
+
+            return list;
         }
 
         #endregion
