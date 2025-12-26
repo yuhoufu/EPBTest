@@ -57,6 +57,8 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="Alarm\AlarmManager.cs" />
+    <Compile Include="Alarm\M7055dSerialClient.cs" />
     <Compile Include="EpbCycleRunner.Advance.Sync.cs" />
     <Compile Include="EpbCycleRunner.cs" />
     <Compile Include="EpbManager.BatchStart.cs" />

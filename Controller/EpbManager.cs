@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Config;
 using Config.Models;
+using Controller.Alarm;
 using DataOperation;
 using IO.NI;
 using Timing;
@@ -23,6 +24,12 @@ namespace Controller
         /// <summary>可选的圈记录器，外部在创建后赋值。</summary>
         /// // 2025.09.16 新增
         public IEpbCycleRecorder Recorder { get; set; }
+
+        /// <summary>可选：报警管理器（M-7055D/RS-485），由 UI 初始化后注入。</summary>
+        public AlarmManager Alarm { get; set; }
+
+        /// <summary>可选：报警配置（用于 Runner 报警阈值/报警快照参数），由 UI 初始化后注入。</summary>
+        public AlarmConfig AlarmConfig { get; set; }
 
         private readonly TwoDeviceAiAcquirer _acq; // ★ 新增：数据采集器
 
@@ -43,6 +50,9 @@ namespace Controller
         private readonly long _wallBaseTicks = Stopwatch.GetTimestamp();
         private readonly DateTime _wallBaseUtc = DateTime.UtcNow;
         private readonly HydraulicGroupCoordinator _hydCoordinator; // ★ 新增：液压组协调器
+
+        private readonly SemaphoreSlim _alarmSnapshotGate = new(1, 1);
+        private readonly Dictionary<int, DateTime> _lastAlarmSnapshotUtcByChannel = new();
 
 
         public EpbManager(
@@ -246,19 +256,36 @@ namespace Controller
             var timer = new HighPrecisionTimer(periodMs, _cfg.Test.OverrunPolicy, _log);
             _timers[channel] = timer;
 
+            // 峰值超限报警增量阈值（可配；<=0 表示禁用）
+            var overshootDeltaA = 0.0;
+            try
+            {
+                var m = AlarmConfig?.Mappings?.Epb?.FirstOrDefault(x => x.Channel == channel);
+                overshootDeltaA = m?.OvershootAlarmDeltaA ?? AlarmConfig?.Behavior?.OvershootAlarmDeltaA ?? 0.0;
+            }
+            catch
+            {
+                overshootDeltaA = 0.0;
+            }
+
 
             var runner = new EpbCycleRunner(
                 channel,
                 hydId,
                 _readCurrent,
                 _do,
+                _acq,
                 _hydraulic,
                 forwardA,
                 holdMs,
                 sampleMs,
                 rcfg.PeakIgnoreMs,
                 _log,
-                this);
+                _cfg,
+                this,
+                overshootAlarmDeltaA: overshootDeltaA);
+
+            runner.AlarmRaised += OnRunnerAlarmRaised;
 
             // —— 新增：登记 Runner —— //
             _runners[channel] = runner;
@@ -362,6 +389,7 @@ namespace Controller
             {
                 // 退出前解绑事件，防止潜在内存泄漏
                 runnerObj.ChannelCycleCompleted -= OnRunnerChannelCycleCompleted;
+                runnerObj.AlarmRaised -= OnRunnerAlarmRaised;
 
                 _runners.Remove(channel);
             }
@@ -385,6 +413,101 @@ namespace Controller
             catch
             {
                 /* 忽略 */
+            }
+        }
+
+
+        private void OnRunnerAlarmRaised(int channel, string reason)
+        {
+            // 不阻塞 Runner/定时器线程
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    if (Alarm != null)
+                        await Alarm.SetAlarmAsync(channel, true, reason).ConfigureAwait(false);
+                }
+                catch
+                {
+                    // ignore
+                }
+
+                try
+                {
+                    await ExportAlarmSnapshotAsync(channel, reason).ConfigureAwait(false);
+                }
+                catch
+                {
+                    // ignore
+                }
+            });
+        }
+
+
+        private async Task ExportAlarmSnapshotAsync(int alarmChannel, string reason)
+        {
+            var recorder = Recorder;
+            if (recorder == null) return;
+
+            // 快照去抖：同一通道在 cooldown 内只导出一次
+            var cooldownMs = AlarmConfig?.Behavior?.SnapshotCooldownMs ?? 2000;
+            var now = DateTime.UtcNow;
+            lock (_lastAlarmSnapshotUtcByChannel)
+            {
+                if (_lastAlarmSnapshotUtcByChannel.TryGetValue(alarmChannel, out var last))
+                {
+                    if ((now - last).TotalMilliseconds < cooldownMs)
+                        return;
+                }
+
+                _lastAlarmSnapshotUtcByChannel[alarmChannel] = now;
+            }
+
+            await _alarmSnapshotGate.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                var lastN = AlarmConfig?.Behavior?.SnapshotLastNCycles ?? 10;
+                lastN = Math.Max(1, lastN);
+
+                // 根目录：StoreDir\TestName\AlarmSnapshots
+                var baseDir = System.IO.Path.Combine(_cfg.Test.StoreDir, _cfg.Test.TestName, "AlarmSnapshots");
+                System.IO.Directory.CreateDirectory(baseDir);
+
+                var stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+                var snapshotDir = System.IO.Path.Combine(baseDir, $"{stamp}-EPB{alarmChannel:D2}");
+                System.IO.Directory.CreateDirectory(snapshotDir);
+
+                int[] running;
+                try
+                {
+                    running = _timers.Keys.ToArray();
+                }
+                catch
+                {
+                    running = Array.Empty<int>();
+                }
+
+                foreach (var ch in running)
+                {
+                    var subName = ch == alarmChannel ? $"EPB{ch:D2}_ALARM" : $"EPB{ch:D2}";
+                    var subDir = System.IO.Path.Combine(snapshotDir, subName);
+                    System.IO.Directory.CreateDirectory(subDir);
+
+                    try
+                    {
+                        recorder.FlushRecentTo(ch, lastN, subDir, includeRunningCycle: true);
+                    }
+                    catch (Exception ex)
+                    {
+                        _log.Warn($"报警快照导出失败：EPB[{ch}] {ex.Message}", "落盘");
+                    }
+                }
+
+                _log.Warn($"报警快照已导出：EPB[{alarmChannel}] {reason} -> {snapshotDir}", "落盘");
+            }
+            finally
+            {
+                _alarmSnapshotGate.Release();
             }
         }
 

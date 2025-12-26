@@ -37,6 +37,10 @@ msbuild TfTest.sln /p:Configuration=Release /p:Platform="Any CPU"
 
 ## 代码规范
 
+### 文档注释（新增）
+- **落地代码要求**：所有新增/修改的业务方法必须写“详细的 XML 文档注释”，至少包含：`<summary>`、`<param>`、`<returns>`（有返回值时）、必要时补充 `<remarks>`（说明触发条件/线程模型/异常/边界）。
+- 目标：让后续联调与现场问题复盘时，能直接从方法注释定位“为什么这么做/怎么用/注意什么”。
+
 ### 命名与结构
 - 类名前缀`Cls`表示旧式数据操作类（如`ClsDataFilter`、`ClsDiskProc`）
 - 配置类在`Config/`，模型类在`Config/Models/`
@@ -67,8 +71,12 @@ XML配置位于`MTTfTest/Config/`：
 - `AOConfig.xml` - 模拟输出（液压压力设定）
 
 报警相关（新增，独立于 NI/DO）：
-- `Config/AlarmConfig.xml` - 泓格 M-7055D 串口参数、EPB→DO 映射、单点/全关指令帧（含 CRC）
+- `MTTfTest/Config/AlarmConfig.xml` - 泓格 M-7055D 串口参数、EPB→DO 映射、单点/全关指令帧（含 CRC）
 - 设计与联调说明：`开发日志/报警系统（泓格M-7055D_RS-485）设计与联调.md`
+
+报警触发数据快照（新增需求）：
+- 报警发生时立即导出“当前圈 + 前 9 圈”，并同时导出所有正在运行通道
+- 目录根：`StoreDir\TestName\AlarmSnapshots\yyyyMMdd_HHmmss-EPBxx\EPBxx(_ALARM)\...`
 
 ## 第三方依赖
 - **NationalInstruments.DAQmx** - 必须安装NI驱动

@@ -13,6 +13,7 @@ using System.Threading.Tasks;
 using System.Windows.Forms;
 using Config;
 using Controller;
+using Controller.Alarm;
 using DataOperation;
 using DevExpress.UITemplates.Collection.Editors;
 using DevExpress.XtraEditors;
@@ -22,6 +23,7 @@ using MTEmbTest.UIHelpers;
 using NationalInstruments.DAQmx;
 using Sunny.UI;
 using ZedGraph;
+using IAppLogger = Config.IAppLogger;
 using Task = NationalInstruments.DAQmx.Task;
 //using AsyncListener;
 using Timer = System.Threading.Timer;
@@ -161,6 +163,12 @@ namespace MTEmbTest
         private DoController _do;
         private EpbManager _epb;
 
+        // 报警子系统（泓格 M-7055D / RS-485）
+        private AlarmManager _alarmManager;
+        private Config.AlarmConfig _alarmCfg;
+        private UICheckBox _cbBuzzerEnabled;
+        private UIButton _btnClearAlarms;
+
         /// <summary>固定的 X 轴窗口宽度（秒）。缺省沿用 ClsGlobal.XDuration。</summary>
         private double _fixedXWindowSec;
 
@@ -188,6 +196,91 @@ namespace MTEmbTest
 
         // —— UI 刷新节流相关 —— //
         private System.Windows.Forms.Timer _uiTimer;
+
+
+        private void TryInitAlarmSubsystem(IAppLogger logger)
+        {
+            try
+            {
+                var alarmCfgPath = Path.Combine(Environment.CurrentDirectory, "Config", "AlarmConfig.xml");
+                if (!File.Exists(alarmCfgPath))
+                {
+                    logger?.Warn($"未找到报警配置：{alarmCfgPath}（将不启用 RS-485 报警输出）", "报警");
+                    return;
+                }
+
+                _alarmCfg = AlarmConfigLoader.Load(alarmCfgPath);
+                _alarmManager = new AlarmManager(_alarmCfg, logger);
+
+                _epb.Alarm = _alarmManager;
+                _epb.AlarmConfig = _alarmCfg;
+
+                // —— 运行时动态加两个最小控件：蜂鸣器启用 + 一键全关 ——
+                // 放到与 BtnSettingDetail 相同容器下，避免破坏 Designer。
+                var host = BtnSettingDetail?.Parent ?? this;
+
+                if (_cbBuzzerEnabled == null)
+                {
+                    _cbBuzzerEnabled = new UICheckBox
+                    {
+                        Text = "蜂鸣器",
+                        Checked = _alarmManager.BuzzerEnabled,
+                        AutoSize = true
+                    };
+
+                    _cbBuzzerEnabled.CheckedChanged += (_, __) =>
+                    {
+                        try
+                        {
+                            _alarmManager?.SetBuzzerEnabled(_cbBuzzerEnabled.Checked);
+                        }
+                        catch
+                        {
+                            // ignore
+                        }
+                    };
+
+                    // 尽量放到设置按钮旁边
+                    var x = BtnSettingDetail != null ? BtnSettingDetail.Right + 10 : 10;
+                    var y = BtnSettingDetail != null ? BtnSettingDetail.Top + 6 : 10;
+                    _cbBuzzerEnabled.Location = new Point(x, y);
+                    host.Controls.Add(_cbBuzzerEnabled);
+                    _cbBuzzerEnabled.BringToFront();
+                }
+
+                if (_btnClearAlarms == null)
+                {
+                    _btnClearAlarms = new UIButton
+                    {
+                        Text = "一键全关报警",
+                        MinimumSize = new Size(120, 30)
+                    };
+
+                    _btnClearAlarms.Click += async (_, __) =>
+                    {
+                        try
+                        {
+                            if (_alarmManager != null)
+                                await _alarmManager.ClearAllAsync();
+                        }
+                        catch (Exception ex)
+                        {
+                            logger?.Warn($"全关报警失败：{ex.Message}", "报警");
+                        }
+                    };
+
+                    var x = _cbBuzzerEnabled != null ? _cbBuzzerEnabled.Right + 10 : (BtnSettingDetail != null ? BtnSettingDetail.Right + 10 : 10);
+                    var y = BtnSettingDetail != null ? BtnSettingDetail.Top : 10;
+                    _btnClearAlarms.Location = new Point(x, y);
+                    host.Controls.Add(_btnClearAlarms);
+                    _btnClearAlarms.BringToFront();
+                }
+            }
+            catch (Exception ex)
+            {
+                logger?.Warn($"报警子系统初始化失败：{ex.Message}", "报警");
+            }
+        }
         private ConcurrentQueue<byte[]> activeWriteBuffer;
         private AiConfigDetail aiConfigDetail;
 
@@ -826,6 +919,10 @@ namespace MTEmbTest
 
                 // ★ 新增：订阅 EPB 单圈完成事件，用于更新 _uiEpbRecords
                 _epb.ChannelCycleCompleted += OnEpbChannelCycleCompleted;
+
+
+                // ===== 报警系统初始化（M-7055D / RS-485）=====
+                TryInitAlarmSubsystem(logger);
 
 
                 // 1) 创建写盘器（使用 DataRetentionPolicy）
@@ -1928,6 +2025,17 @@ namespace MTEmbTest
 
                     twoDeviceAiAcquirer = null;
                 }
+            }
+            catch
+            {
+                // ignored
+            }
+
+            // 3.5) 释放报警子系统（串口）
+            try
+            {
+                _alarmManager?.Dispose();
+                _alarmManager = null;
             }
             catch
             {

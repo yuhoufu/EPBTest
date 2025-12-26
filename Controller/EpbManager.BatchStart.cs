@@ -452,6 +452,18 @@ namespace Controller
             var holdMs = rcfg.HoldMs;
             holdMs = holdMs <= 0 ? 1000 : holdMs;
 
+            // 峰值超限报警增量阈值（可配；<=0 表示禁用）
+            var overshootDeltaA = 0.0;
+            try
+            {
+                var m = AlarmConfig?.Mappings?.Epb?.FirstOrDefault(x => x.Channel == channel);
+                overshootDeltaA = m?.OvershootAlarmDeltaA ?? AlarmConfig?.Behavior?.OvershootAlarmDeltaA ?? 0.0;
+            }
+            catch
+            {
+                overshootDeltaA = 0.0;
+            }
+
             var runner = new EpbCycleRunner(
                 channel,
                 hydId,
@@ -465,7 +477,8 @@ namespace Controller
                 rcfg.PeakIgnoreMs,
                 _log,
                 _cfg,
-                this);
+                this,
+                overshootAlarmDeltaA: overshootDeltaA);
 
             _runnerCache[channel] = runner;
             _runners[channel] = runner; // 立即登记，保证采集回调可用
@@ -487,6 +500,9 @@ namespace Controller
             // 先解绑一次，避免重复订阅造成事件被触发多次
             runner.ChannelCycleCompleted -= OnRunnerChannelCycleCompleted;
             runner.ChannelCycleCompleted += OnRunnerChannelCycleCompleted;
+
+            runner.AlarmRaised -= OnRunnerAlarmRaised;
+            runner.AlarmRaised += OnRunnerAlarmRaised;
         }
 
 

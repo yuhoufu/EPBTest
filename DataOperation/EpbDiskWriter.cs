@@ -501,7 +501,7 @@ public sealed class EpbDiskWriter : IDisposable
         latestN = Math.Max(1, latestN);
 
         // 查询最近 N 个已完成的正式圈
-        var latestList = GetLatestCycles(epbId, latestN);
+        var latestList = GetLatestCycles(epbId, latestN, includeRunningCycle: false);
         if (latestList.Count == 0)
             return;
 
@@ -523,6 +523,33 @@ public sealed class EpbDiskWriter : IDisposable
 
             // 二进制快照（圈号升序）
             var bin = Path.Combine(subDir, $"EPB{epbId}_Cycle_{cy.CycleNumber:D6}.bin");
+            ExportCycleToBin(epbId, cy, bin);
+        }
+    }
+
+
+    /// <summary>
+    ///     导出某 EPB 通道“最新 N 圈”的数据到指定目录（CSV + BIN），不删除索引。
+    ///     可选择是否包含当前 <c>status='running'</c> 的圈（用于“报警快照：当前圈+之前9圈”）。
+    /// </summary>
+    public void ExportLatestCyclesTo(int epbId, int latestN, string exportDir, bool includeRunningCycle)
+    {
+        latestN = Math.Max(1, latestN);
+        if (string.IsNullOrWhiteSpace(exportDir))
+            throw new ArgumentException("exportDir is required", nameof(exportDir));
+
+        var latestList = GetLatestCycles(epbId, latestN, includeRunningCycle);
+        if (latestList.Count == 0)
+            return;
+
+        Directory.CreateDirectory(exportDir);
+
+        foreach (var cy in latestList)
+        {
+            var csv = Path.Combine(exportDir, $"EPB{epbId}_Cycle_{cy.CycleNumber:D6}.csv");
+            ExportCycleToCsv(epbId, cy, csv);
+
+            var bin = Path.Combine(exportDir, $"EPB{epbId}_Cycle_{cy.CycleNumber:D6}.bin");
             ExportCycleToBin(epbId, cy, bin);
         }
     }
@@ -969,18 +996,21 @@ SELECT epb_id, cycle_number, start_time, end_time, start_position, sample_count,
     /// <param name="epbId">EPB 通道号（1..12）</param>
     /// <param name="latestN">需要的圈数（取最近的 N 圈）</param>
     /// <returns>按圈号升序排列的圈信息列表。</returns>
-    private List<CycleInfo> GetLatestCycles(int epbId, int latestN)
+        private List<CycleInfo> GetLatestCycles(int epbId, int latestN, bool includeRunningCycle)
     {
         latestN = Math.Max(1, latestN);
 
         var list = new List<CycleInfo>();
         using var cmd = _conn.CreateCommand();
+                var statusFilter = includeRunningCycle
+                        ? "AND status IN ('completed','running')"
+                        : "AND status = 'completed'";
         cmd.CommandText = $@"
 SELECT epb_id, cycle_number, start_time, end_time, start_position, sample_count, status
   FROM {TABLE_CYCLES}
  WHERE epb_id=@e
    AND cycle_number > 0
-   AND status = 'completed'
+     {statusFilter}
  ORDER BY cycle_number DESC
  LIMIT @n";
         cmd.Parameters.AddWithValue("@e", epbId);
@@ -1068,6 +1098,12 @@ public interface IEpbCycleRecorder
 
 
     int GetLastCycleNumber(int ch);
+
+    /// <summary>
+    ///     导出“最近 N 圈”到指定目录（CSV + BIN），不删除索引。
+    ///     includeRunningCycle=true 时会包含当前 status='running' 的圈（用于报警快照）。
+    /// </summary>
+    void FlushRecentTo(int epbId, int lastNCycles, string exportDir, bool includeRunningCycle);
 }
 
 /// <summary>
@@ -1110,6 +1146,9 @@ public sealed class DiskWriterRecorderAdapter : IEpbCycleRecorder
     /// <param name="lastNCycles">要导出的圈数（最近 N 圈）。</param>
     public void FlushRecent(int epbId, int lastNCycles)
         => _writer.ExportLatestCyclesNow(epbId, Math.Max(1, lastNCycles));
+
+    public void FlushRecentTo(int epbId, int lastNCycles, string exportDir, bool includeRunningCycle)
+        => _writer.ExportLatestCyclesTo(epbId, Math.Max(1, lastNCycles), exportDir, includeRunningCycle);
 
     /// <summary>
     ///  查询指定 EPB 通道当前已存在的“最大正式圈号”（cycle_number），仅统计 CycleNumber &gt; 0。

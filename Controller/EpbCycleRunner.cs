@@ -83,6 +83,14 @@ namespace Controller
 
         private double _actualCutoffCurrent = 0; // 新增：实际断电电流值（判断时监测到的值）
 
+        private readonly double _overshootAlarmDeltaA = 0; // 正向峰值超阈值报警增量（A）；<=0 表示禁用（由 AlarmConfig.xml 注入）
+
+        /// <summary>
+        ///     报警事件：由 Runner 判定“异常/过流”等场景触发。
+        ///     string 为原因/摘要（供上层触发硬件报警与报警快照导出）。
+        /// </summary>
+        public event Action<int, string> AlarmRaised;
+
 
         public EpbCycleRunner(
             int channel,
@@ -121,12 +129,14 @@ namespace Controller
             int sampleMs = 2,
             int peakIgnoreMs = 80,
             ILogger log = null,
-            EpbManager manager = null) // ★ 新增（可选，保持兼容）
+            EpbManager manager = null,
+            double overshootAlarmDeltaA = 0) // ★ 新增：峰值超限报警增量（A），<=0 禁用
             : this(channel, hydId, readCurrent, doController, hydraulic, posThresholdA, holdMs, sampleMs, peakIgnoreMs,
                 log)
         {
             // …你原有的赋值保持不变…
             _manager = manager; // ★ 保存 manager
+            _overshootAlarmDeltaA = overshootAlarmDeltaA;
         }
 
         public EpbCycleRunner(
@@ -142,7 +152,8 @@ namespace Controller
             int peakIgnoreMs = 80,
             ILogger log = null,
             GlobalConfig cfg = null,
-            EpbManager manager = null) // ★ 新增（可选，保持兼容）
+            EpbManager manager = null,
+            double overshootAlarmDeltaA = 0) // ★ 新增：峰值超限报警增量（A），<=0 禁用
             : this(channel, hydId, readCurrent, doController, hydraulic, posThresholdA, holdMs, sampleMs, peakIgnoreMs,
                 log)
         {
@@ -152,6 +163,7 @@ namespace Controller
             _safetyMarginA =
                 _cfg?.Test.EpbCycleRunner.GetRunnerChannel(channel).SafetyMarginA ?? 2.0; // SafetyMarginA为null 则设置为2
             _acq = twoDeviceAiAcquirer;
+            _overshootAlarmDeltaA = overshootAlarmDeltaA;
 
             // 在此处设置epb卡钳的实际运行参数
             DefaultPreReleaseKeepMs = _cfg?.Test.EpbCycleRunner.GetRunnerChannel(channel).PreReleaseKeepMs ?? 500; // 预释放保持时长
@@ -584,6 +596,15 @@ namespace Controller
                     _log?.Warn($"EPB[{_channel}] 正向未达到阈值/平台（Thr={_posThrA:F2}A），本轮终止。", "EPB");
                     _do.SetEpbOff(_channel);
 
+                    try
+                    {
+                        AlarmRaised?.Invoke(_channel, $"ClampTimeout Thr={_posThrA:F2}A");
+                    }
+                    catch
+                    {
+                        // ignore
+                    }
+
                     // ——（新增）断电后，先结束峰值捕获并以【警告】输出 —— //
                     if (_acq != null)
                     {
@@ -616,6 +637,25 @@ namespace Controller
                             _log?.Error(
                                 $"EPB[{_channel}]，阈值：{_posThrA}A,差值：{(_posThrA - peak.MaxAmp):F3}|{(peak.MaxAmp - _actualCutoffCurrent):F3}|{(peak.MaxAmp - (_posThrA - _safetyMarginA)):F3}, 截断值：{_actualCutoffCurrent:F3}|[{_safetyMarginA}]A, 正向段峰值：Imax={peak.MaxAmp:F3}A @ {peak.MaxAt:HH:mm:ss.fff}，Samples={peak.SampleCount}。",
                                 "EPB");
+
+                            // —— 报警判据：峰值超阈值增量 ——
+                            try
+                            {
+                                if (_overshootAlarmDeltaA > 0)
+                                {
+                                    var overshoot = peak.MaxAmp - _posThrA;
+                                    if (overshoot >= _overshootAlarmDeltaA)
+                                    {
+                                        AlarmRaised?.Invoke(
+                                            _channel,
+                                            $"OverCurrent Imax={peak.MaxAmp:F3}A Thr={_posThrA:F2}A Δ={overshoot:F3}A (LimitΔ={_overshootAlarmDeltaA:F3}A)");
+                                    }
+                                }
+                            }
+                            catch
+                            {
+                                // ignore
+                            }
                         });
                 }
 

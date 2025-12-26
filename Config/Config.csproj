@@ -46,6 +46,8 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="AiConfigDetailRecord.cs" />
+    <Compile Include="AlarmConfigLoader.cs" />
+    <Compile Include="AlarmConfigModels.cs" />
     <Compile Include="EpbTestRecord.cs" />
     <Compile Include="ConfigLoader.cs" />
     <Compile Include="IAppLogger.cs" />
