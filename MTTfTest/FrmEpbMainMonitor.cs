@@ -166,8 +166,6 @@ namespace MTEmbTest
         // 报警子系统（泓格 M-7055D / RS-485）
         private AlarmManager _alarmManager;
         private Config.AlarmConfig _alarmCfg;
-        private UICheckBox _cbBuzzerEnabled;
-        private UIButton _btnClearAlarms;
 
         /// <summary>固定的 X 轴窗口宽度（秒）。缺省沿用 ClsGlobal.XDuration。</summary>
         private double _fixedXWindowSec;
@@ -202,6 +200,10 @@ namespace MTEmbTest
         {
             try
             {
+                // 默认：先禁用/隐藏，只有启用报警后再打开
+                if (CbBuzzerEnabled != null) { CbBuzzerEnabled.Enabled = false; CbBuzzerEnabled.Visible = false; }
+                if (BtnClearAlarms != null) { BtnClearAlarms.Enabled = false; BtnClearAlarms.Visible = false; }
+
                 var alarmCfgPath = Path.Combine(Environment.CurrentDirectory, "Config", "AlarmConfig.xml");
                 if (!File.Exists(alarmCfgPath))
                 {
@@ -215,70 +217,56 @@ namespace MTEmbTest
                 _epb.Alarm = _alarmManager;
                 _epb.AlarmConfig = _alarmCfg;
 
-                // —— 运行时动态加两个最小控件：蜂鸣器启用 + 一键全关 ——
-                // 放到与 BtnSettingDetail 相同容器下，避免破坏 Designer。
-                var host = BtnSettingDetail?.Parent ?? this;
-
-                if (_cbBuzzerEnabled == null)
+                // —— 改为：Designer 中固定存在控件，运行时只做状态/事件绑定 ——
+                if (CbBuzzerEnabled != null)
                 {
-                    _cbBuzzerEnabled = new UICheckBox
-                    {
-                        Text = "蜂鸣器",
-                        Checked = _alarmManager.BuzzerEnabled,
-                        AutoSize = true
-                    };
+                    CbBuzzerEnabled.Visible = true;
+                    CbBuzzerEnabled.Enabled = true;
+                    CbBuzzerEnabled.Checked = _alarmManager.BuzzerEnabled;
 
-                    _cbBuzzerEnabled.CheckedChanged += (_, __) =>
-                    {
-                        try
-                        {
-                            _alarmManager?.SetBuzzerEnabled(_cbBuzzerEnabled.Checked);
-                        }
-                        catch
-                        {
-                            // ignore
-                        }
-                    };
-
-                    // 尽量放到设置按钮旁边
-                    var x = BtnSettingDetail != null ? BtnSettingDetail.Right + 10 : 10;
-                    var y = BtnSettingDetail != null ? BtnSettingDetail.Top + 6 : 10;
-                    _cbBuzzerEnabled.Location = new Point(x, y);
-                    host.Controls.Add(_cbBuzzerEnabled);
-                    _cbBuzzerEnabled.BringToFront();
+                    // 防重复订阅
+                    CbBuzzerEnabled.CheckedChanged -= CbBuzzerEnabled_CheckedChanged;
+                    CbBuzzerEnabled.CheckedChanged += CbBuzzerEnabled_CheckedChanged;
                 }
 
-                if (_btnClearAlarms == null)
+                if (BtnClearAlarms != null)
                 {
-                    _btnClearAlarms = new UIButton
-                    {
-                        Text = "一键全关报警",
-                        MinimumSize = new Size(120, 30)
-                    };
+                    BtnClearAlarms.Visible = true;
+                    BtnClearAlarms.Enabled = true;
 
-                    _btnClearAlarms.Click += async (_, __) =>
-                    {
-                        try
-                        {
-                            if (_alarmManager != null)
-                                await _alarmManager.ClearAllAsync();
-                        }
-                        catch (Exception ex)
-                        {
-                            logger?.Warn($"全关报警失败：{ex.Message}", "报警");
-                        }
-                    };
-
-                    var x = _cbBuzzerEnabled != null ? _cbBuzzerEnabled.Right + 10 : (BtnSettingDetail != null ? BtnSettingDetail.Right + 10 : 10);
-                    var y = BtnSettingDetail != null ? BtnSettingDetail.Top : 10;
-                    _btnClearAlarms.Location = new Point(x, y);
-                    host.Controls.Add(_btnClearAlarms);
-                    _btnClearAlarms.BringToFront();
+                    // 防重复订阅
+                    BtnClearAlarms.Click -= BtnClearAlarms_Click;
+                    BtnClearAlarms.Click += BtnClearAlarms_Click;
                 }
             }
             catch (Exception ex)
             {
                 logger?.Warn($"报警子系统初始化失败：{ex.Message}", "报警");
+            }
+        }
+
+        private void CbBuzzerEnabled_CheckedChanged(object sender, EventArgs e)
+        {
+            try
+            {
+                _alarmManager?.SetBuzzerEnabled(CbBuzzerEnabled.Checked);
+            }
+            catch
+            {
+                // ignore
+            }
+        }
+
+        private async void BtnClearAlarms_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                if (_alarmManager != null)
+                    await _alarmManager.ClearAllAsync();
+            }
+            catch (Exception ex)
+            {
+                logger?.Warn($"全关报警失败：{ex.Message}", "报警");
             }
         }
         private ConcurrentQueue<byte[]> activeWriteBuffer;
