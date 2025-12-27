@@ -78,6 +78,16 @@ XML配置位于`MTTfTest/Config/`：
 - 报警发生时立即导出“当前圈 + 前 9 圈”，并同时导出所有正在运行通道
 - 目录根：`StoreDir\TestName\AlarmSnapshots\yyyyMMdd_HHmmss-EPBxx\EPBxx(_ALARM)\...`
 
+落盘圈状态（重要口径）：
+- `running`：已 BeginCycle 但尚未封圈（报警快照可选择包含）
+- `completed`：正常封圈
+- `alarm`：报警触发导致该圈中断封圈（该圈仍计数，且应纳入“最近 N 圈”导出/保留）
+
+计数一致性（重要约束）：
+- 报警停机必须避免遗留 `status='running'` 的悬挂圈，否则会导致 UI（`EpbTestRecord.RunCount`）与落盘圈次数漂移
+- 实现侧要求：报警停机时必须调用 `IEpbCycleRecorder.AlarmCycle(...)` 封圈；正常结束使用 `CompleteCycle(...)`
+- RunCount 的权威口径是：`COUNT(status IN ('completed','alarm'))`，加载试验时会从项目 `index.db` 回填并立即写回 `Config/TestConfig.xml`，以保证 UI、磁盘与配置文件同步
+
 ## 第三方依赖
 - **NationalInstruments.DAQmx** - 必须安装NI驱动
 - **DevExpress v24.2** - 企业控件（需授权）
