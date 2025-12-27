@@ -669,8 +669,8 @@ namespace Controller
             if (ok) // 成功完成一圈
             {
                 // 该通道完成了第 n 圈：
-                 _sessionRunCount++;
-                ChannelCycleCompleted?.Invoke(_channel, _sessionRunCount++); // 通知外部，完成一圈
+                _sessionRunCount++;
+                ChannelCycleCompleted?.Invoke(_channel, _sessionRunCount); // 通知外部，完成一圈
             }
 
             // —— 2) 计算“迟到量”（lateness）：实际耗时 - (periodMs - tailBaseMs) —— //

@@ -58,6 +58,9 @@ namespace Controller
         // 报警触发“立即停机”去重：避免同一通道短时间内重复 Stop
         private readonly ConcurrentDictionary<int, byte> _alarmStopRequested = new();
 
+        // ★ 跟踪每个通道“当前已 BeginCycle 的圈号”：用于报警停机时把当前圈封为 status='alarm'，避免遗留 running 悬挂圈
+        private readonly ConcurrentDictionary<int, int> _currentCycleNumberByChannel = new();
+
         // 通道级“硬停机”取消源：用于中断当前圈内仍在运行的异步流程（Delay/等待判据等）
         private readonly ConcurrentDictionary<int, CancellationTokenSource> _stopCtsByChannel = new();
 
@@ -106,6 +109,72 @@ namespace Controller
         private bool IsHydraulicParticipant(int channel)
         {
             return _hydraulicParticipants.ContainsKey(channel);
+        }
+
+
+        /// <summary>
+        ///     判断指定通道是否已进入“报警停机”流程（用于圈结账时写入 <c>status='alarm'</c>）。
+        /// </summary>
+        /// <param name="channel">EPB 通道号（1..12）。</param>
+        /// <returns>若该通道已触发报警停机则返回 true，否则返回 false。</returns>
+        private bool IsAlarmStopRequested(int channel)
+        {
+            return _alarmStopRequested.ContainsKey(channel);
+        }
+
+
+        /// <summary>
+        ///     记录通道“当前圈号”（BeginCycle 后调用），用于报警停机时封圈。
+        /// </summary>
+        /// <param name="channel">EPB 通道号（1..12）。</param>
+        /// <param name="cycleNumber">当前圈号（与 Recorder.BeginCycle 一致）。</param>
+        private void MarkCurrentCycleNumber(int channel, int cycleNumber)
+        {
+            _currentCycleNumberByChannel[channel] = cycleNumber;
+        }
+
+
+        /// <summary>
+        ///     清除通道“当前圈号”（Complete/Alarm 封圈后调用），避免后续误封圈。
+        /// </summary>
+        /// <param name="channel">EPB 通道号（1..12）。</param>
+        private void ClearCurrentCycleNumber(int channel)
+        {
+            _currentCycleNumberByChannel.TryRemove(channel, out _);
+        }
+
+
+        /// <summary>
+        ///     在报警停机路径中，尝试把“当前圈”封为 <c>status='alarm'</c>。
+        /// </summary>
+        /// <param name="channel">EPB 通道号（1..12）。</param>
+        /// <remarks>
+        ///     线程模型：可在报警事件回调线程/后台任务中调用；内部不抛异常（仅 best-effort）。
+        ///     <para>
+        ///     设计目的：保证 UI(EpbTestRecord) 计数与落盘圈数一致，避免 BeginCycle 后未 Complete 导致的“running 悬挂圈”。
+        ///     </para>
+        /// </remarks>
+        private void TryFinalizeCurrentCycleAsAlarm(int channel)
+        {
+            var recorder = Recorder;
+            if (recorder == null) return;
+
+            if (!_currentCycleNumberByChannel.TryGetValue(channel, out var cycleNumber))
+                return;
+
+            try
+            {
+                var finalN = recorder.GetCurrentCycleSampleCount(channel);
+                recorder.AlarmCycle(channel, cycleNumber, finalN, DateTime.UtcNow);
+            }
+            catch
+            {
+                // ignore
+            }
+            finally
+            {
+                ClearCurrentCycleNumber(channel);
+            }
         }
 
 
@@ -480,15 +549,43 @@ namespace Controller
                 _log.Info($"EPB[{channel}] 周期 {i}/{_cfg.Test.TestTarget} 开始。", "EPB");
 
 
-                // —— 新增：圈开始（圈号 i，以 1 开始；若你的计数为 0 开始，可按需调整）
+                // —— 圈开始（圈号 i，以 1 开始；若你的计数为 0 开始，可按需调整）——
                 Recorder?.BeginCycle(channel, i, DateTime.UtcNow);
+                MarkCurrentCycleNumber(channel, i);
 
+                var ok = false;
+                try
+                {
+                    ok = await runner.RunOneAsync(periodMs, ct).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    ok = false;
+                }
+                catch
+                {
+                    ok = false;
+                }
 
-                var ok = await runner.RunOneAsync(periodMs, ct).ConfigureAwait(false);
+                // —— 圈结束：根据是否报警停机决定封圈状态 ——
+                var recorder = Recorder;
+                if (recorder != null)
+                {
+                    try
+                    {
+                        var finalN = recorder.GetCurrentCycleSampleCount(channel);
+                        if (IsAlarmStopRequested(channel))
+                            recorder.AlarmCycle(channel, i, finalN, DateTime.UtcNow);
+                        else
+                            recorder.CompleteCycle(channel, i, finalN, DateTime.UtcNow);
+                    }
+                    catch
+                    {
+                        // ignore
+                    }
+                }
 
-                // —— 新增：圈结束（取本圈累计样本数做 finalN；若 Recorder 为 null 则 finalN=0）
-                var finalN = Recorder?.GetCurrentCycleSampleCount(channel) ?? 0;
-                Recorder?.CompleteCycle(channel, i, finalN, DateTime.UtcNow);
+                ClearCurrentCycleNumber(channel);
 
                 // 若本通道自然完成最后一圈，则做统一收尾（含“停止即存最近10圈”）
                 if (i >= _cfg.Test.TestTarget)
@@ -617,6 +714,9 @@ namespace Controller
             // 先取消“硬停机”Token，尽快中断当前圈内仍在运行的异步逻辑
             try { CancelStopCts(channel); } catch { /* ignore */ }
 
+            // ★关键：在报警停机路径里尽早把“当前圈”封为 alarm，避免 FlushRecent 时看不到该圈/或遗留 running 悬挂圈
+            try { TryFinalizeCurrentCycleAsAlarm(channel); } catch { /* ignore */ }
+
             // —— 停止“当前轮”的计时器 —— //
             if (_timers.TryGetValue(channel, out var t))
             {
@@ -673,19 +773,14 @@ namespace Controller
 
         private void OnRunnerAlarmRaised(int channel, string reason)
         {
+            // ★同步去重 latch：保证计时器回调能尽快识别“本圈应封为 alarm”，但不在此线程做 IO
+            if (!_alarmStopRequested.TryAdd(channel, 0))
+                return;
+
             // 不阻塞 Runner/定时器线程
             _ = Task.Run(async () =>
             {
-                // ① 报警通道立即停机（去重，避免重复 Stop）
-                try
-                {
-                    if (_alarmStopRequested.TryAdd(channel, 0))
-                        StopChannelOnAlarm(channel);
-                }
-                catch
-                {
-                    // ignore
-                }
+                try { StopChannelOnAlarm(channel); } catch { /* ignore */ }
 
                 try
                 {

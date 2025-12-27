@@ -383,6 +383,28 @@ public sealed class EpbDiskWriter : IDisposable
     }
 
     /// <summary>
+    ///     将指定通道的当前圈以“报警中断”封圈。
+    ///     <list type="bullet">
+    ///         <item>用于“报警停机也必须计数”的一致性：避免遗留 <c>status='running'</c> 的悬挂圈。</item>
+    ///         <item>该方法与 <see cref="CompleteCycle"/> 的区别仅在于将 <c>status</c> 写为 <c>alarm</c>。</item>
+    ///     </list>
+    /// </summary>
+    /// <param name="epbId">EPB 通道号（1..12）。</param>
+    /// <param name="cycleNumber">圈号（必须与 BeginCycle 使用的圈号一致）。</param>
+    /// <param name="finalSampleCount">截至报警发生时的样本数（通常来自 <see cref="GetCurrentCycleSampleCount"/>）。</param>
+    /// <param name="endUtc">报警发生的时间（UTC）。</param>
+    public void AlarmCycle(int epbId, int cycleNumber, int finalSampleCount, DateTime endUtc)
+    {
+        var s = GetState(epbId);
+        lock (s.Gate)
+        {
+            MarkCycleAlarm(epbId, cycleNumber, finalSampleCount, endUtc);
+            s.CurrentCycle = null;
+            s.CurrentSampleIndex = 0;
+        }
+    }
+
+    /// <summary>
     ///     写入单个样本（线程安全）。若未开正式圈，则在 Free-Run 开启时写入（CycleNumber=0）。
     /// </summary>
     public void WriteSample(int epbId, DateTime tsUtc, double epbCurrent, double groupPressure)
@@ -489,7 +511,7 @@ public sealed class EpbDiskWriter : IDisposable
     /// <summary>
     ///     立即导出某 EPB 通道“最新 N 圈”的数据到本地文件（CSV + BIN），不删除索引。
     ///     <list type="number">
-    ///         <item>1. 只导出 <c>status='completed'</c> 的正式圈（CycleNumber &gt; 0）。</item>
+    ///         <item>1. 只导出 <c>status='completed'</c> 或 <c>status='alarm'</c> 的正式圈（CycleNumber &gt; 0）。</item>
     ///         <item>2. 如果实际完成的圈数少于 <paramref name="latestN"/>，则导出全部已完成圈。</item>
     ///         <item>3. 导出路径示例：DataStore\Latest\EPB1\yyyyMMdd_HHmmss\EPB1_Cycle_000001.csv/bin。</item>
     ///     </list>
@@ -762,6 +784,56 @@ SELECT COALESCE(MAX(cycle_number), 0)
 
 
 
+        /// <summary>
+        ///     查询指定 EPB 通道“已封圈”的累计圈次数。
+        /// </summary>
+        /// <param name="epbId">EPB 通道号（1..12）。</param>
+        /// <returns>
+        ///     已封圈圈次数（仅统计 CycleNumber &gt; 0 且 <c>status in ('completed','alarm')</c> 的记录）。
+        /// </returns>
+        /// <remarks>
+        ///     <para>
+        ///     口径说明：
+        ///     <list type="bullet">
+        ///         <item>
+        ///             <description>
+        ///             <c>completed</c>：正常封圈；
+        ///             </description>
+        ///         </item>
+        ///         <item>
+        ///             <description>
+        ///             <c>alarm</c>：报警触发导致该圈中断封圈（仍应计数，保证 UI 与落盘一致）；
+        ///             </description>
+        ///         </item>
+        ///         <item>
+        ///             <description>
+        ///             <c>running</c>：已 BeginCycle 但尚未封圈，不应计入累计圈次数。
+        ///             </description>
+        ///         </item>
+        ///     </list>
+        ///     </para>
+        ///     <para>
+        ///     典型用途：软件启动加载试验时，用 DB 回填 <c>EpbTestRecord.RunCount</c>，
+        ///     将 RunCount 的权威口径固定为：
+        ///     <c>COUNT(status IN ('completed','alarm'))</c>。
+        ///     </para>
+        /// </remarks>
+        public int GetClosedCycleCount(int epbId)
+        {
+                using var cmd = _conn.CreateCommand();
+                cmd.CommandText = $@"
+SELECT COUNT(1)
+    FROM {TABLE_CYCLES}
+ WHERE epb_id=@e
+     AND cycle_number > 0
+     AND status IN ('completed','alarm')";
+                cmd.Parameters.AddWithValue("@e", epbId);
+                var obj = cmd.ExecuteScalar();
+                return Convert.ToInt32(obj);
+        }
+
+
+
     /// <summary>设置“立即停止并保留最新 N 圈”（上层在 StopChannel 前可调用）。</summary>
     public void StopNowAndPersist(int epbId, int keepLatestN = 10, string action = "archive")
     {
@@ -957,6 +1029,20 @@ UPDATE {TABLE_CYCLES}
         cmd.ExecuteNonQuery();
     }
 
+    private void MarkCycleAlarm(int epbId, int cycleNumber, int finalSampleCount, DateTime endUtc)
+    {
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = $@"
+UPDATE {TABLE_CYCLES}
+   SET sample_count=@n, end_time=@et, status='alarm'
+ WHERE epb_id=@e AND cycle_number=@c";
+        cmd.Parameters.AddWithValue("@n", finalSampleCount);
+        cmd.Parameters.AddWithValue("@et", endUtc.ToLocalTime().ToString("o"));
+        cmd.Parameters.AddWithValue("@e", epbId);
+        cmd.Parameters.AddWithValue("@c", cycleNumber);
+        cmd.ExecuteNonQuery();
+    }
+
     private List<CycleInfo> GetCyclesToPurge(int epbId, int keepLatestN)
     {
         var list = new List<CycleInfo>();
@@ -1002,9 +1088,9 @@ SELECT epb_id, cycle_number, start_time, end_time, start_position, sample_count,
 
         var list = new List<CycleInfo>();
         using var cmd = _conn.CreateCommand();
-                var statusFilter = includeRunningCycle
-                        ? "AND status IN ('completed','running')"
-                        : "AND status = 'completed'";
+        var statusFilter = includeRunningCycle
+            ? "AND status IN ('completed','alarm','running')"
+            : "AND status IN ('completed','alarm')";
         cmd.CommandText = $@"
 SELECT epb_id, cycle_number, start_time, end_time, start_position, sample_count, status
   FROM {TABLE_CYCLES}
@@ -1091,6 +1177,18 @@ public interface IEpbCycleRecorder
     void CompleteCycle(int epbId, int cycleNumber, int finalN, DateTime utcNow);
 
     /// <summary>
+    ///     将当前圈以“报警中断”封圈（写入 <c>status='alarm'</c>）。
+    ///     <para>
+    ///     该方法用于保证“报警停机圈次也计数且可导出”，同时避免遗留 <c>status='running'</c> 悬挂圈导致计数漂移。
+    ///     </para>
+    /// </summary>
+    /// <param name="epbId">EPB 通道号（1..12）。</param>
+    /// <param name="cycleNumber">圈号（与 BeginCycle 使用的圈号一致）。</param>
+    /// <param name="finalN">截至报警发生时的样本数。</param>
+    /// <param name="utcNow">报警发生时间（UTC）。</param>
+    void AlarmCycle(int epbId, int cycleNumber, int finalN, DateTime utcNow);
+
+    /// <summary>
     ///     在停止卡钳时，将该通道“最新 N 圈”正式数据（Cycle&gt;0）落盘；
     ///     Free-Run（Cycle=0）不在此范围，若需要可单独调用导出 API。
     /// </summary>
@@ -1164,6 +1262,11 @@ public sealed class DiskWriterRecorderAdapter : IEpbCycleRecorder
     public void CompleteCycle(int epbId, int cycleNumber, int finalN, DateTime endUtc)
     {
         _writer.CompleteCycle(epbId, cycleNumber, finalN, endUtc);
+    }
+
+    public void AlarmCycle(int epbId, int cycleNumber, int finalN, DateTime utcNow)
+    {
+        _writer.AlarmCycle(epbId, cycleNumber, finalN, utcNow);
     }
 }
 

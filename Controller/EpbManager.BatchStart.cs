@@ -165,22 +165,60 @@ namespace Controller
                             var deadlineUtc = t0.AddMilliseconds((k + 1) * PeriodMs);
 
                             // 2.5) ★ 圈开始：通知 Recorder
-                            Recorder?.BeginCycle(ch, cycleIndex + baseCycle, DateTime.UtcNow);
-
+                            var cycleNumber = cycleIndex + baseCycle;
+                            Recorder?.BeginCycle(ch, cycleNumber, DateTime.UtcNow);
+                            MarkCurrentCycleNumber(ch, cycleNumber);
 
                             // 3) 跑一圈（对齐外壳版）
-                            var ok = await runner.RunOneAlignedAsync(
-                                PeriodMs,
-                                T8BaseMs,
-                                phase,
-                                T8MinMs,
-                                deadlineUtc,
-                                token
-                            ).ConfigureAwait(false);
+                            var ok = false;
+                            try
+                            {
+                                ok = await runner.RunOneAlignedAsync(
+                                    PeriodMs,
+                                    T8BaseMs,
+                                    phase,
+                                    T8MinMs,
+                                    deadlineUtc,
+                                    token
+                                ).ConfigureAwait(false);
+                            }
+                            catch (OperationCanceledException)
+                            {
+                                ok = false;
+                            }
+                            catch
+                            {
+                                ok = false;
+                            }
 
-                            // 4) ★ 圈结束：从 Recorder 拿当前圈样本数
-                            var finalN = Recorder?.GetCurrentCycleSampleCount(ch) ?? 0;
-                            Recorder?.CompleteCycle(ch, cycleIndex + baseCycle, finalN, DateTime.UtcNow);
+                            // 4) ★ 圈结束：根据是否报警停机决定封圈状态
+                            var recorder = Recorder;
+                            if (recorder != null)
+                            {
+                                try
+                                {
+                                    var finalN = recorder.GetCurrentCycleSampleCount(ch);
+                                    if (IsAlarmStopRequested(ch))
+                                    {
+                                        recorder.AlarmCycle(ch, cycleNumber, finalN, DateTime.UtcNow);
+
+                                        // ★补发“单圈完成”事件：报警中断圈也必须计数（UI 的 EpbTestRecord 会在该事件里 +1）
+                                        // 仅在 runner 未返回成功时补发，避免与 runner 的 ChannelCycleCompleted 重复。
+                                        if (!ok)
+                                            ChannelCycleCompleted?.Invoke(ch, cycleIndex);
+                                    }
+                                    else
+                                    {
+                                        recorder.CompleteCycle(ch, cycleNumber, finalN, DateTime.UtcNow);
+                                    }
+                                }
+                                catch
+                                {
+                                    // ignore
+                                }
+                            }
+
+                            ClearCurrentCycleNumber(ch);
 
                             // 若该通道自然完成最后一圈：统一收尾（含“停止即存最近10圈”），
                             // 并从运行集合中移除，避免影响其它仍在运行通道的逻辑。

@@ -160,6 +160,21 @@ namespace MTEmbTest
 
         // 落盘相关字段
         private EpbDiskWriter _diskWriter;
+
+        /// <summary>
+        ///     启动加载试验时，是否应当用 DB(index.db) 回填 RunCount。
+        ///     <para>
+        ///     仅当“项目目录下已有 index.db”时为 true，避免首次新建项目时误把 XML 进度覆盖为 0。
+        ///     </para>
+        /// </summary>
+        private bool _shouldBackfillRunCountFromDbOnLoad;
+
+        /// <summary>
+        ///     启动加载试验时，RunCount 是否发生过 DB→UI 的回填变更。
+        ///     <para>用于决定是否立即写回项目 TestConfig.xml。</para>
+        /// </summary>
+        private bool _startupRunCountBackfillChanged;
+
         private DoController _do;
         private EpbManager _epb;
 
@@ -833,8 +848,36 @@ namespace MTEmbTest
                 ConfigLoader.UpdateDefaultTestFromProject(projectTest, logger);
 
 
+                // ===== 数据落盘：优先初始化写盘器（用于启动时从 DB 回填 RunCount） =====
+                var projectIndexDir = Path.Combine(_cfg.Test.StoreDir, _cfg.Test.TestName);
+                var existingIndexDbPath = Path.Combine(projectIndexDir, "index.db");
+                _shouldBackfillRunCountFromDbOnLoad = File.Exists(existingIndexDbPath);
+
+                // 1) 创建写盘器（使用 DataRetentionPolicy）
+                var policy = new DataRetentionPolicy
+                {
+                    DataStorePath = Path.Combine(Environment.CurrentDirectory, "DataStore"), // 数据根目录
+                    IndexAndExportPath = projectIndexDir, // 索引和导出目录
+                    FileSizeMb = 100, // 每通道 .dat大小，单位MB，可按需改 384
+                    RetainLatestCycles = 10, // 停止时“最新N圈”
+                    CleanupMode = "archive" // 或 "delete"
+                };
+                _diskWriter = new EpbDiskWriter(policy);
+                //_diskWriter.StartFreeRun(1); // 暂时注释
+
+                // 适配器：实现 IEpbCycleRecorder，把 EpbDiskWriter 包起来
+                _recorder = new DiskWriterRecorderAdapter(_diskWriter);
+
+
                 // 初始化 EPB 控制器的记录
                 InitializeEpbRecords();
+
+                // 若启动时按 DB 权威口径修正了 RunCount，则立即写回项目 TestConfig.xml，保证下次启动一致
+                if (_startupRunCountBackfillChanged)
+                {
+                    SaveEpbRecordsToTestConfigSafe();
+                }
+
                 // 初始化通道记录概览区域
                 InitEpbSummaryPanel();
 
@@ -914,24 +957,8 @@ namespace MTEmbTest
 
 
                 // 1) 创建写盘器（使用 DataRetentionPolicy）
-                var policy = new DataRetentionPolicy
-                {
-                    DataStorePath = Path.Combine(Environment.CurrentDirectory, "DataStore"), // 数据根目录
-                    IndexAndExportPath = Path.Combine(_cfg.Test.StoreDir, _cfg.Test.TestName), // 索引和导出目录
-                    FileSizeMb = 100, // 每通道 .dat大小，单位MB，可按需改 384
-                    RetainLatestCycles = 10, // 停止时“最新N圈”
-                    CleanupMode = "archive" // 或 "delete"
-                };
-                _diskWriter = new EpbDiskWriter(policy);
-                //_diskWriter.StartFreeRun(1); // 暂时注释
-
-
-                // 适配器：实现 IEpbCycleRecorder，把 EpbDiskWriter 包起来
-                var recorder = new DiskWriterRecorderAdapter(_diskWriter);
-
-
                 // 2) 注入到 EpbManager，数据落盘由 EpbManager 控制
-                _epb.Recorder = recorder;
+                _epb.Recorder = _recorder;
 
 
                 #region 曲线勾选控件相关
@@ -1029,10 +1056,67 @@ namespace MTEmbTest
             // 3) 按通道排序一下，便于 UI 显示
             _uiEpbRecords.Sort((a, b) => a.Id.CompareTo(b.Id));
 
+            // 3.1) 启动加载时：按“DB 为权威”的口径回填 RunCount（completed + alarm）
+            _startupRunCountBackfillChanged = TryBackfillRunCountFromDiskIndex();
+
             foreach (var rec in _uiEpbRecords)
             {
                 rec.InitializeOnLoad(DateTime.Now);
             }
+        }
+
+
+        /// <summary>
+        ///     启动加载试验时，从 SQLite(index.db) 回填每个 EPB 的累计圈次数到 <see cref="_uiEpbRecords"/>。
+        /// </summary>
+        /// <returns>
+        ///     若存在任何通道的 <see cref="EpbTestRecord.RunCount"/> 被更新，则返回 true；否则返回 false。
+        /// </returns>
+        /// <remarks>
+        ///     <para>
+        ///     计数权威口径：<c>RunCount = COUNT(status IN ('completed','alarm'))</c>。
+        ///     </para>
+        ///     <para>
+        ///     为避免“首次新建项目/缺失 DB 文件”导致把 XML 进度覆盖成 0：
+        ///     仅当启动时检测到项目目录下已存在 index.db 时，才执行回填。
+        ///     </para>
+        /// </remarks>
+        private bool TryBackfillRunCountFromDiskIndex()
+        {
+            if (!_shouldBackfillRunCountFromDbOnLoad)
+                return false;
+
+            var writer = _diskWriter;
+            if (writer == null)
+                return false;
+
+            var changed = false;
+
+            try
+            {
+                foreach (var rec in _uiEpbRecords)
+                {
+                    if (rec == null || rec.Id < 1 || rec.Id > 12)
+                        continue;
+
+                    var dbCount = writer.GetClosedCycleCount(rec.Id);
+                    if (dbCount < 0) dbCount = 0;
+
+                    if (rec.RunCount != dbCount)
+                    {
+                        rec.RunCount = dbCount;
+                        changed = true;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                // 启动容错：不因为 DB 回填失败阻塞程序
+                logger?.Warn("启动时从 index.db 回填 RunCount 失败: " + ex.Message, "数据落盘");
+                return false;
+            }
+
+            return changed;
         }
 
 
