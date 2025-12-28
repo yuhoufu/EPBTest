@@ -241,13 +241,122 @@ namespace Controller
 
 
         /// <summary>
-        ///     由采集线程调用：喂入一个“低时延电流样本”（Stopwatch Tick 与电流）。
+        ///     由采集线程调用：喂入一个“低时延电流样本”（Stopwatch Tick 与电流），并为本通道的
+        ///     “夹紧阈值/平台等待器”（若已 Arm）提供事件驱动的判定输入。
         /// </summary>
+        /// <param name="epbChannel">EPB 通道号（1..12）。</param>
+        /// <param name="tick">该样本对应的 <see cref="Stopwatch"/> Tick（建议与采集时间戳同源转换而来）。</param>
+        /// <param name="currentAmp">电流值（A）。通常来自采集回调的 fast 值。</param>
+        /// <remarks>
+        /// 线程模型：
+        /// <list type="bullet">
+        /// <item>本方法可能运行在 NI DAQ 回调线程或后台采集线程上，必须避免阻塞与重操作。</item>
+        /// <item>内部仅做 O(1) 写入与“窗口扫描（几十点级）”的轻量判断，避免影响采集链路。</item>
+        /// </list>
+        /// 设计目的：
+        /// <list type="bullet">
+        /// <item>让 <see cref="WaitCurrentAboveAsync(double,double,CancellationToken,int,double,double,int)"/> 的触发时刻尽可能贴近采样到达时刻，
+        /// 避免因 Task.Delay/线程调度造成“已经远超阈值才触发”。</item>
+        /// </list>
+        /// </remarks>
         public void FeedCurrentSample(int epbChannel, long tick, double currentAmp)
         {
             if (epbChannel < 1 || epbChannel >= _currentBus.Length) return;
             _currentBus[epbChannel].Add(new CurrentSample(tick, currentAmp));
+
+            // 事件驱动判定：仅对本 Runner 所属通道生效
+            if (epbChannel != _channel) return;
+
+            var waiter = Volatile.Read(ref _currentAboveWaiter);
+            if (waiter == null) return;
+
+            try
+            {
+                // 正向夹紧阈值判据使用电流幅值（A），避免硬件/标定导致符号翻转影响过流判断。
+                waiter.OnSample(tick, Math.Abs(currentAmp));
+            }
+            catch
+            {
+                // 采集线程必须“永不抛出”影响上游；异常吞掉即可。
+            }
         }
+
+        /// <summary>
+        ///     “夹紧阈值/平台等待器”：由 <see cref="WaitCurrentAboveAsync(double,double,CancellationToken,int,double,double,int)"/> Arm，
+        ///     再由 <see cref="FeedCurrentSample"/> 在采集样本到达时进行事件驱动判定并完成任务。
+        /// </summary>
+        private sealed class CurrentAboveWaiter
+        {
+            private readonly long _startTick;
+            private readonly double _thrA;
+            private readonly double _safetyMarginA;
+            private readonly double _iEmptyFwdA;
+
+            private readonly int _winCap;
+            private readonly double[] _ring;
+            private int _count;
+            private int _head;
+
+            public readonly TaskCompletionSource<(bool ok, bool isPlatform, double iNow, long tick)> Tcs;
+
+            public CurrentAboveWaiter(long startTick, double thrA, double safetyMarginA, double iEmptyFwdA, int winCap)
+            {
+                _startTick = startTick;
+                _thrA = thrA;
+                _safetyMarginA = safetyMarginA;
+                _iEmptyFwdA = iEmptyFwdA;
+
+                _winCap = Math.Max(1, winCap);
+                _ring = new double[_winCap];
+                _count = 0;
+                _head = 0;
+
+                Tcs = new TaskCompletionSource<(bool ok, bool isPlatform, double iNow, long tick)>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+
+            public void OnSample(long tick, double currentAbs)
+            {
+                if (tick < _startTick) return;
+                if (Tcs.Task.IsCompleted) return;
+
+                // ① 阈值判据：I + margin ≥ thr
+                if (currentAbs + _safetyMarginA >= _thrA)
+                {
+                    Tcs.TrySetResult((true, false, currentAbs, tick));
+                    return;
+                }
+
+                // ② 平台判据：窗口内平坦，且高于 Iempty+ + margin
+                _ring[_head] = currentAbs;
+                _head = (_head + 1) % _winCap;
+                if (_count < _winCap) _count++;
+
+                if (_count == _winCap && _iEmptyFwdA != 0)
+                {
+                    // 窗口几十点级，直接线性扫描求 min/max
+                    double min = _ring[0], max = _ring[0];
+                    for (var i = 1; i < _winCap; i++)
+                    {
+                        var x = _ring[i];
+                        if (x < min) min = x;
+                        if (x > max) max = x;
+                    }
+
+                    var range = max - min;
+                    if (range <= PlateauFlatRangeA && currentAbs >= _iEmptyFwdA + PlateauAboveEmptyMarginA)
+                    {
+                        Tcs.TrySetResult((true, true, currentAbs, tick));
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        ///     当前通道“夹紧阈值/平台等待器”的实例。
+        ///     仅在 <see cref="WaitCurrentAboveAsync(double,double,CancellationToken,int,double,double,int)"/> 执行期间非空。
+        /// </summary>
+        private CurrentAboveWaiter _currentAboveWaiter;
 
         public async Task<bool> LearnAsync(int nCycles, CancellationToken token, int? targetPeriodMs)
         {
@@ -270,7 +379,6 @@ namespace Controller
             const double R_HEAD = 0.15;
             const double R_FWD_EMPTY = 0.35;
             const double R_REV_EMPTY = 0.35;
-            const double R_TAIL = 0.15;
 
             _log.Info(
                 $"EPB[{_channel}] 学习开始，次数={nCycles}；采样={_sampleMs}ms，忽略涌流={_peakIgnoreMs}ms，" +
@@ -634,8 +742,29 @@ namespace Controller
                         peak =>
                         {
                             // 回调在后台线程，如需触发 UI 请自行 Invoke
+
+                            var cutoffTimingText = string.Empty;
+                            try
+                            {
+                                if (_acq.TryGetLastDaqCallbackTimingForEpbChannel(
+                                        _channel,
+                                        out var cbIntervalMs,
+                                        out var arrivalDelayMs,
+                                        out var dev,
+                                        out var batchN,
+                                        out var fs))
+                                {
+                                    cutoffTimingText =
+                                        $"，触发时回调间隔≈{cbIntervalMs:F2}ms 到达延迟≈{arrivalDelayMs:F2}ms ({dev} N={batchN} Fs={fs}Hz)";
+                                }
+                            }
+                            catch
+                            {
+                                // ignore
+                            }
+
                             _log?.Error(
-                                $"EPB[{_channel}]，阈值：{_posThrA}A,差值：{(_posThrA - peak.MaxAmp):F3}|{(peak.MaxAmp - _actualCutoffCurrent):F3}|{(peak.MaxAmp - (_posThrA - _safetyMarginA)):F3}, 截断值：{_actualCutoffCurrent:F3}|[{_safetyMarginA}]A, 正向段峰值：Imax={peak.MaxAmp:F3}A @ {peak.MaxAt:HH:mm:ss.fff}，Samples={peak.SampleCount}。",
+                                $"EPB[{_channel}]，阈值：{_posThrA}A,差值：{(_posThrA - peak.MaxAmp):F3}|{(peak.MaxAmp - _actualCutoffCurrent):F3}|{(peak.MaxAmp - (_posThrA - _safetyMarginA)):F3}, 截断值：{_actualCutoffCurrent:F3}|[{_safetyMarginA:F3}]A, 断电触发点：{_actualCutoffCurrent:F3}A{cutoffTimingText}, 正向段峰值：Imax={peak.MaxAmp:F3}A @ {peak.MaxAt:HH:mm:ss.fff}，Samples={peak.SampleCount}。",
                                 "EPB");
 
                             // —— 报警判据：峰值超阈值增量 ——
@@ -1132,94 +1261,66 @@ namespace Controller
             _ = maxSlopeAperMs;
             _ = slopeWinSize;
 
-            var tBegin = Stopwatch.GetTimestamp();
-
-            // 平台检测环形缓冲（与原方法一致）
+            // 平台检测窗口（样本数）
             var winCap = Math.Max(1, PlateauWindowMs / Math.Max(1, _sampleMs));
-            var ring = new double[winCap];
-            int count = 0, head = 0;
+            var startTick = Stopwatch.GetTimestamp();
+            var waiter = new CurrentAboveWaiter(startTick, thrA, safetyMarginA, _iEmptyFwdA, winCap);
+
+            // Arm（事件驱动）：由 FeedCurrentSample 在样本到达时完成该 TCS
+            Volatile.Write(ref _currentAboveWaiter, waiter);
 
             _log.Info(
-                $"WaitCurrentAboveByMarginOnlyAsync[C] 启动: Thr={thrA:F2}A, PredictiveCut=DISABLED, " +
-                $"Margin={safetyMarginA:F2}A, Mode=HighFreqPolling",
+                $"WaitCurrentAboveAsync[C] 启动: Thr={thrA:F2}A, Margin={safetyMarginA:F2}A, Mode=EventDriven(FastSample)",
                 "EPB");
 
-            // —— 高速轮询策略参数 —— //
-            // 每次循环先做极轻量自旋若干步（几十微秒级），然后偶尔让出时间片，避免100%占满CPU。
-            var spinner = new System.Threading.SpinWait();
-            int loop = 0;
+            int maxWaitMs = _cfg?.Test.EpbCycleRunner.GetRunnerChannel(_channel).FwdOnLimitMs ?? 5_000;
 
-            // 根据经验设置：自旋若干步 + 周期性 Sleep(0)；当 CPU 忙时 Sleep(0) 会把时间片让给同优先级线程。
-            const int SPIN_STEPS_PER_LOOP = 20; // 每轮最多自旋步数（单步时间很短，数量不要太大）
-            const int YIELD_EVERY_LOOPS = 128; // 每 128 轮让出一次时间片
-            const int ASYNC_DELAY_EVERY = 2000; // 每 2000 轮异步让出（Task.Yield/Delay），降低 UI 抢占风险
-            const int ASYNC_DELAY_MS = 1; // 极短异步延迟（1ms），避免长时间占用一个线程
-
-            while (true)
+            try
             {
+                using var _ = token.Register(() => waiter.Tcs.TrySetCanceled());
+
+                // 注意：这里不主动轮询 _readCurrent；判据完全由采集样本驱动。
+                var done = await Task.WhenAny(
+                        waiter.Tcs.Task,
+                        Task.Delay(maxWaitMs, token))
+                    .ConfigureAwait(false);
+
                 token.ThrowIfCancellationRequested();
 
-                // —— 读取瞬时电流 —— //
-                var current = _readCurrent(_channel);
-
-                // —— 仅依据安全裕量的直接判定（低延迟）—— //
-                if (current + safetyMarginA >= thrA)
+                if (done != waiter.Tcs.Task)
                 {
-                    _log.Warn(
-                        $"EPB[{_channel}] 达到阈值(方案C/无预测): I={current:F2}A + Margin={safetyMarginA:F2}A ≥ Thr={thrA:F2}A",
-                        "EPB");
-                    _actualCutoffCurrent = current; //
-                    return true;
-                }
-
-                // —— 平台检测（与原方法一致）—— //
-                ring[head] = current;
-                head = (head + 1) % winCap;
-                if (count < winCap) count++;
-                if (count == winCap && _iEmptyFwdA != 0)
-                {
-                    double min = ring.Min(), max = ring.Max();
-                    var range = max - min;
-
-                    if (range <= PlateauFlatRangeA && current >= _iEmptyFwdA + PlateauAboveEmptyMarginA)
-                    {
-                        _log.Warn(
-                            $"EPB[{_channel}] 疑似限流平台(方案C/无预测): {PlateauWindowMs}ms 内波动≤{range:F2}A, I≈{current:F2}A",
-                            "EPB");
-                        return true;
-                    }
-                }
-
-                int maxWaitMs = _cfg?.Test.EpbCycleRunner.GetRunnerChannel(_channel).FwdOnLimitMs ?? 5_000;
-
-                // —— 超时保护—— //
-                if (ElapsedMs(tBegin) > maxWaitMs)
-                {
-                    _log.Warn($"EPB[{_channel}] 超时(方案C/无预测): {maxWaitMs/1000}s 内未达到 Thr={thrA:F2}A", "EPB");
+                    _log.Warn($"EPB[{_channel}] 超时(方案C/事件驱动): {maxWaitMs / 1000}s 内未达到 Thr={thrA:F2}A", "EPB");
                     return false;
                 }
 
-                // —— 高速轮询轻量节流 —— //
-                // 1) 进行少量自旋（几十微秒级），降低读数间隔；
-                for (int i = 0; i < SPIN_STEPS_PER_LOOP; i++)
+                var result = await waiter.Tcs.Task.ConfigureAwait(false);
+
+                _actualCutoffCurrent = result.iNow;
+
+                if (!result.isPlatform)
                 {
-                    spinner.SpinOnce(); // SpinOnce 会自适应插入短暂 Thread.Sleep(0)（当计数增大）；
-                    // 这里选择“小步自旋 + 外层周期让出”，让行为更可控。
+                    _log.Warn(
+                        $"EPB[{_channel}] 达到阈值(方案C/事件驱动): I={result.iNow:F2}A + Margin={safetyMarginA:F2}A ≥ Thr={thrA:F2}A",
+                        "EPB");
+                }
+                else
+                {
+                    _log.Warn(
+                        $"EPB[{_channel}] 疑似限流平台(方案C/事件驱动): {PlateauWindowMs}ms 内波动≤{PlateauFlatRangeA:F2}A, I≈{result.iNow:F2}A",
+                        "EPB");
                 }
 
-                // 2) 周期性让出时间片，避免长时间霸占 CPU
-                loop++;
-                if ((loop % YIELD_EVERY_LOOPS) == 0)
-                {
-                    System.Threading.Thread.Sleep(0); // 让出给同优先级线程，通常<1ms
-                }
-
-                // 3) 偶尔异步让出（UI/后台都更公平），避免把整个时间片都耗在自旋上
-                if ((loop % ASYNC_DELAY_EVERY) == 0)
-                {
-                    // Task.Yield() 在 .NET Framework 4.8 可用，但为了可控，这里用极短 Delay
-                    await Task.Delay(ASYNC_DELAY_MS, token).ConfigureAwait(false);
-                }
+                return true;
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            finally
+            {
+                // 只清理自己 Arm 的 waiter，避免并发覆盖
+                if (ReferenceEquals(Volatile.Read(ref _currentAboveWaiter), waiter))
+                    Volatile.Write(ref _currentAboveWaiter, null);
             }
         }
 

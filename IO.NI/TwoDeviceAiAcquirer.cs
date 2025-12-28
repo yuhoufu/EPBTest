@@ -3,6 +3,7 @@ using System.Buffers;
 using System.CodeDom;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Configuration;
 using System.Diagnostics;
 using System.Linq;
 using System.Threading;
@@ -95,6 +96,102 @@ namespace IO.NI
         private readonly ConcurrentDictionary<string, DevClock> _devClocks = new();
 
 
+        /// <summary>
+        ///     DAQ 回调节拍诊断状态（按设备维度）。
+        /// </summary>
+        private sealed class CallbackTimingDiag
+        {
+            /// <summary>上一次回调进入时刻（Stopwatch Tick）。</summary>
+            public long LastArrivalSwTick;
+
+            /// <summary>上一次输出诊断日志的时刻（Stopwatch Tick）。用于限频。</summary>
+            public long LastLogSwTick;
+
+            /// <summary>最近一次回调间隔（ms，double bits 形式存储以便原子读写）。</summary>
+            public long LastCbIntervalMsBits;
+
+            /// <summary>最近一次到达延迟（ms，double bits 形式存储以便原子读写）。</summary>
+            public long LastArrivalDelayMsBits;
+
+            /// <summary>最近一次批大小（每通道样本数）。</summary>
+            public int LastBatchN;
+
+            /// <summary>最近一次采样率（Hz，四舍五入）。</summary>
+            public int LastFs;
+        }
+
+        /// <summary>
+        ///     DAQ 回调节拍诊断状态表：key 为设备名（如 Dev1/Dev2）。
+        /// </summary>
+        private readonly ConcurrentDictionary<string, CallbackTimingDiag> _callbackTimingDiag = new();
+
+        // EPB 通道 -> 设备（Dev1/Dev2）映射：用于把“触发时回调节拍”关联到具体 EPB 通道
+        private readonly Dictionary<int, string> _epbChannelToDevice = new();
+
+
+        /// <summary>
+        ///     DAQ 回调节拍日志输出模式。
+        /// </summary>
+        private enum DaqTimingLogMode
+        {
+            /// <summary>不输出日志（默认）。仅保留最近一次节拍快照供断电同屏关联。</summary>
+            Off,
+
+            /// <summary>仅在节拍明显异常时输出（推荐用于现场排障）。</summary>
+            AnomalyOnly,
+
+            /// <summary>按限频输出全部节拍日志（仅限短时间定位）。</summary>
+            All
+        }
+
+        /// <summary>
+        ///     DAQ 回调节拍日志输出模式（来自 App.config appSettings）。
+        ///     <para>key: DaqCallbackTimingLog，取值：off | anomaly | all（不区分大小写）。默认 off。</para>
+        /// </summary>
+        private readonly DaqTimingLogMode _daqTimingLogMode;
+
+        /// <summary>
+        ///     DAQ 回调节拍日志的最小输出间隔（秒）。
+        ///     <para>key: DaqCallbackTimingLogMinIntervalSec，默认 10 秒。</para>
+        /// </summary>
+        private readonly double _daqTimingLogMinIntervalSec;
+
+        /// <summary>
+        ///     DAQ 回调节拍“异常判定”阈值倍率（cbIntervalMs 超过 expectBatchMs * factor 认为异常）。
+        ///     <para>key: DaqCallbackTimingAnomalyFactor，默认 1.5。</para>
+        /// </summary>
+        private readonly double _daqTimingAnomalyFactor;
+
+        private static DaqTimingLogMode ParseDaqTimingLogMode(string s)
+        {
+            if (string.IsNullOrWhiteSpace(s)) return DaqTimingLogMode.Off;
+            s = s.Trim();
+            if (s.Equals("off", StringComparison.OrdinalIgnoreCase) || s.Equals("0")) return DaqTimingLogMode.Off;
+            if (s.Equals("anomaly", StringComparison.OrdinalIgnoreCase) || s.Equals("warn", StringComparison.OrdinalIgnoreCase))
+                return DaqTimingLogMode.AnomalyOnly;
+            if (s.Equals("all", StringComparison.OrdinalIgnoreCase) || s.Equals("1")) return DaqTimingLogMode.All;
+            return DaqTimingLogMode.Off;
+        }
+
+        private static double ParseDoubleOrDefault(string s, double fallback)
+        {
+            if (string.IsNullOrWhiteSpace(s)) return fallback;
+            return double.TryParse(s.Trim(), out var v) ? v : fallback;
+        }
+
+        private static string SafeGetAppSetting(string key)
+        {
+            try
+            {
+                return ConfigurationManager.AppSettings[key];
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+
         private void InitTimeBase()
         {
             _t0 = DateTime.Now;
@@ -110,6 +207,82 @@ namespace IO.NI
             long now = Stopwatch.GetTimestamp();
             double sec = (now - startStamp) / (double)Stopwatch.Frequency;
             return t0.AddSeconds(sec);
+        }
+
+
+        /// <summary>
+        ///     记录 DAQ 回调的“批大小/回调间隔/到达延迟”诊断信息到 ErrorLog（限频）。
+        /// </summary>
+        /// <param name="device">设备标识（例如 "Dev1"/"Dev2"）。</param>
+        /// <param name="batchSampleCount">本次回调 EndRead 得到的样本点数（每通道）。</param>
+        /// <param name="batchTimeUtc">
+        /// 本批数据对应的时间戳（UTC）。注意：该时间戳是本系统按采样率推进/纠偏得到的“数据时间”，
+        /// 与“回调进入时刻”不同；二者差值可用于量化调度/缓冲造成的到达延迟。
+        /// </param>
+        /// <param name="arrivalUtc">回调进入时刻（UTC），用 <see cref="DateTime.UtcNow"/> 取得。</param>
+        /// <param name="driftMs">主机实测时间与理想推进时间的偏差（ms）。用于观察 jitter/漂移。</param>
+        /// <remarks>
+        /// 设计约束：
+        /// <list type="bullet">
+        /// <item>回调线程必须尽可能轻量，避免影响下一批 BeginRead 的节拍；因此这里做“每设备每秒最多 1 条”限频。</item>
+        /// <item>日志级别使用 Error，是为了进入 ErrorLog 文件，便于与当前“峰值打印”同屏对比。</item>
+        /// </list>
+        /// 输出字段解释：
+        /// <list type="bullet">
+        /// <item>期望批间隔(ms)≈N/Fs：硬下限，主要由 samplesPerChannel 决定；</item>
+        /// <item>回调间隔(ms)：回调进入时刻之间的间隔，反映调度/阻塞/GC 影响；</item>
+        /// <item>到达延迟(ms)=arrivalUtc-batchTimeUtc：反映“数据时间”到“处理到达”的滞后；</item>
+        /// </list>
+        /// </remarks>
+        private void TryLogDaqCallbackTiming(string device, int batchSampleCount, DateTime batchTimeUtc,
+            DateTime arrivalUtc, double driftMs)
+        {
+            var diag = _callbackTimingDiag.GetOrAdd(device, _ => new CallbackTimingDiag());
+
+            var arrivalSw = Stopwatch.GetTimestamp();
+            var prevArrivalSw = Interlocked.Exchange(ref diag.LastArrivalSwTick, arrivalSw);
+
+            var expectBatchMs = batchSampleCount <= 0 ? 0 : (batchSampleCount * 1000.0 / _sampleRate);
+            var cbIntervalMs = prevArrivalSw == 0
+                ? 0
+                : (arrivalSw - prevArrivalSw) * 1000.0 / Stopwatch.Frequency;
+
+            // batchTimeUtc 是按采样率推进的“数据时间”，可能略早/略晚于 arrivalUtc；直接记录差值用于量化
+            var arrivalDelayMs = (arrivalUtc - batchTimeUtc).TotalMilliseconds;
+
+            // —— 保存“最近一次回调节拍”，供断电触发点/截断值日志同屏关联 ——
+            Interlocked.Exchange(ref diag.LastCbIntervalMsBits, BitConverter.DoubleToInt64Bits(cbIntervalMs));
+            Interlocked.Exchange(ref diag.LastArrivalDelayMsBits, BitConverter.DoubleToInt64Bits(arrivalDelayMs));
+            diag.LastBatchN = batchSampleCount;
+            diag.LastFs = (int)Math.Round(_sampleRate);
+
+            // 默认不输出节拍日志（测试期避免刷屏）；但仍保留最近一次快照
+            if (_daqTimingLogMode == DaqTimingLogMode.Off) return;
+
+            if (_daqTimingLogMode == DaqTimingLogMode.AnomalyOnly)
+            {
+                // 以“回调间隔”异常为主，辅以 drift 的绝对偏差（避免仅凭 arrivalDelay 误报）
+                var expect = expectBatchMs;
+                var cbTooSlow = expect > 0 && cbIntervalMs > expect * _daqTimingAnomalyFactor;
+                var driftTooBig = Math.Abs(driftMs) > Math.Max(10.0, expect * 0.5);
+
+                if (!cbTooSlow && !driftTooBig) return;
+            }
+
+            // 每设备每秒最多 1 条，避免刷屏
+            var lastLogSw = Volatile.Read(ref diag.LastLogSwTick);
+            if (lastLogSw != 0)
+            {
+                var sinceLogSec = (arrivalSw - lastLogSw) / (double)Stopwatch.Frequency;
+                if (sinceLogSec < _daqTimingLogMinIntervalSec) return;
+            }
+
+            Volatile.Write(ref diag.LastLogSwTick, arrivalSw);
+
+            _log?.Error(
+                $"[AI][{device}] DAQ回调节拍：N={batchSampleCount} (cfgN={_samplesPerChannel}) Fs={_sampleRate:F0}Hz " +
+                $"期望批间隔≈{expectBatchMs:F2}ms 回调间隔≈{cbIntervalMs:F2}ms 到达延迟≈{arrivalDelayMs:F2}ms drift={driftMs:F2}ms",
+                "AI");
         }
 
 
@@ -129,8 +302,14 @@ namespace IO.NI
             ProcessLoopFilteredMedian
         }
 
-        /// <summary>当前 fast 值来源选择。默认采用“后台滤波后”的结果作为 fast 值。</summary>
-        private readonly FastSource _fastSource = FastSource.ProcessLoopFilteredMax;
+        /// <summary>
+        /// 当前 fast 值来源选择。
+        /// <para>
+        /// 默认采用 <see cref="FastSource.DaqCallback"/>：由 DAQ 回调线程提供低时延快照，
+        /// 用于控制/阈值判定等对时效性敏感的逻辑。
+        /// </para>
+        /// </summary>
+        private readonly FastSource _fastSource = FastSource.DaqCallback;
 
 
         public TwoDeviceAiAcquirer(
@@ -146,8 +325,29 @@ namespace IO.NI
             _medianLens = Math.Max(1, medianLens);
             _log = log ?? NLogger.Instance;
 
+            // 回调节拍日志默认关闭（避免测试期刷屏）；需要时可在 App.config 打开
+            _daqTimingLogMode = ParseDaqTimingLogMode(SafeGetAppSetting("DaqCallbackTimingLog"));
+            _daqTimingLogMinIntervalSec = Math.Max(0.2, ParseDoubleOrDefault(SafeGetAppSetting("DaqCallbackTimingLogMinIntervalSec"), 10.0));
+            _daqTimingAnomalyFactor = Math.Max(1.1, ParseDoubleOrDefault(SafeGetAppSetting("DaqCallbackTimingAnomalyFactor"), 1.5));
+
             _dev1Channels = _enabled.Where(r => r.物理通道.StartsWith("Dev1/")).Select(r => r.物理通道).ToArray();
             _dev2Channels = _enabled.Where(r => r.物理通道.StartsWith("Dev2/")).Select(r => r.物理通道).ToArray();
+
+            // 构建 EPB 通道 -> Dev1/Dev2 的映射（用于把回调节拍关联到具体 EPB）
+            foreach (var rec in _enabled)
+            {
+                var epbCh = TryParseEpbChannel(rec.参数名);
+                if (epbCh < 1) continue;
+
+                if (rec.物理通道 != null && rec.物理通道.StartsWith("Dev1/", StringComparison.OrdinalIgnoreCase))
+                {
+                    _epbChannelToDevice[epbCh] = "Dev1";
+                }
+                else if (rec.物理通道 != null && rec.物理通道.StartsWith("Dev2/", StringComparison.OrdinalIgnoreCase))
+                {
+                    _epbChannelToDevice[epbCh] = "Dev2";
+                }
+            }
 
             BuildColumnIndex(_enabled, "Dev1", _dev1Channels, _colIndexDev1);
             BuildColumnIndex(_enabled, "Dev2", _dev2Channels, _colIndexDev2);
@@ -161,13 +361,45 @@ namespace IO.NI
             _worker = Task.Run(ProcessLoop, _cts.Token);
         }
 
+        /// <summary>
+        ///     停止采集与后台处理，并释放资源。
+        /// </summary>
+        /// <remarks>
+        ///     <para>
+        ///     注意：本类内部可能触发 NI/DAQmx 的 COM/驱动调用；若在 WinForms UI 线程（STA）中同步等待后台任务结束，
+        ///     调试期容易触发 MDA：<c>ContextSwitchDeadlock</c>，并造成界面卡顿。
+        ///     </para>
+        ///     <para>
+        ///     因此此处在 UI 线程上不做阻塞等待，而是把等待放到线程池中“尽力回收”。
+        ///     </para>
+        /// </remarks>
         public void Dispose()
         {
             Stop();
             _cts.Cancel();
             try
             {
-                _worker?.Wait(1000);
+                // UI 线程（STA）避免同步等待；否则可能阻塞消息泵并触发 ContextSwitchDeadlock。
+                var sc = SynchronizationContext.Current;
+                var scType = sc?.GetType().FullName;
+                var isWinFormsUiContext = string.Equals(scType, "System.Windows.Forms.WindowsFormsSynchronizationContext",
+                    StringComparison.Ordinal);
+
+                if (isWinFormsUiContext)
+                {
+                    var w = _worker;
+                    if (w != null)
+                    {
+                        Task.Run(() =>
+                        {
+                            try { w.Wait(1000); } catch { }
+                        });
+                    }
+                }
+                else
+                {
+                    _worker?.Wait(1000);
+                }
             }
             catch
             {
@@ -289,7 +521,7 @@ namespace IO.NI
         public double ReadCurrent(int epbChannel)
         {
             var key = $"EPB{epbChannel}_current";
-            //if (_lastFastValue.TryGetValue(key, out var vFast)) return vFast;
+            if (_lastFastValue.TryGetValue(key, out var vFast)) return vFast;
             if (_lastFilteredValue.TryGetValue(key, out var vFilt)) return vFilt;
             return 0.0;
         }
@@ -348,6 +580,57 @@ namespace IO.NI
         {
             var key = $"Pressure_{id}";
             return _lastFastValue.TryGetValue(key, out var v) ? v : 0.0;
+        }
+
+        /// <summary>
+        ///     获取指定 EPB 通道对应设备的“最近一次 DAQ 回调节拍”。
+        /// </summary>
+        /// <param name="epbChannel">EPB 通道号（1..12）。</param>
+        /// <param name="callbackIntervalMs">
+        ///     最近一次回调间隔（ms）。
+        ///     <para>说明：这是“回调进入时刻”之间的间隔，反映调度/阻塞/GC 等因素。</para>
+        /// </param>
+        /// <param name="arrivalDelayMs">
+        ///     最近一次到达延迟（ms）。
+        ///     <para>说明：arrivalUtc - batchTimeUtc；用于量化“数据时间”到“处理到达”的滞后。</para>
+        /// </param>
+        /// <param name="device">设备名（Dev1/Dev2）；若未知返回 null。</param>
+        /// <param name="batchN">最近一次批大小（每通道样本数）；若未知返回 0。</param>
+        /// <param name="fs">最近一次采样率（Hz，四舍五入）；若未知返回 0。</param>
+        /// <returns>
+        ///     若能定位到该 EPB 通道所属设备，且存在回调节拍记录则返回 true；否则返回 false。
+        /// </returns>
+        /// <remarks>
+        ///     <para>
+        ///     线程模型：回调线程写入，控制/日志线程读取；内部采用 double->long bits + Interlocked 读写以避免撕裂。
+        ///     </para>
+        ///     <para>
+        ///     注意：该值反映“最近一次回调”的节拍，并不保证严格对齐到某一条具体 EPB 样本；
+        ///     但足以用于判断“过冲是否伴随回调间隔尖峰”。
+        ///     </para>
+        /// </remarks>
+        public bool TryGetLastDaqCallbackTimingForEpbChannel(
+            int epbChannel,
+            out double callbackIntervalMs,
+            out double arrivalDelayMs,
+            out string device,
+            out int batchN,
+            out int fs)
+        {
+            callbackIntervalMs = 0;
+            arrivalDelayMs = 0;
+            batchN = 0;
+            fs = 0;
+            device = null;
+
+            if (!_epbChannelToDevice.TryGetValue(epbChannel, out device)) return false;
+            if (!_callbackTimingDiag.TryGetValue(device, out var diag)) return false;
+
+            callbackIntervalMs = BitConverter.Int64BitsToDouble(Interlocked.Read(ref diag.LastCbIntervalMsBits));
+            arrivalDelayMs = BitConverter.Int64BitsToDouble(Interlocked.Read(ref diag.LastArrivalDelayMsBits));
+            batchN = diag.LastBatchN;
+            fs = diag.LastFs;
+            return true;
         }
 
         public void Start(double aiMin = -10, double aiMax = 10,
@@ -452,6 +735,9 @@ namespace IO.NI
             {
                 if (reader is null) return; // 任务已停止，不处理
 
+                // 回调进入时刻：用于计算“回调间隔/到达延迟”（与数据时间 current 区分）
+                var arrivalUtc = DateTime.UtcNow;
+
                 var task = (NIDaqTask)ar.AsyncState;
                 var raw = reader.EndReadMultiSample(ar); // [ch, n]
                 int n = raw.GetLength(1);
@@ -479,6 +765,11 @@ namespace IO.NI
                 var driftMs = (hostNow - idealNow).TotalMilliseconds;
                 var current = Math.Abs(driftMs) > 5 ? hostNow : idealNow;
 
+                // —— 诊断：批大小/回调间隔/到达延迟 ——
+                // 说明：current 是“数据时间”（按采样率推进并纠偏）；arrivalUtc 是“回调进入时刻”。
+                // 二者差值可用于量化 NI 缓冲/调度造成的到达滞后。
+                TryLogDaqCallbackTiming(device, n, current.ToUniversalTime(), arrivalUtc, driftMs);
+
                 //var current =  idealNow; // 不用纠偏，直接采用理想时间
 
                 // ④ （可选）诊断丢块：host Δt 远大于 n/Fs
@@ -490,15 +781,6 @@ namespace IO.NI
                     if (lost > 0)
                         _log.Warn($"[{device}] 疑似丢样：hostΔt={hostDt:F4}s 期望={expectDt:F4}s 约缺 {lost} 点（≈{lost / (double)_samplesPerChannel:F2} 批）。", "AI");
                 }*/
-
-
-                // 1) 原始矩阵入队（后台转工程值 + 滤波）
-                _queue.Enqueue(new Item(device, raw, current, last));
-
-                // 2) 立刻把原始矩阵回调给窗体（UI/落盘）
-                //    —— 这行是轻量的，窗体里写入 DaqAIContext 就完全保留你现有两行风格 —— 
-                OnRawBatch?.Invoke(device, raw, current, last);
-
 
 
                 /* 原有的旧代码
@@ -592,6 +874,15 @@ namespace IO.NI
                 }
 
                 #endregion
+
+
+                // 1) 原始矩阵入队（后台转工程值 + 滤波）
+                _queue.Enqueue(new Item(device, raw, current, last));
+
+                // 2) 立刻把原始矩阵回调给窗体（UI/落盘）
+                //    注意：为了降低“控制用 fast 电流事件”的滞后，上面的 fast 分支已被前移到此处之前。
+                //    若 UI/落盘处理较重导致阻塞，此处会拉长回调线程占用时间，但不会影响 fast 事件的最早触发。
+                OnRawBatch?.Invoke(device, raw, current, last);
 
 
                 // 下一轮
@@ -740,12 +1031,13 @@ namespace IO.NI
                     // 刷新“最近值”供控制逻辑查询（**改动：写入 _lastFilteredValue**）
                     UpdateLastSnapshot(engFiltered, item.Device);
 
-                    // —— 新增：若 fast 来源切到 ProcessLoopFiltered，则在此处把“电流 fast”更新为“滤波后的最后样本” —— //
-                    /*if (_fastSource == FastSource.ProcessLoopFilteredLast)
+                    // —— fast 快照语义 ——
+                    // - 当 fast 来源为 DaqCallback：fast 由 DAQ 回调线程更新，后台线程不得覆盖；
+                    // - 当 fast 来源为 ProcessLoopFiltered*：fast 由后台线程从滤波矩阵提升生成。
+                    if (_fastSource != FastSource.DaqCallback)
                     {
                         PromoteFilteredToFastForCurrents(engFiltered, item.Device, item.Current);
-                    }*/
-                    PromoteFilteredToFastForCurrents(engFiltered, item.Device, item.Current);
+                    }
 
                     #region 生成“落盘批次”并触发 OnDiskBatch（使用 engFiltered，不取绝对值） On 2025.09.16 
 

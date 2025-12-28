@@ -1153,7 +1153,22 @@ namespace MTEmbTest
         /// </returns>
         /// <remarks>
         ///     <para>
-        ///     计数权威口径：<c>RunCount = COUNT(status IN ('completed','alarm'))</c>。
+        ///     口径说明：
+        ///     <list type="bullet">
+        ///         <item>
+        ///             <description>
+        ///             本项目中 <see cref="EpbTestRecord.RunCount"/> 既用于 UI 展示“已运行圈数”，也用于“下一圈号”的续号基准；
+        ///             因此启动回填必须与落盘使用的圈号口径一致。
+        ///             </description>
+        ///         </item>
+        ///         <item>
+        ///             <description>
+        ///             回填采用：<c>RunCount = MAX(cycle_number)</c>（CycleNumber &gt; 0）。
+        ///             这样即便现场手工修正过 <c>cycle_number</c>（例如补齐/跳号），
+        ///             也能保证 TestConfig.xml 与 index.db 的“圈号基准”一致，避免开始后出现差 1 或唯一键冲突。
+        ///             </description>
+        ///         </item>
+        ///     </list>
         ///     </para>
         ///     <para>
         ///     为避免“首次新建项目/缺失 DB 文件”导致把 XML 进度覆盖成 0：
@@ -1178,12 +1193,13 @@ namespace MTEmbTest
                     if (rec == null || rec.Id < 1 || rec.Id > 12)
                         continue;
 
-                    var dbCount = writer.GetClosedCycleCount(rec.Id);
-                    if (dbCount < 0) dbCount = 0;
+                    // 关键：使用“最大圈号”回填，保证与 BeginCycle/续号基准一致。
+                    var dbLastCycleNumber = writer.GetLastCycleNumber(rec.Id);
+                    if (dbLastCycleNumber < 0) dbLastCycleNumber = 0;
 
-                    if (rec.RunCount != dbCount)
+                    if (rec.RunCount != dbLastCycleNumber)
                     {
-                        rec.RunCount = dbCount;
+                        rec.RunCount = dbLastCycleNumber;
                         changed = true;
                     }
                 }
