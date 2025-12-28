@@ -217,10 +217,10 @@ public class DaqAIContext
                 var lastTicks = daqData.LastRecvTime.Ticks;
                 var spanTicks = (daqData.RecvTime - daqData.LastRecvTime).Ticks;
 
-                // 正常：按 last→current 等分；异常（<=0）：用 1ms/样本 兜底
+                // 正常：按 last→current 等分；异常（<=0）：按配置的采样周期兜底（避免隐含 1kHz 假设）
                 var stepTicks = spanTicks > 0
                     ? spanTicks / (double)recvSamples
-                    : TimeSpan.FromMilliseconds(1).Ticks; // 兜底：1 kHz
+                    : TimeSpan.FromMilliseconds(DaqSpanMillSec1).Ticks;
 
                 for (var j = 0; j < recvSamples; j++)
                 {

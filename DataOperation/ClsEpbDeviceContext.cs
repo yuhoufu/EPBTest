@@ -1,4 +1,5 @@
 ﻿using System;
+using MtEmbTest;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
@@ -201,7 +202,9 @@ namespace DataOperation
                     // 为每个样本生成时间戳并写入记录
                     var lastTicks = deviceData.LastRecvTime.Ticks;
                     var spanTicks = (deviceData.RecvTime - deviceData.LastRecvTime).Ticks;
-                    var stepTicks = spanTicks > 0 ? spanTicks / (double)samples : TimeSpan.FromMilliseconds(1).Ticks;
+                    var stepTicks = spanTicks > 0
+                        ? spanTicks / (double)samples
+                        : TimeSpan.FromMilliseconds(ClsGlobal.DaqFrequency > 0 ? 1000.0 / ClsGlobal.DaqFrequency : 1.0).Ticks;
 
                     for (var sample = 0; sample < samples; sample++)
                     {
