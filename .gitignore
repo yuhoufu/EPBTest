@@ -396,3 +396,10 @@ FodyWeavers.xsd
 
 # JetBrains Rider
 *.sln.iml
+# Runtime logs and test data
+运行日志/
+DataStore/
+*.csv
+ErrorLog_*.txt
+RunLog_*.txt
+WarnLog_*.txt
