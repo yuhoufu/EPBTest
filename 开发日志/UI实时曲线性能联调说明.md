@@ -45,11 +45,13 @@
 ## 3. 关键实现位置（从哪里看代码）
 
 - 实时曲线核心：`MTTfTest/FrmEpbMainMonitor.cs`
-  - 批次入口：`Acq_OnEngBatch(...)`
+  - 批次入口（采集→UI）：`Acq_OnEngBatch(...)`
   - UI 调度：`ScheduleEngBatchUiWork()` / `ProcessPendingEngBatches()`
   - 追加点与 gap 补偿：`ApplyEngBatchToCurves(...)` / `AppendChannelBatchFromMatrix(...)`（名称以实际文件为准）
   - 统一重绘：`StartUiRedrawTimer()`
   - 快速渲染设置：`ApplyZedGraphFastRenderSettings()`
+
+> 说明：本篇只讨论“采集批次→UI 曲线显示”链路。测试启动（批量启动）主入口在 `Controller/EpbManager.BatchStart.cs` 的 `EpbManager.StartBatchSynchronizedAsync(...)`。
 
 ---
 

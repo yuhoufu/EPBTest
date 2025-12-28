@@ -9,6 +9,18 @@
 - `DataOperation/`：数据处理与落盘（`EpbDiskWriter`）。
 - `Config/`：配置加载与运行状态模型（`GlobalConfig`、`EpbTestRecord`）。
 
+## 测试主入口（重要）
+
+本工程“开始试验/批量启动”的控制主入口为：
+
+- `Controller/EpbManager.BatchStart.cs`：`EpbManager.StartBatchSynchronizedAsync(int[] channels, int learnCycles, CancellationToken token)`
+
+UI 侧（WinForms）点击“开始试验”按钮后，会在：
+
+- `MTTfTest/FrmEpbMainMonitor.cs` 中 `await _epb.StartBatchSynchronizedAsync(...)`
+
+> 说明：`Acq_OnEngBatch(...)` / `TwoDeviceAiAcquirer.OnEngBatch` 属于“采集批次→UI 曲线显示”的入口，与“启动测试/批量启动”不是同一条链路。
+
 ## 配置文件
 
 配置位于 `MTTfTest/Config/`：

@@ -13,6 +13,10 @@ EpbManager (12卡钳编排)
   └─ HydraulicGroupCoordinator (液压组协调)
 ```
 
+### 测试主入口（重要）
+- 批量启动/开始试验的控制主入口：`EpbManager.StartBatchSynchronizedAsync(...)`
+- 参见：`Controller/EpbManager.BatchStart.cs`
+
 ### 关键模块职责
 - **Controller/**: `EpbManager`统一编排，`EpbCycleRunner`实现单卡钳状态机和电流判断逻辑
 - **IO.NI/**: `TwoDeviceAiAcquirer`双设备AI采集，`DoController`数字输出，`AoController`模拟输出
