@@ -1,5 +1,7 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Threading;
 using Config;
 using NationalInstruments.DAQmx;
 
@@ -24,6 +26,123 @@ namespace IO.NI
     public class DoController : IDisposable
     {
         #region 内部类型与字段
+
+        /// <summary>
+        ///     DO 写入专用高优先级 Worker。
+        ///     设计目的：将“触发后断电”等关键 DO 写入从线程池/多线程锁竞争中剥离出来，
+        ///     以更稳定的调度优先级执行写入，减少尾部抖动。
+        /// </summary>
+        private sealed class HighPriorityDoWorker : IDisposable
+        {
+            private sealed class WorkItem
+            {
+                public Func<bool> Work;
+                public ManualResetEventSlim Done;
+                public bool Result;
+                public Exception Error;
+            }
+
+            private readonly ConcurrentQueue<WorkItem> _hiQueue = new ConcurrentQueue<WorkItem>();
+            private readonly AutoResetEvent _signal = new AutoResetEvent(false);
+
+            private volatile bool _stopping;
+            private Thread _thread;
+
+            /// <summary>
+            ///     启动高优先级 worker 线程。
+            /// </summary>
+            /// <remarks>
+            ///     线程模型：
+            ///     <list type="bullet">
+            ///         <item>使用专用 <see cref="Thread"/>，不占用线程池。</item>
+            ///         <item>线程优先级设为 <see cref="ThreadPriority.Highest"/>。</item>
+            ///     </list>
+            /// </remarks>
+            public void StartIfNeeded()
+            {
+                if (_thread != null) return;
+
+                var t = new Thread(Loop)
+                {
+                    IsBackground = true,
+                    Name = "DO-HighPriorityWorker",
+                    Priority = ThreadPriority.Highest
+                };
+
+                _thread = t;
+                t.Start();
+            }
+
+            /// <summary>
+            ///     在高优先级 worker 线程中执行一个 DO 写入任务，并同步等待完成。
+            /// </summary>
+            /// <param name="work">具体写入逻辑；应为短任务（单次 NI 写入）。</param>
+            /// <param name="timeoutMs">
+            ///     等待超时（毫秒）。超时后调用方可选择降级为“本线程直接执行”。
+            /// </param>
+            public bool InvokeHi(Func<bool> work, int timeoutMs)
+            {
+                if (work == null) return false;
+
+                // 若已经在 worker 线程内，直接执行，避免自我等待导致死锁。
+                if (Thread.CurrentThread == _thread)
+                {
+                    try { return work(); }
+                    catch { return false; }
+                }
+
+                StartIfNeeded();
+
+                var item = new WorkItem
+                {
+                    Work = work,
+                    Done = new ManualResetEventSlim(false)
+                };
+
+                _hiQueue.Enqueue(item);
+                _signal.Set();
+
+                // 关键路径：给一个有限等待；若超时由上层决定是否降级直写。
+                if (!item.Done.Wait(Math.Max(1, timeoutMs)))
+                    return false;
+
+                return item.Result;
+            }
+
+            private void Loop()
+            {
+                while (!_stopping)
+                {
+                    if (!_hiQueue.TryDequeue(out var item))
+                    {
+                        _signal.WaitOne(50);
+                        continue;
+                    }
+
+                    try
+                    {
+                        item.Result = item.Work();
+                    }
+                    catch (Exception ex)
+                    {
+                        item.Error = ex;
+                        item.Result = false;
+                    }
+                    finally
+                    {
+                        try { item.Done.Set(); }
+                        catch { /* ignore */ }
+                    }
+                }
+            }
+
+            public void Dispose()
+            {
+                _stopping = true;
+                try { _signal.Set(); } catch { /* ignore */ }
+                try { _signal.Dispose(); } catch { /* ignore */ }
+            }
+        }
 
         /// <summary>每个 NI 设备的上下文。</summary>
         private sealed class DoDevice
@@ -58,6 +177,9 @@ namespace IO.NI
         private string _configPath;
 
         private readonly ILogger _log;
+
+        // ★新增：高优先级 DO worker（用于“触发后断电”等关键写入）
+        private readonly HighPriorityDoWorker _hiWorker = new HighPriorityDoWorker();
 
         // 新增：保存配置对象（来源于外部的 cfgDo）
         private readonly DoConfig _cfg;
@@ -309,6 +431,37 @@ namespace IO.NI
         }
 
         /// <summary>
+        ///     高优先级关闭指定 EPB 通道（正/反全关）。
+        /// </summary>
+        /// <param name="channelNo">EPB 通道号。</param>
+        /// <returns>成功/失败。</returns>
+        /// <remarks>
+        ///     线程模型：
+        ///     <list type="bullet">
+        ///         <item>通过专用高优先级 worker 线程执行，减少线程池调度/锁竞争带来的尾部抖动；</item>
+        ///         <item>若 worker 等待超时，则降级为“当前线程直接写入”（保证最终能断电）。</item>
+        ///     </list>
+        ///     注意：该方法仍会进入 <see cref="SetEpbOff"/> 的锁保护，
+        ///     但因为关键路径集中到单线程，整体竞争通常显著降低。
+        /// </remarks>
+        public bool SetEpbOffHighPriority(int channelNo)
+        {
+            // 关键路径：先尝试在高优先级 worker 中执行。
+            // 超时则降级为直写，避免在极端情况下“排队等不到”导致不断电。
+            var ok = _hiWorker.InvokeHi(() => SetEpbOff(channelNo), timeoutMs: 30);
+            if (ok) return true;
+
+            try
+            {
+                return SetEpbOff(channelNo);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
         /// 设置压力点位开/关。
         /// </summary>
         /// <param name="id">压力点位编号。</param>
@@ -475,13 +628,22 @@ namespace IO.NI
         private void LogError(string message, string category = null, Exception ex = null)
             => _log?.Error(message, category ?? "DO", ex);
 
-        /// <summary>释放所有 NI 资源。</summary>
+        /// <summary>
+        ///     释放所有 NI 资源，并停止内部 DO 写入 worker。
+        /// </summary>
+        /// <remarks>
+        ///     线程模型：该方法会停止专用 worker，并在锁保护下释放 NI Task/Writer。
+        /// </remarks>
         public void Dispose()
         {
+            try { _hiWorker.Dispose(); } catch { /* ignore */ }
+
             lock (_doTaskLock)
             {
-                ResetAllDevices(clearMaps: true);
+                try { ResetAllDevices(clearMaps: true); }
+                catch { /* ignore */ }
             }
+
             GC.SuppressFinalize(this);
         }
 
