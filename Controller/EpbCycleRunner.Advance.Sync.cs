@@ -238,13 +238,13 @@ namespace Controller
             if (!okClamp)
             {
                 // 未达到阈值/平台，直接断电并放弃本圈样本
-                _do.SetEpbOff(_channel);
+                _do.SetEpbOffHighPriority(_channel);
                 _log?.Warn($"EPB[{_channel}] 正向阶段未满足夹紧判据，放弃本圈样本。", "EPB");
                 return null;
             }
 
             // —— 达到夹紧判据 → 立即断电，并通知协调器（用于统一释压）——
-            _do.SetEpbOff(_channel);
+            _do.SetEpbOffHighPriority(_channel);
             if (_manager != null)
                 await _manager.HydraulicMarkReleaseAsync(_channel).ConfigureAwait(false);
 

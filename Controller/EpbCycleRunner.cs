@@ -485,13 +485,13 @@ namespace Controller
 
                 if (!okClamp)
                 {
-                    _do.SetEpbOff(_channel);
+                    _do.SetEpbOffHighPriority(_channel);
                     _log.Warn($"EPB[{_channel}] 学习{k + 1}：④未达到阈值/平台（阈 {_posThrA:F2}A），放弃本轮。", "EPB");
                     continue;
                 }
 
                 // 达到判据 → 立即断电
-                _do.SetEpbOff(_channel);
+                _do.SetEpbOffHighPriority(_channel);
                 _log.Info($"EPB[{_channel}] 学习{k + 1}：已达到夹紧条件（{clampCause}），立即正向断电。", "EPB");
 
                 // ③ 回溯“离开空带上边界”的起点
@@ -702,7 +702,7 @@ namespace Controller
                 if (!okClamp)
                 {
                     _log?.Warn($"EPB[{_channel}] 正向未达到阈值/平台（Thr={_posThrA:F2}A），本轮终止。", "EPB");
-                    _do.SetEpbOff(_channel);
+                    _do.SetEpbOffHighPriority(_channel);
 
                     try
                     {
@@ -728,7 +728,7 @@ namespace Controller
 
 
                 // 达到夹紧判据 → 立即断电并标记释放（与 Learn… 一致）
-                _do.SetEpbOff(_channel);
+                _do.SetEpbOffHighPriority(_channel);
 
                 // —— 达到夹紧判据 → 断电前，安排异步封口（延时 1000ms），完成后回调日志 —— //
                 if (_acq != null)
