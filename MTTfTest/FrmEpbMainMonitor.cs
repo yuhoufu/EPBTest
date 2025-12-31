@@ -185,7 +185,7 @@ namespace MTEmbTest
         ///     这里允许小队列缓冲以保持波形连续性；超出上限时丢弃最旧批次以防内存增长。
         ///     </para>
         /// </summary>
-        private const int MaxPendingEngBatchesPerDev = 16;
+        private const int MaxPendingEngBatchesPerDev = 64; // enlarge to避免队列溢出丢批次
 
         /// <summary>
         ///     单次 UI 调度中最多处理的工程值批次数量（总量）。
@@ -193,7 +193,7 @@ namespace MTEmbTest
         ///     目的：避免一次处理太多批次导致 UI 线程长时间占用而出现更严重卡顿。
         ///     </para>
         /// </summary>
-        private const int MaxEngBatchesPerUiRun = 16;
+        private const int MaxEngBatchesPerUiRun = 64; // 单次UI消费更多批次，减少积压
 
         /// <summary>
         ///     曲线显示的最大“绘图采样率”（Hz）。
@@ -1996,28 +1996,18 @@ namespace MTEmbTest
 
             if (gapSec > 0)
             {
-                // UI 侧可能因负载丢弃部分批次。
-                // 这里选择“直接连线但不做断线”：用“斜率连接”跨过 gap（从上一点连到 gap 末端的首样本值），
-                // 避免出现明显的“水平平台/阶梯”观感（尤其在前后台切换造成的短暂停顿时）。
-                // 注意：要避免在同一 X 上连续加点（会画出竖线/阶梯）。
-                if (list.Count > 0)
+                // UI 侧可能因负载丢弃部分批次。为了既避免跨 gap 直连的尖峰，又不让曲线呈现“虚线”观感，
+                // 仅当 gap 足够大时才断线；小 gap 直接平移时间继续画。
+                const double gapBreakThreshold = 0.3; // 秒；小于此阈值不打断线
+                var gap = Math.Min(gapSec, 1.0);      // 将可视化gap上限收紧到1秒，避免长断线
+
+                if (gap >= gapBreakThreshold && list.Count > 0)
                 {
-                    try
-                    {
-                        var y0 = eng[row, 0];
-                        var xb = x + gapSec;
-                        list.Add(xb, y0);
-                        x = xb + step;
-                    }
-                    catch
-                    {
-                        x += gapSec;
-                    }
+                    // 仅在大 gap 上插入断线（NaN），避免频繁断线导致“虚线”视觉效果
+                    list.Add(double.NaN, double.NaN);
                 }
-                else
-                {
-                    x += gapSec;
-                }
+
+                x += gap;
             }
 
             for (var i = 0; i < colCount; i += stride)
@@ -3265,181 +3255,6 @@ namespace MTEmbTest
         #region 曲线处理
 
         /// <summary>
-        ///     曲线初始化
-        /// </summary>
-        private void InitializeCurve_Old()
-        {
-            try
-            {
-                var fontSize = 12;
-                // 保留原有初始化代码
-                var pane = zedGraphRealChart.GraphPane;
-                // 设置 X 轴和 Y 轴以及刻度线为灰色
-
-
-                pane.XAxis.Color = Color.Gray;
-                pane.XAxis.MajorTic.Color = Color.Gray;
-                pane.XAxis.MinorTic.Size = 0.0f;
-
-                pane.YAxis.Color = Color.Gray;
-                pane.YAxis.MajorTic.Color = Color.Gray;
-                pane.YAxis.MinorTic.Size = 0.0f;
-
-
-                pane.Title.IsVisible = false;
-                pane.XAxis.Title.Text = "Time";
-                pane.YAxis.Title.IsVisible = false;
-                pane.XAxis.Title.IsVisible = false;
-
-
-                pane.Fill = new Fill(Color.FromArgb(255, 255, 255));
-                pane.Chart.Fill = new Fill(Color.FromArgb(248, 248, 248));
-
-
-                pane.Chart.Border.IsVisible = false;
-                //边框不可见，若可见不显示坐标轴颜色
-
-                // 设置图例背景色和曲线区域一致
-                pane.Legend.Fill = new Fill(Color.FromArgb(255, 255, 255));
-
-
-                // 设置图例字体为白色，不显示边框
-                pane.Legend.FontSpec.FontColor = Color.FromArgb(80, 160, 255);
-                pane.Legend.FontSpec.Size = fontSize;
-                pane.Legend.Border.IsVisible = false;
-
-
-                //   pane.XAxis.Type = AxisType.Date;
-                //   pane.XAxis.Scale.Format = "HH:mm:ss";
-
-                pane.XAxis.Type = AxisType.Linear;
-                // pane.XAxis.Scale.Format = "HH:mm:ss";
-
-
-                pane.XAxis.Title.FontSpec.FontColor = Color.FromArgb(80, 160, 255);
-                pane.XAxis.Scale.FontSpec.FontColor = Color.FromArgb(80, 160, 255);
-
-                // 设置 X 轴和 Y 轴的网格线为实线且可见
-                pane.XAxis.MajorGrid.IsVisible = true;
-                pane.XAxis.MajorGrid.Color = Color.Gray;
-                pane.XAxis.MajorGrid.DashOn = float.MaxValue; // 设置为实线
-                pane.XAxis.MajorGrid.DashOff = 0;
-
-                // 调小坐标轴文字字体大小
-                pane.XAxis.Title.FontSpec.Size = fontSize;
-                pane.XAxis.Scale.FontSpec.Size = fontSize;
-
-
-                pane.YAxis.Title.FontSpec.FontColor = Color.FromArgb(80, 160, 255);
-                pane.YAxis.Scale.FontSpec.FontColor = Color.FromArgb(80, 160, 255);
-                pane.YAxis.MajorGrid.Color = Color.FromArgb(80, 160, 255);
-                pane.YAxis.Title.FontSpec.Size = fontSize;
-                pane.YAxis.Scale.FontSpec.Size = fontSize;
-                pane.YAxis.MajorGrid.IsVisible = true;
-                pane.YAxis.MajorGrid.DashOn = float.MaxValue;
-                pane.YAxis.MajorGrid.DashOff = 0;
-
-
-                pane.Y2Axis.IsVisible = true;
-                pane.Y2Axis.Title.FontSpec.FontColor = Color.Lime;
-                pane.Y2Axis.Scale.FontSpec.FontColor = Color.Lime;
-                pane.Y2Axis.Color = Color.Lime;
-                pane.Y2Axis.Title.FontSpec.Size = fontSize;
-                pane.Y2Axis.Scale.FontSpec.Size = fontSize;
-                pane.Y2Axis.MajorGrid.IsVisible = false;
-                pane.Y2Axis.MajorTic.Color = Color.Gray;
-                pane.Y2Axis.MinorTic.Size = 0.0f;
-                pane.Y2Axis.MajorGrid.IsZeroLine = false;
-
-
-                var forceYAxis = new Y2Axis("");
-                pane.Y2AxisList.Add(forceYAxis);
-                forceYAxis.IsVisible = true;
-                forceYAxis.Title.FontSpec.FontColor = Color.Purple;
-                forceYAxis.Color = Color.Purple;
-                forceYAxis.Scale.FontSpec.FontColor = Color.Purple;
-                forceYAxis.Title.FontSpec.Size = fontSize;
-                forceYAxis.Scale.FontSpec.Size = fontSize;
-                forceYAxis.MajorGrid.IsVisible = false;
-                forceYAxis.MajorGrid.IsZeroLine = false;
-
-
-                // 添加 12 根电流曲线
-                for (var i = 1; i <= 12; i++)
-                {
-                    var dataList = new PointPairList();
-                    _curveDataLists.Add(dataList);
-
-                    var curveName = $"DAQ_{i}_I(A)";
-                    var curve = pane.AddCurve(curveName, dataList, _curveColors[(i - 1) % _curveColors.Length],
-                        SymbolType.None);
-
-                    curve.Line.Width = 2;
-                    curve.IsY2Axis = true;
-                    curve.YAxisIndex = 1;
-
-                    _curveItems.Add(curve);
-                }
-
-                // 添加 P1 / P2 / F
-                string[] extraNames = { "DAQ_P1_(bar)", "DAQ_P2_(bar)" };
-                for (var i = 0; i < extraNames.Length; i++)
-                {
-                    var dataList = new PointPairList();
-                    _curveDataLists.Add(dataList);
-
-                    var curve = pane.AddCurve(extraNames[i], dataList, _curveColors[12 + i], SymbolType.None);
-
-                    curve.Line.Width = 2;
-                    curve.IsY2Axis = true;
-                    curve.YAxisIndex = 1;
-
-                    _curveItems.Add(curve);
-                }
-
-
-                var forceDataList = new PointPairList();
-                curveDaqCurrent = pane.AddCurve("DAQ_F_(N)", forceDataList, _curveColors[_curveColors.Length - 1],
-                    SymbolType.None);
-                curveDaqCurrent.Line.Width = 2;
-                curveDaqCurrent.IsY2Axis = false;
-                curveDaqCurrent.YAxisIndex = 1;
-
-
-                zedGraphRealChart.GraphPane.XAxis.Scale.Max = ClsGlobal.XDuration;
-                zedGraphRealChart.GraphPane.XAxis.Scale.Min = 0.0;
-
-
-                zedGraphRealChart.GraphPane.XAxis.Scale.MagAuto = false;
-                zedGraphRealChart.GraphPane.XAxis.Scale.FormatAuto = false;
-
-
-                zedGraphRealChart.GraphPane.YAxis.Scale.MagAuto = false;
-                zedGraphRealChart.GraphPane.YAxis.Scale.FormatAuto = false;
-
-                zedGraphRealChart.GraphPane.Y2Axis.Scale.MagAuto = false;
-                zedGraphRealChart.GraphPane.Y2Axis.Scale.FormatAuto = false;
-
-                forceYAxis.Scale.MagAuto = false;
-                forceYAxis.Scale.FormatAuto = false;
-
-
-                zedGraphRealChart.AxisChange();
-
-                zedGraphRealChart.Invalidate();
-
-                zedGraphRealChart.Refresh();
-            }
-
-            catch (Exception ex)
-            {
-                MessageBox.Show(@"初始化曲线显示失败！" + ex.Message, @"提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "初始化曲线显示失败！" + ex.Message, "初始化");
-            }
-        }
-
-
-        /// <summary>
         ///     曲线初始化：创建 15 条曲线（EPB 电流 12 路 + P1 + P2 + F），
         ///     勾选控件（CheckEdit）实时控制可见性；X 轴为时间（秒）。
         /// </summary>
@@ -3449,6 +3264,13 @@ namespace MTEmbTest
             {
                 var pane = zedGraphRealChart.GraphPane;
                 var fontSize = 12;
+
+                // 防御：若历史代码/异常路径曾经向 YAxisList/Y2AxisList 追加过额外轴，
+                // 会持续挤压绘图区（看起来“曲线显示区域越来越小”）。
+                // 这里统一把“非必需轴”隐藏，只保留：
+                // - 左侧：主 Y 轴 +（可选）压力轴
+                // - 右侧：主 Y2 轴
+                NormalizeRealtimeAxes(pane);
 
                 // —— 基础外观（沿用你原有设置）——
                 pane.CurveList.Clear();
@@ -3491,6 +3313,15 @@ namespace MTEmbTest
                 pane.Y2Axis.MinorTic.Size = 0.0f;
                 pane.Y2Axis.Title.FontSpec.Size = fontSize;
                 pane.Y2Axis.Scale.FontSpec.Size = fontSize;
+
+                // 轴布局约定（按现场习惯）：左侧=电流 + 压力，右侧=力
+                // - 电流：用主左轴（YAxis, index 0）
+                // - 压力：用第二左轴（PRESSURE_AXIS）
+                // - 力：用右轴（Y2Axis, index 0）
+                pane.Y2Axis.Color = Color.Purple;
+                pane.Y2Axis.Scale.FontSpec.FontColor = Color.Purple;
+                pane.Y2Axis.Title.FontSpec.FontColor = Color.Purple;
+                pane.Y2Axis.Title.IsVisible = false;
 
 
                 // ★ 新增：确保有一个用于压力的第二左轴，并拿到它的索引
@@ -3589,9 +3420,9 @@ namespace MTEmbTest
                     switch (_allChs[g].Type)
                     {
                         case SignalType.Current:
-                            // 12 路电流 -> 右轴（Y2）
-                            curve.IsY2Axis = true; // 右侧轴
-                            // curve.Y2AxisIndex = 0;    // 可省，默认 0（只有一个右轴）
+                            // 电流 -> 左侧主轴（YAxis, index 0）
+                            curve.IsY2Axis = false;
+                            curve.YAxisIndex = 0;
                             break;
 
                         case SignalType.Pressure:
@@ -3602,9 +3433,9 @@ namespace MTEmbTest
 
                         case SignalType.Force:
                         default:
-                            // 夹紧力 F -> 默认左轴（索引 0）
-                            curve.IsY2Axis = false; // 左侧轴族
-                            curve.YAxisIndex = 0;
+                            // 力 -> 右侧轴（Y2Axis, index 0）
+                            curve.IsY2Axis = true;
+                            // curve.Y2AxisIndex = 0; // 默认 0
                             break;
                     }
 
@@ -3660,6 +3491,34 @@ namespace MTEmbTest
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError,
                     "初始化曲线显示失败！" + ex.Message, "初始化");
+            }
+        }
+
+
+        /// <summary>
+        ///     统一规整实时曲线的坐标轴：**移除**多余堆叠轴（而不是仅隐藏），避免绘图区被挤压。
+        ///     ZedGraph 即使轴 IsVisible=false，轴对象仍在列表中时可能影响布局计算。
+        /// </summary>
+        private static void NormalizeRealtimeAxes(GraphPane pane)
+        {
+            if (pane == null) return;
+
+            try
+            {
+                // 右侧：移除所有额外的 Y2 轴，只保留主 Y2 轴（Index 0）
+                if (pane.Y2AxisList != null)
+                    while (pane.Y2AxisList.Count > 1)
+                        pane.Y2AxisList.RemoveAt(pane.Y2AxisList.Count - 1);
+
+                // 左侧：移除所有额外的 Y 轴，只保留主 Y 轴（Index 0）
+                // 压力轴会在 EnsurePressureYAxis 中重新创建（有 Tag 防重复）
+                if (pane.YAxisList != null)
+                    while (pane.YAxisList.Count > 1)
+                        pane.YAxisList.RemoveAt(pane.YAxisList.Count - 1);
+            }
+            catch
+            {
+                // 规整失败不影响主流程
             }
         }
 
@@ -3933,12 +3792,20 @@ namespace MTEmbTest
         {
             lock (graphLock)
             {
-                listForce.Clear();
+                // 仅清空点数据与缓冲区，不重建曲线/坐标轴。
+                // 避免运行中（误触发/异常路径）反复 InitializeCurve() 导致轴堆叠挤压绘图区。
+                listForce?.Clear();
+                for (var g = 0; g < _chData.Length; g++)
+                    _chData[g]?.Clear();
+
+                for (var i = 0; i < _lastX.Length; i++) _lastX[i] = 0.0;
+                _latestGlobalX = 0.0;
+                _dirtyForRedraw = true;
+
                 bufferA.Clear();
                 bufferB.Clear();
                 activeWriteBuffer = bufferA;
                 readyReadBuffer = bufferB;
-                InitializeCurve();
                 zedGraphRealChart.Invalidate();
             }
         }
