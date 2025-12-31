@@ -127,6 +127,9 @@ namespace MTEmbTest
 
         private readonly Stopwatch Dispstopwatch = new();
 
+        // UI 激活状态，用于前后台切换时调整曲线补点策略，降低“窗口切走”带来的视觉断线
+        private volatile bool _uiActive = true;
+
 
         private readonly ClsEPBControler[] EpbGroup = new ClsEPBControler[12];
         private readonly object graphLock = new(); //曲线更新锁
@@ -401,7 +404,13 @@ namespace MTEmbTest
         {
             InitializeComponent();
 
-            Activated += (_, __) => ApplyZedGraphFastRenderSettings();
+            Activated += (_, __) =>
+            {
+                _uiActive = true;
+                ApplyZedGraphFastRenderSettings();
+            };
+
+            Deactivate += (_, __) => { _uiActive = false; };
 
             // 窗口和父容器尺寸变化时都刷新一次
             Resize += (_, __) => ResizeLedDisplaysUnified();
@@ -1998,8 +2007,15 @@ namespace MTEmbTest
             {
                 // UI 侧可能因负载丢弃部分批次。为了既避免跨 gap 直连的尖峰，又不让曲线呈现“虚线”观感，
                 // 仅当 gap 足够大时才断线；小 gap 直接平移时间继续画。
-                const double gapBreakThreshold = 0.3; // 秒；小于此阈值不打断线
-                var gap = Math.Min(gapSec, 1.0);      // 将可视化gap上限收紧到1秒，避免长断线
+                var gapBreakThreshold = 0.3; // 秒；小于此阈值不打断线
+                var gap = Math.Min(gapSec, 1.0); // 将可视化gap上限收紧到1秒，避免长断线
+
+                if (!_uiActive)
+                {
+                    // 后台/失焦时，Windows 可能节流 UI 线程，导致 gap 变大；此时收紧 gap 并关闭断线
+                    gap = Math.Min(gap, 0.12);
+                    gapBreakThreshold = double.MaxValue;
+                }
 
                 if (gap >= gapBreakThreshold && list.Count > 0)
                 {
