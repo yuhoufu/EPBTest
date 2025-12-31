@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Xml;
 using Config;
 using Config.Models;
@@ -594,8 +595,36 @@ public static class ConfigLoader
 
             var tmp = path + ".tmp";
             doc.Save(tmp);
-            if (File.Exists(path)) File.Replace(tmp, path, null);
-            else File.Move(tmp, path);
+
+            if (File.Exists(path))
+            {
+                var replaced = false;
+
+                // 对偶发文件占用（如杀毒/索引或并发写）做少量重试
+                for (var i = 0; i < 3 && !replaced; i++)
+                {
+                    try
+                    {
+                        File.Replace(tmp, path, null);
+                        replaced = true;
+                    }
+                    catch (IOException) when (i < 2)
+                    {
+                        System.Threading.Thread.Sleep(50);
+                    }
+                }
+
+                if (!replaced)
+                {
+                    // 兜底：删除后移动，避免 .tmp 遗留
+                    File.Delete(path);
+                    File.Move(tmp, path);
+                }
+            }
+            else
+            {
+                File.Move(tmp, path);
+            }
         }
     }
 
