@@ -85,15 +85,9 @@ namespace IO.NI
             maxSlewAperSec: 0 // 每秒最大电流变化（A/s），依硬件调
         );
 
-        // 顶部字段处
-        private sealed class DevClock // 每设备时钟状态
-        {
-            public DateTime T0; // 本设备参考起点（与 Start() 同时刻）
-            public DateTime Last; // 本设备上一次时间戳
-            public long Samples; // 本设备自启动累计样本数（可用于诊断）
-        }
-
-        private readonly ConcurrentDictionary<string, DevClock> _devClocks = new();
+        // 顶部字段处 - 统一时间基准（两设备共用，避免长时间漂移）
+        private DateTime _globalLast = DateTime.Now;
+        private readonly object _globalLastLock = new object();
 
 
         /// <summary>
@@ -646,12 +640,11 @@ namespace IO.NI
             }
 
 
-            // 为每个实际启用的设备放入独立的时钟
-            if (_dev1Channels.Length > 0)
-                _devClocks["Dev1"] = new DevClock { T0 = _t0, Last = _t0, Samples = 0 };
-
-            if (_dev2Channels.Length > 0)
-                _devClocks["Dev2"] = new DevClock { T0 = _t0, Last = _t0, Samples = 0 };
+            // 初始化全局时钟（两设备共用）
+            lock (_globalLastLock)
+            {
+                _globalLast = _t0;
+            }
 
 
 
@@ -745,25 +738,24 @@ namespace IO.NI
                 // ① 先 re-arm 下一批，减小回调耗时对节拍的影响
                 reader.BeginReadMultiSample(_samplesPerChannel, again, task);
 
-                // ② 取本设备的时钟状态
-                if (!_devClocks.TryGetValue(device, out var clk))
+                // ② 使用全局时钟（两设备统一时间基准）
+                DateTime last;
+                DateTime current;
+                double driftMs;
+                lock (_globalLastLock)
                 {
-                    // 极端情况下（热插拔/重启后）没有就创建
-                    clk = new DevClock { T0 = _t0, Last = _t0, Samples = 0 };
-                    _devClocks[device] = clk;
+                    last = _globalLast;
+                    
+                    //  两种时间：主机"实测" + 按采样率推进的"理想"
+                    var hostNow = _t0.AddMilliseconds(_sw.ElapsedMilliseconds - _ts0);
+                    var idealNow = last.AddSeconds(n / _sampleRate);
+
+                    // ③ 轻微纠偏（例如 >5ms 时用主机时间，否则用理想时间，避免长期漂移）
+                    driftMs = (hostNow - idealNow).TotalMilliseconds;
+                    current = Math.Abs(driftMs) > 5 ? hostNow : idealNow;
+                    
+                    _globalLast = current;
                 }
-                
-                var last = clk.Last;
-                
-                //  两种时间：主机“实测” + 按采样率推进的“理想”
-                var hostNow = _t0.AddMilliseconds(_sw.ElapsedMilliseconds - _ts0); // 主机"实测时间"
-
-
-                var idealNow = last.AddSeconds(n / _sampleRate); //  理想时间：由采样率推进，避免 jitter 抖动 Fs * n
-
-                // ③ 轻微纠偏（例如 >5ms 时用主机时间，否则用理想时间，避免长期漂移）
-                var driftMs = (hostNow - idealNow).TotalMilliseconds;
-                var current = Math.Abs(driftMs) > 5 ? hostNow : idealNow;
 
                 // —— 诊断：批大小/回调间隔/到达延迟 ——
                 // 说明：current 是“数据时间”（按采样率推进并纠偏）；arrivalUtc 是“回调进入时刻”。
@@ -889,9 +881,7 @@ namespace IO.NI
                 //reader.BeginReadMultiSample(_samplesPerChannel, again, task);
                 //_lastTs = current;
 
-                // ⑧ 更新本设备的时钟
-                clk.Last = current;
-                clk.Samples += n;
+                // ⑧ 时钟更新已在上面的 lock 块中完成
 
             }
             catch (DaqException ex)
