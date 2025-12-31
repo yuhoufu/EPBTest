@@ -64,13 +64,33 @@ namespace Controller
         /// <summary>写裕量的线程安全锁（若同实例可能并发，建议保留）。</summary>
         private readonly object _marginLock = new object();
 
+        /// <summary>
+        /// 运行/学习期共用：发生过冲后，短暂抑制“向下调裕量”（避免两种动态模式间来回摆动）。
+        /// 单位：剩余圈数。
+        /// </summary>
+        private int _downAdjustFreezeCyclesLeft = 0;
+
 
         /// <summary>安全裕量学习参数（可视需要暴露到配置）。</summary>
         private static class MarginLearnDefaults
         {
             public const double DeadbandA = 0.05; // |err| ≤ deadband 不调参
-            public const double Kp = 0.60; // Δ = Kp * err
-            public const double MaxStepA = 0.50; // |Δ| ≤ MaxStep
+
+            // 非对称 + 分段：过冲更激进、欠冲更保守（避免两种模式之间来回追）
+            public const double KpUp = 0.80; // err>0
+            public const double KpDown = 0.40; // err<0
+
+            public const double MaxStepUpSmallA = 0.60; // |err| < SplitErrA
+            public const double MaxStepUpBigA = 1.00;   // |err| ≥ SplitErrA
+            public const double MaxStepDownSmallA = 0.30;
+            public const double MaxStepDownBigA = 0.40;
+            public const double SplitErrA = 1.00;
+
+            // 迟滞：过冲后冻结/衰减下调若干圈
+            public const int FreezeDownCyclesSmall = 2;
+            public const int FreezeDownCyclesBig = 3;
+            public const double FreezeDownScale = 0.25; // 冻结期：下调的 Kp/step 缩放系数（0=完全冻结）
+
             public const double MinMarginA = 0.20; // 下限
             public const double MaxMarginA = 5.00; // 上限
 
@@ -380,13 +400,6 @@ namespace Controller
         public async Task<LearnSample> LearnOneAlignedCoreAsync(
             int periodMs, int tailBaseMs, int phaseMs, int tailMinMs, CancellationToken token)
         {
-            // ——【自学习调参常量】（可根据机型微调；用局部常量避免破坏原方法签名）——
-            const double deadbandA = 0.05;  // 误差死区（A）：|peak - _posThrA| ≤ deadband 不调参
-            const double kp = 0.60;  // 比例系数（A/A）：Δmargin = kp * err
-            const double maxStepA = 0.50;  // 单圈最大步长（A）：|Δmargin| ≤ maxStepA
-            const double minMarginA = 0.20;  // 裕量下限（A）
-            const double maxMarginA = 5.00;  // 裕量上限（A）
-
             // —— 进入液压建压（与正式阶段保持一致；若无需求可保持幂等）——
             if (_manager != null)
                 await _manager.HydraulicEnterAsync(_channel, token).ConfigureAwait(false);
@@ -568,15 +581,45 @@ namespace Controller
             var absErr = Math.Abs(err);
 
             double before, after;
+            var freezeBefore = 0;
+            var freezeAfter = 0;
             lock (_marginLock)
             {
                 before = double.IsNaN(_learnMargin) ? (_safetyMarginA > 0 ? _safetyMarginA : 2.0) : _learnMargin;
+                freezeBefore = _downAdjustFreezeCyclesLeft;
 
                 if (absErr > MarginLearnDefaults.DeadbandA)
                 {
-                    var delta = MarginLearnDefaults.Kp * err;
-                    if (delta > 0) delta = Math.Min(delta, MarginLearnDefaults.MaxStepA);
-                    else delta = Math.Max(delta, -MarginLearnDefaults.MaxStepA);
+                    double delta;
+                    if (err > 0)
+                    {
+                        // 过冲：加大裕量，并启动“下调冻结”窗口
+                        _downAdjustFreezeCyclesLeft = Math.Max(
+                            _downAdjustFreezeCyclesLeft,
+                            absErr >= MarginLearnDefaults.SplitErrA
+                                ? MarginLearnDefaults.FreezeDownCyclesBig
+                                : MarginLearnDefaults.FreezeDownCyclesSmall);
+
+                        var maxStepUp = absErr >= MarginLearnDefaults.SplitErrA
+                            ? MarginLearnDefaults.MaxStepUpBigA
+                            : MarginLearnDefaults.MaxStepUpSmallA;
+                        delta = MarginLearnDefaults.KpUp * err;
+                        if (delta > maxStepUp) delta = maxStepUp;
+                    }
+                    else
+                    {
+                        var maxStepDown = absErr >= MarginLearnDefaults.SplitErrA
+                            ? MarginLearnDefaults.MaxStepDownBigA
+                            : MarginLearnDefaults.MaxStepDownSmallA;
+
+                        // 欠冲：若处于“过冲后冻结窗口”，则只衰减 KpDown（不缩放 maxStepDown），
+                        // 避免小幅欠冲拉回过快，同时允许大欠冲仍能较快回拉。
+                        var scale = (_downAdjustFreezeCyclesLeft > 0) ? MarginLearnDefaults.FreezeDownScale : 1.0;
+                        var kpDown = MarginLearnDefaults.KpDown * scale;
+
+                        delta = kpDown * err;
+                        if (delta < -maxStepDown) delta = -maxStepDown;
+                    }
 
                     after = before + delta;
                 }
@@ -584,6 +627,12 @@ namespace Controller
                 {
                     after = before; // 死区内不调整
                 }
+
+                // 计数衰减：只要本圈没有发生过冲，就让冻结窗口向 0 收敛
+                if (err <= MarginLearnDefaults.DeadbandA && _downAdjustFreezeCyclesLeft > 0)
+                    _downAdjustFreezeCyclesLeft--;
+
+                freezeAfter = _downAdjustFreezeCyclesLeft;
 
                 // 夹紧边界
                 if (after < MarginLearnDefaults.MinMarginA) after = MarginLearnDefaults.MinMarginA;
@@ -596,9 +645,17 @@ namespace Controller
                 _marginTrace.Add(after);
             }
 
+            var stepText = absErr >= MarginLearnDefaults.SplitErrA
+                ? $"up≤{MarginLearnDefaults.MaxStepUpBigA:F2}/down≤{MarginLearnDefaults.MaxStepDownBigA:F2}"
+                : $"up≤{MarginLearnDefaults.MaxStepUpSmallA:F2}/down≤{MarginLearnDefaults.MaxStepDownSmallA:F2}";
+
+            var freezeText = (freezeBefore > 0 || freezeAfter > 0)
+                ? $", freezeDown:{freezeBefore}→{freezeAfter}"
+                : string.Empty;
+
             _log?.Error($"EPB[{_channel}] SafetyMargin 学习圈：Imax={peakAmp:F3}A, err={err:+0.000;-0.000;0.000}A, " +
                        $"Margin:{before:F3}→{after:F3}A（deadband={MarginLearnDefaults.DeadbandA:F2}, " +
-                       $"Kp={MarginLearnDefaults.Kp:F2}, step≤{MarginLearnDefaults.MaxStepA:F2}）", "EPB");
+                       $"KpUp={MarginLearnDefaults.KpUp:F2}, KpDown={MarginLearnDefaults.KpDown:F2}, {stepText}{freezeText}）", "EPB");
         }
 
         /// <summary>

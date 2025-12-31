@@ -755,7 +755,20 @@ namespace Controller
                                         out var fs))
                                 {
                                     cutoffTimingText =
-                                        $"，触发时回调间隔≈{cbIntervalMs:F2}ms 到达延迟≈{arrivalDelayMs:F2}ms ({dev} N={batchN} Fs={fs}Hz)";
+                                        $"，触发时回调间隔≈{cbIntervalMs:F2}ms 到达延迟(尾)≈{arrivalDelayMs:F2}ms ({dev} N={batchN} Fs={fs}Hz)";
+                                }
+
+                                if (_acq.TryGetLastDaqCallbackTimingForEpbChannelEx(
+                                        _channel,
+                                        out var cbIntervalMsEx,
+                                        out var arrivalDelayToEndMsEx,
+                                        out var arrivalDelayToStartMsEx,
+                                        out var devEx,
+                                        out var batchNEx,
+                                        out var fsEx))
+                                {
+                                    cutoffTimingText =
+                                        $"，触发时回调间隔≈{cbIntervalMsEx:F2}ms 到达延迟(尾)≈{arrivalDelayToEndMsEx:F2}ms 到达延迟(首)≈{arrivalDelayToStartMsEx:F2}ms ({devEx} N={batchNEx} Fs={fsEx}Hz)";
                                 }
                             }
                             catch
@@ -763,8 +776,65 @@ namespace Controller
                                 // ignore
                             }
 
+                            // —— 自适应调整 SafetyMargin ——
+                            double oldMargin, newMargin;
+                            int freezeBefore = 0, freezeAfter = 0;
+                            lock (_marginLock)
+                            {
+                                oldMargin = _safetyMarginA;
+                                newMargin = oldMargin;
+                                freezeBefore = _downAdjustFreezeCyclesLeft;
+                                try
+                                {
+                                    var err = peak.MaxAmp - _posThrA; // >0: Overshoot, <0: Undershoot
+                                    var absErr = Math.Abs(err);
+
+                                    const double deadbandA = 0.05;
+                                    const double kpUp = 0.80;
+                                    const double kpDown = 0.40;
+                                    const double minMarginA = 0.20;
+                                    const double maxMarginA = 5.00;
+
+                                    const int freezeDownCyclesSmall = 2;
+                                    const int freezeDownCyclesBig = 3;
+                                    const double freezeDownScale = 0.25; // 冻结期：下调力度缩放（0=完全冻结）
+
+                                    double maxStepUp = absErr >= 1.0 ? 1.00 : 0.60;
+                                    double maxStepDown = absErr >= 1.0 ? 0.40 : 0.30;
+
+                                    if (err > deadbandA)
+                                    {
+                                        _downAdjustFreezeCyclesLeft = Math.Max(
+                                            _downAdjustFreezeCyclesLeft,
+                                            absErr >= 1.0 ? freezeDownCyclesBig : freezeDownCyclesSmall);
+
+                                        var delta = kpUp * err;
+                                        if (delta > maxStepUp) delta = maxStepUp;
+                                        newMargin = oldMargin + delta;
+                                    }
+                                    else if (err < -deadbandA)
+                                    {
+                                        var scale = (_downAdjustFreezeCyclesLeft > 0) ? freezeDownScale : 1.0;
+                                        var delta = (kpDown * scale) * err;
+                                        if (delta < -maxStepDown) delta = -maxStepDown;
+                                        newMargin = oldMargin + delta;
+                                    }
+
+                                    if (newMargin < minMarginA) newMargin = minMarginA;
+                                    if (newMargin > maxMarginA) newMargin = maxMarginA;
+
+                                    _safetyMarginA = newMargin;
+
+                                    if (err <= deadbandA && _downAdjustFreezeCyclesLeft > 0)
+                                        _downAdjustFreezeCyclesLeft--;
+                                }
+                                catch {}
+
+                                freezeAfter = _downAdjustFreezeCyclesLeft;
+                            }
+
                             _log?.Error(
-                                $"EPB[{_channel}]，阈值：{_posThrA}A,差值：{(_posThrA - peak.MaxAmp):F3}|{(peak.MaxAmp - _actualCutoffCurrent):F3}|{(peak.MaxAmp - (_posThrA - _safetyMarginA)):F3}, 截断值：{_actualCutoffCurrent:F3}|[{_safetyMarginA:F3}]A, 断电触发点：{_actualCutoffCurrent:F3}A{cutoffTimingText}, 正向段峰值：Imax={peak.MaxAmp:F3}A @ {peak.MaxAt:HH:mm:ss.fff}，Samples={peak.SampleCount}。",
+                                $"EPB[{_channel}]，阈值：{_posThrA}A,差值：{(_posThrA - peak.MaxAmp):F3}|{(peak.MaxAmp - _actualCutoffCurrent):F3}|{(peak.MaxAmp - (_posThrA - oldMargin)):F3}, 截断值：{_actualCutoffCurrent:F3}|[{oldMargin:F3}->{newMargin:F3}]A(freezeDown:{freezeBefore}->{freezeAfter}), 断电触发点：{_actualCutoffCurrent:F3}A{cutoffTimingText}, 正向段峰值：Imax={peak.MaxAmp:F3}A @ {peak.MaxAt:HH:mm:ss.fff}，Samples={peak.SampleCount}。",
                                 "EPB");
 
                             // —— 报警判据：峰值超阈值增量 ——
@@ -1333,10 +1403,16 @@ namespace Controller
             double maxSlopeAperMs = 1.0,
             int slopeWinSize = 10)
         {
+            double margin;
+            lock (_marginLock)
+            {
+                margin = _safetyMarginA;
+            }
+
             // 直接调用原方法，使用字段 _safetyMarginA 作为参数
             return await WaitCurrentAboveAsync(
                 thrA,
-                _safetyMarginA, // 使用字段值
+                margin, // 使用字段值
                 token,
                 predictiveCutMs,
                 minSlopeAperMs,

@@ -107,6 +107,11 @@ namespace IO.NI
             /// <summary>最近一次到达延迟（ms，double bits 形式存储以便原子读写）。</summary>
             public long LastArrivalDelayMsBits;
 
+            /// <summary>
+            /// 最近一次到达延迟（相对批首，ms，double bits 形式存储以便原子读写）。
+            /// </summary>
+            public long LastArrivalDelayToStartMsBits;
+
             /// <summary>最近一次批大小（每通道样本数）。</summary>
             public int LastBatchN;
 
@@ -241,12 +246,20 @@ namespace IO.NI
                 ? 0
                 : (arrivalSw - prevArrivalSw) * 1000.0 / Stopwatch.Frequency;
 
-            // batchTimeUtc 是按采样率推进的“数据时间”，可能略早/略晚于 arrivalUtc；直接记录差值用于量化
-            var arrivalDelayMs = (arrivalUtc - batchTimeUtc).TotalMilliseconds;
+            // batchTimeUtc 是按采样率推进的“数据时间”（更接近批尾时刻）。拆成“相对批尾/相对批首”两种延迟，避免负数被误读。
+            var batchEndUtc = batchTimeUtc;
+            var batchStartUtc = batchSampleCount <= 0
+                ? batchEndUtc
+                : batchEndUtc.AddSeconds(-batchSampleCount / _sampleRate);
+
+            var arrivalDelayToEndMs = (arrivalUtc - batchEndUtc).TotalMilliseconds;
+            var arrivalDelayToStartMs = (arrivalUtc - batchStartUtc).TotalMilliseconds;
 
             // —— 保存“最近一次回调节拍”，供断电触发点/截断值日志同屏关联 ——
             Interlocked.Exchange(ref diag.LastCbIntervalMsBits, BitConverter.DoubleToInt64Bits(cbIntervalMs));
-            Interlocked.Exchange(ref diag.LastArrivalDelayMsBits, BitConverter.DoubleToInt64Bits(arrivalDelayMs));
+            Interlocked.Exchange(ref diag.LastArrivalDelayMsBits, BitConverter.DoubleToInt64Bits(arrivalDelayToEndMs));
+            Interlocked.Exchange(ref diag.LastArrivalDelayToStartMsBits,
+                BitConverter.DoubleToInt64Bits(arrivalDelayToStartMs));
             diag.LastBatchN = batchSampleCount;
             diag.LastFs = (int)Math.Round(_sampleRate);
 
@@ -273,10 +286,55 @@ namespace IO.NI
 
             Volatile.Write(ref diag.LastLogSwTick, arrivalSw);
 
+            var catchUpText = string.Empty;
+            try
+            {
+                // 假设：当出现明显“积压”（delayToEnd 较大）且 cbInterval 远小于期望批间隔时，多半是驱动/线程池在追赶积压数据。
+                if (expectBatchMs > 0 && arrivalDelayToEndMs > expectBatchMs * 2 && cbIntervalMs > 0 && cbIntervalMs < expectBatchMs * 0.2)
+                    catchUpText = " catch-up";
+            }
+            catch
+            {
+            }
+
             _log?.Error(
-                $"[AI][{device}] DAQ回调节拍：N={batchSampleCount} (cfgN={_samplesPerChannel}) Fs={_sampleRate:F0}Hz " +
-                $"期望批间隔≈{expectBatchMs:F2}ms 回调间隔≈{cbIntervalMs:F2}ms 到达延迟≈{arrivalDelayMs:F2}ms drift={driftMs:F2}ms",
+                $"[AI][{device}] DAQ回调节拍：N={batchSampleCount} (cfgN={_samplesPerChannel}) Fs={_sampleRate:F0}Hz" +
+                $" 期望批间隔≈{expectBatchMs:F2}ms 回调间隔≈{cbIntervalMs:F2}ms" +
+                $" 到达延迟(尾)≈{arrivalDelayToEndMs:F2}ms 到达延迟(首)≈{arrivalDelayToStartMs:F2}ms" +
+                $" drift={driftMs:F2}ms{catchUpText}",
                 "AI");
+        }
+
+
+        /// <summary>
+        ///     获取指定 EPB 通道对应设备的“最近一次 DAQ 回调节拍”（增强版：同时返回相对批首/批尾的到达延迟）。
+        /// </summary>
+        public bool TryGetLastDaqCallbackTimingForEpbChannelEx(
+            int epbChannel,
+            out double callbackIntervalMs,
+            out double arrivalDelayToEndMs,
+            out double arrivalDelayToStartMs,
+            out string device,
+            out int batchN,
+            out int fs)
+        {
+            callbackIntervalMs = 0;
+            arrivalDelayToEndMs = 0;
+            arrivalDelayToStartMs = 0;
+            batchN = 0;
+            fs = 0;
+            device = null;
+
+            if (!_epbChannelToDevice.TryGetValue(epbChannel, out device)) return false;
+            if (!_callbackTimingDiag.TryGetValue(device, out var diag)) return false;
+
+            callbackIntervalMs = BitConverter.Int64BitsToDouble(Interlocked.Read(ref diag.LastCbIntervalMsBits));
+            arrivalDelayToEndMs = BitConverter.Int64BitsToDouble(Interlocked.Read(ref diag.LastArrivalDelayMsBits));
+            arrivalDelayToStartMs = BitConverter.Int64BitsToDouble(
+                Interlocked.Read(ref diag.LastArrivalDelayToStartMsBits));
+            batchN = diag.LastBatchN;
+            fs = diag.LastFs;
+            return true;
         }
 
 
