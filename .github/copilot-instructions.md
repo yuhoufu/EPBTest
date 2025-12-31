@@ -1,107 +1,36 @@
-# EPBTest 项目 AI 编码指南
+# EPBTest AI Coding Instructions
 
-## 项目概述
-万向EPB测试系统：Windows桌面应用，控制12个EPB卡钳通过液压和电控系统进行自动化疲劳测试。基于.NET Framework 4.8 + WinForms + National Instruments DAQmx。
+## 项目定位
+- Windows 桌面应用：.NET Framework 4.8 + WinForms（主程序 `MTTfTest/`），硬件依赖 NI DAQmx。
+- Debug 默认 x86；Release 多为 Any CPU（以 `TfTest.sln` 配置为准）。
 
-## 核心架构
+## 一句话架构（先看入口）
+- `Controller/EpbManager.BatchStart.cs`：批量启动主入口 `EpbManager.StartBatchSynchronizedAsync(...)`，负责“压力组锚点 + 组内错峰相位 + 12 路定时器锁相”。
+- `Controller/EpbCycleRunner.cs`：单通道一圈的状态机/电流判定（可触发 `AlarmRaised`）。
+- `IO.NI/TwoDeviceAiAcquirer.cs`：双设备 AI 连续采集（快/慢快照分离）。
+- `DataOperation/EpbDiskWriter.cs`：内存映射 .dat + SQLite `index.db` 的圈级索引与“最新 N 圈”留存。
+- 报警硬件（RS-485，非 NI DO）：`Controller/Alarm/AlarmManager.cs` + `M7055dSerialClient.cs`。
 
-### 控制层级关系
-```
-EpbManager (12卡钳编排)
-  ├─ EpbCycleRunner × 12 (单卡钳循环控制, 独立高精度定时器)
-  ├─ HydraulicController (液压: 2气缸控制1-6/7-12卡钳)
-  └─ HydraulicGroupCoordinator (液压组协调)
-```
+## 关键工作流
+- 构建：`msbuild TfTest.sln /p:Configuration=Debug /p:Platform=x86`；Release：`/p:Platform="Any CPU"`。
+- UI 点击“开始试验”：`MTTfTest/FrmEpbMainMonitor.cs` → `await _epb.StartBatchSynchronizedAsync(...)`。
+- 注意链路区分：`TwoDeviceAiAcquirer.OnEngBatch` 主要用于“采集批次→UI 曲线”，不是“批量启动”。
+- 现场日志提取阈值记录：`py -3 .\Tools\ThresholdExporter\export_thresholds.py --log .\运行日志 --template <csv> --out <csv>`（见 `Tools/ThresholdExporter/README.md`）。
 
-### 测试主入口（重要）
-- 批量启动/开始试验的控制主入口：`EpbManager.StartBatchSynchronizedAsync(...)`
-- 参见：`Controller/EpbManager.BatchStart.cs`
+## 本项目最容易踩坑的约束（务必遵守）
+- 定时/同步：正式阶段使用 `HighPrecisionTimer`（`OverrunPolicy.AlignToWallClock`），按“压力组 t0 + k*Period + phase”触发（见 `StartFormalPhaseTimers`）。
+- 供电错峰：同电源组通道需相位错峰（`IndexInPowerGroup(ch) * StaggerDeltaMs`），不要改成同刻启动。
+- 控制读数 vs UI/统计：控制侧读电流用 fast（未滤波、低时延）；UI/统计用 filtered（见 `TwoDeviceAiAcquirer` 的双快照设计）。
+- 封圈一致性：`EpbManager` 在每圈会调用 `Recorder.BeginCycle(...)`，结束必须二选一：
+  - 正常：`Recorder.CompleteCycle(ch, cycleNumber, finalN, endUtc)`
+  - 报警停机：`Recorder.AlarmCycle(ch, cycleNumber, finalN, endUtc)`（避免遗留 `status='running'` 导致计数漂移）
+- RunCount 权威口径来自 `index.db`：只计 `status in ('completed','alarm')`（见仓库 `readMe.md` 的口径说明）。
 
-### 关键模块职责
-- **Controller/**: `EpbManager`统一编排，`EpbCycleRunner`实现单卡钳状态机和电流判断逻辑
-- **IO.NI/**: `TwoDeviceAiAcquirer`双设备AI采集，`DoController`数字输出，`AoController`模拟输出
-- **（新增）报警子系统**：泓格 M-7055D 通过 RS-485 控制报警灯/蜂鸣器（不走 `DoController`）
-- **DataOperation/**: 数据处理、CAN解析（`ClsDbcParser`）、落盘（`EpbDiskWriter`）
-- **Config/**: XML配置加载，`GlobalConfig`聚合所有配置，`EpbTestRecord`单卡钳状态
-- **MTTfTest/**: WinForms界面，`FrmEpbMainMonitor`主监控，`FrmTestSetting`参数设置
+## 配置与约定
+- XML 配置目录：`MTTfTest/Config/`（`TestConfig.xml`、`AIConfig.xml`、`AOConfig.xml`、`DOConfig.xml`、`AlarmConfig.xml`）。
+- 日志统一走 `Config/IAppLogger.cs`（常见 tag："EPB"/"液压"/"报警"）。
+- 命名：WinForms 用 `Frm*`；老式数据类常见 `Cls*`（多在 `DataOperation/`）。
+- 报警快照目录根：`StoreDir\TestName\AlarmSnapshots\yyyyMMdd_HHmmss-EPBxx\...`（现场排障常用）。
 
-### 供电分组策略（重要）
-- 4个程控电源，每个供3个卡钳
-- **同组卡钳启动需要错峰延时**，不同组可同时启动
-- 参见 `EpbManager.BatchStart.cs` 中的错峰实现
-
-## 构建命令
-```powershell
-# Debug构建 (x86平台)
-msbuild TfTest.sln /p:Configuration=Debug /p:Platform=x86
-
-# Release构建
-msbuild TfTest.sln /p:Configuration=Release /p:Platform="Any CPU"
-```
-
-## 代码规范
-
-### 文档注释（新增）
-- **落地代码要求**：所有新增/修改的业务方法必须写“详细的 XML 文档注释”，至少包含：`<summary>`、`<param>`、`<returns>`（有返回值时）、必要时补充 `<remarks>`（说明触发条件/线程模型/异常/边界）。
-- 目标：让后续联调与现场问题复盘时，能直接从方法注释定位“为什么这么做/怎么用/注意什么”。
-
-### 命名与结构
-- 类名前缀`Cls`表示旧式数据操作类（如`ClsDataFilter`、`ClsDiskProc`）
-- 配置类在`Config/`，模型类在`Config/Models/`
-- 界面代码使用`Frm`前缀
-
-### 并发模式
-- `HighPrecisionTimer`（Timing/）用于精确循环控制
-- `ConcurrentDictionary`管理并发状态
-- `TaskCompletionSource`实现异步等待
-- `ManualResetEventSlim`实现暂停门控
-
-### 日志接口
-统一使用`IAppLogger`（定义在Config/），示例：
-```csharp
-_log.Info($"EPB[{_channel}] 正向完成", "电控");
-_log.Error($"液压[{hydId}] 超时", "液压");
-```
-
-### 电流读取模式
-- **控制用**：`TwoDeviceAiAcquirer.ReadCurrentFast()`，低时延未滤波
-- **UI/统计**：`ReadCurrentFiltered()`，滤波后数据
-
-## 配置文件结构
-XML配置位于`MTTfTest/Config/`：
-- `TestConfig.xml` - 测试参数（周期、目标圈数、电控分组）
-- `AIConfig.xml` - 模拟输入通道定义
-- `DOConfig.xml` - 数字输出（EPB正/反向、液压开关）
-- `AOConfig.xml` - 模拟输出（液压压力设定）
-
-报警相关（新增，独立于 NI/DO）：
-- `MTTfTest/Config/AlarmConfig.xml` - 泓格 M-7055D 串口参数、EPB→DO 映射、单点/全关指令帧（含 CRC）
-- 设计与联调说明：`开发日志/报警系统（泓格M-7055D_RS-485）设计与联调.md`
-
-报警触发数据快照（新增需求）：
-- 报警发生时立即导出“当前圈 + 前 9 圈”，并同时导出所有正在运行通道
-- 目录根：`StoreDir\TestName\AlarmSnapshots\yyyyMMdd_HHmmss-EPBxx\EPBxx(_ALARM)\...`
-
-落盘圈状态（重要口径）：
-- `running`：已 BeginCycle 但尚未封圈（报警快照可选择包含）
-- `completed`：正常封圈
-- `alarm`：报警触发导致该圈中断封圈（该圈仍计数，且应纳入“最近 N 圈”导出/保留）
-
-计数一致性（重要约束）：
-- 报警停机必须避免遗留 `status='running'` 的悬挂圈，否则会导致 UI（`EpbTestRecord.RunCount`）与落盘圈次数漂移
-- 实现侧要求：报警停机时必须调用 `IEpbCycleRecorder.AlarmCycle(...)` 封圈；正常结束使用 `CompleteCycle(...)`
-- RunCount 的权威口径是：`COUNT(status IN ('completed','alarm'))`，加载试验时会从项目 `index.db` 回填并立即写回 `Config/TestConfig.xml`，以保证 UI、磁盘与配置文件同步
-
-## 第三方依赖
-- **NationalInstruments.DAQmx** - 必须安装NI驱动
-- **DevExpress v24.2** - 企业控件（需授权）
-- **SunnyUI 3.7.0** - 现代UI控件
-- **ZedGraph 5.1.7** - 图表绘制
-
-## 调试技巧
-- 仿真模式：无硬件时可运行界面和逻辑测试
-- 日志文件：应用目录下的日志文件夹
-- 内存监控：长时间运行注意`TwoDeviceAiAcquirer`缓冲区
-
-## 开发日志
-项目变更记录在`开发日志/`目录，包含架构决策和需求演变说明。
+## 外部依赖（影响可运行性）
+- NI DAQmx 驱动（`NationalInstruments.DAQmx`）+ DevExpress（项目引用），无硬件/无授权时仅能做有限联调。
