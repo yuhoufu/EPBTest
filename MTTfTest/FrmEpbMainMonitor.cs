@@ -217,10 +217,10 @@ namespace MTEmbTest
         private const int InstantUiUpdateMinIntervalMs = 200;
 
         /// <summary>
-        ///     记录每个设备最近一次“已应用到曲线”的批次时间戳，用于在 UI 丢弃部分批次时进行时间轴补偿。
+        ///     绘图零点时间（绝对时间），用于将 DAQ 的绝对时间戳转换为曲线的相对时间 X。
+        ///     <para>在 ResetDisplaySystem 时重置，在首个数据包到达时锚定。</para>
         /// </summary>
-        private readonly ConcurrentDictionary<string, DateTime> _lastAppliedEngBatchTimeByDev =
-            new(StringComparer.OrdinalIgnoreCase);
+        private DateTime _plotZeroTime = DateTime.MinValue;
 
         /// <summary>
         ///     记录“快速渲染设置”是否已输出过一次日志（避免 Activated 多次触发刷屏）。
@@ -1896,30 +1896,9 @@ namespace MTEmbTest
 
             var dt = 1.0 / ClsGlobal.DaqFrequency;
 
-            // —— 时间轴补偿（关键）：当 UI 处理不过来而丢弃部分批次时，若仍按“无丢帧”连续追加，
-            // 将导致时间被压缩，表现为后段波形频率变高/变形。
-            // 这里用批次时间戳估计 gap，把 X 轴前移补齐。
-            var gapSec = 0.0;
-            try
-            {
-                if (_lastAppliedEngBatchTimeByDev.TryGetValue(dev, out var prevApplied))
-                {
-                    // 期望：一批包含 cols 个点，跨度约 cols*dt
-                    var expectedSec = cols * dt;
-                    var actualSec = (current - prevApplied).TotalSeconds;
-                    gapSec = actualSec - expectedSec;
-                    if (gapSec < 0) gapSec = 0;
-
-                    // 防御：极端情况下（系统挂起/时间跳变）避免一次性跳太大导致观感异常
-                    if (gapSec > 5.0) gapSec = 5.0;
-                }
-
-                _lastAppliedEngBatchTimeByDev[dev] = current;
-            }
-            catch
-            {
-                gapSec = 0.0;
-            }
+            // —— 时间轴对齐 ——
+            // 旧的 gapSec 逻辑已移除，改用绝对时间戳 current 对齐，彻底解决多设备不同步问题。
+            // 无论 UI 是否丢帧，X 轴都严格锚定到 DAQ 的绝对时间。
 
             try
             {
@@ -1931,7 +1910,7 @@ namespace MTEmbTest
                     var draw = _checkByGlobal.TryGetValue(g, out var cb) ? cb.Checked : true;
 
                     // 直接从矩阵追加，避免每批/每通道分配数组造成 GC 抖动
-                    AppendChannelBatchFromMatrix(g, eng, r, cols, dt, draw, gapSec);
+                    AppendChannelBatchFromMatrix(g, eng, r, cols, dt, draw, current);
                 }
 
                 lastGraphyTime = current;
@@ -1951,9 +1930,9 @@ namespace MTEmbTest
         /// <param name="colCount">样本列数（本批次样本数）。</param>
         /// <param name="dt">相邻样本时间间隔（秒/点）。</param>
         /// <param name="draw">是否显示该通道。</param>
-        /// <param name="gapSec">需要补齐的时间缺口（秒），用于 UI 丢批次后的时间轴修正。</param>
+        /// <param name="batchEndUtc">本批次结束的绝对时间戳（用于绝对对齐）。</param>
         private void AppendChannelBatchFromMatrix(int globalIndex, double[,] eng, int row, int colCount, double dt,
-            bool draw, double gapSec)
+            bool draw, DateTime batchEndUtc)
         {
             if (_isClosing || Volatile.Read(ref _formClosedFlag) == 1) return;
             if (zedGraphRealChart == null || zedGraphRealChart.IsDisposed) return;
@@ -1963,8 +1942,8 @@ namespace MTEmbTest
                 try
                 {
                     zedGraphRealChart.BeginInvoke(
-                        new Action<int, double[,], int, int, double, bool, double>(AppendChannelBatchFromMatrix),
-                        globalIndex, eng, row, colCount, dt, draw, gapSec);
+                        new Action<int, double[,], int, int, double, bool, DateTime>(AppendChannelBatchFromMatrix),
+                        globalIndex, eng, row, colCount, dt, draw, batchEndUtc);
                 }
                 catch
                 {
@@ -1982,12 +1961,29 @@ namespace MTEmbTest
             var line = _chCurve[globalIndex];
             if (line != null) line.IsVisible = draw;
 
-            // —— 连续时间轴追加（含 gap 修正） —— //
-            var x = _lastX[globalIndex];
-            if (list.Count == 0 && x == 0.0) x = 0.0;
-            else x += dt;
+            // —— 绝对时间轴计算（彻底解决不同步） —— //
+            // 1. 确保绘图零点已锚定
+            if (_plotZeroTime == DateTime.MinValue)
+                _plotZeroTime = batchEndUtc.AddSeconds(-(colCount - 1) * dt);
 
-            // 显示层抽稀：把 1000Hz 级原始点抽到 UiMaxPlotHz 左右，降低全通道绘制压力。
+            // 2. 计算本批次首个样本的绝对 X 坐标
+            //    batchEndUtc 对应 index = colCount - 1
+            //    startX 对应 index = 0
+            var endX = (batchEndUtc - _plotZeroTime).TotalSeconds;
+            var startX = endX - (colCount - 1) * dt;
+
+            // 3. 检查是否需要断线（Gap Detection）
+            //    如果 startX 比 _lastX 大太多，说明中间有丢包或停顿
+            var lastX = _lastX[globalIndex];
+            var expectedX = list.Count > 0 ? lastX + dt : startX;
+            var gap = startX - expectedX;
+
+            if (gap > 0.3) // 阈值 0.3s
+            {
+                if (list.Count > 0) list.Add(double.NaN, double.NaN);
+            }
+
+            // 显示层抽稀
             var stride = 1;
             try
             {
@@ -2003,36 +1999,15 @@ namespace MTEmbTest
             }
             var step = dt * stride;
 
-            if (gapSec > 0)
-            {
-                // UI 侧可能因负载丢弃部分批次。为了既避免跨 gap 直连的尖峰，又不让曲线呈现“虚线”观感，
-                // 仅当 gap 足够大时才断线；小 gap 直接平移时间继续画。
-                var gapBreakThreshold = 0.3; // 秒；小于此阈值不打断线
-                var gap = Math.Min(gapSec, 1.0); // 将可视化gap上限收紧到1秒，避免长断线
-
-                if (!_uiActive)
-                {
-                    // 后台/失焦时，Windows 可能节流 UI 线程，导致 gap 变大；此时收紧 gap 并关闭断线
-                    gap = Math.Min(gap, 0.12);
-                    gapBreakThreshold = double.MaxValue;
-                }
-
-                if (gap >= gapBreakThreshold && list.Count > 0)
-                {
-                    // 仅在大 gap 上插入断线（NaN），避免频繁断线导致“虚线”视觉效果
-                    list.Add(double.NaN, double.NaN);
-                }
-
-                x += gap;
-            }
-
+            // 4. 循环添加点
+            //    注意：这里直接用 startX + i*dt 计算，不再依赖累加，避免浮点漂移
             for (var i = 0; i < colCount; i += stride)
             {
-                list.Add(x, eng[row, i]);
-                x += step;
+                list.Add(startX + i * dt, eng[row, i]);
             }
 
-            _lastX[globalIndex] = x - dt;
+            // 更新最后一点的 X
+            _lastX[globalIndex] = startX + (colCount - 1) * dt;
 
             _latestGlobalX = Math.Max(_latestGlobalX, _lastX[globalIndex]);
             _dirtyForRedraw = true;
@@ -3816,6 +3791,7 @@ namespace MTEmbTest
 
                 for (var i = 0; i < _lastX.Length; i++) _lastX[i] = 0.0;
                 _latestGlobalX = 0.0;
+                _plotZeroTime = DateTime.MinValue; // 重置绘图零点
                 _dirtyForRedraw = true;
 
                 bufferA.Clear();
