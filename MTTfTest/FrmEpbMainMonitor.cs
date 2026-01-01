@@ -30,6 +30,7 @@ using Task = NationalInstruments.DAQmx.Task;
 //using AsyncListener;
 using Timer = System.Threading.Timer;
 
+
 // ReSharper disable AsyncVoidLambda
 
 namespace MTEmbTest
@@ -293,6 +294,12 @@ namespace MTEmbTest
         private IEpbCycleRecorder _recorder;
 
         private UiConfig _uiCfg;
+        private const string UiInfoLogFileName = "ui-info.log";
+        private string _uiInfoLogFilePath = string.Empty;
+        private readonly SemaphoreSlim _uiInfoLogSemaphore = new(1, 1);
+        private readonly ConcurrentQueue<string> _uiInfoLogWriteQueue = new();
+        private int _uiInfoLogWriterRunning;
+        private bool _suppressRtbInfoTextChanged;
 
 
         /// <summary>内存中的 12 路 EPB 记录，来源于 TestConfig.xml 的 &lt;EpbRecords&gt;。</summary>
@@ -946,6 +953,8 @@ namespace MTEmbTest
                 defaultCfg.Test = projectTest;
                 _cfg = defaultCfg;
 
+                InitializeUiInfoLog();
+
                 // 4) 确保默认 Config\TestConfig.xml 中也同步了 Basic 和 TotalCount（但进度清零）
                 //    方便下次启动软件时，仍然能通过默认配置推算出当前项目路径。
                 ConfigLoader.UpdateDefaultTestFromProject(projectTest, logger);
@@ -1000,10 +1009,8 @@ namespace MTEmbTest
                 LoadTestConfigToUI();
                 //LoadEMBHandlerAndFrameNo();
 
-                RtbInfo.Invoke(new SetTextCallback(SetInfoText), "1. 编辑试验信息并确认");
-                //   RtbInfo.Invoke(new SetTextCallback(SetInfoText), "2. CAN卡初始化");
-                //   RtbInfo.Invoke(new SetTextCallback(SetInfoText), "3. 打开各个电源开关");
-                RtbInfo.Invoke(new SetTextCallback(SetInfoText), "2. 自学习/开始试验");
+                LogInfo("1. 编辑试验信息并确认");
+                LogInfo("2. 自学习/开始试验");
 
 
                 // ClsDiskProc.MakeSubDir(testConfig.StoreDir);
@@ -1055,6 +1062,9 @@ namespace MTEmbTest
 
                 // ★ 新增：订阅 EPB 单圈完成事件，用于更新 _uiEpbRecords
                 _epb.ChannelCycleCompleted += OnEpbChannelCycleCompleted;
+                _epb.ChannelAlarmRaised += OnEpbChannelAlarmRaised;
+                _epb.ChannelPaused += OnEpbChannelPaused;
+                _epb.ChannelResumed += OnEpbChannelResumed;
 
 
                 // ===== 报警系统初始化（M-7055D / RS-485）=====
@@ -1308,7 +1318,7 @@ namespace MTEmbTest
                     _epb.StopChannel(record.Id); // 停止该通道试验
 
                     // ====  UI 提示 =====================================================
-                    RtbInfo?.AppendText($"[{DateTime.Now:HH:mm:ss.fff}] EPB-{record.Id} 已完成试验。\n");
+                    LogInfo($"EPB-{record.Id} 已完成试验。");
                 }
             }
 
@@ -1316,12 +1326,22 @@ namespace MTEmbTest
             EpbGroup[channel - 1].CtrlCycles.Text = record.RunCount.ToString();
 
             // —— 4) 下拉框右侧面板选中时刷新 —— //
-            if (record.Id == _currentEpbSummaryChannel)
-            {
-                UpdateEpbSummaryPanel(record);
-            }
-
             // —— ?? 取消实时保存，改为“定时自动保存” —— //
+        }
+
+        private void OnEpbChannelAlarmRaised(int channel, string reason)
+        {
+            LogInfo($"卡钳{channel} 报警：{reason}");
+        }
+
+        private void OnEpbChannelPaused(int channel)
+        {
+            LogInfo($"卡钳{channel} 已暂停");
+        }
+
+        private void OnEpbChannelResumed(int channel)
+        {
+            LogInfo($"卡钳{channel} 已恢复运行");
         }
 
 
@@ -1350,7 +1370,7 @@ namespace MTEmbTest
                 uiCheckBoxIsSameCycleForAllEpb.Checked = test.IsSameCycleForAllEpb;
 
                 // ====  UI 提示 =====================================================
-                RtbInfo?.AppendText($"[{DateTime.Now:HH:mm:ss.fff}] 已加载试验配置。\n");
+                LogInfo("已加载试验配置。");
             }
             catch (Exception ex)
             {
@@ -1559,18 +1579,14 @@ namespace MTEmbTest
                     var OpenSuccess = await ClosePowerChannel((byte)index, ClsGlobal.SerialPortRetrys);
                     if (!OpenSuccess)
                     {
-                        RtbInfo.Invoke(new SetTextCallback(SetInfoText),
-                            DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "关闭EMB" + (index + 1) +
-                            "继电器开关失败!");
+                        LogInfo($"关闭EMB{index + 1} 继电器开关失败");
                         ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError,
                             "关闭EMB" + (index + 1) + "继电器开关失败!", "串口操作");
                         ClsGlobal.PowerStatus[index] = 2;
                     }
                     else
                     {
-                        RtbInfo.Invoke(new SetTextCallback(SetInfoText),
-                            DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "关闭EMB" + (index + 1) +
-                            "继电器开关!");
+                        LogInfo($"关闭EMB{index + 1} 继电器开关");
                         ClsLogProcess.AddToInfoList(MaxInfos, ref LogInformation,
                             "关闭EMB" + (index + 1) + "继电器开关!", "UI 操作");
                         ClsGlobal.PowerStatus[index] = 1;
@@ -1613,18 +1629,14 @@ namespace MTEmbTest
                     var OpenSuccess = await OpenPowerChannel((byte)index, ClsGlobal.SerialPortRetrys);
                     if (!OpenSuccess)
                     {
-                        RtbInfo.Invoke(new SetTextCallback(SetInfoText),
-                            DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "打开EMB" + (index + 1) +
-                            "继电器开关失败!");
+                        LogInfo($"打开EMB{index + 1} 继电器开关失败");
                         ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError,
                             "打开EMB" + (index + 1) + "继电器开关失败!", "串口操作");
                         ClsGlobal.PowerStatus[index] = 1;
                     }
                     else
                     {
-                        RtbInfo.Invoke(new SetTextCallback(SetInfoText),
-                            DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "打开EMB" + (index + 1) +
-                            "继电器开关!");
+                        LogInfo($"打开EMB{index + 1} 继电器开关");
                         ClsLogProcess.AddToInfoList(MaxInfos, ref LogInformation,
                             "打开EMB" + (index + 1) + "继电器开关!", "UI 操作");
                         ClsGlobal.PowerStatus[index] = 2;
@@ -2293,6 +2305,7 @@ namespace MTEmbTest
 
                 channels = selected.ToArray(); // 例如: {1,2,4,6} 或 {1..12}
 
+                LogInfo($"准备启动卡钳：{string.Join(",", channels)}；自学习 {learnCycles} 圈。");
                 try
                 {
                     await _epb.StartBatchSynchronizedAsync(
@@ -2301,15 +2314,15 @@ namespace MTEmbTest
                         _batchCts.Token // 取消令牌（Stop 按钮用）
                     );
 
-                    RtbInfo?.AppendText("批量启动完成：学习阶段已对齐并错峰，上线后每圈对齐运行中…\n");
+                    LogInfo("批量启动完成：学习阶段已对齐并错峰，上线后每圈对齐运行中…");
                 }
                 catch (OperationCanceledException)
                 {
-                    RtbInfo?.AppendText("批量启动取消。\n");
+                    LogInfo("批量启动取消。");
                 }
                 catch (Exception ex)
                 {
-                    RtbInfo?.AppendText($"批量启动失败：{ex.Message}\n");
+                    LogInfo($"批量启动失败：{ex.Message}");
                 }
 
                 #endregion
@@ -2328,6 +2341,7 @@ namespace MTEmbTest
             }
             catch (Exception ex)
             {
+                LogInfo($"启动卡钳{string.Join(",", channels)} 测试失败：{ex.Message}");
                 MessageBox.Show($@"启动卡钳{channels}测试失败：{ex.Message}", @"提示", MessageBoxButtons.OK,
                     MessageBoxIcon.Warning);
             }
@@ -2371,11 +2385,11 @@ namespace MTEmbTest
             {
                 _batchCts?.Cancel(); // 触发外壳的 await 停下学习/计时器工作
                 _epb.StopAll(); // 内部 DO/AO/Runner 停止
-                RtbInfo?.AppendText($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  > 停止试验\n");
+                LogInfo("停止试验");
             }
             catch (Exception ex)
             {
-                RtbInfo?.AppendText($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  > 停止失败：{ex.Message}\n");
+                LogInfo($"停止失败：{ex.Message}");
             }
         }
 
@@ -4510,13 +4524,149 @@ namespace MTEmbTest
 
         #region UI滚动消息
 
-        private delegate void SetTextCallback(string text);
-
-        private void SetInfoText(string text)
+        private void InitializeUiInfoLog()
         {
-            RtbInfo.AppendText($"{text}\n");
+            _uiInfoLogFilePath = GetUiInfoLogPath();
+            if (string.IsNullOrEmpty(_uiInfoLogFilePath))
+                return;
 
-            RtbInfo.ScrollToCaret();
+            var dir = Path.GetDirectoryName(_uiInfoLogFilePath);
+            if (!string.IsNullOrEmpty(dir))
+                Directory.CreateDirectory(dir);
+
+            if (!File.Exists(_uiInfoLogFilePath))
+                File.WriteAllText(_uiInfoLogFilePath, string.Empty);
+
+            var existingLines = File.ReadAllLines(_uiInfoLogFilePath);
+            _suppressRtbInfoTextChanged = true;
+            RtbInfo.Text = existingLines.Length == 0
+                ? string.Empty
+                : string.Join(Environment.NewLine, existingLines);
+            if (existingLines.Length > 0 && !RtbInfo.Text.EndsWith(Environment.NewLine))
+                RtbInfo.AppendText(Environment.NewLine);
+            _suppressRtbInfoTextChanged = false;
+
+            RtbInfo.TextChanged -= RtbInfo_TextChanged;
+            RtbInfo.TextChanged += RtbInfo_TextChanged;
+        }
+
+        private string GetUiInfoLogPath()
+        {
+            var storeDir = _cfg?.Test?.StoreDir;
+            var testName = _cfg?.Test?.TestName;
+            var projectRoot = ConfigLoader.GetProjectRootDir(storeDir, testName);
+            if (string.IsNullOrEmpty(projectRoot))
+                projectRoot = Path.Combine(Environment.CurrentDirectory, "ProjectLogs");
+
+            return Path.Combine(projectRoot, "log", UiInfoLogFileName);
+        }
+
+        private void LogInfo(string message)
+        {
+            if (string.IsNullOrWhiteSpace(message))
+                return;
+
+            var formatted = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {message.Trim()}";
+            AppendInfoLine(formatted);
+            EnqueueLineForPersist(formatted);
+        }
+
+        private void AppendInfoLine(string formattedLine)
+        {
+            if (RtbInfo == null || RtbInfo.IsDisposed)
+                return;
+
+            if (RtbInfo.InvokeRequired)
+            {
+                RtbInfo.BeginInvoke(new Action<string>(AppendInfoLine), formattedLine);
+                return;
+            }
+
+            _suppressRtbInfoTextChanged = true;
+            try
+            {
+                if (string.IsNullOrEmpty(RtbInfo.Text))
+                    RtbInfo.Text = formattedLine + Environment.NewLine;
+                else
+                    RtbInfo.AppendText(formattedLine + Environment.NewLine);
+
+                RtbInfo.ScrollToCaret();
+            }
+            finally
+            {
+                _suppressRtbInfoTextChanged = false;
+            }
+        }
+
+        private void EnqueueLineForPersist(string formattedLine)
+        {
+            if (string.IsNullOrEmpty(_uiInfoLogFilePath))
+                return;
+
+            _uiInfoLogWriteQueue.Enqueue(formattedLine);
+            _ = DrainUiInfoLogQueueAsync();
+        }
+
+        private async System.Threading.Tasks.Task DrainUiInfoLogQueueAsync()
+        {
+            if (Interlocked.Exchange(ref _uiInfoLogWriterRunning, 1) == 1)
+                return;
+
+            try
+            {
+                while (_uiInfoLogWriteQueue.TryDequeue(out var line))
+                {
+                    await _uiInfoLogSemaphore.WaitAsync().ConfigureAwait(false);
+                    try
+                    {
+                        using (var writer = new StreamWriter(_uiInfoLogFilePath, true))
+                        {
+                            await writer.WriteLineAsync(line).ConfigureAwait(false);
+                        }
+                    }
+                    finally
+                    {
+                        _uiInfoLogSemaphore.Release();
+                    }
+                }
+            }
+            catch
+            {
+                // Swallow logging failures so main logic is unaffected
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _uiInfoLogWriterRunning, 0);
+                if (!_uiInfoLogWriteQueue.IsEmpty)
+                    _ = DrainUiInfoLogQueueAsync();
+            }
+        }
+
+        private async void RtbInfo_TextChanged(object sender, EventArgs e)
+        {
+            if (_suppressRtbInfoTextChanged)
+                return;
+
+            await OverwriteUiInfoLogAsync(RtbInfo.Text).ConfigureAwait(false);
+        }
+
+        private async System.Threading.Tasks.Task OverwriteUiInfoLogAsync(string text)
+        {
+            if (string.IsNullOrEmpty(_uiInfoLogFilePath))
+                return;
+
+            await _uiInfoLogSemaphore.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                using (var writer = new StreamWriter(_uiInfoLogFilePath, false))
+                {
+                    await writer.WriteAsync(text).ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                _uiInfoLogSemaphore.Release();
+            }
         }
 
         #endregion

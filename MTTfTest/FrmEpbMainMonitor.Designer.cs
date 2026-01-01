@@ -3060,7 +3060,6 @@
             this.uiTableLayoutPanel2.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 50F));
             this.uiTableLayoutPanel2.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 2.040812F));
             this.uiTableLayoutPanel2.Controls.Add(this.TxtTargetCycles, 3, 5);
-            this.uiTableLayoutPanel2.Controls.Add(this.TxtTestCycleTime, 3, 3);
             this.uiTableLayoutPanel2.Controls.Add(this.uiLabel7, 1, 1);
             this.uiTableLayoutPanel2.Controls.Add(this.uiLabel9, 1, 3);
             this.uiTableLayoutPanel2.Controls.Add(this.uiLabel10, 1, 5);
@@ -3074,6 +3073,7 @@
             this.uiTableLayoutPanel2.Controls.Add(this.uiCheckBoxIsSameCycleForAllEpb, 4, 5);
             this.uiTableLayoutPanel2.Controls.Add(this.BtnClearAlarms, 3, 7);
             this.uiTableLayoutPanel2.Controls.Add(this.CbBuzzerEnabled, 4, 7);
+            this.uiTableLayoutPanel2.Controls.Add(this.TxtTestCycleTime, 3, 3);
             this.uiTableLayoutPanel2.Dock = System.Windows.Forms.DockStyle.Fill;
             this.uiTableLayoutPanel2.Location = new System.Drawing.Point(0, 64);
             this.uiTableLayoutPanel2.Name = "uiTableLayoutPanel2";

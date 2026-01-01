@@ -32,6 +32,15 @@ namespace Controller
         /// <summary>可选：报警配置（用于 Runner 报警阈值/报警快照参数），由 UI 初始化后注入。</summary>
         public AlarmConfig AlarmConfig { get; set; }
 
+        /// <summary>事件：某个通道触发了报警。</summary>
+        public event Action<int, string> ChannelAlarmRaised;
+
+        /// <summary>事件：某个通道被暂停。</summary>
+        public event Action<int> ChannelPaused;
+
+        /// <summary>事件：某个通道恢复运行。</summary>
+        public event Action<int> ChannelResumed;
+
         private readonly TwoDeviceAiAcquirer _acq; // ★ 新增：数据采集器
 
         private readonly AoController _ao;
@@ -605,11 +614,13 @@ namespace Controller
         public void PauseChannel(int channel)
         {
             if (_timers.TryGetValue(channel, out var t)) t.Pause();
+            ChannelPaused?.Invoke(channel);
         }
 
         public void ResumeChannel(int channel)
         {
             if (_timers.TryGetValue(channel, out var t)) t.Resume();
+            ChannelResumed?.Invoke(channel);
         }
 
 
@@ -782,6 +793,8 @@ namespace Controller
             // ★同步去重 latch：保证计时器回调能尽快识别“本圈应封为 alarm”，但不在此线程做 IO
             if (!_alarmStopRequested.TryAdd(channel, 0))
                 return;
+
+            ChannelAlarmRaised?.Invoke(channel, reason);
 
             // 不阻塞 Runner/定时器线程
             _ = Task.Run(async () =>
