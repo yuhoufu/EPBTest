@@ -581,7 +581,8 @@ namespace Controller
                 _log,
                 _cfg,
                 this,
-                overshootAlarmDeltaA: overshootDeltaA);
+                overshootAlarmDeltaA: overshootDeltaA,
+                safetyMarginControlMode: _safetyMarginControlMode);
 
             _runnerCache[channel] = runner;
             _runners[channel] = runner; // 立即登记，保证采集回调可用

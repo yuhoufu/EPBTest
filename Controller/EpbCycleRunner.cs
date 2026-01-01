@@ -55,6 +55,8 @@ namespace Controller
         private readonly int _peakIgnoreMs;
         private readonly GlobalConfig _cfg;
 
+        private readonly SafetyMarginControlMode _safetyMarginControlMode = SafetyMarginControlMode.Legacy20251010;
+
         private readonly double _posThrA;
         private double _safetyMarginA; // 提前断电空间
 
@@ -153,7 +155,8 @@ namespace Controller
             ILogger log = null,
             GlobalConfig cfg = null,
             EpbManager manager = null,
-            double overshootAlarmDeltaA = 0) // ★ 新增：峰值超限报警增量（A），<=0 禁用
+            double overshootAlarmDeltaA = 0, // ★ 新增：峰值超限报警增量（A），<=0 禁用
+            SafetyMarginControlMode safetyMarginControlMode = SafetyMarginControlMode.Legacy20251010)
             : this(channel, hydId, readCurrent, doController, hydraulic, posThresholdA, holdMs, sampleMs, peakIgnoreMs,
                 log)
         {
@@ -164,6 +167,7 @@ namespace Controller
                 _cfg?.Test.EpbCycleRunner.GetRunnerChannel(channel).SafetyMarginA ?? 2.0; // SafetyMarginA为null 则设置为2
             _acq = twoDeviceAiAcquirer;
             _overshootAlarmDeltaA = overshootAlarmDeltaA;
+            _safetyMarginControlMode = safetyMarginControlMode;
 
             // 在此处设置epb卡钳的实际运行参数
             DefaultPreReleaseKeepMs = _cfg?.Test.EpbCycleRunner.GetRunnerChannel(channel).PreReleaseKeepMs ?? 500; // 预释放保持时长
@@ -779,63 +783,96 @@ namespace Controller
                             // —— 自适应调整 SafetyMargin ——
                             double oldMargin, newMargin;
                             int freezeBefore = 0, freezeAfter = 0;
+                            var modeText = string.Empty;
                             lock (_marginLock)
                             {
                                 oldMargin = _safetyMarginA;
                                 newMargin = oldMargin;
-                                freezeBefore = _downAdjustFreezeCyclesLeft;
                                 try
                                 {
                                     var err = peak.MaxAmp - _posThrA; // >0: Overshoot, <0: Undershoot
                                     var absErr = Math.Abs(err);
 
-                                    const double deadbandA = 0.05;
-                                    const double kpUp = 0.80;
-                                    const double kpDown = 0.40;
-                                    const double minMarginA = 0.20;
-                                    const double maxMarginA = 5.00;
-
-                                    const int freezeDownCyclesSmall = 2;
-                                    const int freezeDownCyclesBig = 3;
-                                    const double freezeDownScale = 0.25; // 冻结期：下调力度缩放（0=完全冻结）
-
-                                    double maxStepUp = absErr >= 1.0 ? 1.00 : 0.60;
-                                    double maxStepDown = absErr >= 1.0 ? 0.40 : 0.30;
-
-                                    if (err > deadbandA)
+                                    if (_safetyMarginControlMode == SafetyMarginControlMode.Legacy20251010)
                                     {
-                                        _downAdjustFreezeCyclesLeft = Math.Max(
-                                            _downAdjustFreezeCyclesLeft,
-                                            absErr >= 1.0 ? freezeDownCyclesBig : freezeDownCyclesSmall);
+                                        modeText = "Legacy20251010";
 
-                                        var delta = kpUp * err;
-                                        if (delta > maxStepUp) delta = maxStepUp;
-                                        newMargin = oldMargin + delta;
+                                        // 重要：与 feature/epb-cycle-sync-20251010 保持一致，legacy 模式在“正式阶段”不做比例自调。
+                                        // SafetyMargin 的闭环更新仅发生在学习阶段（FinalizeSafetyMarginLearning 一次性写回）。
+                                        newMargin = oldMargin;
+
+                                        // legacy 模式不使用 freezeDown
+                                        _downAdjustFreezeCyclesLeft = 0;
+                                        freezeBefore = 0;
+                                        freezeAfter = 0;
                                     }
-                                    else if (err < -deadbandA)
+                                    else
                                     {
-                                        var scale = (_downAdjustFreezeCyclesLeft > 0) ? freezeDownScale : 1.0;
-                                        var delta = (kpDown * scale) * err;
-                                        if (delta < -maxStepDown) delta = -maxStepDown;
-                                        newMargin = oldMargin + delta;
+                                        modeText = "FreezeA20260101";
+                                        freezeBefore = _downAdjustFreezeCyclesLeft;
+
+                                        const double deadbandA = 0.05;
+                                        const double kpUp = 0.80;
+                                        const double kpDown = 0.40;
+                                        const double minMarginA = 0.20;
+                                        const double maxMarginA = 5.00;
+
+                                        const int freezeDownCyclesSmall = 2;
+                                        const int freezeDownCyclesBig = 3;
+                                        const double freezeDownScale = 0.25; // 冻结期：下调力度缩放（0=完全冻结）
+
+                                        double maxStepUp = absErr >= 1.0 ? 1.00 : 0.60;
+                                        double maxStepDown = absErr >= 1.0 ? 0.40 : 0.30;
+
+                                        if (err > deadbandA)
+                                        {
+                                            _downAdjustFreezeCyclesLeft = Math.Max(
+                                                _downAdjustFreezeCyclesLeft,
+                                                absErr >= 1.0 ? freezeDownCyclesBig : freezeDownCyclesSmall);
+
+                                            var delta = kpUp * err;
+                                            if (delta > maxStepUp) delta = maxStepUp;
+                                            newMargin = oldMargin + delta;
+                                        }
+                                        else if (err < -deadbandA)
+                                        {
+                                            var scale = (_downAdjustFreezeCyclesLeft > 0) ? freezeDownScale : 1.0;
+                                            var delta = (kpDown * scale) * err;
+                                            if (delta < -maxStepDown) delta = -maxStepDown;
+                                            newMargin = oldMargin + delta;
+                                        }
+
+                                        if (newMargin < minMarginA) newMargin = minMarginA;
+                                        if (newMargin > maxMarginA) newMargin = maxMarginA;
+
+                                        _safetyMarginA = newMargin;
+
+                                        if (err <= deadbandA && _downAdjustFreezeCyclesLeft > 0)
+                                            _downAdjustFreezeCyclesLeft--;
+
+                                        freezeAfter = _downAdjustFreezeCyclesLeft;
                                     }
-
-                                    if (newMargin < minMarginA) newMargin = minMarginA;
-                                    if (newMargin > maxMarginA) newMargin = maxMarginA;
-
-                                    _safetyMarginA = newMargin;
-
-                                    if (err <= deadbandA && _downAdjustFreezeCyclesLeft > 0)
-                                        _downAdjustFreezeCyclesLeft--;
                                 }
                                 catch {}
-
-                                freezeAfter = _downAdjustFreezeCyclesLeft;
                             }
 
-                            _log?.Error(
-                                $"EPB[{_channel}]，阈值：{_posThrA}A,差值：{(_posThrA - peak.MaxAmp):F3}|{(peak.MaxAmp - _actualCutoffCurrent):F3}|{(peak.MaxAmp - (_posThrA - oldMargin)):F3}, 截断值：{_actualCutoffCurrent:F3}|[{oldMargin:F3}->{newMargin:F3}]A(freezeDown:{freezeBefore}->{freezeAfter}), 断电触发点：{_actualCutoffCurrent:F3}A{cutoffTimingText}, 正向段峰值：Imax={peak.MaxAmp:F3}A @ {peak.MaxAt:HH:mm:ss.fff}，Samples={peak.SampleCount}。",
-                                "EPB");
+                            var freezeSuffix = _safetyMarginControlMode == SafetyMarginControlMode.FreezeA20260101
+                                ? $"(freezeDown:{freezeBefore}->{freezeAfter})"
+                                : string.Empty;
+
+                            // Legacy20251010：保持与 feature/epb-cycle-sync-20251010 完全一致的日志格式（不打印 old->new / mode）。
+                            if (_safetyMarginControlMode == SafetyMarginControlMode.Legacy20251010)
+                            {
+                                _log?.Error(
+                                    $"EPB[{_channel}]，阈值：{_posThrA}A,差值：{(_posThrA - peak.MaxAmp):F3}|{(peak.MaxAmp - _actualCutoffCurrent):F3}|{(peak.MaxAmp - (_posThrA - oldMargin)):F3}, 截断值：{_actualCutoffCurrent:F3}|[{oldMargin:F3}]A, 断电触发点：{_actualCutoffCurrent:F3}A{cutoffTimingText}, 正向段峰值：Imax={peak.MaxAmp:F3}A @ {peak.MaxAt:HH:mm:ss.fff}，Samples={peak.SampleCount}。",
+                                    "EPB");
+                            }
+                            else
+                            {
+                                _log?.Error(
+                                    $"EPB[{_channel}]，阈值：{_posThrA}A,差值：{(_posThrA - peak.MaxAmp):F3}|{(peak.MaxAmp - _actualCutoffCurrent):F3}|{(peak.MaxAmp - (_posThrA - oldMargin)):F3}, 截断值：{_actualCutoffCurrent:F3}|[{oldMargin:F3}->{newMargin:F3}]A{freezeSuffix}(mode:{modeText}), 断电触发点：{_actualCutoffCurrent:F3}A{cutoffTimingText}, 正向段峰值：Imax={peak.MaxAmp:F3}A @ {peak.MaxAt:HH:mm:ss.fff}，Samples={peak.SampleCount}。",
+                                    "EPB");
+                            }
 
                             // —— 报警判据：峰值超阈值增量 ——
                             try

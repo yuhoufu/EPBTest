@@ -576,6 +576,59 @@ namespace Controller
         /// <param name="peakAmp">本圈正向段的峰值（Imax）。</param>
         private void ApplySafetyMarginFromPeak(double peakAmp)
         {
+            if (_safetyMarginControlMode == SafetyMarginControlMode.Legacy20251010)
+                ApplySafetyMarginFromPeak_Legacy20251010(peakAmp);
+            else
+                ApplySafetyMarginFromPeak_FreezeA20260101(peakAmp);
+        }
+
+        private void ApplySafetyMarginFromPeak_Legacy20251010(double peakAmp)
+        {
+            var err = peakAmp - _posThrA;
+            var absErr = Math.Abs(err);
+
+            const double deadbandA = 0.05;
+            const double kp = 0.60;
+            const double maxStepA = 0.50;
+            const double minMarginA = 0.20;
+            const double maxMarginA = 5.00;
+
+            double before, after;
+            lock (_marginLock)
+            {
+                before = double.IsNaN(_learnMargin) ? (_safetyMarginA > 0 ? _safetyMarginA : 2.0) : _learnMargin;
+
+                // legacy 模式不使用 freezeDown
+                _downAdjustFreezeCyclesLeft = 0;
+
+                if (absErr > deadbandA)
+                {
+                    var delta = kp * err;
+                    if (delta > 0) delta = Math.Min(delta, maxStepA);
+                    else delta = Math.Max(delta, -maxStepA);
+                    after = before + delta;
+                }
+                else
+                {
+                    after = before;
+                }
+
+                if (after < minMarginA) after = minMarginA;
+                if (after > maxMarginA) after = maxMarginA;
+
+                _learnMargin = after;
+                _peakTrace.Add(peakAmp);
+                _marginTrace.Add(after);
+            }
+
+            _log?.Error(
+                $"EPB[{_channel}] SafetyMargin 学习圈(legacy)：Imax={peakAmp:F3}A, err={err:+0.000;-0.000;0.000}A, " +
+                $"Margin:{before:F3}→{after:F3}A（deadband={deadbandA:F2}, Kp={kp:F2}, step≤{maxStepA:F2}）",
+                "EPB");
+        }
+
+        private void ApplySafetyMarginFromPeak_FreezeA20260101(double peakAmp)
+        {
             // 计算误差：>0 偏高（欠切）→ 增大裕量；<0 偏低（过早）→ 减小裕量
             var err = peakAmp - _posThrA;
             var absErr = Math.Abs(err);

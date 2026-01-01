@@ -211,9 +211,6 @@
       <DependentUpon>Settings.settings</DependentUpon>
       <DesignTimeSharedInput>True</DesignTimeSharedInput>
     </Compile>
-    <Compile Include="Editors\ToggleButton.cs">
-      <SubType>Component</SubType>
-    </Compile>
     <Compile Include="Assets\Toolbox\Root.cs" />
     <EmbeddedResource Include="Assets\Toolbox\ToggleButton.bmp" />
     <Compile Include="Editors\Base\ButtonBase.cs">

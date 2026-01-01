@@ -45,20 +45,57 @@ namespace MTEmbTest
         public void Info(string message, string category = null)
         {
             void write() => ClsLogProcess.AddToInfoList(_maxInfos, ref _logInfo, message, category ?? "信息");
-            if (_ui != null && _ui.InvokeRequired) _ui.BeginInvoke((Action)write); else write();
+            if (_ui != null && !_ui.IsDisposed && _ui.IsHandleCreated && _ui.InvokeRequired)
+            {
+                try
+                {
+                    _ui.BeginInvoke((Action)write);
+                    return;
+                }
+                catch
+                {
+                    // 窗体关闭/句柄销毁期间可能抛异常；降级为直接写队列
+                }
+            }
+
+            write();
         }
 
         public void Warn(string message, string category = null)
         {
             void write() => ClsLogProcess.AddToWarnList(_maxWarns, ref _logWarn, message, category ?? "警告");
-            if (_ui != null && _ui.InvokeRequired) _ui.BeginInvoke((Action)write); else write();
+            if (_ui != null && !_ui.IsDisposed && _ui.IsHandleCreated && _ui.InvokeRequired)
+            {
+                try
+                {
+                    _ui.BeginInvoke((Action)write);
+                    return;
+                }
+                catch
+                {
+                }
+            }
+
+            write();
         }
 
         public void Error(string message, string category = null, Exception ex = null)
         {
             string msg = ex == null ? message : $"{message} | {ex}";
             void write() => ClsErrorProcess.AddToErrorList(_maxErrors, ref _logError, msg, category ?? "错误");
-            if (_ui != null && _ui.InvokeRequired) _ui.BeginInvoke((Action)write); else write();
+            if (_ui != null && !_ui.IsDisposed && _ui.IsHandleCreated && _ui.InvokeRequired)
+            {
+                try
+                {
+                    _ui.BeginInvoke((Action)write);
+                    return;
+                }
+                catch
+                {
+                }
+            }
+
+            write();
         }
     }
 }

@@ -42,6 +42,8 @@ namespace Controller
         private readonly HydraulicController _hydraulic;
         private readonly IAppLogger _log;
 
+        private readonly SafetyMarginControlMode _safetyMarginControlMode;
+
 
         // —— 回调（采样） —— //
         private readonly EpbCycleRunner.ReadCurrentDelegate _readCurrent;
@@ -281,7 +283,8 @@ namespace Controller
             DoController doController,
             AoController aoController,
             TwoDeviceAiAcquirer acq,
-            IAppLogger log = null)
+            IAppLogger log = null,
+            SafetyMarginControlMode safetyMarginControlMode = SafetyMarginControlMode.Legacy20251010)
         {
             _do = doController ?? throw new ArgumentNullException(nameof(doController));
             _ao = aoController ?? throw new ArgumentNullException(nameof(aoController));
@@ -294,6 +297,8 @@ namespace Controller
             _readCurrent = acq.ReadCurrentFast;
             _log = log ?? NullLogger.Instance;
             _acq = acq;
+
+            _safetyMarginControlMode = safetyMarginControlMode;
 
             // 从cfg中获取控制参数；
             PeriodMs = cfg.Test.PeriodMs; // 周期时长
@@ -513,7 +518,8 @@ namespace Controller
                 _log,
                 _cfg,
                 this,
-                overshootAlarmDeltaA: overshootDeltaA);
+                overshootAlarmDeltaA: overshootDeltaA,
+                safetyMarginControlMode: _safetyMarginControlMode);
 
             runner.AlarmRaised += OnRunnerAlarmRaised;
 

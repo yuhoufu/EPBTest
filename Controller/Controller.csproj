@@ -63,6 +63,7 @@
     <Compile Include="EpbCycleRunner.cs" />
     <Compile Include="EpbManager.BatchStart.cs" />
     <Compile Include="EpbManager.cs" />
+    <Compile Include="SafetyMarginControlMode.cs" />
     <Compile Include="HydraulicController.cs" />
     <Compile Include="HydraulicGroupCoordinator.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
