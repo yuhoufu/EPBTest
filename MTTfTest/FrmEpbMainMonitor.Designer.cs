@@ -187,7 +187,6 @@
             this.uiGroupBox1 = new Sunny.UI.UIGroupBox();
             this.uiTableLayoutPanel2 = new Sunny.UI.UITableLayoutPanel();
             this.TxtTargetCycles = new Sunny.UI.UITextBox();
-            this.TxtTestCycleTime = new Sunny.UI.UITextBox();
             this.uiLabel7 = new Sunny.UI.UILabel();
             this.uiLabel9 = new Sunny.UI.UILabel();
             this.uiLabel10 = new Sunny.UI.UILabel();
@@ -221,6 +220,7 @@
             this.uiCheckBoxIsSameCycleForAllEpb = new Sunny.UI.UICheckBox();
             this.BtnClearAlarms = new Sunny.UI.UIButton();
             this.CbBuzzerEnabled = new Sunny.UI.UICheckBox();
+            this.TxtTestCycleTime = new Sunny.UI.UITextBox();
             this.EPBGroupBox = new Sunny.UI.UIGroupBox();
             this.tableLayoutPanel1 = new System.Windows.Forms.TableLayoutPanel();
             this.uiTableLayoutPanel11 = new Sunny.UI.UITableLayoutPanel();
@@ -3116,25 +3116,6 @@
             this.TxtTargetCycles.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
             this.TxtTargetCycles.Watermark = "";
             // 
-            // TxtTestCycleTime
-            // 
-            this.TxtTestCycleTime.Cursor = System.Windows.Forms.Cursors.IBeam;
-            this.TxtTestCycleTime.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.TxtTestCycleTime.DoubleValue = 30D;
-            this.TxtTestCycleTime.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.TxtTestCycleTime.IntValue = 30;
-            this.TxtTestCycleTime.Location = new System.Drawing.Point(454, 117);
-            this.TxtTestCycleTime.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
-            this.TxtTestCycleTime.MinimumSize = new System.Drawing.Size(1, 16);
-            this.TxtTestCycleTime.Name = "TxtTestCycleTime";
-            this.TxtTestCycleTime.Padding = new System.Windows.Forms.Padding(5);
-            this.TxtTestCycleTime.ShowText = false;
-            this.TxtTestCycleTime.Size = new System.Drawing.Size(257, 65);
-            this.TxtTestCycleTime.TabIndex = 44;
-            this.TxtTestCycleTime.Text = "30";
-            this.TxtTestCycleTime.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
-            this.TxtTestCycleTime.Watermark = "";
-            // 
             // uiLabel7
             // 
             this.uiTableLayoutPanel2.SetColumnSpan(this.uiLabel7, 2);
@@ -3671,6 +3652,25 @@
             this.CbBuzzerEnabled.Size = new System.Drawing.Size(147, 69);
             this.CbBuzzerEnabled.TabIndex = 201;
             this.CbBuzzerEnabled.Text = "蜂鸣器";
+            // 
+            // TxtTestCycleTime
+            // 
+            this.TxtTestCycleTime.Cursor = System.Windows.Forms.Cursors.IBeam;
+            this.TxtTestCycleTime.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.TxtTestCycleTime.DoubleValue = 30D;
+            this.TxtTestCycleTime.Font = new System.Drawing.Font("Arial", 10.5782F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.TxtTestCycleTime.IntValue = 30;
+            this.TxtTestCycleTime.Location = new System.Drawing.Point(454, 117);
+            this.TxtTestCycleTime.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.TxtTestCycleTime.MinimumSize = new System.Drawing.Size(1, 16);
+            this.TxtTestCycleTime.Name = "TxtTestCycleTime";
+            this.TxtTestCycleTime.Padding = new System.Windows.Forms.Padding(5);
+            this.TxtTestCycleTime.ShowText = false;
+            this.TxtTestCycleTime.Size = new System.Drawing.Size(257, 65);
+            this.TxtTestCycleTime.TabIndex = 44;
+            this.TxtTestCycleTime.Text = "30";
+            this.TxtTestCycleTime.TextAlignment = System.Drawing.ContentAlignment.MiddleLeft;
+            this.TxtTestCycleTime.Watermark = "";
             // 
             // EPBGroupBox
             // 
