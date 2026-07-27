@@ -67,6 +67,35 @@ namespace Controller.Alarm
             lock (_active) return _active.Count > 0;
         }
 
+        /// <summary>
+        /// 直接控制指定 EPB 通道对应的“面板指示灯”输出（用于联调/测试界面）。
+        /// <para>
+        /// 注意：该方法<strong>不会</strong>修改内部报警集合 <see cref="_active"/>，也不会触发 <see cref="AlarmStateChanged"/>。
+        /// </para>
+        /// </summary>
+        public Task SetIndicatorOutputAsync(int epbId, bool on, CancellationToken token = default)
+        {
+            if (!_epbMap.TryGetValue(epbId, out var map))
+                return Task.CompletedTask;
+
+            return SetSingleCoilAsync(map.DeviceId, map.Line, on, token);
+        }
+
+        /// <summary>
+        /// 直接控制蜂鸣器输出（用于联调/测试界面）。
+        /// <para>
+        /// 注意：该方法不依赖是否有报警激活，且不会改变 <see cref="BuzzerEnabled"/> 或内部报警集合。
+        /// </para>
+        /// </summary>
+        public Task SetBuzzerOutputAsync(bool on, CancellationToken token = default)
+        {
+            var buz = _cfg.Mappings.Buzzer;
+            if (buz == null)
+                return Task.CompletedTask;
+
+            return SetSingleCoilAsync(buz.DeviceId, buz.Line, on, token);
+        }
+
         public async Task SetAlarmAsync(int epbId, bool active, string reason = null, CancellationToken token = default)
         {
             reason ??= string.Empty;
@@ -104,7 +133,7 @@ namespace Controller.Alarm
                 foreach (var cmd in _cfg.Commands.AllOff.OrderBy(x => x.DeviceId))
                 {
                     if (cmd == null) continue;
-                    await SendHexAsync(cmd.Hex, cmd.ExpectResponse, token).ConfigureAwait(false);
+                    await SendHexNoGateAsync(cmd.Hex, cmd.ExpectResponse, token).ConfigureAwait(false);
                 }
 
                 lock (_active) _active.Clear();
@@ -141,6 +170,37 @@ namespace Controller.Alarm
             finally
             {
                 _ioGate.Release();
+            }
+        }
+
+        /// <summary>
+        /// 在 <see cref="_ioGate"/> 已经被调用方持有的前提下发送串口帧。
+        /// <para>
+        /// 用于避免像 <see cref="ClearAllAsync"/> 这类“批量发送”场景下，外层持锁又进入 <see cref="SendHexAsync"/>
+        /// 造成二次 WaitAsync 的死锁。
+        /// </para>
+        /// </summary>
+        private async Task SendHexNoGateAsync(string hex, bool expectResponse, CancellationToken token)
+        {
+            var frame = HexToBytes(hex);
+
+            var retry = Math.Max(0, _cfg.Behavior.Retry);
+            for (var attempt = 0; attempt <= retry; attempt++)
+            {
+                token.ThrowIfCancellationRequested();
+
+                try
+                {
+                    _client.Send(frame, expectResponse);
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    if (attempt >= retry)
+                        _log.Warn($"报警串口发送失败：{ex.Message}（Hex={hex}）", "报警");
+
+                    await Task.Delay(30, token).ConfigureAwait(false);
+                }
             }
         }
 

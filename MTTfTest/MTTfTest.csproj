@@ -127,6 +127,9 @@
     <Compile Include="ClsGlobe.cs" />
     <Compile Include="ConfigOperation.cs" />
     <Compile Include="FormLoggerAdapter.cs" />
+    <Compile Include="FrmAlarmPanelTest.cs">
+      <SubType>Form</SubType>
+    </Compile>
     <Compile Include="FrmDAQCalibrate.cs">
       <SubType>Form</SubType>
     </Compile>

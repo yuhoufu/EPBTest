@@ -278,6 +278,9 @@ namespace MTEmbTest
         private AlarmManager _alarmManager;
         private Config.AlarmConfig _alarmCfg;
 
+        // 报警面板输出测试窗体（用于直控 12 路指示灯 + 蜂鸣器）
+        private FrmAlarmPanelTest _alarmPanelTestForm;
+
         /// <summary>固定的 X 轴窗口宽度（秒）。缺省沿用 ClsGlobal.XDuration。</summary>
         private double _fixedXWindowSec;
 
@@ -1710,8 +1713,30 @@ namespace MTEmbTest
 
         private void BtnTest_Click(object sender, EventArgs e)
         {
-            // _do.SetEpb(channelNo: 1, directionIsForward: true);
-            // _do.SetEpb(channelNo: 9, directionIsForward: true);
+            try
+            {
+                if (_alarmManager == null)
+                {
+                    MessageBox.Show(@"报警子系统未初始化（未加载 AlarmConfig.xml 或初始化失败）。", @"提示",
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                if (_alarmPanelTestForm != null && !_alarmPanelTestForm.IsDisposed)
+                {
+                    _alarmPanelTestForm.Close();
+                    _alarmPanelTestForm = null;
+                    return;
+                }
+
+                _alarmPanelTestForm = new FrmAlarmPanelTest(_alarmManager);
+                _alarmPanelTestForm.FormClosed += (_, __) => { _alarmPanelTestForm = null; };
+                _alarmPanelTestForm.Show(this);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($@"打开测试界面失败：{ex.Message}", @"提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
         }
 
         #region 测试相关代码 - 正式运行删除
@@ -2475,6 +2500,20 @@ namespace MTEmbTest
             // 3.5) 释放报警子系统（串口）
             try
             {
+                try
+                {
+                    if (_alarmPanelTestForm != null && !_alarmPanelTestForm.IsDisposed)
+                        _alarmPanelTestForm.Close();
+                }
+                catch
+                {
+                    // ignored
+                }
+                finally
+                {
+                    _alarmPanelTestForm = null;
+                }
+
                 _alarmManager?.Dispose();
                 _alarmManager = null;
             }
