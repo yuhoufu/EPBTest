@@ -8,6 +8,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Drawing;
 using System.IO.Ports;
+using System.Reflection;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -38,12 +39,27 @@ namespace MtEmbTest
         public Main_Frm()
         {
             InitializeComponent();
+            Text = BuildWindowTitle();
             ConfigureMenuStrip();
 
             // 放在程序启动早期（如 Form_Load / Main 里）
             _ = typeof(EpbManager).FullName; // 用 Controller 内真实存在的公开类型名替换
             _ = typeof(TwoDeviceAiAcquirer).FullName; // 解决断电打不到TwoDeviceAiAcquirer中的问题
 
+        }
+
+        private static string BuildWindowTitle()
+        {
+            const string productName = "MT EPB常温疲劳测试";
+            var assembly = typeof(Main_Frm).Assembly;
+            var attributes = assembly.GetCustomAttributes(typeof(AssemblyInformationalVersionAttribute), false);
+            var version = attributes.Length > 0
+                ? ((AssemblyInformationalVersionAttribute)attributes[0]).InformationalVersion
+                : assembly.GetName().Version?.ToString(3);
+
+            return string.IsNullOrWhiteSpace(version)
+                ? productName
+                : $"{productName} V{version}";
         }
 
 

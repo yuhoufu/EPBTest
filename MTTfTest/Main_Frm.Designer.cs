@@ -184,7 +184,7 @@
             this.MainMenuStrip = this.menuStripMain;
             this.Margin = new System.Windows.Forms.Padding(2, 2, 2, 2);
             this.Name = "Main_Frm";
-            this.Text = "MT EPB常温疲劳测试 V1.0.0.0";
+            this.Text = "MT EPB常温疲劳测试";
             this.WindowState = System.Windows.Forms.FormWindowState.Maximized;
             this.FormClosing += new System.Windows.Forms.FormClosingEventHandler(this.Main_Frm_FormClosing);
             this.Load += new System.EventHandler(this.Main_Frm_Load);
