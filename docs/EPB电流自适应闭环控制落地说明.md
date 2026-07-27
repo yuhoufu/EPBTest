@@ -25,6 +25,8 @@
 - 项目级 `Config/EpbAdaptiveProfiles.xml` 原子保存、损坏文件备份和空模型回退；
 - 前 5 个有效圈形成稳定模型；连续 3 圈偏差超过 30%时预警并渐进更新；
 - `LegacyFixedTiming` 回退开关和 EPB10 单通道灰度开关。
+- 自适应通道的启动学习圈与正式圈共用同一电流状态机；不会再调用旧的
+  `FwdOnLimitMs` / `RevEmptyFixedMs` 固定时序，学习成功圈直接积累项目模型。
 
 ## 配置
 

@@ -338,13 +338,19 @@ namespace Controller
                     r.EnableTailCompensation = true; // ⑧尾部由外壳统一对齐（学习单圈不等待）
                     r.TailMinMs = T8MinMs;
 
-                    // 原有：开始“学习样本聚合”（时间/阶段统计用）
-                    r.BeginLearnAggregation();
-
-                    // ★新增：开始“SafetyMargin 聚合”（清空学习轨迹、设置临时裕量）
-                    r.BeginSafetyMarginLearning();
-
-                    _log?.Info($"EPB[{ch}] SafetyMargin 学习开始！", "EPB");
+                    if (GetEpbControlMode(ch) == Adaptive.EpbControlMode.AdaptiveCurrent)
+                    {
+                        _log?.Info(
+                            $"EPB[{ch}] 自适应模型学习开始：学习圈直接使用电流状态机和硬保护。",
+                            "EPB");
+                    }
+                    else
+                    {
+                        // 旧模式继续学习时间参数和 SafetyMargin。
+                        r.BeginLearnAggregation();
+                        r.BeginSafetyMarginLearning();
+                        _log?.Info($"EPB[{ch}] SafetyMargin 学习开始！", "EPB");
+                    }
                 }
             }
 
@@ -396,14 +402,31 @@ namespace Controller
                             else
                                 await Task.Yield();
 
-                            // ③ 正常执行学习核心
+                            // ③ 执行学习核心：
+                            //    自适应通道从第一学习圈起就使用正式电流状态机，禁止再落回
+                            //    FwdOnLimitMs / RevEmptyFixedMs 的旧固定时序。
                             var runner = GetRunner(ch);
-                            var sample = await runner.LearnOneAlignedCoreAsync(
-                                PeriodMs, T8BaseMs, phase, T8MinMs, token
-                            ).ConfigureAwait(false);
+                            if (GetEpbControlMode(ch) == Adaptive.EpbControlMode.AdaptiveCurrent)
+                            {
+                                var outcome = await runner.RunOneAdaptiveLearningAsync(PeriodMs, token)
+                                    .ConfigureAwait(false);
 
-                            if (sample != null)
-                                runner.ApplyLearnSample(sample);
+                                if (outcome.Kind == Adaptive.EpbCycleOutcomeKind.Canceled)
+                                    throw new OperationCanceledException(token);
+
+                                if (!outcome.IsSuccess)
+                                    throw new InvalidOperationException(
+                                        $"EPB[{ch}] 自适应学习圈失败：阶段={outcome.Stage}，原因={outcome.Reason}");
+                            }
+                            else
+                            {
+                                var sample = await runner.LearnOneAlignedCoreAsync(
+                                    PeriodMs, T8BaseMs, phase, T8MinMs, token
+                                ).ConfigureAwait(false);
+
+                                if (sample != null)
+                                    runner.ApplyLearnSample(sample);
+                            }
                         }, token));
                     }
                 }
@@ -423,11 +446,15 @@ namespace Controller
                     var ch = enabled[i];
                     var r = GetRunner(ch);
 
-                    // 原有：结束“学习样本聚合”
-                    r.FinalizeLearnAggregation();
-
-                    // ★新增：结束“SafetyMargin 聚合”→鲁棒收敛→一次性写回 _safetyMarginA
-                    r.FinalizeSafetyMarginLearning();
+                    if (GetEpbControlMode(ch) == Adaptive.EpbControlMode.AdaptiveCurrent)
+                    {
+                        _log?.Info($"EPB[{ch}] 自适应模型学习阶段结束。", "EPB");
+                    }
+                    else
+                    {
+                        r.FinalizeLearnAggregation();
+                        r.FinalizeSafetyMarginLearning();
+                    }
                 }
             }
         }
@@ -775,6 +802,13 @@ namespace Controller
     {
         /// <summary>最近一次正式单圈的结构化结果。</summary>
         Adaptive.EpbCycleOutcome LastCycleOutcome { get; }
+
+        /// <summary>
+        /// 使用自适应状态机执行一个启动学习圈；不增加正式成功圈计数。
+        /// </summary>
+        Task<Adaptive.EpbCycleOutcome> RunOneAdaptiveLearningAsync(
+            int targetPeriodMs,
+            CancellationToken token);
 
         /// <summary>是否移除①头部等待（由外部“相位对齐”承担）。</summary>
         bool UseNoHeadPhase { get; set; }

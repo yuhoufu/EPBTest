@@ -367,6 +367,19 @@ namespace Controller
             }
         }
 
+        /// <summary>
+        /// 自适应模式的启动学习圈。与正式控制共用同一套电流状态机和硬保护，
+        /// 但不触发正式圈完成计数；成功样本会写入项目级自适应模型。
+        /// </summary>
+        public async Task<EpbCycleOutcome> RunOneAdaptiveLearningAsync(
+            int targetPeriodMs,
+            CancellationToken token)
+        {
+            var outcome = await RunOneAdaptiveAsync(targetPeriodMs, token).ConfigureAwait(false);
+            LastCycleOutcome = outcome;
+            return outcome;
+        }
+
         private void PersistSuccessfulAdaptiveSample(
             int forwardElapsedMs,
             int reverseElapsedMs,
