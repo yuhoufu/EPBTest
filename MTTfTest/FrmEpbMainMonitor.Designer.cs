@@ -2960,7 +2960,7 @@
             this.BtnStartTest.TabIndex = 50;
             this.BtnStartTest.Text = "开始试验";
             this.BtnStartTest.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
-            this.BtnStartTest.Click += new System.EventHandler(this.BtnStartTest_Click);
+            this.BtnStartTest.Click += new System.EventHandler(this.BtnStartTestGuarded_Click);
             // 
             // BtnStop
             // 

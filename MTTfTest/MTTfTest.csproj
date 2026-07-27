@@ -139,6 +139,9 @@
     <Compile Include="FrmEpbMainMonitor.cs">
       <SubType>Form</SubType>
     </Compile>
+    <Compile Include="FrmEpbMainMonitor.BatchGuard.cs">
+      <DependentUpon>FrmEpbMainMonitor.cs</DependentUpon>
+    </Compile>
     <Compile Include="FrmEpbMainMonitor.Designer.cs">
       <DependentUpon>FrmEpbMainMonitor.cs</DependentUpon>
     </Compile>

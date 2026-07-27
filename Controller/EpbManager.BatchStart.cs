@@ -20,6 +20,11 @@ namespace Controller
         // 字段区
         private readonly Dictionary<int, EpbCycleRunner> _runnerCache = new();
         private readonly Dictionary<int, HighPrecisionTimer> _timerCache = new();
+        private int _batchSessionActive;
+        private CancellationTokenSource _batchSessionCts;
+
+        /// <summary>当前是否已有批量学习或正式试验会话。</summary>
+        public bool IsBatchSessionActive => Volatile.Read(ref _batchSessionActive) != 0;
 
         /// <summary>
         /// 对外暴露的“EPB 单圈完成”事件。
@@ -57,40 +62,112 @@ namespace Controller
             if (channels == null || channels.Length == 0)
                 throw new ArgumentException("channels 不能为空", nameof(channels));
 
-            // —— 1) 按压力组归类，并为每组计算“锚点零相位” t0（含预热裕度 + 周期上取整）—— //
-            var nowUtc = DateTime.UtcNow;
-            var groups = GroupByPressure(channels); // Dictionary<int, List<int>>，键为 1/2
-            var t0OfGroup = new Dictionary<int, DateTime>(); // key: PG(1/2), value: t0(UTC)
-
-            foreach (var kv in groups)
+            var sessionToken = BeginBatchSession(token);
+            try
             {
-                var pg = kv.Key;
-                var list = kv.Value;
-                if (list == null || list.Count == 0) continue;
+                // —— 1) 按压力组归类，并为每组计算“锚点零相位” t0（含预热裕度 + 周期上取整）—— //
+                var nowUtc = DateTime.UtcNow;
+                var groups = GroupByPressure(channels); // Dictionary<int, List<int>>，键为 1/2
+                var t0OfGroup = new Dictionary<int, DateTime>(); // key: PG(1/2), value: t0(UTC)
 
-                // 预热裕度：避免首圈 k=0 时 delay ≤ 0 造成“零等待”扎堆
-                var warm = nowUtc.AddMilliseconds(AnchorWarmupMs);
-                // 上取整到下一个周期边界（使所有 pg 的 t0 对齐到统一节拍）
-                t0OfGroup[pg] = CeilToBoundary(warm, PeriodMs);
+                foreach (var kv in groups)
+                {
+                    var pg = kv.Key;
+                    var list = kv.Value;
+                    if (list == null || list.Count == 0) continue;
+
+                    // 预热裕度：避免首圈 k=0 时 delay ≤ 0 造成“零等待”扎堆
+                    var warm = nowUtc.AddMilliseconds(AnchorWarmupMs);
+                    // 上取整到下一个周期边界（使所有 pg 的 t0 对齐到统一节拍）
+                    t0OfGroup[pg] = CeilToBoundary(warm, PeriodMs);
+                }
+
+                // —— 2) （可选）学习前“预释放”：三波错峰，仅做一次，避免每圈额外能耗 —— //
+                if (learnCycles > 0)
+                {
+                    var all = groups.Values.SelectMany(v => v).Distinct().OrderBy(x => x).ToArray();
+                    _log?.Info($"批量预释放：通道[{string.Join(",", all)}]，三波错峰，Δ={StaggerDeltaMs}ms。", "EPB");
+
+                    // keepMs=null → 由 Runner 内部使用 DefaultPreReleaseKeepMs
+                    await PreReleaseBatchStaggeredAsync(
+                            all,
+                            /*keepMs*/ null,
+                            /*deltaMs*/ StaggerDeltaMs,
+                            sessionToken)
+                        .ConfigureAwait(false);
+                }
+
+                // —— 3) 学习阶段：次数不多，用“每圈循环 + 锚点屏障 + 相位延时”实现稳定对齐 —— //
+                if (learnCycles > 0)
+                    await RunLearningPhaseAsync(groups, t0OfGroup, learnCycles, sessionToken)
+                        .ConfigureAwait(false);
+
+                // —— 4) 正式阶段：为每个通道创建对齐到“锚点+相位”的高精计时器 —— //
+                StartFormalPhaseTimers(groups, t0OfGroup, sessionToken);
+            }
+            catch (Exception ex)
+            {
+                _log?.Error($"批量启动异常：{ex}", "EPB", ex);
+                EndBatchSession(cancel: true);
+
+                foreach (var channel in channels.Distinct())
+                {
+                    try { StopChannel(channel); }
+                    catch (Exception stopEx)
+                    {
+                        _log?.Warn($"批量启动异常后停止 EPB[{channel}] 失败：{stopEx}", "EPB");
+                    }
+                }
+
+                throw;
+            }
+        }
+
+        private CancellationToken BeginBatchSession(CancellationToken externalToken)
+        {
+            if (Interlocked.CompareExchange(ref _batchSessionActive, 1, 0) != 0)
+            {
+                const string message = "已有批量试验正在启动或运行，请勿重复点击“开始试验”。";
+                _log?.Warn(message, "EPB");
+                throw new InvalidOperationException(message);
             }
 
-            // —— 2) （可选）学习前“预释放”：三波错峰，仅做一次，避免每圈额外能耗 —— //
-            if (learnCycles > 0)
+            try
             {
-                var all = groups.Values.SelectMany(v => v).Distinct().OrderBy(x => x).ToArray();
-                _log?.Info($"批量预释放：通道[{string.Join(",", all)}]，三波错峰，Δ={StaggerDeltaMs}ms。", "EPB");
+                var linked = CancellationTokenSource.CreateLinkedTokenSource(externalToken);
+                var previous = Interlocked.Exchange(ref _batchSessionCts, linked);
+                previous?.Dispose();
+                return linked.Token;
+            }
+            catch
+            {
+                Interlocked.Exchange(ref _batchSessionActive, 0);
+                throw;
+            }
+        }
 
-                // keepMs=null → 由 Runner 内部使用 DefaultPreReleaseKeepMs
-                await PreReleaseBatchStaggeredAsync(all, /*keepMs*/ null, /*deltaMs*/ StaggerDeltaMs, token)
-                    .ConfigureAwait(false);
+        private void EndBatchSession(bool cancel)
+        {
+            var cts = Interlocked.Exchange(ref _batchSessionCts, null);
+            if (cts != null)
+            {
+                if (cancel)
+                {
+                    try { cts.Cancel(); }
+                    catch { /* 停止路径不得因取消异常中断 */ }
+                }
+
+                try { cts.Dispose(); }
+                catch { /* ignore */ }
             }
 
-            // —— 3) 学习阶段：次数不多，用“每圈循环 + 锚点屏障 + 相位延时”实现稳定对齐 —— //
-            if (learnCycles > 0)
-                await RunLearningPhaseAsync(groups, t0OfGroup, learnCycles, token).ConfigureAwait(false);
+            Interlocked.Exchange(ref _batchSessionActive, 0);
+        }
 
-            // —— 4) 正式阶段：为每个通道创建对齐到“锚点+相位”的高精计时器 —— //
-            StartFormalPhaseTimers(groups, t0OfGroup, token);
+        private void TryEndBatchSessionWhenIdle()
+        {
+            if (_timers.Count == 0 && _timerCache.Count == 0 && _runners.Count == 0)
+                EndBatchSession(cancel: false);
         }
 
         #endregion

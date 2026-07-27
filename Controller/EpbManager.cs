@@ -264,6 +264,8 @@ namespace Controller
             {
                 // ignore
             }
+
+            TryEndBatchSessionWhenIdle();
         }
 
         /// <summary>
@@ -757,6 +759,8 @@ namespace Controller
             {
                 /* 忽略 */
             }
+
+            TryEndBatchSessionWhenIdle();
         }
 
 
@@ -831,6 +835,8 @@ namespace Controller
             {
                 // ignore
             }
+
+            TryEndBatchSessionWhenIdle();
         }
 
 
@@ -1038,6 +1044,9 @@ namespace Controller
         /// </summary>
         public void StopAll()
         {
+            // 学习阶段尚未创建通道 Timer 时，也必须能通过控制层自己的 CTS 停止。
+            EndBatchSession(cancel: true);
+
             var keys = _timers.Keys.ToArray(); // 拷贝快照，避免枚举期间修改
             for (int i = 0; i < keys.Length; i++)
                 StopChannel(keys[i]);
