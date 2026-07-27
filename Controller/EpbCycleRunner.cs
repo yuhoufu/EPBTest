@@ -6,6 +6,8 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
+using Config;
+using Controller.Adaptive;
 using IO.NI;
 using ILogger = Config.IAppLogger;
 using NLogger = Config.NullLogger;
@@ -93,6 +95,11 @@ namespace Controller
         /// </summary>
         public event Action<int, string> AlarmRaised;
 
+        /// <summary>
+        /// 软预警事件：只用于黄色提示和日志，不触发停机或蜂鸣器。
+        /// </summary>
+        public event Action<int, string> WarningRaised;
+
 
         public EpbCycleRunner(
             int channel,
@@ -156,7 +163,11 @@ namespace Controller
             GlobalConfig cfg = null,
             EpbManager manager = null,
             double overshootAlarmDeltaA = 0, // ★ 新增：峰值超限报警增量（A），<=0 禁用
-            SafetyMarginControlMode safetyMarginControlMode = SafetyMarginControlMode.Legacy20251010)
+            SafetyMarginControlMode safetyMarginControlMode = SafetyMarginControlMode.Legacy20251010,
+            EpbControlMode epbControlMode = EpbControlMode.LegacyFixedTiming,
+            bool adaptiveShadowMode = true,
+            EpbAdaptiveProfile adaptiveProfile = null,
+            Action<EpbAdaptiveProfile> saveAdaptiveProfile = null)
             : this(channel, hydId, readCurrent, doController, hydraulic, posThresholdA, holdMs, sampleMs, peakIgnoreMs,
                 log)
         {
@@ -168,6 +179,11 @@ namespace Controller
             _acq = twoDeviceAiAcquirer;
             _overshootAlarmDeltaA = overshootAlarmDeltaA;
             _safetyMarginControlMode = safetyMarginControlMode;
+            _epbControlMode = epbControlMode;
+            _adaptiveShadowMode = adaptiveShadowMode;
+            _adaptiveProfile = adaptiveProfile?.Clone() ?? new EpbAdaptiveProfile { Channel = channel };
+            _saveAdaptiveProfile = saveAdaptiveProfile;
+            _adaptiveStateMachine = new EpbAdaptiveCurrentStateMachine(_adaptiveProfile);
 
             // 在此处设置epb卡钳的实际运行参数
             DefaultPreReleaseKeepMs = _cfg?.Test.EpbCycleRunner.GetRunnerChannel(channel).PreReleaseKeepMs ?? 500; // 预释放保持时长
@@ -272,17 +288,20 @@ namespace Controller
             if (epbChannel != _channel) return;
 
             var waiter = Volatile.Read(ref _currentAboveWaiter);
-            if (waiter == null) return;
+            if (waiter != null)
+            {
+                try
+                {
+                    // 正向夹紧阈值判据使用电流幅值（A），避免硬件/标定导致符号翻转影响过流判断。
+                    waiter.OnSample(tick, Math.Abs(currentAmp));
+                }
+                catch
+                {
+                    // 采集线程必须“永不抛出”影响上游；异常吞掉即可。
+                }
+            }
 
-            try
-            {
-                // 正向夹紧阈值判据使用电流幅值（A），避免硬件/标定导致符号翻转影响过流判断。
-                waiter.OnSample(tick, Math.Abs(currentAmp));
-            }
-            catch
-            {
-                // 采集线程必须“永不抛出”影响上游；异常吞掉即可。
-            }
+            ProcessAdaptiveSample(tick, currentAmp);
         }
 
         /// <summary>
@@ -652,6 +671,14 @@ namespace Controller
         /// <returns>本轮是否成功完成（true/false）。</returns>
         public async Task<bool> RunOneAsync(int targetPeriodMs, CancellationToken token, bool? preRelease = false)
         {
+            if (_epbControlMode == EpbControlMode.AdaptiveCurrent)
+            {
+                LastCycleOutcome = await RunOneAdaptiveAsync(targetPeriodMs, token).ConfigureAwait(false);
+                return LastCycleOutcome.IsSuccess;
+            }
+
+            LastCycleOutcome = EpbCycleOutcome.Canceled(EpbCurrentStage.Idle, "LegacyCycleRunning");
+
             try
             {
                 // —— 本地计时工具（与 Learn… 保持一致）——
@@ -683,6 +710,7 @@ namespace Controller
                 var tElecStart = NowTicks(); // 用于⑧尾段收口计算
 
                 // ===================== ② + ③ + ④：正向（合并为直接夹紧判据） =====================
+                BeginAdaptiveForwardMonitoring(targetPeriodMs);
                 _do.SetEpbForward(_channel);
                 _log?.Info($"EPB[{_channel}] ②正向上电，忽略涌流 {_peakIgnoreMs}ms…", "EPB");
                 await Task.Delay(_peakIgnoreMs, token).ConfigureAwait(false);
@@ -727,12 +755,17 @@ namespace Controller
                     }
 
                     if (_manager != null) await _manager.HydraulicMarkReleaseAsync(_channel).ConfigureAwait(false);
+                    DisarmAdaptiveMonitoring();
+                    LastCycleOutcome = EpbCycleOutcome.HardFault(
+                        EpbCurrentStage.LoadRise,
+                        $"ClampTimeout Thr={_posThrA:F2}A");
                     return false;
                 }
 
 
                 // 达到夹紧判据 → 立即断电并标记释放（与 Learn… 一致）
                 _do.SetEpbOffHighPriority(_channel);
+                CompleteAdaptiveForwardMonitoring(fwdJudgeElapsedMs);
 
                 // —— 达到夹紧判据 → 断电前，安排异步封口（延时 1000ms），完成后回调日志 —— //
                 if (_acq != null)
@@ -906,6 +939,7 @@ namespace Controller
                 }
 
                 // ===================== ⑥ + ⑦：反向（刚性衰减 + 固定空行程） =====================
+                BeginAdaptiveReverseMonitoring(targetPeriodMs);
                 _do.SetEpbReverse(_channel);
                 _log?.Info($"EPB[{_channel}] ⑥反向上电，忽略涌流 {_peakIgnoreMs}ms…", "EPB");
                 await Task.Delay(_peakIgnoreMs, token).ConfigureAwait(false);
@@ -979,6 +1013,7 @@ namespace Controller
 
                 // 反向断电
                 _do.SetEpbOff(_channel);
+                CompleteAdaptiveShadowCycle();
 
                 // ===================== ⑧ 尾段收口（可交由外壳） =====================
                 var elecElapsed = MsBetween(tElecStart, NowTicks());
@@ -1005,18 +1040,35 @@ namespace Controller
                     "EPB");
 
 
+                LastCycleOutcome = new EpbCycleOutcome
+                {
+                    Kind = _adaptiveSoftWarningSeen
+                        ? EpbCycleOutcomeKind.SuccessWithWarning
+                        : EpbCycleOutcomeKind.Success,
+                    Stage = EpbCurrentStage.Released,
+                    Reason = _adaptiveSoftWarningSeen ? "LegacyCompletedWithAdaptiveShadowWarning" : "LegacyCompleted",
+                    ForwardElapsedMs = fwdJudgeElapsedMs,
+                    ReverseElapsedMs = tRevPeakDecayMs,
+                    PeakCurrentA = _adaptiveForwardPeakA
+                };
                 return true;
             }
             catch (OperationCanceledException)
             {
                 _log?.Warn($"EPB[{_channel}] 本轮被取消。", "EPB");
                 _do.SetEpbOff(_channel);
+                DisarmAdaptiveMonitoring();
+                LastCycleOutcome = EpbCycleOutcome.Canceled(_adaptiveStateMachine?.Stage ?? EpbCurrentStage.Idle, "Canceled");
                 return false;
             }
             catch (Exception ex)
             {
                 _log?.Error($"EPB[{_channel}] 运行异常：{ex.Message}", "EPB", ex);
                 _do.SetEpbOff(_channel);
+                DisarmAdaptiveMonitoring();
+                LastCycleOutcome = EpbCycleOutcome.HardFault(
+                    _adaptiveStateMachine?.Stage ?? EpbCurrentStage.Faulted,
+                    "UnhandledException: " + ex.Message);
                 return false;
             }
         }

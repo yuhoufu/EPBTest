@@ -102,8 +102,14 @@ public sealed class HighPrecisionTimer
                                 i += 2; // 跳过一次
                                 continue;
                             case OverrunPolicy.AlignToWallClock:
-                                _log.Warn(msg + "（保持与时钟对齐，不追赶）", "Timer");
+                                _log.Warn("周期不足：" + msg + "（滚动到下一个未来周期边界，禁止追赶式执行）", "Timer");
+                                var futureSlot = Math.Max(
+                                    i + 1,
+                                    (int)Math.Floor((t1 - _ticksStart) / (double)_periodMs) + 1);
+                                var nextPlanned = _ticksStart + (long)futureSlot * _periodMs;
                                 i++;
+                                // 保持完成圈号连续，但把调度基准平移到刚算出的未来边界。
+                                _ticksStart = nextPlanned - (long)i * _periodMs;
                                 continue;
                             case OverrunPolicy.Throw:
                                 _log.Error(msg + "（抛出异常）", "Timer");

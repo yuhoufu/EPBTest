@@ -385,7 +385,7 @@ public sealed class EpbDiskWriter : IDisposable
     /// <summary>
     ///     将指定通道的当前圈以“报警中断”封圈。
     ///     <list type="bullet">
-    ///         <item>用于“报警停机也必须计数”的一致性：避免遗留 <c>status='running'</c> 的悬挂圈。</item>
+    ///         <item>报警圈只用于追溯，不计为成功圈；封圈可避免遗留 <c>status='running'</c>。</item>
     ///         <item>该方法与 <see cref="CompleteCycle"/> 的区别仅在于将 <c>status</c> 写为 <c>alarm</c>。</item>
     ///     </list>
     /// </summary>
@@ -399,6 +399,28 @@ public sealed class EpbDiskWriter : IDisposable
         lock (s.Gate)
         {
             MarkCycleAlarm(epbId, cycleNumber, finalSampleCount, endUtc);
+            s.CurrentCycle = null;
+            s.CurrentSampleIndex = 0;
+        }
+    }
+
+    /// <summary>
+    /// 将未完整完成的圈封为 canceled/failed。此类圈不参与成功计数和正常圈导出。
+    /// </summary>
+    public void AbortCycle(
+        int epbId,
+        int cycleNumber,
+        int finalSampleCount,
+        DateTime endUtc,
+        string status)
+    {
+        var normalized = string.Equals(status, "canceled", StringComparison.OrdinalIgnoreCase)
+            ? "canceled"
+            : "failed";
+        var s = GetState(epbId);
+        lock (s.Gate)
+        {
+            MarkCycleAborted(epbId, cycleNumber, finalSampleCount, endUtc, normalized);
             s.CurrentCycle = null;
             s.CurrentSampleIndex = 0;
         }
@@ -760,16 +782,27 @@ public sealed class EpbDiskWriter : IDisposable
     }
 
     /// <summary>
-    ///     查询指定 EPB 通道当前已存在的“最大正式圈号”（cycle_number），仅统计 CycleNumber &gt; 0。
-    ///     后续在 EpbManager 里开启新试验时，就可以（举例）：
+    ///     查询指定 EPB 通道正常完成的累计圈数。
+    ///     该方法保留给旧界面的启动回填逻辑使用；报警、失败、取消圈均不计入 RunCount。
+    /// </summary>
+    /// <param name="epbId">EPB 通道号（1..12）。</param>
+    /// <returns>正常完成的累计圈数。</returns>
+    public int GetLastCycleNumber(int epbId)
+    {
+        return GetClosedCycleCount(epbId);
+    }
+
+    /// <summary>
+    ///     查询当前已存在的最大正式数据圈号，仅用于生成不重复的下一圈数据序号。
+    ///     后续在 EpbManager 里开启新试验时，可以（举例）：
     ///     // 每个通道单独算一个“起始圈号基准”
-    ///     var last = _diskWriter.GetLastCycleNumber(ch);
+    ///     var last = _diskWriter.GetMaxCycleNumber(ch);
     ///     var baseCycle = last;         // 这次试验第1圈就是 baseCycle + 1
     ///     然后把 runner 的 _sessionRunCount 写成 baseCycle + n，再传给 BeginCycle/CompleteCycle
     /// </summary>
     /// <param name="epbId">EPB 通道号（1..12）。</param>
     /// <returns>若无正式圈记录，则返回 0。</returns>
-    public int GetLastCycleNumber(int epbId)
+    public int GetMaxCycleNumber(int epbId)
     {
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = $@"
@@ -785,11 +818,11 @@ SELECT COALESCE(MAX(cycle_number), 0)
 
 
         /// <summary>
-        ///     查询指定 EPB 通道“已封圈”的累计圈次数。
+        ///     查询指定 EPB 通道正常完成的累计圈次数。
         /// </summary>
         /// <param name="epbId">EPB 通道号（1..12）。</param>
         /// <returns>
-        ///     已封圈圈次数（仅统计 CycleNumber &gt; 0 且 <c>status in ('completed','alarm')</c> 的记录）。
+        ///     成功圈次数（仅统计 CycleNumber &gt; 0 且 <c>status='completed'</c> 的记录）。
         /// </returns>
         /// <remarks>
         ///     <para>
@@ -802,7 +835,7 @@ SELECT COALESCE(MAX(cycle_number), 0)
         ///         </item>
         ///         <item>
         ///             <description>
-        ///             <c>alarm</c>：报警触发导致该圈中断封圈（仍应计数，保证 UI 与落盘一致）；
+        ///             <c>alarm</c>：报警触发导致该圈中断，只保留故障证据，不计入成功圈；
         ///             </description>
         ///         </item>
         ///         <item>
@@ -815,7 +848,7 @@ SELECT COALESCE(MAX(cycle_number), 0)
         ///     <para>
         ///     典型用途：软件启动加载试验时，用 DB 回填 <c>EpbTestRecord.RunCount</c>，
         ///     将 RunCount 的权威口径固定为：
-        ///     <c>COUNT(status IN ('completed','alarm'))</c>。
+        ///     <c>COUNT(status='completed')</c>。
         ///     </para>
         /// </remarks>
         public int GetClosedCycleCount(int epbId)
@@ -826,7 +859,7 @@ SELECT COUNT(1)
     FROM {TABLE_CYCLES}
  WHERE epb_id=@e
      AND cycle_number > 0
-     AND status IN ('completed','alarm')";
+     AND status='completed'";
                 cmd.Parameters.AddWithValue("@e", epbId);
                 var obj = cmd.ExecuteScalar();
                 return Convert.ToInt32(obj);
@@ -1043,6 +1076,26 @@ UPDATE {TABLE_CYCLES}
         cmd.ExecuteNonQuery();
     }
 
+    private void MarkCycleAborted(
+        int epbId,
+        int cycleNumber,
+        int finalSampleCount,
+        DateTime endUtc,
+        string status)
+    {
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = $@"
+UPDATE {TABLE_CYCLES}
+   SET sample_count=@n, end_time=@et, status=@status
+ WHERE epb_id=@e AND cycle_number=@c";
+        cmd.Parameters.AddWithValue("@n", finalSampleCount);
+        cmd.Parameters.AddWithValue("@et", endUtc.ToLocalTime().ToString("o"));
+        cmd.Parameters.AddWithValue("@status", status);
+        cmd.Parameters.AddWithValue("@e", epbId);
+        cmd.Parameters.AddWithValue("@c", cycleNumber);
+        cmd.ExecuteNonQuery();
+    }
+
     private List<CycleInfo> GetCyclesToPurge(int epbId, int keepLatestN)
     {
         var list = new List<CycleInfo>();
@@ -1188,6 +1241,9 @@ public interface IEpbCycleRecorder
     /// <param name="utcNow">报警发生时间（UTC）。</param>
     void AlarmCycle(int epbId, int cycleNumber, int finalN, DateTime utcNow);
 
+    /// <summary>将取消/失败的半圈封账，但不计为成功圈。</summary>
+    void AbortCycle(int epbId, int cycleNumber, int finalN, DateTime utcNow, string status);
+
     /// <summary>
     ///     在停止卡钳时，将该通道“最新 N 圈”正式数据（Cycle&gt;0）落盘；
     ///     Free-Run（Cycle=0）不在此范围，若需要可单独调用导出 API。
@@ -1255,7 +1311,7 @@ public sealed class DiskWriterRecorderAdapter : IEpbCycleRecorder
     /// <returns></returns>
     public int GetLastCycleNumber(int ch)
     {
-        return _writer.GetLastCycleNumber(ch);
+        return _writer.GetMaxCycleNumber(ch);
     }
 
 
@@ -1267,6 +1323,11 @@ public sealed class DiskWriterRecorderAdapter : IEpbCycleRecorder
     public void AlarmCycle(int epbId, int cycleNumber, int finalN, DateTime utcNow)
     {
         _writer.AlarmCycle(epbId, cycleNumber, finalN, utcNow);
+    }
+
+    public void AbortCycle(int epbId, int cycleNumber, int finalN, DateTime utcNow, string status)
+    {
+        _writer.AbortCycle(epbId, cycleNumber, finalN, utcNow, status);
     }
 }
 

@@ -57,14 +57,15 @@ UI 侧（WinForms）点击“开始试验”按钮后，会在：
 
 - `running`：圈已开始但尚未封圈（用于快照可选包含）。
 - `completed`：正常封圈。
-- `alarm`：报警触发导致该圈中断封圈（该圈仍计数，且可作为“最近 N 圈”导出）。
+- `alarm`：硬报警导致该圈中断；保留故障证据和快照，但不计成功圈。
+- `failed` / `canceled`：未形成完整正向、保持、动态释放过程，不计成功圈。
 
 > 说明：报警停机必须避免遗留 `running` 悬挂圈，否则会导致“落盘圈号/次数”与 UI 计数漂移。
 
 ## RunCount 权威口径
 
 `EpbTestRecord.RunCount` 在界面启动时会从项目目录下的 `index.db` 查询：
-`COUNT(status IN ('completed','alarm'))`，确保 UI 与落盘的“累计圈数”始终一致。
+`COUNT(status='completed')`，确保 UI 与落盘的“成功圈数”始终一致。
 
 - 仅当项目已有 `index.db` 时才回填，避免首次创建项目时把 XML 中的进度意外压成 0。
 - 回填完成后立即写回项目 `Config/TestConfig.xml`，所见即所得。无论任意启动/报警，并未完成的圈都不会被计入。

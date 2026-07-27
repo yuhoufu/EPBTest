@@ -161,8 +161,10 @@ namespace Controller
                             await HydraulicEnterAtGroupAnchorAsync(pg, participants, token).ConfigureAwait(false);
 
                             // 2) 计算本圈的绝对“硬截止”时刻（用于 Runner 保证统一收尾）
-                            var k = cycleIndex - 1;
-                            var deadlineUtc = t0.AddMilliseconds((k + 1) * PeriodMs);
+                            var elapsedFromAnchorMs = Math.Max(0, (DateTime.UtcNow - t0).TotalMilliseconds);
+                            var nextBoundarySlot =
+                                Math.Max(1, (long)Math.Floor(elapsedFromAnchorMs / PeriodMs) + 1);
+                            var deadlineUtc = t0.AddMilliseconds(nextBoundarySlot * PeriodMs);
 
                             // 2.5) ★ 圈开始：通知 Recorder
                             var cycleNumber = cycleIndex + baseCycle;
@@ -198,18 +200,25 @@ namespace Controller
                                 try
                                 {
                                     var finalN = recorder.GetCurrentCycleSampleCount(ch);
-                                    if (IsAlarmStopRequested(ch))
+                                    if (IsAlarmStopRequested(ch) ||
+                                        runner.LastCycleOutcome.Kind == Adaptive.EpbCycleOutcomeKind.HardFault)
                                     {
                                         recorder.AlarmCycle(ch, cycleNumber, finalN, DateTime.UtcNow);
-
-                                        // ★补发“单圈完成”事件：报警中断圈也必须计数（UI 的 EpbTestRecord 会在该事件里 +1）
-                                        // 仅在 runner 未返回成功时补发，避免与 runner 的 ChannelCycleCompleted 重复。
-                                        if (!ok)
-                                            ChannelCycleCompleted?.Invoke(ch, cycleIndex);
+                                    }
+                                    else if (runner.LastCycleOutcome.IsSuccess)
+                                    {
+                                        recorder.CompleteCycle(ch, cycleNumber, finalN, DateTime.UtcNow);
                                     }
                                     else
                                     {
-                                        recorder.CompleteCycle(ch, cycleNumber, finalN, DateTime.UtcNow);
+                                        recorder.AbortCycle(
+                                            ch,
+                                            cycleNumber,
+                                            finalN,
+                                            DateTime.UtcNow,
+                                            runner.LastCycleOutcome.Kind == Adaptive.EpbCycleOutcomeKind.Canceled
+                                                ? "canceled"
+                                                : "failed");
                                     }
                                 }
                                 catch
@@ -582,7 +591,11 @@ namespace Controller
                 _cfg,
                 this,
                 overshootAlarmDeltaA: overshootDeltaA,
-                safetyMarginControlMode: _safetyMarginControlMode);
+                safetyMarginControlMode: _safetyMarginControlMode,
+                epbControlMode: GetEpbControlMode(channel),
+                adaptiveShadowMode: _adaptiveShadowMode,
+                adaptiveProfile: GetAdaptiveProfile(channel),
+                saveAdaptiveProfile: SaveAdaptiveProfile);
 
             _runnerCache[channel] = runner;
             _runners[channel] = runner; // 立即登记，保证采集回调可用
@@ -607,6 +620,9 @@ namespace Controller
 
             runner.AlarmRaised -= OnRunnerAlarmRaised;
             runner.AlarmRaised += OnRunnerAlarmRaised;
+
+            runner.WarningRaised -= OnRunnerWarningRaised;
+            runner.WarningRaised += OnRunnerWarningRaised;
         }
 
 
@@ -757,6 +773,9 @@ namespace Controller
     /// </summary>
     public interface IEpbCycleRunner
     {
+        /// <summary>最近一次正式单圈的结构化结果。</summary>
+        Adaptive.EpbCycleOutcome LastCycleOutcome { get; }
+
         /// <summary>是否移除①头部等待（由外部“相位对齐”承担）。</summary>
         bool UseNoHeadPhase { get; set; }
 

@@ -3,10 +3,12 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Configuration;
 using System.Threading;
 using System.Threading.Tasks;
 using Config;
 using Config.Models;
+using Controller.Adaptive;
 using Controller.Alarm;
 using DataOperation;
 using IO.NI;
@@ -35,6 +37,9 @@ namespace Controller
         /// <summary>事件：某个通道触发了报警。</summary>
         public event Action<int, string> ChannelAlarmRaised;
 
+        /// <summary>事件：某个通道产生软预警；不停止通道、不触发蜂鸣器。</summary>
+        public event Action<int, string> ChannelWarningRaised;
+
         /// <summary>事件：某个通道被暂停。</summary>
         public event Action<int> ChannelPaused;
 
@@ -52,6 +57,10 @@ namespace Controller
         private readonly IAppLogger _log;
 
         private readonly SafetyMarginControlMode _safetyMarginControlMode;
+        private readonly EpbControlMode _epbControlMode;
+        private readonly bool _adaptiveShadowMode;
+        private readonly EpbAdaptiveProfileStore _adaptiveProfileStore;
+        private readonly HashSet<int> _adaptiveChannels;
 
 
         // —— 回调（采样） —— //
@@ -225,6 +234,7 @@ namespace Controller
                 {
                     runnerObj.ChannelCycleCompleted -= OnRunnerChannelCycleCompleted;
                     runnerObj.AlarmRaised -= OnRunnerAlarmRaised;
+                    runnerObj.WarningRaised -= OnRunnerWarningRaised;
                 }
                 catch
                 {
@@ -293,7 +303,9 @@ namespace Controller
             AoController aoController,
             TwoDeviceAiAcquirer acq,
             IAppLogger log = null,
-            SafetyMarginControlMode safetyMarginControlMode = SafetyMarginControlMode.Legacy20251010)
+            SafetyMarginControlMode safetyMarginControlMode = SafetyMarginControlMode.Legacy20251010,
+            EpbControlMode epbControlMode = EpbControlMode.LegacyFixedTiming,
+            bool adaptiveShadowMode = true)
         {
             _do = doController ?? throw new ArgumentNullException(nameof(doController));
             _ao = aoController ?? throw new ArgumentNullException(nameof(aoController));
@@ -308,6 +320,23 @@ namespace Controller
             _acq = acq;
 
             _safetyMarginControlMode = safetyMarginControlMode;
+            _epbControlMode = ReadEpbControlMode(epbControlMode);
+            _adaptiveShadowMode = ReadAdaptiveShadowMode(adaptiveShadowMode);
+            _adaptiveChannels = ReadAdaptiveChannels();
+
+            try
+            {
+                var projectConfigDir = ConfigLoader.GetProjectConfigDir(cfg.Test.StoreDir, cfg.Test.TestName);
+                _adaptiveProfileStore = new EpbAdaptiveProfileStore(projectConfigDir, _log);
+                _log.Info(
+                    $"EPB 控制模式={_epbControlMode}，灰度通道={string.Join(",", _adaptiveChannels)}，" +
+                    $"影子判定={_adaptiveShadowMode}，模型={_adaptiveProfileStore.FilePath}",
+                    "EPB");
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"初始化 EPB 自适应模型存储失败，将使用内存空模型：{ex.Message}", "EPB");
+            }
 
             // 从cfg中获取控制参数；
             PeriodMs = cfg.Test.PeriodMs; // 周期时长
@@ -528,9 +557,14 @@ namespace Controller
                 _cfg,
                 this,
                 overshootAlarmDeltaA: overshootDeltaA,
-                safetyMarginControlMode: _safetyMarginControlMode);
+                safetyMarginControlMode: _safetyMarginControlMode,
+                epbControlMode: GetEpbControlMode(channel),
+                adaptiveShadowMode: _adaptiveShadowMode,
+                adaptiveProfile: GetAdaptiveProfile(channel),
+                saveAdaptiveProfile: SaveAdaptiveProfile);
 
             runner.AlarmRaised += OnRunnerAlarmRaised;
+            runner.WarningRaised += OnRunnerWarningRaised;
 
             // —— 新增：登记 Runner —— //
             _runners[channel] = runner;
@@ -589,10 +623,20 @@ namespace Controller
                     try
                     {
                         var finalN = recorder.GetCurrentCycleSampleCount(channel);
-                        if (IsAlarmStopRequested(channel))
+                        if (IsAlarmStopRequested(channel) ||
+                            runner.LastCycleOutcome.Kind == EpbCycleOutcomeKind.HardFault)
                             recorder.AlarmCycle(channel, i, finalN, DateTime.UtcNow);
-                        else
+                        else if (runner.LastCycleOutcome.IsSuccess)
                             recorder.CompleteCycle(channel, i, finalN, DateTime.UtcNow);
+                        else
+                            recorder.AbortCycle(
+                                channel,
+                                i,
+                                finalN,
+                                DateTime.UtcNow,
+                                runner.LastCycleOutcome.Kind == EpbCycleOutcomeKind.Canceled
+                                    ? "canceled"
+                                    : "failed");
                     }
                     catch
                     {
@@ -697,6 +741,7 @@ namespace Controller
                 // 退出前解绑事件，防止潜在内存泄漏
                 runnerObj.ChannelCycleCompleted -= OnRunnerChannelCycleCompleted;
                 runnerObj.AlarmRaised -= OnRunnerAlarmRaised;
+                runnerObj.WarningRaised -= OnRunnerWarningRaised;
 
                 _runners.Remove(channel);
             }
@@ -759,6 +804,7 @@ namespace Controller
                 {
                     runnerObj.ChannelCycleCompleted -= OnRunnerChannelCycleCompleted;
                     runnerObj.AlarmRaised -= OnRunnerAlarmRaised;
+                    runnerObj.WarningRaised -= OnRunnerWarningRaised;
                 }
                 catch
                 {
@@ -820,6 +866,96 @@ namespace Controller
                     // ignore
                 }
             });
+        }
+
+        private void OnRunnerWarningRaised(int channel, string reason)
+        {
+            _log.Warn($"EPB[{channel}] 自适应软预警：{reason}", "EPB");
+            try { ChannelWarningRaised?.Invoke(channel, reason); }
+            catch { /* UI 订阅者异常不得影响控制线程 */ }
+        }
+
+        private EpbAdaptiveProfile GetAdaptiveProfile(int channel)
+        {
+            try
+            {
+                return _adaptiveProfileStore?.GetOrCreate(channel) ??
+                       new EpbAdaptiveProfile { Channel = channel };
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"EPB[{channel}] 加载自适应模型失败，使用空模型：{ex.Message}", "EPB");
+                return new EpbAdaptiveProfile { Channel = channel };
+            }
+        }
+
+        private void SaveAdaptiveProfile(EpbAdaptiveProfile profile)
+        {
+            if (profile == null || _adaptiveProfileStore == null) return;
+            try
+            {
+                _adaptiveProfileStore.Save(profile);
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"EPB[{profile.Channel}] 保存自适应模型失败：{ex.Message}", "EPB");
+            }
+        }
+
+        private EpbControlMode ReadEpbControlMode(EpbControlMode fallback)
+        {
+            try
+            {
+                var raw = ConfigurationManager.AppSettings["EpbControlMode"];
+                return EpbControlModeParser.ParseOrDefault(raw, fallback);
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"读取 EpbControlMode 失败，使用 {fallback}：{ex.Message}", "EPB");
+                return fallback;
+            }
+        }
+
+        private bool ReadAdaptiveShadowMode(bool fallback)
+        {
+            try
+            {
+                var raw = ConfigurationManager.AppSettings["EpbAdaptiveShadowMode"];
+                return bool.TryParse(raw, out var enabled) ? enabled : fallback;
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"读取 EpbAdaptiveShadowMode 失败，使用 {fallback}：{ex.Message}", "EPB");
+                return fallback;
+            }
+        }
+
+        private HashSet<int> ReadAdaptiveChannels()
+        {
+            var channels = new HashSet<int>();
+            try
+            {
+                var raw = ConfigurationManager.AppSettings["EpbAdaptiveChannels"] ?? "10";
+                foreach (var token in raw.Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries))
+                {
+                    if (int.TryParse(token.Trim(), out var channel) && channel >= 1 && channel <= 12)
+                        channels.Add(channel);
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"读取 EpbAdaptiveChannels 失败，回退 EPB10：{ex.Message}", "EPB");
+            }
+
+            if (channels.Count == 0) channels.Add(10);
+            return channels;
+        }
+
+        private EpbControlMode GetEpbControlMode(int channel)
+        {
+            return _epbControlMode == EpbControlMode.AdaptiveCurrent && _adaptiveChannels.Contains(channel)
+                ? EpbControlMode.AdaptiveCurrent
+                : EpbControlMode.LegacyFixedTiming;
         }
 
 
