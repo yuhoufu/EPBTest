@@ -65,6 +65,12 @@ namespace Controller
             var sessionToken = BeginBatchSession(token);
             try
             {
+                // 新批次必须复位上一次运行留下的报警停机锁存。
+                // 否则 IsAlarmStopRequested 会让后续成功圈也持续写成 status='alarm'，
+                // 且重复报警会在 OnRunnerAlarmRaised 中被去重后直接返回。
+                foreach (var channel in channels.Distinct())
+                    _alarmStopLatch.BeginRun(channel);
+
                 // —— 1) 按压力组归类，并为每组计算“锚点零相位” t0（含预热裕度 + 周期上取整）—— //
                 var nowUtc = DateTime.UtcNow;
                 var groups = GroupByPressure(channels); // Dictionary<int, List<int>>，键为 1/2
@@ -277,10 +283,14 @@ namespace Controller
                                 try
                                 {
                                     var finalN = recorder.GetCurrentCycleSampleCount(ch);
-                                    if (IsAlarmStopRequested(ch) ||
-                                        runner.LastCycleOutcome.Kind == Adaptive.EpbCycleOutcomeKind.HardFault)
+                                    if (IsAlarmStopRequested(ch))
                                     {
-                                        recorder.AlarmCycle(ch, cycleNumber, finalN, DateTime.UtcNow);
+                                        // 报警后台流程会在确认当前圈 CSV/BIN 快照存在后封为 alarm；
+                                        // 若快照失败则封为 failed。这里保持 running，避免先写无文件的 alarm。
+                                    }
+                                    else if (runner.LastCycleOutcome.Kind == Adaptive.EpbCycleOutcomeKind.HardFault)
+                                    {
+                                        recorder.AbortCycle(ch, cycleNumber, finalN, DateTime.UtcNow, "failed");
                                     }
                                     else if (runner.LastCycleOutcome.IsSuccess)
                                     {
@@ -304,7 +314,8 @@ namespace Controller
                                 }
                             }
 
-                            ClearCurrentCycleNumber(ch);
+                            if (!IsAlarmStopRequested(ch))
+                                ClearCurrentCycleNumber(ch);
 
                             // 若该通道自然完成最后一圈：统一收尾（含“停止即存最近10圈”），
                             // 并从运行集合中移除，避免影响其它仍在运行通道的逻辑。

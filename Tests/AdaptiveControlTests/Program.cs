@@ -5,6 +5,7 @@ using System.IO;
 using System.Collections.Generic;
 using Config;
 using Controller.Adaptive;
+using Controller.Alarm;
 using Timing;
 
 namespace AdaptiveControlTests
@@ -33,7 +34,9 @@ namespace AdaptiveControlTests
                 Run("模型原子保存与重载", ProfilePersistence);
                 Run("损坏模型回退", CorruptProfileFallback);
                 Run("周期超限不追赶且圈号连续", TimerDoesNotCatchUp);
-                Console.WriteLine($"PASS {_passed}/13");
+                Run("新运行复位报警停机锁存", AlarmStopLatchResetsForNewRun);
+                Run("报警状态要求CSV和BIN同时存在", AlarmRequiresCsvAndBinFiles);
+                Console.WriteLine($"PASS {_passed}/15");
                 return 0;
             }
             catch (Exception ex)
@@ -307,6 +310,45 @@ namespace AdaptiveControlTests
             Assert(starts.Count == 3, "超限后丢失了应完成的圈数");
             Assert(starts[1] - starts[0] >= 280, "超限后发生追赶式连续上电");
             Assert(starts[2] > starts[1], "后续圈没有按未来边界执行");
+        }
+
+        private static void AlarmStopLatchResetsForNewRun()
+        {
+            var latch = new ChannelAlarmStopLatch();
+
+            latch.BeginRun(10);
+            Assert(latch.TryRequestStop(10), "本次运行的首次报警未获得停机权");
+            Assert(latch.IsStopRequested(10), "首次报警后锁存未置位");
+            Assert(!latch.TryRequestStop(10), "同一次运行中的重复报警未被去重");
+
+            latch.BeginRun(10);
+            Assert(!latch.IsStopRequested(10), "新运行未清除上一次报警锁存");
+            Assert(latch.TryRequestStop(10), "新运行中的首次报警仍被旧锁存抑制");
+        }
+
+        private static void AlarmRequiresCsvAndBinFiles()
+        {
+            var directory = Path.Combine(
+                Path.GetTempPath(),
+                "EPBTest_AlarmSnapshotEvidence_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            try
+            {
+                var stem = Path.Combine(directory, "EPB10_Cycle_017161");
+                File.WriteAllText(stem + ".csv", "header");
+                Assert(
+                    !AlarmSnapshotFileEvidence.HasCsvAndBin(directory, 10, 17161),
+                    "只有CSV时不应允许写alarm");
+
+                File.WriteAllBytes(stem + ".bin", Array.Empty<byte>());
+                Assert(
+                    AlarmSnapshotFileEvidence.HasCsvAndBin(directory, 10, 17161),
+                    "CSV和BIN均存在时应允许写alarm");
+            }
+            finally
+            {
+                Directory.Delete(directory, true);
+            }
         }
 
         private static EpbAdaptiveCurrentStateMachine NewMachine()

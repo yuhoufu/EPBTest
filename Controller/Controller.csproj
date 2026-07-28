@@ -60,6 +60,8 @@
   <ItemGroup>
     <Compile Include="Adaptive\EpbAdaptiveControl.cs" />
     <Compile Include="Alarm\AlarmManager.cs" />
+    <Compile Include="Alarm\AlarmSnapshotFileEvidence.cs" />
+    <Compile Include="Alarm\ChannelAlarmStopLatch.cs" />
     <Compile Include="EpbCycleRunner.Adaptive.cs" />
     <Compile Include="Alarm\M7055dSerialClient.cs" />
     <Compile Include="EpbCycleRunner.Advance.Sync.cs" />

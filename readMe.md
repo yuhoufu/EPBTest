@@ -8,6 +8,9 @@
 安全、数据一致性与工程稳定性的可执行整改任务、迁移规格和验收矩阵见：
 [docs/安全与数据整改实施方案.md](docs/安全与数据整改实施方案.md)。
 
+本轮报警证据、环形落盘恢复、原子导出、双采集卡时钟及历史数据修复说明见：
+[docs/报警与落盘一致性修复说明.md](docs/报警与落盘一致性修复说明.md)。
+
 ## 目录速览
 
 - `MTTfTest/`：主界面与交互（`FrmEpbMainMonitor`）。
@@ -51,9 +54,14 @@ UI 侧（WinForms）点击“开始试验”按钮后，会在：
 
 目录根：`StoreDir\TestName\AlarmSnapshots\yyyyMMdd_HHmmss-EPBxx\EPBxx(_ALARM)\...`
 
+报警圈必须在 `EPBxx_ALARM` 目录中同时存在同通道、同圈号的 CSV 和 BIN。
+只有文件证据完整时，SQLite 圈状态才会封为 `alarm`；导出失败则封为
+`failed`，并在警告日志中记录原因。每次重新启动通道都会重置报警停机锁存，
+确保新运行中的首次报警不会被上一次运行抑制。
+
 ## 落盘圈状态（重要口径）
 
-`EpbDiskWriter` 的圈级索引（SQLite `cycles` 表）使用 `status` 字段表示圈的最终状态：
+`EpbDiskWriter` 的圈级索引（SQLite `epb_cycles` 表）使用 `status` 字段表示圈的最终状态：
 
 - `running`：圈已开始但尚未封圈（用于快照可选包含）。
 - `completed`：正常封圈。
@@ -61,6 +69,20 @@ UI 侧（WinForms）点击“开始试验”按钮后，会在：
 - `failed` / `canceled`：未形成完整正向、保持、动态释放过程，不计成功圈。
 
 > 说明：报警停机必须避免遗留 `running` 悬挂圈，否则会导致“落盘圈号/次数”与 UI 计数漂移。
+
+## CSV 与环形落盘
+
+- CSV 列固定为
+  `Timestamp,RelativeTimeSeconds,Cycle,SampleIndex,EpbCurrent,GroupPressure`；
+- `RelativeTimeSeconds` 从当前导出文件首条记录起算，并保证不倒退；
+- 程序重启后根据 SQLite 最后一圈恢复环形文件写游标，避免从文件头覆盖；
+- 导出前校验圈号、样本序号和时间戳；CSV/BIN 成对原子提交；
+- 环形区数据已被覆盖时，会尝试使用既有历史 BIN 快照恢复；
+- 归档只有在 CSV/BIN 均成功后才删除对应圈索引，失败信息写入
+  `export_errors.txt`。
+
+双 NI 采集卡使用共同时间原点，但 Dev1、Dev2 分别推进各自的批次时钟，
+避免共享游标造成回调时间相互叠加和回拨。
 
 ## RunCount 权威口径
 
@@ -73,6 +95,7 @@ UI 侧（WinForms）点击“开始试验”按钮后，会在：
 
 ## 参考文档
 
+- [docs/报警与落盘一致性修复说明.md](docs/报警与落盘一致性修复说明.md)
 - [开发日志/新版“数据落盘逻辑”整合说明（含新增需求）_0916_2.md](开发日志/新版“数据落盘逻辑”整合说明（含新增需求）_0916_2.md)
 - [开发日志/报警系统（泓格M-7055D_RS-485）设计与联调.md](开发日志/报警系统（泓格M-7055D_RS-485）设计与联调.md)
 

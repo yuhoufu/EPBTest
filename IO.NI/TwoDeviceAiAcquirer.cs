@@ -86,8 +86,9 @@ namespace IO.NI
         );
 
         // 顶部字段处 - 统一时间基准（两设备共用，避免长时间漂移）
-        private DateTime _globalLast = DateTime.Now;
-        private readonly object _globalLastLock = new object();
+        private readonly Dictionary<string, DateTime> _lastTimestampByDevice =
+            new(StringComparer.OrdinalIgnoreCase);
+        private readonly object _deviceClockLock = new object();
 
 
         /// <summary>
@@ -698,10 +699,13 @@ namespace IO.NI
             }
 
 
-            // 初始化全局时钟（两设备共用）
-            lock (_globalLastLock)
+            // 两块采集卡共享同一时间原点，但必须各自推进批次时间。
+            // 若共用一个 last，Dev1/Dev2 每次回调都会重复推进 n/Fs，随后被主机时间纠偏回拨。
+            lock (_deviceClockLock)
             {
-                _globalLast = _t0;
+                _lastTimestampByDevice.Clear();
+                _lastTimestampByDevice["Dev1"] = _t0;
+                _lastTimestampByDevice["Dev2"] = _t0;
             }
 
 
@@ -796,23 +800,25 @@ namespace IO.NI
                 // ① 先 re-arm 下一批，减小回调耗时对节拍的影响
                 reader.BeginReadMultiSample(_samplesPerChannel, again, task);
 
-                // ② 使用全局时钟（两设备统一时间基准）
+                // ② 使用统一时间原点、按设备独立推进的采样时钟
                 DateTime last;
                 DateTime current;
                 double driftMs;
-                lock (_globalLastLock)
+                lock (_deviceClockLock)
                 {
-                    last = _globalLast;
-                    
+                    if (!_lastTimestampByDevice.TryGetValue(device, out last))
+                        last = _t0;
+
                     //  两种时间：主机"实测" + 按采样率推进的"理想"
                     var hostNow = _t0.AddMilliseconds(_sw.ElapsedMilliseconds - _ts0);
                     var idealNow = last.AddSeconds(n / _sampleRate);
 
                     // ③ 轻微纠偏（例如 >5ms 时用主机时间，否则用理想时间，避免长期漂移）
                     driftMs = (hostNow - idealNow).TotalMilliseconds;
-                    current = Math.Abs(driftMs) > 5 ? hostNow : idealNow;
-                    
-                    _globalLast = current;
+                    var corrected = Math.Abs(driftMs) > 5 ? hostNow : idealNow;
+                    current = corrected > last ? corrected : idealNow;
+
+                    _lastTimestampByDevice[device] = current;
                 }
 
                 // —— 诊断：批大小/回调间隔/到达延迟 ——

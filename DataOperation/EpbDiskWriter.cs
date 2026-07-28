@@ -5,8 +5,10 @@ using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Data.SQLite;
+using System.Globalization;
 using System.IO;
 using System.IO.MemoryMappedFiles;
+using System.Linq;
 using System.Text;
 
 namespace DataOperation;
@@ -94,6 +96,9 @@ public enum StopTrigger
 /// </summary>
 public sealed class EpbDiskWriter : IDisposable
 {
+    private const string CSV_HEADER =
+        "Timestamp,RelativeTimeSeconds,Cycle,SampleIndex,EpbCurrent,GroupPressure";
+
     #region 与 EpbManager 的“停止触发”配合（可选）
 
     /// <summary>在上层 StopChannel 的实际停止点调用（若 StopTrigger=Immediate 则已处理）。</summary>
@@ -213,6 +218,9 @@ public sealed class EpbDiskWriter : IDisposable
             _viewLengths[ch] = firstLen;
 
             _states[ch].CapacityRecords = _fileBytes / SampleRecord.Size;
+            _states[ch].TotalWritten = RestoreNextWritePosition(
+                ch,
+                _states[ch].CapacityRecords);
         }
     }
 
@@ -503,30 +511,43 @@ public sealed class EpbDiskWriter : IDisposable
         var purgeList = GetCyclesToPurge(epbId, keepLatestN);
         if (purgeList.Count == 0) return;
 
-        if (action == "archive")
+        if (action != "archive")
         {
-            var dir = Path.Combine(_indexDir, "Archive", $"EPB{epbId}");
-            Directory.CreateDirectory(dir);
+            DeleteCycles(purgeList);
+            return;
+        }
 
-            foreach (var cy in purgeList)
+        var dir = Path.Combine(_indexDir, "Archive", $"EPB{epbId}");
+        Directory.CreateDirectory(dir);
+        var exported = new List<CycleInfo>();
+        var failures = new List<Exception>();
+
+        foreach (var cy in purgeList)
+        {
+            // 以圈开始时间命名子目录，便于回放/检索
+            var tsFolder = cy.StartTimeUtc.ToLocalTime().ToString("yyyyMMdd_HHmmss");
+            var subDir = Path.Combine(dir, tsFolder);
+            Directory.CreateDirectory(subDir);
+
+            try
             {
-                // 以圈开始时间命名子目录，便于回放/检索
-                var tsFolder = cy.StartTimeUtc.ToLocalTime().ToString("yyyyMMdd_HHmmss");
-                var subDir = Path.Combine(dir, tsFolder);
-                Directory.CreateDirectory(subDir);
-
-                // 升序导出 CSV
                 var csv = Path.Combine(subDir, $"EPB{epbId}_Cycle_{cy.CycleNumber:D6}.csv");
-                ExportCycleToCsv(epbId, cy, csv);
-
-                // 升序导出二进制快照
                 var bin = Path.Combine(subDir, $"EPB{epbId}_Cycle_{cy.CycleNumber:D6}.bin");
-                ExportCycleToBin(epbId, cy, bin);
+                ExportCyclePair(epbId, cy, csv, bin, new ExportFormatOptions());
+                exported.Add(cy);
+            }
+            catch (Exception ex)
+            {
+                failures.Add(WrapExportFailure(epbId, cy, ex));
+                WriteExportErrors(subDir, failures[failures.Count - 1]);
             }
         }
 
-        // 删除更早圈的“圈级索引”（业务索引），底层环形数据将被自然覆盖
-        DeleteCycles(purgeList);
+        // 只有 CSV/BIN 均成功生成的圈才能删除索引；失败圈保留以便追溯。
+        if (exported.Count > 0)
+            DeleteCycles(exported);
+
+        ThrowIfExportFailures(epbId, failures);
     }
 
 
@@ -558,17 +579,7 @@ public sealed class EpbDiskWriter : IDisposable
         var tsFolder = DateTime.Now.ToLocalTime().ToString(@"yyyyMMdd_HHmmss");
         var subDir = Path.Combine(dir, tsFolder);
         Directory.CreateDirectory(subDir);
-
-        foreach (var cy in latestList)
-        {
-            // CSV 文件（圈号升序）
-            var csv = Path.Combine(subDir, $"EPB{epbId}_Cycle_{cy.CycleNumber:D6}.csv");
-            ExportCycleToCsv(epbId, cy, csv);
-
-            // 二进制快照（圈号升序）
-            var bin = Path.Combine(subDir, $"EPB{epbId}_Cycle_{cy.CycleNumber:D6}.bin");
-            ExportCycleToBin(epbId, cy, bin);
-        }
+        ExportCycleList(epbId, latestList, subDir);
     }
 
 
@@ -587,15 +598,7 @@ public sealed class EpbDiskWriter : IDisposable
             return;
 
         Directory.CreateDirectory(exportDir);
-
-        foreach (var cy in latestList)
-        {
-            var csv = Path.Combine(exportDir, $"EPB{epbId}_Cycle_{cy.CycleNumber:D6}.csv");
-            ExportCycleToCsv(epbId, cy, csv);
-
-            var bin = Path.Combine(exportDir, $"EPB{epbId}_Cycle_{cy.CycleNumber:D6}.bin");
-            ExportCycleToBin(epbId, cy, bin);
-        }
+        ExportCycleList(epbId, latestList, exportDir);
     }
 
 
@@ -642,31 +645,12 @@ public sealed class EpbDiskWriter : IDisposable
     public void ExportCycleToCsv(int epbId, CycleInfo cycle, string csvPath, ExportFormatOptions fmt = null)
     {
         fmt ??= new ExportFormatOptions();
-
-        var s = GetState(epbId);
-        var capacity = s.CapacityRecords;
-        if (capacity <= 0)
+        var records = ReadValidatedCycleRecords(epbId, cycle);
+        WriteAtomically(csvPath, tempPath =>
         {
-            File.WriteAllText(csvPath, "Timestamp,Cycle,SampleIndex,EpbCurrent,GroupPressure", Encoding.UTF8);
-            return;
-        }
-
-        var start = ModNN(cycle.StartRecordIndex, capacity);
-        var count = Math.Min(cycle.SampleCount, (int)capacity);
-
-        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(csvPath)) ?? ".");
-        using var sw = new StreamWriter(csvPath, false, Encoding.UTF8);
-        sw.WriteLine("Timestamp,Cycle,SampleIndex,EpbCurrent,GroupPressure");
-        for (var i = 0; i < count; i++)
-        {
-            var idx = (start + i) % capacity;
-            var rec = ReadRecord(epbId, idx * SampleRecord.Size);
-            if (rec.CycleNumber <= 0 || rec.TimestampBinary == 0) continue;
-
-            var tsText = FormatLocalTime(rec.TimestampBinary, fmt.TimeFormat);
-            sw.WriteLine(
-                $"{tsText},{rec.CycleNumber},{rec.SampleIndex},{rec.EpbCurrent.ToString(fmt.CurrentFormat)},{rec.GroupPressure.ToString(fmt.PressureFormat)}");
-        }
+            using var sw = new StreamWriter(tempPath, false, Encoding.UTF8);
+            WriteCsvRecords(sw, records, fmt);
+        });
     }
 
     /// <summary>
@@ -674,28 +658,418 @@ public sealed class EpbDiskWriter : IDisposable
     /// </summary>
     public void ExportCycleToBin(int epbId, CycleInfo cycle, string binPath)
     {
+        var records = ReadValidatedCycleRecords(epbId, cycle);
+        WriteAtomically(binPath, tempPath =>
+        {
+            using var fs = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.Read);
+            using var bw = new BinaryWriter(fs);
+            WriteBinRecords(bw, records);
+        });
+    }
+
+    private void ExportCycleList(int epbId, IEnumerable<CycleInfo> cycles, string exportDir)
+    {
+        var failures = new List<Exception>();
+        foreach (var cy in cycles)
+        {
+            try
+            {
+                var csv = Path.Combine(exportDir, $"EPB{epbId}_Cycle_{cy.CycleNumber:D6}.csv");
+                var bin = Path.Combine(exportDir, $"EPB{epbId}_Cycle_{cy.CycleNumber:D6}.bin");
+                ExportCyclePair(epbId, cy, csv, bin, new ExportFormatOptions());
+            }
+            catch (Exception ex)
+            {
+                var failure = WrapExportFailure(epbId, cy, ex);
+                failures.Add(failure);
+                WriteExportErrors(exportDir, failure);
+            }
+        }
+
+        ThrowIfExportFailures(epbId, failures);
+    }
+
+    private void ExportCyclePair(
+        int epbId,
+        CycleInfo cycle,
+        string csvPath,
+        string binPath,
+        ExportFormatOptions fmt)
+    {
+        var records = ReadValidatedCycleRecords(epbId, cycle);
+        var csvTemp = GetTempPath(csvPath);
+        var binTemp = GetTempPath(binPath);
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(csvPath)) ?? ".");
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(binPath)) ?? ".");
+
+        try
+        {
+            using (var sw = new StreamWriter(csvTemp, false, Encoding.UTF8))
+                WriteCsvRecords(sw, records, fmt);
+            using (var fs = new FileStream(binTemp, FileMode.Create, FileAccess.Write, FileShare.Read))
+            using (var bw = new BinaryWriter(fs))
+                WriteBinRecords(bw, records);
+
+            CommitPair(csvTemp, csvPath, binTemp, binPath);
+        }
+        finally
+        {
+            TryDeleteFile(csvTemp);
+            TryDeleteFile(binTemp);
+        }
+    }
+
+    private List<SampleRecord> ReadValidatedCycleRecords(int epbId, CycleInfo cycle)
+    {
+        if (cycle == null) throw new ArgumentNullException(nameof(cycle));
         var s = GetState(epbId);
-        var capacity = s.CapacityRecords;
-        if (capacity <= 0) return;
+        InvalidDataException ringFailure;
+        lock (s.Gate)
+        {
+            try
+            {
+                return ReadCycleRecordsFromRing(epbId, cycle, s.CapacityRecords);
+            }
+            catch (InvalidDataException ex)
+            {
+                ringFailure = ex;
+            }
+        }
+
+        if (TryReadHistoricalBinSnapshot(epbId, cycle, out var recovered, out _))
+            return recovered;
+
+        throw new InvalidDataException(
+            $"{ringFailure.Message}；未在 {_indexDir} 中找到可恢复的完整 BIN 快照。",
+            ringFailure);
+    }
+
+    private List<SampleRecord> ReadCycleRecordsFromRing(
+        int epbId,
+        CycleInfo cycle,
+        long capacity)
+    {
+        if (capacity <= 0)
+            throw new InvalidDataException($"EPB[{epbId}] 环形缓冲区容量无效。");
+        if (cycle.SampleCount <= 0)
+            throw new InvalidDataException(
+                $"EPB[{epbId}] Cycle={cycle.CycleNumber} 没有可导出的样本。");
+        if (cycle.SampleCount > capacity)
+            throw new InvalidDataException(
+                $"EPB[{epbId}] Cycle={cycle.CycleNumber} 样本数 {cycle.SampleCount} 超过环形容量 {capacity}，数据已被覆盖。");
 
         var start = ModNN(cycle.StartRecordIndex, capacity);
-        var count = Math.Min(cycle.SampleCount, (int)capacity);
-
-        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(binPath)) ?? ".");
-        using var fs = new FileStream(binPath, FileMode.Create, FileAccess.Write, FileShare.Read);
-        using var bw = new BinaryWriter(fs);
-        for (var i = 0; i < count; i++)
+        var records = new List<SampleRecord>(cycle.SampleCount);
+        for (var i = 0; i < cycle.SampleCount; i++)
         {
             var idx = (start + i) % capacity;
             var rec = ReadRecord(epbId, idx * SampleRecord.Size);
-            if (rec.CycleNumber <= 0 || rec.TimestampBinary == 0) continue;
-
-            bw.Write(rec.TimestampBinary);
-            bw.Write(rec.CycleNumber);
-            bw.Write(rec.SampleIndex);
-            bw.Write(rec.EpbCurrent);
-            bw.Write(rec.GroupPressure);
+            ValidateCycleRecord(epbId, cycle, i, idx, rec);
+            records.Add(rec);
         }
+
+        return records;
+    }
+
+    private bool TryReadHistoricalBinSnapshot(
+        int epbId,
+        CycleInfo cycle,
+        out List<SampleRecord> records,
+        out string sourcePath)
+    {
+        records = null;
+        sourcePath = null;
+        if (!Directory.Exists(_indexDir) || cycle.SampleCount <= 0)
+            return false;
+
+        var fileName = $"EPB{epbId}_Cycle_{cycle.CycleNumber:D6}.bin";
+        IEnumerable<string> candidates;
+        try
+        {
+            candidates = Directory
+                .EnumerateFiles(_indexDir, fileName, SearchOption.AllDirectories)
+                .OrderByDescending(File.GetLastWriteTimeUtc)
+                .ToArray();
+        }
+        catch
+        {
+            return false;
+        }
+
+        foreach (var candidate in candidates)
+        {
+            try
+            {
+                var expectedLength = (long)cycle.SampleCount * SampleRecord.Size;
+                var info = new FileInfo(candidate);
+                if (info.Length != expectedLength) continue;
+
+                var recovered = new List<SampleRecord>(cycle.SampleCount);
+                using var fs = new FileStream(candidate, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                using var br = new BinaryReader(fs);
+                for (var i = 0; i < cycle.SampleCount; i++)
+                {
+                    var rec = new SampleRecord
+                    {
+                        TimestampBinary = br.ReadInt64(),
+                        CycleNumber = br.ReadInt32(),
+                        SampleIndex = br.ReadInt32(),
+                        EpbCurrent = br.ReadDouble(),
+                        GroupPressure = br.ReadDouble()
+                    };
+                    ValidateCycleRecord(epbId, cycle, i, i, rec);
+                    recovered.Add(rec);
+                }
+
+                records = recovered;
+                sourcePath = candidate;
+                return true;
+            }
+            catch
+            {
+                // 当前候选已损坏或属于被覆盖后的错误快照，继续尝试其它历史快照。
+            }
+        }
+
+        return false;
+    }
+
+    private static void ValidateCycleRecord(
+        int epbId,
+        CycleInfo cycle,
+        int expectedSampleIndex,
+        long recordIndex,
+        SampleRecord actual)
+    {
+        if (actual.TimestampBinary == 0)
+            throw InvalidCycleRecord(epbId, cycle, expectedSampleIndex, recordIndex, actual, "时间戳为空");
+        if (actual.CycleNumber != cycle.CycleNumber)
+            throw InvalidCycleRecord(epbId, cycle, expectedSampleIndex, recordIndex, actual, "圈号不一致");
+        if (actual.SampleIndex != expectedSampleIndex)
+            throw InvalidCycleRecord(epbId, cycle, expectedSampleIndex, recordIndex, actual, "样本序号不连续");
+
+        try
+        {
+            DateTime.FromBinary(actual.TimestampBinary);
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidDataException(
+                $"EPB[{epbId}] Cycle={cycle.CycleNumber} Record={recordIndex} 时间戳无效。",
+                ex);
+        }
+    }
+
+    private static InvalidDataException InvalidCycleRecord(
+        int epbId,
+        CycleInfo cycle,
+        int expectedSampleIndex,
+        long recordIndex,
+        SampleRecord actual,
+        string reason)
+    {
+        return new InvalidDataException(
+            $"EPB[{epbId}] Cycle={cycle.CycleNumber} 导出校验失败：{reason}；" +
+            $"Record={recordIndex}，ExpectedCycle={cycle.CycleNumber}，ActualCycle={actual.CycleNumber}，" +
+            $"ExpectedSampleIndex={expectedSampleIndex}，ActualSampleIndex={actual.SampleIndex}。");
+    }
+
+    private static void WriteCsvRecords(
+        TextWriter writer,
+        IEnumerable<SampleRecord> records,
+        ExportFormatOptions fmt)
+    {
+        writer.WriteLine(CSV_HEADER);
+        long? firstTimestampTicks = null;
+        var previousRelativeSeconds = 0.0;
+        foreach (var rec in records)
+        {
+            var relativeSeconds = GetNonDecreasingRelativeSeconds(
+                rec.TimestampBinary,
+                ref firstTimestampTicks,
+                ref previousRelativeSeconds);
+            var tsText = FormatLocalTime(rec.TimestampBinary, fmt.TimeFormat);
+            writer.WriteLine(
+                $"{tsText},{relativeSeconds.ToString("F6", CultureInfo.InvariantCulture)},{rec.CycleNumber},{rec.SampleIndex},{rec.EpbCurrent.ToString(fmt.CurrentFormat)},{rec.GroupPressure.ToString(fmt.PressureFormat)}");
+        }
+    }
+
+    private static double GetNonDecreasingRelativeSeconds(
+        long timestampBinary,
+        ref long? firstTimestampTicks,
+        ref double previousRelativeSeconds)
+    {
+        var timestamp = DateTime.FromBinary(timestampBinary);
+        firstTimestampTicks ??= timestamp.Ticks;
+        var relativeSeconds =
+            (timestamp.Ticks - firstTimestampTicks.Value) / (double)TimeSpan.TicksPerSecond;
+        if (relativeSeconds < previousRelativeSeconds)
+            relativeSeconds = previousRelativeSeconds;
+        previousRelativeSeconds = relativeSeconds;
+        return relativeSeconds;
+    }
+
+    private static void WriteBinRecords(BinaryWriter writer, IEnumerable<SampleRecord> records)
+    {
+        foreach (var rec in records)
+        {
+            writer.Write(rec.TimestampBinary);
+            writer.Write(rec.CycleNumber);
+            writer.Write(rec.SampleIndex);
+            writer.Write(rec.EpbCurrent);
+            writer.Write(rec.GroupPressure);
+        }
+    }
+
+    private static void WriteAtomically(string targetPath, Action<string> writeTemp)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(targetPath)) ?? ".");
+        var tempPath = GetTempPath(targetPath);
+        try
+        {
+            writeTemp(tempPath);
+            CommitSingle(tempPath, targetPath);
+        }
+        finally
+        {
+            TryDeleteFile(tempPath);
+        }
+    }
+
+    private static string GetTempPath(string targetPath)
+    {
+        return targetPath + ".tmp." + Guid.NewGuid().ToString("N");
+    }
+
+    private static void CommitSingle(string tempPath, string targetPath)
+    {
+        var backupPath = targetPath + ".bak." + Guid.NewGuid().ToString("N");
+        var hadTarget = File.Exists(targetPath);
+        var backedUp = false;
+        var committed = false;
+        var succeeded = false;
+        try
+        {
+            if (hadTarget)
+            {
+                File.Move(targetPath, backupPath);
+                backedUp = true;
+            }
+
+            File.Move(tempPath, targetPath);
+            committed = true;
+            succeeded = true;
+        }
+        catch
+        {
+            if (committed) TryDeleteFile(targetPath);
+            if (backedUp && File.Exists(backupPath) && !File.Exists(targetPath))
+                File.Move(backupPath, targetPath);
+            throw;
+        }
+        finally
+        {
+            if (succeeded) TryDeleteFile(backupPath);
+        }
+    }
+
+    private static void CommitPair(
+        string csvTemp,
+        string csvPath,
+        string binTemp,
+        string binPath)
+    {
+        var csvBackup = csvPath + ".bak." + Guid.NewGuid().ToString("N");
+        var binBackup = binPath + ".bak." + Guid.NewGuid().ToString("N");
+        var hadCsv = File.Exists(csvPath);
+        var hadBin = File.Exists(binPath);
+        var csvBackedUp = false;
+        var binBackedUp = false;
+        var csvCommitted = false;
+        var binCommitted = false;
+        var succeeded = false;
+        try
+        {
+            if (hadCsv)
+            {
+                File.Move(csvPath, csvBackup);
+                csvBackedUp = true;
+            }
+
+            if (hadBin)
+            {
+                File.Move(binPath, binBackup);
+                binBackedUp = true;
+            }
+
+            File.Move(csvTemp, csvPath);
+            csvCommitted = true;
+            File.Move(binTemp, binPath);
+            binCommitted = true;
+            succeeded = true;
+        }
+        catch
+        {
+            if (csvCommitted) TryDeleteFile(csvPath);
+            if (binCommitted) TryDeleteFile(binPath);
+            if (csvBackedUp && File.Exists(csvBackup) && !File.Exists(csvPath))
+                File.Move(csvBackup, csvPath);
+            if (binBackedUp && File.Exists(binBackup) && !File.Exists(binPath))
+                File.Move(binBackup, binPath);
+            throw;
+        }
+        finally
+        {
+            if (succeeded)
+            {
+                TryDeleteFile(csvBackup);
+                TryDeleteFile(binBackup);
+            }
+        }
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
+                File.Delete(path);
+        }
+        catch
+        {
+            // 清理临时文件失败不覆盖原始导出异常。
+        }
+    }
+
+    private static Exception WrapExportFailure(int epbId, CycleInfo cycle, Exception ex)
+    {
+        return new InvalidDataException(
+            $"EPB[{epbId}] Cycle={cycle.CycleNumber} 导出失败：{ex.Message}",
+            ex);
+    }
+
+    private static void WriteExportErrors(string exportDir, Exception failure)
+    {
+        try
+        {
+            Directory.CreateDirectory(exportDir);
+            File.AppendAllText(
+                Path.Combine(exportDir, "export_errors.txt"),
+                $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {failure.Message}{Environment.NewLine}",
+                Encoding.UTF8);
+        }
+        catch
+        {
+            // 错误清单写入失败时仍通过 AggregateException 通知调用方。
+        }
+    }
+
+    private static void ThrowIfExportFailures(int epbId, List<Exception> failures)
+    {
+        if (failures.Count > 0)
+            throw new AggregateException(
+                $"EPB[{epbId}] 有 {failures.Count} 圈数据未通过导出校验，其他有效圈已继续导出。",
+                failures);
     }
 
     /// <summary>从二进制快照（ExportCycleToBin 生成）导出 CSV（升序输出）。</summary>
@@ -708,7 +1082,9 @@ public sealed class EpbDiskWriter : IDisposable
         using var br = new BinaryReader(fs);
         using var sw = new StreamWriter(csvPath, false, Encoding.UTF8);
 
-        sw.WriteLine("Timestamp,Cycle,SampleIndex,EpbCurrent,GroupPressure");
+        sw.WriteLine(CSV_HEADER);
+        long? firstTimestampTicks = null;
+        var previousRelativeSeconds = 0.0;
 
         while (fs.Position + SampleRecord.Size <= fs.Length)
         {
@@ -718,8 +1094,13 @@ public sealed class EpbDiskWriter : IDisposable
             var cur = br.ReadDouble();
             var pr = br.ReadDouble();
 
+            var relativeSeconds = GetNonDecreasingRelativeSeconds(
+                tsBin,
+                ref firstTimestampTicks,
+                ref previousRelativeSeconds);
             var tsText = FormatLocalTime(tsBin, fmt.TimeFormat);
-            sw.WriteLine($"{tsText},{cyc},{idx},{cur.ToString(fmt.CurrentFormat)},{pr.ToString(fmt.PressureFormat)}");
+            sw.WriteLine(
+                $"{tsText},{relativeSeconds.ToString("F6", CultureInfo.InvariantCulture)},{cyc},{idx},{cur.ToString(fmt.CurrentFormat)},{pr.ToString(fmt.PressureFormat)}");
         }
     }
 
@@ -740,7 +1121,7 @@ public sealed class EpbDiskWriter : IDisposable
         if (capacity <= 0 || s.TotalWritten == 0)
         {
             using var sw0 = new StreamWriter(csvPath, false, Encoding.UTF8);
-            sw0.WriteLine("Timestamp,Cycle,SampleIndex,EpbCurrent,GroupPressure");
+            sw0.WriteLine(CSV_HEADER);
             return 0;
         }
 
@@ -760,12 +1141,18 @@ public sealed class EpbDiskWriter : IDisposable
         list.Reverse(); // 升序
 
         using var sw = new StreamWriter(csvPath, false, Encoding.UTF8);
-        sw.WriteLine("Timestamp,Cycle,SampleIndex,EpbCurrent,GroupPressure");
+        sw.WriteLine(CSV_HEADER);
+        long? firstTimestampTicks = null;
+        var previousRelativeSeconds = 0.0;
         foreach (var rec in list)
         {
+            var relativeSeconds = GetNonDecreasingRelativeSeconds(
+                rec.TimestampBinary,
+                ref firstTimestampTicks,
+                ref previousRelativeSeconds);
             var tsText = FormatLocalTime(rec.TimestampBinary, fmt.TimeFormat);
             sw.WriteLine(
-                $"{tsText},{rec.CycleNumber},{rec.SampleIndex},{rec.EpbCurrent.ToString(fmt.CurrentFormat)},{rec.GroupPressure.ToString(fmt.PressureFormat)}");
+                $"{tsText},{relativeSeconds.ToString("F6", CultureInfo.InvariantCulture)},{rec.CycleNumber},{rec.SampleIndex},{rec.EpbCurrent.ToString(fmt.CurrentFormat)},{rec.GroupPressure.ToString(fmt.PressureFormat)}");
         }
 
         return list.Count;
@@ -996,6 +1383,30 @@ SELECT COUNT(1)
     }
 
     // —— SQLite 圈级索引 —— //
+    private long RestoreNextWritePosition(int epbId, long capacityRecords)
+    {
+        if (capacityRecords <= 0) return 0;
+
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = $@"
+SELECT start_position, COALESCE(sample_count, 0)
+  FROM {TABLE_CYCLES}
+ WHERE epb_id=@e
+ ORDER BY cycle_number DESC, id DESC
+ LIMIT 1";
+        cmd.Parameters.AddWithValue("@e", epbId);
+        using var rd = cmd.ExecuteReader();
+        if (!rd.Read()) return 0;
+
+        var startPosition = rd.GetInt64(0);
+        var sampleCount = Math.Max(0L, Convert.ToInt64(rd.GetValue(1)));
+        var logicalEnd = startPosition + sampleCount;
+
+        // TotalWritten 保留“至少已写过这些数据”的语义；真正访问环形文件时统一取模。
+        // 不能直接只保存余数，否则刚好写满一圈时余数为 0，会被 Free-Run 误判为从未写入。
+        return logicalEnd >= 0 ? logicalEnd : ModNN(logicalEnd, capacityRecords);
+    }
+
     private void InitSchema()
     {
         using var cmd = _conn.CreateCommand();

@@ -75,8 +75,8 @@ namespace Controller
         private readonly SemaphoreSlim _alarmSnapshotGate = new(1, 1);
         private readonly Dictionary<int, DateTime> _lastAlarmSnapshotUtcByChannel = new();
 
-        // 报警触发“立即停机”去重：避免同一通道短时间内重复 Stop
-        private readonly ConcurrentDictionary<int, byte> _alarmStopRequested = new();
+        // 报警触发“立即停机”去重：同一次运行只处理首个报警；新运行必须显式复位
+        private readonly ChannelAlarmStopLatch _alarmStopLatch = new();
 
         // ★ 跟踪每个通道“当前已 BeginCycle 的圈号”：用于报警停机时把当前圈封为 status='alarm'，避免遗留 running 悬挂圈
         private readonly ConcurrentDictionary<int, int> _currentCycleNumberByChannel = new();
@@ -139,7 +139,7 @@ namespace Controller
         /// <returns>若该通道已触发报警停机则返回 true，否则返回 false。</returns>
         private bool IsAlarmStopRequested(int channel)
         {
-            return _alarmStopRequested.ContainsKey(channel);
+            return _alarmStopLatch.IsStopRequested(channel);
         }
 
 
@@ -165,7 +165,8 @@ namespace Controller
 
 
         /// <summary>
-        ///     在报警停机路径中，尝试把“当前圈”封为 <c>status='alarm'</c>。
+        ///     报警快照流程结束后封圈：只有当前报警圈的 CSV/BIN 均已落盘时才写
+        ///     <c>status='alarm'</c>；快照失败则写为 <c>failed</c>。
         /// </summary>
         /// <param name="channel">EPB 通道号（1..12）。</param>
         /// <remarks>
@@ -174,26 +175,37 @@ namespace Controller
         ///     设计目的：保证 UI(EpbTestRecord) 计数与落盘圈数一致，避免 BeginCycle 后未 Complete 导致的“running 悬挂圈”。
         ///     </para>
         /// </remarks>
-        private void TryFinalizeCurrentCycleAsAlarm(int channel)
+        private void TryFinalizeCurrentCycleAfterSnapshot(int channel, bool hasSnapshotFiles)
         {
             var recorder = Recorder;
             if (recorder == null) return;
 
-            if (!_currentCycleNumberByChannel.TryGetValue(channel, out var cycleNumber))
+            if (!_currentCycleNumberByChannel.TryRemove(channel, out var cycleNumber))
                 return;
 
             try
             {
                 var finalN = recorder.GetCurrentCycleSampleCount(channel);
-                recorder.AlarmCycle(channel, cycleNumber, finalN, DateTime.UtcNow);
+                if (hasSnapshotFiles)
+                {
+                    recorder.AlarmCycle(channel, cycleNumber, finalN, DateTime.UtcNow);
+                }
+                else
+                {
+                    recorder.AbortCycle(
+                        channel,
+                        cycleNumber,
+                        finalN,
+                        DateTime.UtcNow,
+                        "failed");
+                    _log.Warn(
+                        $"EPB[{channel}] 报警快照文件未完整生成，当前圈记为 failed，不写入 alarm。",
+                        "落盘");
+                }
             }
             catch
             {
                 // ignore
-            }
-            finally
-            {
-                ClearCurrentCycleNumber(channel);
             }
         }
 
@@ -257,7 +269,14 @@ namespace Controller
                 if (recorder != null)
                     _ = Task.Run(() =>
                     {
-                        try { recorder.FlushRecent(channel, 10); } catch { /* ignore */ }
+                        try
+                        {
+                            recorder.FlushRecent(channel, 10);
+                        }
+                        catch (Exception ex)
+                        {
+                            _log.Warn($"EPB[{channel}] 停止导出失败：{ex.Message}", "落盘");
+                        }
                     });
             }
             catch
@@ -489,7 +508,7 @@ namespace Controller
             }
 
             // 若上一次因报警触发过停机，这里允许重新启动
-            _alarmStopRequested.TryRemove(channel, out _);
+            _alarmStopLatch.BeginRun(channel);
 
             // 本次启动为该通道刷新“硬停机”取消源
             var stopCts = RenewStopCts(channel);
@@ -625,9 +644,12 @@ namespace Controller
                     try
                     {
                         var finalN = recorder.GetCurrentCycleSampleCount(channel);
-                        if (IsAlarmStopRequested(channel) ||
-                            runner.LastCycleOutcome.Kind == EpbCycleOutcomeKind.HardFault)
-                            recorder.AlarmCycle(channel, i, finalN, DateTime.UtcNow);
+                        if (IsAlarmStopRequested(channel))
+                        {
+                            // 报警后台流程负责在快照文件存在后封圈。
+                        }
+                        else if (runner.LastCycleOutcome.Kind == EpbCycleOutcomeKind.HardFault)
+                            recorder.AbortCycle(channel, i, finalN, DateTime.UtcNow, "failed");
                         else if (runner.LastCycleOutcome.IsSuccess)
                             recorder.CompleteCycle(channel, i, finalN, DateTime.UtcNow);
                         else
@@ -646,7 +668,8 @@ namespace Controller
                     }
                 }
 
-                ClearCurrentCycleNumber(channel);
+                if (!IsAlarmStopRequested(channel))
+                    ClearCurrentCycleNumber(channel);
 
                 // 若本通道自然完成最后一圈，则做统一收尾（含“停止即存最近10圈”）
                 if (i >= _cfg.Test.TestTarget)
@@ -755,9 +778,9 @@ namespace Controller
             {
                 Recorder?.FlushRecent(channel, 10);
             }
-            catch
+            catch (Exception ex)
             {
-                /* 忽略 */
+                _log.Warn($"EPB[{channel}] 停止导出失败：{ex.Message}", "落盘");
             }
 
             TryEndBatchSessionWhenIdle();
@@ -779,9 +802,6 @@ namespace Controller
 
             // 先取消“硬停机”Token，尽快中断当前圈内仍在运行的异步逻辑
             try { CancelStopCts(channel); } catch { /* ignore */ }
-
-            // ★关键：在报警停机路径里尽早把“当前圈”封为 alarm，避免 FlushRecent 时看不到该圈/或遗留 running 悬挂圈
-            try { TryFinalizeCurrentCycleAsAlarm(channel); } catch { /* ignore */ }
 
             // —— 停止“当前轮”的计时器 —— //
             if (_timers.TryGetValue(channel, out var t))
@@ -828,7 +848,14 @@ namespace Controller
                 if (recorder != null)
                     _ = Task.Run(() =>
                     {
-                        try { recorder.FlushRecent(channel, 10); } catch { /* ignore */ }
+                        try
+                        {
+                            recorder.FlushRecent(channel, 10);
+                        }
+                        catch (Exception ex)
+                        {
+                            _log.Warn($"EPB[{channel}] 停止导出失败：{ex.Message}", "落盘");
+                        }
                     });
             }
             catch
@@ -843,7 +870,7 @@ namespace Controller
         private void OnRunnerAlarmRaised(int channel, string reason)
         {
             // ★同步去重 latch：保证计时器回调能尽快识别“本圈应封为 alarm”，但不在此线程做 IO
-            if (!_alarmStopRequested.TryAdd(channel, 0))
+            if (!_alarmStopLatch.TryRequestStop(channel))
                 return;
 
             ChannelAlarmRaised?.Invoke(channel, reason);
@@ -863,14 +890,18 @@ namespace Controller
                     // ignore
                 }
 
+                var hasSnapshotFiles = false;
                 try
                 {
-                    await ExportAlarmSnapshotAsync(channel, reason).ConfigureAwait(false);
+                    hasSnapshotFiles = await ExportAlarmSnapshotAsync(channel, reason).ConfigureAwait(false);
                 }
                 catch
                 {
                     // ignore
                 }
+
+                // 数据库中的 alarm 必须有同一通道、同一圈号的快照文件作为证据。
+                TryFinalizeCurrentCycleAfterSnapshot(channel, hasSnapshotFiles);
             });
         }
 
@@ -965,10 +996,12 @@ namespace Controller
         }
 
 
-        private async Task ExportAlarmSnapshotAsync(int alarmChannel, string reason)
+        private async Task<bool> ExportAlarmSnapshotAsync(int alarmChannel, string reason)
         {
             var recorder = Recorder;
-            if (recorder == null) return;
+            if (recorder == null) return false;
+            if (!_currentCycleNumberByChannel.TryGetValue(alarmChannel, out var alarmCycleNumber))
+                return false;
 
             // 快照去抖：同一通道在 cooldown 内只导出一次
             var cooldownMs = AlarmConfig?.Behavior?.SnapshotCooldownMs ?? 2000;
@@ -978,7 +1011,7 @@ namespace Controller
                 if (_lastAlarmSnapshotUtcByChannel.TryGetValue(alarmChannel, out var last))
                 {
                     if ((now - last).TotalMilliseconds < cooldownMs)
-                        return;
+                        return false;
                 }
 
                 _lastAlarmSnapshotUtcByChannel[alarmChannel] = now;
@@ -1029,7 +1062,20 @@ namespace Controller
                     }
                 }
 
-                _log.Warn($"报警快照已导出：EPB[{alarmChannel}] {reason} -> {snapshotDir}", "落盘");
+                var alarmSubDir = System.IO.Path.Combine(snapshotDir, $"EPB{alarmChannel:D2}_ALARM");
+                var hasSnapshotFiles = AlarmSnapshotFileEvidence.HasCsvAndBin(
+                    alarmSubDir,
+                    alarmChannel,
+                    alarmCycleNumber);
+
+                if (hasSnapshotFiles)
+                    _log.Warn($"报警快照已导出：EPB[{alarmChannel}] {reason} -> {snapshotDir}", "落盘");
+                else
+                    _log.Warn(
+                        $"报警快照缺少当前圈文件：EPB[{alarmChannel}] Cycle={alarmCycleNumber} -> {snapshotDir}",
+                        "落盘");
+
+                return hasSnapshotFiles;
             }
             finally
             {
