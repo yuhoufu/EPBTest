@@ -1327,6 +1327,7 @@ namespace MTEmbTest
 
             // —— 3) 更新左侧 EPBGroup —— //
             EpbGroup[channel - 1].CtrlCycles.Text = record.RunCount.ToString();
+            RefreshCurrentEpbSummary(channel);
 
             // —— 4) 下拉框右侧面板选中时刷新 —— //
             // —— ?? 取消实时保存，改为“定时自动保存” —— //
@@ -1334,16 +1335,25 @@ namespace MTEmbTest
 
         private void OnEpbChannelAlarmRaised(int channel, string reason)
         {
+            var record = EnsureEpbRecord(channel);
+            lock (_epbRecordsLock) record.SetAlarm();
+            RefreshCurrentEpbSummary(channel);
             LogInfo($"卡钳{channel} 报警：{reason}");
         }
 
         private void OnEpbChannelPaused(int channel)
         {
+            var record = EnsureEpbRecord(channel);
+            lock (_epbRecordsLock) record.Pause();
+            RefreshCurrentEpbSummary(channel);
             LogInfo($"卡钳{channel} 已暂停");
         }
 
         private void OnEpbChannelResumed(int channel)
         {
+            var record = EnsureEpbRecord(channel);
+            lock (_epbRecordsLock) record.Resume(DateTime.Now);
+            RefreshCurrentEpbSummary(channel);
             LogInfo($"卡钳{channel} 已恢复运行");
         }
 
@@ -2357,7 +2367,7 @@ namespace MTEmbTest
                 {
                     var record = EnsureEpbRecord(channel);
                     record.MarkTestStarted(DateTime.Now);
-                    UpdateEpbSummaryPanel(record);
+                    RefreshCurrentEpbSummary(channel);
                 }
 
 
@@ -2887,6 +2897,38 @@ namespace MTEmbTest
             var curRecord = EnsureEpbRecord(channelId);
 
             UpdateEpbSummaryPanel(curRecord);
+        }
+
+        /// <summary>
+        /// Refreshes the summary only when the changed channel is the channel selected in the summary combo box.
+        /// </summary>
+        private void RefreshCurrentEpbSummary(int channel)
+        {
+            if (InvokeRequired)
+            {
+                try
+                {
+                    BeginInvoke(new Action<int>(RefreshCurrentEpbSummary), channel);
+                }
+                catch
+                {
+                    // Form is closing; no UI refresh is required.
+                }
+
+                return;
+            }
+
+            if (_currentEpbSummaryChannel != channel)
+                return;
+
+            EpbTestRecord record;
+            lock (_epbRecordsLock)
+            {
+                record = _uiEpbRecords?.FirstOrDefault(r => r.Id == channel);
+            }
+
+            if (record != null)
+                UpdateEpbSummaryPanel(record);
         }
 
         /// <summary>
