@@ -4,6 +4,7 @@ using System.Globalization;
 using System.IO;
 using System.Collections.Generic;
 using Config;
+using Controller;
 using Controller.Adaptive;
 using Controller.Alarm;
 using Timing;
@@ -36,7 +37,23 @@ namespace AdaptiveControlTests
                 Run("周期超限不追赶且圈号连续", TimerDoesNotCatchUp);
                 Run("新运行复位报警停机锁存", AlarmStopLatchResetsForNewRun);
                 Run("报警状态要求CSV和BIN同时存在", AlarmRequiresCsvAndBinFiles);
-                Console.WriteLine($"PASS {_passed}/15");
+                Run("错峰部分通道重新编号", StaggerPartialSelection);
+                Run("错峰同组全选", StaggerFullGroup);
+                Run("错峰不同组并行", StaggerAcrossGroups);
+                Run("错峰计划配置快照", StaggerPlanIsImmutableSnapshot);
+                Run("连续圈保持固定墙钟相位", StaggerPhaseRemainsFixedAcrossCycles);
+                Run("错峰重复组ID被拒绝", StaggerRejectsDuplicateGroupId);
+                Run("错峰重复归组被拒绝", StaggerRejectsDuplicateMembership);
+                Run("错峰漏配通道被拒绝", StaggerRejectsMissingChannel);
+                Run("错峰越界通道被拒绝", StaggerRejectsOutOfRangeChannel);
+                Run("错峰零步长被拒绝", StaggerRejectsZeroDelta);
+                Run("错峰最大相位越周期被拒绝", StaggerRejectsPhaseBeyondPeriod);
+                Run("错峰单通道相位为零", StaggerSingleChannelStartsAtZero);
+                Run("错峰任务不等待前相位完成", StaggerExecutorDoesNotSerialize);
+                Run("DO追踪缓冲按运行过滤并限时", DoTraceBufferFiltersRunAndAge);
+                Run("报警辅助证据包含计划和DO时序", AlarmControlEvidenceIsReconstructable);
+                Run("同组硬故障仅停止故障通道", HardFaultDoesNotStopSiblingChannel);
+                Console.WriteLine($"PASS {_passed}/31");
                 return 0;
             }
             catch (Exception ex)
@@ -348,6 +365,400 @@ namespace AdaptiveControlTests
             finally
             {
                 Directory.Delete(directory, true);
+            }
+        }
+
+        private static void StaggerPartialSelection()
+        {
+            var plan = ElectricalStaggerPlanner.Build(
+                new[] { 8, 9 },
+                new[] { NewElectricalGroup(3, 800, 7, 8, 9) },
+                15_000);
+
+            Assert(plan.Get(8).SelectedIndexInGroup == 0 && plan.Get(8).PhaseMs == 0,
+                "EPB8未按已选通道重新编号为0相位");
+            Assert(plan.Get(9).SelectedIndexInGroup == 1 && plan.Get(9).PhaseMs == 800,
+                "EPB9未按已选通道重新编号为800ms相位");
+        }
+
+        private static void StaggerFullGroup()
+        {
+            var plan = ElectricalStaggerPlanner.Build(
+                new[] { 9, 7, 8 },
+                new[] { NewElectricalGroup(3, 800, 7, 8, 9) },
+                15_000);
+
+            Assert(plan.Get(7).PhaseMs == 0, "EPB7相位错误");
+            Assert(plan.Get(8).PhaseMs == 800, "EPB8相位错误");
+            Assert(plan.Get(9).PhaseMs == 1600, "EPB9相位错误");
+        }
+
+        private static void StaggerAcrossGroups()
+        {
+            var plan = ElectricalStaggerPlanner.Build(
+                new[] { 8, 9, 10, 12 },
+                new[]
+                {
+                    NewElectricalGroup(3, 800, 7, 8, 9),
+                    NewElectricalGroup(4, 800, 10, 11, 12)
+                },
+                15_000);
+
+            Assert(plan.Get(8).PhaseMs == 0 && plan.Get(10).PhaseMs == 0,
+                "不同电源组首通道未并行使用0相位");
+            Assert(plan.Get(9).PhaseMs == 800 && plan.Get(12).PhaseMs == 800,
+                "不同电源组第二通道未使用800ms相位");
+        }
+
+        private static void StaggerPlanIsImmutableSnapshot()
+        {
+            var group = NewElectricalGroup(3, 800, 7, 8, 9);
+            var plan = ElectricalStaggerPlanner.Build(new[] { 8, 9 }, new[] { group }, 15_000);
+
+            group.StaggerMs = 1200;
+            group.Members.Clear();
+
+            Assert(plan.Get(8).StaggerMs == 800 && plan.Get(9).PhaseMs == 800,
+                "配置修改污染了已生成的错峰计划");
+        }
+
+        private static void StaggerPhaseRemainsFixedAcrossCycles()
+        {
+            var plan = ElectricalStaggerPlanner.Build(
+                new[] { 8, 9 },
+                new[] { NewElectricalGroup(3, 800, 7, 8, 9) },
+                15_000);
+            var anchor = new DateTime(2026, 7, 29, 8, 0, 0, DateTimeKind.Utc);
+
+            for (var cycle = 0; cycle < 5; cycle++)
+            {
+                var epb8 = plan.GetDueUtc(anchor, 8, cycle);
+                var epb9 = plan.GetDueUtc(anchor, 9, cycle);
+                Assert((epb9 - epb8).TotalMilliseconds == 800,
+                    $"第{cycle + 1}圈相位差发生漂移");
+                if (cycle > 0)
+                    Assert((epb8 - plan.GetDueUtc(anchor, 8, cycle - 1)).TotalMilliseconds == 15_000,
+                        $"第{cycle + 1}圈未保持固定墙钟周期");
+            }
+        }
+
+        private static void StaggerRejectsDuplicateGroupId()
+        {
+            AssertStaggerError(
+                new[] { 1, 4 },
+                new[]
+                {
+                    NewElectricalGroup(1, 800, 1, 2, 3),
+                    NewElectricalGroup(1, 800, 4, 5, 6)
+                },
+                15_000,
+                "电气组ID 1 重复");
+        }
+
+        private static void StaggerRejectsDuplicateMembership()
+        {
+            AssertStaggerError(
+                new[] { 3 },
+                new[]
+                {
+                    NewElectricalGroup(1, 800, 1, 2, 3),
+                    NewElectricalGroup(2, 800, 3, 4, 5)
+                },
+                15_000,
+                "EPB3 同时属于");
+        }
+
+        private static void StaggerRejectsMissingChannel()
+        {
+            AssertStaggerError(
+                new[] { 8 },
+                new[] { NewElectricalGroup(4, 800, 10, 11, 12) },
+                15_000,
+                "EPB8 未配置");
+        }
+
+        private static void StaggerRejectsOutOfRangeChannel()
+        {
+            AssertStaggerError(
+                new[] { 0 },
+                new[] { NewElectricalGroup(5, 800, 0) },
+                15_000,
+                "超出允许范围");
+            AssertStaggerError(
+                new[] { 13 },
+                new[] { NewElectricalGroup(5, 800, 13) },
+                15_000,
+                "超出允许范围");
+        }
+
+        private static void StaggerRejectsZeroDelta()
+        {
+            AssertStaggerError(
+                new[] { 8, 9 },
+                new[] { NewElectricalGroup(3, 0, 7, 8, 9) },
+                15_000,
+                "StaggerMs 必须大于0");
+            AssertStaggerError(
+                new[] { 8, 9 },
+                new[] { NewElectricalGroup(3, -1, 7, 8, 9) },
+                15_000,
+                "StaggerMs 必须大于0");
+        }
+
+        private static void StaggerRejectsPhaseBeyondPeriod()
+        {
+            AssertStaggerError(
+                new[] { 7, 8, 9 },
+                new[] { NewElectricalGroup(3, 800, 7, 8, 9) },
+                1600,
+                "必须小于试验周期");
+        }
+
+        private static void StaggerSingleChannelStartsAtZero()
+        {
+            var plan = ElectricalStaggerPlanner.Build(
+                new[] { 12 },
+                new[] { NewElectricalGroup(4, 800, 10, 11, 12) },
+                15_000);
+
+            Assert(plan.Get(12).SelectedIndexInGroup == 0 && plan.Get(12).PhaseMs == 0,
+                "单通道启动仍保留了物理工位空相位");
+        }
+
+        private static void StaggerExecutorDoesNotSerialize()
+        {
+            var plan = ElectricalStaggerPlanner.Build(
+                new[] { 8, 9 },
+                new[] { NewElectricalGroup(3, 60, 7, 8, 9) },
+                1000);
+            var sw = Stopwatch.StartNew();
+            var starts = new Dictionary<int, long>();
+            var ends = new Dictionary<int, long>();
+            var gate = new object();
+
+            ElectricalStaggerExecutor.RunAsync(
+                    new[] { 8, 9 },
+                    plan,
+                    DateTime.UtcNow.AddMilliseconds(20),
+                    async (channel, token) =>
+                    {
+                        lock (gate) starts[channel] = sw.ElapsedMilliseconds;
+                        await System.Threading.Tasks.Task.Delay(channel == 8 ? 220 : 20, token);
+                        lock (gate) ends[channel] = sw.ElapsedMilliseconds;
+                    },
+                    System.Threading.CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+
+            Assert(starts[9] - starts[8] >= 35, "后一相位没有按计划延迟");
+            Assert(starts[9] < ends[8], "后一相位等待前一任务完成，错峰退化成串行");
+        }
+
+        private static void DoTraceBufferFiltersRunAndAge()
+        {
+            var runA = Guid.NewGuid();
+            var runB = Guid.NewGuid();
+            var now = DateTime.UtcNow;
+            var buffer = new DoControlTraceBuffer();
+            buffer.Add(new DoControlTraceEvent
+            {
+                Utc = now.AddSeconds(-61),
+                RunId = runA,
+                Channel = 8,
+                Command = EpbDoCommand.Forward
+            });
+            buffer.Add(new DoControlTraceEvent
+            {
+                Utc = now,
+                RunId = runB,
+                Channel = 10,
+                Command = EpbDoCommand.Forward
+            });
+            buffer.Add(new DoControlTraceEvent
+            {
+                Utc = now,
+                RunId = runA,
+                Channel = 9,
+                Command = EpbDoCommand.OffHighPriority
+            });
+
+            var snapshot = buffer.Snapshot(now, runA);
+            Assert(snapshot.Count == 1, "DO追踪未按60秒窗口和运行ID过滤");
+            Assert(snapshot[0].Channel == 9, "DO追踪保留了错误运行或过期事件");
+
+            var capacityBuffer = new DoControlTraceBuffer();
+            for (var i = 0; i < 10001; i++)
+            {
+                capacityBuffer.Add(new DoControlTraceEvent
+                {
+                    Utc = now,
+                    RunId = runA,
+                    Channel = 8,
+                    MonotonicTicks = i
+                });
+            }
+
+            var capacitySnapshot = capacityBuffer.Snapshot(now, runA);
+            Assert(capacitySnapshot.Count == 10000, "DO追踪超过10000条后未保持有界");
+            Assert(capacitySnapshot[0].MonotonicTicks == 1, "DO追踪未淘汰最旧事件");
+        }
+
+        private static void AlarmControlEvidenceIsReconstructable()
+        {
+            var directory = CreateTempDir();
+            try
+            {
+                var runId = Guid.NewGuid();
+                var plan = ElectricalStaggerPlanner.Build(
+                    new[] { 8, 9 },
+                    new[] { NewElectricalGroup(3, 800, 7, 8, 9) },
+                    15_000);
+                var utc = DateTime.UtcNow;
+
+                EpbManager.WriteAlarmMetadata(
+                    Path.Combine(directory, "alarm-metadata.json"),
+                    9,
+                    42,
+                    "堵转\"故障\n复测",
+                    true,
+                    utc,
+                    runId,
+                    plan.Get(9),
+                    plan,
+                    new[]
+                    {
+                        new DoControlTraceEvent
+                        {
+                            Utc = utc.AddMilliseconds(-10),
+                            MonotonicTicks = 122,
+                            RunId = runId,
+                            Channel = 9,
+                            Stage = "RunOneAdaptiveAsync",
+                            Command = EpbDoCommand.Forward,
+                            DoCommandResult = false,
+                            BranchCurrentA = 10.25
+                        },
+                        new DoControlTraceEvent
+                        {
+                            Utc = utc,
+                            MonotonicTicks = 123,
+                            RunId = runId,
+                            Channel = 9,
+                            Stage = "RunOneAdaptiveAsync",
+                            Command = EpbDoCommand.OffHighPriority,
+                            DoCommandResult = true,
+                            BranchCurrentA = 12.3456
+                        }
+                    });
+                EpbManager.WriteStaggerPlan(
+                    Path.Combine(directory, "electrical-stagger-plan.json"),
+                    runId,
+                    plan);
+                EpbManager.WriteDoTimeline(
+                    Path.Combine(directory, "do-control-timeline.csv"),
+                    new[]
+                    {
+                        new DoControlTraceEvent
+                        {
+                            Utc = utc,
+                            MonotonicTicks = 123,
+                            MonotonicElapsedMs = 456.789,
+                            RunId = runId,
+                            CycleNumber = 42,
+                            ElectricalGroupId = 3,
+                            Channel = 9,
+                            PlannedPhaseMs = 800,
+                            Stage = "RunOneAdaptiveAsync",
+                            Command = EpbDoCommand.OffHighPriority,
+                            DoCommandResult = true,
+                            BranchCurrentA = 12.3456
+                        },
+                        new DoControlTraceEvent
+                        {
+                            Utc = utc.AddMilliseconds(-10),
+                            MonotonicTicks = 122,
+                            MonotonicElapsedMs = 446.789,
+                            RunId = runId,
+                            CycleNumber = 42,
+                            ElectricalGroupId = 3,
+                            Channel = 9,
+                            PlannedPhaseMs = 800,
+                            ElectricalPhaseDueUtc = utc.AddMilliseconds(-12),
+                            ElectricalPhaseStartDeviationMs = 2,
+                            Stage = "RunOneAdaptiveAsync",
+                            Command = EpbDoCommand.Forward,
+                            DoCommandResult = false,
+                            BranchCurrentA = 10.25
+                        }
+                    });
+
+                var metadata = File.ReadAllText(Path.Combine(directory, "alarm-metadata.json"));
+                var stagger = File.ReadAllText(Path.Combine(directory, "electrical-stagger-plan.json"));
+                var timeline = File.ReadAllText(Path.Combine(directory, "do-control-timeline.csv"));
+
+                Assert(metadata.Contains("\"alarmCycleCsvAndBinComplete\": true"),
+                    "报警元数据未记录CSV/BIN完整性");
+                Assert(metadata.Contains("\"physicalPowerState\": \"NotMeasured\""),
+                    "报警元数据误将DO返回值当成物理断电确认");
+                Assert(metadata.Contains("\"selectedChannelsInElectricalGroup\": [8, 9]") &&
+                       metadata.Contains("\"forward\": {") &&
+                       metadata.Contains("\"off\": {"),
+                    "报警元数据缺少同组计划或最近DO命令");
+                Assert(stagger.Contains("\"channel\": 9") && stagger.Contains("\"phaseMs\": 800"),
+                    "错峰计划证据缺少通道相位");
+                Assert(timeline.Contains("OffHighPriority") &&
+                       timeline.Contains("12.345600") &&
+                       timeline.Contains("NotMeasured"),
+                    "DO时间线缺少命令、电流或物理状态语义");
+                Assert(timeline.IndexOf("Forward", StringComparison.Ordinal) <
+                       timeline.IndexOf("OffHighPriority", StringComparison.Ordinal) &&
+                       timeline.Contains(",false,10.250000,NotMeasured"),
+                    "DO时间线未按单调时序保存命令顺序或返回值");
+            }
+            finally
+            {
+                Directory.Delete(directory, true);
+            }
+        }
+
+        private static void HardFaultDoesNotStopSiblingChannel()
+        {
+            var plan = ElectricalStaggerPlanner.Build(
+                new[] { 8, 9 },
+                new[] { NewElectricalGroup(3, 800, 7, 8, 9) },
+                15_000);
+            var affected = ChannelFaultIsolationPolicy.GetChannelsToStop(8);
+
+            Assert(affected.Count == 1 && affected[0] == 8,
+                "硬故障停机范围扩展到了同组其他通道");
+            Assert(plan.Get(9).PhaseMs == 800,
+                "同组正常通道的原计划相位被硬故障策略改变");
+        }
+
+        private static ElectricalGroup NewElectricalGroup(
+            int id,
+            int staggerMs,
+            params int[] members)
+        {
+            var group = new ElectricalGroup { Id = id, StaggerMs = staggerMs };
+            group.Members.AddRange(members);
+            return group;
+        }
+
+        private static void AssertStaggerError(
+            IEnumerable<int> selected,
+            IEnumerable<ElectricalGroup> groups,
+            int periodMs,
+            string expected)
+        {
+            try
+            {
+                ElectricalStaggerPlanner.Build(selected, groups, periodMs);
+                throw new InvalidOperationException("预期错峰配置校验失败，但计划生成成功");
+            }
+            catch (ElectricalStaggerPlanException ex)
+            {
+                Assert(ex.Message.Contains(expected), $"错误信息未包含“{expected}”：{ex.Message}");
             }
         }
 

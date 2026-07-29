@@ -244,7 +244,7 @@ namespace Controller
 
             // ===================== 正向阶段（②~④ 合并为“直接夹紧判据”） =====================
             // ② 正向上电并忽略涌流去抖
-            _do.SetEpbForward(_channel);
+            CommandForward();
             await Task.Delay(_peakIgnoreMs, token).ConfigureAwait(false);
 
             // 这里的“正向峰值衰减时长”按你的新方案，取为“忽略涌流时长”的等效值。
@@ -258,13 +258,13 @@ namespace Controller
             if (!okClamp)
             {
                 // 未达到阈值/平台，直接断电并放弃本圈样本
-                _do.SetEpbOffHighPriority(_channel);
+                CommandOffHighPriority();
                 _log?.Warn($"EPB[{_channel}] 正向阶段未满足夹紧判据，放弃本圈样本。", "EPB");
                 return null;
             }
 
             // —— 达到夹紧判据 → 立即断电，并通知协调器（用于统一释压）——
-            _do.SetEpbOffHighPriority(_channel);
+            CommandOffHighPriority();
             if (_manager != null)
                 await _manager.HydraulicMarkReleaseAsync(_channel).ConfigureAwait(false);
 
@@ -277,7 +277,7 @@ namespace Controller
 
             // ===================== 反向阶段（⑥ 刚性衰减 + ⑦ 固定空行程） =====================
             // ⑥ 反向上电并忽略涌流去抖
-            _do.SetEpbReverse(_channel);
+            CommandReverse();
             await Task.Delay(_peakIgnoreMs, token).ConfigureAwait(false);
 
             // —— 在“刚性衰减上限”内等待电流 ≤ RevDecayLimitA —— //
@@ -336,7 +336,7 @@ namespace Controller
             await Task.Delay(Math.Max(0, RevEmptyFixedMs), token).ConfigureAwait(false);
 
             // —— 反向断电 —— //
-            _do.SetEpbOff(_channel);
+            CommandOff();
 
             // ===================== 返回单圈样本（兼容 LearnSample 结构） =====================
             // 说明：
@@ -406,7 +406,7 @@ namespace Controller
 
             // ===================== 正向阶段（②~④ 合并为“直接夹紧判据”） =====================
             // ② 正向上电并忽略涌流去抖
-            _do.SetEpbForward(_channel);
+            CommandForward();
             await Task.Delay(_peakIgnoreMs, token).ConfigureAwait(false);
 
             // 这里的“正向峰值衰减时长”按你的新方案，取为“忽略涌流时长”的等效值。
@@ -431,7 +431,7 @@ namespace Controller
             var fwdJudgeElapsedMs = (int)((Stopwatch.GetTimestamp() - tFwdJudgeStart) * 1000.0 / Stopwatch.Frequency);
 
             // —— 达成与否都立刻断电 —— 
-            _do.SetEpbOff(_channel);
+            CommandOff();
 
             if (!okClamp)
             {
@@ -475,7 +475,7 @@ namespace Controller
 
             // ===================== 反向阶段（⑥ 刚性衰减 + ⑦ 固定空行程） =====================
             // ⑥ 反向上电并忽略涌流去抖
-            _do.SetEpbReverse(_channel);
+            CommandReverse();
             await Task.Delay(_peakIgnoreMs, token).ConfigureAwait(false);
 
             // —— 在“刚性衰减上限”内等待电流 ≤ RevDecayLimitA —— //
@@ -534,7 +534,7 @@ namespace Controller
             await Task.Delay(Math.Max(0, RevEmptyFixedMs), token).ConfigureAwait(false);
 
             // —— 反向断电 —— //
-            _do.SetEpbOff(_channel);
+            CommandOff();
 
             // ===================== 返回单圈样本（兼容 LearnSample 结构） =====================
             var sample = new LearnSample

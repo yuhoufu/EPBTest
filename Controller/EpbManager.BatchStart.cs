@@ -22,6 +22,8 @@ namespace Controller
         private readonly Dictionary<int, HighPrecisionTimer> _timerCache = new();
         private int _batchSessionActive;
         private CancellationTokenSource _batchSessionCts;
+        private ElectricalStaggerPlan _activeStaggerPlan;
+        private Guid _activeBatchId;
 
         /// <summary>当前是否已有批量学习或正式试验会话。</summary>
         public bool IsBatchSessionActive => Volatile.Read(ref _batchSessionActive) != 0;
@@ -62,18 +64,25 @@ namespace Controller
             if (channels == null || channels.Length == 0)
                 throw new ArgumentException("channels 不能为空", nameof(channels));
 
+            var selected = channels.Distinct().OrderBy(x => x).ToArray();
+            var staggerPlan = ElectricalStaggerPlanner.Build(selected, _cfg.Test.Groups, PeriodMs);
             var sessionToken = BeginBatchSession(token);
             try
             {
+                _activeStaggerPlan = staggerPlan;
+                _activeBatchId = Guid.NewGuid();
+                RegisterRunContext(_activeBatchId, staggerPlan);
+                LogStaggerPlan(_activeBatchId, staggerPlan);
+
                 // 新批次必须复位上一次运行留下的报警停机锁存。
                 // 否则 IsAlarmStopRequested 会让后续成功圈也持续写成 status='alarm'，
                 // 且重复报警会在 OnRunnerAlarmRaised 中被去重后直接返回。
-                foreach (var channel in channels.Distinct())
+                foreach (var channel in selected)
                     _alarmStopLatch.BeginRun(channel);
 
                 // —— 1) 按压力组归类，并为每组计算“锚点零相位” t0（含预热裕度 + 周期上取整）—— //
                 var nowUtc = DateTime.UtcNow;
-                var groups = GroupByPressure(channels); // Dictionary<int, List<int>>，键为 1/2
+                var groups = GroupByPressure(selected); // Dictionary<int, List<int>>，键为 1/2
                 var t0OfGroup = new Dictionary<int, DateTime>(); // key: PG(1/2), value: t0(UTC)
 
                 foreach (var kv in groups)
@@ -92,31 +101,33 @@ namespace Controller
                 if (learnCycles > 0)
                 {
                     var all = groups.Values.SelectMany(v => v).Distinct().OrderBy(x => x).ToArray();
-                    _log?.Info($"批量预释放：通道[{string.Join(",", all)}]，三波错峰，Δ={StaggerDeltaMs}ms。", "EPB");
+                    _log?.Info(
+                        $"批量预释放：通道[{string.Join(",", all)}]，按XML电气组计划错峰。",
+                        "EPB");
 
                     // keepMs=null → 由 Runner 内部使用 DefaultPreReleaseKeepMs
-                    await PreReleaseBatchStaggeredAsync(
+                    await PreReleaseBatchWithPlanAsync(
                             all,
                             /*keepMs*/ null,
-                            /*deltaMs*/ StaggerDeltaMs,
+                            staggerPlan,
                             sessionToken)
                         .ConfigureAwait(false);
                 }
 
                 // —— 3) 学习阶段：次数不多，用“每圈循环 + 锚点屏障 + 相位延时”实现稳定对齐 —— //
                 if (learnCycles > 0)
-                    await RunLearningPhaseAsync(groups, t0OfGroup, learnCycles, sessionToken)
+                    await RunLearningPhaseAsync(groups, t0OfGroup, learnCycles, staggerPlan, sessionToken)
                         .ConfigureAwait(false);
 
                 // —— 4) 正式阶段：为每个通道创建对齐到“锚点+相位”的高精计时器 —— //
-                StartFormalPhaseTimers(groups, t0OfGroup, sessionToken);
+                StartFormalPhaseTimers(groups, t0OfGroup, staggerPlan, sessionToken);
             }
             catch (Exception ex)
             {
                 _log?.Error($"批量启动异常：{ex}", "EPB", ex);
                 EndBatchSession(cancel: true);
 
-                foreach (var channel in channels.Distinct())
+                foreach (var channel in selected)
                 {
                     try { StopChannel(channel); }
                     catch (Exception stopEx)
@@ -168,6 +179,29 @@ namespace Controller
             }
 
             Interlocked.Exchange(ref _batchSessionActive, 0);
+            _activeStaggerPlan = null;
+            _activeBatchId = Guid.Empty;
+        }
+
+        private void LogStaggerPlan(Guid batchId, ElectricalStaggerPlan plan)
+        {
+            _log?.Info(
+                $"EPB错峰计划 Batch={batchId:N} Period={plan.PeriodMs}ms Created={plan.CreatedUtc:O}",
+                "EPB");
+
+            foreach (var group in plan.Assignments.Values
+                         .GroupBy(x => x.ElectricalGroupId)
+                         .OrderBy(x => x.Key))
+            {
+                var assignments = string.Join(
+                    ", ",
+                    group.OrderBy(x => x.SelectedIndexInGroup)
+                        .Select(x =>
+                            $"EPB{x.Channel}(index={x.SelectedIndexInGroup},phase={x.PhaseMs}ms)"));
+                _log?.Info(
+                    $"Group{group.Key} Stagger={group.First().StaggerMs}ms: {assignments}",
+                    "EPB");
+            }
         }
 
         private void TryEndBatchSessionWhenIdle()
@@ -187,6 +221,7 @@ namespace Controller
         private void StartFormalPhaseTimers(
             Dictionary<int, List<int>> groups,
             Dictionary<int, DateTime> t0OfGroup,
+            ElectricalStaggerPlan staggerPlan,
             CancellationToken token)
         {
             foreach (var kv in groups)
@@ -201,7 +236,7 @@ namespace Controller
                 
                 foreach (var ch in enabled)
                 {
-                    var phase = IndexInPowerGroup(ch) * StaggerDeltaMs;
+                    var phase = staggerPlan.Get(ch).PhaseMs;
                     var initialDelay = (int)(t0.AddMilliseconds(phase) - DateTime.UtcNow).TotalMilliseconds;
 
                     // 若 warmup 偏小导致已过相位，滚动到下一（几）圈的相位
@@ -236,6 +271,19 @@ namespace Controller
                         {
                             using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, stopCts.Token);
                             var token = linked.Token;
+                            var actualStartUtc = DateTime.UtcNow;
+                            var phaseBaseUtc = t0.AddMilliseconds(phase);
+                            var elapsedSincePhaseMs = (actualStartUtc - phaseBaseUtc).TotalMilliseconds;
+                            var phaseSlot = elapsedSincePhaseMs <= 0
+                                ? 0L
+                                : (long)Math.Floor(elapsedSincePhaseMs / PeriodMs);
+                            var plannedStartUtc = phaseBaseUtc.AddMilliseconds(phaseSlot * PeriodMs);
+                            MarkElectricalPhaseDue(ch, plannedStartUtc);
+                            _log?.Info(
+                                $"正式阶段启动 Run={_activeBatchId:N} EPB={ch} Group={staggerPlan.Get(ch).ElectricalGroupId} " +
+                                $"Cycle={cycleIndex} Phase={phase}ms PlannedUtc={plannedStartUtc:O} " +
+                                $"ActualUtc={actualStartUtc:O} DeviationMs={(actualStartUtc - plannedStartUtc).TotalMilliseconds:F3}",
+                                "EPB");
 
                             // 1) 在本圈锚点时刻为该压力组建压：
                             //    对本组所有参与通道调用 EnterElectricalPhaseAsync，
@@ -405,6 +453,7 @@ namespace Controller
             Dictionary<int, List<int>> groups,
             Dictionary<int, DateTime> t0OfGroup,
             int learnCycles,
+            ElectricalStaggerPlan staggerPlan,
             CancellationToken token)
         {
             // —— 保护：无任务直接返回 —— //
@@ -468,7 +517,7 @@ namespace Controller
                     for (var i = 0; i < enabled.Count; i++)
                     {
                         var ch = enabled[i];
-                        var phase = IndexInPowerGroup(ch) * StaggerDeltaMs; // 0/Δ/2Δ
+                        var phase = staggerPlan.Get(ch).PhaseMs;
                         var at = tk.AddMilliseconds(phase);
 
                         tasksAllGroups.Add(Task.Run(async () =>
@@ -481,7 +530,7 @@ namespace Controller
                             var atFuture = RollForwardToFuture(at, now, PeriodMs, /*safetyMs:*/ 2);
 
                             var delay = atFuture - now;
-                            _log?.Error(
+                            _log?.Info(
                                 $"通道{ch}: tk={tk:HH:mm:ss.fff}, phase={phase}ms, at={at:HH:mm:ss.fff}, delay={delay.TotalMilliseconds}ms");
 
                             var ms = (int)Math.Floor(delay.TotalMilliseconds);
@@ -489,6 +538,14 @@ namespace Controller
                                 await Task.Delay(ms, token).ConfigureAwait(false);
                             else
                                 await Task.Yield();
+
+                            var actualStartUtc = DateTime.UtcNow;
+                            MarkElectricalPhaseDue(ch, atFuture);
+                            _log?.Info(
+                                $"学习阶段启动 Run={_activeBatchId:N} EPB={ch} Group={staggerPlan.Get(ch).ElectricalGroupId} " +
+                                $"LearnCycle={k + 1} Phase={phase}ms PlannedUtc={atFuture:O} " +
+                                $"ActualUtc={actualStartUtc:O} DeviationMs={(actualStartUtc - atFuture).TotalMilliseconds:F3}",
+                                "EPB");
 
                             // ③ 执行学习核心：
                             //    自适应通道从第一学习圈起就使用正式电流状态机，禁止再落回
@@ -570,7 +627,7 @@ namespace Controller
 
         #endregion
 
-        #region 可调参数（你可转为从 TestConfig 读取）
+        #region 可调参数
 
         /// <summary>试验总循环次数</summary>
         public int TestCycle { get; set; } = 100;
@@ -580,8 +637,18 @@ namespace Controller
         /// <summary>每圈目标周期（毫秒）。必须与现有配置一致。</summary>
         public int PeriodMs { get; set; } = 30000;
 
-        /// <summary>组内错峰步长 Δ（毫秒）。索引 0/1/2 → 0/Δ/2Δ。</summary>
-        public int StaggerDeltaMs { get; set; } = 350; // 原先120ms 暂时在程序里写死
+        private int _legacyStaggerDeltaMs;
+
+        /// <summary>
+        /// 仅为二进制/源码兼容保留。批量调度不再读取此值，实际错峰来自
+        /// TestConfig.xml 的 ElectricalGroups/Group/StaggerMs。
+        /// </summary>
+        [Obsolete("错峰值已改由XML ElectricalGroups/Group/StaggerMs提供；此属性不再参与调度。")]
+        public int StaggerDeltaMs
+        {
+            get => _legacyStaggerDeltaMs;
+            set => _legacyStaggerDeltaMs = value;
+        }
 
         /// <summary>将旧①“头部未上电”的时间并入⑧后的“尾段基准时长”（毫秒）。</summary>
         public int T8BaseMs { get; set; } = 800;
@@ -613,13 +680,6 @@ namespace Controller
 
             return dict;
         }
-
-        /*/// <summary>电源组内索引（固定映射）：1/4/7/10→0；2/5/8/11→1；3/6/9/12→2。</summary>
-        private static int IndexInPowerGroup(int ch)
-        {
-            if (ch < 1) ch = 1;
-            return (ch - 1) % 3;
-        }*/
 
         /// <summary>向上取整到周期边界（UTC）。</summary>
         private static DateTime CeilToBoundary(DateTime utcNow, int periodMs)

@@ -1,0 +1,260 @@
+using System;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using Config;
+
+namespace Controller
+{
+    /// <summary>
+    /// 单个通道在本次运行中的不可变电气组错峰分配。
+    /// </summary>
+    internal sealed class ChannelStaggerAssignment
+    {
+        internal ChannelStaggerAssignment(
+            int channel,
+            int electricalGroupId,
+            int selectedIndexInGroup,
+            int staggerMs)
+        {
+            Channel = channel;
+            ElectricalGroupId = electricalGroupId;
+            SelectedIndexInGroup = selectedIndexInGroup;
+            StaggerMs = staggerMs;
+            PhaseMs = checked(selectedIndexInGroup * staggerMs);
+        }
+
+        public int Channel { get; }
+        public int ElectricalGroupId { get; }
+        public int SelectedIndexInGroup { get; }
+        public int StaggerMs { get; }
+        public int PhaseMs { get; }
+    }
+
+    /// <summary>
+    /// 批次启动时生成的不可变错峰计划。运行期间不再读取可变配置。
+    /// </summary>
+    internal sealed class ElectricalStaggerPlan
+    {
+        private readonly IReadOnlyDictionary<int, ChannelStaggerAssignment> _assignments;
+
+        internal ElectricalStaggerPlan(
+            int periodMs,
+            DateTime createdUtc,
+            IDictionary<int, ChannelStaggerAssignment> assignments)
+        {
+            PeriodMs = periodMs;
+            CreatedUtc = createdUtc;
+            _assignments = new ReadOnlyDictionary<int, ChannelStaggerAssignment>(
+                new Dictionary<int, ChannelStaggerAssignment>(assignments));
+        }
+
+        public int PeriodMs { get; }
+        public DateTime CreatedUtc { get; }
+        public IReadOnlyDictionary<int, ChannelStaggerAssignment> Assignments => _assignments;
+
+        public ChannelStaggerAssignment Get(int channel)
+        {
+            if (!_assignments.TryGetValue(channel, out var assignment))
+                throw new KeyNotFoundException($"通道 EPB{channel} 不在当前错峰计划中。");
+
+            return assignment;
+        }
+
+        public DateTime GetDueUtc(DateTime anchorUtc, int channel, long zeroBasedCycleIndex)
+        {
+            if (zeroBasedCycleIndex < 0)
+                throw new ArgumentOutOfRangeException(nameof(zeroBasedCycleIndex));
+
+            var assignment = Get(channel);
+            var offsetMs = checked(zeroBasedCycleIndex * (long)PeriodMs + assignment.PhaseMs);
+            return anchorUtc.AddMilliseconds(offsetMs);
+        }
+    }
+
+    /// <summary>
+    /// 电气组配置或本次选中通道无法生成安全、确定的错峰计划。
+    /// </summary>
+    internal sealed class ElectricalStaggerPlanException : InvalidOperationException
+    {
+        public ElectricalStaggerPlanException(IEnumerable<string> errors)
+            : base(BuildMessage(errors, out var snapshot))
+        {
+            Errors = snapshot;
+        }
+
+        public IReadOnlyList<string> Errors { get; }
+
+        private static string BuildMessage(IEnumerable<string> errors, out IReadOnlyList<string> snapshot)
+        {
+            var list = (errors ?? Array.Empty<string>())
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .ToList();
+            snapshot = new ReadOnlyCollection<string>(list);
+            return "电气组错峰配置无效：" + Environment.NewLine + string.Join(Environment.NewLine, list);
+        }
+    }
+
+    /// <summary>
+    /// 按“本次选中 ∩ XML组成员”的通道号升序重新编号并生成固定相位。
+    /// </summary>
+    internal static class ElectricalStaggerPlanner
+    {
+        public static ElectricalStaggerPlan Build(
+            IEnumerable<int> selectedChannels,
+            IEnumerable<ElectricalGroup> configuredGroups,
+            int periodMs)
+        {
+            var errors = new List<string>();
+            var selected = (selectedChannels ?? Array.Empty<int>())
+                .Distinct()
+                .OrderBy(x => x)
+                .ToList();
+            var groups = (configuredGroups ?? Array.Empty<ElectricalGroup>()).ToList();
+
+            if (selected.Count == 0)
+                errors.Add("至少选择一个EPB通道。");
+            if (periodMs <= 0)
+                errors.Add($"试验周期必须大于0 ms，当前为 {periodMs} ms。");
+
+            foreach (var channel in selected.Where(x => x < 1 || x > 12))
+                errors.Add($"已选通道 EPB{channel} 超出允许范围1～12。");
+
+            var groupIds = new HashSet<int>();
+            var groupByChannel = new Dictionary<int, ElectricalGroup>();
+            foreach (var group in groups)
+            {
+                if (group == null)
+                {
+                    errors.Add("电气组配置中存在空Group节点。");
+                    continue;
+                }
+
+                if (group.Id <= 0)
+                    errors.Add($"电气组ID必须为正数，当前为 {group.Id}。");
+                else if (!groupIds.Add(group.Id))
+                    errors.Add($"电气组ID {group.Id} 重复。");
+
+                if (group.StaggerMs <= 0)
+                    errors.Add($"电气组 {group.Id} 的 StaggerMs 必须大于0，当前为 {group.StaggerMs}。");
+
+                if (group.Members == null || group.Members.Count == 0)
+                {
+                    errors.Add($"电气组 {group.Id} 未配置成员通道。");
+                    continue;
+                }
+
+                var membersSeenInGroup = new HashSet<int>();
+                foreach (var channel in group.Members)
+                {
+                    if (channel < 1 || channel > 12)
+                        errors.Add($"电气组 {group.Id} 的通道 EPB{channel} 超出允许范围1～12。");
+                    if (!membersSeenInGroup.Add(channel))
+                        errors.Add($"电气组 {group.Id} 内重复配置通道 EPB{channel}。");
+
+                    if (groupByChannel.TryGetValue(channel, out var previous))
+                        errors.Add($"通道 EPB{channel} 同时属于电气组 {previous.Id} 和 {group.Id}。");
+                    else
+                        groupByChannel[channel] = group;
+                }
+            }
+
+            foreach (var channel in selected.Where(x => x >= 1 && x <= 12))
+                if (!groupByChannel.ContainsKey(channel))
+                    errors.Add($"已选通道 EPB{channel} 未配置到任何电气组。");
+
+            var assignments = new Dictionary<int, ChannelStaggerAssignment>();
+            foreach (var group in groups.Where(x => x?.Members != null))
+            {
+                var selectedMembers = selected
+                    .Where(channel => group.Members.Contains(channel))
+                    .OrderBy(channel => channel)
+                    .ToList();
+                if (selectedMembers.Count == 0)
+                    continue;
+
+                for (var index = 0; index < selectedMembers.Count; index++)
+                {
+                    try
+                    {
+                        var assignment = new ChannelStaggerAssignment(
+                            selectedMembers[index],
+                            group.Id,
+                            index,
+                            group.StaggerMs);
+                        assignments[assignment.Channel] = assignment;
+                    }
+                    catch (OverflowException)
+                    {
+                        errors.Add($"电气组 {group.Id} 的错峰相位计算溢出。");
+                        break;
+                    }
+                }
+
+                if (periodMs > 0 && group.StaggerMs > 0)
+                {
+                    var maxPhase = (long)(selectedMembers.Count - 1) * group.StaggerMs;
+                    if (maxPhase >= periodMs)
+                        errors.Add(
+                            $"电气组 {group.Id} 最大相位 {maxPhase} ms 必须小于试验周期 {periodMs} ms。");
+                }
+            }
+
+            if (errors.Count > 0)
+                throw new ElectricalStaggerPlanException(errors);
+
+            return new ElectricalStaggerPlan(periodMs, DateTime.UtcNow, assignments);
+        }
+    }
+
+    /// <summary>
+    /// 一次性创建全部任务，并按计划相位延迟执行；不会等待前一相位任务完成。
+    /// </summary>
+    internal static class ElectricalStaggerExecutor
+    {
+        public static Task RunAsync(
+            IEnumerable<int> channels,
+            ElectricalStaggerPlan plan,
+            DateTime anchorUtc,
+            Func<int, CancellationToken, Task> work,
+            CancellationToken token)
+        {
+            if (channels == null) throw new ArgumentNullException(nameof(channels));
+            if (plan == null) throw new ArgumentNullException(nameof(plan));
+            if (work == null) throw new ArgumentNullException(nameof(work));
+
+            var tasks = channels.Distinct().OrderBy(x => x).Select(async channel =>
+            {
+                var dueUtc = anchorUtc.AddMilliseconds(plan.Get(channel).PhaseMs);
+                var delay = dueUtc - DateTime.UtcNow;
+                if (delay.TotalMilliseconds > 1)
+                    await Task.Delay(delay, token).ConfigureAwait(false);
+                else
+                {
+                    token.ThrowIfCancellationRequested();
+                    await Task.Yield();
+                }
+
+                await work(channel, token).ConfigureAwait(false);
+            });
+
+            return Task.WhenAll(tasks);
+        }
+    }
+
+    /// <summary>
+    /// 本阶段硬故障隔离范围固定为故障通道本身，不扩展为电源组级停机。
+    /// </summary>
+    internal static class ChannelFaultIsolationPolicy
+    {
+        public static IReadOnlyList<int> GetChannelsToStop(int faultedChannel)
+        {
+            if (faultedChannel < 1 || faultedChannel > 12)
+                throw new ArgumentOutOfRangeException(nameof(faultedChannel));
+
+            return new[] { faultedChannel };
+        }
+    }
+}

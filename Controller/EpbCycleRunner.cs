@@ -213,7 +213,7 @@ namespace Controller
                 _log.Info($"EPB[{_channel}] 预释放：开始（目标保持 {holdMs}ms）。", "EPB");
 
                 // 1) 反向上电 → 忽略涌流（去抖）
-                _do.SetEpbReverse(_channel);
+                CommandReverse();
                 await Task.Delay(_peakIgnoreMs, token).ConfigureAwait(false);
 
                 // 2) 判定进入反向空行程（Ewma 稳定窗口）
@@ -254,7 +254,7 @@ namespace Controller
             finally
             {
                 // 4) 断电（始终）
-                _do.SetEpbOff(_channel);
+                CommandOff();
                 _log.Info($"EPB[{_channel}] 预释放：完成，已断电。", "EPB");
             }
         }
@@ -414,7 +414,7 @@ namespace Controller
                 try
                 {
                     _log.Info($"EPB[{_channel}] 自学习预处理：先反向释放，进入反向空行程后保持 {DefaultPreReleaseKeepMs}ms。", "EPB");
-                    _do.SetEpbReverse(_channel);
+                    CommandReverse();
                     await Task.Delay(_peakIgnoreMs, token).ConfigureAwait(false);
 
                     var (okRel, _, iEmptyRel) =
@@ -443,7 +443,7 @@ namespace Controller
                 }
                 finally
                 {
-                    _do.SetEpbOff(_channel);
+                    CommandOff();
                 }
 
             // 采样统计容器
@@ -486,7 +486,7 @@ namespace Controller
                 var tElecStart = NowTicks();
 
                 // ② 正向
-                _do.SetEpbForward(_channel);
+                CommandForward();
                 _log.Info($"EPB[{_channel}] 学习{k + 1}：②正向上电，忽略涌流 {_peakIgnoreMs}ms…", "EPB");
                 await Task.Delay(_peakIgnoreMs, token).ConfigureAwait(false);
 
@@ -494,7 +494,7 @@ namespace Controller
                     await WaitStableAroundAsync(+0.5, +1, _emptyBandA, _stableWinMs, token).ConfigureAwait(false);
                 if (!okEmptyFwd)
                 {
-                    _do.SetEpbOff(_channel);
+                    CommandOff();
                     _log.Warn($"EPB[{_channel}] 学习{k + 1}：②未判定到正向空行程，放弃本轮。", "EPB");
                     continue;
                 }
@@ -508,13 +508,13 @@ namespace Controller
 
                 if (!okClamp)
                 {
-                    _do.SetEpbOffHighPriority(_channel);
+                    CommandOffHighPriority();
                     _log.Warn($"EPB[{_channel}] 学习{k + 1}：④未达到阈值/平台（阈 {_posThrA:F2}A），放弃本轮。", "EPB");
                     continue;
                 }
 
                 // 达到判据 → 立即断电
-                _do.SetEpbOffHighPriority(_channel);
+                CommandOffHighPriority();
                 _log.Info($"EPB[{_channel}] 学习{k + 1}：已达到夹紧条件（{clampCause}），立即正向断电。", "EPB");
 
                 // ③ 回溯“离开空带上边界”的起点
@@ -538,7 +538,7 @@ namespace Controller
                 }
 
                 // ⑥ + ⑦ 反向
-                _do.SetEpbReverse(_channel);
+                CommandReverse();
                 _log.Info($"EPB[{_channel}] 学习{k + 1}：⑥反向上电，忽略涌流 {_peakIgnoreMs}ms…", "EPB");
                 await Task.Delay(_peakIgnoreMs, token).ConfigureAwait(false);
 
@@ -546,7 +546,7 @@ namespace Controller
                     await WaitStableAroundAsync(-0.5, -1, _emptyBandA, _stableWinMs, token).ConfigureAwait(false);
                 if (!okEmptyRev)
                 {
-                    _do.SetEpbOff(_channel);
+                    CommandOff();
                     _log.Warn($"EPB[{_channel}] 学习{k + 1}：⑥未判定到反向空行程，放弃本轮。", "EPB");
                     continue;
                 }
@@ -577,7 +577,7 @@ namespace Controller
                 await Task.Delay(run7, token).ConfigureAwait(false);
                 var tRevEmpty = run7;
 
-                _do.SetEpbOff(_channel);
+                CommandOff();
 
                 var elecElapsed = MsBetween(tElecStart, NowTicks());
                 var tailRemain = Math.Max(0, elecBudgetMs - elecElapsed);
@@ -711,7 +711,7 @@ namespace Controller
 
                 // ===================== ② + ③ + ④：正向（合并为直接夹紧判据） =====================
                 BeginAdaptiveForwardMonitoring(targetPeriodMs);
-                _do.SetEpbForward(_channel);
+                CommandForward();
                 _log?.Info($"EPB[{_channel}] ②正向上电，忽略涌流 {_peakIgnoreMs}ms…", "EPB");
                 await Task.Delay(_peakIgnoreMs, token).ConfigureAwait(false);
 
@@ -734,7 +734,7 @@ namespace Controller
                 if (!okClamp)
                 {
                     _log?.Warn($"EPB[{_channel}] 正向未达到阈值/平台（Thr={_posThrA:F2}A），本轮终止。", "EPB");
-                    _do.SetEpbOffHighPriority(_channel);
+                    CommandOffHighPriority();
 
                     try
                     {
@@ -764,7 +764,7 @@ namespace Controller
 
 
                 // 达到夹紧判据 → 立即断电并标记释放（与 Learn… 一致）
-                _do.SetEpbOffHighPriority(_channel);
+                CommandOffHighPriority();
                 CompleteAdaptiveForwardMonitoring(fwdJudgeElapsedMs);
 
                 // —— 达到夹紧判据 → 断电前，安排异步封口（延时 1000ms），完成后回调日志 —— //
@@ -940,7 +940,7 @@ namespace Controller
 
                 // ===================== ⑥ + ⑦：反向（刚性衰减 + 固定空行程） =====================
                 BeginAdaptiveReverseMonitoring(targetPeriodMs);
-                _do.SetEpbReverse(_channel);
+                CommandReverse();
                 _log?.Info($"EPB[{_channel}] ⑥反向上电，忽略涌流 {_peakIgnoreMs}ms…", "EPB");
                 await Task.Delay(_peakIgnoreMs, token).ConfigureAwait(false);
 
@@ -1012,7 +1012,7 @@ namespace Controller
                 }
 
                 // 反向断电
-                _do.SetEpbOff(_channel);
+                CommandOff();
                 CompleteAdaptiveShadowCycle();
 
                 // ===================== ⑧ 尾段收口（可交由外壳） =====================
@@ -1056,7 +1056,7 @@ namespace Controller
             catch (OperationCanceledException)
             {
                 _log?.Warn($"EPB[{_channel}] 本轮被取消。", "EPB");
-                _do.SetEpbOff(_channel);
+                CommandOff();
                 DisarmAdaptiveMonitoring();
                 LastCycleOutcome = EpbCycleOutcome.Canceled(_adaptiveStateMachine?.Stage ?? EpbCurrentStage.Idle, "Canceled");
                 return false;
@@ -1064,7 +1064,7 @@ namespace Controller
             catch (Exception ex)
             {
                 _log?.Error($"EPB[{_channel}] 运行异常：{ex.Message}", "EPB", ex);
-                _do.SetEpbOff(_channel);
+                CommandOff();
                 DisarmAdaptiveMonitoring();
                 LastCycleOutcome = EpbCycleOutcome.HardFault(
                     _adaptiveStateMachine?.Stage ?? EpbCurrentStage.Faulted,

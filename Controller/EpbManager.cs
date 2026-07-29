@@ -259,7 +259,7 @@ namespace Controller
             try { _runnerCache.Remove(channel); } catch { /* ignore */ }
 
             // 4) 安全落位：断电 + 请求液压释放
-            try { _do.SetEpbOff(channel); } catch { /* ignore */ }
+            try { CommandEpbOff(channel, nameof(FinalizeChannelAfterNaturalCompletion)); } catch { /* ignore */ }
             try { _ = HydraulicMarkReleaseAsync(channel); } catch { /* ignore */ }
 
             // 5) 停止即存最近10圈：不阻塞当前线程
@@ -529,16 +529,18 @@ namespace Controller
             // 如果 holdMs 为 null、0 或无效值，则设置为默认值 1000ms
             holdMs = holdMs <= 0 ? 1000 : holdMs; // 设置为 1000ms（1秒），可根据实际需要调整，调试使用
 
-            var staggerMs = 0;
-            foreach (var g in _cfg.Test.Groups)
-                if (g.Members.Contains(channel))
-                {
-                    var indexInGroup = g.Members.OrderBy(x => x).ToList().IndexOf(channel);
-
-                    staggerMs = g.StaggerMs * Math.Max(0, indexInGroup);
-                    _log.Info($"EPB[{channel}] 归属组 {g.Id} 首启错峰 {staggerMs}ms（组内位置={indexInGroup}）", "EPB");
-                    break;
-                }
+            var singleChannelPlan = ElectricalStaggerPlanner.Build(
+                new[] { channel },
+                _cfg.Test.Groups,
+                periodMs);
+            var singleRunId = Guid.NewGuid();
+            RegisterRunContext(singleRunId, singleChannelPlan);
+            var singleAssignment = singleChannelPlan.Get(channel);
+            var staggerMs = singleAssignment.PhaseMs;
+            _log.Info(
+                $"EPB[{channel}] 单通道运行 Run={singleRunId:N}，归属组 {singleAssignment.ElectricalGroupId}，" +
+                $"按已选集合重新编号后首启相位={staggerMs}ms。",
+                "EPB");
 
             //日志记录周期
             _log.Info($"高精度定时器，  EPB[{channel}] 周期 {periodMs}ms，采样 {sampleMs}ms，前进阈值 {forwardA}A，保持时间 {holdMs}ms",
@@ -598,6 +600,7 @@ namespace Controller
                 _log.Info($"EPB[{channel}] 启动前自学习 {learnCycles} 次。", "EPB");
                 try
                 {
+                    MarkElectricalPhaseDue(channel, DateTime.UtcNow);
                     await runner.LearnAsync(learnCycles, uiToken, periodMs).ConfigureAwait(false);
                     _log.Info($"EPB[{channel}] 自学习完成，进入正式试验。", "EPB");
                 }
@@ -611,12 +614,26 @@ namespace Controller
                 }
             }
 
+            var singleFormalAnchorUtc = DateTime.UtcNow.AddMilliseconds(staggerMs);
             _ = timer.StartAsync(_cfg.Test.TestTarget, staggerMs, async (i, token) =>
             {
                 using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, stopCts.Token);
                 var ct = linked.Token;
+                var actualStartUtc = DateTime.UtcNow;
+                var nominalDueUtc = singleFormalAnchorUtc.AddMilliseconds((long)(i - 1) * periodMs);
+                var elapsedSinceNominalMs = (actualStartUtc - nominalDueUtc).TotalMilliseconds;
+                var rolledPeriods = elapsedSinceNominalMs <= 0
+                    ? 0L
+                    : (long)Math.Floor(elapsedSinceNominalMs / periodMs);
+                var plannedStartUtc = nominalDueUtc.AddMilliseconds(rolledPeriods * periodMs);
+                MarkElectricalPhaseDue(channel, plannedStartUtc);
 
-                _log.Info($"EPB[{channel}] 周期 {i}/{_cfg.Test.TestTarget} 开始。", "EPB");
+                _log.Info(
+                    $"EPB[{channel}] 周期 {i}/{_cfg.Test.TestTarget} 开始，Run={singleRunId:N} " +
+                    $"Group={singleAssignment.ElectricalGroupId} Phase={singleAssignment.PhaseMs}ms " +
+                    $"PlannedUtc={plannedStartUtc:O} ActualUtc={actualStartUtc:O} " +
+                    $"DeviationMs={(actualStartUtc - plannedStartUtc).TotalMilliseconds:F3}。",
+                    "EPB");
 
 
                 // —— 圈开始（圈号 i，以 1 开始；若你的计数为 0 开始，可按需调整）——
@@ -743,7 +760,7 @@ namespace Controller
             // —— 安全落位（优先）：尽快断电并请求液压释放 —— //
             try
             {
-                _do.SetEpbOff(channel);
+                CommandEpbOff(channel, nameof(StopChannel));
             }
             catch
             {
@@ -818,7 +835,7 @@ namespace Controller
             }
 
             // —— 安全落位：立即断电 + 请求液压释放 —— //
-            try { _do.SetEpbOff(channel); } catch { /* ignore */ }
+            try { CommandEpbOffHighPriority(channel, nameof(StopChannelOnAlarm)); } catch { /* ignore */ }
             try { _ = HydraulicMarkReleaseAsync(channel); } catch { /* ignore */ }
 
             // —— 清理 Runner（避免继续喂样本/回调）—— //
@@ -873,12 +890,16 @@ namespace Controller
             if (!_alarmStopLatch.TryRequestStop(channel))
                 return;
 
+            var alarmUtc = DateTime.UtcNow;
             ChannelAlarmRaised?.Invoke(channel, reason);
 
             // 不阻塞 Runner/定时器线程
             _ = Task.Run(async () =>
             {
-                try { StopChannelOnAlarm(channel); } catch { /* ignore */ }
+                foreach (var affectedChannel in ChannelFaultIsolationPolicy.GetChannelsToStop(channel))
+                {
+                    try { StopChannelOnAlarm(affectedChannel); } catch { /* ignore */ }
+                }
 
                 try
                 {
@@ -893,7 +914,7 @@ namespace Controller
                 var hasSnapshotFiles = false;
                 try
                 {
-                    hasSnapshotFiles = await ExportAlarmSnapshotAsync(channel, reason).ConfigureAwait(false);
+                    hasSnapshotFiles = await ExportAlarmSnapshotAsync(channel, reason, alarmUtc).ConfigureAwait(false);
                 }
                 catch
                 {
@@ -996,7 +1017,10 @@ namespace Controller
         }
 
 
-        private async Task<bool> ExportAlarmSnapshotAsync(int alarmChannel, string reason)
+        private async Task<bool> ExportAlarmSnapshotAsync(
+            int alarmChannel,
+            string reason,
+            DateTime alarmUtc)
         {
             var recorder = Recorder;
             if (recorder == null) return false;
@@ -1067,6 +1091,23 @@ namespace Controller
                     alarmSubDir,
                     alarmChannel,
                     alarmCycleNumber);
+
+                // DO时间线和错峰计划是辅助证据；其写入失败不得改变当前报警圈
+                // 由CSV/BIN完整性决定的 alarm/failed 结果。
+                try
+                {
+                    ExportControlEvidence(
+                        snapshotDir,
+                        alarmChannel,
+                        alarmCycleNumber,
+                        reason,
+                        hasSnapshotFiles,
+                        alarmUtc);
+                }
+                catch (Exception ex)
+                {
+                    _log.Warn($"报警控制证据导出失败：EPB[{alarmChannel}] {ex.Message}", "落盘");
+                }
 
                 if (hasSnapshotFiles)
                     _log.Warn($"报警快照已导出：EPB[{alarmChannel}] {reason} -> {snapshotDir}", "落盘");
@@ -1144,126 +1185,6 @@ namespace Controller
         }
 
 
-        #region —— 私有辅助：学习延时、锚点、索引等 ——
-
-        /// <summary>
-        ///     延时后启动单通道学习。
-        /// </summary>
-        private async Task<(int ch, bool ok, Exception ex)> StartOneLearnWithDelayAsync(
-            int channel,
-            EpbCycleRunner runner,
-            int learnCycles,
-            int periodMs,
-            int delayMs,
-            CancellationToken token)
-        {
-            try
-            {
-                if (delayMs > 0)
-                {
-                    _log.Info($"EPB[{channel}] 学习延时 {delayMs}ms（组内错峰）。", "EPB");
-                    await Task.Delay(delayMs, token).ConfigureAwait(false);
-                }
-
-                _log.Info($"EPB[{channel}] 开始学习（{learnCycles} 次）。", "EPB");
-                var ok = await runner.LearnAsync(learnCycles, token, periodMs).ConfigureAwait(false);
-                _log.Info($"EPB[{channel}] 学习 {(ok ? "完成" : "失败")}。", "EPB");
-
-                // 返回带名字的元组：ch、ok、ex（学习成功时 ex 为 null）
-                return (channel, ok, ok ? null : new Exception("LearnAsync 返回 false"));
-            }
-            catch (OperationCanceledException oce)
-            {
-                _log.Warn($"EPB[{channel}] 学习被取消：{oce.Message}", "EPB");
-                return (channel, false, oce);
-            }
-            catch (Exception ex)
-            {
-                return (channel, false, ex);
-            }
-        }
-
-        /// <summary>
-        ///     构建“通道 -> 组”的映射。若通道未出现在任何组中，则不加入映射（视作独立组）。
-        /// </summary>
-        private static Dictionary<int, ElectricalGroup> MapChannelToGroup(IEnumerable<ElectricalGroup> groups)
-        {
-            var map = new Dictionary<int, ElectricalGroup>();
-            foreach (var g in groups ?? Array.Empty<ElectricalGroup>())
-            {
-                if (g?.Members == null) continue;
-                foreach (var ch in g.Members)
-                    // 若一个通道在多个组中，只保留第一次出现（配置应避免重复归属）
-                    if (!map.ContainsKey(ch))
-                        map[ch] = g;
-            }
-
-            return map;
-        }
-
-        /// <summary>
-        ///     计算“组内索引”：对“本次被选中 ∩ 该组成员”的通道，按通道号升序编号 i=0..n-1。
-        ///     未分组通道的索引为 0。
-        /// </summary>
-        private static Dictionary<int, int> ComputeIndexInGroup(
-            IList<int> selected,
-            Dictionary<int, ElectricalGroup> groupByChannel)
-        {
-            var result = new Dictionary<int, int>();
-
-            // 先按“组”分类：无组通道单独一个桶（避免使用可空引用类型注解）
-            var buckets = new Dictionary<ElectricalGroup, List<int>>();
-            var ungrouped = new List<int>();
-            foreach (var ch in selected)
-            {
-                if (groupByChannel.TryGetValue(ch, out var grp) && grp != null)
-                {
-                    if (!buckets.TryGetValue(grp, out var list))
-                    {
-                        list = new List<int>();
-                        buckets[grp] = list;
-                    }
-
-                    list.Add(ch);
-                }
-                else
-                {
-                    ungrouped.Add(ch);
-                }
-            }
-
-            // 每个桶内部按升序重新编号
-            foreach (var kv in buckets)
-            {
-                var list = kv.Value.OrderBy(x => x).ToList();
-                for (var i = 0; i < list.Count; i++)
-                    result[list[i]] = i;
-            }
-
-            // 无组通道索引统一为 0
-            foreach (var ch in ungrouped)
-                result[ch] = 0;
-
-            return result;
-        }
-
-        /// <summary>
-        ///     计算“现在 + secondsAhead”后向上对齐到 PeriodMs 边界的 UTC 锚点。
-        /// </summary>
-        private static DateTime ComputeAlignedAnchorUtc(int periodMs, int secondsAhead)
-        {
-            var nowUtc = DateTime.UtcNow;
-            var baseUtc = nowUtc.AddSeconds(secondsAhead);
-
-            // 以 Unix Epoch 做整数对齐，减少多定时器首发相位误差
-            var msFromEpoch = (long)(baseUtc - new DateTime(1970, 1, 1)).TotalMilliseconds;
-            var aligned = (msFromEpoch + periodMs - 1) / periodMs * periodMs;
-            return new DateTime(1970, 1, 1).AddMilliseconds(aligned);
-        }
-
-        #endregion
-
-
         #region 卡钳预释放
 
         /// <summary>
@@ -1277,7 +1198,7 @@ namespace Controller
         /// <param name="token">取消令牌。</param>
         /// <returns>全部通道任务完成的 <see cref="Task"/>。</returns>
         /// <remarks>
-        /// - 默认并发执行全部通道的预释放。若你希望遵守“电源组错峰”，可以按 IndexInPowerGroup 分三波执行。<br/>
+        /// - 按本次选中集合生成XML驱动的不可变错峰计划；不同电源组可并行，同组按计划相位启动。<br/>
         /// - 该方法仅做“学习前的姿态归零”，不做液压建压/释压；正式流程仍由“每圈锚点”统一控制。
         /// </remarks>
         public async Task PreReleaseBatchAsync(int[] channels, int? keepMs, CancellationToken token)
@@ -1285,72 +1206,73 @@ namespace Controller
             if (channels == null || channels.Length == 0)
                 throw new ArgumentException("channels 不能为空。", nameof(channels));
 
-            // 并发跑每个通道的预释放
-            var tasks = new List<Task>();
             var enabled = channels.Distinct().OrderBy(x => x).ToArray();
-
-            foreach (var ch in enabled)
-            {
-                var runner = GetRunner(ch); // 你在 BatchStart.cs 中实现的对接
-
-                // 若 keepMs==null，runner 内部会使用 DefaultPreReleaseKeepMs
-                tasks.Add(runner.PreReleaseAsync(keepMs, token));
-            }
-
-            await Task.WhenAll(tasks).ConfigureAwait(false);
+            var plan = ElectricalStaggerPlanner.Build(enabled, _cfg.Test.Groups, PeriodMs);
+            var runId = Guid.NewGuid();
+            RegisterRunContext(runId, plan);
+            LogStaggerPlan(runId, plan);
+            await PreReleaseBatchWithPlanAsync(enabled, keepMs, plan, token).ConfigureAwait(false);
         }
 
         /// <summary>
-        /// （可选增强）按“电源组相位 0/Δ/2Δ”三波错峰执行批量预释放。
-        /// 当你担心同时反向上电电流过大时使用。
+        /// 保留原有公共签名以兼容调用方。错峰值统一从XML电气组读取，
+        /// <paramref name="deltaMs"/> 不再参与安全调度。
         /// </summary>
-        public async Task PreReleaseBatchStaggeredAsync(int[] channels, int? keepMs, int deltaMs,
+        public async Task PreReleaseBatchStaggeredAsync(
+            int[] channels,
+            int? keepMs,
+            int deltaMs,
             CancellationToken token)
         {
             if (channels == null || channels.Length == 0)
                 throw new ArgumentException("channels 不能为空。", nameof(channels));
 
             var enabled = channels.Distinct().OrderBy(x => x).ToArray();
-
-            // 三个相位桶：索引 0：1/4/7/10；索引 1：2/5/8/11；索引 2：3/6/9/12
-            var buckets = new[] { new List<int>(), new List<int>(), new List<int>() };
-            for (int i = 0; i < enabled.Length; i++)
-            {
-                var ch = enabled[i];
-                var idx = IndexInPowerGroup(ch);
-                buckets[idx].Add(ch);
-            }
-
-            var t0 = DateTime.UtcNow.AddMilliseconds(500); // 给 500ms 预热时间（可按需调整）
-
-            for (int phaseIdx = 0; phaseIdx < 3; phaseIdx++)
-            {
-                var bucket = buckets[phaseIdx];
-                if (bucket.Count == 0) continue;
-
-                var at = t0.AddMilliseconds(phaseIdx * deltaMs);
-                var delay = at - DateTime.UtcNow;
-                if (delay.TotalMilliseconds > 1)
-                    await Task.Delay(delay, token).ConfigureAwait(false);
-
-                var tasks = new List<Task>();
-                for (int j = 0; j < bucket.Count; j++)
-                {
-                    var ch = bucket[j];
-                    var runner = GetRunner(ch);
-                    
-                    tasks.Add(runner.PreReleaseAsync(keepMs, token));
-                }
-
-                await Task.WhenAll(tasks).ConfigureAwait(false);
-            }
+            var plan = ElectricalStaggerPlanner.Build(enabled, _cfg.Test.Groups, PeriodMs);
+            var runId = Guid.NewGuid();
+            RegisterRunContext(runId, plan);
+            LogStaggerPlan(runId, plan);
+            _log.Warn(
+                $"PreReleaseBatchStaggeredAsync 的 deltaMs={deltaMs} 已忽略；实际使用XML ElectricalGroups/StaggerMs。",
+                "EPB");
+            await PreReleaseBatchWithPlanAsync(enabled, keepMs, plan, token).ConfigureAwait(false);
         }
 
-        // 你已有的工具：电源组索引（1/4/7/10→0；2/5/8/11→1；3/6/9/12→2）
-        private static int IndexInPowerGroup(int ch)
+        /// <summary>
+        /// 按批次不可变错峰计划启动预释放。所有任务一次性创建，不等待前一相位完成。
+        /// </summary>
+        private async Task PreReleaseBatchWithPlanAsync(
+            int[] channels,
+            int? keepMs,
+            ElectricalStaggerPlan staggerPlan,
+            CancellationToken token)
         {
-            if (ch < 1) ch = 1;
-            return (ch - 1) % 3;
+            if (channels == null || channels.Length == 0)
+                throw new ArgumentException("channels 不能为空。", nameof(channels));
+            if (staggerPlan == null)
+                throw new ArgumentNullException(nameof(staggerPlan));
+
+            var enabled = channels.Distinct().OrderBy(x => x).ToArray();
+            var anchorUtc = DateTime.UtcNow.AddMilliseconds(500);
+            await ElectricalStaggerExecutor.RunAsync(
+                enabled,
+                staggerPlan,
+                anchorUtc,
+                async (ch, ct) =>
+                {
+                    var assignment = staggerPlan.Get(ch);
+                    var plannedStartUtc = anchorUtc.AddMilliseconds(assignment.PhaseMs);
+                    var actualStartUtc = DateTime.UtcNow;
+                    MarkElectricalPhaseDue(ch, plannedStartUtc);
+                    _log.Info(
+                        $"EPB[{ch}] 预释放计划启动：Group={assignment.ElectricalGroupId}，" +
+                        $"Index={assignment.SelectedIndexInGroup}，Phase={assignment.PhaseMs}ms，" +
+                        $"PlannedUtc={plannedStartUtc:O}，ActualUtc={actualStartUtc:O}，" +
+                        $"DeviationMs={(actualStartUtc - plannedStartUtc).TotalMilliseconds:F3}。",
+                        "EPB");
+                    await GetRunner(ch).PreReleaseAsync(keepMs, ct).ConfigureAwait(false);
+                },
+                token).ConfigureAwait(false);
         }
 
         #endregion

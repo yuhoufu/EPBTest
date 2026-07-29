@@ -63,9 +63,12 @@
     <Compile Include="Alarm\AlarmSnapshotFileEvidence.cs" />
     <Compile Include="Alarm\ChannelAlarmStopLatch.cs" />
     <Compile Include="EpbCycleRunner.Adaptive.cs" />
+    <Compile Include="EpbCycleRunner.DoTrace.cs" />
     <Compile Include="Alarm\M7055dSerialClient.cs" />
     <Compile Include="EpbCycleRunner.Advance.Sync.cs" />
     <Compile Include="EpbCycleRunner.cs" />
+    <Compile Include="DoControlTrace.cs" />
+    <Compile Include="ElectricalStaggerPlan.cs" />
     <Compile Include="EpbManager.BatchStart.cs" />
     <Compile Include="EpbManager.cs" />
     <Compile Include="SafetyMarginControlMode.cs" />

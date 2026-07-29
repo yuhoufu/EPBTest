@@ -207,7 +207,7 @@ namespace Controller
 
             if (Interlocked.Exchange(ref _adaptiveFaultLatched, 1) != 0) return;
 
-            try { _do.SetEpbOffHighPriority(_channel); }
+            try { CommandOffHighPriority(); }
             catch { /* 报警链路仍继续 */ }
 
             TaskCompletionSource<EpbAdaptiveDecision> forward;
@@ -273,7 +273,7 @@ namespace Controller
 
                 BeginAdaptiveForwardMonitoring(targetPeriodMs);
                 _acq?.BeginEpbCurrentPeak(_channel);
-                _do.SetEpbForward(_channel);
+                CommandForward();
                 _log?.Info(
                     $"EPB[{_channel}] 自适应正向上电：软时限={_adaptiveProfile.GetForwardSoftLimitMs()}ms，" +
                     $"硬时限={GetForwardAbsoluteMaxMs(targetPeriodMs)}ms。",
@@ -287,7 +287,7 @@ namespace Controller
                 if (!forward.ClampReached)
                     return EpbCycleOutcome.HardFault(forward.Stage, "ForwardEndedWithoutClamp");
 
-                _do.SetEpbOffHighPriority(_channel);
+                CommandOffHighPriority();
                 CompleteAdaptiveForwardMonitoring(forward.ElapsedMs);
                 try
                 {
@@ -306,7 +306,7 @@ namespace Controller
                     await Task.Delay(_holdMs, token).ConfigureAwait(false);
 
                 BeginAdaptiveReverseMonitoring(targetPeriodMs);
-                _do.SetEpbReverse(_channel);
+                CommandReverse();
                 _log?.Info(
                     $"EPB[{_channel}] 自适应反向上电：硬时限={GetReverseAbsoluteMaxMs(targetPeriodMs)}ms。",
                     "EPB");
@@ -319,7 +319,7 @@ namespace Controller
                 if (!reverse.ReleaseCompleted)
                     return EpbCycleOutcome.HardFault(reverse.Stage, "ReverseEndedWithoutRelease");
 
-                _do.SetEpbOffHighPriority(_channel);
+                CommandOffHighPriority();
                 _adaptiveReverseEmptyA = _adaptiveStateMachine.ObservedReverseEmptyA;
                 _adaptiveStateMachine.Disarm();
 
@@ -352,13 +352,13 @@ namespace Controller
             }
             catch (OperationCanceledException)
             {
-                try { _do.SetEpbOffHighPriority(_channel); } catch { }
+                try { CommandOffHighPriority(); } catch { }
                 DisarmAdaptiveMonitoring();
                 return EpbCycleOutcome.Canceled(_adaptiveStateMachine?.Stage ?? EpbCurrentStage.Idle, "Canceled");
             }
             catch (Exception ex)
             {
-                try { _do.SetEpbOffHighPriority(_channel); } catch { }
+                try { CommandOffHighPriority(); } catch { }
                 DisarmAdaptiveMonitoring();
                 try { AlarmRaised?.Invoke(_channel, "AdaptiveUnhandledException " + ex.Message); } catch { }
                 return EpbCycleOutcome.HardFault(
