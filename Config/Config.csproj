@@ -52,6 +52,7 @@
     <Compile Include="EpbTestRecord.cs" />
     <Compile Include="ConfigLoader.cs" />
     <Compile Include="IAppLogger.cs" />
+    <Compile Include="ProjectLogStore.cs" />
     <Compile Include="Models\EpbCycleRunnerConfig.cs" />
     <Compile Include="PowerSupplyConfig.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />

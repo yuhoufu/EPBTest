@@ -4761,15 +4761,7 @@ namespace MTEmbTest
         /// <param name="e"></param>
         private void BtnRunLog_Click(object sender, EventArgs e)
         {
-            try
-            {
-                var OutFile = Environment.CurrentDirectory + @"\RunLog.txt";
-                ClsLogProcess.ViewLogData(ref LogInformation, OutFile);
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show(ex.Message);
-            }
+            OpenProjectLog(ProjectLogLevel.Info);
         }
 
         /// <summary>
@@ -4779,15 +4771,7 @@ namespace MTEmbTest
         /// <param name="e"></param>
         private void BtnWarnLog_Click(object sender, EventArgs e)
         {
-            try
-            {
-                var OutFile = Environment.CurrentDirectory + @"\WarnLog.txt";
-                ClsLogProcess.ViewWarnData(ref LogWarn, OutFile);
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show(ex.Message);
-            }
+            OpenProjectLog(ProjectLogLevel.Warning);
         }
 
         /// <summary>
@@ -4797,10 +4781,26 @@ namespace MTEmbTest
         /// <param name="e"></param>
         private void BtnErrorLog_Click(object sender, EventArgs e)
         {
+            OpenProjectLog(ProjectLogLevel.Error);
+        }
+
+        private void OpenProjectLog(ProjectLogLevel level)
+        {
             try
             {
-                var OutFile = Environment.CurrentDirectory + @"\ErrorLog.txt";
-                ClsErrorProcess.ViewErrorData(ref LogError, OutFile);
+                logger?.Flush();
+                var path = ProjectLogHub.GetActivePath(level);
+                if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+                {
+                    MessageBox.Show(
+                        "\u5f53\u524d\u9879\u76ee\u65e5\u5fd7\u5c1a\u672a\u521d\u59cb\u5316\u6216\u8be5\u7ea7\u522b\u5c1a\u65e0\u8bb0\u5f55\u3002",
+                        "\u9879\u76ee\u65e5\u5fd7",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information);
+                    return;
+                }
+
+                Process.Start("notepad.exe", $"\"{path}\"");
             }
             catch (Exception ex)
             {

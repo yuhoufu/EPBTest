@@ -29,6 +29,12 @@ namespace Config
         void Error(string message, string category = null, Exception ex = null);
     }
 
+    /// <summary>可选的持久化日志刷新能力；不改变现有 IAppLogger 调用接口。</summary>
+    public interface IFlushableAppLogger
+    {
+        bool Flush(bool durable = false);
+    }
+
     /// <summary>
     /// 空实现：便于未注入时调用安全。
     /// </summary>

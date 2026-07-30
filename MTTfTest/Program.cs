@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using Config;
 using MTEmbTest;
 
 namespace MtEmbTest
@@ -15,11 +16,11 @@ namespace MtEmbTest
         {
             try
             {
-                var dir = AppDomain.CurrentDomain.BaseDirectory;
-                var file = Path.Combine(dir, "FatalLog.txt");
-                File.AppendAllText(
-                    file,
-                    $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {source}{Environment.NewLine}{ex}{Environment.NewLine}{Environment.NewLine}");
+                ProjectLogHub.Write(
+                    ProjectLogLevel.Error,
+                    $"{source}: {ex}",
+                    "未处理异常");
+                ProjectLogHub.Flush(true);
             }
             catch
             {
@@ -57,7 +58,15 @@ namespace MtEmbTest
 
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            Application.Run(new Main_Frm());
+            try
+            {
+                Application.Run(new Main_Frm());
+            }
+            finally
+            {
+                ProjectLogHub.Flush(true);
+                ProjectLogHub.Shutdown();
+            }
             //Application.Run(new FrmEpbMainMonitor());
         }
     }
