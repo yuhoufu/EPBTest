@@ -50,6 +50,12 @@ namespace Config.Models
             /// <summary>（可选）预释放保持时长（ms）。XML 未配置则为 null。</summary>
             public int? PreReleaseKeepMs { get; set; }
 
+            /// <summary>
+            /// （可选）预释放寻找反向空行程的最长等待（ms）。
+            /// XML 未配置时使用 <see cref="RevDecayRigidMaxMs"/>，不得与保持时长混用。
+            /// </summary>
+            public int? PreReleaseDetectTimeoutMs { get; set; }
+
             /// <summary>上电涌流忽略时间（ms）。</summary>
             public int PeakIgnoreMs { get; set; }
         }

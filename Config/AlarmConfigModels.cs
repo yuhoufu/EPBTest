@@ -83,6 +83,15 @@ namespace Config
         public double OvershootAlarmDeltaA { get; set; } = 3.0;
 
         /// <summary>
+        /// 自适应控制的峰值平衡带（A）。超出后先软预警并继续释放，
+        /// 达到连续确认圈数后才升级为硬故障。
+        /// </summary>
+        public double AdaptiveOvershootWarningDeltaA { get; set; } = 0.8;
+
+        /// <summary>自适应峰值连续超出平衡带多少圈后升级为硬故障。</summary>
+        public int AdaptiveOvershootConfirmCycles { get; set; } = 3;
+
+        /// <summary>
         /// 报警触发时导出最近 N 圈（含当前 running 圈）。
         /// </summary>
         public int SnapshotLastNCycles { get; set; } = 10;

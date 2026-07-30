@@ -357,7 +357,6 @@ namespace Controller
         private async Task<EpbCycleOutcome> RunOneAdaptiveAsync(int targetPeriodMs, CancellationToken token)
         {
             const int postOffPeakCaptureMs = 100;
-            const double balancedOvershootLimitA = 0.8;
             const double balancedUndershootWarningA = 0.8;
             var outcome = new EpbCycleOutcome
             {
@@ -438,6 +437,7 @@ namespace Controller
                 var peakErrorA = peakCaptureValid
                     ? _adaptiveForwardPeakA - _posThrA
                     : double.NaN;
+                var overshootStreak = _adaptiveProfile?.ConsecutiveForwardOvershootCount ?? 0;
                 if (peakCaptureValid)
                 {
                     PersistAdaptiveCutoffObservation(
@@ -445,6 +445,16 @@ namespace Controller
                         forward.EstimatedSlopeAperMs,
                         _adaptiveForwardPeakA,
                         peakErrorA);
+
+                    overshootStreak = _adaptiveProfile.UpdateForwardOvershootStreak(
+                        peakErrorA,
+                        _adaptiveOvershootWarningDeltaA);
+                    _adaptiveStateMachine.UpdateProfile(_adaptiveProfile);
+                    try { _saveAdaptiveProfile?.Invoke(_adaptiveProfile.Clone()); }
+                    catch (Exception ex)
+                    {
+                        _log?.Warn($"EPB[{_channel}] 超调连续计数保存失败：{ex.Message}", "EPB");
+                    }
                 }
                 else
                 {
@@ -453,14 +463,26 @@ namespace Controller
                         "EPB");
                 }
 
-                if (peakCaptureValid && peakErrorA > balancedOvershootLimitA)
+                var immediateOvershoot =
+                    peakCaptureValid &&
+                    _overshootAlarmDeltaA > 0 &&
+                    peakErrorA > _overshootAlarmDeltaA;
+                var confirmedOvershoot =
+                    peakCaptureValid &&
+                    peakErrorA > _adaptiveOvershootWarningDeltaA &&
+                    overshootStreak >= _adaptiveOvershootConfirmCycles;
+                if (immediateOvershoot || confirmedOvershoot)
                 {
                     await hydraulicReleaseTask.ConfigureAwait(false);
                     DisarmAdaptiveMonitoring();
+                    var policy = immediateOvershoot
+                        ? $"Immediate Limit=+{_overshootAlarmDeltaA:F3}A"
+                        : $"Consecutive Streak={overshootStreak}/{_adaptiveOvershootConfirmCycles} " +
+                          $"WarningLimit=+{_adaptiveOvershootWarningDeltaA:F3}A";
                     var reason =
                         $"ForwardPeakOvershoot Peak={_adaptiveForwardPeakA:F3}A " +
                         $"Target={_posThrA:F3}A Error={peakErrorA:+0.000;-0.000;0.000}A " +
-                        $"Limit=+{balancedOvershootLimitA:F3}A";
+                        $"Policy={policy}";
                     try { AlarmRaised?.Invoke(_channel, "AdaptiveHardFault " + reason); }
                     catch { }
                     return new EpbCycleOutcome
@@ -479,6 +501,16 @@ namespace Controller
                         CutoffReason = forward.CutoffReason,
                         ForwardEmptyCurrentA = _adaptiveForwardEmptyA
                     };
+                }
+
+                if (peakCaptureValid && peakErrorA > _adaptiveOvershootWarningDeltaA)
+                {
+                    _adaptiveSoftWarningSeen = true;
+                    RaiseAdaptiveWarning(
+                        $"正向实际峰值单圈超出平衡带：Peak={_adaptiveForwardPeakA:F3}A，" +
+                        $"Target={_posThrA:F3}A，Error={peakErrorA:+0.000;-0.000;0.000}A，" +
+                        $"连续={overshootStreak}/{_adaptiveOvershootConfirmCycles}；" +
+                        "本圈继续完成反向释放，控流模型已提前修正下一圈断电点。");
                 }
 
                 if (peakCaptureValid && peakErrorA < -balancedUndershootWarningA)

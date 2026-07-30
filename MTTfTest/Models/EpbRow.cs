@@ -41,6 +41,9 @@ namespace MTEmbTest.Models
         /// <summary>预释放维持时长 ms（可空；为 null 表示不用）。</summary>
         public int? PreReleaseKeepMs { get; set; }
 
+        /// <summary>预释放寻找反向空行程的最长等待 ms（可空）。</summary>
+        public int? PreReleaseDetectTimeoutMs { get; set; }
+
         /// <summary>忽略峰值的抑制窗口 ms（启动后前 Xms 不做峰值统计）。</summary>
         public int PeakIgnoreMs { get; set; }
 

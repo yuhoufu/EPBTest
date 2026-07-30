@@ -51,6 +51,7 @@ namespace Config
         public double ForwardPeakErrorMedianA { get; set; }
         public double ForwardPeakErrorMadA { get; set; }
         public int ValidCutoffSampleCount { get; set; }
+        public int ConsecutiveForwardOvershootCount { get; set; }
         public DateTime UpdatedUtc { get; set; }
 
         [XmlArrayItem("Value")]
@@ -153,6 +154,36 @@ namespace Config
             return (int)Math.Ceiling(ForwardClampMedianMs + Math.Max(1000.0, 4.0 * ForwardClampMadMs));
         }
 
+        /// <summary>
+        /// 返回预测峰值的正向系统偏差补偿。
+        /// 中位数抵消长期偏高，额外一个 MAD 为离散性留出鲁棒余量；
+        /// 上限避免异常历史样本导致过早断电。
+        /// </summary>
+        public double GetForwardPeakBiasCorrectionA(double maximumA = 1.0)
+        {
+            if (ValidCutoffSampleCount < 5) return 0;
+            var correction = ForwardPeakErrorMedianA + ForwardPeakErrorMadA;
+            if (double.IsNaN(correction) || double.IsInfinity(correction) || correction <= 0)
+                return 0;
+            return Math.Min(Math.Max(0, maximumA), correction);
+        }
+
+        /// <summary>
+        /// 更新正向峰值超出平衡带的连续圈数；回到带内立即清零。
+        /// </summary>
+        public int UpdateForwardOvershootStreak(double peakErrorA, double warningDeltaA)
+        {
+            var exceeded =
+                !double.IsNaN(peakErrorA) &&
+                !double.IsInfinity(peakErrorA) &&
+                peakErrorA > Math.Max(0, warningDeltaA);
+            ConsecutiveForwardOvershootCount = exceeded
+                ? ConsecutiveForwardOvershootCount + 1
+                : 0;
+            UpdatedUtc = DateTime.UtcNow;
+            return ConsecutiveForwardOvershootCount;
+        }
+
         public EpbAdaptiveProfile Clone()
         {
             return new EpbAdaptiveProfile
@@ -174,6 +205,7 @@ namespace Config
                 ForwardPeakErrorMedianA = ForwardPeakErrorMedianA,
                 ForwardPeakErrorMadA = ForwardPeakErrorMadA,
                 ValidCutoffSampleCount = ValidCutoffSampleCount,
+                ConsecutiveForwardOvershootCount = ConsecutiveForwardOvershootCount,
                 UpdatedUtc = UpdatedUtc,
                 ForwardEmptyHistoryA = new List<double>(ForwardEmptyHistoryA ?? new List<double>()),
                 ReverseEmptyHistoryA = new List<double>(ReverseEmptyHistoryA ?? new List<double>()),

@@ -344,6 +344,17 @@ namespace Controller
                                 ok = false;
                             }
 
+                            if (!ok)
+                            {
+                                var failed = runner.LastCycleOutcome;
+                                _log?.Warn(
+                                    $"EPB[{ch}] 周期 {cycleNumber} 返回失败：" +
+                                    $"Kind={failed.Kind} Stage={failed.Stage} Reason={failed.Reason} " +
+                                    $"Peak={failed.PeakCurrentA:F3}A Target={failed.TargetCurrentA:F3}A " +
+                                    $"Error={failed.PeakErrorA:+0.000;-0.000;0.000}A",
+                                    "EPB");
+                            }
+
                             // 4) ★ 圈结束：根据是否报警停机决定封圈状态
                             var recorder = Recorder;
                             if (recorder != null)
@@ -786,6 +797,10 @@ namespace Controller
                 _cfg,
                 this,
                 overshootAlarmDeltaA: overshootDeltaA,
+                adaptiveOvershootWarningDeltaA:
+                    AlarmConfig?.Behavior?.AdaptiveOvershootWarningDeltaA ?? 0.8,
+                adaptiveOvershootConfirmCycles:
+                    AlarmConfig?.Behavior?.AdaptiveOvershootConfirmCycles ?? 3,
                 safetyMarginControlMode: _safetyMarginControlMode,
                 epbControlMode: GetEpbControlMode(channel),
                 adaptiveShadowMode: _adaptiveShadowMode,

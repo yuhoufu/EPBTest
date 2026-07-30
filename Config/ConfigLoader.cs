@@ -228,6 +228,12 @@ public sealed class GlobalConfig
 /// </summary>
 public static class ConfigLoader
 {
+    /// <summary>
+    /// 当前已经解析并接管的项目根目录。项目日志适配器据此开始持久化，
+    /// 避免在项目配置尚未确定时误写到默认模板目录。
+    /// </summary>
+    public static string CurrentProjectRootDir { get; private set; }
+
     // 1) 在 ConfigLoader 类里补这个字段（线程安全用）
     private static readonly object _uiFileLock = new();
 
@@ -420,6 +426,7 @@ public static class ConfigLoader
                 RevDecayRigidMaxMs = GetInt(r, "RevDecayRigidMaxMs", 0),
                 RevEmptyFixedMs = GetInt(r, "RevEmptyFixedMs", 0),
                 PreReleaseKeepMs = TryGetNullableInt(r, "PreReleaseKeepMs"),
+                PreReleaseDetectTimeoutMs = TryGetNullableInt(r, "PreReleaseDetectTimeoutMs"),
                 PeakIgnoreMs = GetInt(r, "PeakIgnoreMs", 0)
             };
 
@@ -804,6 +811,7 @@ public static class ConfigLoader
             Add("RevDecayRigidMaxMs", it.RevDecayRigidMaxMs.ToString());
             Add("RevEmptyFixedMs", it.RevEmptyFixedMs.ToString());
             Add("PreReleaseKeepMs", it.PreReleaseKeepMs?.ToString() ?? "");
+            Add("PreReleaseDetectTimeoutMs", it.PreReleaseDetectTimeoutMs?.ToString() ?? "");
             Add("PeakIgnoreMs", it.PeakIgnoreMs.ToString());
 
             epbNode.AppendChild(rec);
@@ -932,6 +940,7 @@ public static class ConfigLoader
         var storeDir = defaultCfg.Test.StoreDir;
         var testName = defaultCfg.Test.TestName;
 
+        CurrentProjectRootDir = GetProjectRootDir(storeDir, testName);
         var projectTestPath = GetProjectTestConfigPath(storeDir, testName);
         if (string.IsNullOrEmpty(projectTestPath))
         {
@@ -996,6 +1005,7 @@ public static class ConfigLoader
     public static void UpdateDefaultTestFromProject(TestConfig projectTest, IAppLogger log = null)
     {
         if (projectTest == null) throw new ArgumentNullException(nameof(projectTest));
+        CurrentProjectRootDir = GetProjectRootDir(projectTest.StoreDir, projectTest.TestName);
 
         var defaultTestPath = Path.Combine(DefaultConfigDir, "TestConfig.xml");
         if (!File.Exists(defaultTestPath))

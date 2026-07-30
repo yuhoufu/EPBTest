@@ -23,6 +23,11 @@ namespace Controller
         /// </summary>
         public int DefaultPreReleaseKeepMs { get; } = 500;
 
+        /// <summary>
+        /// 预释放寻找反向空行程的最长等待（ms）；与进入空行程后的保持时长相互独立。
+        /// </summary>
+        public int DefaultPreReleaseDetectTimeoutMs { get; } = 3000;
+
         private const double PlateauAboveEmptyMarginA = 0.8;
         private const int PlateauWindowMs = 150;
         private const double PlateauFlatRangeA = 0.15;
@@ -88,6 +93,8 @@ namespace Controller
         private double _actualCutoffCurrent = 0; // 新增：实际断电电流值（判断时监测到的值）
 
         private readonly double _overshootAlarmDeltaA = 0; // 正向峰值超阈值报警增量（A）；<=0 表示禁用（由 AlarmConfig.xml 注入）
+        private readonly double _adaptiveOvershootWarningDeltaA = 0.8;
+        private readonly int _adaptiveOvershootConfirmCycles = 3;
 
         /// <summary>
         ///     报警事件：由 Runner 判定“异常/过流”等场景触发。
@@ -167,6 +174,8 @@ namespace Controller
             GlobalConfig cfg = null,
             EpbManager manager = null,
             double overshootAlarmDeltaA = 0, // ★ 新增：峰值超限报警增量（A），<=0 禁用
+            double adaptiveOvershootWarningDeltaA = 0.8,
+            int adaptiveOvershootConfirmCycles = 3,
             SafetyMarginControlMode safetyMarginControlMode = SafetyMarginControlMode.Legacy20251010,
             EpbControlMode epbControlMode = EpbControlMode.LegacyFixedTiming,
             bool adaptiveShadowMode = true,
@@ -182,6 +191,8 @@ namespace Controller
                 _cfg?.Test.EpbCycleRunner.GetRunnerChannel(channel).SafetyMarginA ?? 2.0; // SafetyMarginA为null 则设置为2
             _acq = twoDeviceAiAcquirer;
             _overshootAlarmDeltaA = overshootAlarmDeltaA;
+            _adaptiveOvershootWarningDeltaA = Math.Max(0.1, adaptiveOvershootWarningDeltaA);
+            _adaptiveOvershootConfirmCycles = Math.Max(1, adaptiveOvershootConfirmCycles);
             _safetyMarginControlMode = safetyMarginControlMode;
             _epbControlMode = epbControlMode;
             _adaptiveShadowMode = adaptiveShadowMode;
@@ -194,19 +205,22 @@ namespace Controller
             RevDecayRigidMaxMs = _cfg?.Test.EpbCycleRunner.GetRunnerChannel(channel).RevDecayRigidMaxMs ?? 1000; // // 建议现场可配：80~150ms 
             RevEmptyFixedMs = _cfg?.Test.EpbCycleRunner.GetRunnerChannel(channel).RevEmptyFixedMs ?? 2000; // 反向固定空行程时长
             RevDecayLimitA = _cfg?.Test.EpbCycleRunner.GetRunnerChannel(channel).RevDecayLimitA ?? 3; // 反向电流“衰减限值”
+            DefaultPreReleaseDetectTimeoutMs =
+                _cfg?.Test.EpbCycleRunner.GetRunnerChannel(channel).PreReleaseDetectTimeoutMs
+                ?? Math.Max(3000, RevDecayRigidMaxMs);
         }
 
 
         /// <summary>
         ///     对当前通道执行一次“预释放”：
         ///     反向上电 → 忽略涌流 → 等待进入反向空行程（Ewma 稳定判据）→ 保持 keepMs → 断电。
-        ///     若未稳定判定到反向空行程，仍按 keepMs 定时保持（兜底），然后断电。
+        ///     若未稳定判定到反向空行程，立即断电并向上层返回失败。
         /// </summary>
         /// <param name="keepMs">
         ///     反向空行程保持时长（毫秒）。为 <c>null</c> 时使用 <see cref="DefaultPreReleaseKeepMs" />。
         /// </param>
         /// <param name="token">取消令牌。</param>
-        /// <returns>执行是否顺利（判定到反向空行程记为 true；未判定到也会完成动作但返回 false）。</returns>
+        /// <returns>执行是否顺利（仅在明确判定到反向空行程时返回 true）。</returns>
         public async Task<bool> PreReleaseAsync(int? keepMs, CancellationToken token)
         {
             var holdMs = keepMs ?? DefaultPreReleaseKeepMs;
@@ -214,41 +228,36 @@ namespace Controller
 
             try
             {
-                _log.Info($"EPB[{_channel}] 预释放：开始（目标保持 {holdMs}ms）。", "EPB");
+                _log.Info(
+                    $"EPB[{_channel}] 预释放：开始（判定超时 {DefaultPreReleaseDetectTimeoutMs}ms，" +
+                    $"进入空行程后保持 {holdMs}ms）。",
+                    "EPB");
 
                 // 1) 反向上电 → 忽略涌流（去抖）
                 CommandReverse();
                 await Task.Delay(_peakIgnoreMs, token).ConfigureAwait(false);
 
-                // 2) 判定进入反向空行程（Ewma 稳定窗口）
-                // 目标电流：优先使用项目级自适应模型，其次兼容旧运行时学习值，
-                // 两者都没有时使用 -0.5A 安全兜底。
-                var target = _adaptiveProfile != null &&
-                             _adaptiveProfile.IsStable &&
-                             _adaptiveProfile.ReverseEmptyCurrentA > 0
-                    ? -Math.Abs(_adaptiveProfile.ReverseEmptyCurrentA)
-                    : _iEmptyRevA != 0
-                        ? _iEmptyRevA
-                        : -0.5;
-                var tuple = await WaitStableAroundAsync(
-                    target,
-                    -1, // 反向
-                    _emptyBandA,
-                    _stableWinMs,
-                    token,
-                    holdMs).ConfigureAwait(false);
+                // 2) 判定进入反向空行程。
+                // 复用正式自适应反向释放的鲁棒窗口：有稳定模型时按历史基线，
+                // 无模型时按 RevDecayLimitA + 分位数/离散度判定，禁止固定猜测 -0.5A。
+                var tuple = await WaitForReverseEmptyPlateauAsync(
+                    DefaultPreReleaseDetectTimeoutMs,
+                    token).ConfigureAwait(false);
 
-                var okRel = tuple.Item1;
-                var iEmptyRel = tuple.Item3;
+                var okRel = tuple.ok;
+                var iEmptyRel = tuple.iAvg;
 
                 if (okRel)
+                {
                     _log.Info($"EPB[{_channel}] 预释放：已进入反向空行程，Iempty-≈{iEmptyRel:F2}A。保持 {holdMs}ms。", "EPB");
+                    if (holdMs > 0)
+                        await Task.Delay(holdMs, token).ConfigureAwait(false);
+                }
                 else
-                    _log.Warn($"EPB[{_channel}] 预释放：未稳定判定到反向空行程，仍按 {holdMs}ms 定时保持。", "EPB");
-
-                // 3) 保持 keepMs（无论是否判定成功都保持）
-                if (holdMs > 0)
-                    await Task.Delay(holdMs, token).ConfigureAwait(false);
+                    _log.Warn(
+                        $"EPB[{_channel}] 预释放：{tuple.reason}；未稳定判定到反向空行程，" +
+                        "拒绝进入后续学习/正式阶段。",
+                        "EPB");
 
                 return okRel;
             }
@@ -259,7 +268,7 @@ namespace Controller
             }
             catch (Exception ex)
             {
-                _log.Warn($"EPB[{_channel}] 预释放阶段异常：{ex.Message}（忽略继续）。", "EPB");
+                _log.Warn($"EPB[{_channel}] 预释放阶段异常：{ex.Message}；拒绝进入后续阶段。", "EPB");
                 return false;
             }
             finally
@@ -436,12 +445,18 @@ namespace Controller
             if (DefaultPreReleaseKeepMs > 0)
                 try
                 {
-                    _log.Info($"EPB[{_channel}] 自学习预处理：先反向释放，进入反向空行程后保持 {DefaultPreReleaseKeepMs}ms。", "EPB");
+                    _log.Info(
+                        $"EPB[{_channel}] 自学习预处理：先反向释放，最多判定 " +
+                        $"{DefaultPreReleaseDetectTimeoutMs}ms，进入反向空行程后保持 " +
+                        $"{DefaultPreReleaseKeepMs}ms。",
+                        "EPB");
                     CommandReverse();
                     await Task.Delay(_peakIgnoreMs, token).ConfigureAwait(false);
 
-                    var (okRel, _, iEmptyRel) =
-                        await WaitStableAroundAsync(-0.5, -1, _emptyBandA, _stableWinMs, token).ConfigureAwait(false);
+                    var (okRel, _, iEmptyRel, reason) =
+                        await WaitForReverseEmptyPlateauAsync(
+                            DefaultPreReleaseDetectTimeoutMs,
+                            token).ConfigureAwait(false);
                     if (okRel)
                     {
                         _log.Info(
@@ -451,7 +466,10 @@ namespace Controller
                     }
                     else
                     {
-                        _log.Warn($"EPB[{_channel}] 预释放：未稳定判定到反向空行程，仍按 {DefaultPreReleaseKeepMs}ms 定时保持。", "EPB");
+                        _log.Warn(
+                            $"EPB[{_channel}] 预释放：{reason}；未稳定判定到反向空行程，" +
+                            $"仍按 {DefaultPreReleaseKeepMs}ms 定时保持。",
+                            "EPB");
                     }
 
                     await Task.Delay(DefaultPreReleaseKeepMs, token).ConfigureAwait(false);
@@ -1173,6 +1191,48 @@ namespace Controller
         private double ReadEwma(double prev, double cur)
         {
             return prev + _ewmaAlpha * (cur - prev);
+        }
+
+        /// <summary>
+        /// 使用与正式自适应反向释放相同的分位数窗口判定预释放空行程。
+        /// 有稳定模型时使用通道历史基线；无模型时使用 RevDecayLimitA，
+        /// 因而可在首次学习前工作，不依赖固定的 -0.5A 假设。
+        /// </summary>
+        private async Task<(bool ok, long tEnter, double iAvg, string reason)>
+            WaitForReverseEmptyPlateauAsync(int maxWaitMs, CancellationToken token)
+        {
+            var waitMs = Math.Max(500, maxWaitMs);
+            var detector = new EpbAdaptiveCurrentStateMachine(
+                _adaptiveProfile?.Clone() ?? new EpbAdaptiveProfile { Channel = _channel });
+            var startTick = Stopwatch.GetTimestamp();
+            detector.ArmReverse(
+                startTick,
+                0,
+                waitMs,
+                Math.Max(0.1, RevDecayLimitA),
+                0,
+                _posThrA);
+
+            while (true)
+            {
+                token.ThrowIfCancellationRequested();
+                await Task.Delay(_sampleMs, token).ConfigureAwait(false);
+
+                var nowTick = Stopwatch.GetTimestamp();
+                var decision = detector.OnSample(nowTick, _readCurrent(_channel));
+                if (decision.ReleaseCompleted)
+                {
+                    var elapsedMs = (long)((nowTick - startTick) * 1000.0 / Stopwatch.Frequency);
+                    return (
+                        true,
+                        elapsedMs,
+                        -Math.Abs(detector.ObservedReverseEmptyA),
+                        decision.Reason ?? "Released");
+                }
+
+                if (decision.HardFault)
+                    return (false, 0, 0, decision.Reason ?? "DetectionHardFault");
+            }
         }
 
         /// <summary>

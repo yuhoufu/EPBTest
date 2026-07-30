@@ -98,6 +98,15 @@ namespace Controller
         // 报警触发“立即停机”去重：同一次运行只处理首个报警；新运行必须显式复位
         private readonly ChannelAlarmStopLatch _alarmStopLatch = new();
 
+        private void FlushPersistentLog(bool durable = true)
+        {
+            try { (_log as IFlushableAppLogger)?.Flush(durable); }
+            catch
+            {
+                // 日志刷新失败不得回流控制链路。
+            }
+        }
+
         // ★ 跟踪每个通道“当前已 BeginCycle 的圈号”：用于报警停机时把当前圈封为 status='alarm'，避免遗留 running 悬挂圈
         private readonly ConcurrentDictionary<int, int> _currentCycleNumberByChannel = new();
 
@@ -250,6 +259,10 @@ namespace Controller
         /// </remarks>
         private void FinalizeChannelAfterNaturalCompletion(int channel)
         {
+            _log.Info(
+                $"EPB[{channel}] 已完成全部目标圈数，开始安全断电、液压释放和最近10圈持久化。",
+                "EPB");
+
             // 1) 先从液压判定参与者中移除
             UnmarkHydraulicParticipant(channel);
 
@@ -305,6 +318,7 @@ namespace Controller
             }
 
             TryEndBatchSessionWhenIdle();
+            FlushPersistentLog();
         }
 
         /// <summary>
@@ -623,6 +637,10 @@ namespace Controller
                 _cfg,
                 this,
                 overshootAlarmDeltaA: overshootDeltaA,
+                adaptiveOvershootWarningDeltaA:
+                    AlarmConfig?.Behavior?.AdaptiveOvershootWarningDeltaA ?? 0.8,
+                adaptiveOvershootConfirmCycles:
+                    AlarmConfig?.Behavior?.AdaptiveOvershootConfirmCycles ?? 3,
                 safetyMarginControlMode: _safetyMarginControlMode,
                 epbControlMode: GetEpbControlMode(channel),
                 adaptiveShadowMode: _adaptiveShadowMode,
@@ -963,6 +981,10 @@ namespace Controller
                 return;
 
             var alarmUtc = DateTime.UtcNow;
+            _log.Error(
+                $"EPB[{channel}] 硬故障，立即停止该通道并导出报警快照。原因={reason}",
+                "报警");
+            FlushPersistentLog();
             ChannelAlarmRaised?.Invoke(channel, reason);
 
             // 不阻塞 Runner/定时器线程
@@ -1314,6 +1336,7 @@ namespace Controller
         /// </summary>
         public void StopAll()
         {
+            _log.Info("收到停止全部 EPB 请求：取消批次、逐通道断电并持久化最近数据。", "EPB");
             // 学习阶段尚未创建通道 Timer 时，也必须能通过控制层自己的 CTS 停止。
             EndBatchSession(cancel: true);
 
@@ -1327,11 +1350,14 @@ namespace Controller
             _timerCache.Clear();
             _runners.Clear();
             _ = DisableAllPowerSafeAsync("StopAll");
+            _log.Info("全部 EPB 停止请求已提交。", "EPB");
+            FlushPersistentLog();
         }
 
         /// <summary>停止全部 EPB，并等待四台程控电源输出关闭回读完成。</summary>
         public async Task StopAllAsync(CancellationToken token = default)
         {
+            _log.Info("收到停止全部 EPB 请求：等待通道断电和程控电源回读。", "EPB");
             EndBatchSession(cancel: true);
             var keys = _timers.Keys
                 .Concat(_runners.Keys)
@@ -1354,6 +1380,8 @@ namespace Controller
             finally
             {
                 EndPowerSupplyTelemetryRecording();
+                _log.Info("全部 EPB 与程控电源已完成停止收尾。", "EPB");
+                FlushPersistentLog();
             }
         }
 
@@ -1542,6 +1570,7 @@ namespace Controller
 
             var enabled = channels.Distinct().OrderBy(x => x).ToArray();
             var anchorUtc = DateTime.UtcNow.AddMilliseconds(500);
+            var failedChannels = new ConcurrentBag<int>();
             await ElectricalStaggerExecutor.RunAsync(
                 enabled,
                 staggerPlan,
@@ -1558,9 +1587,59 @@ namespace Controller
                         $"PlannedUtc={plannedStartUtc:O}，ActualUtc={actualStartUtc:O}，" +
                         $"DeviationMs={(actualStartUtc - plannedStartUtc).TotalMilliseconds:F3}。",
                         "EPB");
-                    await GetRunner(ch).PreReleaseAsync(keepMs, ct).ConfigureAwait(false);
+                    var released = await GetRunner(ch).PreReleaseAsync(keepMs, ct).ConfigureAwait(false);
+                    if (!released)
+                        failedChannels.Add(ch);
                 },
                 token).ConfigureAwait(false);
+
+            var failed = failedChannels.Distinct().OrderBy(x => x).ToArray();
+            if (failed.Length == 0) return;
+
+            foreach (var channel in enabled)
+            {
+                try { CommandEpbOff(channel, nameof(PreReleaseBatchWithPlanAsync)); }
+                catch (Exception ex)
+                {
+                    _log.Warn($"预释放失败回滚时 EPB[{channel}] 断电命令异常：{ex.Message}", "EPB");
+                }
+            }
+
+            if (_powerSupply != null)
+            {
+                try
+                {
+                    await _powerSupply.DisableAllAsync("批量预释放失败", CancellationToken.None)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _log.Error($"预释放失败回滚时程控电源关闭未完全确认：{ex.Message}", "程控电源", ex);
+                }
+                finally
+                {
+                    EndPowerSupplyTelemetryRecording();
+                }
+            }
+
+            EnsurePreReleaseBatchSucceeded(failed, _log);
+        }
+
+        internal static void EnsurePreReleaseBatchSucceeded(
+            IEnumerable<int> failedChannels,
+            IAppLogger logger = null)
+        {
+            var failed = (failedChannels ?? Enumerable.Empty<int>())
+                .Distinct()
+                .OrderBy(x => x)
+                .ToArray();
+            if (failed.Length == 0) return;
+
+            var message =
+                $"批量预释放失败：通道[{string.Join(",", failed)}]未在检测预算内确认进入反向空行程；" +
+                "已拒绝进入学习/正式阶段。";
+            logger?.Error(message, "EPB");
+            throw new InvalidOperationException(message);
         }
 
         #endregion

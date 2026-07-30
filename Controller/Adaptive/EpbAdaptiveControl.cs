@@ -240,7 +240,8 @@ namespace Controller.Adaptive
             int inrushIgnoreMs,
             int absoluteMaxMs,
             double reverseDecayLimitA,
-            double overshootDeltaA)
+            double overshootDeltaA,
+            double forwardReferenceA = 0)
         {
             lock (_gate)
             {
@@ -248,6 +249,10 @@ namespace Controller.Adaptive
                 _forwardDirection = false;
                 _reverseDecayLimitA = Math.Max(0.1, reverseDecayLimitA);
                 _overshootDeltaA = Math.Max(0, overshootDeltaA);
+                if (forwardReferenceA > 0 &&
+                    !double.IsNaN(forwardReferenceA) &&
+                    !double.IsInfinity(forwardReferenceA))
+                    _forwardA = forwardReferenceA;
                 SetStage(EpbCurrentStage.Inrush);
             }
         }
@@ -431,7 +436,10 @@ namespace Controller.Adaptive
             {
                 var slope = PredictionSlopeAperMs();
                 var leadMs = GetPredictionLeadMs(slope);
-                var predictedPeak = current + slope * leadMs;
+                // 历史“实际峰值 - 目标值”长期偏正时，把中位数+MAD作为模型残差补偿。
+                // 这会在同样的上升斜率下更早断电，优先从控制算法消除偶发超调。
+                var peakBiasCorrectionA = _profile.GetForwardPeakBiasCorrectionA();
+                var predictedPeak = current + slope * leadMs + peakBiasCorrectionA;
                 decision.CutoffCurrentA = current;
                 decision.EstimatedSlopeAperMs = slope;
                 decision.PredictionLeadMs = leadMs;

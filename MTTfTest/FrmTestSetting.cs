@@ -710,6 +710,7 @@ namespace MtEmbTest
                     RevDecayRigidMaxMs = r?.RevDecayRigidMaxMs ?? 0,
                     RevEmptyFixedMs = r?.RevEmptyFixedMs ?? 0,
                     PreReleaseKeepMs = r?.PreReleaseKeepMs,
+                    PreReleaseDetectTimeoutMs = r?.PreReleaseDetectTimeoutMs,
                     PeakIgnoreMs = r?.PeakIgnoreMs ?? 0,
                     // ★ 额外：目标次数
                     TargetTotalCount = targetTotal
@@ -752,6 +753,7 @@ namespace MtEmbTest
                 AddCol(nameof(EpbRow.RevDecayRigidMaxMs), "反衰限制时长(ms)", 287);
                 AddCol(nameof(EpbRow.RevEmptyFixedMs), "反向固定空行程(ms)", 311);
                 AddCol(nameof(EpbRow.PreReleaseKeepMs), "预释放维持(ms)", 233);
+                AddCol(nameof(EpbRow.PreReleaseDetectTimeoutMs), "预释放判定超时(ms)", 270);
                 AddCol(nameof(EpbRow.PeakIgnoreMs), "峰值忽略(ms)", 212);
 
 
@@ -796,6 +798,7 @@ namespace MtEmbTest
                     RevDecayRigidMaxMs = r?.RevDecayRigidMaxMs ?? 0,
                     RevEmptyFixedMs = r?.RevEmptyFixedMs ?? 0,
                     PreReleaseKeepMs = r?.PreReleaseKeepMs,
+                    PreReleaseDetectTimeoutMs = r?.PreReleaseDetectTimeoutMs,
                     PeakIgnoreMs = r?.PeakIgnoreMs ?? 0
                 });
             }
@@ -848,6 +851,7 @@ namespace MtEmbTest
                 AddCol(nameof(EpbRow.RevDecayRigidMaxMs), "反衰限制时长(ms)", 122f);
                 AddCol(nameof(EpbRow.RevEmptyFixedMs), "反向固定空行程(ms)", 132f);
                 AddCol(nameof(EpbRow.PreReleaseKeepMs), "预释放维持(ms)", 99f);
+                AddCol(nameof(EpbRow.PreReleaseDetectTimeoutMs), "预释放判定超时(ms)", 118f);
                 AddCol(nameof(EpbRow.PeakIgnoreMs), "峰值忽略(ms)", 90f);
                 // ★ 新增：每个 EPB 的目标次数
                 AddCol(nameof(EpbRow.TargetTotalCount), "目标次数", 80f);
@@ -1414,6 +1418,7 @@ namespace MtEmbTest
                     RevDecayRigidMaxMs = Math.Max(0, r.RevDecayRigidMaxMs),
                     RevEmptyFixedMs = Math.Max(0, r.RevEmptyFixedMs),
                     PreReleaseKeepMs = r.PreReleaseKeepMs,
+                    PreReleaseDetectTimeoutMs = r.PreReleaseDetectTimeoutMs,
                     PeakIgnoreMs = Math.Max(0, r.PeakIgnoreMs)
                 };
                 dict[r.Channel] = item;
