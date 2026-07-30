@@ -3,10 +3,12 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Collections.Generic;
+using System.Linq;
 using Config;
 using Controller;
 using Controller.Adaptive;
 using Controller.Alarm;
+using IO.NI;
 using Timing;
 
 namespace AdaptiveControlTests
@@ -69,9 +71,16 @@ namespace AdaptiveControlTests
                 Run("DO追踪缓冲按运行过滤并限时", DoTraceBufferFiltersRunAndAge);
                 Run("报警辅助证据包含计划和DO时序", AlarmControlEvidenceIsReconstructable);
                 Run("同组硬故障仅停止故障通道", HardFaultDoesNotStopSiblingChannel);
+                Run("2000Hz样本时间严格递增5000 ticks", TwoKilohertzSampleTimestamps);
+                Run("采集重启重建高精度时基", HighResolutionClockReset);
+                Run("新项目清零且不改旧项目", NewProjectIsIsolatedAndReset);
+                Run("进度摘要默认选择最小已启动通道", InitialSummarySelectsFirstStarted);
+                Run("进度摘要完成后切换且全完成保持", SummaryAdvancesAfterCompletion);
+                Run("EPB勾选仅按设置到电源到曲线单向传播", EpbSelectionPropagatesOneWay);
+                Run("DHMS运行时间格式", DhmsFormatting);
                 _passed += PowerSupplyCoordinatorTests.RunAll();
                 _passed += ProjectLogStoreTests.RunAll();
-                Console.WriteLine($"PASS {_passed}/62");
+                Console.WriteLine($"PASS {_passed}/69");
                 return 0;
             }
             catch (Exception ex)
@@ -1281,6 +1290,185 @@ namespace AdaptiveControlTests
         {
             // 避免 0 被状态机视为“尚未设置”的哨兵值。
             return Stopwatch.Frequency + (long)(milliseconds * (Stopwatch.Frequency / 1000.0));
+        }
+
+        private static void TwoKilohertzSampleTimestamps()
+        {
+            var last = new DateTime(2026, 7, 30, 18, 0, 0, DateTimeKind.Utc);
+            var timestamps = HighResolutionSampleClock.BuildBatchTimestamps(last, 20, 2000);
+            Assert(timestamps.Length == 20, "样本数错误");
+            for (var i = 1; i < timestamps.Length; i++)
+                Assert(
+                    timestamps[i].Ticks - timestamps[i - 1].Ticks == 5000,
+                    $"样本{i}未按5000 ticks递增");
+            Assert(timestamps.Distinct().Count() == timestamps.Length, "绝对时间戳出现重复");
+        }
+
+        private static void HighResolutionClockReset()
+        {
+            var clock = new HighResolutionSampleClock();
+            var firstWall = new DateTime(2026, 7, 30, 18, 0, 0, DateTimeKind.Local);
+            clock.Reset(firstWall);
+            var firstOrigin = clock.StartTimestamp;
+            System.Threading.Thread.SpinWait(10000);
+
+            var secondWall = firstWall.AddMinutes(1);
+            clock.Reset(secondWall);
+            Assert(clock.WallTime == secondWall, "重启后墙钟原点未更新");
+            Assert(clock.StartTimestamp >= firstOrigin, "重启后单调时钟起点未更新");
+            Assert(Math.Abs((clock.Now() - secondWall).TotalSeconds) < 1,
+                "重启后仍继承上一次采集的运行时间");
+        }
+
+        private static void NewProjectIsIsolatedAndReset()
+        {
+            var root = CreateTempDir();
+            try
+            {
+                var oldRoot = Path.Combine(root, "old");
+                var oldConfigDir = Path.Combine(oldRoot, "Config");
+                Directory.CreateDirectory(oldConfigDir);
+                var oldConfig = Path.Combine(oldConfigDir, "TestConfig.xml");
+                var xml = "<TestConfig><Basic><TestName>old</TestName><StoreDir>" +
+                          root +
+                          "</StoreDir></Basic></TestConfig>";
+                File.WriteAllText(oldConfig, xml);
+                var oldBytes = File.ReadAllBytes(oldConfig);
+                var oldDb = Path.Combine(oldRoot, "index.db");
+                File.WriteAllBytes(oldDb, new byte[] { 1, 2, 3, 4 });
+
+                var source = new TestConfig
+                {
+                    TestName = "old",
+                    StoreDir = root,
+                    TestPeriod = 15,
+                    TestTarget = 20,
+                    LearnCycles = 10
+                };
+                source.EnsureEpbRecords();
+                foreach (var record in source.EpbRecords)
+                {
+                    record.Enabled = true;
+                    record.TotalCount = 20;
+                    record.RunCount = 7;
+                    record.Status = EpbTestStatus.Running;
+                    record.RunTimeSpan = TimeSpan.FromMinutes(2);
+                }
+
+                var created = ConfigLoader.CreateNewProjectTestConfig(
+                    source,
+                    oldConfig,
+                    root,
+                    "new");
+
+                Assert(created.EpbRecords.All(record =>
+                        !record.Enabled &&
+                        record.RunCount == 0 &&
+                        record.Status == EpbTestStatus.NotStarted &&
+                        record.RunTimeSpan == TimeSpan.Zero &&
+                        record.TotalCount == 20),
+                    "新项目未按未勾选、零进度初始化");
+                Assert(File.ReadAllBytes(oldConfig).SequenceEqual(oldBytes), "旧项目配置被改写");
+                Assert(File.ReadAllBytes(oldDb).SequenceEqual(new byte[] { 1, 2, 3, 4 }),
+                    "旧项目数据库被改写");
+                Assert(File.Exists(Path.Combine(root, "new", "Config", "TestConfig.xml")),
+                    "新项目配置未创建");
+
+                Directory.CreateDirectory(Path.Combine(root, "residual"));
+                var residualWasBlocked = false;
+                try
+                {
+                    ConfigLoader.CreateNewProjectTestConfig(
+                        source,
+                        oldConfig,
+                        root,
+                        "residual");
+                }
+                catch (IOException)
+                {
+                    residualWasBlocked = true;
+                }
+                Assert(residualWasBlocked, "缺少TestConfig.xml的残留目录未被阻止");
+            }
+            finally
+            {
+                try
+                {
+                    if (Directory.Exists(root)) Directory.Delete(root, true);
+                }
+                catch
+                {
+                    // Test cleanup must not hide the assertion result.
+                }
+            }
+        }
+
+        private static void InitialSummarySelectsFirstStarted()
+        {
+            var records = Enumerable.Range(1, 12)
+                .Select(id => EpbTestRecord.CreateDefault(id, 20))
+                .ToList();
+            records[7].Enabled = true;
+            records[8].Enabled = true;
+            records[9].Enabled = true;
+            records[7].Status = EpbTestStatus.Running;
+            records[8].Status = EpbTestStatus.Running;
+            records[9].Status = EpbTestStatus.Running;
+
+            Assert(EpbProjectPolicies.FindInitialSummaryChannel(records) == 8,
+                "未选择编号最小的实际启动通道");
+        }
+
+        private static void SummaryAdvancesAfterCompletion()
+        {
+            var records = Enumerable.Range(1, 12)
+                .Select(id => EpbTestRecord.CreateDefault(id, 20))
+                .ToList();
+            foreach (var id in new[] { 8, 9, 10 })
+            {
+                records[id - 1].Enabled = true;
+                records[id - 1].Status = EpbTestStatus.Running;
+                records[id - 1].RunCount = 1;
+            }
+
+            records[7].RunCount = 20;
+            records[7].Status = EpbTestStatus.Completed;
+            Assert(EpbProjectPolicies.FindSummaryChannelAfterCompletion(records, 8) == 9,
+                "当前通道完成后未选择最小未完成启动通道");
+            Assert(EpbProjectPolicies.FindSummaryChannelAfterCompletion(records, 10) == 10,
+                "未完成的当前通道不应被其他通道抢占");
+
+            records[8].RunCount = records[9].RunCount = 20;
+            records[8].Status = records[9].Status = EpbTestStatus.Completed;
+            Assert(EpbProjectPolicies.FindSummaryChannelAfterCompletion(records, 10) == 10,
+                "全部完成后应保留最后显示项");
+        }
+
+        private static void DhmsFormatting()
+        {
+            Assert(EpbTestRecord.FormatDHMS(TimeSpan.FromSeconds(9)) == "00D 00H 00M 09S",
+                "不足一分钟格式错误");
+            Assert(EpbTestRecord.FormatDHMS(new TimeSpan(0, 0, 4, 49)) == "00D 00H 04M 49S",
+                "4分49秒格式错误");
+            Assert(EpbTestRecord.FormatDHMS(new TimeSpan(0, 2, 3, 4)) == "00D 02H 03M 04S",
+                "跨小时格式错误");
+            Assert(EpbTestRecord.FormatDHMS(new TimeSpan(2, 3, 4, 5)) == "02D 03H 04M 05S",
+                "跨天格式错误");
+        }
+
+        private static void EpbSelectionPropagatesOneWay()
+        {
+            var state = EpbProjectPolicies.ApplySettingsSelection(true);
+            Assert(state.SettingsEnabled && state.PowerSelected && state.CurveSelected,
+                "设置勾选未传播到电源和曲线");
+
+            state = EpbProjectPolicies.ApplyCurveSelection(state, false);
+            Assert(state.SettingsEnabled && state.PowerSelected && !state.CurveSelected,
+                "曲线变化错误反写了上游");
+
+            state = EpbProjectPolicies.ApplyPowerSelection(state, false);
+            Assert(state.SettingsEnabled && !state.PowerSelected && !state.CurveSelected,
+                "电源变化未驱动曲线或错误反写设置");
         }
 
         private static string CreateTempDir()

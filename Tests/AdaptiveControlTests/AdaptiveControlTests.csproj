@@ -30,6 +30,9 @@
     <Reference Include="System.Core" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="..\..\IO.NI\HighResolutionSampleClock.cs">
+      <Link>HighResolutionSampleClock.cs</Link>
+    </Compile>
     <Compile Include="Program.cs" />
     <Compile Include="PowerSupplyCoordinatorTests.cs" />
     <Compile Include="ProjectLogStoreTests.cs" />
