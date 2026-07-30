@@ -922,6 +922,26 @@ public static class ConfigLoader
     }
 
     /// <summary>
+    /// Loads an existing project config and updates the active project root used by
+    /// project-scoped logging and persistence.
+    /// </summary>
+    public static TestConfig LoadProjectTestConfig(
+        string storeDir,
+        string testName,
+        IAppLogger log = null)
+    {
+        var path = GetProjectTestConfigPath(storeDir, testName);
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+            throw new FileNotFoundException("项目 TestConfig.xml 不存在。", path);
+
+        var candidate = LoadTest(path, log);
+        candidate.StoreDir = storeDir;
+        candidate.TestName = testName;
+        CurrentProjectRootDir = GetProjectRootDir(storeDir, testName);
+        return candidate;
+    }
+
+    /// <summary>
     ///     基于“默认 Config\TestConfig.xml”，为某个项目创建一份专用的 TestConfig.xml，
     ///     并对其中的 <see cref="TestConfig.EpbRecords"/> 进行“清零但保留目标次数 TotalCount”。
     ///     若项目下已存在 TestConfig.xml，则直接加载并返回。
@@ -967,9 +987,7 @@ public static class ConfigLoader
             // 如果默认文件都不存在，只能用当前内存中的 Test 对象作为模板
             log?.Warn($"默认 TestConfig.xml 不存在，直接使用内存中的 TestConfig 作为模板：{projectTestPath}", "配置");
             var cfg = defaultCfg.Test;
-            cfg.EnsureEpbRecords();
-            foreach (var rec in cfg.EpbRecords)
-                rec.ResetKeepTotalCount(); // 清零进度，保留 TotalCount
+            EpbProjectPolicies.InitializeNewProject(cfg, storeDir, testName);
             SaveTest(projectTestPath, cfg);
             return cfg;
         }
@@ -978,14 +996,121 @@ public static class ConfigLoader
         File.Copy(defaultTestPath, projectTestPath, overwrite: false);
         var projectCfg = LoadTest(projectTestPath, log);
 
-        projectCfg.EnsureEpbRecords();
-        foreach (var rec in projectCfg.EpbRecords)
-            rec.ResetKeepTotalCount(); // 清零进度，保留目标次数
+        EpbProjectPolicies.InitializeNewProject(projectCfg, storeDir, testName);
 
         SaveTest(projectTestPath, projectCfg);
 
         log?.Info($"已从默认 TestConfig.xml 创建项目专用配置：{projectTestPath}", "配置");
         return projectCfg;
+    }
+
+    /// <summary>
+    /// Creates a new project config from an existing in-memory config without changing
+    /// the source object or touching any previous project files.
+    /// </summary>
+    public static TestConfig CreateNewProjectTestConfig(
+        TestConfig source,
+        string templatePath,
+        string storeDir,
+        string testName,
+        IAppLogger log = null)
+    {
+        if (source == null) throw new ArgumentNullException(nameof(source));
+        if (string.IsNullOrWhiteSpace(templatePath) || !File.Exists(templatePath))
+            throw new FileNotFoundException("创建项目所需的 TestConfig.xml 模板不存在。", templatePath);
+        if (string.IsNullOrWhiteSpace(storeDir))
+            throw new ArgumentException("项目存储路径不能为空。", nameof(storeDir));
+        if (string.IsNullOrWhiteSpace(testName))
+            throw new ArgumentException("项目名称不能为空。", nameof(testName));
+
+        storeDir = Path.GetFullPath(storeDir.Trim());
+        testName = testName.Trim();
+        if (testName == "." || testName == ".." ||
+            testName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+            throw new ArgumentException("项目名称不是合法的 Windows 文件夹名称。", nameof(testName));
+
+        var projectRoot = Path.GetFullPath(GetProjectRootDir(storeDir, testName));
+        var targetPath = GetProjectTestConfigPath(storeDir, testName);
+        if (string.IsNullOrWhiteSpace(projectRoot) || string.IsNullOrWhiteSpace(targetPath))
+            throw new InvalidOperationException("无法生成新项目配置路径。");
+        if (!string.Equals(
+                Directory.GetParent(projectRoot)?.FullName,
+                storeDir,
+                StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("项目目录必须是存储根目录的直接子目录。");
+
+        if (Directory.Exists(projectRoot))
+        {
+            if (File.Exists(targetPath))
+                throw new IOException($"项目“{testName}”已存在，不能按新项目覆盖：{targetPath}");
+            throw new IOException(
+                $"目标项目目录已存在，但缺少有效的 TestConfig.xml。请先处理残留目录：{projectRoot}");
+        }
+
+        Directory.CreateDirectory(storeDir);
+        var stagingPath = Path.Combine(
+            storeDir,
+            $".epb-new-project-{Guid.NewGuid():N}.xml");
+        var createdProjectRoot = false;
+
+        try
+        {
+            File.Copy(templatePath, stagingPath, false);
+            SaveTest(stagingPath, source);
+
+            var candidate = LoadTest(stagingPath, log);
+            EpbProjectPolicies.InitializeNewProject(candidate, storeDir, testName);
+            SaveTest(stagingPath, candidate);
+
+            // Re-read the staged file before publishing it so a malformed candidate
+            // never becomes the active project.
+            candidate = LoadTest(stagingPath, log);
+
+            if (Directory.Exists(projectRoot))
+                throw new IOException(
+                    $"发布新项目时检测到目标目录已存在，已停止以避免覆盖：{projectRoot}");
+            Directory.CreateDirectory(Path.Combine(projectRoot, "Config"));
+            createdProjectRoot = true;
+            File.Move(stagingPath, targetPath);
+            CurrentProjectRootDir = projectRoot;
+            log?.Info($"已创建新项目配置：{targetPath}", "配置");
+            return candidate;
+        }
+        catch
+        {
+            TryDeleteFile(stagingPath);
+            if (createdProjectRoot)
+            {
+                TryDeleteEmptyDirectory(Path.Combine(projectRoot, "Config"));
+                TryDeleteEmptyDirectory(projectRoot);
+            }
+            throw;
+        }
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
+        catch
+        {
+            // Best effort cleanup of a file created by this method.
+        }
+    }
+
+    private static void TryDeleteEmptyDirectory(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path) && !Directory.EnumerateFileSystemEntries(path).Any())
+                Directory.Delete(path, false);
+        }
+        catch
+        {
+            // Best effort cleanup of an empty directory created by this method.
+        }
     }
 
     /// <summary>

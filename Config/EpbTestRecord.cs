@@ -359,6 +359,21 @@ namespace Config
                 ts.Minutes);
         }
 
+        /// <summary>
+        /// 将累计运行时间格式化为 "00D 00H 00M 00S" 形式。
+        /// </summary>
+        public static string FormatDHMS(TimeSpan ts)
+        {
+            if (ts < TimeSpan.Zero)
+                ts = TimeSpan.Zero;
+
+            return string.Format("{0:00}D {1:00}H {2:00}M {3:00}S",
+                (int)ts.TotalDays,
+                ts.Hours,
+                ts.Minutes,
+                ts.Seconds);
+        }
+
 
         #endregion
     }

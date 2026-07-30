@@ -2835,7 +2835,7 @@
             this.LedRunTime.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
             this.LedRunTime.BorderColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
             this.LedRunTime.BorderInColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(70)))), ((int)(((byte)(0)))));
-            this.LedRunTime.CharCount = 11;
+            this.LedRunTime.CharCount = 15;
             this.LedRunTime.Font = new System.Drawing.Font("微软雅黑", 10.5782F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
             this.LedRunTime.ForeColor = System.Drawing.Color.Lime;
             this.LedRunTime.ImeMode = System.Windows.Forms.ImeMode.NoControl;
@@ -2848,7 +2848,7 @@
             this.LedRunTime.Name = "LedRunTime";
             this.LedRunTime.Size = new System.Drawing.Size(137, 17);
             this.LedRunTime.TabIndex = 0;
-            this.LedRunTime.Text = "00D 00H 00M";
+            this.LedRunTime.Text = "00D 00H 00M 00S";
             // 
             // uiTableLayoutPanel41
             // 

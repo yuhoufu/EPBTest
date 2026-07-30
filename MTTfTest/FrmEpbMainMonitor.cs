@@ -1110,6 +1110,8 @@ namespace MTEmbTest
                 }
 
                 // 4) 如果文件里缺少某些控件项，第一次加载会补齐；这里统一保存一次，保证文件完整
+                // Project configuration is the authoritative upstream source for EPB selection.
+                ApplyProjectEpbSelectionToMonitor();
                 ConfigLoader.SaveUI(_uiCfg);
 
                 #endregion
@@ -1327,7 +1329,24 @@ namespace MTEmbTest
 
             // —— 3) 更新左侧 EPBGroup —— //
             EpbGroup[channel - 1].CtrlCycles.Text = record.RunCount.ToString();
-            RefreshCurrentEpbSummary(channel);
+
+            if (_currentEpbSummaryChannel == channel && record.Status == EpbTestStatus.Completed)
+            {
+                int nextChannel;
+                lock (_epbRecordsLock)
+                    nextChannel = EpbProjectPolicies.FindSummaryChannelAfterCompletion(
+                        _uiEpbRecords,
+                        channel);
+
+                if (nextChannel != channel)
+                    SelectEpbSummaryChannel(nextChannel);
+                else
+                    RefreshCurrentEpbSummary(channel);
+            }
+            else
+            {
+                RefreshCurrentEpbSummary(channel);
+            }
 
             // —— 4) 下拉框右侧面板选中时刷新 —— //
             // —— ?? 取消实时保存，改为“定时自动保存” —— //
@@ -1685,9 +1704,45 @@ namespace MTEmbTest
         }
 
 
+        private void ApplyProjectEpbSelectionToMonitor()
+        {
+            if (_cfg?.Test == null) return;
+
+            _cfg.Test.EnsureEpbRecords(12);
+            for (var i = 0; i < 12; i++)
+            {
+                var selection = EpbProjectPolicies.ApplySettingsSelection(
+                    _cfg.Test.GetEpbRecord(i + 1).Enabled);
+                var powerCheck = EpbGroup[i]?.CtrlJoinTest;
+                if (powerCheck != null && powerCheck.Checked != selection.PowerSelected)
+                    powerCheck.Checked = selection.PowerSelected;
+
+                var curveCheck = Controls.Find($"CheckEpbA{i + 1}", true)
+                    .OfType<CheckEdit>()
+                    .FirstOrDefault();
+                if (curveCheck != null && curveCheck.Checked != selection.CurveSelected)
+                    curveCheck.Checked = selection.CurveSelected;
+            }
+        }
+
         private void JoinEmbChanged(object sender, EventArgs e, int index)
         {
             var checkBox = (CheckEdit)sender;
+
+            // One-way propagation: power-group selection drives the curve only.
+            var curveCheck = Controls.Find($"CheckEpbA{index + 1}", true)
+                .OfType<CheckEdit>()
+                .FirstOrDefault();
+            var currentSelection = new EpbSelectionState(
+                _cfg?.Test?.GetEpbRecord(index + 1)?.Enabled ?? false,
+                checkBox.Checked,
+                curveCheck?.Checked ?? false);
+            var propagated = EpbProjectPolicies.ApplyPowerSelection(
+                currentSelection,
+                checkBox.Checked);
+            if (curveCheck != null && curveCheck.Checked != propagated.CurveSelected)
+                curveCheck.Checked = propagated.CurveSelected;
+
             if (checkBox.Checked)
             {
                 // EpbGroup[index].CtrlCurrentEmb.Enabled = true; // 界面上没有这个控件，暂时注释掉
@@ -2807,7 +2862,8 @@ namespace MTEmbTest
             // 如果有项目，默认选中第一项
             if (comboBoxEditCurrentRecord.Properties.Items.Count > 0)
             {
-                comboBoxEditCurrentRecord.SelectedIndex = 0;
+                var initialChannel = EpbProjectPolicies.FindInitialSummaryChannel(_uiEpbRecords);
+                comboBoxEditCurrentRecord.SelectedIndex = Math.Max(0, initialChannel - 1);
             }
 
             // 重新绑定事件
@@ -2934,10 +2990,20 @@ namespace MTEmbTest
         /// <summary>
         /// 清空 EPB 概览区域显示，用于“未选中”或解析失败的情况。
         /// </summary>
+        private void SelectEpbSummaryChannel(int channel)
+        {
+            if (channel < 1 || channel > 12 || comboBoxEditCurrentRecord == null) return;
+            var selectedIndex = channel - 1;
+            if (selectedIndex >= comboBoxEditCurrentRecord.Properties.Items.Count) return;
+
+            comboBoxEditCurrentRecord.SelectedIndex = selectedIndex;
+            RefreshSummaryByComboSelection();
+        }
+
         private void ClearEpbSummaryPanel()
         {
             // ② 运行时间
-            LedRunTime.Text = "00D 00H 00M";
+            LedRunTime.Text = "00D 00H 00M 00S";
 
             // ③ 完成次数
             LedRunCycles.Text = "0";
@@ -2969,7 +3035,7 @@ namespace MTEmbTest
             if (record == null) return;
 
             // === ② LedRunTime 显示 "00D 00H 00M" ===
-            LedRunTime.Text = EpbTestRecord.FormatDHM(record.RunTimeSpan);
+            LedRunTime.Text = EpbTestRecord.FormatDHMS(record.RunTimeSpan);
 
             // === ③ 完成次数 ===
             LedRunCycles.Text = record.RunCount.ToString();
