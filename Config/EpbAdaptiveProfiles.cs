@@ -25,8 +25,10 @@ namespace Config
     /// </summary>
     public sealed class EpbAdaptiveProfile
     {
-        public const int CurrentModelVersion = 1;
+        public const int CurrentModelVersion = 2;
         private const int HistoryCapacity = 30;
+        private const double MinimumCutoffSlopeAperMs = 0.001;
+        private const double MaximumCutoffLeadMs = 100.0;
 
         [XmlAttribute]
         public int Channel { get; set; }
@@ -44,6 +46,11 @@ namespace Config
         public double ReverseReleaseMadMs { get; set; }
         public int ValidSampleCount { get; set; }
         public int ConsecutiveDeviationCount { get; set; }
+        public double ForwardCutoffLeadMedianMs { get; set; }
+        public double ForwardCutoffLeadMadMs { get; set; }
+        public double ForwardPeakErrorMedianA { get; set; }
+        public double ForwardPeakErrorMadA { get; set; }
+        public int ValidCutoffSampleCount { get; set; }
         public DateTime UpdatedUtc { get; set; }
 
         [XmlArrayItem("Value")]
@@ -58,8 +65,18 @@ namespace Config
         [XmlArrayItem("Value")]
         public List<double> ReverseReleaseHistoryMs { get; set; } = new List<double>();
 
+        [XmlArrayItem("Value")]
+        public List<double> ForwardCutoffLeadHistoryMs { get; set; } = new List<double>();
+
+        [XmlArrayItem("Value")]
+        public List<double> ForwardPeakErrorHistoryA { get; set; } = new List<double>();
+
         [XmlIgnore]
         public bool IsStable => ValidSampleCount >= 5;
+
+        [XmlIgnore]
+        public bool HasCutoffPrediction =>
+            ValidCutoffSampleCount > 0 && ForwardCutoffLeadMedianMs >= 0;
 
         public bool AddSuccessfulCycle(
             double forwardEmptyA,
@@ -93,6 +110,43 @@ namespace Config
             return ConsecutiveDeviationCount >= 3;
         }
 
+        /// <summary>
+        /// 将一次有效的正向断电观测写入独立控流模型。
+        /// 等效提前时间使用实际尾部电流增量除以断电判定时斜率，
+        /// 从而可随下一圈实时斜率自动缩放提前断电电流。
+        /// </summary>
+        public bool TryAddCutoffObservation(
+            double targetA,
+            double cutoffCurrentA,
+            double cutoffSlopeAperMs,
+            double actualPeakA,
+            out double equivalentLeadMs)
+        {
+            equivalentLeadMs = 0;
+            if (!IsFinitePositive(targetA) ||
+                !IsFiniteNonNegative(cutoffCurrentA) ||
+                !IsFinitePositive(actualPeakA) ||
+                !IsFinitePositive(cutoffSlopeAperMs) ||
+                cutoffSlopeAperMs < MinimumCutoffSlopeAperMs)
+                return false;
+
+            var tailRiseA = Math.Max(0, actualPeakA - cutoffCurrentA);
+            equivalentLeadMs = Math.Min(
+                MaximumCutoffLeadMs,
+                tailRiseA / cutoffSlopeAperMs);
+
+            AddBounded(ForwardCutoffLeadHistoryMs, equivalentLeadMs);
+            AddBoundedSigned(ForwardPeakErrorHistoryA, actualPeakA - targetA);
+            ForwardCutoffLeadMedianMs = Median(ForwardCutoffLeadHistoryMs);
+            ForwardCutoffLeadMadMs = Mad(ForwardCutoffLeadHistoryMs, ForwardCutoffLeadMedianMs);
+            ForwardPeakErrorMedianA = Median(ForwardPeakErrorHistoryA);
+            ForwardPeakErrorMadA = Mad(ForwardPeakErrorHistoryA, ForwardPeakErrorMedianA);
+            ValidCutoffSampleCount++;
+            ModelVersion = CurrentModelVersion;
+            UpdatedUtc = DateTime.UtcNow;
+            return true;
+        }
+
         public int GetForwardSoftLimitMs()
         {
             if (!IsStable || ForwardClampMedianMs <= 0) return 0;
@@ -115,11 +169,20 @@ namespace Config
                 ReverseReleaseMadMs = ReverseReleaseMadMs,
                 ValidSampleCount = ValidSampleCount,
                 ConsecutiveDeviationCount = ConsecutiveDeviationCount,
+                ForwardCutoffLeadMedianMs = ForwardCutoffLeadMedianMs,
+                ForwardCutoffLeadMadMs = ForwardCutoffLeadMadMs,
+                ForwardPeakErrorMedianA = ForwardPeakErrorMedianA,
+                ForwardPeakErrorMadA = ForwardPeakErrorMadA,
+                ValidCutoffSampleCount = ValidCutoffSampleCount,
                 UpdatedUtc = UpdatedUtc,
                 ForwardEmptyHistoryA = new List<double>(ForwardEmptyHistoryA ?? new List<double>()),
                 ReverseEmptyHistoryA = new List<double>(ReverseEmptyHistoryA ?? new List<double>()),
                 ForwardClampHistoryMs = new List<double>(ForwardClampHistoryMs ?? new List<double>()),
-                ReverseReleaseHistoryMs = new List<double>(ReverseReleaseHistoryMs ?? new List<double>())
+                ReverseReleaseHistoryMs = new List<double>(ReverseReleaseHistoryMs ?? new List<double>()),
+                ForwardCutoffLeadHistoryMs =
+                    new List<double>(ForwardCutoffLeadHistoryMs ?? new List<double>()),
+                ForwardPeakErrorHistoryA =
+                    new List<double>(ForwardPeakErrorHistoryA ?? new List<double>())
             };
         }
 
@@ -128,6 +191,23 @@ namespace Config
             if (values == null || double.IsNaN(value) || double.IsInfinity(value) || value < 0) return;
             values.Add(value);
             while (values.Count > HistoryCapacity) values.RemoveAt(0);
+        }
+
+        private static void AddBoundedSigned(List<double> values, double value)
+        {
+            if (values == null || double.IsNaN(value) || double.IsInfinity(value)) return;
+            values.Add(value);
+            while (values.Count > HistoryCapacity) values.RemoveAt(0);
+        }
+
+        private static bool IsFinitePositive(double value)
+        {
+            return !double.IsNaN(value) && !double.IsInfinity(value) && value > 0;
+        }
+
+        private static bool IsFiniteNonNegative(double value)
+        {
+            return !double.IsNaN(value) && !double.IsInfinity(value) && value >= 0;
         }
 
         private static double Median(IEnumerable<double> source)
@@ -220,6 +300,21 @@ namespace Config
                     var loaded = serializer.Deserialize(stream) as EpbAdaptiveProfiles;
                     if (loaded == null) throw new InvalidDataException("反序列化结果为空。");
                     loaded.Profiles = loaded.Profiles ?? new List<EpbAdaptiveProfile>();
+                    foreach (var profile in loaded.Profiles.Where(x => x != null))
+                    {
+                        profile.ForwardEmptyHistoryA =
+                            profile.ForwardEmptyHistoryA ?? new List<double>();
+                        profile.ReverseEmptyHistoryA =
+                            profile.ReverseEmptyHistoryA ?? new List<double>();
+                        profile.ForwardClampHistoryMs =
+                            profile.ForwardClampHistoryMs ?? new List<double>();
+                        profile.ReverseReleaseHistoryMs =
+                            profile.ReverseReleaseHistoryMs ?? new List<double>();
+                        profile.ForwardCutoffLeadHistoryMs =
+                            profile.ForwardCutoffLeadHistoryMs ?? new List<double>();
+                        profile.ForwardPeakErrorHistoryA =
+                            profile.ForwardPeakErrorHistoryA ?? new List<double>();
+                    }
                     return loaded;
                 }
             }

@@ -26,6 +26,7 @@ namespace Controller
         private double _adaptiveForwardEmptyA;
         private double _adaptiveReverseEmptyA;
         private double _adaptiveForwardPeakA;
+        private int _adaptiveClampPeakCaptureStarted;
         private string _adaptiveDirection = string.Empty;
 
         internal event Action<AdaptiveDecisionTraceEvent> AdaptiveDecisionObserved;
@@ -63,6 +64,7 @@ namespace Controller
             _adaptiveForwardEmptyA = 0;
             _adaptiveReverseEmptyA = 0;
             _adaptiveForwardPeakA = 0;
+            Interlocked.Exchange(ref _adaptiveClampPeakCaptureStarted, 0);
 
             lock (_adaptiveGate)
             {
@@ -90,7 +92,10 @@ namespace Controller
                 ? _adaptiveForwardElapsedMs
                 : Math.Max(0, measuredElapsedMs);
             _adaptiveForwardEmptyA = _adaptiveStateMachine.ObservedForwardEmptyA;
-            _adaptiveForwardPeakA = _adaptiveStateMachine.PeakCurrentA;
+            if (_acq == null)
+                _adaptiveForwardPeakA = Math.Max(
+                    _adaptiveForwardPeakA,
+                    _adaptiveStateMachine.CutoffCurrentA);
             _adaptiveStateMachine.MarkHold();
         }
 
@@ -101,7 +106,10 @@ namespace Controller
             _adaptiveForwardEmptyA = _adaptiveForwardEmptyA > 0
                 ? _adaptiveForwardEmptyA
                 : _adaptiveStateMachine.ObservedForwardEmptyA;
-            _adaptiveForwardPeakA = Math.Max(_adaptiveForwardPeakA, _adaptiveStateMachine.PeakCurrentA);
+            if (_acq == null)
+                _adaptiveForwardPeakA = Math.Max(
+                    _adaptiveForwardPeakA,
+                    _adaptiveStateMachine.CutoffCurrentA);
 
             lock (_adaptiveGate)
             {
@@ -146,6 +154,11 @@ namespace Controller
 
         private void DisarmAdaptiveMonitoring()
         {
+            if (Interlocked.Exchange(ref _adaptiveClampPeakCaptureStarted, 0) != 0)
+            {
+                try { _acq?.CancelEpbCurrentPeak(_channel); }
+                catch { }
+            }
             _adaptiveStateMachine?.Disarm();
             _adaptiveDirection = string.Empty;
             lock (_adaptiveGate)
@@ -210,6 +223,11 @@ namespace Controller
                 WindowP90A = decision.WindowP90A,
                 ReleaseThresholdA = decision.ReleaseThresholdA,
                 AllowedSpreadA = decision.AllowedSpreadA,
+                CutoffCurrentA = decision.CutoffCurrentA,
+                EstimatedSlopeAperMs = decision.EstimatedSlopeAperMs,
+                PredictedPeakA = decision.PredictedPeakA,
+                PredictionLeadMs = decision.PredictionLeadMs,
+                CutoffReason = decision.CutoffReason,
                 ReleaseCandidateElapsedMs = decision.ReleaseCandidateElapsedMs,
                 WindowQualified = decision.WindowQualified,
                 Action = action,
@@ -223,6 +241,11 @@ namespace Controller
         {
             if (decision == null || !decision.HasAction) return;
 
+            if (decision.StateChanged &&
+                decision.Stage == EpbCurrentStage.LoadRise &&
+                string.Equals(_adaptiveDirection, "Forward", StringComparison.Ordinal))
+                EnsureAdaptiveClampPeakCaptureStarted();
+
             if (decision.SoftWarning)
             {
                 _adaptiveSoftWarningSeen = true;
@@ -232,8 +255,10 @@ namespace Controller
 
             if (decision.ClampReached)
             {
+                EnsureAdaptiveClampPeakCaptureStarted();
                 _adaptiveForwardElapsedMs = decision.ElapsedMs;
-                _adaptiveForwardPeakA = Math.Max(_adaptiveForwardPeakA, _adaptiveStateMachine.PeakCurrentA);
+                if (_acq == null)
+                    _adaptiveForwardPeakA = Math.Max(_adaptiveForwardPeakA, decision.CurrentA);
                 TaskCompletionSource<EpbAdaptiveDecision> completion;
                 lock (_adaptiveGate) completion = _adaptiveForwardCompletion;
                 completion?.TrySetResult(decision);
@@ -277,6 +302,21 @@ namespace Controller
             catch { /* 上层报警订阅者异常不允许回流采集线程 */ }
         }
 
+        private void EnsureAdaptiveClampPeakCaptureStarted()
+        {
+            if (_acq == null ||
+                Interlocked.CompareExchange(ref _adaptiveClampPeakCaptureStarted, 1, 0) != 0)
+                return;
+            try
+            {
+                _acq.BeginEpbCurrentPeak(_channel);
+            }
+            catch
+            {
+                Interlocked.Exchange(ref _adaptiveClampPeakCaptureStarted, 0);
+            }
+        }
+
         private void RaiseAdaptiveWarning(string reason)
         {
             try { WarningRaised?.Invoke(_channel, reason ?? "AdaptiveWarning"); }
@@ -316,6 +356,9 @@ namespace Controller
 
         private async Task<EpbCycleOutcome> RunOneAdaptiveAsync(int targetPeriodMs, CancellationToken token)
         {
+            const int postOffPeakCaptureMs = 100;
+            const double balancedOvershootLimitA = 0.8;
+            const double balancedUndershootWarningA = 0.8;
             var outcome = new EpbCycleOutcome
             {
                 Kind = EpbCycleOutcomeKind.HardFault,
@@ -329,7 +372,6 @@ namespace Controller
                     await _manager.HydraulicEnterAsync(_channel, token).ConfigureAwait(false);
 
                 BeginAdaptiveForwardMonitoring(targetPeriodMs);
-                _acq?.BeginEpbCurrentPeak(_channel);
                 CommandForward();
                 _log?.Info(
                     $"EPB[{_channel}] 自适应正向上电：软时限={_adaptiveProfile.GetForwardSoftLimitMs()}ms，" +
@@ -340,27 +382,115 @@ namespace Controller
                 lock (_adaptiveGate) forwardCompletion = _adaptiveForwardCompletion;
                 var forward = await WaitAdaptiveDecisionAsync(forwardCompletion, token).ConfigureAwait(false);
                 if (forward.HardFault)
+                {
+                    DisarmAdaptiveMonitoring();
                     return EpbCycleOutcome.HardFault(forward.Stage, forward.Reason);
+                }
                 if (!forward.ClampReached)
+                {
+                    DisarmAdaptiveMonitoring();
                     return EpbCycleOutcome.HardFault(forward.Stage, "ForwardEndedWithoutClamp");
+                }
 
                 CommandOffHighPriority();
                 CompleteAdaptiveForwardMonitoring(forward.ElapsedMs);
+
+                var holdTask = _holdMs > 0
+                    ? Task.Delay(_holdMs, token)
+                    : Task.CompletedTask;
+                Task hydraulicReleaseTask = Task.CompletedTask;
+                if (_manager != null)
+                    hydraulicReleaseTask = _manager.HydraulicMarkReleaseAsync(_channel);
+
+                var peakCaptureValid = false;
                 try
                 {
-                    var peak = _acq?.EndEpbCurrentPeak(_channel);
-                    if (peak != null) _adaptiveForwardPeakA = Math.Max(_adaptiveForwardPeakA, peak.Value.MaxAmp);
+                    if (_acq != null &&
+                        Interlocked.CompareExchange(ref _adaptiveClampPeakCaptureStarted, 1, 1) == 1)
+                    {
+                        var peak = await _acq.EndEpbCurrentPeakAsync(
+                                _channel,
+                                postOffPeakCaptureMs,
+                                cutoffAfterDelay: true,
+                                token: token)
+                            .ConfigureAwait(false);
+                        _adaptiveForwardPeakA = Math.Max(
+                            forward.CutoffCurrentA,
+                            Math.Max(_adaptiveForwardPeakA, peak.MaxAmp));
+                        peakCaptureValid = peak.SampleCount > 0 &&
+                                           peak.MaxAmp > 0 &&
+                                           !double.IsNaN(peak.MaxAmp) &&
+                                           !double.IsInfinity(peak.MaxAmp);
+                        Interlocked.Exchange(ref _adaptiveClampPeakCaptureStarted, 0);
+                    }
                 }
-                catch
+                catch (Exception ex)
                 {
+                    if (Interlocked.Exchange(ref _adaptiveClampPeakCaptureStarted, 0) != 0)
+                    {
+                        try { _acq?.CancelEpbCurrentPeak(_channel); }
+                        catch { }
+                    }
                     // 峰值封口失败不改变已经由快速样本确认的夹紧结果。
+                    _log?.Warn($"EPB[{_channel}] 断电后峰值捕获失败：{ex.Message}", "EPB");
                 }
 
-                if (_manager != null)
-                    await _manager.HydraulicMarkReleaseAsync(_channel).ConfigureAwait(false);
+                var peakErrorA = peakCaptureValid
+                    ? _adaptiveForwardPeakA - _posThrA
+                    : double.NaN;
+                if (peakCaptureValid)
+                {
+                    PersistAdaptiveCutoffObservation(
+                        forward.CutoffCurrentA,
+                        forward.EstimatedSlopeAperMs,
+                        _adaptiveForwardPeakA,
+                        peakErrorA);
+                }
+                else
+                {
+                    _log?.Warn(
+                        $"EPB[{_channel}] 未取得有效断电后峰值，本圈不更新控流预测模型。",
+                        "EPB");
+                }
 
-                if (_holdMs > 0)
-                    await Task.Delay(_holdMs, token).ConfigureAwait(false);
+                if (peakCaptureValid && peakErrorA > balancedOvershootLimitA)
+                {
+                    await hydraulicReleaseTask.ConfigureAwait(false);
+                    DisarmAdaptiveMonitoring();
+                    var reason =
+                        $"ForwardPeakOvershoot Peak={_adaptiveForwardPeakA:F3}A " +
+                        $"Target={_posThrA:F3}A Error={peakErrorA:+0.000;-0.000;0.000}A " +
+                        $"Limit=+{balancedOvershootLimitA:F3}A";
+                    try { AlarmRaised?.Invoke(_channel, "AdaptiveHardFault " + reason); }
+                    catch { }
+                    return new EpbCycleOutcome
+                    {
+                        Kind = EpbCycleOutcomeKind.HardFault,
+                        Stage = EpbCurrentStage.ClampReached,
+                        Reason = reason,
+                        ForwardElapsedMs = _adaptiveForwardElapsedMs,
+                        PeakCurrentA = _adaptiveForwardPeakA,
+                        TargetCurrentA = _posThrA,
+                        CutoffCurrentA = forward.CutoffCurrentA,
+                        EstimatedSlopeAperMs = forward.EstimatedSlopeAperMs,
+                        PredictedPeakA = forward.PredictedPeakA,
+                        PredictionLeadMs = forward.PredictionLeadMs,
+                        PeakErrorA = peakErrorA,
+                        CutoffReason = forward.CutoffReason,
+                        ForwardEmptyCurrentA = _adaptiveForwardEmptyA
+                    };
+                }
+
+                if (peakCaptureValid && peakErrorA < -balancedUndershootWarningA)
+                {
+                    _adaptiveSoftWarningSeen = true;
+                    RaiseAdaptiveWarning(
+                        $"正向实际峰值低于目标：Peak={_adaptiveForwardPeakA:F3}A，" +
+                        $"Target={_posThrA:F3}A，Error={peakErrorA:F3}A；控流模型将自动缩短提前量。");
+                }
+
+                await hydraulicReleaseTask.ConfigureAwait(false);
+                await holdTask.ConfigureAwait(false);
 
                 BeginAdaptiveReverseMonitoring(targetPeriodMs);
                 CommandReverse();
@@ -372,9 +502,15 @@ namespace Controller
                 lock (_adaptiveGate) reverseCompletion = _adaptiveReverseCompletion;
                 var reverse = await WaitAdaptiveDecisionAsync(reverseCompletion, token).ConfigureAwait(false);
                 if (reverse.HardFault)
+                {
+                    DisarmAdaptiveMonitoring();
                     return EpbCycleOutcome.HardFault(reverse.Stage, reverse.Reason);
+                }
                 if (!reverse.ReleaseCompleted)
+                {
+                    DisarmAdaptiveMonitoring();
                     return EpbCycleOutcome.HardFault(reverse.Stage, "ReverseEndedWithoutRelease");
+                }
 
                 CommandOffHighPriority();
                 _adaptiveReverseEmptyA = _adaptiveStateMachine.ObservedReverseEmptyA;
@@ -390,6 +526,13 @@ namespace Controller
                     ForwardElapsedMs = _adaptiveForwardElapsedMs,
                     ReverseElapsedMs = _adaptiveReverseElapsedMs,
                     PeakCurrentA = _adaptiveForwardPeakA,
+                    TargetCurrentA = _posThrA,
+                    CutoffCurrentA = forward.CutoffCurrentA,
+                    EstimatedSlopeAperMs = forward.EstimatedSlopeAperMs,
+                    PredictedPeakA = forward.PredictedPeakA,
+                    PredictionLeadMs = forward.PredictionLeadMs,
+                    PeakErrorA = peakErrorA,
+                    CutoffReason = forward.CutoffReason,
                     ForwardEmptyCurrentA = _adaptiveForwardEmptyA,
                     ReverseEmptyCurrentA = _adaptiveReverseEmptyA
                 };
@@ -403,7 +546,11 @@ namespace Controller
 
                 _log?.Info(
                     $"EPB[{_channel}] 自适应单圈完成：Fwd={outcome.ForwardElapsedMs}ms，" +
-                    $"Rev={outcome.ReverseElapsedMs}ms，Peak={outcome.PeakCurrentA:F3}A，结果={outcome.Kind}。",
+                    $"Rev={outcome.ReverseElapsedMs}ms，Cutoff={outcome.CutoffCurrentA:F3}A，" +
+                    $"PredictedPeak={outcome.PredictedPeakA:F3}A，Peak={outcome.PeakCurrentA:F3}A，" +
+                    $"Target={outcome.TargetCurrentA:F3}A，Error={outcome.PeakErrorA:+0.000;-0.000;0.000}A，" +
+                    $"Slope={outcome.EstimatedSlopeAperMs:F4}A/ms，Lead={outcome.PredictionLeadMs:F2}ms，" +
+                    $"Trigger={outcome.CutoffReason}，结果={outcome.Kind}。",
                     "EPB");
                 return outcome;
             }
@@ -480,6 +627,43 @@ namespace Controller
                 $"EPB[{_channel}] {source}样本已保存：有效样本={_adaptiveProfile.ValidSampleCount}，" +
                 $"Fwd={_adaptiveProfile.ForwardClampMedianMs:F0}±MAD{_adaptiveProfile.ForwardClampMadMs:F0}ms，" +
                 $"Rev={_adaptiveProfile.ReverseReleaseMedianMs:F0}±MAD{_adaptiveProfile.ReverseReleaseMadMs:F0}ms。",
+                "EPB");
+        }
+
+        private void PersistAdaptiveCutoffObservation(
+            double cutoffCurrentA,
+            double cutoffSlopeAperMs,
+            double actualPeakA,
+            double peakErrorA)
+        {
+            if (!_adaptiveProfile.TryAddCutoffObservation(
+                    _posThrA,
+                    cutoffCurrentA,
+                    cutoffSlopeAperMs,
+                    actualPeakA,
+                    out var equivalentLeadMs))
+            {
+                _log?.Warn(
+                    $"EPB[{_channel}] 控流观测无效，未更新预测模型：" +
+                    $"Cutoff={cutoffCurrentA:F3}A Slope={cutoffSlopeAperMs:F4}A/ms " +
+                    $"Peak={actualPeakA:F3}A Target={_posThrA:F3}A。",
+                    "EPB");
+                return;
+            }
+
+            _adaptiveStateMachine.UpdateProfile(_adaptiveProfile);
+            try { _saveAdaptiveProfile?.Invoke(_adaptiveProfile.Clone()); }
+            catch (Exception ex)
+            {
+                _log?.Warn($"EPB[{_channel}] 控流模型回调保存失败：{ex.Message}", "EPB");
+            }
+
+            _log?.Info(
+                $"EPB[{_channel}] 控流观测已保存：样本={_adaptiveProfile.ValidCutoffSampleCount}，" +
+                $"本圈等效Lead={equivalentLeadMs:F2}ms，" +
+                $"模型Lead={_adaptiveProfile.ForwardCutoffLeadMedianMs:F2}±MAD" +
+                $"{_adaptiveProfile.ForwardCutoffLeadMadMs:F2}ms，" +
+                $"PeakError={peakErrorA:+0.000;-0.000;0.000}A。",
                 "EPB");
         }
 

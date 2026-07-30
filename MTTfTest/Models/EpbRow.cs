@@ -17,10 +17,10 @@ namespace MTEmbTest.Models
         /// <summary>名称（如 EPB1）。</summary>
         public string Name { get; set; }
 
-        /// <summary>正向电流阈值 A（达到即换向/关闭的目标阈值）。</summary>
+        /// <summary>正向实际夹紧峰值目标 A。</summary>
         public double ForwardA { get; set; }
 
-        /// <summary>提前断电电流 A（安全裕量）。</summary>
+        /// <summary>自适应模式首次提前量 A；后续由真实峰值自动修正。</summary>
         public double SafetyMarginA { get; set; }
 
         /// <summary>正向上电最长时长 ms（超时则强制结束正向）。</summary>

@@ -23,8 +23,11 @@ namespace AdaptiveControlTests
                     return ReplayCsv(args[1]);
 
                 Run("正常夹紧", NormalClamp);
+                Run("学习尾部提前量后预测夹紧", LearnedTailLeadPredictsClamp);
+                Run("低斜率不提前误触发", LowSlopeDoesNotPredictEarly);
                 Run("未识别负载上升前到阈值立即停机", ThresholdBeforeLoadRiseFaults);
                 Run("夹紧阈值必须连续三样本确认", ClampNeedsThreeSamples);
+                Run("稳定模型后连续50圈仍记录正向空行程", StableProfileKeepsLearningForFiftyCycles);
                 Run("长空行程只软预警", LongEmptyTravelWarning);
                 Run("反向动态释放", ReverseRelease);
                 Run("反向17ms采样节拍仍可释放", ReverseReleaseWithSeventeenMillisecondCadence);
@@ -39,6 +42,8 @@ namespace AdaptiveControlTests
                 Run("绝对上电超限", AbsoluteOnTime);
                 Run("异常高电流平台", AbnormalHighPlateau);
                 Run("模型原子保存与重载", ProfilePersistence);
+                Run("控流模型五圈收敛到目标带", CutoffModelConvergesWithinFiveCycles);
+                Run("版本1模型无损升级到版本2", VersionOneProfileMigrates);
                 Run("损坏模型回退", CorruptProfileFallback);
                 Run("周期超限不追赶且圈号连续", TimerDoesNotCatchUp);
                 Run("新运行复位报警停机锁存", AlarmStopLatchResetsForNewRun);
@@ -60,7 +65,7 @@ namespace AdaptiveControlTests
                 Run("报警辅助证据包含计划和DO时序", AlarmControlEvidenceIsReconstructable);
                 Run("同组硬故障仅停止故障通道", HardFaultDoesNotStopSiblingChannel);
                 _passed += PowerSupplyCoordinatorTests.RunAll();
-                Console.WriteLine($"PASS {_passed}/44");
+                Console.WriteLine($"PASS {_passed}/49");
                 return 0;
             }
             catch (Exception ex)
@@ -171,6 +176,40 @@ namespace AdaptiveControlTests
             Assert(!decision.HardFault, "正常夹紧被判硬故障");
         }
 
+        private static void LearnedTailLeadPredictsClamp()
+        {
+            var profile = StableProfile();
+            Assert(
+                profile.TryAddCutoffObservation(15.0, 14.5, 0.05, 15.0, out var learnedLead),
+                "有效控流观测未被模型接受");
+            Assert(Math.Abs(learnedLead - 10.0) < 0.01, "等效尾部时间计算错误");
+
+            var machine = new EpbAdaptiveCurrentStateMachine(profile);
+            machine.ArmForward(Tick(0), 100, 6000, 15.0, 2.0, 3.0);
+            Feed(machine, 0, 300, 10, _ => 1.0);
+            var decision = Feed(machine, 302, 800, 2, ms => 1.0 + (ms - 302) * 0.05);
+
+            Assert(decision.ClampReached && !decision.HardFault, "学习提前量后未完成预测夹紧");
+            Assert(
+                decision.CutoffReason == "PredictedPeak",
+                $"学习提前量未走预测触发：Reason={decision.CutoffReason} " +
+                $"Cutoff={decision.CutoffCurrentA:F3} Predicted={decision.PredictedPeakA:F3} " +
+                $"Slope={decision.EstimatedSlopeAperMs:F4} Lead={decision.PredictionLeadMs:F2}");
+            Assert(decision.CutoffCurrentA < 15.0, "预测控制没有在目标前断电");
+            Assert(Math.Abs(decision.PredictedPeakA - 15.0) <= 0.35, "预测峰值未落入目标控制带");
+        }
+
+        private static void LowSlopeDoesNotPredictEarly()
+        {
+            var profile = StableProfile();
+            profile.TryAddCutoffObservation(15.0, 14.5, 0.05, 15.0, out _);
+            var machine = new EpbAdaptiveCurrentStateMachine(profile);
+            machine.ArmForward(Tick(0), 100, 6000, 15.0, 2.0, 3.0);
+            Feed(machine, 0, 300, 10, _ => 1.0);
+            var decision = Feed(machine, 310, 1800, 10, ms => 1.0 + (ms - 310) * 0.0005);
+            Assert(!decision.ClampReached && !decision.HardFault, "低斜率波形被预测算法提前误触发");
+        }
+
         private static void ThresholdBeforeLoadRiseFaults()
         {
             var machine = NewMachine();
@@ -194,6 +233,36 @@ namespace AdaptiveControlTests
                 "夹紧阈值单点或两点即被错误判定成功");
             var third = machine.OnSample(Tick(810), 14.0);
             Assert(third.ClampReached, "夹紧阈值连续三样本后仍未确认");
+        }
+
+        private static void StableProfileKeepsLearningForFiftyCycles()
+        {
+            var profile = StableProfile();
+            for (var cycle = 0; cycle < 50; cycle++)
+            {
+                var machine = new EpbAdaptiveCurrentStateMachine(profile);
+                machine.ArmForward(Tick(0), 100, 6000, 15.0, 1.0, 3.0);
+                Feed(machine, 0, 260, 10, _ => 1.0 + cycle * 0.001);
+                var clamp = Feed(
+                    machine,
+                    270,
+                    1000,
+                    10,
+                    ms => 1.0 + cycle * 0.001 + (ms - 270) * 0.03);
+
+                Assert(clamp.ClampReached && !clamp.HardFault, $"稳定模型第{cycle + 1}圈未夹紧");
+                Assert(
+                    machine.ObservedForwardEmptyA > 0,
+                    $"稳定模型第{cycle + 1}圈正向空行程观测仍为0");
+                profile.AddSuccessfulCycle(
+                    machine.ObservedForwardEmptyA,
+                    1.0,
+                    clamp.ElapsedMs,
+                    1200);
+            }
+
+            Assert(profile.ValidSampleCount == 55, "稳定模型后50圈没有持续增加有效样本数");
+            Assert(profile.ForwardEmptyHistoryA.Count == 30, "空行程滚动历史没有保持容量上限");
         }
 
         private static void LongEmptyTravelWarning()
@@ -395,12 +464,89 @@ namespace AdaptiveControlTests
                 var profile = store.GetOrCreate(10);
                 for (var i = 0; i < 5; i++)
                     profile.AddSuccessfulCycle(1.0 + i * 0.01, 0.8 + i * 0.01, 3000 + i * 10, 1200 + i * 5);
+                profile.TryAddCutoffObservation(15.0, 14.5, 0.05, 15.0, out _);
                 store.Save(profile);
 
                 var loaded = new EpbAdaptiveProfileStore(dir).GetOrCreate(10);
                 Assert(loaded.ValidSampleCount == 5, "模型样本数未持久化");
                 Assert(loaded.IsStable, "五圈后模型未进入稳定状态");
+                Assert(loaded.ModelVersion == 2, "控流模型未保存为版本2");
+                Assert(loaded.ValidCutoffSampleCount == 1, "控流样本数未持久化");
+                Assert(Math.Abs(loaded.ForwardCutoffLeadMedianMs - 10.0) < 0.01,
+                    "控流提前时间未持久化");
                 Assert(File.Exists(Path.Combine(dir, "EpbAdaptiveProfiles.xml")), "模型文件不存在");
+            }
+            finally
+            {
+                Directory.Delete(dir, true);
+            }
+        }
+
+        private static void CutoffModelConvergesWithinFiveCycles()
+        {
+            var profile = StableProfile();
+            const double targetA = 15.0;
+            const double slopeAperMs = 0.05;
+            const double physicalTailLeadMs = 8.0;
+            var leadMs = 2.0 / slopeAperMs;
+            var errors = new List<double>();
+
+            for (var cycle = 0; cycle < 5; cycle++)
+            {
+                var cutoffCurrentA = targetA - slopeAperMs * leadMs;
+                var actualPeakA = cutoffCurrentA + slopeAperMs * physicalTailLeadMs;
+                errors.Add(actualPeakA - targetA);
+                Assert(
+                    profile.TryAddCutoffObservation(
+                        targetA,
+                        cutoffCurrentA,
+                        slopeAperMs,
+                        actualPeakA,
+                        out _),
+                    $"第{cycle + 1}圈控流观测未写入");
+                leadMs = profile.ForwardCutoffLeadMedianMs;
+            }
+
+            Assert(profile.ValidCutoffSampleCount == 5, "五圈控流样本数错误");
+            Assert(Math.Abs(errors[errors.Count - 1]) <= 0.3, "五圈后峰值误差未进入±0.3A");
+            Assert(errors.TrueForAll(x => x <= 0.8), "正常学习波形出现超过+0.8A超调");
+        }
+
+        private static void VersionOneProfileMigrates()
+        {
+            var dir = CreateTempDir();
+            try
+            {
+                var path = Path.Combine(dir, "EpbAdaptiveProfiles.xml");
+                File.WriteAllText(
+                    path,
+                    "<EpbAdaptiveProfiles ModelVersion=\"1\">" +
+                    "<Profile Channel=\"10\" ModelVersion=\"1\">" +
+                    "<ForwardEmptyCurrentA>1.1</ForwardEmptyCurrentA>" +
+                    "<ReverseEmptyCurrentA>0.9</ReverseEmptyCurrentA>" +
+                    "<ForwardClampMedianMs>3000</ForwardClampMedianMs>" +
+                    "<ReverseReleaseMedianMs>1200</ReverseReleaseMedianMs>" +
+                    "<ValidSampleCount>5</ValidSampleCount>" +
+                    "<ForwardEmptyHistoryA><Value>1.1</Value></ForwardEmptyHistoryA>" +
+                    "<ReverseEmptyHistoryA><Value>0.9</Value></ReverseEmptyHistoryA>" +
+                    "<ForwardClampHistoryMs><Value>3000</Value></ForwardClampHistoryMs>" +
+                    "<ReverseReleaseHistoryMs><Value>1200</Value></ReverseReleaseHistoryMs>" +
+                    "</Profile></EpbAdaptiveProfiles>");
+
+                var store = new EpbAdaptiveProfileStore(dir);
+                var loaded = store.GetOrCreate(10);
+                Assert(loaded.IsStable && loaded.ValidSampleCount == 5, "版本1有效样本未保留");
+                Assert(Math.Abs(loaded.ForwardEmptyCurrentA - 1.1) < 0.001,
+                    "版本1空行程基线未保留");
+                Assert(loaded.ValidCutoffSampleCount == 0 && !loaded.HasCutoffPrediction,
+                    "版本1模型错误地产生控流学习数据");
+
+                loaded.TryAddCutoffObservation(15.0, 14.5, 0.05, 15.0, out _);
+                store.Save(loaded);
+                var migrated = new EpbAdaptiveProfileStore(dir).GetOrCreate(10);
+                Assert(migrated.ModelVersion == 2, "版本1模型首次控流保存后未升级");
+                Assert(migrated.ValidSampleCount == 5 && migrated.ValidCutoffSampleCount == 1,
+                    "模型升级破坏原有样本或新增控流样本");
             }
             finally
             {

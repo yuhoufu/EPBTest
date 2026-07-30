@@ -59,6 +59,13 @@ namespace Controller.Adaptive
         public int ForwardElapsedMs { get; set; }
         public int ReverseElapsedMs { get; set; }
         public double PeakCurrentA { get; set; }
+        public double TargetCurrentA { get; set; }
+        public double CutoffCurrentA { get; set; }
+        public double EstimatedSlopeAperMs { get; set; }
+        public double PredictedPeakA { get; set; }
+        public double PredictionLeadMs { get; set; }
+        public double PeakErrorA { get; set; }
+        public string CutoffReason { get; set; }
         public double ForwardEmptyCurrentA { get; set; }
         public double ReverseEmptyCurrentA { get; set; }
 
@@ -105,6 +112,11 @@ namespace Controller.Adaptive
         public double WindowP90A { get; set; } = double.NaN;
         public double ReleaseThresholdA { get; set; } = double.NaN;
         public double AllowedSpreadA { get; set; } = double.NaN;
+        public double CutoffCurrentA { get; set; } = double.NaN;
+        public double EstimatedSlopeAperMs { get; set; } = double.NaN;
+        public double PredictedPeakA { get; set; } = double.NaN;
+        public double PredictionLeadMs { get; set; } = double.NaN;
+        public string CutoffReason { get; set; }
         public int ReleaseCandidateElapsedMs { get; set; }
         public bool WindowQualified { get; set; }
 
@@ -119,16 +131,22 @@ namespace Controller.Adaptive
     {
         private const int StableWindowMs = 150;
         private const int StableWindowMinCoverageMs = 120;
+        private const int ForwardEmptyWindowMinCoverageMs = 100;
         private const int ReverseWindowMs = 200;
         private const int ReverseWindowMinCoverageMs = 120;
         private const int WindowMinimumSamples = 8;
         private const int WindowRetentionMs = 350;
+        private const int PredictionSlopeWindowMs = 30;
         private const int ReleaseConfirmMs = 200;
         private const int NearZeroFaultMs = 200;
         private const double NearZeroA = 0.10;
+        private const double MinimumPredictionSlopeAperMs = 0.001;
+        private const double MaximumPredictionSlopeAperMs = 1.0;
+        private const double MaximumPredictionLeadMs = 100.0;
 
         private readonly object _gate = new object();
         private readonly Queue<Sample> _window = new Queue<Sample>();
+        private readonly Queue<Sample> _forwardEmptyWindow = new Queue<Sample>();
 
         private EpbAdaptiveProfile _profile;
         private EpbCurrentStage _stage = EpbCurrentStage.Idle;
@@ -180,6 +198,12 @@ namespace Controller.Adaptive
         {
             get { lock (_gate) return _observedReverseEmptyA; }
         }
+
+        public double CutoffCurrentA { get; private set; }
+        public double CutoffSlopeAperMs { get; private set; }
+        public double PredictedPeakA { get; private set; }
+        public double PredictionLeadMs { get; private set; }
+        public string CutoffReason { get; private set; }
 
         public void UpdateProfile(EpbAdaptiveProfile profile)
         {
@@ -233,6 +257,7 @@ namespace Controller.Adaptive
             lock (_gate)
             {
                 _window.Clear();
+                _forwardEmptyWindow.Clear();
                 SetStage(EpbCurrentStage.Idle);
                 _lastSampleTick = 0;
             }
@@ -351,19 +376,37 @@ namespace Controller.Adaptive
 
             if (_stage == EpbCurrentStage.EmptyTravel)
             {
-                if (WindowIsStable(out var median, out var mad) && _observedForwardEmptyA <= 0)
+                var historicalBaselineAvailable =
+                    _profile.IsStable && _profile.ForwardEmptyCurrentA > 0;
+                var provisionalBaseline = historicalBaselineAvailable
+                    ? _profile.ForwardEmptyCurrentA
+                    : _observedForwardEmptyA;
+                var provisionalMad = historicalBaselineAvailable
+                    ? _profile.ForwardEmptyMadA
+                    : _observedForwardEmptyMadA;
+                var provisionalLoadRiseThreshold = provisionalBaseline > 0
+                    ? provisionalBaseline + Math.Max(0.5, 4.0 * provisionalMad)
+                    : double.PositiveInfinity;
+
+                // 独立保留本圈负载上升前的样本。即使历史模型已经稳定，也必须先形成
+                // 本圈真实空行程观测，禁止使用历史基线冒充本圈样本。
+                if (_observedForwardEmptyA <= 0 &&
+                    (!historicalBaselineAvailable || current < provisionalLoadRiseThreshold))
                 {
-                    _observedForwardEmptyA = median;
-                    _observedForwardEmptyMadA = mad;
+                    AddForwardEmptyWindow(tick, current);
+                    if (ForwardEmptyWindowIsStable(out var median, out var mad))
+                    {
+                        _observedForwardEmptyA = median;
+                        _observedForwardEmptyMadA = mad;
+                    }
                 }
 
-                if (_observedForwardEmptyA > 0 ||
-                    (_profile.IsStable && _profile.ForwardEmptyCurrentA > 0))
+                if (_observedForwardEmptyA > 0)
                 {
-                    var baseline = _profile.IsStable && _profile.ForwardEmptyCurrentA > 0
+                    var baseline = historicalBaselineAvailable
                         ? _profile.ForwardEmptyCurrentA
                         : _observedForwardEmptyA;
-                    var baselineMad = _profile.IsStable
+                    var baselineMad = historicalBaselineAvailable
                         ? _profile.ForwardEmptyMadA
                         : _observedForwardEmptyMadA;
                     var loadRiseThreshold = baseline + Math.Max(0.5, 4.0 * baselineMad);
@@ -376,19 +419,26 @@ namespace Controller.Adaptive
                 }
             }
 
-            var clampThreshold = Math.Max(0, _forwardA - _safetyMarginA);
-            if (_stage == EpbCurrentStage.EmptyTravel && current >= clampThreshold)
+            if (_stage == EpbCurrentStage.EmptyTravel && current >= _forwardA)
             {
                 Fault(
                     decision,
-                    $"CurveSequenceInvalid ThresholdBeforeLoadRise I={current:F3}A Threshold={clampThreshold:F3}A");
+                    $"CurveSequenceInvalid ThresholdBeforeLoadRise I={current:F3}A Target={_forwardA:F3}A");
                 return;
             }
 
             if (_stage == EpbCurrentStage.LoadRise)
             {
+                var slope = PredictionSlopeAperMs();
+                var leadMs = GetPredictionLeadMs(slope);
+                var predictedPeak = current + slope * leadMs;
+                decision.CutoffCurrentA = current;
+                decision.EstimatedSlopeAperMs = slope;
+                decision.PredictionLeadMs = leadMs;
+                decision.PredictedPeakA = predictedPeak;
+
                 if (current > _loadRisePeakA) _loadRisePeakA = current;
-                if (_loadRisePeakA - current >= 2.0 && current < clampThreshold)
+                if (_loadRisePeakA - current >= 2.0 && current < _forwardA)
                 {
                     if (_loadRiseDropStartTick == 0) _loadRiseDropStartTick = tick;
                     if (ElapsedMs(_loadRiseDropStartTick, tick) >= 100)
@@ -404,14 +454,27 @@ namespace Controller.Adaptive
                     _loadRiseDropStartTick = 0;
                 }
 
-                _clampConfirmSamples = current >= clampThreshold ? _clampConfirmSamples + 1 : 0;
-                if (_clampConfirmSamples >= 3)
+                // 实际电流达到目标时立即断电；预测触发则仍要求连续三点，抵抗孤立毛刺。
+                var directTargetReached = current >= _forwardA;
+                var predictionReached =
+                    slope >= MinimumPredictionSlopeAperMs && predictedPeak >= _forwardA;
+                _clampConfirmSamples = predictionReached ? _clampConfirmSamples + 1 : 0;
+                if (directTargetReached || _clampConfirmSamples >= 3)
                 {
                     SetStage(EpbCurrentStage.ClampReached);
+                    CutoffCurrentA = current;
+                    CutoffSlopeAperMs = slope;
+                    PredictedPeakA = predictedPeak;
+                    PredictionLeadMs = leadMs;
+                    CutoffReason = directTargetReached ? "DirectTarget" : "PredictedPeak";
                     decision.ClampReached = true;
                     decision.StateChanged = true;
+                    decision.CutoffReason = CutoffReason;
                     decision.Reason =
-                        $"ClampReachedConfirmed I={current:F3}A Threshold={clampThreshold:F3}A Samples=3";
+                        directTargetReached
+                            ? $"ClampReachedDirect I={current:F3}A Target={_forwardA:F3}A"
+                            : $"ClampReachedPredicted I={current:F3}A Predicted={predictedPeak:F3}A " +
+                              $"Target={_forwardA:F3}A Slope={slope:F4}A/ms Lead={leadMs:F2}ms Samples=3";
                 }
             }
         }
@@ -548,6 +611,7 @@ namespace Controller.Adaptive
         private void ResetDirection(long startTick, int inrushIgnoreMs, int absoluteMaxMs)
         {
             _window.Clear();
+            _forwardEmptyWindow.Clear();
             _powerStartTick = startTick;
             _lastSampleTick = 0;
             _releaseCandidateTick = 0;
@@ -566,6 +630,11 @@ namespace Controller.Adaptive
             _observedReverseEmptyA = 0;
             _loadRisePeakA = 0;
             _loadRiseDropStartTick = 0;
+            CutoffCurrentA = 0;
+            CutoffSlopeAperMs = 0;
+            PredictedPeakA = 0;
+            PredictionLeadMs = 0;
+            CutoffReason = string.Empty;
         }
 
         private void AddWindow(long tick, double current)
@@ -592,6 +661,34 @@ namespace Controller.Adaptive
             return stats.Range <= Math.Max(0.15, 6.0 * mad);
         }
 
+        private void AddForwardEmptyWindow(long tick, double current)
+        {
+            _forwardEmptyWindow.Enqueue(new Sample(tick, current));
+            while (_forwardEmptyWindow.Count > 0 &&
+                   ElapsedMs(_forwardEmptyWindow.Peek().Tick, tick) > WindowRetentionMs)
+                _forwardEmptyWindow.Dequeue();
+        }
+
+        private bool ForwardEmptyWindowIsStable(out double median, out double mad)
+        {
+            median = 0;
+            mad = 0;
+            if (_forwardEmptyWindow.Count == 0) return false;
+            var nowTick = _forwardEmptyWindow.Last().Tick;
+            if (!TryGetWindowStats(
+                    _forwardEmptyWindow,
+                    nowTick,
+                    StableWindowMs,
+                    ForwardEmptyWindowMinCoverageMs,
+                    WindowMinimumSamples,
+                    out var stats))
+                return false;
+
+            median = stats.Median;
+            mad = stats.Mad;
+            return stats.Range <= Math.Max(0.15, 6.0 * mad);
+        }
+
         private bool TryGetWindowStats(
             long nowTick,
             int windowMs,
@@ -599,10 +696,27 @@ namespace Controller.Adaptive
             int minimumSamples,
             out WindowStats stats)
         {
-            stats = default;
-            if (_window.Count < minimumSamples || nowTick <= 0) return false;
+            return TryGetWindowStats(
+                _window,
+                nowTick,
+                windowMs,
+                minimumCoverageMs,
+                minimumSamples,
+                out stats);
+        }
 
-            var samples = _window
+        private static bool TryGetWindowStats(
+            IEnumerable<Sample> source,
+            long nowTick,
+            int windowMs,
+            int minimumCoverageMs,
+            int minimumSamples,
+            out WindowStats stats)
+        {
+            stats = default;
+            if (source == null || nowTick <= 0) return false;
+
+            var samples = source
                 .Where(x => ElapsedMs(x.Tick, nowTick) <= windowMs)
                 .ToArray();
             if (samples.Length < minimumSamples) return false;
@@ -651,6 +765,48 @@ namespace Controller.Adaptive
             var last = samples[samples.Length - 1];
             var elapsed = ElapsedMs(first.Tick, last.Tick);
             return elapsed <= 0 ? 0 : (last.CurrentA - first.CurrentA) / elapsed;
+        }
+
+        private double PredictionSlopeAperMs()
+        {
+            var samples = _window
+                .Where(x => ElapsedMs(x.Tick, _lastSampleTick) <= PredictionSlopeWindowMs)
+                .ToArray();
+            if (samples.Length < 3) return 0;
+
+            var firstTick = samples[0].Tick;
+            var times = samples
+                .Select(x => (x.Tick - firstTick) * 1000.0 / Stopwatch.Frequency)
+                .ToArray();
+            var meanTime = times.Average();
+            var meanCurrent = samples.Average(x => x.CurrentA);
+            double covariance = 0;
+            double variance = 0;
+            for (var i = 0; i < samples.Length; i++)
+            {
+                var dt = times[i] - meanTime;
+                covariance += dt * (samples[i].CurrentA - meanCurrent);
+                variance += dt * dt;
+            }
+
+            if (variance <= 1e-9) return 0;
+            var slope = covariance / variance;
+            if (double.IsNaN(slope) || double.IsInfinity(slope) ||
+                slope < MinimumPredictionSlopeAperMs)
+                return 0;
+            return Math.Min(MaximumPredictionSlopeAperMs, slope);
+        }
+
+        private double GetPredictionLeadMs(double slopeAperMs)
+        {
+            if (slopeAperMs < MinimumPredictionSlopeAperMs) return 0;
+            if (_profile.HasCutoffPrediction)
+                return Math.Max(
+                    0,
+                    Math.Min(MaximumPredictionLeadMs, _profile.ForwardCutoffLeadMedianMs));
+            return Math.Max(
+                0,
+                Math.Min(MaximumPredictionLeadMs, _safetyMarginA / slopeAperMs));
         }
 
         private void SetStage(EpbCurrentStage stage)

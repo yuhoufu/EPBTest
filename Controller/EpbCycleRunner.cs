@@ -123,6 +123,10 @@ namespace Controller
             _sampleMs = Math.Max(1, sampleMs);
             _peakIgnoreMs = Math.Max(0, peakIgnoreMs);
             _log = log ?? NLogger.Instance;
+            // 所有构造路径必须具有有效的预释放/旧学习判稳参数，禁止 readonly 默认成 0。
+            _emptyBandA = 0.20;
+            _ewmaAlpha = 0.20;
+            _stableWinMs = 50;
         }
 
 
@@ -217,8 +221,15 @@ namespace Controller
                 await Task.Delay(_peakIgnoreMs, token).ConfigureAwait(false);
 
                 // 2) 判定进入反向空行程（Ewma 稳定窗口）
-                // 目标电流：优先用已学习到的 _iEmptyRevA；没有则用 -0.5A 兜底
-                var target = _iEmptyRevA != 0 ? _iEmptyRevA : -0.5;
+                // 目标电流：优先使用项目级自适应模型，其次兼容旧运行时学习值，
+                // 两者都没有时使用 -0.5A 安全兜底。
+                var target = _adaptiveProfile != null &&
+                             _adaptiveProfile.IsStable &&
+                             _adaptiveProfile.ReverseEmptyCurrentA > 0
+                    ? -Math.Abs(_adaptiveProfile.ReverseEmptyCurrentA)
+                    : _iEmptyRevA != 0
+                        ? _iEmptyRevA
+                        : -0.5;
                 var tuple = await WaitStableAroundAsync(
                     target,
                     -1, // 反向

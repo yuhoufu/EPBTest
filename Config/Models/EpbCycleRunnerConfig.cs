@@ -23,11 +23,12 @@ namespace Config.Models
             /// <summary>通道名（如“EPB1”）。</summary>
             public string Name { get; set; }
 
-            /// <summary>正向上电电流阈值（A）。</summary>
+            /// <summary>正向实际夹紧峰值目标（A）。</summary>
             public double ForwardA { get; set; }
 
             /// <summary>
-            /// 提前断电余量（A）。示例：2 表示在 <see cref="ForwardA"/> - 2 时即开始断电。
+            /// AdaptiveCurrent 模式首次控流的提前量种子（A）；获得真实断电尾部观测后，
+            /// 程序改用每通道自适应预测值。LegacyFixedTiming 模式仍保留原有固定余量语义。
             /// </summary>
             public double SafetyMarginA { get; set; }
 

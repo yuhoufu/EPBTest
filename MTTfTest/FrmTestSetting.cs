@@ -744,8 +744,8 @@ namespace MtEmbTest
                 AddCol(nameof(EpbRow.Name), "名称", 125);
                 // ★ 新增一列：目标次数
                 AddCol(nameof(EpbRow.TargetTotalCount), "目标次数", 120);
-                AddCol(nameof(EpbRow.ForwardA), "电流阈值(A)", 187);
-                AddCol(nameof(EpbRow.SafetyMarginA), "提前断电值(A)", 237);
+                AddCol(nameof(EpbRow.ForwardA), "夹紧目标(A)", 187);
+                AddCol(nameof(EpbRow.SafetyMarginA), "首次提前量(A)", 237);
                 AddCol(nameof(EpbRow.FwdOnLimitMs), "正上限时长(ms)", 249);
                 AddCol(nameof(EpbRow.HoldMs), "夹紧保持(ms)", 212);
                 AddCol(nameof(EpbRow.RevDecayLimitA), "反向衰减限(A)", 216);
@@ -840,8 +840,8 @@ namespace MtEmbTest
                 // 下面这些 FillWeight 是按照你原来像素宽度的比例换算出来的（大概等比例）
                 AddCol(nameof(EpbRow.Channel), "通道", 34f, true);
                 AddCol(nameof(EpbRow.Name), "名称", 53f);
-                AddCol(nameof(EpbRow.ForwardA), "电流阈值(A)", 80f);
-                AddCol(nameof(EpbRow.SafetyMarginA), "提前断电值(A)", 101f);
+                AddCol(nameof(EpbRow.ForwardA), "夹紧目标(A)", 80f);
+                AddCol(nameof(EpbRow.SafetyMarginA), "首次提前量(A)", 101f);
                 AddCol(nameof(EpbRow.FwdOnLimitMs), "正上限时长(ms)", 106f);
                 AddCol(nameof(EpbRow.HoldMs), "夹紧保持(ms)", 90f);
                 AddCol(nameof(EpbRow.RevDecayLimitA), "反向衰减限(A)", 92f);

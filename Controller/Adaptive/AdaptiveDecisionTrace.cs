@@ -26,6 +26,11 @@ namespace Controller.Adaptive
         public double WindowP90A { get; set; }
         public double ReleaseThresholdA { get; set; }
         public double AllowedSpreadA { get; set; }
+        public double CutoffCurrentA { get; set; }
+        public double EstimatedSlopeAperMs { get; set; }
+        public double PredictedPeakA { get; set; }
+        public double PredictionLeadMs { get; set; }
+        public string CutoffReason { get; set; }
         public int ReleaseCandidateElapsedMs { get; set; }
         public bool WindowQualified { get; set; }
         public string Action { get; set; }
@@ -101,7 +106,8 @@ namespace Controller.Adaptive
                 writer.WriteLine(
                     "Utc,MonotonicTicks,RunId,Cycle,Channel,Direction,Stage,ElapsedMs,CurrentA," +
                     "WindowSamples,WindowSpanMs,MedianA,MadA,P10A,P90A,ReleaseThresholdA," +
-                    "AllowedSpreadA,CandidateElapsedMs,WindowQualified,Action,Reason");
+                    "AllowedSpreadA,CutoffCurrentA,EstimatedSlopeAperMs,PredictedPeakA," +
+                    "PredictionLeadMs,CutoffReason,CandidateElapsedMs,WindowQualified,Action,Reason");
                 foreach (var item in events ?? Enumerable.Empty<AdaptiveDecisionTraceEvent>())
                 {
                     writer.WriteLine(string.Join(",",
@@ -122,6 +128,11 @@ namespace Controller.Adaptive
                         Number(item.WindowP90A),
                         Number(item.ReleaseThresholdA),
                         Number(item.AllowedSpreadA),
+                        Number(item.CutoffCurrentA),
+                        Number(item.EstimatedSlopeAperMs),
+                        Number(item.PredictedPeakA),
+                        Number(item.PredictionLeadMs),
+                        Csv(item.CutoffReason),
                         item.ReleaseCandidateElapsedMs.ToString(CultureInfo.InvariantCulture),
                         item.WindowQualified.ToString(),
                         Csv(item.Action),
