@@ -32,6 +32,7 @@
   <ItemGroup>
     <Compile Include="Program.cs" />
     <Compile Include="PowerSupplyCoordinatorTests.cs" />
+    <Compile Include="ProjectLogStoreTests.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="Fixtures\20260730_reverse_release_curves.csv">

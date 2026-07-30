@@ -34,6 +34,9 @@ namespace AdaptiveControlTests
                 Run("反向释放窗口忽略孤立毛刺", ReverseReleaseIgnoresSparseOutliers);
                 Run("现场EPB8和EPB9曲线可释放", MeasuredReverseFixturesRelease);
                 Run("反向持续高负载仍触发绝对时限", SustainedReverseLoadDoesNotRelease);
+                Run("预释放6.5A平台按15A目标不误报", PreReleaseNormalPlatformUsesForwardReference);
+                Run("预释放持续超过9A触发高平台保护", PreReleaseHighPlatformStillFaults);
+                Run("预释放失败阻止学习阶段", PreReleaseFailureBlocksLearning);
                 Run("保持阶段不误报断流", HoldDoesNotFault);
                 Run("三样本过流", ThreeSampleOverCurrent);
                 Run("开路检测", OpenCircuit);
@@ -43,6 +46,8 @@ namespace AdaptiveControlTests
                 Run("异常高电流平台", AbnormalHighPlateau);
                 Run("模型原子保存与重载", ProfilePersistence);
                 Run("控流模型五圈收敛到目标带", CutoffModelConvergesWithinFiveCycles);
+                Run("峰值系统偏差用于提前断电补偿", PeakBiasCorrectionIsLearned);
+                Run("偶发超调不累计为连续硬故障", OvershootStreakRequiresConsecutiveCycles);
                 Run("版本1模型无损升级到版本2", VersionOneProfileMigrates);
                 Run("损坏模型回退", CorruptProfileFallback);
                 Run("周期超限不追赶且圈号连续", TimerDoesNotCatchUp);
@@ -65,7 +70,8 @@ namespace AdaptiveControlTests
                 Run("报警辅助证据包含计划和DO时序", AlarmControlEvidenceIsReconstructable);
                 Run("同组硬故障仅停止故障通道", HardFaultDoesNotStopSiblingChannel);
                 _passed += PowerSupplyCoordinatorTests.RunAll();
-                Console.WriteLine($"PASS {_passed}/49");
+                _passed += ProjectLogStoreTests.RunAll();
+                Console.WriteLine($"PASS {_passed}/62");
                 return 0;
             }
             catch (Exception ex)
@@ -316,6 +322,47 @@ namespace AdaptiveControlTests
                 "释放决策缺少有效窗口覆盖诊断");
         }
 
+        private static void PreReleaseNormalPlatformUsesForwardReference()
+        {
+            var machine = new EpbAdaptiveCurrentStateMachine(StableProfile());
+            machine.ArmReverse(Tick(0), 0, 3000, 3.0, 0, 15.0);
+            var platform = Feed(machine, 0, 1200, 10, _ => 6.502);
+            Assert(!platform.HardFault, "6.5A 正常卸载平台误触发高平台保护");
+
+            var released = Feed(machine, 1210, 2200, 10, _ => 1.0);
+            Assert(released.ReleaseCompleted && !released.HardFault,
+                "6.5A 正常平台后未能确认进入反向空行程");
+        }
+
+        private static void PreReleaseHighPlatformStillFaults()
+        {
+            var machine = new EpbAdaptiveCurrentStateMachine(StableProfile());
+            machine.ArmReverse(Tick(0), 0, 3000, 3.0, 0, 15.0);
+            var fault = Feed(machine, 0, 1200, 10, _ => 9.2);
+            Assert(
+                fault.HardFault &&
+                fault.Reason.Contains("AbnormalHighCurrentPlateau") &&
+                fault.Reason.Contains("threshold=9.000"),
+                "持续超过9A的反向平台未触发保护或阈值不正确");
+        }
+
+        private static void PreReleaseFailureBlocksLearning()
+        {
+            var learningStarted = false;
+            try
+            {
+                EpbManager.EnsurePreReleaseBatchSucceeded(new[] { 9 });
+                learningStarted = true;
+            }
+            catch (InvalidOperationException ex)
+            {
+                Assert(ex.Message.Contains("9") && ex.Message.Contains("拒绝进入学习/正式阶段"),
+                    "预释放失败异常未包含阻断上下文");
+            }
+
+            Assert(!learningStarted, "预释放失败后仍进入学习阶段");
+        }
+
         private static void ReverseReleaseIgnoresSparseOutliers()
         {
             var machine = NewReverseMachine(StableProfile());
@@ -510,6 +557,36 @@ namespace AdaptiveControlTests
             Assert(profile.ValidCutoffSampleCount == 5, "五圈控流样本数错误");
             Assert(Math.Abs(errors[errors.Count - 1]) <= 0.3, "五圈后峰值误差未进入±0.3A");
             Assert(errors.TrueForAll(x => x <= 0.8), "正常学习波形出现超过+0.8A超调");
+        }
+
+        private static void PeakBiasCorrectionIsLearned()
+        {
+            var profile = StableProfile();
+            for (var i = 0; i < 5; i++)
+            {
+                Assert(
+                    profile.TryAddCutoffObservation(15.0, 14.0, 0.01, 15.5, out _),
+                    "峰值偏差样本未写入");
+            }
+
+            Assert(
+                Math.Abs(profile.GetForwardPeakBiasCorrectionA() - 0.5) < 0.001,
+                "连续正偏差未形成预测峰值补偿");
+        }
+
+        private static void OvershootStreakRequiresConsecutiveCycles()
+        {
+            var profile = StableProfile();
+            Assert(profile.UpdateForwardOvershootStreak(0.812, 0.8) == 1,
+                "首次边界超调未记录为1圈");
+            Assert(profile.UpdateForwardOvershootStreak(0.3, 0.8) == 0,
+                "回到平衡带后连续计数未清零");
+            Assert(profile.UpdateForwardOvershootStreak(0.9, 0.8) == 1,
+                "连续超调第1圈计数错误");
+            Assert(profile.UpdateForwardOvershootStreak(0.95, 0.8) == 2,
+                "连续超调第2圈计数错误");
+            Assert(profile.UpdateForwardOvershootStreak(0.85, 0.8) == 3,
+                "连续超调第3圈未达到确认值");
         }
 
         private static void VersionOneProfileMigrates()
