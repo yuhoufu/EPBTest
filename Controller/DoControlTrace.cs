@@ -6,6 +6,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
+using Controller.Adaptive;
 
 namespace Controller
 {
@@ -220,6 +221,11 @@ namespace Controller
             _staggerAssignmentByChannel.TryGetValue(alarmChannel, out var alarmAssignment);
             _staggerPlansByRun.TryGetValue(runId, out var plan);
             var events = _doControlTrace.Snapshot(alarmUtc, runId);
+            var adaptiveEvents = _adaptiveDecisionTrace.Snapshot(
+                alarmUtc,
+                runId,
+                alarmChannel);
+            var latestAdaptiveDecision = adaptiveEvents.LastOrDefault();
 
             TryWriteControlEvidence(
                 "alarm-metadata.json",
@@ -233,7 +239,8 @@ namespace Controller
                     runId,
                     alarmAssignment,
                     plan,
-                    events));
+                    events,
+                    latestAdaptiveDecision));
             TryWriteControlEvidence(
                 "electrical-stagger-plan.json",
                 () => WriteStaggerPlan(
@@ -245,6 +252,11 @@ namespace Controller
                 () => WriteDoTimeline(
                     Path.Combine(snapshotDir, "do-control-timeline.csv"),
                     events));
+            TryWriteControlEvidence(
+                "adaptive-decision-timeline.csv",
+                () => AdaptiveDecisionTraceBuffer.ExportCsv(
+                    Path.Combine(snapshotDir, "adaptive-decision-timeline.csv"),
+                    adaptiveEvents));
         }
 
         private void TryWriteControlEvidence(string fileName, Action write)
@@ -269,7 +281,8 @@ namespace Controller
             Guid runId,
             ChannelStaggerAssignment assignment,
             ElectricalStaggerPlan plan,
-            IReadOnlyList<DoControlTraceEvent> events)
+            IReadOnlyList<DoControlTraceEvent> events,
+            AdaptiveDecisionTraceEvent latestAdaptiveDecision = null)
         {
             var groupAssignments = plan?.Assignments.Values
                 .Where(x => assignment != null && x.ElectricalGroupId == assignment.ElectricalGroupId)
@@ -287,7 +300,7 @@ namespace Controller
 
             var json = new StringBuilder();
             json.AppendLine("{");
-            json.AppendLine("  \"schemaVersion\": 1,");
+            json.AppendLine("  \"schemaVersion\": 2,");
             json.AppendLine($"  \"alarmUtc\": \"{alarmUtc:O}\",");
             json.AppendLine($"  \"runId\": \"{runId:N}\",");
             json.AppendLine($"  \"alarmChannel\": {alarmChannel},");
@@ -314,6 +327,7 @@ namespace Controller
             AppendCommandJson(json, "reverse", lastReverse, true);
             AppendCommandJson(json, "off", lastOff, false);
             json.AppendLine("  },");
+            AppendAdaptiveDecisionJson(json, latestAdaptiveDecision);
             json.AppendLine("  \"doCommandResultMeaning\": \"软件DO方法返回值；不代表继电器触点或负载端物理通断确认\",");
             json.AppendLine("  \"physicalOffStatus\": \"NotMeasured\",");
             json.AppendLine("  \"physicalPowerState\": \"NotMeasured\"");
@@ -349,6 +363,46 @@ namespace Controller
 
             if (trailingComma) json.Append(',');
             json.AppendLine();
+        }
+
+        private static void AppendAdaptiveDecisionJson(
+            StringBuilder json,
+            AdaptiveDecisionTraceEvent item)
+        {
+            json.Append("  \"adaptiveDecision\": ");
+            if (item == null)
+            {
+                json.AppendLine("null,");
+                return;
+            }
+
+            json.Append("{");
+            json.Append($"\"sampleUtc\": \"{item.SampleUtc:O}\", ");
+            json.Append($"\"monotonicTicks\": {item.MonotonicTicks}, ");
+            json.Append($"\"direction\": \"{EscapeJson(item.Direction)}\", ");
+            json.Append($"\"stage\": \"{item.Stage}\", ");
+            json.Append($"\"elapsedMs\": {item.ElapsedMs}, ");
+            json.Append($"\"currentA\": {JsonNumber(item.CurrentA)}, ");
+            json.Append($"\"windowSamples\": {item.WindowSampleCount}, ");
+            json.Append($"\"windowSpanMs\": {item.WindowSpanMs}, ");
+            json.Append($"\"medianA\": {JsonNumber(item.WindowMedianA)}, ");
+            json.Append($"\"madA\": {JsonNumber(item.WindowMadA)}, ");
+            json.Append($"\"p10A\": {JsonNumber(item.WindowP10A)}, ");
+            json.Append($"\"p90A\": {JsonNumber(item.WindowP90A)}, ");
+            json.Append($"\"releaseThresholdA\": {JsonNumber(item.ReleaseThresholdA)}, ");
+            json.Append($"\"allowedSpreadA\": {JsonNumber(item.AllowedSpreadA)}, ");
+            json.Append($"\"candidateElapsedMs\": {item.ReleaseCandidateElapsedMs}, ");
+            json.Append($"\"windowQualified\": {item.WindowQualified.ToString().ToLowerInvariant()}, ");
+            json.Append($"\"action\": \"{EscapeJson(item.Action)}\", ");
+            json.Append($"\"reason\": \"{EscapeJson(item.Reason)}\"");
+            json.AppendLine("},");
+        }
+
+        private static string JsonNumber(double value)
+        {
+            return double.IsNaN(value) || double.IsInfinity(value)
+                ? "null"
+                : value.ToString("F6", CultureInfo.InvariantCulture);
         }
 
         internal static void WriteStaggerPlan(string path, Guid runId, ElectricalStaggerPlan plan)

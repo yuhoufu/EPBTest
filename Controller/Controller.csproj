@@ -58,6 +58,7 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="Adaptive\AdaptiveDecisionTrace.cs" />
     <Compile Include="Adaptive\EpbAdaptiveControl.cs" />
     <Compile Include="Alarm\AlarmManager.cs" />
     <Compile Include="Alarm\AlarmSnapshotFileEvidence.cs" />
@@ -70,16 +71,22 @@
     <Compile Include="DoControlTrace.cs" />
     <Compile Include="ElectricalStaggerPlan.cs" />
     <Compile Include="EpbManager.BatchStart.cs" />
+    <Compile Include="EpbManager.AdaptiveTrace.cs" />
     <Compile Include="EpbManager.cs" />
     <Compile Include="SafetyMarginControlMode.cs" />
     <Compile Include="HydraulicController.cs" />
     <Compile Include="HydraulicGroupCoordinator.cs" />
+    <Compile Include="PowerSupplyCoordinator.cs" />
+    <Compile Include="PowerSupplyTelemetryCsvRecorder.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Config\Config.csproj">
       <Project>{7941D662-F680-489B-972D-F324CBB42A9D}</Project>
       <Name>Config</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\PowerSupply.Core\PowerSupply.Core.csproj">
+      <Name>PowerSupply.Core</Name>
     </ProjectReference>
     <ProjectReference Include="..\DataOperation\DataOperation.csproj">
       <Project>{FCE7FD92-9529-40DF-83AB-92B6B4DC469C}</Project>

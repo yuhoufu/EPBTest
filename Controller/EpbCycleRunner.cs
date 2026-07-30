@@ -281,6 +281,18 @@ namespace Controller
         /// </remarks>
         public void FeedCurrentSample(int epbChannel, long tick, double currentAmp)
         {
+            FeedCurrentSample(epbChannel, tick, currentAmp, DateTime.UtcNow);
+        }
+
+        /// <summary>
+        ///     注入带采集时间戳的电流样本。时间戳仅用于诊断证据，控制判定仍使用单调时钟。
+        /// </summary>
+        public void FeedCurrentSample(
+            int epbChannel,
+            long tick,
+            double currentAmp,
+            DateTime sampleUtc)
+        {
             if (epbChannel < 1 || epbChannel >= _currentBus.Length) return;
             _currentBus[epbChannel].Add(new CurrentSample(tick, currentAmp));
 
@@ -301,7 +313,7 @@ namespace Controller
                 }
             }
 
-            ProcessAdaptiveSample(tick, currentAmp);
+            ProcessAdaptiveSample(tick, currentAmp, sampleUtc);
         }
 
         /// <summary>

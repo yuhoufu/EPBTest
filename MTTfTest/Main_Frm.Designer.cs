@@ -41,7 +41,6 @@
             this.TsmHorizon = new System.Windows.Forms.ToolStripMenuItem();
             this.TsmVertical = new System.Windows.Forms.ToolStripMenuItem();
             this.TsmLayout = new System.Windows.Forms.ToolStripMenuItem();
-            this.TsmPower = new System.Windows.Forms.ToolStripMenuItem();
             this.关于ToolStripMenuItem1 = new System.Windows.Forms.ToolStripMenuItem();
             this.menuStripMain.SuspendLayout();
             this.SuspendLayout();
@@ -57,7 +56,6 @@
             this.TsmSetting,
             this.TsmDAQCalibrate,
             this.TsmWindows,
-            this.TsmPower,
             this.关于ToolStripMenuItem1});
             this.menuStripMain.LayoutStyle = System.Windows.Forms.ToolStripLayoutStyle.HorizontalStackWithOverflow;
             this.menuStripMain.Location = new System.Drawing.Point(0, 0);
@@ -155,16 +153,6 @@
             this.TsmLayout.Text = "层    叠(&L）";
             this.TsmLayout.Click += new System.EventHandler(this.TsmLayout_Click);
             // 
-            // TsmPower
-            // 
-            this.TsmPower.AutoSize = false;
-            this.TsmPower.DisplayStyle = System.Windows.Forms.ToolStripItemDisplayStyle.Image;
-            this.TsmPower.Image = global::MTEmbTest.Properties.Resources.P5;
-            this.TsmPower.Name = "TsmPower";
-            this.TsmPower.Size = new System.Drawing.Size(52, 35);
-            this.TsmPower.Text = "1-OFF";
-            this.TsmPower.Click += new System.EventHandler(this.TsmPower_Click);
-            // 
             // 关于ToolStripMenuItem1
             // 
             this.关于ToolStripMenuItem1.Name = "关于ToolStripMenuItem1";
@@ -210,7 +198,6 @@
         private System.Windows.Forms.ToolStripMenuItem TsmCharacterPlayBack;
         private System.Windows.Forms.ToolStripMenuItem TsmRawPlayBack;
         private System.Windows.Forms.ToolStripMenuItem TsmRealMinitor;
-        private System.Windows.Forms.ToolStripMenuItem TsmPower;
     }
 }
 

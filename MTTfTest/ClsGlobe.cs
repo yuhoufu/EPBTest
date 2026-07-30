@@ -12,13 +12,9 @@ namespace MtEmbTest
     //全局共享类
     public static class ClsGlobal
     {
-        public static int Voltage;
-        public static int MaxCurrent;
-        public static int MinCurrent;
-        public static int MaxPower;
-        public static int MinPower;
+        // 仅供未绑定事件的历史 UI 方法保持源码兼容；新控制链路不读写此状态。
+        public static int[] PowerStatus = new int[12];
 
-        public static int[] PowerStatus = new int[1] { 0 };
         public static int ClampCount = 0;
         public static int ReleaseCount = 0;
 
@@ -126,19 +122,8 @@ namespace MtEmbTest
         public static int SerialSendIntervalSpan;
         public static int DevResetWaitSpan;
 
-        public static string[] PowerServerAdr = new string[1] { "" };
-        public static string[] PowerServerPort = new string[1] { "" };
-
-
         static ClsGlobal()
         {
-            Voltage = 0;
-            MaxCurrent = 0;
-            MinCurrent = 0;
-            MaxPower = 0;
-            MinPower = 0;
-
-
             ClampCount = 0;
             ReleaseCount = 0;
             ClampSpan = 0;

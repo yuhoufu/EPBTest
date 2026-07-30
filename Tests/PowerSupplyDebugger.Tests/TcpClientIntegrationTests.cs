@@ -129,6 +129,46 @@ public sealed class TcpClientIntegrationTests
         Assert.False(client.IsConnected);
     }
 
+    [Fact]
+    public async Task CancellationDuringQueryFinishesTransactionBeforeNextCommand()
+    {
+        await using var server = new FakePswServer(outputEnabled: true);
+        server.Start();
+        await using var client = CreateClient(server);
+        await client.ConnectAsync();
+        server.ClearCommands();
+        server.DelayResponseFor = "OUTP?";
+        server.ResponseDelayMs = 250;
+
+        using var cancellation = new CancellationTokenSource();
+        var readTask = client.ReadSnapshotAsync(cancellation.Token);
+        await WaitUntilAsync(
+            () => server.Commands.Contains("OUTP?"),
+            TimeSpan.FromSeconds(2));
+        cancellation.Cancel();
+
+        var snapshot = await readTask;
+        Assert.True(snapshot.OutputEnabled);
+
+        server.DelayResponseFor = null;
+        Assert.False(await client.SetOutputAsync(false));
+        Assert.True(client.IsConnected);
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (!condition())
+        {
+            if (DateTime.UtcNow >= deadline)
+            {
+                throw new TimeoutException("等待模拟电源收到命令超时。");
+            }
+
+            await Task.Delay(10);
+        }
+    }
+
     private static PswTcpClient CreateClient(FakePswServer server) =>
         new(
             new PowerSupplyEndpoint

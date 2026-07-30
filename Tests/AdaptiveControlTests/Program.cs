@@ -23,8 +23,14 @@ namespace AdaptiveControlTests
                     return ReplayCsv(args[1]);
 
                 Run("正常夹紧", NormalClamp);
+                Run("未识别负载上升前到阈值立即停机", ThresholdBeforeLoadRiseFaults);
+                Run("夹紧阈值必须连续三样本确认", ClampNeedsThreeSamples);
                 Run("长空行程只软预警", LongEmptyTravelWarning);
                 Run("反向动态释放", ReverseRelease);
+                Run("反向17ms采样节拍仍可释放", ReverseReleaseWithSeventeenMillisecondCadence);
+                Run("反向释放窗口忽略孤立毛刺", ReverseReleaseIgnoresSparseOutliers);
+                Run("现场EPB8和EPB9曲线可释放", MeasuredReverseFixturesRelease);
+                Run("反向持续高负载仍触发绝对时限", SustainedReverseLoadDoesNotRelease);
                 Run("保持阶段不误报断流", HoldDoesNotFault);
                 Run("三样本过流", ThreeSampleOverCurrent);
                 Run("开路检测", OpenCircuit);
@@ -53,7 +59,8 @@ namespace AdaptiveControlTests
                 Run("DO追踪缓冲按运行过滤并限时", DoTraceBufferFiltersRunAndAge);
                 Run("报警辅助证据包含计划和DO时序", AlarmControlEvidenceIsReconstructable);
                 Run("同组硬故障仅停止故障通道", HardFaultDoesNotStopSiblingChannel);
-                Console.WriteLine($"PASS {_passed}/31");
+                _passed += PowerSupplyCoordinatorTests.RunAll();
+                Console.WriteLine($"PASS {_passed}/44");
                 return 0;
             }
             catch (Exception ex)
@@ -164,6 +171,31 @@ namespace AdaptiveControlTests
             Assert(!decision.HardFault, "正常夹紧被判硬故障");
         }
 
+        private static void ThresholdBeforeLoadRiseFaults()
+        {
+            var machine = NewMachine();
+            machine.ArmForward(Tick(0), 100, 6000, 15, 1, 3);
+            Feed(machine, 0, 90, 10, _ => 1.0);
+            var fault = machine.OnSample(Tick(100), 15.0);
+            Assert(
+                fault.HardFault && fault.Reason.Contains("ThresholdBeforeLoadRise"),
+                "未形成完整负载上升曲线时到达阈值没有立即停机");
+        }
+
+        private static void ClampNeedsThreeSamples()
+        {
+            var machine = NewMachine();
+            machine.ArmForward(Tick(0), 100, 6000, 15, 1, 3);
+            Feed(machine, 0, 300, 10, _ => 1.0);
+            Feed(machine, 310, 780, 10, ms => 1.0 + (ms - 310) * 0.025);
+            var first = machine.OnSample(Tick(790), 14.2);
+            var second = machine.OnSample(Tick(800), 14.1);
+            Assert(!first.ClampReached && !second.ClampReached,
+                "夹紧阈值单点或两点即被错误判定成功");
+            var third = machine.OnSample(Tick(810), 14.0);
+            Assert(third.ClampReached, "夹紧阈值连续三样本后仍未确认");
+        }
+
         private static void LongEmptyTravelWarning()
         {
             var profile = StableProfile();
@@ -192,6 +224,91 @@ namespace AdaptiveControlTests
             machine.ArmReverse(Tick(1000), 100, 3500, 3.0, 3.0);
             var released = Feed(machine, 1000, 1900, 10, ms => ms < 1250 ? 6.0 - (ms - 1000) * 0.02 : 1.0);
             Assert(released.ReleaseCompleted, "反向低负载稳定后未释放");
+        }
+
+        private static void ReverseReleaseWithSeventeenMillisecondCadence()
+        {
+            var machine = NewReverseMachine(StableProfile());
+
+            EpbAdaptiveDecision released = null;
+            for (var ms = 0; ms <= 1500; ms += 17)
+            {
+                var decision = machine.OnSample(Tick(ms), 1.0);
+                if (decision.ReleaseCompleted || decision.HardFault)
+                {
+                    released = decision;
+                    break;
+                }
+            }
+
+            Assert(released != null && released.ReleaseCompleted && !released.HardFault,
+                "17ms采样节拍下稳定窗口被错误判为覆盖不足");
+            Assert(released.WindowSpanMs >= 120 && released.WindowSampleCount >= 8,
+                "释放决策缺少有效窗口覆盖诊断");
+        }
+
+        private static void ReverseReleaseIgnoresSparseOutliers()
+        {
+            var machine = NewReverseMachine(StableProfile());
+
+            EpbAdaptiveDecision released = null;
+            var index = 0;
+            for (var ms = 0; ms <= 1800; ms += 17, index++)
+            {
+                var current = index > 0 && index % 20 == 0 ? 5.0 : 1.0;
+                var decision = machine.OnSample(Tick(ms), current);
+                if (decision.ReleaseCompleted || decision.HardFault)
+                {
+                    released = decision;
+                    break;
+                }
+            }
+
+            Assert(released != null && released.ReleaseCompleted && !released.HardFault,
+                "孤立电流毛刺导致反向释放候选被持续清零");
+            Assert(released.WindowP90A <= released.ReleaseThresholdA,
+                "释放时稳健P90仍高于学习阈值");
+        }
+
+        private static void MeasuredReverseFixturesRelease()
+        {
+            var path = Path.Combine(
+                AppDomain.CurrentDomain.BaseDirectory,
+                "Fixtures",
+                "20260730_reverse_release_curves.csv");
+            var rows = ReadReverseFixture(path);
+            Assert(rows.ContainsKey(8) && rows.ContainsKey(9), "现场回归夹具缺少EPB8或EPB9");
+
+            AssertFixtureReleases(
+                8,
+                rows[8],
+                reverseEmptyA: 0.6140579823,
+                reverseMadA: 0.0480287044,
+                validSampleCount: 14);
+            AssertFixtureReleases(
+                9,
+                rows[9],
+                reverseEmptyA: 1.9260636231,
+                reverseMadA: 0.1285986643,
+                validSampleCount: 5);
+        }
+
+        private static void SustainedReverseLoadDoesNotRelease()
+        {
+            var machine = NewReverseMachine(StableProfile());
+
+            EpbAdaptiveDecision last = null;
+            for (var ms = 0; ms <= 3500; ms += 17)
+            {
+                last = machine.OnSample(Tick(ms), 4.5);
+                Assert(!last.ReleaseCompleted, "持续高负载被误判为已经释放");
+                if (last.HardFault) break;
+            }
+
+            if (last == null || !last.HardFault)
+                last = machine.CheckWatchdog(Tick(3500));
+            Assert(last.HardFault && last.Reason.Contains("ReverseAbsoluteOnTimeExceeded"),
+                "持续高负载没有保留反向绝对上电保护");
         }
 
         private static void HoldDoesNotFault()
@@ -614,6 +731,30 @@ namespace AdaptiveControlTests
                     new[] { NewElectricalGroup(3, 800, 7, 8, 9) },
                     15_000);
                 var utc = DateTime.UtcNow;
+                var adaptiveDecision = new AdaptiveDecisionTraceEvent
+                {
+                    SampleUtc = utc,
+                    MonotonicTicks = 124,
+                    RunId = runId,
+                    CycleNumber = 42,
+                    Channel = 9,
+                    Direction = "Reverse",
+                    Stage = EpbCurrentStage.ReleaseDecay,
+                    ElapsedMs = 3500,
+                    CurrentA = 1.95,
+                    WindowSampleCount = 12,
+                    WindowSpanMs = 187,
+                    WindowMedianA = 1.91,
+                    WindowMadA = 0.03,
+                    WindowP10A = 1.87,
+                    WindowP90A = 1.98,
+                    ReleaseThresholdA = 2.44,
+                    AllowedSpreadA = 1.03,
+                    ReleaseCandidateElapsedMs = 187,
+                    WindowQualified = true,
+                    Action = "HardFault",
+                    Reason = "ReverseAbsoluteOnTimeExceeded"
+                };
 
                 EpbManager.WriteAlarmMetadata(
                     Path.Combine(directory, "alarm-metadata.json"),
@@ -649,7 +790,8 @@ namespace AdaptiveControlTests
                             DoCommandResult = true,
                             BranchCurrentA = 12.3456
                         }
-                    });
+                    },
+                    adaptiveDecision);
                 EpbManager.WriteStaggerPlan(
                     Path.Combine(directory, "electrical-stagger-plan.json"),
                     runId,
@@ -691,18 +833,27 @@ namespace AdaptiveControlTests
                             BranchCurrentA = 10.25
                         }
                     });
+                AdaptiveDecisionTraceBuffer.ExportCsv(
+                    Path.Combine(directory, "adaptive-decision-timeline.csv"),
+                    new[] { adaptiveDecision });
 
                 var metadata = File.ReadAllText(Path.Combine(directory, "alarm-metadata.json"));
                 var stagger = File.ReadAllText(Path.Combine(directory, "electrical-stagger-plan.json"));
                 var timeline = File.ReadAllText(Path.Combine(directory, "do-control-timeline.csv"));
+                var adaptiveTimeline = File.ReadAllText(
+                    Path.Combine(directory, "adaptive-decision-timeline.csv"));
 
+                Assert(metadata.Contains("\"schemaVersion\": 2"),
+                    "报警元数据未升级到包含自适应判定的schema 2");
                 Assert(metadata.Contains("\"alarmCycleCsvAndBinComplete\": true"),
                     "报警元数据未记录CSV/BIN完整性");
                 Assert(metadata.Contains("\"physicalPowerState\": \"NotMeasured\""),
                     "报警元数据误将DO返回值当成物理断电确认");
                 Assert(metadata.Contains("\"selectedChannelsInElectricalGroup\": [8, 9]") &&
                        metadata.Contains("\"forward\": {") &&
-                       metadata.Contains("\"off\": {"),
+                       metadata.Contains("\"off\": {") &&
+                       metadata.Contains("\"adaptiveDecision\": {") &&
+                       metadata.Contains("\"releaseThresholdA\": 2.440000"),
                     "报警元数据缺少同组计划或最近DO命令");
                 Assert(stagger.Contains("\"channel\": 9") && stagger.Contains("\"phaseMs\": 800"),
                     "错峰计划证据缺少通道相位");
@@ -714,6 +865,10 @@ namespace AdaptiveControlTests
                        timeline.IndexOf("OffHighPriority", StringComparison.Ordinal) &&
                        timeline.Contains(",false,10.250000,NotMeasured"),
                     "DO时间线未按单调时序保存命令顺序或返回值");
+                Assert(adaptiveTimeline.Contains("WindowSamples") &&
+                       adaptiveTimeline.Contains("ReleaseThresholdA") &&
+                       adaptiveTimeline.Contains("ReverseAbsoluteOnTimeExceeded"),
+                    "自适应判定时间线缺少窗口、阈值或报警原因");
             }
             finally
             {
@@ -765,6 +920,109 @@ namespace AdaptiveControlTests
         private static EpbAdaptiveCurrentStateMachine NewMachine()
         {
             return new EpbAdaptiveCurrentStateMachine(new EpbAdaptiveProfile { Channel = 10 });
+        }
+
+        private static EpbAdaptiveCurrentStateMachine NewReverseMachine(EpbAdaptiveProfile profile)
+        {
+            var machine = new EpbAdaptiveCurrentStateMachine(profile);
+            machine.ArmForward(Tick(0), 100, 6000, 15.0, 1.0, 3.0);
+            machine.ArmReverse(Tick(0), 100, 3500, 3.0, 3.0);
+            return machine;
+        }
+
+        private static Dictionary<int, List<ReverseFixturePoint>> ReadReverseFixture(string path)
+        {
+            if (!File.Exists(path)) throw new FileNotFoundException("现场回归夹具不存在。", path);
+            var result = new Dictionary<int, List<ReverseFixturePoint>>();
+            using (var reader = new StreamReader(path))
+            {
+                reader.ReadLine();
+                string line;
+                while ((line = reader.ReadLine()) != null)
+                {
+                    if (string.IsNullOrWhiteSpace(line)) continue;
+                    var columns = line.Split(',');
+                    var channel = int.Parse(columns[0], CultureInfo.InvariantCulture);
+                    var point = new ReverseFixturePoint(
+                        int.Parse(columns[1], CultureInfo.InvariantCulture),
+                        double.Parse(columns[2], CultureInfo.InvariantCulture));
+                    if (!result.TryGetValue(channel, out var points))
+                    {
+                        points = new List<ReverseFixturePoint>();
+                        result[channel] = points;
+                    }
+                    points.Add(point);
+                }
+            }
+
+            return result;
+        }
+
+        private static void AssertFixtureReleases(
+            int channel,
+            List<ReverseFixturePoint> points,
+            double reverseEmptyA,
+            double reverseMadA,
+            int validSampleCount)
+        {
+            var profile = new EpbAdaptiveProfile
+            {
+                Channel = channel,
+                ReverseEmptyCurrentA = reverseEmptyA,
+                ReverseEmptyMadA = reverseMadA,
+                ValidSampleCount = validSampleCount
+            };
+            var machine = NewReverseMachine(profile);
+            var cadenceMs = new[] { 10, 10, 20, 10, 31, 10, 10, 20, 17 };
+            var elapsedMs = 0;
+            var cadenceIndex = 0;
+            EpbAdaptiveDecision terminal = null;
+            while (elapsedMs <= points[points.Count - 1].ElapsedMs)
+            {
+                var decision = machine.OnSample(
+                    Tick(elapsedMs),
+                    InterpolateFixture(points, elapsedMs));
+                if (decision.ReleaseCompleted || decision.HardFault)
+                {
+                    terminal = decision;
+                    break;
+                }
+
+                elapsedMs += cadenceMs[cadenceIndex++ % cadenceMs.Length];
+            }
+
+            Assert(terminal != null && terminal.ReleaseCompleted && !terminal.HardFault,
+                $"EPB{channel}现场反向曲线未能在绝对时限前识别释放");
+        }
+
+        private static double InterpolateFixture(
+            List<ReverseFixturePoint> points,
+            int elapsedMs)
+        {
+            if (elapsedMs <= points[0].ElapsedMs) return points[0].CurrentA;
+            for (var i = 1; i < points.Count; i++)
+            {
+                if (elapsedMs > points[i].ElapsedMs) continue;
+                var previous = points[i - 1];
+                var next = points[i];
+                var ratio = (elapsedMs - previous.ElapsedMs) /
+                            (double)(next.ElapsedMs - previous.ElapsedMs);
+                return previous.CurrentA + ratio * (next.CurrentA - previous.CurrentA);
+            }
+
+            return points[points.Count - 1].CurrentA;
+        }
+
+        private sealed class ReverseFixturePoint
+        {
+            public ReverseFixturePoint(int elapsedMs, double currentA)
+            {
+                ElapsedMs = elapsedMs;
+                CurrentA = currentA;
+            }
+
+            public int ElapsedMs { get; }
+            public double CurrentA { get; }
         }
 
         private static EpbAdaptiveProfile StableProfile()

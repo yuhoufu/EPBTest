@@ -2,13 +2,16 @@
 
 ## 当前上线策略
 
-本阶段已经把自适应状态机接入正式控制代码，但默认仍采用安全灰度配置：
+主程序 `MTTfTest/App.config` 当前采用全通道正式闭环配置：
 
-- `EpbControlMode=LegacyFixedTiming`：DO 控制继续使用旧流程；
-- `EpbAdaptiveShadowMode=true`：新状态机并行分析快速采样，只记录预警和学习模型，不改变 DO；
-- `EpbAdaptiveChannels=10`：切换到 `AdaptiveCurrent` 后也只允许 EPB10 使用新控制，其余通道保持旧模式。
+```xml
+<add key="EpbSafetyMarginControlMode" value="Legacy20251010" />
+<add key="EpbControlMode" value="AdaptiveCurrent" />
+<add key="EpbAdaptiveChannels" value="1,2,3,4,5,6,7,8,9,10,11,12" />
+<add key="EpbAdaptiveShadowMode" value="false" />
+```
 
-在 EPB10 完成影子日志核对和单通道台架验证前，不应扩大自适应通道范围。
+这意味着 EPB1--EPB12 的学习圈和正式圈均由完整电流阶段状态机判定并直接执行 DO 控制；状态机的过流、开路、DAQ 断流和绝对上电时限等硬保护均生效。配置变更在程序重新启动后读取并生效。
 
 ## 已实现
 
@@ -24,7 +27,7 @@
 - 周期超限后滚动到下一个未来边界，同时保持实际完成圈号连续；
 - 项目级 `Config/EpbAdaptiveProfiles.xml` 原子保存、损坏文件备份和空模型回退；
 - 前 5 个有效圈形成稳定模型；连续 3 圈偏差超过 30%时预警并渐进更新；
-- `LegacyFixedTiming` 回退开关和 EPB10 单通道灰度开关。
+- `LegacyFixedTiming` 总体回退开关，以及可通过通道白名单实施的单通道灰度能力（历史上用于 EPB10）。
 - 自适应通道的启动学习圈与正式圈共用同一电流状态机；不会再调用旧的
   `FwdOnLimitMs` / `RevEmptyFixedMs` 固定时序，学习成功圈直接积累项目模型。
 - 批量启动采用 UI 按钮锁和控制层会话锁双重防重复；停止、报警、自然结束或
@@ -35,19 +38,47 @@
 配置位于主程序 `App.config`：
 
 ```xml
-<add key="EpbControlMode" value="LegacyFixedTiming" />
-<add key="EpbAdaptiveChannels" value="10" />
-<add key="EpbAdaptiveShadowMode" value="true" />
+<add key="EpbSafetyMarginControlMode" value="Legacy20251010" />
+<add key="EpbControlMode" value="AdaptiveCurrent" />
+<add key="EpbAdaptiveChannels" value="1,2,3,4,5,6,7,8,9,10,11,12" />
+<add key="EpbAdaptiveShadowMode" value="false" />
 ```
 
-建议执行顺序：
+### 参数详解
 
-1. 维持上述默认配置运行影子判定；
-2. 确认 EPB10 的状态转换、软预警和模型统计与波形一致；
-3. 台架硬故障注入全部通过后，仅把 `EpbControlMode` 改成 `AdaptiveCurrent`；
-4. EPB10 连续 100 圈验收通过后，再逐步扩展 `EpbAdaptiveChannels`。
+| 参数 | 当前值 | 可选值/格式 | 生效含义 |
+| --- | --- | --- | --- |
+| `EpbSafetyMarginControlMode` | `Legacy20251010` | `Legacy20251010`、`FreezeA20260101` | 选择学习阶段的正向阈值裕量更新算法。当前值采用 2025-10-10 的固定增益、单步限幅策略，正式圈保持学习完成时得到的裕量，不再按每圈峰值继续自调。 |
+| `EpbControlMode` | `AdaptiveCurrent` | `AdaptiveCurrent`、`LegacyFixedTiming` | 全局控制总开关。`AdaptiveCurrent` 允许已选通道使用状态机直接控制；`LegacyFixedTiming` 时所有通道退回旧固定时序控制。 |
+| `EpbAdaptiveChannels` | `1,2,3,4,5,6,7,8,9,10,11,12` | 1--12 的逗号、分号或空格分隔列表 | 自适应控制的通道白名单。只有全局模式为 `AdaptiveCurrent` 且通道位于此列表中，该通道才使用完整电流曲线控制；其余通道自动按旧固定时序运行。 |
+| `EpbAdaptiveShadowMode` | `false` | `true`、`false` | 影子开关。`true` 时状态机只观察、记录预警和学习结果，不直接保护或改变 DO；`false` 时状态机直接参与控制并执行硬保护。正式试验必须为 `false`。 |
 
-如需立即回退，只需把 `EpbControlMode` 改回 `LegacyFixedTiming`，无需恢复旧 DLL。
+#### `EpbSafetyMarginControlMode=Legacy20251010`
+
+正向夹紧判据为 `current + SafetyMarginA >= ForwardA`，因此裕量越大，越早断开正向 DO。`Legacy20251010` 以 `Imax - ForwardA` 为误差：误差绝对值不超过 `0.05 A` 时不调整；其余情况按 `0.60 × 误差` 调整，单圈最大变化为 `±0.50 A`，并将裕量限制在 `0.20--5.00 A`。该版本使用固定、对称的调整规则，当前被选为较保守的基线策略。
+
+`FreezeA20260101` 是替代策略：上调和下调使用不同增益，并在过冲后冻结/放缓后续下调，减少轻微欠冲导致的快速回拉。它会在正式圈峰值封口后继续调整正式裕量；启用前应按变更流程完成专项验证，不能与“当前更保守基线”这一假设混用。
+
+#### 正式模式的组合校验
+
+启动正式试验时，系统会拒绝以下任一情况：程控电源闭环要求已启用但未初始化；选中通道未实际落入 `AdaptiveCurrent`；或 `EpbAdaptiveShadowMode=true`。此外，每一路必须先形成稳定基线（至少 5 个完整有效学习圈），否则不能进入正式试验。
+
+当前四项配置满足上述正式模式条件：全局启用自适应、1--12 路均在白名单内、影子模式关闭，且裕量使用 `Legacy20251010` 基线算法。
+
+### 配置变更与回退
+
+推荐将配置变更作为受控变更执行：先停止当前批次，修改 `App.config`，重启程序，确认启动日志中的控制模式、灰度通道和影子模式，再开始新的学习/正式批次。
+
+- 如需整体回退至旧控制：将 `EpbControlMode` 改为 `LegacyFixedTiming`。即使白名单仍包含 1--12 路，也不会启用新控制。
+- 如需只缩小自适应范围：保持 `EpbControlMode=AdaptiveCurrent`，仅从 `EpbAdaptiveChannels` 删除对应通道；被删除通道将回退为旧固定时序。正式批次仍要求所有被选中通道都在白名单中。
+- 如需观察而不直接控 DO：设 `EpbAdaptiveShadowMode=true`。该组合仅用于调试/核对，系统会阻止启动正式试验。
+- 如需切换裕量算法：仅修改 `EpbSafetyMarginControlMode` 为 `FreezeA20260101` 并重新验证学习和正式圈表现；不能把该切换当作无验证的运行时微调。
+
+不应通过只打开 `AdaptiveCurrent`、却遗漏目标通道白名单或保持影子模式的方式尝试进入正式控制；控制层会将未满足条件的通道视为旧模式并阻止正式启动。
+
+### 历史灰度路径（仅供追溯）
+
+早期灰度配置为 `LegacyFixedTiming + EpbAdaptiveChannels=10 + EpbAdaptiveShadowMode=true`，仅用于 EPB10 的并行波形核对。该组合不是当前生产配置，且不可用于启动正式试验。
 
 ## 验证
 

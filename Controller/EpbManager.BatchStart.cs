@@ -65,12 +65,19 @@ namespace Controller
                 throw new ArgumentException("channels 不能为空", nameof(channels));
 
             var selected = channels.Distinct().OrderBy(x => x).ToArray();
+            if (learnCycles < 5)
+                throw new InvalidOperationException("严格完整曲线控制要求 LearnCycle 至少为5圈。");
             var staggerPlan = ElectricalStaggerPlanner.Build(selected, _cfg.Test.Groups, PeriodMs);
             var sessionToken = BeginBatchSession(token);
             try
             {
-                _activeStaggerPlan = staggerPlan;
                 _activeBatchId = Guid.NewGuid();
+                BeginPowerSupplyTelemetryRecording(_activeBatchId);
+                EnsureStrictCurveControl(selected);
+                if (_powerSupply != null)
+                    await _powerSupply.PrepareAndEnableAsync(selected, sessionToken).ConfigureAwait(false);
+
+                _activeStaggerPlan = staggerPlan;
                 RegisterRunContext(_activeBatchId, staggerPlan);
                 LogStaggerPlan(_activeBatchId, staggerPlan);
 
@@ -119,6 +126,8 @@ namespace Controller
                     await RunLearningPhaseAsync(groups, t0OfGroup, learnCycles, staggerPlan, sessionToken)
                         .ConfigureAwait(false);
 
+                EnsureAdaptiveProfilesReady(selected);
+
                 // —— 4) 正式阶段：为每个通道创建对齐到“锚点+相位”的高精计时器 —— //
                 StartFormalPhaseTimers(groups, t0OfGroup, staggerPlan, sessionToken);
             }
@@ -135,6 +144,17 @@ namespace Controller
                         _log?.Warn($"批量启动异常后停止 EPB[{channel}] 失败：{stopEx}", "EPB");
                     }
                 }
+
+                if (_powerSupply != null)
+                {
+                    try
+                    {
+                        await _powerSupply.DisableAllAsync("批量启动异常回滚", CancellationToken.None)
+                            .ConfigureAwait(false);
+                    }
+                    catch { }
+                }
+                EndPowerSupplyTelemetryRecording();
 
                 throw;
             }
@@ -798,6 +818,9 @@ namespace Controller
 
             runner.WarningRaised -= OnRunnerWarningRaised;
             runner.WarningRaised += OnRunnerWarningRaised;
+
+            runner.AdaptiveDecisionObserved -= OnRunnerAdaptiveDecisionObserved;
+            runner.AdaptiveDecisionObserved += OnRunnerAdaptiveDecisionObserved;
         }
 
 

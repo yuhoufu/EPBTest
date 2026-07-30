@@ -26,6 +26,9 @@ namespace Controller
         private double _adaptiveForwardEmptyA;
         private double _adaptiveReverseEmptyA;
         private double _adaptiveForwardPeakA;
+        private string _adaptiveDirection = string.Empty;
+
+        internal event Action<AdaptiveDecisionTraceEvent> AdaptiveDecisionObserved;
 
         public EpbCycleOutcome LastCycleOutcome { get; private set; } =
             EpbCycleOutcome.Canceled(EpbCurrentStage.Idle, "NotStarted");
@@ -77,6 +80,7 @@ namespace Controller
                 _posThrA,
                 margin,
                 _overshootAlarmDeltaA);
+            _adaptiveDirection = "Forward";
         }
 
         private void CompleteAdaptiveForwardMonitoring(int measuredElapsedMs)
@@ -110,6 +114,7 @@ namespace Controller
                 GetReverseAbsoluteMaxMs(periodMs),
                 RevDecayLimitA,
                 _overshootAlarmDeltaA);
+            _adaptiveDirection = "Reverse";
         }
 
         private void CompleteAdaptiveShadowCycle()
@@ -142,6 +147,7 @@ namespace Controller
         private void DisarmAdaptiveMonitoring()
         {
             _adaptiveStateMachine?.Disarm();
+            _adaptiveDirection = string.Empty;
             lock (_adaptiveGate)
             {
                 _adaptiveForwardCompletion = null;
@@ -149,7 +155,10 @@ namespace Controller
             }
         }
 
-        private void ProcessAdaptiveSample(long tick, double currentAmp)
+        private void ProcessAdaptiveSample(
+            long tick,
+            double currentAmp,
+            DateTime sampleUtc)
         {
             if (!AdaptiveMonitoringEnabled || _adaptiveStateMachine == null) return;
 
@@ -164,7 +173,50 @@ namespace Controller
                 return;
             }
 
+            PublishAdaptiveTrace(tick, sampleUtc, decision);
             HandleAdaptiveDecision(decision);
+        }
+
+        private void PublishAdaptiveTrace(
+            long tick,
+            DateTime sampleUtc,
+            EpbAdaptiveDecision decision)
+        {
+            if (decision == null) return;
+            string action;
+            if (decision.HardFault) action = "HardFault";
+            else if (decision.ReleaseCompleted) action = "ReleaseCompleted";
+            else if (decision.ClampReached) action = "ClampReached";
+            else if (decision.SoftWarning) action = "SoftWarning";
+            else if (decision.StateChanged) action = "StateChanged";
+            else action = string.Empty;
+
+            var item = new AdaptiveDecisionTraceEvent
+            {
+                SampleUtc = sampleUtc.Kind == DateTimeKind.Utc
+                    ? sampleUtc
+                    : sampleUtc.ToUniversalTime(),
+                MonotonicTicks = tick,
+                Channel = _channel,
+                Direction = _adaptiveDirection,
+                Stage = decision.Stage,
+                ElapsedMs = decision.ElapsedMs,
+                CurrentA = decision.CurrentA,
+                WindowSampleCount = decision.WindowSampleCount,
+                WindowSpanMs = decision.WindowSpanMs,
+                WindowMedianA = decision.WindowMedianA,
+                WindowMadA = decision.WindowMadA,
+                WindowP10A = decision.WindowP10A,
+                WindowP90A = decision.WindowP90A,
+                ReleaseThresholdA = decision.ReleaseThresholdA,
+                AllowedSpreadA = decision.AllowedSpreadA,
+                ReleaseCandidateElapsedMs = decision.ReleaseCandidateElapsedMs,
+                WindowQualified = decision.WindowQualified,
+                Action = action,
+                Reason = decision.Reason
+            };
+            try { AdaptiveDecisionObserved?.Invoke(item); }
+            catch { /* 诊断订阅者不得影响控制线程 */ }
         }
 
         private void HandleAdaptiveDecision(EpbAdaptiveDecision decision)
@@ -248,9 +300,14 @@ namespace Controller
                 if (finished == completion.Task)
                     return await completion.Task.ConfigureAwait(false);
 
-                var watchdog = _adaptiveStateMachine.CheckWatchdog(AdaptiveNowTicks());
+                var watchdogTick = AdaptiveNowTicks();
+                var watchdog = _adaptiveStateMachine.CheckWatchdog(watchdogTick);
                 if (watchdog.HardFault)
                 {
+                    PublishAdaptiveTrace(
+                        watchdogTick,
+                        DateTime.UtcNow,
+                        watchdog);
                     HandleAdaptiveDecision(watchdog);
                     return watchdog;
                 }

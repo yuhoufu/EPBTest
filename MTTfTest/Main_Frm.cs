@@ -1,16 +1,11 @@
 ﻿using Controller;
-using CustomTcpClient;
 using DataOperation;
 using IO.NI;
 using MTEmbTest;
-using MTEmbTest.Properties;
 using System;
 using System.Collections.Concurrent;
 using System.Drawing;
-using System.IO.Ports;
 using System.Reflection;
-using System.Text;
-using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
@@ -18,8 +13,6 @@ namespace MtEmbTest
 {
     public partial class Main_Frm : Form
     {
-        public bool[] IsPowerConnect = { false };
-        private readonly AsyncTcpClient[] powerClient = new AsyncTcpClient[1];
 
         #region 软件配置相关
 
@@ -115,11 +108,6 @@ namespace MtEmbTest
             }
 
 
-            if (ClsGlobal.PowerStatus[0] > 0)
-            {
-                MessageBox.Show("请关闭电源", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                e.Cancel = true;
-            }
         }
 
 
@@ -255,16 +243,6 @@ namespace MtEmbTest
                 ClsGlobal.DevResetWaitSpan = int.Parse(ConfigOperation.SetOneItem("DevResetWaitSpan"));
 
                 ClsGlobal.DaqTimeBias = double.Parse(ConfigOperation.SetOneItem("DaqTimeBias"));
-
-                ClsGlobal.Voltage = int.Parse(ConfigOperation.SetOneItem("Voltage"));
-                ClsGlobal.MaxCurrent = int.Parse(ConfigOperation.SetOneItem("MaxCurrent"));
-                ClsGlobal.MinCurrent = int.Parse(ConfigOperation.SetOneItem("MinCurrent"));
-                ClsGlobal.MaxPower = int.Parse(ConfigOperation.SetOneItem("MaxPower"));
-                ClsGlobal.MinPower = int.Parse(ConfigOperation.SetOneItem("MinPower"));
-
-
-                ClsGlobal.PowerServerAdr[0] = ConfigOperation.SetOneItem("Power1ServerAdr");
-                ClsGlobal.PowerServerPort[0] = ConfigOperation.SetOneItem("Power1ServerPort");
 
                 // 无需CAN卡，禁用
                 /*
@@ -484,6 +462,9 @@ namespace MtEmbTest
         }
         */
 
+#if LEGACY_EMB_POWER
+        // 仅保留为历史源码参考；生产构建不定义 LEGACY_EMB_POWER。
+        // EPB 程控电源必须通过 PowerSupplyCoordinator 的预检、回读和联锁控制。
         private async void TsmPower_Click(object sender, EventArgs e)
         {
             if (TsmPower.Text == "1-OFF")
@@ -937,6 +918,7 @@ namespace MtEmbTest
                 return ex.Message;
             }
         }
+#endif
 
 
         // 自定义颜色表
@@ -963,12 +945,5 @@ namespace MtEmbTest
             public override Color MenuItemPressedGradientBegin => Color.SteelBlue;
         }
 
-        #region Serial变量
-
-        private TaskCompletionSource<byte[]> serialResponseTcs;
-        private static SerialPort serialPort;
-        private readonly object _serialPortLock = new();
-
-        #endregion
     }
 }

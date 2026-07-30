@@ -61,9 +61,6 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
   <ItemGroup>
-    <Reference Include="AsyncTcpClient">
-      <HintPath>..\image\AsyncTcpClient.dll</HintPath>
-    </Reference>
     <Reference Include="DevExpress.Data.Desktop.v24.2, Version=24.2.5.0, Culture=neutral, PublicKeyToken=b88d1754d700e49a" />
     <Reference Include="DevExpress.Data.v24.2, Version=24.2.5.0, Culture=neutral, PublicKeyToken=b88d1754d700e49a" />
     <Reference Include="DevExpress.Drawing.v24.2, Version=24.2.5.0, Culture=neutral, PublicKeyToken=b88d1754d700e49a" />
@@ -141,6 +138,11 @@
     </Compile>
     <Compile Include="FrmEpbMainMonitor.BatchGuard.cs">
       <DependentUpon>FrmEpbMainMonitor.cs</DependentUpon>
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="FrmEpbMainMonitor.PowerSupply.cs">
+      <DependentUpon>FrmEpbMainMonitor.cs</DependentUpon>
+      <SubType>Form</SubType>
     </Compile>
     <Compile Include="FrmEpbMainMonitor.Designer.cs">
       <DependentUpon>FrmEpbMainMonitor.cs</DependentUpon>
@@ -270,6 +272,9 @@
     <Content Include="Config\AlarmConfig.xml">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <Content Include="Config\PowerSupplyConfig.xml">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
     <Content Include="Config\AOConfig.xml">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
@@ -301,6 +306,9 @@
     <ProjectReference Include="..\Controller\Controller.csproj">
       <Project>{3788aca5-1b32-414c-8678-637d8cad9b18}</Project>
       <Name>Controller</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\PowerSupply.Core\PowerSupply.Core.csproj">
+      <Name>PowerSupply.Core</Name>
     </ProjectReference>
     <ProjectReference Include="..\DataOperation\DataOperation.csproj">
       <Project>{fce7fd92-9529-40df-83ab-92b6b4dc469c}</Project>

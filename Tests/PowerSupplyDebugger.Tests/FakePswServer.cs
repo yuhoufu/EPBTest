@@ -27,6 +27,8 @@ internal sealed class FakePswServer : IAsyncDisposable
 
     public string Identity { get; set; }
     public string? SuppressResponseFor { get; set; }
+    public string? DelayResponseFor { get; set; }
+    public int ResponseDelayMs { get; set; }
     public string? CloseConnectionFor { get; set; }
     public ConcurrentQueue<string> Commands { get; } = new();
     public ConcurrentQueue<string> RawFrames { get; } = new();
@@ -105,6 +107,12 @@ internal sealed class FakePswServer : IAsyncDisposable
                     string.Equals(command, SuppressResponseFor, StringComparison.OrdinalIgnoreCase))
                 {
                     continue;
+                }
+
+                if (string.Equals(command, DelayResponseFor, StringComparison.OrdinalIgnoreCase) &&
+                    ResponseDelayMs > 0)
+                {
+                    await Task.Delay(ResponseDelayMs, cancellationToken);
                 }
 
                 var response = GetResponse(command) + "\r\n";

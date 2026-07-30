@@ -97,6 +97,16 @@ namespace Controller.Adaptive
         public string Reason { get; set; }
         public double CurrentA { get; set; }
         public int ElapsedMs { get; set; }
+        public int WindowSampleCount { get; set; }
+        public int WindowSpanMs { get; set; }
+        public double WindowMedianA { get; set; } = double.NaN;
+        public double WindowMadA { get; set; } = double.NaN;
+        public double WindowP10A { get; set; } = double.NaN;
+        public double WindowP90A { get; set; } = double.NaN;
+        public double ReleaseThresholdA { get; set; } = double.NaN;
+        public double AllowedSpreadA { get; set; } = double.NaN;
+        public int ReleaseCandidateElapsedMs { get; set; }
+        public bool WindowQualified { get; set; }
 
         public bool HasAction =>
             ClampReached || ReleaseCompleted || SoftWarning || HardFault || StateChanged;
@@ -108,6 +118,11 @@ namespace Controller.Adaptive
     public sealed class EpbAdaptiveCurrentStateMachine
     {
         private const int StableWindowMs = 150;
+        private const int StableWindowMinCoverageMs = 120;
+        private const int ReverseWindowMs = 200;
+        private const int ReverseWindowMinCoverageMs = 120;
+        private const int WindowMinimumSamples = 8;
+        private const int WindowRetentionMs = 350;
         private const int ReleaseConfirmMs = 200;
         private const int NearZeroFaultMs = 200;
         private const double NearZeroA = 0.10;
@@ -130,12 +145,16 @@ namespace Controller.Adaptive
         private double _overshootDeltaA;
         private double _reverseDecayLimitA;
         private int _consecutiveOverCurrent;
+        private int _clampConfirmSamples;
         private bool _softWarningRaised;
         private bool _forwardDirection;
         private double _peakCurrentA;
+        private double _lastCurrentA;
         private double _observedForwardEmptyA;
         private double _observedForwardEmptyMadA;
         private double _observedReverseEmptyA;
+        private double _loadRisePeakA;
+        private long _loadRiseDropStartTick;
 
         public EpbAdaptiveCurrentStateMachine(EpbAdaptiveProfile profile)
         {
@@ -232,13 +251,18 @@ namespace Controller.Adaptive
 
                 var current = Math.Abs(currentAmp);
                 _lastSampleTick = tick;
+                _lastCurrentA = current;
                 if (current > _peakCurrentA) _peakCurrentA = current;
 
                 var elapsedMs = ElapsedMs(_powerStartTick, tick);
                 decision.ElapsedMs = elapsedMs;
 
                 if (elapsedMs >= _absoluteMaxMs)
+                {
+                    if (!_forwardDirection)
+                        TryApplyReverseWindowDiagnostics(tick, decision, out _);
                     return Fault(decision, _forwardDirection ? "ForwardAbsoluteOnTimeExceeded" : "ReverseAbsoluteOnTimeExceeded");
+                }
 
                 var overCurrentLimit = _forwardA + _overshootDeltaA;
                 if (_overshootDeltaA > 0 && current >= overCurrentLimit)
@@ -291,7 +315,7 @@ namespace Controller.Adaptive
         {
             lock (_gate)
             {
-                var decision = NewDecision(0);
+                var decision = NewDecision(_lastCurrentA);
                 if (_stage == EpbCurrentStage.Idle ||
                     _stage == EpbCurrentStage.Hold ||
                     _stage == EpbCurrentStage.ClampReached ||
@@ -299,11 +323,15 @@ namespace Controller.Adaptive
                     _stage == EpbCurrentStage.Faulted)
                     return decision;
 
-                if ((_lastSampleTick == 0 && ElapsedMs(_powerStartTick, nowTick) > 100) ||
+                decision.ElapsedMs = ElapsedMs(_powerStartTick, nowTick);
+                if (!_forwardDirection)
+                    TryApplyReverseWindowDiagnostics(nowTick, decision, out _);
+
+                if ((_lastSampleTick == 0 && decision.ElapsedMs > 100) ||
                     (_lastSampleTick != 0 && ElapsedMs(_lastSampleTick, nowTick) > 100))
                     return Fault(decision, "DaqSampleStale>100ms");
 
-                if (ElapsedMs(_powerStartTick, nowTick) >= _absoluteMaxMs)
+                if (decision.ElapsedMs >= _absoluteMaxMs)
                     return Fault(decision, _forwardDirection ? "ForwardAbsoluteOnTimeExceeded" : "ReverseAbsoluteOnTimeExceeded");
 
                 return decision;
@@ -348,45 +376,75 @@ namespace Controller.Adaptive
                 }
             }
 
-            if (current + _safetyMarginA >= _forwardA)
+            var clampThreshold = Math.Max(0, _forwardA - _safetyMarginA);
+            if (_stage == EpbCurrentStage.EmptyTravel && current >= clampThreshold)
             {
-                SetStage(EpbCurrentStage.ClampReached);
-                decision.ClampReached = true;
-                decision.StateChanged = true;
-                decision.Reason = $"ClampReached I={current:F3}A Margin={_safetyMarginA:F3}A";
+                Fault(
+                    decision,
+                    $"CurveSequenceInvalid ThresholdBeforeLoadRise I={current:F3}A Threshold={clampThreshold:F3}A");
+                return;
+            }
+
+            if (_stage == EpbCurrentStage.LoadRise)
+            {
+                if (current > _loadRisePeakA) _loadRisePeakA = current;
+                if (_loadRisePeakA - current >= 2.0 && current < clampThreshold)
+                {
+                    if (_loadRiseDropStartTick == 0) _loadRiseDropStartTick = tick;
+                    if (ElapsedMs(_loadRiseDropStartTick, tick) >= 100)
+                    {
+                        Fault(
+                            decision,
+                            $"AbnormalLoadRiseDrop Peak={_loadRisePeakA:F3}A Current={current:F3}A");
+                        return;
+                    }
+                }
+                else
+                {
+                    _loadRiseDropStartTick = 0;
+                }
+
+                _clampConfirmSamples = current >= clampThreshold ? _clampConfirmSamples + 1 : 0;
+                if (_clampConfirmSamples >= 3)
+                {
+                    SetStage(EpbCurrentStage.ClampReached);
+                    decision.ClampReached = true;
+                    decision.StateChanged = true;
+                    decision.Reason =
+                        $"ClampReachedConfirmed I={current:F3}A Threshold={clampThreshold:F3}A Samples=3";
+                }
             }
         }
 
         private void EvaluateReverse(long tick, double current, EpbAdaptiveDecision decision)
         {
             if (_stage != EpbCurrentStage.ReleaseDecay) return;
-            if (!WindowIsStable(out var median, out var mad))
+
+            if (!TryApplyReverseWindowDiagnostics(tick, decision, out var stats))
             {
                 _releaseCandidateTick = 0;
                 return;
             }
 
-            var lowLoadThreshold = _profile.IsStable && _profile.ReverseEmptyCurrentA > 0
-                ? _profile.ReverseEmptyCurrentA + Math.Max(0.30, 4.0 * _profile.ReverseEmptyMadA)
-                : _reverseDecayLimitA;
-            var flatLimit = Math.Max(0.15, 6.0 * (_profile.IsStable ? _profile.ReverseEmptyMadA : mad));
-
-            if (median <= lowLoadThreshold && WindowRange() <= flatLimit)
+            if (decision.WindowQualified)
             {
-                _observedReverseEmptyA = median;
+                _observedReverseEmptyA = stats.Median;
                 if (_releaseCandidateTick == 0)
                 {
                     _releaseCandidateTick = tick;
                     return;
                 }
 
-                if (ElapsedMs(_releaseCandidateTick, tick) >= ReleaseConfirmMs)
+                decision.ReleaseCandidateElapsedMs = ElapsedMs(_releaseCandidateTick, tick);
+                if (decision.ReleaseCandidateElapsedMs >= ReleaseConfirmMs)
                 {
                     SetStage(EpbCurrentStage.Released);
                     decision.ReleaseCompleted = true;
                     decision.StateChanged = true;
                     decision.Reason =
-                        $"Released I={current:F3}A median={median:F3}A threshold={lowLoadThreshold:F3}A";
+                        $"Released I={current:F3}A median={stats.Median:F3}A " +
+                        $"p90={stats.P90:F3}A threshold={decision.ReleaseThresholdA:F3}A " +
+                        $"spread={stats.P90 - stats.P10:F3}A allowed={decision.AllowedSpreadA:F3}A";
                 }
             }
             else
@@ -395,9 +453,39 @@ namespace Controller.Adaptive
             }
         }
 
+        private bool TryApplyReverseWindowDiagnostics(
+            long tick,
+            EpbAdaptiveDecision decision,
+            out WindowStats stats)
+        {
+            if (!TryGetWindowStats(
+                    tick,
+                    ReverseWindowMs,
+                    ReverseWindowMinCoverageMs,
+                    WindowMinimumSamples,
+                    out stats))
+                return false;
+
+            var lowLoadThreshold = _profile.IsStable && _profile.ReverseEmptyCurrentA > 0
+                ? _profile.ReverseEmptyCurrentA + Math.Max(0.30, 4.0 * _profile.ReverseEmptyMadA)
+                : _reverseDecayLimitA;
+            var allowedSpread = Math.Max(
+                0.30,
+                8.0 * (_profile.IsStable ? _profile.ReverseEmptyMadA : stats.Mad));
+            ApplyWindowDiagnostics(decision, stats);
+            decision.ReleaseThresholdA = lowLoadThreshold;
+            decision.AllowedSpreadA = allowedSpread;
+            decision.WindowQualified =
+                stats.P90 <= lowLoadThreshold &&
+                stats.P90 - stats.P10 <= allowedSpread;
+            if (_releaseCandidateTick != 0)
+                decision.ReleaseCandidateElapsedMs = ElapsedMs(_releaseCandidateTick, tick);
+            return true;
+        }
+
         private void EvaluateAbnormalHighPlateau(long tick, int elapsedMs, EpbAdaptiveDecision decision)
         {
-            if (elapsedMs < 500 || !WindowIsStable(out var median, out _))
+            if (elapsedMs < _inrushIgnoreMs + 200 || !WindowIsStable(out var median, out _))
             {
                 _highPlateauStartTick = 0;
                 return;
@@ -469,17 +557,21 @@ namespace Controller.Adaptive
             _absoluteMaxMs = Math.Max(1, absoluteMaxMs);
             _softLimitMs = 0;
             _consecutiveOverCurrent = 0;
+            _clampConfirmSamples = 0;
             _softWarningRaised = false;
             _peakCurrentA = 0;
+            _lastCurrentA = 0;
             _observedForwardEmptyA = 0;
             _observedForwardEmptyMadA = 0;
             _observedReverseEmptyA = 0;
+            _loadRisePeakA = 0;
+            _loadRiseDropStartTick = 0;
         }
 
         private void AddWindow(long tick, double current)
         {
             _window.Enqueue(new Sample(tick, current));
-            while (_window.Count > 0 && ElapsedMs(_window.Peek().Tick, tick) > StableWindowMs)
+            while (_window.Count > 0 && ElapsedMs(_window.Peek().Tick, tick) > WindowRetentionMs)
                 _window.Dequeue();
         }
 
@@ -487,36 +579,76 @@ namespace Controller.Adaptive
         {
             median = 0;
             mad = 0;
-            if (_window.Count < 5) return false;
-            var first = _window.Peek();
-            var last = _window.Last();
-            if (ElapsedMs(first.Tick, last.Tick) < StableWindowMs - 10) return false;
-            var values = _window.Select(x => x.CurrentA).OrderBy(x => x).ToArray();
-            median = Median(values);
-            var medianValue = median;
-            mad = Median(values.Select(x => Math.Abs(x - medianValue)).OrderBy(x => x).ToArray());
-            return WindowRange() <= Math.Max(0.15, 6.0 * mad);
+            if (!TryGetWindowStats(
+                    _lastSampleTick,
+                    StableWindowMs,
+                    StableWindowMinCoverageMs,
+                    WindowMinimumSamples,
+                    out var stats))
+                return false;
+
+            median = stats.Median;
+            mad = stats.Mad;
+            return stats.Range <= Math.Max(0.15, 6.0 * mad);
         }
 
-        private double WindowRange()
+        private bool TryGetWindowStats(
+            long nowTick,
+            int windowMs,
+            int minimumCoverageMs,
+            int minimumSamples,
+            out WindowStats stats)
         {
-            if (_window.Count == 0) return double.MaxValue;
-            var min = double.MaxValue;
-            var max = double.MinValue;
-            foreach (var sample in _window)
-            {
-                if (sample.CurrentA < min) min = sample.CurrentA;
-                if (sample.CurrentA > max) max = sample.CurrentA;
-            }
+            stats = default;
+            if (_window.Count < minimumSamples || nowTick <= 0) return false;
 
-            return max - min;
+            var samples = _window
+                .Where(x => ElapsedMs(x.Tick, nowTick) <= windowMs)
+                .ToArray();
+            if (samples.Length < minimumSamples) return false;
+
+            var spanMs = ElapsedMs(samples[0].Tick, samples[samples.Length - 1].Tick);
+            if (spanMs < minimumCoverageMs) return false;
+
+            var values = samples.Select(x => x.CurrentA).OrderBy(x => x).ToArray();
+            var median = Median(values);
+            var medianValue = median;
+            var mad = Median(values
+                .Select(x => Math.Abs(x - medianValue))
+                .OrderBy(x => x)
+                .ToArray());
+
+            stats = new WindowStats(
+                samples.Length,
+                spanMs,
+                median,
+                mad,
+                Quantile(values, 0.10),
+                Quantile(values, 0.90),
+                values[values.Length - 1] - values[0]);
+            return true;
+        }
+
+        private static void ApplyWindowDiagnostics(
+            EpbAdaptiveDecision decision,
+            WindowStats stats)
+        {
+            decision.WindowSampleCount = stats.SampleCount;
+            decision.WindowSpanMs = stats.SpanMs;
+            decision.WindowMedianA = stats.Median;
+            decision.WindowMadA = stats.Mad;
+            decision.WindowP10A = stats.P10;
+            decision.WindowP90A = stats.P90;
         }
 
         private double WindowSlopeAperMs()
         {
-            if (_window.Count < 2) return 0;
-            var first = _window.Peek();
-            var last = _window.Last();
+            var samples = _window
+                .Where(x => ElapsedMs(x.Tick, _lastSampleTick) <= StableWindowMs)
+                .ToArray();
+            if (samples.Length < 2) return 0;
+            var first = samples[0];
+            var last = samples[samples.Length - 1];
             var elapsed = ElapsedMs(first.Tick, last.Tick);
             return elapsed <= 0 ? 0 : (last.CurrentA - first.CurrentA) / elapsed;
         }
@@ -540,6 +672,45 @@ namespace Controller.Adaptive
             return values.Length % 2 == 0
                 ? (values[mid - 1] + values[mid]) / 2.0
                 : values[mid];
+        }
+
+        private static double Quantile(double[] sortedValues, double probability)
+        {
+            if (sortedValues == null || sortedValues.Length == 0) return 0;
+            var p = Math.Max(0, Math.Min(1, probability));
+            var index = (int)Math.Round(
+                p * (sortedValues.Length - 1),
+                MidpointRounding.AwayFromZero);
+            return sortedValues[index];
+        }
+
+        private readonly struct WindowStats
+        {
+            public WindowStats(
+                int sampleCount,
+                int spanMs,
+                double median,
+                double mad,
+                double p10,
+                double p90,
+                double range)
+            {
+                SampleCount = sampleCount;
+                SpanMs = spanMs;
+                Median = median;
+                Mad = mad;
+                P10 = p10;
+                P90 = p90;
+                Range = range;
+            }
+
+            public int SampleCount { get; }
+            public int SpanMs { get; }
+            public double Median { get; }
+            public double Mad { get; }
+            public double P10 { get; }
+            public double P90 { get; }
+            public double Range { get; }
         }
 
         private readonly struct Sample

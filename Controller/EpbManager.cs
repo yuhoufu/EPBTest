@@ -46,6 +46,23 @@ namespace Controller
         /// <summary>事件：某个通道恢复运行。</summary>
         public event Action<int> ChannelResumed;
 
+        /// <summary>程控电源遥测更新；订阅者不得阻塞控制线程。</summary>
+        public event Action<PowerSupplyTelemetry> PowerSupplyTelemetryUpdated;
+
+        /// <summary>程控电源组级硬故障。</summary>
+        public event Action<PowerSupplyFault> PowerSupplyFaultRaised;
+
+        /// <summary>
+        /// 人工复位指定电源组的故障锁存。只有输出已关闭、保护已解除且身份校验通过时才会成功；
+        /// 下次启动仍执行完整预检。
+        /// </summary>
+        public Task ResetPowerSupplyFaultAsync(int electricalGroupId, CancellationToken token = default)
+        {
+            if (_powerSupply == null)
+                throw new InvalidOperationException("程控电源控制未初始化。");
+            return _powerSupply.ResetFaultAsync(electricalGroupId, token);
+        }
+
         private readonly TwoDeviceAiAcquirer _acq; // ★ 新增：数据采集器
 
         private readonly AoController _ao;
@@ -55,6 +72,9 @@ namespace Controller
         private readonly DoController _do;
         private readonly HydraulicController _hydraulic;
         private readonly IAppLogger _log;
+        private readonly IPowerSupplyCoordinator _powerSupply;
+        private readonly bool _requirePowerSupply;
+        private PowerSupplyTelemetryCsvRecorder _powerTelemetryRecorder;
 
         private readonly SafetyMarginControlMode _safetyMarginControlMode;
         private readonly EpbControlMode _epbControlMode;
@@ -326,7 +346,9 @@ namespace Controller
             IAppLogger log = null,
             SafetyMarginControlMode safetyMarginControlMode = SafetyMarginControlMode.Legacy20251010,
             EpbControlMode epbControlMode = EpbControlMode.LegacyFixedTiming,
-            bool adaptiveShadowMode = true)
+            bool adaptiveShadowMode = true,
+            IPowerSupplyCoordinator powerSupply = null,
+            bool requirePowerSupply = false)
         {
             _do = doController ?? throw new ArgumentNullException(nameof(doController));
             _ao = aoController ?? throw new ArgumentNullException(nameof(aoController));
@@ -339,6 +361,22 @@ namespace Controller
             _readCurrent = acq.ReadCurrentFast;
             _log = log ?? NullLogger.Instance;
             _acq = acq;
+            _requirePowerSupply = requirePowerSupply || ReadBooleanAppSetting("PowerSupplyIntegrationRequired", false);
+            if (powerSupply == null && _requirePowerSupply)
+            {
+                var powerConfigPath = System.IO.Path.Combine(
+                    AppDomain.CurrentDomain.BaseDirectory,
+                    "Config",
+                    "PowerSupplyConfig.xml");
+                var powerConfig = PowerSupplyConfigLoader.Load(powerConfigPath);
+                powerSupply = new PowerSupplyCoordinator(powerConfig, cfg.Test.Groups, _log);
+            }
+            _powerSupply = powerSupply;
+            if (_powerSupply != null)
+            {
+                _powerSupply.TelemetryUpdated += OnPowerSupplyTelemetryUpdated;
+                _powerSupply.FaultRaised += OnPowerSupplyFaultRaised;
+            }
 
             _safetyMarginControlMode = safetyMarginControlMode;
             _epbControlMode = ReadEpbControlMode(epbControlMode);
@@ -379,8 +417,9 @@ namespace Controller
             {
                 if (_runners.TryGetValue(ch, out var r))
                 {
-                    var tick = ToStopwatchTicks(ts.ToUniversalTime());
-                    r.FeedCurrentSample(ch, tick, amps);
+                    var sampleUtc = ts.ToUniversalTime();
+                    var tick = ToStopwatchTicks(sampleUtc);
+                    r.FeedCurrentSample(ch, tick, amps, sampleUtc);
                 }
             };
 
@@ -506,6 +545,10 @@ namespace Controller
                 _log.Warn($"EPB[{channel}] 已在运行。", "EPB");
                 return;
             }
+
+            EnsureStrictCurveControl(new[] { channel });
+            if (_powerSupply != null)
+                await _powerSupply.PrepareAndEnableAsync(new[] { channel }, uiToken).ConfigureAwait(false);
 
             // 若上一次因报警触发过停机，这里允许重新启动
             _alarmStopLatch.BeginRun(channel);
@@ -801,6 +844,7 @@ namespace Controller
             }
 
             TryEndBatchSessionWhenIdle();
+            TryDisableIdlePowerGroup(channel, "通道停止后电源组已无运行通道");
         }
 
 
@@ -886,6 +930,34 @@ namespace Controller
 
         private void OnRunnerAlarmRaised(int channel, string reason)
         {
+            if (_powerSupply != null &&
+                reason?.IndexOf("AbnormalHighCurrentPlateau", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                var groupId = GetElectricalGroupId(channel);
+                if (groupId > 0 && _powerSupply.HasFreshPowerFaultEvidence(groupId))
+                {
+                    var snapshot = _powerSupply.GetLatestSnapshot(groupId);
+                    var affected = _cfg.Test.Groups
+                        .First(x => x.Id == groupId)
+                        .Members
+                        .Where(x => IsHydraulicParticipant(x) || _timers.ContainsKey(x) || x == channel)
+                        .Distinct()
+                        .OrderBy(x => x)
+                        .ToArray();
+                    OnPowerSupplyFaultRaised(new PowerSupplyFault
+                    {
+                        TimestampUtc = DateTime.UtcNow,
+                        SupplyId = snapshot?.SupplyId ?? groupId,
+                        ElectricalGroupId = groupId,
+                        Code = "SharedPowerLimiting",
+                        Reason = $"支路平台与程控电源限流/低压证据同时出现。首发EPB={channel}；{reason}",
+                        AffectedChannels = affected.Length > 0 ? affected : new[] { channel },
+                        Snapshot = snapshot
+                    });
+                    return;
+                }
+            }
+
             // ★同步去重 latch：保证计时器回调能尽快识别“本圈应封为 alarm”，但不在此线程做 IO
             if (!_alarmStopLatch.TryRequestStop(channel))
                 return;
@@ -923,6 +995,97 @@ namespace Controller
 
                 // 数据库中的 alarm 必须有同一通道、同一圈号的快照文件作为证据。
                 TryFinalizeCurrentCycleAfterSnapshot(channel, hasSnapshotFiles);
+            });
+        }
+
+        private void OnPowerSupplyTelemetryUpdated(PowerSupplyTelemetry telemetry)
+        {
+            var recorder = _powerTelemetryRecorder;
+            if (recorder != null && telemetry != null)
+            {
+                var group = _cfg.Test.Groups.FirstOrDefault(x => x.Id == telemetry.ElectricalGroupId);
+                var cycle = group == null
+                    ? 0
+                    : group.Members
+                        .Select(channel =>
+                            _currentCycleNumberByChannel.TryGetValue(channel, out var value) ? value : 0)
+                        .DefaultIfEmpty(0)
+                        .Max();
+                var stage = telemetry.Snapshot == null || !telemetry.Snapshot.OutputEnabled
+                    ? "Preflight/Stopped"
+                    : cycle > 0 ? "Running" : "Armed";
+                recorder.Enqueue(telemetry, cycle, stage);
+            }
+            try { PowerSupplyTelemetryUpdated?.Invoke(telemetry); } catch { }
+        }
+
+        private void BeginPowerSupplyTelemetryRecording(Guid runId)
+        {
+            if (_powerSupply == null) return;
+            var directory = System.IO.Path.Combine(
+                _cfg.Test.StoreDir,
+                _cfg.Test.TestName,
+                "PowerSupplyTelemetry");
+            var path = System.IO.Path.Combine(
+                directory,
+                $"{DateTime.Now:yyyyMMdd_HHmmss}_{runId:N}.csv");
+            var next = new PowerSupplyTelemetryCsvRecorder(path, _log);
+            var previous = Interlocked.Exchange(ref _powerTelemetryRecorder, next);
+            previous?.Dispose();
+            _log.Info($"程控电源连续遥测文件：{path}", "程控电源");
+        }
+
+        private void EndPowerSupplyTelemetryRecording()
+        {
+            var recorder = Interlocked.Exchange(ref _powerTelemetryRecorder, null);
+            recorder?.Dispose();
+        }
+
+        private void OnPowerSupplyFaultRaised(PowerSupplyFault fault)
+        {
+            if (fault == null) return;
+            try { PowerSupplyFaultRaised?.Invoke(fault); } catch { }
+
+            _ = Task.Run(async () =>
+            {
+                var reason = $"PowerSupply[{fault.Code}] {fault.Reason}";
+                foreach (var channel in fault.AffectedChannels.Distinct().OrderBy(x => x))
+                {
+                    if (!_alarmStopLatch.TryRequestStop(channel)) continue;
+                    try { ChannelAlarmRaised?.Invoke(channel, reason); } catch { }
+                    try { StopChannelOnAlarm(channel); } catch { }
+                    try
+                    {
+                        if (Alarm != null)
+                            await Alarm.SetAlarmAsync(channel, true, reason).ConfigureAwait(false);
+                    }
+                    catch { }
+
+                    var alarmUtc = fault.TimestampUtc == default ? DateTime.UtcNow : fault.TimestampUtc;
+                    var hasSnapshotFiles = false;
+                    try
+                    {
+                        hasSnapshotFiles = await ExportAlarmSnapshotAsync(channel, reason, alarmUtc)
+                            .ConfigureAwait(false);
+                    }
+                    catch { }
+                    TryFinalizeCurrentCycleAfterSnapshot(channel, hasSnapshotFiles);
+                }
+
+                // 先完成同组所有 EPB 高优先级断电，再关闭共享电源输出。
+                try
+                {
+                    await _powerSupply.DisableGroupAsync(
+                        fault.ElectricalGroupId,
+                        reason,
+                        CancellationToken.None).ConfigureAwait(false);
+                }
+                catch { }
+                finally
+                {
+                    if (_powerSupply.ActiveGroups.Count == 0)
+                        EndPowerSupplyTelemetryRecording();
+                }
             });
         }
 
@@ -1109,6 +1272,26 @@ namespace Controller
                     _log.Warn($"报警控制证据导出失败：EPB[{alarmChannel}] {ex.Message}", "落盘");
                 }
 
+                try
+                {
+                    var electricalGroupId = GetElectricalGroupId(alarmChannel);
+                    if (_powerSupply != null && electricalGroupId > 0)
+                    {
+                        var powerTelemetry = _powerSupply.GetRecentTelemetry(
+                            electricalGroupId,
+                            TimeSpan.FromSeconds(60));
+                        PowerSupplyCoordinator.ExportTelemetryCsv(
+                            System.IO.Path.Combine(snapshotDir, "power-supply-telemetry.csv"),
+                            powerTelemetry,
+                            alarmCycleNumber,
+                            reason);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _log.Warn($"报警电源遥测导出失败：EPB[{alarmChannel}] {ex.Message}", "落盘");
+                }
+
                 if (hasSnapshotFiles)
                     _log.Warn($"报警快照已导出：EPB[{alarmChannel}] {reason} -> {snapshotDir}", "落盘");
                 else
@@ -1143,6 +1326,111 @@ namespace Controller
             _runnerCache.Clear();
             _timerCache.Clear();
             _runners.Clear();
+            _ = DisableAllPowerSafeAsync("StopAll");
+        }
+
+        /// <summary>停止全部 EPB，并等待四台程控电源输出关闭回读完成。</summary>
+        public async Task StopAllAsync(CancellationToken token = default)
+        {
+            EndBatchSession(cancel: true);
+            var keys = _timers.Keys
+                .Concat(_runners.Keys)
+                .Concat(_hydraulicParticipants.Keys)
+                .Distinct()
+                .ToArray();
+            foreach (var channel in keys)
+            {
+                try { StopChannel(channel); } catch { }
+            }
+            _timers.Clear();
+            _runnerCache.Clear();
+            _timerCache.Clear();
+            _runners.Clear();
+            try
+            {
+                if (_powerSupply != null)
+                    await _powerSupply.DisableAllAsync("人工/正常停止试验", token).ConfigureAwait(false);
+            }
+            finally
+            {
+                EndPowerSupplyTelemetryRecording();
+            }
+        }
+
+        private async Task DisableAllPowerSafeAsync(string reason)
+        {
+            try
+            {
+                if (_powerSupply != null)
+                    await _powerSupply.DisableAllAsync(reason, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception ex) { _log.Error($"程控电源关闭未完全确认：{ex.Message}", "程控电源", ex); }
+            finally { EndPowerSupplyTelemetryRecording(); }
+        }
+
+        private void TryDisableIdlePowerGroup(int channel, string reason)
+        {
+            if (_powerSupply == null) return;
+            var groupId = GetElectricalGroupId(channel);
+            if (groupId <= 0) return;
+            var members = _cfg.Test.Groups.FirstOrDefault(x => x.Id == groupId)?.Members ?? new List<int>();
+            if (members.Any(IsHydraulicParticipant) || members.Any(x => _timers.ContainsKey(x))) return;
+            _ = Task.Run(async () =>
+            {
+                try { await _powerSupply.DisableGroupAsync(groupId, reason, CancellationToken.None).ConfigureAwait(false); }
+                catch { }
+                finally
+                {
+                    if (_powerSupply.ActiveGroups.Count == 0)
+                        EndPowerSupplyTelemetryRecording();
+                }
+            });
+        }
+
+        private int GetElectricalGroupId(int channel)
+        {
+            return _cfg.Test.Groups.FirstOrDefault(x => x.Members.Contains(channel))?.Id ?? 0;
+        }
+
+        private void EnsureStrictCurveControl(IEnumerable<int> channels)
+        {
+            if (_requirePowerSupply && _powerSupply == null)
+                throw new InvalidOperationException(
+                    "程控电源闭环未初始化，禁止启动。请检查 PowerSupplyConfig.xml。");
+            foreach (var channel in channels)
+            {
+                if (GetEpbControlMode(channel) != EpbControlMode.AdaptiveCurrent)
+                    throw new InvalidOperationException(
+                        $"EPB{channel} 未启用 AdaptiveCurrent 严格完整曲线控制，禁止启动正式试验。");
+            }
+            if (_adaptiveShadowMode)
+                throw new InvalidOperationException("EpbAdaptiveShadowMode=true 时只观察不保护，禁止启动正式试验。");
+        }
+
+        private void EnsureAdaptiveProfilesReady(IEnumerable<int> channels)
+        {
+            var notReady = (channels ?? Enumerable.Empty<int>())
+                .Distinct()
+                .Where(channel => !GetAdaptiveProfile(channel).IsStable)
+                .OrderBy(channel => channel)
+                .ToArray();
+            if (notReady.Length > 0)
+                throw new InvalidOperationException(
+                    $"严格完整曲线基线尚未形成：EPB[{string.Join(",", notReady)}]。" +
+                    "每路至少需要5个完整有效学习圈，禁止进入正式试验。");
+        }
+
+        private static bool ReadBooleanAppSetting(string key, bool fallback)
+        {
+            try
+            {
+                var raw = ConfigurationManager.AppSettings[key];
+                return bool.TryParse(raw, out var value) ? value : fallback;
+            }
+            catch
+            {
+                return fallback;
+            }
         }
 
 

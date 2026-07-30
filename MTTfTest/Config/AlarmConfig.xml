@@ -87,7 +87,7 @@
   -->
   <Behavior
     BuzzerEnabled="true"
-    BuzzerOnAnyAlarm="false"
+    BuzzerOnAnyAlarm="true"
     BuzzerDebounceMs="200"
     RearmDelayMs="1000"
     TimeoutMs="200"
