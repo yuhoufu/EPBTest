@@ -52,17 +52,15 @@ namespace IO.NI
         private readonly int _samplesPerChannel;
 
         // 时间戳（模仿 FrmMainMonitor）
-        private readonly Stopwatch _sw = new();
+        private readonly HighResolutionSampleClock _sampleClock = new();
         private readonly Task _worker;
         private DateTime _lastTs = DateTime.Now;
         private AnalogMultiChannelReader _reader1, _reader2;
         private DateTime _t0 = DateTime.Now;
-        private long _swStartTicks; // Stopwatch 起点
 
 
         // NI 任务
         private NIDaqTask _task1, _task2;
-        private long _ts0;
 
         // 动态置零偏移（参数名 -> offset，工程值单位）
         private readonly ConcurrentDictionary<string, double> _zeroOffsets = new(StringComparer.OrdinalIgnoreCase);
@@ -195,20 +193,9 @@ namespace IO.NI
         private void InitTimeBase()
         {
             _t0 = DateTime.Now;
-            _swStartTicks = Stopwatch.GetTimestamp();
-            _sw.Restart();
-            _ts0 = 0;
+            _sampleClock.Reset(_t0);
             _lastTs = _t0;
         }
-
-        /// <summary>把当前 Stopwatch 读数换算为 DateTime（纳秒级精度，避免整数毫秒量化）。</summary>
-        private static DateTime NowFromStopwatch(long startStamp, DateTime t0)
-        {
-            long now = Stopwatch.GetTimestamp();
-            double sec = (now - startStamp) / (double)Stopwatch.Frequency;
-            return t0.AddSeconds(sec);
-        }
-
 
         /// <summary>
         ///     记录 DAQ 回调的“批大小/回调间隔/到达延迟”诊断信息到 ErrorLog（限频）。
@@ -690,13 +677,8 @@ namespace IO.NI
             AITerminalConfiguration term = AITerminalConfiguration.Rse)
         {
             Stop();
-            if (!_sw.IsRunning)
-            {
-                //InitTimeBase();
-                _t0 = DateTime.Now;
-                _sw.Start();
-                _ts0 = _sw.ElapsedMilliseconds;
-            }
+            // 每次启动都重新建立单调时钟与墙钟的对应关系，避免继承上一次采集的起点。
+            InitTimeBase();
 
 
             // 两块采集卡共享同一时间原点，但必须各自推进批次时间。
@@ -810,8 +792,8 @@ namespace IO.NI
                         last = _t0;
 
                     //  两种时间：主机"实测" + 按采样率推进的"理想"
-                    var hostNow = _t0.AddMilliseconds(_sw.ElapsedMilliseconds - _ts0);
-                    var idealNow = last.AddSeconds(n / _sampleRate);
+                    var hostNow = _sampleClock.Now();
+                    var idealNow = HighResolutionSampleClock.AddSamples(last, n, _sampleRate);
 
                     // ③ 轻微纠偏（例如 >5ms 时用主机时间，否则用理想时间，避免长期漂移）
                     driftMs = (hostNow - idealNow).TotalMilliseconds;
@@ -1100,10 +1082,10 @@ namespace IO.NI
                     {
                         // 1) 计算时间戳数组（以本批最后一个样本对齐 item.Current，向前按 Fs 均匀回推）
                         var n = engFiltered.GetLength(1);
-                        var tsUtc = new DateTime[n];
-                        double dt = 1.0 / _sampleRate;                 // 你的 Fs
-                        var tStart = item.Current.ToUniversalTime().AddSeconds(-(n - 1) * dt);
-                        for (int k = 0; k < n; k++) tsUtc[k] = tStart.AddSeconds(k * dt);
+                        var tsUtc = HighResolutionSampleClock.BuildBatchTimestamps(
+                            item.Current.ToUniversalTime(),
+                            n,
+                            _sampleRate);
 
                         // 2) 构建“每 EPB 通道”的电流数组（从当前 device 的工程值矩阵提取）
                         var currentsByEpb = new Dictionary<int, double[]>();

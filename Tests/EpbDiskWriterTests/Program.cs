@@ -27,7 +27,8 @@ namespace EpbDiskWriterTests
                 Run("环形数据覆盖后从历史快照恢复", HistoricalSnapshotRecoversOverwrittenCycle);
                 Run("归档失败不删除索引", FailedArchiveKeepsIndex);
                 Run("所有 CSV 出口包含相对时间", AllCsvExportsContainRelativeTime);
-                Console.WriteLine($"PASS {_passed}/8");
+                Run("2000Hz CSV保留0.5ms时间分辨率", TwoKilohertzCsvKeepsSubMillisecondTime);
+                Console.WriteLine($"PASS {_passed}/9");
                 return 0;
             }
             catch (Exception ex)
@@ -273,6 +274,42 @@ namespace EpbDiskWriterTests
                     var freeRunCsv = Path.Combine(root, "free-run.csv");
                     writer.ExportFreeRunBySamples(2, 3, freeRunCsv);
                     AssertRelativeTimeCsv(freeRunCsv, 3);
+                }
+            });
+        }
+
+        private static void TwoKilohertzCsvKeepsSubMillisecondTime()
+        {
+            WithRoot(root =>
+            {
+                var policy = NewPolicy(root);
+                var start = new DateTime(2026, 7, 30, 18, 0, 0, DateTimeKind.Utc);
+                var timestamps = Enumerable.Range(0, 20)
+                    .Select(index => start.AddTicks(index * 5000L))
+                    .ToArray();
+                var currents = Enumerable.Range(0, 20).Select(index => (double)index).ToArray();
+                var pressures = Enumerable.Repeat(70.0, 20).ToArray();
+
+                string csvPath;
+                using (var writer = new EpbDiskWriter(policy))
+                {
+                    writer.BeginCycle(1, 1, start);
+                    writer.WriteBatch(1, timestamps, currents, pressures);
+                    writer.CompleteCycle(1, 1, 20, timestamps[19]);
+                    var exportDir = Path.Combine(root, "export");
+                    writer.ExportLatestCyclesTo(1, 1, exportDir, false);
+                    csvPath = CsvPath(exportDir, 1, 1);
+                }
+
+                var rows = File.ReadAllLines(csvPath).Skip(1).ToArray();
+                Assert(rows.Length == 20, "2000Hz CSV样本数错误");
+                var absolute = rows.Select(row => row.Split(',')[0]).ToArray();
+                Assert(absolute.Distinct().Count() == absolute.Length, "CSV绝对时间戳重复");
+                for (var i = 0; i < rows.Length; i++)
+                {
+                    var relative = rows[i].Split(',')[1];
+                    var expected = (i * 0.0005).ToString("F7", CultureInfo.InvariantCulture);
+                    Assert(relative == expected, $"CSV相对时间错误：{relative} != {expected}");
                 }
             });
         }

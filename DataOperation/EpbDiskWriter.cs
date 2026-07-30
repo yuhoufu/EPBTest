@@ -619,8 +619,8 @@ public sealed class EpbDiskWriter : IDisposable
     /// <summary>导出格式选项。</summary>
     public sealed class ExportFormatOptions
     {
-        /// <summary>时间格式（默认 yyyy-MM-dd HH:mm:ss.fff）。</summary>
-        public string TimeFormat { get; set; } = "yyyy-MM-dd HH:mm:ss.fff";
+        /// <summary>时间格式（默认保留 DateTime 的 100 ns 精度）。</summary>
+        public string TimeFormat { get; set; } = "yyyy-MM-dd HH:mm:ss.fffffff";
 
         /// <summary>电流格式（默认 F3）。</summary>
         public string CurrentFormat { get; set; } = "F3";
@@ -631,7 +631,7 @@ public sealed class EpbDiskWriter : IDisposable
 
     private static string FormatLocalTime(long tsBinary, string fmt)
     {
-        return DateTime.FromBinary(tsBinary).ToLocalTime().ToString(fmt ?? "yyyy-MM-dd HH:mm:ss.fff");
+        return DateTime.FromBinary(tsBinary).ToLocalTime().ToString(fmt ?? "yyyy-MM-dd HH:mm:ss.fffffff");
     }
 
     /// <summary>
@@ -890,7 +890,7 @@ public sealed class EpbDiskWriter : IDisposable
                 ref previousRelativeSeconds);
             var tsText = FormatLocalTime(rec.TimestampBinary, fmt.TimeFormat);
             writer.WriteLine(
-                $"{tsText},{relativeSeconds.ToString("F6", CultureInfo.InvariantCulture)},{rec.CycleNumber},{rec.SampleIndex},{rec.EpbCurrent.ToString(fmt.CurrentFormat)},{rec.GroupPressure.ToString(fmt.PressureFormat)}");
+                $"{tsText},{relativeSeconds.ToString("F7", CultureInfo.InvariantCulture)},{rec.CycleNumber},{rec.SampleIndex},{rec.EpbCurrent.ToString(fmt.CurrentFormat)},{rec.GroupPressure.ToString(fmt.PressureFormat)}");
         }
     }
 
