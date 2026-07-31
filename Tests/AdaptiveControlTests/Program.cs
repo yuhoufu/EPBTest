@@ -35,6 +35,10 @@ namespace AdaptiveControlTests
                 Run("稳定模型后连续50圈仍记录正向空行程", StableProfileKeepsLearningForFiftyCycles);
                 Run("正向未进入负载上升按模型期限硬停", ForwardLoadRiseDeadlineFaults);
                 Run("正向平台不足1000ms不误报且满窗硬停", ForwardCurrentRiseStallFaults);
+                Run("14.6A近目标平台200ms软完成", NearTargetPlateauCompletesWithWarning);
+                Run("13.9A短平台恢复后不误停", LowPlateauRecoversBeforeFaultWindow);
+                Run("13.9A持续1000ms按真实失速硬停", Sustained139AmpPlateauFaults);
+                Run("EPB10第28圈全数据峰值回放", Epb10Cycle28FullRatePeakReplay);
                 Run("正向正常爬升穿越半目标值不误报平台", ForwardRampThroughHalfTargetDoesNotFault);
                 Run("反向动态释放", ReverseRelease);
                 Run("反向17ms采样节拍仍可释放", ReverseReleaseWithSeventeenMillisecondCadence);
@@ -57,7 +61,9 @@ namespace AdaptiveControlTests
                 Run("DO失败与电流未清零触发组级联锁", OffFailureEscalatesToPowerGroup);
                 Run("断电电流在窗口内清零不联锁且超时只失败一次", OffCurrentPollingWindow);
                 Run("断电清零阈值适配现场零偏且保持安全上限", OffCurrentThresholdTracksTrustedBaseline);
-                Run("失速安全配置XML往返无损", SafetyLimitsXmlRoundTrip);
+                Run("项目XML不再保存程序级安全参数", ProjectXmlIgnoresProgramSafetySettings);
+                Run("EXE安全配置缺失非法时使用安全默认值", ProgramSafetySettingsValidation);
+                Run("程序安全配置快照包含值与来源", ProgramSafetySnapshotIsAuditable);
                 Run("旧项目100ms断电清零配置自动迁移", LegacyShortOffTimeoutIsMigrated);
                 Run("模型原子保存与重载", ProfilePersistence);
                 Run("控流模型五圈收敛到目标带", CutoffModelConvergesWithinFiveCycles);
@@ -93,6 +99,7 @@ namespace AdaptiveControlTests
                 Run("进度摘要完成后切换且全完成保持", SummaryAdvancesAfterCompletion);
                 Run("EPB勾选仅按设置到电源到曲线单向传播", EpbSelectionPropagatesOneWay);
                 Run("DHMS运行时间格式", DhmsFormatting);
+                Run("固定随机种子10万圈耐久仿真", HundredThousandCycleDurabilitySimulation);
                 _passed += HydraulicGroupCoordinatorTests.RunAll();
                 _passed += PowerSupplyCoordinatorTests.RunAll();
                 _passed += ProjectLogStoreTests.RunAll();
@@ -341,6 +348,101 @@ namespace AdaptiveControlTests
                 fault.WindowSpanMs >= 1000 &&
                 fault.ElapsedMs <= 3540,
                 "正向平台未在完整1000ms确认窗口后硬停");
+        }
+
+        private static void NearTargetPlateauCompletesWithWarning()
+        {
+            var machine = new EpbAdaptiveCurrentStateMachine(StableProfile());
+            machine.ArmForward(Tick(0), 100, 9000, 15, 0, 3);
+            Feed(machine, 0, 1000, 10, _ => 1.0);
+            var ramp = Feed(
+                machine,
+                1010,
+                2600,
+                10,
+                ms => Math.Min(14.6, 1.0 + (ms - 1000) * 0.0085));
+            Assert(!ramp.HardFault, "14.6A平台形成前已误判硬故障");
+
+            var completed = Feed(machine, 2610, 2900, 10, _ => 14.6);
+            Assert(
+                completed.ClampReached &&
+                completed.SoftWarning &&
+                !completed.HardFault &&
+                completed.CutoffReason == "NearTargetPlateau" &&
+                completed.Reason.Contains("ClampReachedNearTargetPlateau"),
+                "14.6A近目标平台未在200ms后安全断电并记软预警");
+        }
+
+        private static void LowPlateauRecoversBeforeFaultWindow()
+        {
+            var machine = new EpbAdaptiveCurrentStateMachine(StableProfile());
+            machine.ArmForward(Tick(0), 100, 9000, 15, 0, 3);
+            Feed(machine, 0, 1000, 10, _ => 1.0);
+            Feed(
+                machine,
+                1010,
+                2600,
+                10,
+                ms => Math.Min(13.9, 1.0 + (ms - 1000) * 0.0085));
+
+            var shortPlateau = Feed(machine, 2610, 3400, 10, _ => 13.9);
+            Assert(
+                !shortPlateau.HardFault && !shortPlateau.ClampReached,
+                "13.9A不足1000ms的短平台被误停");
+
+            var recovered = Feed(
+                machine,
+                3410,
+                3700,
+                10,
+                ms => Math.Min(15.0, 13.9 + (ms - 3400) * 0.01));
+            Assert(
+                recovered.ClampReached && !recovered.HardFault,
+                "13.9A短平台恢复上升后未能正常夹紧");
+        }
+
+        private static void Epb10Cycle28FullRatePeakReplay()
+        {
+            var machine = new EpbAdaptiveCurrentStateMachine(StableProfile());
+            machine.ArmForward(Tick(0), 100, 9000, 15, 0, 3);
+            Feed(machine, 0, 1000, 10, _ => 1.0);
+            Feed(
+                machine,
+                1010,
+                2600,
+                10,
+                ms => Math.Min(14.6, 1.0 + (ms - 1000) * 0.0085));
+
+            // 现场第28圈：10ms控制值约14.6A，但2kHz原始峰值达到15.301A。
+            var decision = machine.OnSample(Tick(2610), 14.6, 15.301);
+            Assert(
+                decision.ClampReached &&
+                !decision.HardFault &&
+                decision.Stage == EpbCurrentStage.ClampReached &&
+                decision.CutoffReason == "FullRateTarget" &&
+                Math.Abs(decision.ObservedFullRatePeakA - 15.301) < 0.0001 &&
+                !decision.Reason.Contains("ForwardCurrentRiseStalled"),
+                "EPB10第28圈未按15.301A全数据峰值正常断电");
+        }
+
+        private static void Sustained139AmpPlateauFaults()
+        {
+            var machine = new EpbAdaptiveCurrentStateMachine(StableProfile());
+            machine.ArmForward(Tick(0), 100, 9000, 15, 0, 3);
+            Feed(machine, 0, 1000, 10, _ => 1.0);
+            Feed(
+                machine,
+                1010,
+                2600,
+                10,
+                ms => Math.Min(13.9, 1.0 + (ms - 1000) * 0.0085));
+
+            var fault = Feed(machine, 2610, 3800, 10, _ => 13.9);
+            Assert(
+                fault.HardFault &&
+                fault.Reason.Contains("ForwardCurrentRiseStalled") &&
+                fault.WindowSpanMs >= 1000,
+                "低于14.2A的13.9A平台持续1000ms后未按真实失速硬停");
         }
 
         private static void ForwardRampThroughHalfTargetDoesNotFault()
@@ -663,7 +765,7 @@ namespace AdaptiveControlTests
             }
         }
 
-        private static void SafetyLimitsXmlRoundTrip()
+        private static void ProjectXmlIgnoresProgramSafetySettings()
         {
             var source = Path.GetFullPath(Path.Combine(
                 AppDomain.CurrentDomain.BaseDirectory,
@@ -678,28 +780,113 @@ namespace AdaptiveControlTests
             var target = Path.Combine(directory, "TestConfig.xml");
             try
             {
-                File.Copy(source, target);
+                var legacyXml = File.ReadAllText(source)
+                    .Replace(
+                        "<Channel>9</Channel>",
+                        "<Channel>9</Channel>" +
+                        "<ForwardProgressConfirmMs>200</ForwardProgressConfirmMs>" +
+                        "<ForwardProgressDeadlineMs>3000</ForwardProgressDeadlineMs>" +
+                        "<ReverseProgressConfirmMs>100</ReverseProgressConfirmMs>" +
+                        "<OffCurrentClearTimeoutMs>100</OffCurrentClearTimeoutMs>");
+                File.WriteAllText(target, legacyXml);
                 var config = ConfigLoader.LoadTest(target, NullLogger.Instance);
                 var channel = config.EpbCycleRunner.GetRunnerChannel(9);
-                Assert(channel.ForwardProgressConfirmMs == 1000 &&
-                       Math.Abs(channel.ForwardMinimumRiseSlopeAperMs - 0.001) < 1e-9 &&
-                       channel.ForwardProgressDeadlineMs == 5000 &&
-                       channel.ReverseProgressConfirmMs == 200 &&
-                       Math.Abs(channel.ReverseMinimumDecaySlopeAperMs - 0.001) < 1e-9 &&
-                       channel.ReverseProgressDeadlineMs == 2500 &&
-                       Math.Abs(channel.OffCurrentClearThresholdA - 0.1) < 1e-9 &&
-                       channel.OffCurrentClearTimeoutMs == 1000,
-                    "失速安全默认配置读取错误");
+                Assert(
+                    channel.ForwardProgressConfirmMs == 200 &&
+                    channel.ForwardProgressDeadlineMs == 3000,
+                    "旧项目安全字段未能兼容读取");
 
-                channel.ForwardProgressConfirmMs = 240;
-                channel.ReverseProgressDeadlineMs = 2300;
                 ConfigLoader.SaveTest(target, config);
-                var reloaded = ConfigLoader.LoadTest(target, NullLogger.Instance)
-                    .EpbCycleRunner
-                    .GetRunnerChannel(9);
-                Assert(reloaded.ForwardProgressConfirmMs == 240 &&
-                       reloaded.ReverseProgressDeadlineMs == 2300,
-                    "失速安全配置保存后未能无损重载");
+                var saved = File.ReadAllText(target);
+                Assert(
+                    !saved.Contains("<ForwardProgressConfirmMs>") &&
+                    !saved.Contains("<ForwardProgressDeadlineMs>") &&
+                    !saved.Contains("<ReverseProgressConfirmMs>") &&
+                    !saved.Contains("<OffCurrentClearTimeoutMs>"),
+                    "项目保存仍在回写程序级安全参数");
+
+                var program = EpbProgramSafetySettings.FromAppSettings(
+                    new System.Collections.Specialized.NameValueCollection(),
+                    NullLogger.Instance);
+                Assert(
+                    program.ForwardProgressConfirmMs == 1000 &&
+                    program.ForwardProgressDeadlineMs == 5000 &&
+                    program.ReverseProgressConfirmMs == 200 &&
+                    program.OffCurrentClearTimeoutMs == 1000,
+                    "旧项目200/3000错误覆盖了程序级安全策略");
+            }
+            finally
+            {
+                Directory.Delete(directory, true);
+            }
+        }
+
+        private static void ProgramSafetySettingsValidation()
+        {
+            var missing = EpbProgramSafetySettings.FromAppSettings(
+                new System.Collections.Specialized.NameValueCollection(),
+                NullLogger.Instance);
+            Assert(
+                missing.ForwardProgressConfirmMs == 1000 &&
+                Math.Abs(missing.ForwardMinimumRiseSlopeAperMs - 0.001) < 1e-9 &&
+                missing.ForwardProgressDeadlineMs == 5000 &&
+                missing.ForwardNearTargetConfirmMs == 200 &&
+                Math.Abs(missing.ForwardAcceptableUndershootA - 0.8) < 1e-9 &&
+                missing.ReverseProgressConfirmMs == 200 &&
+                missing.ReverseProgressDeadlineMs == 2500 &&
+                Math.Abs(missing.OffCurrentClearThresholdA - 0.1) < 1e-9 &&
+                missing.OffCurrentClearTimeoutMs == 1000,
+                "缺少EXE配置时未使用完整编译安全默认值");
+
+            var invalidValues = new System.Collections.Specialized.NameValueCollection
+            {
+                ["EpbForwardProgressConfirmMs"] = "200",
+                ["EpbForwardMinimumRiseSlopeAperMs"] = "not-a-number",
+                ["EpbForwardProgressDeadlineMs"] = "3000",
+                ["EpbForwardNearTargetConfirmMs"] = "20",
+                ["EpbForwardAcceptableUndershootA"] = "-1",
+                ["EpbReverseProgressConfirmMs"] = "100",
+                ["EpbReverseProgressDeadlineMs"] = "300",
+                ["EpbOffCurrentClearThresholdA"] = "0",
+                ["EpbOffCurrentClearTimeoutMs"] = "100"
+            };
+            var normalized = EpbProgramSafetySettings.FromAppSettings(
+                invalidValues,
+                NullLogger.Instance);
+            Assert(
+                normalized.ForwardProgressConfirmMs == 1000 &&
+                Math.Abs(normalized.ForwardMinimumRiseSlopeAperMs - 0.001) < 1e-9 &&
+                normalized.ForwardProgressDeadlineMs == 5000 &&
+                normalized.ForwardNearTargetConfirmMs == 100 &&
+                Math.Abs(normalized.ForwardAcceptableUndershootA - 0.8) < 1e-9 &&
+                normalized.ReverseProgressConfirmMs == 200 &&
+                normalized.ReverseProgressDeadlineMs == 2500 &&
+                Math.Abs(normalized.OffCurrentClearThresholdA - 0.1) < 1e-9 &&
+                normalized.OffCurrentClearTimeoutMs == 1000,
+                "非法EXE安全参数未按安全下限钳制");
+        }
+
+        private static void ProgramSafetySnapshotIsAuditable()
+        {
+            var directory = CreateTempDir();
+            try
+            {
+                var values = new System.Collections.Specialized.NameValueCollection
+                {
+                    ["EpbForwardProgressConfirmMs"] = "1200",
+                    ["EpbForwardProgressDeadlineMs"] = "6000"
+                };
+                var settings = EpbProgramSafetySettings.FromAppSettings(
+                    values,
+                    NullLogger.Instance);
+                var path = settings.SaveEffectiveSnapshot(directory, NullLogger.Instance);
+                var xml = File.ReadAllText(path);
+                Assert(
+                    xml.Contains("policyVersion=\"2026.07.31.1\"") &&
+                    xml.Contains("key=\"EpbForwardProgressConfirmMs\" value=\"1200\" source=\"appSettings\"") &&
+                    xml.Contains("key=\"EpbForwardProgressDeadlineMs\" value=\"6000\" source=\"appSettings\"") &&
+                    xml.Contains("key=\"EpbReverseProgressConfirmMs\" value=\"200\" source=\"compiled-default\""),
+                    "程序安全快照未完整记录策略版本、生效值和来源");
             }
             finally
             {
@@ -1512,6 +1699,57 @@ namespace AdaptiveControlTests
             {
                 Assert(ex.Message.Contains(expected), $"错误信息未包含“{expected}”：{ex.Message}");
             }
+        }
+
+        private static void HundredThousandCycleDurabilitySimulation()
+        {
+            const int cycleCount = 100_000;
+            var random = new Random(20260731);
+            var profile = StableProfile();
+            var fullRateCompletions = 0;
+            var maximumRetainedSamples = 0;
+
+            for (var cycle = 0; cycle < cycleCount; cycle++)
+            {
+                var machine = new EpbAdaptiveCurrentStateMachine(profile);
+                machine.ArmForward(Tick(0), 100, 9000, 15, 0, 3);
+
+                EpbAdaptiveDecision terminal = null;
+                for (var ms = 0; ms <= 300; ms += 20)
+                    terminal = machine.OnSample(Tick(ms), 1.0 + random.NextDouble() * 0.02);
+                for (var ms = 320; ms <= 500; ms += 20)
+                    terminal = machine.OnSample(
+                        Tick(ms),
+                        1.0 + (ms - 300) * 0.045 + random.NextDouble() * 0.02);
+
+                // 固定种子覆盖正式阶段±0.8A波动；控制通道保留在目标以下，
+                // 2kHz峰值证据达到目标，验证短峰不会在长时间运行中误走硬停。
+                var fullRatePeakA = 15.0 + random.NextDouble() * 0.79;
+                terminal = machine.OnSample(
+                    Tick(520),
+                    9.5 + random.NextDouble() * 0.1,
+                    fullRatePeakA);
+                maximumRetainedSamples = Math.Max(
+                    maximumRetainedSamples,
+                    machine.RetainedWindowSampleCount);
+
+                Assert(
+                    terminal.ClampReached &&
+                    !terminal.HardFault &&
+                    terminal.CutoffReason == "FullRateTarget",
+                    $"10万圈仿真第{cycle + 1}圈发生错误硬停");
+                fullRateCompletions++;
+            }
+
+            Assert(fullRateCompletions == cycleCount, "10万圈仿真完成数不正确");
+            Assert(
+                maximumRetainedSamples <= 60,
+                $"状态窗口样本未保持有界：max={maximumRetainedSamples}");
+
+            // 同一套策略仍须及时拦截真实低平台、开路和DAQ断流。
+            ForwardCurrentRiseStallFaults();
+            OpenCircuit();
+            DaqStale();
         }
 
         private static EpbAdaptiveCurrentStateMachine NewMachine()

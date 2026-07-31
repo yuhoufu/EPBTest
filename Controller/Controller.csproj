@@ -60,6 +60,7 @@
   <ItemGroup>
     <Compile Include="Adaptive\AdaptiveDecisionTrace.cs" />
     <Compile Include="Adaptive\EpbAdaptiveControl.cs" />
+    <Compile Include="Adaptive\EpbProgramSafetySettings.cs" />
     <Compile Include="Alarm\AlarmManager.cs" />
     <Compile Include="Alarm\AlarmSnapshotFileEvidence.cs" />
     <Compile Include="Alarm\ChannelAlarmStopLatch.cs" />

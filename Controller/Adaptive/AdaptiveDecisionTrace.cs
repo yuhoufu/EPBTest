@@ -29,6 +29,7 @@ namespace Controller.Adaptive
         public double CutoffCurrentA { get; set; }
         public double EstimatedSlopeAperMs { get; set; }
         public double PredictedPeakA { get; set; }
+        public double ObservedFullRatePeakA { get; set; }
         public double PredictionLeadMs { get; set; }
         public string CutoffReason { get; set; }
         public int ReleaseCandidateElapsedMs { get; set; }
@@ -107,7 +108,8 @@ namespace Controller.Adaptive
                     "Utc,MonotonicTicks,RunId,Cycle,Channel,Direction,Stage,ElapsedMs,CurrentA," +
                     "WindowSamples,WindowSpanMs,MedianA,MadA,P10A,P90A,ReleaseThresholdA," +
                     "AllowedSpreadA,CutoffCurrentA,EstimatedSlopeAperMs,PredictedPeakA," +
-                    "PredictionLeadMs,CutoffReason,CandidateElapsedMs,WindowQualified,Action,Reason");
+                    "ObservedFullRatePeakA,PredictionLeadMs,CutoffReason,CandidateElapsedMs," +
+                    "WindowQualified,Action,Reason");
                 foreach (var item in events ?? Enumerable.Empty<AdaptiveDecisionTraceEvent>())
                 {
                     writer.WriteLine(string.Join(",",
@@ -131,6 +133,7 @@ namespace Controller.Adaptive
                         Number(item.CutoffCurrentA),
                         Number(item.EstimatedSlopeAperMs),
                         Number(item.PredictedPeakA),
+                        Number(item.ObservedFullRatePeakA),
                         Number(item.PredictionLeadMs),
                         Csv(item.CutoffReason),
                         item.ReleaseCandidateElapsedMs.ToString(CultureInfo.InvariantCulture),

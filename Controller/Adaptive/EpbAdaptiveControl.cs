@@ -58,7 +58,9 @@ namespace Controller.Adaptive
         public string Reason { get; set; }
         public int ForwardElapsedMs { get; set; }
         public int ReverseElapsedMs { get; set; }
+        /// <summary>2kHz 全数据峰值；保留 PeakCurrentA 名称以兼容既有结果消费者。</summary>
         public double PeakCurrentA { get; set; }
+        public double ControlPeakCurrentA { get; set; }
         public double TargetCurrentA { get; set; }
         public double CutoffCurrentA { get; set; }
         public double EstimatedSlopeAperMs { get; set; }
@@ -68,6 +70,8 @@ namespace Controller.Adaptive
         public string CutoffReason { get; set; }
         public double ForwardEmptyCurrentA { get; set; }
         public double ReverseEmptyCurrentA { get; set; }
+        public string SafetyPolicyVersion { get; set; } =
+            EpbProgramSafetySettings.SafetyPolicyVersion;
 
         public bool IsSuccess =>
             Kind == EpbCycleOutcomeKind.Success || Kind == EpbCycleOutcomeKind.SuccessWithWarning;
@@ -115,6 +119,7 @@ namespace Controller.Adaptive
         public double CutoffCurrentA { get; set; } = double.NaN;
         public double EstimatedSlopeAperMs { get; set; } = double.NaN;
         public double PredictedPeakA { get; set; } = double.NaN;
+        public double ObservedFullRatePeakA { get; set; } = double.NaN;
         public double PredictionLeadMs { get; set; } = double.NaN;
         public string CutoffReason { get; set; }
         public int ReleaseCandidateElapsedMs { get; set; }
@@ -125,13 +130,15 @@ namespace Controller.Adaptive
     }
 
     /// <summary>
-    /// 电流进展与断电代理确认的安全参数。默认值即使旧 XML 未配置也会生效。
+    /// 电流进展与断电代理确认的运行时安全参数，由程序级设置统一生成。
     /// </summary>
     public sealed class EpbAdaptiveSafetyLimits
     {
         public int ForwardProgressConfirmMs { get; set; } = 1000;
         public double ForwardMinimumRiseSlopeAperMs { get; set; } = 0.001;
         public int ForwardProgressDeadlineMs { get; set; } = 5000;
+        public int ForwardNearTargetConfirmMs { get; set; } = 200;
+        public double ForwardAcceptableUndershootA { get; set; } = 0.8;
         public int ReverseProgressConfirmMs { get; set; } = 200;
         public double ReverseMinimumDecaySlopeAperMs { get; set; } = 0.001;
         public int ReverseProgressDeadlineMs { get; set; } = 2500;
@@ -140,16 +147,21 @@ namespace Controller.Adaptive
 
         public EpbAdaptiveSafetyLimits Normalized()
         {
-            var forwardConfirm = Math.Max(20, ForwardProgressConfirmMs);
-            var reverseConfirm = Math.Max(20, ReverseProgressConfirmMs);
+            var forwardConfirm = Math.Max(1000, ForwardProgressConfirmMs);
+            var nearTargetConfirm = Math.Max(
+                100,
+                Math.Min(forwardConfirm, ForwardNearTargetConfirmMs));
+            var reverseConfirm = Math.Max(200, ReverseProgressConfirmMs);
             return new EpbAdaptiveSafetyLimits
             {
                 ForwardProgressConfirmMs = forwardConfirm,
                 ForwardMinimumRiseSlopeAperMs = Math.Max(0.00001, ForwardMinimumRiseSlopeAperMs),
-                ForwardProgressDeadlineMs = Math.Max(forwardConfirm, ForwardProgressDeadlineMs),
+                ForwardProgressDeadlineMs = Math.Max(5000, Math.Max(forwardConfirm, ForwardProgressDeadlineMs)),
+                ForwardNearTargetConfirmMs = nearTargetConfirm,
+                ForwardAcceptableUndershootA = Math.Max(0.1, ForwardAcceptableUndershootA),
                 ReverseProgressConfirmMs = reverseConfirm,
                 ReverseMinimumDecaySlopeAperMs = Math.Max(0.00001, ReverseMinimumDecaySlopeAperMs),
-                ReverseProgressDeadlineMs = Math.Max(reverseConfirm, ReverseProgressDeadlineMs),
+                ReverseProgressDeadlineMs = Math.Max(2500, Math.Max(reverseConfirm, ReverseProgressDeadlineMs)),
                 OffCurrentClearThresholdA = Math.Max(0.01, OffCurrentClearThresholdA),
                 // 现场采集链路在断电后仍会经历约 200~300ms 的衰减/刷新。
                 // 旧项目中的 100ms 会把正常衰减误判为继电器未断开，因此运行时强制迁移到 1s。
@@ -203,6 +215,7 @@ namespace Controller.Adaptive
         private double _observedForwardEmptyMadA;
         private double _observedReverseEmptyA;
         private double _loadRisePeakA;
+        private double _observedFullRatePeakA;
         private long _loadRiseDropStartTick;
         private long _loadRiseStartTick;
         private long _forwardProgressStallStartTick;
@@ -232,6 +245,15 @@ namespace Controller.Adaptive
         public double ObservedReverseEmptyA
         {
             get { lock (_gate) return _observedReverseEmptyA; }
+        }
+
+        public int RetainedWindowSampleCount
+        {
+            get
+            {
+                lock (_gate)
+                    return _window.Count + _forwardEmptyWindow.Count;
+            }
         }
 
         public double CutoffCurrentA { get; private set; }
@@ -311,7 +333,10 @@ namespace Controller.Adaptive
             }
         }
 
-        public EpbAdaptiveDecision OnSample(long tick, double currentAmp)
+        public EpbAdaptiveDecision OnSample(
+            long tick,
+            double currentAmp,
+            double observedFullRatePeakA = double.NaN)
         {
             lock (_gate)
             {
@@ -323,6 +348,13 @@ namespace Controller.Adaptive
                     return decision;
 
                 var current = Math.Abs(currentAmp);
+                if (!double.IsNaN(observedFullRatePeakA) &&
+                    !double.IsInfinity(observedFullRatePeakA) &&
+                    observedFullRatePeakA > _observedFullRatePeakA)
+                    _observedFullRatePeakA = Math.Abs(observedFullRatePeakA);
+                decision.ObservedFullRatePeakA = _observedFullRatePeakA > 0
+                    ? _observedFullRatePeakA
+                    : double.NaN;
                 _lastSampleTick = tick;
                 _lastCurrentA = current;
                 if (current > _peakCurrentA) _peakCurrentA = current;
@@ -501,6 +533,24 @@ namespace Controller.Adaptive
                 decision.PredictedPeakA = predictedPeak;
 
                 if (current > _loadRisePeakA) _loadRisePeakA = current;
+                var effectiveObservedPeakA = Math.Max(_loadRisePeakA, _observedFullRatePeakA);
+
+                // 全数据峰值捕获基于 2kHz 原始样本。它达到目标时优先于 10ms 控制样本，
+                // 避免短峰已达标、随后平台段却被误判为正向失速。
+                if (_observedFullRatePeakA >= _forwardA)
+                {
+                    CompleteForwardClamp(
+                        decision,
+                        current,
+                        slope,
+                        _observedFullRatePeakA,
+                        leadMs,
+                        "FullRateTarget",
+                        $"ClampReachedFullRatePeak Peak={_observedFullRatePeakA:F3}A " +
+                        $"I={current:F3}A Target={_forwardA:F3}A");
+                    return;
+                }
+
                 if (_loadRisePeakA - current >= 2.0 && current < _forwardA)
                 {
                     if (_loadRiseDropStartTick == 0) _loadRiseDropStartTick = tick;
@@ -517,9 +567,7 @@ namespace Controller.Adaptive
                     _loadRiseDropStartTick = 0;
                 }
 
-                var stallProbeMs = Math.Max(
-                    100,
-                    Math.Min(200, _safetyLimits.ForwardProgressConfirmMs / 5));
+                var stallProbeMs = _safetyLimits.ForwardNearTargetConfirmMs;
                 if (_loadRiseStartTick != 0 &&
                     TryGetLinearSlope(
                         tick,
@@ -531,6 +579,26 @@ namespace Controller.Adaptive
                     stallProbeStats.P90 < _forwardA &&
                     stallProbeSlope <= _safetyLimits.ForwardMinimumRiseSlopeAperMs)
                 {
+                    var acceptableFloorA = Math.Max(
+                        0,
+                        _forwardA - _safetyLimits.ForwardAcceptableUndershootA);
+                    if (effectiveObservedPeakA >= acceptableFloorA)
+                    {
+                        ApplyWindowDiagnostics(decision, stallProbeStats);
+                        decision.SoftWarning = true;
+                        CompleteForwardClamp(
+                            decision,
+                            current,
+                            stallProbeSlope,
+                            effectiveObservedPeakA,
+                            0,
+                            "NearTargetPlateau",
+                            $"ClampReachedNearTargetPlateau Peak={effectiveObservedPeakA:F3}A " +
+                            $"I={current:F3}A Floor={acceptableFloorA:F3}A Target={_forwardA:F3}A " +
+                            $"slope={stallProbeSlope:F6}A/ms confirm={stallProbeStats.SpanMs}ms");
+                        return;
+                    }
+
                     if (_forwardProgressStallStartTick == 0)
                     {
                         _forwardProgressStallStartTick = tick -
@@ -571,22 +639,48 @@ namespace Controller.Adaptive
                 _clampConfirmSamples = predictionReached ? _clampConfirmSamples + 1 : 0;
                 if (directTargetReached || _clampConfirmSamples >= 3)
                 {
-                    SetStage(EpbCurrentStage.ClampReached);
-                    CutoffCurrentA = current;
-                    CutoffSlopeAperMs = slope;
-                    PredictedPeakA = predictedPeak;
-                    PredictionLeadMs = leadMs;
-                    CutoffReason = directTargetReached ? "DirectTarget" : "PredictedPeak";
-                    decision.ClampReached = true;
-                    decision.StateChanged = true;
-                    decision.CutoffReason = CutoffReason;
-                    decision.Reason =
+                    var cutoffReason = directTargetReached ? "DirectTarget" : "PredictedPeak";
+                    var reason =
                         directTargetReached
                             ? $"ClampReachedDirect I={current:F3}A Target={_forwardA:F3}A"
                             : $"ClampReachedPredicted I={current:F3}A Predicted={predictedPeak:F3}A " +
                               $"Target={_forwardA:F3}A Slope={slope:F4}A/ms Lead={leadMs:F2}ms Samples=3";
+                    CompleteForwardClamp(
+                        decision,
+                        current,
+                        slope,
+                        predictedPeak,
+                        leadMs,
+                        cutoffReason,
+                        reason);
                 }
             }
+        }
+
+        private void CompleteForwardClamp(
+            EpbAdaptiveDecision decision,
+            double current,
+            double slope,
+            double peak,
+            double leadMs,
+            string cutoffReason,
+            string reason)
+        {
+            SetStage(EpbCurrentStage.ClampReached);
+            CutoffCurrentA = current;
+            CutoffSlopeAperMs = slope;
+            PredictedPeakA = peak;
+            PredictionLeadMs = leadMs;
+            CutoffReason = cutoffReason ?? string.Empty;
+            decision.ClampReached = true;
+            decision.StateChanged = true;
+            decision.Stage = _stage;
+            decision.CutoffCurrentA = current;
+            decision.EstimatedSlopeAperMs = slope;
+            decision.PredictedPeakA = peak;
+            decision.PredictionLeadMs = leadMs;
+            decision.CutoffReason = CutoffReason;
+            decision.Reason = reason;
         }
 
         private void EvaluateReverse(
@@ -791,6 +885,7 @@ namespace Controller.Adaptive
             _observedForwardEmptyMadA = 0;
             _observedReverseEmptyA = 0;
             _loadRisePeakA = 0;
+            _observedFullRatePeakA = 0;
             _loadRiseDropStartTick = 0;
             _loadRiseStartTick = 0;
             _forwardProgressStallStartTick = 0;

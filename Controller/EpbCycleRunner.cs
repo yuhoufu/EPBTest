@@ -180,7 +180,8 @@ namespace Controller
             EpbControlMode epbControlMode = EpbControlMode.LegacyFixedTiming,
             bool adaptiveShadowMode = true,
             EpbAdaptiveProfile adaptiveProfile = null,
-            Action<EpbAdaptiveProfile> saveAdaptiveProfile = null)
+            Action<EpbAdaptiveProfile> saveAdaptiveProfile = null,
+            EpbProgramSafetySettings programSafetySettings = null)
             : this(channel, hydId, readCurrent, doController, hydraulic, posThresholdA, holdMs, sampleMs, peakIgnoreMs,
                 log)
         {
@@ -199,18 +200,9 @@ namespace Controller
             _adaptiveProfile = adaptiveProfile?.Clone() ?? new EpbAdaptiveProfile { Channel = channel };
             _saveAdaptiveProfile = saveAdaptiveProfile;
             _adaptiveStateMachine = new EpbAdaptiveCurrentStateMachine(_adaptiveProfile);
-            var safetyRecord = _cfg?.Test.EpbCycleRunner.GetRunnerChannel(channel);
-            _adaptiveSafetyLimits = new EpbAdaptiveSafetyLimits
-            {
-                ForwardProgressConfirmMs = safetyRecord?.ForwardProgressConfirmMs ?? 1000,
-                ForwardMinimumRiseSlopeAperMs = safetyRecord?.ForwardMinimumRiseSlopeAperMs ?? 0.001,
-                ForwardProgressDeadlineMs = safetyRecord?.ForwardProgressDeadlineMs ?? 5000,
-                ReverseProgressConfirmMs = safetyRecord?.ReverseProgressConfirmMs ?? 200,
-                ReverseMinimumDecaySlopeAperMs = safetyRecord?.ReverseMinimumDecaySlopeAperMs ?? 0.001,
-                ReverseProgressDeadlineMs = safetyRecord?.ReverseProgressDeadlineMs ?? 2500,
-                OffCurrentClearThresholdA = safetyRecord?.OffCurrentClearThresholdA ?? 0.1,
-                OffCurrentClearTimeoutMs = safetyRecord?.OffCurrentClearTimeoutMs ?? 1000
-            }.Normalized();
+            _programSafetySettings =
+                programSafetySettings ?? EpbProgramSafetySettings.Load(_log);
+            _adaptiveSafetyLimits = _programSafetySettings.ToAdaptiveSafetyLimits();
 
             // 在此处设置epb卡钳的实际运行参数
             DefaultPreReleaseKeepMs = _cfg?.Test.EpbCycleRunner.GetRunnerChannel(channel).PreReleaseKeepMs ?? 500; // 预释放保持时长
@@ -1102,7 +1094,8 @@ namespace Controller
                     Reason = _adaptiveSoftWarningSeen ? "LegacyCompletedWithAdaptiveShadowWarning" : "LegacyCompleted",
                     ForwardElapsedMs = fwdJudgeElapsedMs,
                     ReverseElapsedMs = tRevPeakDecayMs,
-                    PeakCurrentA = _adaptiveForwardPeakA
+                    PeakCurrentA = _adaptiveForwardPeakA,
+                    ControlPeakCurrentA = _adaptiveForwardControlPeakA
                 };
                 return true;
             }

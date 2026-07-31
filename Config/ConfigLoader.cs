@@ -460,8 +460,8 @@ public static class ConfigLoader
                 item.ReverseProgressConfirmMs,
                 item.ReverseProgressDeadlineMs);
             item.OffCurrentClearThresholdA = Math.Max(0.01, item.OffCurrentClearThresholdA);
-            // 兼容旧项目：100ms 小于现场电流衰减与采集刷新时间，会在正常断电时误报警。
-            // 加载时提升到 1s，后续保存也会把迁移后的安全值写回项目配置。
+            // 兼容读取旧项目字段；运行控制不使用这些值，也不会在项目保存时回写。
+            // 这里保留防御性归一化，仅避免旧字段被其他只读诊断代码误用。
             item.OffCurrentClearTimeoutMs = Math.Max(1000, item.OffCurrentClearTimeoutMs);
 
             cfg.EpbCycleRunner.Channels[ch] = item; // 覆盖写入
@@ -846,17 +846,8 @@ public static class ConfigLoader
             Add("PreReleaseKeepMs", it.PreReleaseKeepMs?.ToString() ?? "");
             Add("PreReleaseDetectTimeoutMs", it.PreReleaseDetectTimeoutMs?.ToString() ?? "");
             Add("PeakIgnoreMs", it.PeakIgnoreMs.ToString());
-            Add("ForwardProgressConfirmMs", it.ForwardProgressConfirmMs.ToString());
-            Add("ForwardMinimumRiseSlopeAperMs",
-                it.ForwardMinimumRiseSlopeAperMs.ToString(CultureInfo.InvariantCulture));
-            Add("ForwardProgressDeadlineMs", it.ForwardProgressDeadlineMs.ToString());
-            Add("ReverseProgressConfirmMs", it.ReverseProgressConfirmMs.ToString());
-            Add("ReverseMinimumDecaySlopeAperMs",
-                it.ReverseMinimumDecaySlopeAperMs.ToString(CultureInfo.InvariantCulture));
-            Add("ReverseProgressDeadlineMs", it.ReverseProgressDeadlineMs.ToString());
-            Add("OffCurrentClearThresholdA",
-                it.OffCurrentClearThresholdA.ToString(CultureInfo.InvariantCulture));
-            Add("OffCurrentClearTimeoutMs", it.OffCurrentClearTimeoutMs.ToString());
+            // 正/反向失速和断电清零属于程序级安全策略，由 EXE 同名配置统一管理。
+            // 旧项目字段仍可兼容读取，但保存项目时不再写回，避免切换项目覆盖程序安全默认值。
 
             epbNode.AppendChild(rec);
         }

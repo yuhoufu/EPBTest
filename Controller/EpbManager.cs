@@ -80,6 +80,7 @@ namespace Controller
         private readonly EpbControlMode _epbControlMode;
         private readonly bool _adaptiveShadowMode;
         private readonly EpbAdaptiveProfileStore _adaptiveProfileStore;
+        private readonly EpbProgramSafetySettings _programSafetySettings;
         private readonly HashSet<int> _adaptiveChannels;
 
 
@@ -397,6 +398,7 @@ namespace Controller
             _epbControlMode = ReadEpbControlMode(epbControlMode);
             _adaptiveShadowMode = ReadAdaptiveShadowMode(adaptiveShadowMode);
             _adaptiveChannels = ReadAdaptiveChannels();
+            _programSafetySettings = EpbProgramSafetySettings.Load(_log);
 
             try
             {
@@ -405,6 +407,10 @@ namespace Controller
                 _log.Info(
                     $"EPB 控制模式={_epbControlMode}，灰度通道={string.Join(",", _adaptiveChannels)}，" +
                     $"影子判定={_adaptiveShadowMode}，模型={_adaptiveProfileStore.FilePath}",
+                    "EPB");
+                _log.Info(
+                    "项目 TestConfig.xml 中旧的正/反向失速与断电清零字段仅为兼容读取，" +
+                    "运行时统一使用 EXE 同名配置中的程序级安全策略。",
                     "EPB");
             }
             catch (Exception ex)
@@ -519,6 +525,19 @@ namespace Controller
                 _log);
         }
 
+        private void SaveProgramSafetySnapshot()
+        {
+            var projectConfigDir = ConfigLoader.GetProjectConfigDir(
+                _cfg?.Test?.StoreDir,
+                _cfg?.Test?.TestName);
+            if (_programSafetySettings == null) return;
+            _log.Info(
+                $"本次试验EPB程序级安全策略：Policy={EpbProgramSafetySettings.SafetyPolicyVersion}; " +
+                _programSafetySettings.ToAuditLogText(),
+                "EPB");
+            _programSafetySettings.SaveEffectiveSnapshot(projectConfigDir, _log);
+        }
+
         // 将 DateTime（采集回调给的 ts）换算为当前进程 Stopwatch Ticks
         private long ToStopwatchTicks(DateTime tsUtc)
         {
@@ -562,6 +581,7 @@ namespace Controller
             }
 
             EnsureStrictCurveControl(new[] { channel });
+            SaveProgramSafetySnapshot();
             if (_powerSupply != null)
                 await _powerSupply.PrepareAndEnableAsync(new[] { channel }, uiToken).ConfigureAwait(false);
 
@@ -646,7 +666,8 @@ namespace Controller
                 epbControlMode: GetEpbControlMode(channel),
                 adaptiveShadowMode: _adaptiveShadowMode,
                 adaptiveProfile: GetAdaptiveProfile(channel),
-                saveAdaptiveProfile: SaveAdaptiveProfile);
+                saveAdaptiveProfile: SaveAdaptiveProfile,
+                programSafetySettings: _programSafetySettings);
 
             runner.AlarmRaised += OnRunnerAlarmRaised;
             runner.WarningRaised += OnRunnerWarningRaised;

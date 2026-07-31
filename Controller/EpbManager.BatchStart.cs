@@ -76,6 +76,7 @@ namespace Controller
                 _emergencyPowerGroupLatch.Clear();
                 BeginPowerSupplyTelemetryRecording(_activeBatchId);
                 EnsureStrictCurveControl(selected);
+                SaveProgramSafetySnapshot();
                 if (_powerSupply != null)
                     await _powerSupply.PrepareAndEnableAsync(selected, sessionToken).ConfigureAwait(false);
 
@@ -970,7 +971,8 @@ namespace Controller
                 epbControlMode: GetEpbControlMode(channel),
                 adaptiveShadowMode: _adaptiveShadowMode,
                 adaptiveProfile: GetAdaptiveProfile(channel),
-                saveAdaptiveProfile: SaveAdaptiveProfile);
+                saveAdaptiveProfile: SaveAdaptiveProfile,
+                programSafetySettings: _programSafetySettings);
 
             _runnerCache[channel] = runner;
             _runners[channel] = runner; // 立即登记，保证采集回调可用

@@ -13,6 +13,7 @@ namespace Controller
         private readonly bool _adaptiveShadowMode;
         private readonly EpbAdaptiveCurrentStateMachine _adaptiveStateMachine;
         private readonly EpbAdaptiveProfile _adaptiveProfile;
+        private readonly EpbProgramSafetySettings _programSafetySettings;
         private readonly Action<EpbAdaptiveProfile> _saveAdaptiveProfile;
         private readonly object _adaptiveGate = new object();
 
@@ -26,6 +27,7 @@ namespace Controller
         private double _adaptiveForwardEmptyA;
         private double _adaptiveReverseEmptyA;
         private double _adaptiveForwardPeakA;
+        private double _adaptiveForwardControlPeakA;
         private int _adaptiveClampPeakCaptureStarted;
         private string _adaptiveDirection = string.Empty;
         private readonly EpbAdaptiveSafetyLimits _adaptiveSafetyLimits;
@@ -110,6 +112,7 @@ namespace Controller
             _adaptiveForwardEmptyA = 0;
             _adaptiveReverseEmptyA = 0;
             _adaptiveForwardPeakA = 0;
+            _adaptiveForwardControlPeakA = 0;
             Interlocked.Exchange(ref _adaptiveClampPeakCaptureStarted, 0);
             Interlocked.Exchange(ref _adaptiveTerminalOffLatched, 0);
 
@@ -140,6 +143,9 @@ namespace Controller
                 ? _adaptiveForwardElapsedMs
                 : Math.Max(0, measuredElapsedMs);
             _adaptiveForwardEmptyA = _adaptiveStateMachine.ObservedForwardEmptyA;
+            _adaptiveForwardControlPeakA = Math.Max(
+                _adaptiveForwardControlPeakA,
+                _adaptiveStateMachine.PeakCurrentA);
             if (_acq == null)
                 _adaptiveForwardPeakA = Math.Max(
                     _adaptiveForwardPeakA,
@@ -230,7 +236,24 @@ namespace Controller
             EpbAdaptiveDecision decision;
             try
             {
-                decision = _adaptiveStateMachine.OnSample(tick, currentAmp);
+                var fullRatePeakA = double.NaN;
+                if (_acq != null &&
+                    string.Equals(_adaptiveDirection, "Forward", StringComparison.Ordinal) &&
+                    Interlocked.CompareExchange(ref _adaptiveClampPeakCaptureStarted, 1, 1) == 1)
+                {
+                    try
+                    {
+                        var peak = _acq.PeekEpbCurrentPeak(_channel);
+                        if (peak.SampleCount > 0)
+                            fullRatePeakA = peak.MaxAmp;
+                    }
+                    catch
+                    {
+                        // 峰值窥视失败时继续使用快速控制通道，不得中断采集回调。
+                    }
+                }
+
+                decision = _adaptiveStateMachine.OnSample(tick, currentAmp, fullRatePeakA);
             }
             catch
             {
@@ -294,6 +317,7 @@ namespace Controller
                 CutoffCurrentA = decision.CutoffCurrentA,
                 EstimatedSlopeAperMs = decision.EstimatedSlopeAperMs,
                 PredictedPeakA = decision.PredictedPeakA,
+                ObservedFullRatePeakA = decision.ObservedFullRatePeakA,
                 PredictionLeadMs = decision.PredictionLeadMs,
                 CutoffReason = decision.CutoffReason,
                 ReleaseCandidateElapsedMs = decision.ReleaseCandidateElapsedMs,
@@ -655,7 +679,8 @@ namespace Controller
         private async Task<EpbCycleOutcome> RunOneAdaptiveAsync(int targetPeriodMs, CancellationToken token)
         {
             const int postOffPeakCaptureMs = 100;
-            const double balancedUndershootWarningA = 0.8;
+            var balancedUndershootWarningA =
+                _adaptiveSafetyLimits.ForwardAcceptableUndershootA;
             var outcome = new EpbCycleOutcome
             {
                 Kind = EpbCycleOutcomeKind.HardFault,
@@ -790,6 +815,7 @@ namespace Controller
                         Reason = reason,
                         ForwardElapsedMs = _adaptiveForwardElapsedMs,
                         PeakCurrentA = _adaptiveForwardPeakA,
+                        ControlPeakCurrentA = _adaptiveForwardControlPeakA,
                         TargetCurrentA = _posThrA,
                         CutoffCurrentA = forward.CutoffCurrentA,
                         EstimatedSlopeAperMs = forward.EstimatedSlopeAperMs,
@@ -855,6 +881,7 @@ namespace Controller
                     ForwardElapsedMs = _adaptiveForwardElapsedMs,
                     ReverseElapsedMs = _adaptiveReverseElapsedMs,
                     PeakCurrentA = _adaptiveForwardPeakA,
+                    ControlPeakCurrentA = _adaptiveForwardControlPeakA,
                     TargetCurrentA = _posThrA,
                     CutoffCurrentA = forward.CutoffCurrentA,
                     EstimatedSlopeAperMs = forward.EstimatedSlopeAperMs,
@@ -876,10 +903,12 @@ namespace Controller
                 _log?.Info(
                     $"EPB[{_channel}] 自适应单圈完成：Fwd={outcome.ForwardElapsedMs}ms，" +
                     $"Rev={outcome.ReverseElapsedMs}ms，Cutoff={outcome.CutoffCurrentA:F3}A，" +
-                    $"PredictedPeak={outcome.PredictedPeakA:F3}A，Peak={outcome.PeakCurrentA:F3}A，" +
+                    $"PredictedPeak={outcome.PredictedPeakA:F3}A，" +
+                    $"ControlPeak={outcome.ControlPeakCurrentA:F3}A，FullRatePeak={outcome.PeakCurrentA:F3}A，" +
                     $"Target={outcome.TargetCurrentA:F3}A，Error={outcome.PeakErrorA:+0.000;-0.000;0.000}A，" +
                     $"Slope={outcome.EstimatedSlopeAperMs:F4}A/ms，Lead={outcome.PredictionLeadMs:F2}ms，" +
-                    $"Trigger={outcome.CutoffReason}，结果={outcome.Kind}。",
+                    $"Trigger={outcome.CutoffReason}，SafetyPolicy={EpbProgramSafetySettings.SafetyPolicyVersion}，" +
+                    $"结果={outcome.Kind}。",
                     "EPB");
                 return outcome;
             }
