@@ -982,6 +982,11 @@ namespace Controller
             if (!_alarmStopLatch.TryRequestStop(channel))
                 return;
 
+            // 学习阶段必须在报警回调线程同步取消，不能等后台 StopChannelOnAlarm，
+            // 否则已报警 Runner 可能继续进入保持或反向。
+            CancelActiveLearningPhase();
+            try { CancelStopCts(channel); } catch { }
+
             var alarmUtc = DateTime.UtcNow;
             _log.Error(
                 $"EPB[{channel}] 硬故障，立即停止该通道并导出报警快照。原因={reason}",
@@ -1070,6 +1075,11 @@ namespace Controller
         private void OnPowerSupplyFaultRaised(PowerSupplyFault fault)
         {
             if (fault == null) return;
+            CancelActiveLearningPhase();
+            foreach (var channel in fault.AffectedChannels.Distinct())
+            {
+                try { CancelStopCts(channel); } catch { }
+            }
             try { PowerSupplyFaultRaised?.Invoke(fault); } catch { }
 
             _ = Task.Run(async () =>
@@ -1468,6 +1478,7 @@ namespace Controller
 
         internal void RequestElectricalGroupEmergencyShutdown(int sourceChannel, string reason)
         {
+            CancelActiveLearningPhase();
             var groupId = GetElectricalGroupId(sourceChannel);
             if (groupId <= 0)
             {

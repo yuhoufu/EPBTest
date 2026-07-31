@@ -354,12 +354,37 @@ public sealed class EpbDiskWriter : IDisposable
         {
             if (s.CapacityRecords <= 0)
                 throw new InvalidOperationException("CapacityRecords must be positive.");
-
-            s.CurrentCycle = cycleNumber;
-            s.CurrentSampleIndex = 0;
+            if (s.CurrentCycle.HasValue)
+                throw new InvalidOperationException(
+                    $"EPB[{epbId}] 圈 {s.CurrentCycle.Value} 尚未封存，不能开始圈 {cycleNumber}。");
 
             var startIndex = s.TotalWritten % s.CapacityRecords; // 非负
             UpsertCycleStart(epbId, cycleNumber, startUtc.ToLocalTime(), startIndex);
+            s.CurrentCycle = cycleNumber;
+            s.CurrentSampleIndex = 0;
+        }
+    }
+
+    /// <summary>
+    /// 原子分配并开始一个学习圈。学习圈使用负数内部圈号，不参与正式圈号、成功计数或最近圈导出。
+    /// </summary>
+    public int BeginLearningCycle(int epbId, DateTime startUtc)
+    {
+        var s = GetState(epbId);
+        lock (s.Gate)
+        {
+            if (s.CapacityRecords <= 0)
+                throw new InvalidOperationException("CapacityRecords must be positive.");
+            if (s.CurrentCycle.HasValue)
+                throw new InvalidOperationException(
+                    $"EPB[{epbId}] 圈 {s.CurrentCycle.Value} 尚未封存，不能开始学习圈。");
+
+            var cycleNumber = GetNextLearningCycleNumber(epbId);
+            var startIndex = s.TotalWritten % s.CapacityRecords;
+            UpsertCycleStart(epbId, cycleNumber, startUtc.ToLocalTime(), startIndex);
+            s.CurrentCycle = cycleNumber;
+            s.CurrentSampleIndex = 0;
+            return cycleNumber;
         }
     }
 
@@ -421,8 +446,27 @@ public sealed class EpbDiskWriter : IDisposable
         string exportDir,
         DateTime fallbackEndUtc)
     {
+        return SealAndExportCycle(
+            epbId,
+            cycleNumber,
+            exportDir,
+            fallbackEndUtc,
+            "alarm");
+    }
+
+    /// <summary>
+    /// 在单通道锁内原子领取、导出并封存当前圈。报警后台与学习收尾并发时只有首个调用方能够领取。
+    /// </summary>
+    public AlarmCycleSnapshotEvidence SealAndExportCycle(
+        int epbId,
+        int cycleNumber,
+        string exportDir,
+        DateTime fallbackEndUtc,
+        string status)
+    {
         if (string.IsNullOrWhiteSpace(exportDir))
             throw new ArgumentException("exportDir is required", nameof(exportDir));
+        var normalizedStatus = NormalizeSealStatus(status);
 
         var stem = $"EPB{epbId}_Cycle_{cycleNumber:D6}";
         var csvPath = Path.Combine(exportDir, stem + ".csv");
@@ -430,7 +474,8 @@ public sealed class EpbDiskWriter : IDisposable
         var evidence = new AlarmCycleSnapshotEvidence
         {
             CsvPath = csvPath,
-            BinPath = binPath
+            BinPath = binPath,
+            FinalStatus = normalizedStatus
         };
         var s = GetState(epbId);
         lock (s.Gate)
@@ -439,21 +484,30 @@ public sealed class EpbDiskWriter : IDisposable
             var endUtc = fallbackEndUtc.Kind == DateTimeKind.Utc
                 ? fallbackEndUtc
                 : fallbackEndUtc.ToUniversalTime();
+            if (s.CurrentCycle != cycleNumber)
+            {
+                evidence.WasClaimed = false;
+                evidence.ValidationError =
+                    $"EPB[{epbId}] Cycle={cycleNumber} 已由其它收尾路径封存，当前圈为 " +
+                    $"{s.CurrentCycle?.ToString() ?? "null"}。";
+                return evidence;
+            }
+
+            evidence.WasClaimed = true;
             try
             {
-                if (s.CurrentCycle != cycleNumber)
-                {
-                    throw new InvalidOperationException(
-                        $"EPB[{epbId}] 当前圈 {s.CurrentCycle?.ToString() ?? "null"} 与报警圈 {cycleNumber} 不一致。");
-                }
-
                 var cycle = GetCycleInfo(epbId, cycleNumber);
                 cycle.SampleCount = finalSampleCount;
-                if (cycle.SampleCount <= 0)
+                var allowEmpty = normalizedStatus == "learning_canceled" ||
+                                 normalizedStatus == "learning_failed";
+                if (cycle.SampleCount <= 0 && !allowEmpty)
                     throw new InvalidDataException($"EPB[{epbId}] Cycle={cycleNumber} 没有可封存样本。");
 
-                var records = ReadCycleRecordsFromRing(epbId, cycle, s.CapacityRecords);
-                endUtc = DateTime.FromBinary(records[records.Count - 1].TimestampBinary).ToUniversalTime();
+                var records = cycle.SampleCount > 0
+                    ? ReadCycleRecordsFromRing(epbId, cycle, s.CapacityRecords)
+                    : new List<SampleRecord>();
+                if (records.Count > 0)
+                    endUtc = DateTime.FromBinary(records[records.Count - 1].TimestampBinary).ToUniversalTime();
                 Directory.CreateDirectory(exportDir);
                 var csvTemp = GetTempPath(csvPath);
                 var binTemp = GetTempPath(binPath);
@@ -476,15 +530,25 @@ public sealed class EpbDiskWriter : IDisposable
                     csvPath,
                     binPath,
                     epbId,
-                    cycleNumber);
+                    cycleNumber,
+                    allowEmpty);
+                evidence.WasClaimed = true;
+                evidence.FinalStatus = normalizedStatus;
                 if (!evidence.IsValid)
                     throw new InvalidDataException(evidence.ValidationError);
 
-                MarkCycleAlarm(epbId, cycleNumber, evidence.SampleCount, evidence.LastSampleUtc ?? endUtc);
+                MarkCycleFinalized(
+                    epbId,
+                    cycleNumber,
+                    evidence.SampleCount,
+                    evidence.LastSampleUtc ?? endUtc,
+                    normalizedStatus);
             }
             catch (Exception ex)
             {
                 evidence.IsValid = false;
+                evidence.WasClaimed = true;
+                evidence.FinalStatus = normalizedStatus;
                 evidence.SampleCount = finalSampleCount;
                 evidence.ValidationError = ex.Message;
                 try
@@ -494,7 +558,9 @@ public sealed class EpbDiskWriter : IDisposable
                         cycleNumber,
                         finalSampleCount,
                         evidence.LastSampleUtc ?? endUtc,
-                        "failed");
+                        normalizedStatus.StartsWith("learning_", StringComparison.Ordinal)
+                            ? "learning_failed"
+                            : "failed");
                 }
                 catch (Exception dbEx)
                 {
@@ -511,12 +577,40 @@ public sealed class EpbDiskWriter : IDisposable
         return evidence;
     }
 
+    private static string NormalizeSealStatus(string status)
+    {
+        var normalized = (status ?? string.Empty).Trim().ToLowerInvariant();
+        switch (normalized)
+        {
+            case "alarm":
+            case "learning_completed":
+            case "learning_canceled":
+            case "learning_failed":
+                return normalized;
+            default:
+                throw new ArgumentOutOfRangeException(
+                    nameof(status),
+                    status,
+                    "仅支持 alarm、learning_completed、learning_canceled、learning_failed。");
+        }
+    }
+
     /// <summary>逐条校验报警 CSV/BIN 对的数量、圈号、序号和时间范围。</summary>
     public static AlarmCycleSnapshotEvidence ValidateAlarmCycleSnapshotPair(
         string csvPath,
         string binPath,
         int epbId,
         int cycleNumber)
+    {
+        return ValidateAlarmCycleSnapshotPair(csvPath, binPath, epbId, cycleNumber, false);
+    }
+
+    private static AlarmCycleSnapshotEvidence ValidateAlarmCycleSnapshotPair(
+        string csvPath,
+        string binPath,
+        int epbId,
+        int cycleNumber,
+        bool allowEmpty)
     {
         var evidence = new AlarmCycleSnapshotEvidence
         {
@@ -529,7 +623,7 @@ public sealed class EpbDiskWriter : IDisposable
                 throw new InvalidDataException("报警快照 CSV/BIN 文件不完整。");
 
             var binLength = new FileInfo(binPath).Length;
-            if (binLength <= 0 || binLength % SampleRecord.Size != 0)
+            if ((!allowEmpty && binLength <= 0) || binLength % SampleRecord.Size != 0)
                 throw new InvalidDataException(
                     $"BIN 长度 {binLength} 不是 {SampleRecord.Size} 字节记录的整数倍。");
 
@@ -1396,6 +1490,22 @@ SELECT COALESCE(MAX(cycle_number), 0)
         return Convert.ToInt32(obj);
     }
 
+    /// <summary>返回下一个负数学习圈号；调用方必须持有对应通道锁。</summary>
+    private int GetNextLearningCycleNumber(int epbId)
+    {
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = $@"
+SELECT COALESCE(MIN(cycle_number), 0)
+  FROM {TABLE_CYCLES}
+ WHERE epb_id=@e
+   AND cycle_number < 0";
+        cmd.Parameters.AddWithValue("@e", epbId);
+        var currentMinimum = Convert.ToInt32(cmd.ExecuteScalar());
+        if (currentMinimum == int.MinValue)
+            throw new InvalidOperationException($"EPB[{epbId}] 学习圈号已耗尽。");
+        return currentMinimum < 0 ? currentMinimum - 1 : -1;
+    }
+
 
 
         /// <summary>
@@ -1586,7 +1696,7 @@ SELECT COUNT(1)
 SELECT start_position, COALESCE(sample_count, 0)
   FROM {TABLE_CYCLES}
  WHERE epb_id=@e
- ORDER BY cycle_number DESC, id DESC
+ ORDER BY id DESC
  LIMIT 1";
         cmd.Parameters.AddWithValue("@e", epbId);
         using var rd = cmd.ExecuteReader();
@@ -1701,6 +1811,26 @@ UPDATE {TABLE_CYCLES}
         cmd.ExecuteNonQuery();
     }
 
+    private void MarkCycleFinalized(
+        int epbId,
+        int cycleNumber,
+        int finalSampleCount,
+        DateTime endUtc,
+        string status)
+    {
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = $@"
+UPDATE {TABLE_CYCLES}
+   SET sample_count=@n, end_time=@et, status=@status
+ WHERE epb_id=@e AND cycle_number=@c";
+        cmd.Parameters.AddWithValue("@n", finalSampleCount);
+        cmd.Parameters.AddWithValue("@et", endUtc.ToLocalTime().ToString("o"));
+        cmd.Parameters.AddWithValue("@status", status);
+        cmd.Parameters.AddWithValue("@e", epbId);
+        cmd.Parameters.AddWithValue("@c", cycleNumber);
+        cmd.ExecuteNonQuery();
+    }
+
     private List<CycleInfo> GetCyclesToPurge(int epbId, int keepLatestN)
     {
         var list = new List<CycleInfo>();
@@ -1709,12 +1839,14 @@ UPDATE {TABLE_CYCLES}
 WITH nth AS (
   SELECT cycle_number FROM {TABLE_CYCLES}
    WHERE epb_id=@e
+     AND cycle_number > 0
    ORDER BY cycle_number DESC
    LIMIT 1 OFFSET @off
 )
 SELECT epb_id, cycle_number, start_time, end_time, start_position, sample_count, status
   FROM {TABLE_CYCLES}
  WHERE epb_id=@e
+   AND cycle_number > 0
    AND cycle_number < COALESCE((SELECT cycle_number FROM nth), -1)
  ORDER BY cycle_number ASC";
         cmd.Parameters.AddWithValue("@e", epbId);
@@ -1842,12 +1974,15 @@ public sealed class CycleInfo
 /// <summary>报警圈原子封存和文件校验结果。</summary>
 public sealed class AlarmCycleSnapshotEvidence
 {
+    /// <summary>本调用是否取得当前圈的唯一封存权。</summary>
+    public bool WasClaimed { get; set; }
     public bool IsValid { get; set; }
     public int SampleCount { get; set; }
     public DateTime? FirstSampleUtc { get; set; }
     public DateTime? LastSampleUtc { get; set; }
     public string CsvPath { get; set; }
     public string BinPath { get; set; }
+    public string FinalStatus { get; set; }
     public string ValidationError { get; set; }
 }
 
@@ -1861,6 +1996,9 @@ public interface IEpbCycleRecorder
 {
     /// <summary>标记某 EPB 在某圈开始；若未调用过，将使用圈号0做“常开记录”</summary>
     void BeginCycle(int epbId, int cycleNumber, DateTime utcNow);
+
+    /// <summary>原子分配负数内部圈号并开始学习圈。</summary>
+    int BeginLearningCycle(int epbId, DateTime utcNow);
 
     /// <summary>圈内批量写入：同批次时间戳、对应电流数组、对应组压数组</summary>
     void WriteBatch(int epbId, DateTime[] tsUtc, double[] currents, double[] groupPressures);
@@ -1889,6 +2027,14 @@ public interface IEpbCycleRecorder
         int cycleNumber,
         string exportDir,
         DateTime fallbackEndUtc);
+
+    /// <summary>原子领取、导出并按指定终态封存当前圈。</summary>
+    AlarmCycleSnapshotEvidence SealAndExportCycle(
+        int epbId,
+        int cycleNumber,
+        string exportDir,
+        DateTime fallbackEndUtc,
+        string status);
 
     /// <summary>将取消/失败的半圈封账，但不计为成功圈。</summary>
     void AbortCycle(int epbId, int cycleNumber, int finalN, DateTime utcNow, string status);
@@ -1924,6 +2070,11 @@ public sealed class DiskWriterRecorderAdapter : IEpbCycleRecorder
     public void BeginCycle(int epbId, int cycleNumber, DateTime startUtc)
     {
         _writer.BeginCycle(epbId, cycleNumber, startUtc);
+    }
+
+    public int BeginLearningCycle(int epbId, DateTime startUtc)
+    {
+        return _writer.BeginLearningCycle(epbId, startUtc);
     }
 
     public void WriteBatch(int epbId, DateTime[] tsUtc, double[] currents, double[] groupPressures)
@@ -1985,6 +2136,21 @@ public sealed class DiskWriterRecorderAdapter : IEpbCycleRecorder
             cycleNumber,
             exportDir,
             fallbackEndUtc);
+    }
+
+    public AlarmCycleSnapshotEvidence SealAndExportCycle(
+        int epbId,
+        int cycleNumber,
+        string exportDir,
+        DateTime fallbackEndUtc,
+        string status)
+    {
+        return _writer.SealAndExportCycle(
+            epbId,
+            cycleNumber,
+            exportDir,
+            fallbackEndUtc,
+            status);
     }
 
     public void AbortCycle(int epbId, int cycleNumber, int finalN, DateTime utcNow, string status)

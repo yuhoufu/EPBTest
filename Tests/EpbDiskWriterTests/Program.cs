@@ -4,6 +4,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Data.SQLite;
+using System.Threading.Tasks;
 using DataOperation;
 
 namespace EpbDiskWriterTests
@@ -31,6 +32,10 @@ namespace EpbDiskWriterTests
                 Run("2000Hz CSV保留0.5ms时间分辨率", TwoKilohertzCsvKeepsSubMillisecondTime);
                 Run("报警圈原子封存与数据库边界一致", AlarmSealMatchesDatabaseBoundary);
                 Run("报警CSV和BIN不一致时校验失败", AlarmPairValidatorRejectsMismatch);
+                Run("学习圈四种终态均落盘且不改变正式计数", LearningOutcomesDoNotAffectFormalCounters);
+                Run("学习负圈号跨重启连续且唯一", LearningCycleNumbersSurviveRestart);
+                Run("报警与学习收尾并发只封存一次", ConcurrentSealClaimsOnce);
+                Run("正式圈保留策略不删除学习索引", FormalRetentionKeepsLearningRows);
                 Console.WriteLine($"PASS {_passed}/{_passed}");
                 return 0;
             }
@@ -420,6 +425,179 @@ namespace EpbDiskWriterTests
                 Assert(!invalid.IsValid && invalid.ValidationError.Contains("样本数不一致"),
                     "CSV/BIN 数量不一致未被拒绝。");
             });
+        }
+
+        private static void LearningOutcomesDoNotAffectFormalCounters()
+        {
+            WithRoot(root =>
+            {
+                var policy = NewPolicy(root);
+                var start = DateTime.UtcNow;
+                var statuses = new[]
+                {
+                    "learning_completed",
+                    "learning_canceled",
+                    "learning_failed"
+                };
+                var learningCycles = new List<int>();
+                using (var writer = new EpbDiskWriter(policy))
+                {
+                    for (var i = 0; i < statuses.Length; i++)
+                    {
+                        var cycle = writer.BeginLearningCycle(8, start.AddSeconds(i));
+                        learningCycles.Add(cycle);
+                        if (statuses[i] != "learning_canceled")
+                            WriteSamples(writer, 8, 3 + i, start.AddSeconds(i));
+                        var evidence = writer.SealAndExportCycle(
+                            8,
+                            cycle,
+                            Path.Combine(root, "LearningCycles", $"Learning_{i + 1:D4}"),
+                            start.AddSeconds(i + 1),
+                            statuses[i]);
+                        Assert(evidence.WasClaimed && evidence.IsValid,
+                            $"学习圈 {statuses[i]} 未生成一致CSV/BIN：{evidence.ValidationError}");
+                    }
+
+                    var alarmCycle = writer.BeginLearningCycle(8, start.AddSeconds(10));
+                    learningCycles.Add(alarmCycle);
+                    WriteSamples(writer, 8, 5, start.AddSeconds(10));
+                    var alarm = writer.SealAndExportAlarmCycle(
+                        8,
+                        alarmCycle,
+                        Path.Combine(root, "AlarmSnapshots"),
+                        start.AddSeconds(11));
+                    Assert(alarm.WasClaimed && alarm.IsValid, "学习硬故障报警圈未原子封存");
+
+                    WriteCompletedCycle(writer, 8, 1, 4, start.AddSeconds(20));
+                    Assert(writer.GetMaxCycleNumber(8) == 1, "学习负圈号改变了正式最大圈号");
+                    Assert(writer.GetClosedCycleCount(8) == 1, "学习终态改变了正式成功计数");
+
+                    var latest = Path.Combine(root, "Latest");
+                    writer.ExportLatestCyclesTo(8, 10, latest, false);
+                    AssertCsvCycle(latest, 8, 1, 4);
+                    Assert(
+                        Directory.EnumerateFiles(latest, "*", SearchOption.AllDirectories)
+                            .All(path => !Path.GetFileName(path).Contains("-00000")),
+                        "最近正式圈导出混入了学习负圈号");
+                }
+
+                using var connection = OpenIndex(policy);
+                using var command = connection.CreateCommand();
+                command.CommandText =
+                    "SELECT cycle_number,status FROM epb_cycles WHERE epb_id=8 ORDER BY id";
+                using var reader = command.ExecuteReader();
+                var rows = new List<Tuple<int, string>>();
+                while (reader.Read())
+                    rows.Add(Tuple.Create(reader.GetInt32(0), reader.GetString(1)));
+                Assert(rows.Count == 5, "学习与正式圈索引数量错误");
+                Assert(rows.All(row => row.Item2 != "running"), "学习结束后仍有 running 悬挂行");
+                Assert(rows.Count(row => row.Item1 < 0) == 4, "学习负圈号数量错误");
+                Assert(rows.Any(row => row.Item2 == "learning_completed") &&
+                       rows.Any(row => row.Item2 == "learning_canceled") &&
+                       rows.Any(row => row.Item2 == "learning_failed") &&
+                       rows.Any(row => row.Item2 == "alarm"),
+                    "学习圈终态未完整写入SQLite");
+            });
+        }
+
+        private static void LearningCycleNumbersSurviveRestart()
+        {
+            WithRoot(root =>
+            {
+                var policy = NewPolicy(root);
+                var start = DateTime.UtcNow;
+                int first;
+                using (var writer = new EpbDiskWriter(policy))
+                {
+                    first = writer.BeginLearningCycle(9, start);
+                    WriteSamples(writer, 9, 2, start);
+                    writer.SealAndExportCycle(
+                        9,
+                        first,
+                        Path.Combine(root, "run1"),
+                        start.AddSeconds(1),
+                        "learning_completed");
+                }
+
+                using (var writer = new EpbDiskWriter(policy))
+                {
+                    var second = writer.BeginLearningCycle(9, start.AddSeconds(2));
+                    Assert(first == -1 && second == -2, "学习负圈号跨重启未连续递减");
+                    WriteSamples(writer, 9, 2, start.AddSeconds(2));
+                    writer.SealAndExportCycle(
+                        9,
+                        second,
+                        Path.Combine(root, "run2"),
+                        start.AddSeconds(3),
+                        "learning_completed");
+                }
+            });
+        }
+
+        private static void ConcurrentSealClaimsOnce()
+        {
+            WithRoot(root =>
+            {
+                var policy = NewPolicy(root);
+                using var writer = new EpbDiskWriter(policy);
+                var start = DateTime.UtcNow;
+                var cycle = writer.BeginLearningCycle(10, start);
+                WriteSamples(writer, 10, 8, start);
+                var exportDir = Path.Combine(root, "concurrent");
+                var tasks = new[]
+                {
+                    Task.Run(() => writer.SealAndExportCycle(
+                        10, cycle, exportDir, DateTime.UtcNow, "learning_failed")),
+                    Task.Run(() => writer.SealAndExportCycle(
+                        10, cycle, exportDir, DateTime.UtcNow, "learning_failed"))
+                };
+                Task.WaitAll(tasks);
+                Assert(tasks.Count(task => task.Result.WasClaimed) == 1,
+                    "并发收尾有多个调用方取得封存权");
+                Assert(tasks.Count(task => task.Result.IsValid) == 1,
+                    "并发收尾生成了重复有效结果");
+                Assert(File.Exists(CsvPath(exportDir, 10, cycle)) &&
+                       File.Exists(BinPath(exportDir, 10, cycle)),
+                    "并发收尾未保留唯一CSV/BIN");
+            });
+        }
+
+        private static void FormalRetentionKeepsLearningRows()
+        {
+            WithRoot(root =>
+            {
+                var policy = NewPolicy(root);
+                var start = DateTime.UtcNow;
+                using (var writer = new EpbDiskWriter(policy))
+                {
+                    var learning = writer.BeginLearningCycle(11, start);
+                    WriteSamples(writer, 11, 2, start);
+                    writer.SealAndExportCycle(
+                        11,
+                        learning,
+                        Path.Combine(root, "learning"),
+                        start.AddSeconds(1),
+                        "learning_completed");
+                    for (var cycle = 1; cycle <= 11; cycle++)
+                        WriteCompletedCycle(writer, 11, cycle, 1, start.AddSeconds(cycle + 1));
+                    writer.PersistLatestCyclesNow(11, 10, "archive");
+                }
+
+                using var connection = OpenIndex(policy);
+                using var command = connection.CreateCommand();
+                command.CommandText =
+                    "SELECT COUNT(*) FROM epb_cycles WHERE epb_id=11 AND cycle_number < 0";
+                Assert(Convert.ToInt32(command.ExecuteScalar()) == 1,
+                    "正式圈保留策略错误删除了学习索引");
+            });
+        }
+
+        private static SQLiteConnection OpenIndex(DataRetentionPolicy policy)
+        {
+            var connection = new SQLiteConnection(
+                $"Data Source={Path.Combine(policy.IndexAndExportPath, policy.IndexDbFile)}");
+            connection.Open();
+            return connection;
         }
 
         private static void WriteCompletedCycle(
