@@ -249,9 +249,18 @@ namespace Config
             }
             else if (state.Writer == null || state.Stream == null)
             {
-                _writers.Remove(level);
-                state = CreateWriterState(level, now);
-                _writers[level] = state;
+                // 上一次轮转可能在关闭 writer 后因外部文件占用而失败。
+                // 保留 ContentDate，重试时先按原内容日期归档，避免跨日记录混入活动日志。
+                if (File.Exists(state.ActivePath) &&
+                    new FileInfo(state.ActivePath).Length > 0 &&
+                    state.ContentDate.Date != now.Date)
+                {
+                    RotateClosedFile(state.ActivePath, state.Stem, state.ContentDate.Date);
+                }
+
+                state.Stream = _options.AppendStreamFactory(state.ActivePath);
+                state.Writer = new StreamWriter(state.Stream, new UTF8Encoding(false)) { AutoFlush = true };
+                state.ContentDate = now.Date;
             }
 
             if (state.ContentDate.Date != now.Date)
