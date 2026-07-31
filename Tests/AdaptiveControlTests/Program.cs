@@ -55,6 +55,7 @@ namespace AdaptiveControlTests
                 Run("DO失败与电流未清零触发组级联锁", OffFailureEscalatesToPowerGroup);
                 Run("断电电流在窗口内清零不联锁且超时只失败一次", OffCurrentPollingWindow);
                 Run("失速安全配置XML往返无损", SafetyLimitsXmlRoundTrip);
+                Run("旧项目100ms断电清零配置自动迁移", LegacyShortOffTimeoutIsMigrated);
                 Run("模型原子保存与重载", ProfilePersistence);
                 Run("控流模型五圈收敛到目标带", CutoffModelConvergesWithinFiveCycles);
                 Run("峰值系统偏差用于提前断电补偿", PeakBiasCorrectionIsLearned);
@@ -643,6 +644,52 @@ namespace AdaptiveControlTests
                 Assert(reloaded.ForwardProgressConfirmMs == 240 &&
                        reloaded.ReverseProgressDeadlineMs == 2300,
                     "失速安全配置保存后未能无损重载");
+            }
+            finally
+            {
+                Directory.Delete(directory, true);
+            }
+        }
+
+        private static void LegacyShortOffTimeoutIsMigrated()
+        {
+            var source = Path.GetFullPath(Path.Combine(
+                AppDomain.CurrentDomain.BaseDirectory,
+                "..",
+                "..",
+                "..",
+                "..",
+                "MTTfTest",
+                "Config",
+                "TestConfig.xml"));
+            var directory = CreateTempDir();
+            var target = Path.Combine(directory, "TestConfig.xml");
+            try
+            {
+                var legacyXml = File.ReadAllText(source)
+                    .Replace(
+                        "<OffCurrentClearTimeoutMs>1000</OffCurrentClearTimeoutMs>",
+                        "<OffCurrentClearTimeoutMs>100</OffCurrentClearTimeoutMs>");
+                File.WriteAllText(target, legacyXml);
+
+                var config = ConfigLoader.LoadTest(target, NullLogger.Instance);
+                var migrated = config.EpbCycleRunner.GetRunnerChannel(8);
+                Assert(migrated.OffCurrentClearTimeoutMs == 1000,
+                    "旧项目的100ms断电清零超时未在加载时迁移到1000ms");
+
+                var normalized = new EpbAdaptiveSafetyLimits
+                {
+                    OffCurrentClearTimeoutMs = 100
+                }.Normalized();
+                Assert(normalized.OffCurrentClearTimeoutMs == 1000,
+                    "运行时安全参数仍允许100ms旧值穿透");
+
+                ConfigLoader.SaveTest(target, config);
+                var reloaded = ConfigLoader.LoadTest(target, NullLogger.Instance)
+                    .EpbCycleRunner
+                    .GetRunnerChannel(8);
+                Assert(reloaded.OffCurrentClearTimeoutMs == 1000,
+                    "迁移后的1000ms断电清零超时未持久化");
             }
             finally
             {

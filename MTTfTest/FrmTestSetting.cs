@@ -1493,7 +1493,7 @@ namespace MtEmbTest
                         Math.Max(20, r.ReverseProgressConfirmMs),
                         r.ReverseProgressDeadlineMs),
                     OffCurrentClearThresholdA = Math.Max(0.01, r.OffCurrentClearThresholdA),
-                    OffCurrentClearTimeoutMs = Math.Max(20, r.OffCurrentClearTimeoutMs)
+                    OffCurrentClearTimeoutMs = Math.Max(1000, r.OffCurrentClearTimeoutMs)
                 };
                 dict[r.Channel] = item;
             }

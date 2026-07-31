@@ -460,7 +460,9 @@ public static class ConfigLoader
                 item.ReverseProgressConfirmMs,
                 item.ReverseProgressDeadlineMs);
             item.OffCurrentClearThresholdA = Math.Max(0.01, item.OffCurrentClearThresholdA);
-            item.OffCurrentClearTimeoutMs = Math.Max(20, item.OffCurrentClearTimeoutMs);
+            // 兼容旧项目：100ms 小于现场电流衰减与采集刷新时间，会在正常断电时误报警。
+            // 加载时提升到 1s，后续保存也会把迁移后的安全值写回项目配置。
+            item.OffCurrentClearTimeoutMs = Math.Max(1000, item.OffCurrentClearTimeoutMs);
 
             cfg.EpbCycleRunner.Channels[ch] = item; // 覆盖写入
         }

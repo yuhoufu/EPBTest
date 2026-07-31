@@ -80,7 +80,7 @@ namespace Config.Models
             /// <summary>断电后用于电气代理确认的电流阈值（A）。</summary>
             public double OffCurrentClearThresholdA { get; set; } = 0.1;
 
-            /// <summary>断电后等待电流清零的最长时间（ms）。</summary>
+            /// <summary>断电后等待电流清零的最长时间（ms）；运行时下限为 1000ms。</summary>
             public int OffCurrentClearTimeoutMs { get; set; } = 1000;
         }
 

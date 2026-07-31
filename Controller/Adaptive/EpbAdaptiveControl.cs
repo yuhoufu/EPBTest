@@ -151,7 +151,9 @@ namespace Controller.Adaptive
                 ReverseMinimumDecaySlopeAperMs = Math.Max(0.00001, ReverseMinimumDecaySlopeAperMs),
                 ReverseProgressDeadlineMs = Math.Max(reverseConfirm, ReverseProgressDeadlineMs),
                 OffCurrentClearThresholdA = Math.Max(0.01, OffCurrentClearThresholdA),
-                OffCurrentClearTimeoutMs = Math.Max(20, OffCurrentClearTimeoutMs)
+                // 现场采集链路在断电后仍会经历约 200~300ms 的衰减/刷新。
+                // 旧项目中的 100ms 会把正常衰减误判为继电器未断开，因此运行时强制迁移到 1s。
+                OffCurrentClearTimeoutMs = Math.Max(1000, OffCurrentClearTimeoutMs)
             };
         }
     }

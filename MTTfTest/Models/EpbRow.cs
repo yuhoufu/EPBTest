@@ -54,6 +54,7 @@ namespace MTEmbTest.Models
         public double ReverseMinimumDecaySlopeAperMs { get; set; } = 0.001;
         public int ReverseProgressDeadlineMs { get; set; } = 2500;
         public double OffCurrentClearThresholdA { get; set; } = 0.1;
+        /// <summary>断电电流清零等待时间；现场安全下限为 1000ms。</summary>
         public int OffCurrentClearTimeoutMs { get; set; } = 1000;
 
         /// <summary>
