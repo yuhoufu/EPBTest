@@ -129,14 +129,14 @@ namespace Controller.Adaptive
     /// </summary>
     public sealed class EpbAdaptiveSafetyLimits
     {
-        public int ForwardProgressConfirmMs { get; set; } = 200;
+        public int ForwardProgressConfirmMs { get; set; } = 1000;
         public double ForwardMinimumRiseSlopeAperMs { get; set; } = 0.001;
-        public int ForwardProgressDeadlineMs { get; set; } = 3000;
+        public int ForwardProgressDeadlineMs { get; set; } = 5000;
         public int ReverseProgressConfirmMs { get; set; } = 200;
         public double ReverseMinimumDecaySlopeAperMs { get; set; } = 0.001;
         public int ReverseProgressDeadlineMs { get; set; } = 2500;
         public double OffCurrentClearThresholdA { get; set; } = 0.1;
-        public int OffCurrentClearTimeoutMs { get; set; } = 100;
+        public int OffCurrentClearTimeoutMs { get; set; } = 1000;
 
         public EpbAdaptiveSafetyLimits Normalized()
         {
@@ -202,6 +202,7 @@ namespace Controller.Adaptive
         private double _loadRisePeakA;
         private long _loadRiseDropStartTick;
         private long _loadRiseStartTick;
+        private long _forwardProgressStallStartTick;
         private EpbAdaptiveSafetyLimits _safetyLimits = new EpbAdaptiveSafetyLimits();
         private int _reverseNoModelDeadlineMs;
 
@@ -513,27 +514,51 @@ namespace Controller.Adaptive
                     _loadRiseDropStartTick = 0;
                 }
 
+                var stallProbeMs = Math.Max(
+                    100,
+                    Math.Min(200, _safetyLimits.ForwardProgressConfirmMs / 5));
                 if (_loadRiseStartTick != 0 &&
-                    ElapsedMs(_loadRiseStartTick, tick) >= _safetyLimits.ForwardProgressConfirmMs &&
                     TryGetLinearSlope(
                         tick,
-                        _safetyLimits.ForwardProgressConfirmMs + 20,
-                        _safetyLimits.ForwardProgressConfirmMs,
-                        out var progressStats,
-                        out var progressSlope) &&
+                        stallProbeMs + 20,
+                        stallProbeMs,
+                        out var stallProbeStats,
+                        out var stallProbeSlope) &&
                     current < _forwardA &&
-                    progressStats.P90 < _forwardA &&
-                    progressSlope <= _safetyLimits.ForwardMinimumRiseSlopeAperMs)
+                    stallProbeStats.P90 < _forwardA &&
+                    stallProbeSlope <= _safetyLimits.ForwardMinimumRiseSlopeAperMs)
                 {
-                    ApplyWindowDiagnostics(decision, progressStats);
-                    decision.EstimatedSlopeAperMs = progressSlope;
-                    Fault(
-                        decision,
-                        $"ForwardCurrentRiseStalled slope={progressSlope:F6}A/ms " +
-                        $"limit={_safetyLimits.ForwardMinimumRiseSlopeAperMs:F6}A/ms " +
-                        $"window={progressStats.SpanMs}ms median={progressStats.Median:F3}A " +
-                        $"Target={_forwardA:F3}A");
-                    return;
+                    if (_forwardProgressStallStartTick == 0)
+                    {
+                        _forwardProgressStallStartTick = tick -
+                            (long)(stallProbeStats.SpanMs * Stopwatch.Frequency / 1000.0);
+                    }
+
+                    if (ElapsedMs(_forwardProgressStallStartTick, tick) >=
+                        _safetyLimits.ForwardProgressConfirmMs &&
+                        TryGetLinearSlope(
+                            tick,
+                            _safetyLimits.ForwardProgressConfirmMs + 20,
+                            _safetyLimits.ForwardProgressConfirmMs,
+                            out var progressStats,
+                            out var progressSlope) &&
+                        progressStats.P90 < _forwardA &&
+                        progressSlope <= _safetyLimits.ForwardMinimumRiseSlopeAperMs)
+                    {
+                        ApplyWindowDiagnostics(decision, progressStats);
+                        decision.EstimatedSlopeAperMs = progressSlope;
+                        Fault(
+                            decision,
+                            $"ForwardCurrentRiseStalled slope={progressSlope:F6}A/ms " +
+                            $"limit={_safetyLimits.ForwardMinimumRiseSlopeAperMs:F6}A/ms " +
+                            $"window={progressStats.SpanMs}ms median={progressStats.Median:F3}A " +
+                            $"Target={_forwardA:F3}A");
+                        return;
+                    }
+                }
+                else
+                {
+                    _forwardProgressStallStartTick = 0;
                 }
 
                 // 实际电流达到目标时立即断电；预测触发则仍要求连续三点，抵抗孤立毛刺。
@@ -737,6 +762,7 @@ namespace Controller.Adaptive
             _loadRisePeakA = 0;
             _loadRiseDropStartTick = 0;
             _loadRiseStartTick = 0;
+            _forwardProgressStallStartTick = 0;
             _reverseNoModelDeadlineMs = 0;
             CutoffCurrentA = 0;
             CutoffSlopeAperMs = 0;

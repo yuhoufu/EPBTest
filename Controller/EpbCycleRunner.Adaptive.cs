@@ -389,8 +389,14 @@ namespace Controller
             {
                 try
                 {
-                    await Task.Delay(timeoutMs).ConfigureAwait(false);
-                    var currentA = Math.Abs(_readCurrent(_channel));
+                    var verification = await PollOffCurrentUntilClearAsync(
+                            () => Math.Abs(_readCurrent(_channel)),
+                            thresholdA,
+                            timeoutMs,
+                            20,
+                            CancellationToken.None)
+                        .ConfigureAwait(false);
+                    var currentA = verification.CurrentA;
                     var cleared = VerifyOffCurrentOrEscalate(
                         currentA,
                         thresholdA,
@@ -401,14 +407,14 @@ namespace Controller
                         _channel,
                         currentA,
                         thresholdA,
-                        timeoutMs,
+                        verification.ElapsedMs,
                         cleared);
                     if (cleared)
                     {
                         _log?.Info(
                             $"EPB[{_channel}] 断电电流代理确认通过：" +
                             $"ElectricalCurrentCleared=true Current={currentA:F3}A " +
-                            $"Threshold={thresholdA:F3}A Wait={timeoutMs}ms " +
+                            $"Threshold={thresholdA:F3}A Wait={verification.ElapsedMs}ms " +
                             "PhysicalOffStatus=NotMeasured",
                             "EPB");
                         return;
@@ -417,7 +423,7 @@ namespace Controller
                     _log?.Error(
                         $"EPB[{_channel}] 断电后电流未清零，立即触发电源组联锁：" +
                         $"ElectricalCurrentCleared=false Current={currentA:F3}A " +
-                        $"Threshold={thresholdA:F3}A Wait={timeoutMs}ms " +
+                        $"Threshold={thresholdA:F3}A Wait={verification.ElapsedMs}ms " +
                         $"Reason={reason} PhysicalOffStatus=NotMeasured",
                         "EPB");
                     try
@@ -453,6 +459,63 @@ namespace Controller
                     catch { }
                 }
             });
+        }
+
+        internal readonly struct OffCurrentClearResult
+        {
+            public OffCurrentClearResult(bool cleared, double currentA, int elapsedMs)
+            {
+                Cleared = cleared;
+                CurrentA = currentA;
+                ElapsedMs = elapsedMs;
+            }
+
+            public bool Cleared { get; }
+            public double CurrentA { get; }
+            public int ElapsedMs { get; }
+        }
+
+        /// <summary>
+        /// 断电后按固定周期读取电流；只要在窗口内清零即通过，窗口耗尽才返回失败。
+        /// 调用方负责对失败结果执行一次组级联锁。
+        /// </summary>
+        internal static async Task<OffCurrentClearResult> PollOffCurrentUntilClearAsync(
+            Func<double> readCurrent,
+            double thresholdA,
+            int timeoutMs,
+            int pollMs,
+            CancellationToken token)
+        {
+            if (readCurrent == null) throw new ArgumentNullException(nameof(readCurrent));
+            var boundedTimeoutMs = Math.Max(20, timeoutMs);
+            var boundedPollMs = Math.Max(1, pollMs);
+            var started = Stopwatch.GetTimestamp();
+            var currentA = double.NaN;
+
+            while (true)
+            {
+                token.ThrowIfCancellationRequested();
+                currentA = readCurrent();
+                var elapsedMs = (int)Math.Min(
+                    int.MaxValue,
+                    Math.Max(
+                        0,
+                        (Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency));
+                if (!double.IsNaN(currentA) &&
+                    !double.IsInfinity(currentA) &&
+                    currentA <= thresholdA)
+                {
+                    return new OffCurrentClearResult(true, currentA, elapsedMs);
+                }
+
+                if (elapsedMs >= boundedTimeoutMs)
+                    return new OffCurrentClearResult(false, currentA, elapsedMs);
+
+                await Task.Delay(
+                        Math.Min(boundedPollMs, boundedTimeoutMs - elapsedMs),
+                        token)
+                    .ConfigureAwait(false);
+            }
         }
 
         internal static bool ExecuteTerminalOffWithEscalation(

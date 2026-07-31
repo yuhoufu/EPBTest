@@ -202,14 +202,14 @@ namespace Controller
             var safetyRecord = _cfg?.Test.EpbCycleRunner.GetRunnerChannel(channel);
             _adaptiveSafetyLimits = new EpbAdaptiveSafetyLimits
             {
-                ForwardProgressConfirmMs = safetyRecord?.ForwardProgressConfirmMs ?? 200,
+                ForwardProgressConfirmMs = safetyRecord?.ForwardProgressConfirmMs ?? 1000,
                 ForwardMinimumRiseSlopeAperMs = safetyRecord?.ForwardMinimumRiseSlopeAperMs ?? 0.001,
-                ForwardProgressDeadlineMs = safetyRecord?.ForwardProgressDeadlineMs ?? 3000,
+                ForwardProgressDeadlineMs = safetyRecord?.ForwardProgressDeadlineMs ?? 5000,
                 ReverseProgressConfirmMs = safetyRecord?.ReverseProgressConfirmMs ?? 200,
                 ReverseMinimumDecaySlopeAperMs = safetyRecord?.ReverseMinimumDecaySlopeAperMs ?? 0.001,
                 ReverseProgressDeadlineMs = safetyRecord?.ReverseProgressDeadlineMs ?? 2500,
                 OffCurrentClearThresholdA = safetyRecord?.OffCurrentClearThresholdA ?? 0.1,
-                OffCurrentClearTimeoutMs = safetyRecord?.OffCurrentClearTimeoutMs ?? 100
+                OffCurrentClearTimeoutMs = safetyRecord?.OffCurrentClearTimeoutMs ?? 1000
             }.Normalized();
 
             // 在此处设置epb卡钳的实际运行参数

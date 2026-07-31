@@ -34,7 +34,7 @@ namespace AdaptiveControlTests
                 Run("夹紧阈值必须连续三样本确认", ClampNeedsThreeSamples);
                 Run("稳定模型后连续50圈仍记录正向空行程", StableProfileKeepsLearningForFiftyCycles);
                 Run("正向未进入负载上升按模型期限硬停", ForwardLoadRiseDeadlineFaults);
-                Run("EPB9型正向平台200ms内硬停", ForwardCurrentRiseStallFaults);
+                Run("正向平台不足1000ms不误报且满窗硬停", ForwardCurrentRiseStallFaults);
                 Run("反向动态释放", ReverseRelease);
                 Run("反向17ms采样节拍仍可释放", ReverseReleaseWithSeventeenMillisecondCadence);
                 Run("反向释放窗口忽略孤立毛刺", ReverseReleaseIgnoresSparseOutliers);
@@ -53,6 +53,7 @@ namespace AdaptiveControlTests
                 Run("异常高电流平台", AbnormalHighPlateau);
                 Run("终态断电先于阻塞诊断发布", TerminalOffPrecedesBlockingDiagnostics);
                 Run("DO失败与电流未清零触发组级联锁", OffFailureEscalatesToPowerGroup);
+                Run("断电电流在窗口内清零不联锁且超时只失败一次", OffCurrentPollingWindow);
                 Run("失速安全配置XML往返无损", SafetyLimitsXmlRoundTrip);
                 Run("模型原子保存与重载", ProfilePersistence);
                 Run("控流模型五圈收敛到目标带", CutoffModelConvergesWithinFiveCycles);
@@ -291,11 +292,11 @@ namespace AdaptiveControlTests
 
         private static void ForwardLoadRiseDeadlineFaults()
         {
-            var profile = StableProfile();
-            var machine = new EpbAdaptiveCurrentStateMachine(profile);
+            // 首次完全释放后的学习圈尚无稳定模型，应使用配置的5000ms空行程期限。
+            var machine = NewMachine();
             machine.ArmForward(Tick(0), 100, 6500, 15, 1, 3);
             EpbAdaptiveDecision terminal = null;
-            for (var ms = 0; ms <= 4500; ms += 10)
+            for (var ms = 0; ms <= 5500; ms += 10)
             {
                 var decision = machine.OnSample(Tick(ms), 1.0);
                 if (!decision.HardFault) continue;
@@ -306,8 +307,9 @@ namespace AdaptiveControlTests
             Assert(
                 terminal != null &&
                 terminal.Reason.Contains("ForwardLoadRiseNotStarted") &&
-                terminal.ElapsedMs <= 3300,
-                "正向无负载上升仍等待绝对时限");
+                terminal.ElapsedMs >= 5000 &&
+                terminal.ElapsedMs <= 5050,
+                "首次完全释放后的空行程未按5000ms进展期限硬停");
         }
 
         private static void ForwardCurrentRiseStallFaults()
@@ -323,13 +325,16 @@ namespace AdaptiveControlTests
                 ms => Math.Min(13.6, 1.0 + (ms - 1000) * 0.0085));
             Assert(!ramp.ClampReached && !ramp.HardFault, "正向13.6A平台形成前已误判终态");
 
-            var fault = Feed(machine, 2510, 2900, 10, _ => 13.6);
+            var transient = Feed(machine, 2510, 3370, 10, _ => 13.6);
+            Assert(!transient.HardFault, "不足1000ms的正向平台被误报失速");
+
+            var fault = Feed(machine, 3380, 3600, 10, _ => 13.6);
             Assert(
                 fault.HardFault &&
                 fault.Reason.Contains("ForwardCurrentRiseStalled") &&
-                fault.WindowSpanMs >= 200 &&
-                fault.ElapsedMs <= 2720,
-                "EPB9型正向平台未在完整200ms窗口后立即硬停");
+                fault.WindowSpanMs >= 1000 &&
+                fault.ElapsedMs <= 3540,
+                "正向平台未在完整1000ms确认窗口后硬停");
         }
 
         private static void ReverseRelease()
@@ -619,14 +624,14 @@ namespace AdaptiveControlTests
                 File.Copy(source, target);
                 var config = ConfigLoader.LoadTest(target, NullLogger.Instance);
                 var channel = config.EpbCycleRunner.GetRunnerChannel(9);
-                Assert(channel.ForwardProgressConfirmMs == 200 &&
+                Assert(channel.ForwardProgressConfirmMs == 1000 &&
                        Math.Abs(channel.ForwardMinimumRiseSlopeAperMs - 0.001) < 1e-9 &&
-                       channel.ForwardProgressDeadlineMs == 3000 &&
+                       channel.ForwardProgressDeadlineMs == 5000 &&
                        channel.ReverseProgressConfirmMs == 200 &&
                        Math.Abs(channel.ReverseMinimumDecaySlopeAperMs - 0.001) < 1e-9 &&
                        channel.ReverseProgressDeadlineMs == 2500 &&
                        Math.Abs(channel.OffCurrentClearThresholdA - 0.1) < 1e-9 &&
-                       channel.OffCurrentClearTimeoutMs == 100,
+                       channel.OffCurrentClearTimeoutMs == 1000,
                     "失速安全默认配置读取错误");
 
                 channel.ForwardProgressConfirmMs = 240;
@@ -664,6 +669,37 @@ namespace AdaptiveControlTests
                 0.1,
                 () => escalations++);
             Assert(validClear && escalations == 2, "电流已清零仍错误触发组级联锁");
+        }
+
+        private static void OffCurrentPollingWindow()
+        {
+            var reads = 0;
+            var clears = EpbCycleRunner.PollOffCurrentUntilClearAsync(
+                    () => ++reads < 4 ? 0.35 : 0.05,
+                    0.1,
+                    200,
+                    20,
+                    CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+            Assert(clears.Cleared && clears.CurrentA <= 0.1 && reads == 4,
+                "断电电流在轮询窗口内清零仍被判定失败");
+
+            var timedOut = EpbCycleRunner.PollOffCurrentUntilClearAsync(
+                    () => 0.35,
+                    0.1,
+                    60,
+                    20,
+                    CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+            var escalations = 0;
+            var cleared = EpbCycleRunner.VerifyOffCurrentOrEscalate(
+                timedOut.CurrentA,
+                0.1,
+                () => escalations++);
+            Assert(!timedOut.Cleared && !cleared && escalations == 1,
+                "断电电流持续超限未在窗口结束后只触发一次联锁");
         }
 
         private static void ProfilePersistence()

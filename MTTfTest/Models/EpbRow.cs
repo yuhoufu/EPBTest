@@ -47,14 +47,14 @@ namespace MTEmbTest.Models
         /// <summary>忽略峰值的抑制窗口 ms（启动后前 Xms 不做峰值统计）。</summary>
         public int PeakIgnoreMs { get; set; }
 
-        public int ForwardProgressConfirmMs { get; set; } = 200;
+        public int ForwardProgressConfirmMs { get; set; } = 1000;
         public double ForwardMinimumRiseSlopeAperMs { get; set; } = 0.001;
-        public int ForwardProgressDeadlineMs { get; set; } = 3000;
+        public int ForwardProgressDeadlineMs { get; set; } = 5000;
         public int ReverseProgressConfirmMs { get; set; } = 200;
         public double ReverseMinimumDecaySlopeAperMs { get; set; } = 0.001;
         public int ReverseProgressDeadlineMs { get; set; } = 2500;
         public double OffCurrentClearThresholdA { get; set; } = 0.1;
-        public int OffCurrentClearTimeoutMs { get; set; } = 100;
+        public int OffCurrentClearTimeoutMs { get; set; } = 1000;
 
         /// <summary>
         /// 每个 EPB 的目标次数，对应 Test.EpbRecords[x].TotalCount。

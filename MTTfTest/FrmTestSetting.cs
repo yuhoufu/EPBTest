@@ -701,14 +701,14 @@ namespace MtEmbTest
                     PreReleaseKeepMs = r?.PreReleaseKeepMs,
                     PreReleaseDetectTimeoutMs = r?.PreReleaseDetectTimeoutMs,
                     PeakIgnoreMs = r?.PeakIgnoreMs ?? 0,
-                    ForwardProgressConfirmMs = r?.ForwardProgressConfirmMs ?? 200,
+                    ForwardProgressConfirmMs = r?.ForwardProgressConfirmMs ?? 1000,
                     ForwardMinimumRiseSlopeAperMs = r?.ForwardMinimumRiseSlopeAperMs ?? 0.001,
-                    ForwardProgressDeadlineMs = r?.ForwardProgressDeadlineMs ?? 3000,
+                    ForwardProgressDeadlineMs = r?.ForwardProgressDeadlineMs ?? 5000,
                     ReverseProgressConfirmMs = r?.ReverseProgressConfirmMs ?? 200,
                     ReverseMinimumDecaySlopeAperMs = r?.ReverseMinimumDecaySlopeAperMs ?? 0.001,
                     ReverseProgressDeadlineMs = r?.ReverseProgressDeadlineMs ?? 2500,
                     OffCurrentClearThresholdA = r?.OffCurrentClearThresholdA ?? 0.1,
-                    OffCurrentClearTimeoutMs = r?.OffCurrentClearTimeoutMs ?? 100,
+                    OffCurrentClearTimeoutMs = r?.OffCurrentClearTimeoutMs ?? 1000,
                     // ★ 额外：目标次数
                     TargetTotalCount = targetTotal
                 });
@@ -805,14 +805,14 @@ namespace MtEmbTest
                     PreReleaseKeepMs = r?.PreReleaseKeepMs,
                     PreReleaseDetectTimeoutMs = r?.PreReleaseDetectTimeoutMs,
                     PeakIgnoreMs = r?.PeakIgnoreMs ?? 0,
-                    ForwardProgressConfirmMs = r?.ForwardProgressConfirmMs ?? 200,
+                    ForwardProgressConfirmMs = r?.ForwardProgressConfirmMs ?? 1000,
                     ForwardMinimumRiseSlopeAperMs = r?.ForwardMinimumRiseSlopeAperMs ?? 0.001,
-                    ForwardProgressDeadlineMs = r?.ForwardProgressDeadlineMs ?? 3000,
+                    ForwardProgressDeadlineMs = r?.ForwardProgressDeadlineMs ?? 5000,
                     ReverseProgressConfirmMs = r?.ReverseProgressConfirmMs ?? 200,
                     ReverseMinimumDecaySlopeAperMs = r?.ReverseMinimumDecaySlopeAperMs ?? 0.001,
                     ReverseProgressDeadlineMs = r?.ReverseProgressDeadlineMs ?? 2500,
                     OffCurrentClearThresholdA = r?.OffCurrentClearThresholdA ?? 0.1,
-                    OffCurrentClearTimeoutMs = r?.OffCurrentClearTimeoutMs ?? 100
+                    OffCurrentClearTimeoutMs = r?.OffCurrentClearTimeoutMs ?? 1000
                 });
             }
 

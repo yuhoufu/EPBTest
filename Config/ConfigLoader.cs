@@ -434,14 +434,14 @@ public static class ConfigLoader
                 PreReleaseKeepMs = TryGetNullableInt(r, "PreReleaseKeepMs"),
                 PreReleaseDetectTimeoutMs = TryGetNullableInt(r, "PreReleaseDetectTimeoutMs"),
                 PeakIgnoreMs = GetInt(r, "PeakIgnoreMs", 0),
-                ForwardProgressConfirmMs = GetInt(r, "ForwardProgressConfirmMs", 200),
+                ForwardProgressConfirmMs = GetInt(r, "ForwardProgressConfirmMs", 1000),
                 ForwardMinimumRiseSlopeAperMs = GetDouble(r, "ForwardMinimumRiseSlopeAperMs", 0.001),
-                ForwardProgressDeadlineMs = GetInt(r, "ForwardProgressDeadlineMs", 3000),
+                ForwardProgressDeadlineMs = GetInt(r, "ForwardProgressDeadlineMs", 5000),
                 ReverseProgressConfirmMs = GetInt(r, "ReverseProgressConfirmMs", 200),
                 ReverseMinimumDecaySlopeAperMs = GetDouble(r, "ReverseMinimumDecaySlopeAperMs", 0.001),
                 ReverseProgressDeadlineMs = GetInt(r, "ReverseProgressDeadlineMs", 2500),
                 OffCurrentClearThresholdA = GetDouble(r, "OffCurrentClearThresholdA", 0.1),
-                OffCurrentClearTimeoutMs = GetInt(r, "OffCurrentClearTimeoutMs", 100)
+                OffCurrentClearTimeoutMs = GetInt(r, "OffCurrentClearTimeoutMs", 1000)
             };
 
             // 软边界钳制（防御性）
