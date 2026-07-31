@@ -1,0 +1,147 @@
+{
+  "source_root": "\\\\wj-epb\\EPB_Data\\10364-009_V2.3.0.0_2",
+  "run_log": "\\\\wj-epb\\EPB_Data\\10364-009_V2.3.0.0_2\\log\\run.20260730.001.log",
+  "generated_at": "2026-07-30T23:52:37.753476+00:00",
+  "precision": {
+    "8": {
+      "completed_formal_cycles": 100,
+      "success": 98,
+      "success_with_warning": 2,
+      "min_error_a": -0.477,
+      "max_error_a": 1.37,
+      "mean_error_a": 0.11395999999999999,
+      "mae_a": 0.23464,
+      "p95_absolute_error_a": 0.5703499999999999,
+      "within_0_8_a": 99,
+      "forward_median_ms": 2552.0,
+      "forward_p95_ms": 2677.05,
+      "forward_max_ms": 5745,
+      "reverse_median_ms": 1817.0,
+      "reverse_p95_ms": 1896.05,
+      "reverse_max_ms": 4982
+    },
+    "9": {
+      "completed_formal_cycles": 62,
+      "success": 59,
+      "success_with_warning": 3,
+      "min_error_a": -0.839,
+      "max_error_a": 1.076,
+      "mean_error_a": 0.07520967741935485,
+      "mae_a": 0.33320967741935476,
+      "p95_absolute_error_a": 0.7896499999999997,
+      "within_0_8_a": 59,
+      "forward_median_ms": 2651.5,
+      "forward_p95_ms": 2862.85,
+      "forward_max_ms": 2901,
+      "reverse_median_ms": 1977.5,
+      "reverse_p95_ms": 2096.95,
+      "reverse_max_ms": 2109
+    },
+    "10": {
+      "completed_formal_cycles": 62,
+      "success": 60,
+      "success_with_warning": 2,
+      "min_error_a": -0.345,
+      "max_error_a": 0.969,
+      "mean_error_a": 0.10793548387096774,
+      "mae_a": 0.22080645161290322,
+      "p95_absolute_error_a": 0.6802499999999998,
+      "within_0_8_a": 60,
+      "forward_median_ms": 2518.0,
+      "forward_p95_ms": 2733.7,
+      "forward_max_ms": 2776,
+      "reverse_median_ms": 1720.5,
+      "reverse_p95_ms": 1859.5,
+      "reverse_max_ms": 1873
+    }
+  },
+  "database": {
+    "integrity_check": "ok",
+    "duplicate_epb_cycle_keys": 0,
+    "status_counts": [
+      {
+        "channel": 8,
+        "status": "completed",
+        "count": 100
+      },
+      {
+        "channel": 9,
+        "status": "alarm",
+        "count": 1
+      },
+      {
+        "channel": 9,
+        "status": "completed",
+        "count": 62
+      },
+      {
+        "channel": 10,
+        "status": "alarm",
+        "count": 1
+      },
+      {
+        "channel": 10,
+        "status": "completed",
+        "count": 62
+      }
+    ],
+    "cycle63_database": [
+      {
+        "channel": 9,
+        "sample_count": 23080,
+        "status": "alarm",
+        "end_time": "2026-07-30T22:29:27.3661415+08:00"
+      },
+      {
+        "channel": 10,
+        "sample_count": 28740,
+        "status": "alarm",
+        "end_time": "2026-07-30T22:29:29.4164898+08:00"
+      }
+    ]
+  },
+  "alarm_snapshot_pairs": {
+    "pairs_checked": 50,
+    "pair_mismatches": []
+  },
+  "alarm_database_evidence_alignment": [
+    {
+      "channel": 9,
+      "database_samples": 23080,
+      "evidence_samples": 21460,
+      "difference": 1620,
+      "evidence_bin": "\\\\wj-epb\\EPB_Data\\10364-009_V2.3.0.0_2\\AlarmSnapshots\\20260730_222924-EPB09\\EPB09_ALARM\\EPB9_Cycle_000063.bin"
+    },
+    {
+      "channel": 10,
+      "database_samples": 28740,
+      "evidence_samples": 27080,
+      "difference": 1660,
+      "evidence_bin": "\\\\wj-epb\\EPB_Data\\10364-009_V2.3.0.0_2\\AlarmSnapshots\\20260730_222927-EPB10\\EPB10_ALARM\\EPB10_Cycle_000063.bin"
+    }
+  ],
+  "warning_log": {
+    "invalid_cutoff_observation": 3,
+    "peak_soft_warning": 6,
+    "undershoot_soft_warning": 1,
+    "forward_soft_limit": 2,
+    "peak_capture_cancelled": 1,
+    "hard_fault": 2,
+    "snapshot_exported": 2
+  },
+  "power_telemetry": {
+    "file": "\\\\wj-epb\\EPB_Data\\10364-009_V2.3.0.0_2\\PowerSupplyTelemetry\\20260730_221101_cd9eb11b6ed045cdaa4746b5f3f6805c.csv",
+    "rows_by_group": {
+      "3": 15181,
+      "4": 294815
+    },
+    "bad_flag_counts": {},
+    "group4_first_output_off_utc": "2026-07-30T23:12:23.314223+00:00",
+    "group4_last_output_on_utc": "2026-07-30T23:12:23.204335+00:00",
+    "group4_alarm_to_output_off_seconds": 31376.314223
+  },
+  "charts": [
+    "D:\\Github\\wanxiang\\EPBTest\\docs\\01_Inboxes\\assets\\v2_3_0_0_peak_error_cycles.png",
+    "D:\\Github\\wanxiang\\EPBTest\\docs\\01_Inboxes\\assets\\v2_3_0_0_cycle63_fault_timeline.png"
+  ]
+}
