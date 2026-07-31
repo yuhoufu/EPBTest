@@ -174,6 +174,7 @@ namespace Controller.Adaptive
         private const double MinimumPredictionSlopeAperMs = 0.001;
         private const double MaximumPredictionSlopeAperMs = 1.0;
         private const double MaximumPredictionLeadMs = 100.0;
+        private const double MaximumPlateauSpreadA = 0.75;
 
         private readonly object _gate = new object();
         private readonly Queue<Sample> _window = new Queue<Sample>();
@@ -614,7 +615,7 @@ namespace Controller.Adaptive
                     $"Released I={current:F3}A median={stats.Median:F3}A " +
                     $"p90={stats.P90:F3}A threshold={decision.ReleaseThresholdA:F3}A " +
                     $"spread={stats.P90 - stats.P10:F3}A allowed={decision.AllowedSpreadA:F3}A " +
-                    $"confirm={stats.SpanMs}ms";
+                    $"slope={decision.EstimatedSlopeAperMs:F6}A/ms confirm={stats.SpanMs}ms";
                 return;
             }
             else
@@ -660,20 +661,32 @@ namespace Controller.Adaptive
                     out stats))
                 return false;
 
+            if (!TryGetLinearSlope(
+                    tick,
+                    _safetyLimits.ReverseProgressConfirmMs + 20,
+                    _safetyLimits.ReverseProgressConfirmMs,
+                    out _,
+                    out var plateauSlope))
+                return false;
+
             var lowLoadThreshold = _profile.IsStable && _profile.ReverseEmptyCurrentA > 0
-                ? Math.Max(
+                ? Math.Min(
                     _reverseDecayLimitA,
                     _profile.ReverseEmptyCurrentA + Math.Max(0.30, 4.0 * _profile.ReverseEmptyMadA))
                 : _reverseDecayLimitA;
-            var allowedSpread = Math.Max(
-                0.30,
-                8.0 * (_profile.IsStable ? _profile.ReverseEmptyMadA : stats.Mad));
+            var allowedSpread = Math.Min(
+                MaximumPlateauSpreadA,
+                Math.Max(
+                    0.30,
+                    4.0 * (_profile.IsStable ? _profile.ReverseEmptyMadA : stats.Mad)));
             ApplyWindowDiagnostics(decision, stats);
             decision.ReleaseThresholdA = lowLoadThreshold;
             decision.AllowedSpreadA = allowedSpread;
+            decision.EstimatedSlopeAperMs = plateauSlope;
             decision.WindowQualified =
                 stats.P90 <= lowLoadThreshold &&
-                stats.P90 - stats.P10 <= allowedSpread;
+                stats.P90 - stats.P10 <= allowedSpread &&
+                Math.Abs(plateauSlope) <= _safetyLimits.ReverseMinimumDecaySlopeAperMs;
             if (_releaseCandidateTick != 0)
                 decision.ReleaseCandidateElapsedMs = ElapsedMs(_releaseCandidateTick, tick);
             return true;
@@ -689,10 +702,25 @@ namespace Controller.Adaptive
                     highPlateauConfirmMs,
                     WindowMinimumSamples,
                     out var stats) ||
-                stats.Range > Math.Max(0.15, 6.0 * stats.Mad))
+                !TryGetLinearSlope(
+                    tick,
+                    highPlateauConfirmMs + 20,
+                    highPlateauConfirmMs,
+                    out _,
+                    out var plateauSlope) ||
+                stats.P90 - stats.P10 > MaximumPlateauSpreadA)
             {
                 return;
             }
+
+            var slopeLimit = _forwardDirection
+                ? _safetyLimits.ForwardMinimumRiseSlopeAperMs
+                : _safetyLimits.ReverseMinimumDecaySlopeAperMs;
+            if (Math.Abs(plateauSlope) > slopeLimit)
+            {
+                return;
+            }
+
             var median = stats.Median;
 
             double abnormalThreshold;
@@ -718,9 +746,10 @@ namespace Controller.Adaptive
             }
 
             ApplyWindowDiagnostics(decision, stats);
+            decision.EstimatedSlopeAperMs = plateauSlope;
             Fault(decision,
                 $"AbnormalHighCurrentPlateau median={median:F3}A threshold={abnormalThreshold:F3}A " +
-                $"window={stats.SpanMs}ms");
+                $"window={stats.SpanMs}ms slope={plateauSlope:F6}A/ms");
         }
 
         private EpbAdaptiveDecision Fault(EpbAdaptiveDecision decision, string reason)

@@ -35,9 +35,11 @@ namespace AdaptiveControlTests
                 Run("稳定模型后连续50圈仍记录正向空行程", StableProfileKeepsLearningForFiftyCycles);
                 Run("正向未进入负载上升按模型期限硬停", ForwardLoadRiseDeadlineFaults);
                 Run("正向平台不足1000ms不误报且满窗硬停", ForwardCurrentRiseStallFaults);
+                Run("正向正常爬升穿越半目标值不误报平台", ForwardRampThroughHalfTargetDoesNotFault);
                 Run("反向动态释放", ReverseRelease);
                 Run("反向17ms采样节拍仍可释放", ReverseReleaseWithSeventeenMillisecondCadence);
                 Run("反向释放窗口忽略孤立毛刺", ReverseReleaseIgnoresSparseOutliers);
+                Run("污染模型下反向下降沿不误判低电流平台", ReverseDecayWithPollutedProfileWaitsForPlateau);
                 Run("现场EPB8和EPB9曲线可释放", MeasuredReverseFixturesRelease);
                 Run("反向3到9A平台按模型期限硬停", SustainedReverseLoadFaultsAtProgressDeadline);
                 Run("反向低电流平台200ms确认释放", ReverseLowPlateauReleasesInOneWindow);
@@ -341,6 +343,23 @@ namespace AdaptiveControlTests
                 "正向平台未在完整1000ms确认窗口后硬停");
         }
 
+        private static void ForwardRampThroughHalfTargetDoesNotFault()
+        {
+            var machine = new EpbAdaptiveCurrentStateMachine(StableProfile());
+            machine.ArmForward(Tick(0), 100, 9000, 15, 0, 3);
+            Feed(machine, 0, 90, 10, _ => 0.05);
+            var ramp = Feed(
+                machine,
+                100,
+                700,
+                10,
+                ms => 6.0 + (ms - 100) * 0.004);
+
+            Assert(
+                !ramp.HardFault,
+                "持续上升的正常正向电流在穿越7.5A时被误判为高电流平台");
+        }
+
         private static void ReverseRelease()
         {
             var machine = new EpbAdaptiveCurrentStateMachine(StableProfile());
@@ -436,6 +455,40 @@ namespace AdaptiveControlTests
                 "孤立电流毛刺导致反向释放候选被持续清零");
             Assert(released.WindowP90A <= released.ReleaseThresholdA,
                 "释放时稳健P90仍高于学习阈值");
+        }
+
+        private static void ReverseDecayWithPollutedProfileWaitsForPlateau()
+        {
+            var profile = new EpbAdaptiveProfile
+            {
+                Channel = 8,
+                ValidSampleCount = 10,
+                ReverseEmptyCurrentA = 2.495,
+                ReverseEmptyMadA = 1.339,
+                ReverseReleaseMedianMs = 1256,
+                ReverseReleaseMadMs = 322
+            };
+            var machine = NewReverseMachine(profile);
+
+            var decay = Feed(
+                machine,
+                0,
+                1200,
+                10,
+                ms => ms < 100
+                    ? 0.05
+                    : Math.Max(0.70, 8.0 - (ms - 100) * (7.30 / 1100.0)));
+            Assert(
+                !decay.ReleaseCompleted && !decay.HardFault,
+                "反向电流仍在下降时被污染模型误判为稳定低电流平台");
+
+            var released = Feed(machine, 1210, 1600, 10, _ => 0.70);
+            Assert(
+                released.ReleaseCompleted &&
+                !released.HardFault &&
+                released.ReleaseThresholdA <= 3.0 + 1e-9 &&
+                Math.Abs(released.EstimatedSlopeAperMs) <= 0.001,
+                "污染模型下未等待到3A以下的平坦低电流平台再断电");
         }
 
         private static void MeasuredReverseFixturesRelease()
