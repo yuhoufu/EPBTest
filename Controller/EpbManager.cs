@@ -112,6 +112,7 @@ namespace Controller
 
         // 通道级“硬停机”取消源：用于中断当前圈内仍在运行的异步流程（Delay/等待判据等）
         private readonly ConcurrentDictionary<int, CancellationTokenSource> _stopCtsByChannel = new();
+        private readonly ConcurrentDictionary<int, byte> _emergencyPowerGroupLatch = new();
 
         // ★ 当前仍参与“液压组判定”的通道集合：用于把“报警停机/提前结束”的通道排除出释压条件
         // 说明：
@@ -943,6 +944,7 @@ namespace Controller
             }
 
             TryEndBatchSessionWhenIdle();
+            TryDisableIdlePowerGroup(channel, "报警通道停止后电源组已无运行通道");
         }
 
 
@@ -1005,18 +1007,20 @@ namespace Controller
                     // ignore
                 }
 
-                var hasSnapshotFiles = false;
+                AlarmCycleSnapshotEvidence snapshotEvidence = null;
                 try
                 {
-                    hasSnapshotFiles = await ExportAlarmSnapshotAsync(channel, reason, alarmUtc).ConfigureAwait(false);
+                    snapshotEvidence = await ExportAlarmSnapshotAsync(channel, reason, alarmUtc).ConfigureAwait(false);
                 }
                 catch
                 {
                     // ignore
                 }
 
-                // 数据库中的 alarm 必须有同一通道、同一圈号的快照文件作为证据。
-                TryFinalizeCurrentCycleAfterSnapshot(channel, hasSnapshotFiles);
+                if (snapshotEvidence == null)
+                    TryFinalizeCurrentCycleAfterSnapshot(channel, false);
+                else
+                    _currentCycleNumberByChannel.TryRemove(channel, out _);
             });
         }
 
@@ -1084,14 +1088,17 @@ namespace Controller
                     catch { }
 
                     var alarmUtc = fault.TimestampUtc == default ? DateTime.UtcNow : fault.TimestampUtc;
-                    var hasSnapshotFiles = false;
+                    AlarmCycleSnapshotEvidence snapshotEvidence = null;
                     try
                     {
-                        hasSnapshotFiles = await ExportAlarmSnapshotAsync(channel, reason, alarmUtc)
+                        snapshotEvidence = await ExportAlarmSnapshotAsync(channel, reason, alarmUtc)
                             .ConfigureAwait(false);
                     }
                     catch { }
-                    TryFinalizeCurrentCycleAfterSnapshot(channel, hasSnapshotFiles);
+                    if (snapshotEvidence == null)
+                        TryFinalizeCurrentCycleAfterSnapshot(channel, false);
+                    else
+                        _currentCycleNumberByChannel.TryRemove(channel, out _);
                 }
 
                 // 先完成同组所有 EPB 高优先级断电，再关闭共享电源输出。
@@ -1202,15 +1209,15 @@ namespace Controller
         }
 
 
-        private async Task<bool> ExportAlarmSnapshotAsync(
+        private async Task<AlarmCycleSnapshotEvidence> ExportAlarmSnapshotAsync(
             int alarmChannel,
             string reason,
             DateTime alarmUtc)
         {
             var recorder = Recorder;
-            if (recorder == null) return false;
+            if (recorder == null) return null;
             if (!_currentCycleNumberByChannel.TryGetValue(alarmChannel, out var alarmCycleNumber))
-                return false;
+                return null;
 
             // 快照去抖：同一通道在 cooldown 内只导出一次
             var cooldownMs = AlarmConfig?.Behavior?.SnapshotCooldownMs ?? 2000;
@@ -1220,11 +1227,16 @@ namespace Controller
                 if (_lastAlarmSnapshotUtcByChannel.TryGetValue(alarmChannel, out var last))
                 {
                     if ((now - last).TotalMilliseconds < cooldownMs)
-                        return false;
+                        return null;
                 }
 
                 _lastAlarmSnapshotUtcByChannel[alarmChannel] = now;
             }
+
+            var postOffTailMs = AlarmConfig?.Behavior?.SnapshotPostOffTailMs ?? 1000;
+            postOffTailMs = Math.Max(0, Math.Min(3000, postOffTailMs));
+            if (postOffTailMs > 0)
+                await Task.Delay(postOffTailMs).ConfigureAwait(false);
 
             await _alarmSnapshotGate.WaitAsync().ConfigureAwait(false);
             try
@@ -1250,11 +1262,13 @@ namespace Controller
                     running = Array.Empty<int>();
                 }
 
-                // 可能在报警回调里已先 StopChannelOnAlarm 导致 _timers 不再包含报警通道；
-                // 但快照必须包含报警通道本身，因此这里补回。
-                if (!running.Contains(alarmChannel))
-                    running = running.Concat(new[] { alarmChannel }).ToArray();
+                // 先冻结报警通道，保证 PostOffTailMs 是明确边界；其它通道随后作为辅助证据导出。
+                // StopChannelOnAlarm 通常已把报警通道从 _timers 移除，因此显式放到首位。
+                running = new[] { alarmChannel }
+                    .Concat(running.Where(channel => channel != alarmChannel))
+                    .ToArray();
 
+                AlarmCycleSnapshotEvidence alarmEvidence = null;
                 foreach (var ch in running)
                 {
                     var subName = ch == alarmChannel ? $"EPB{ch:D2}_ALARM" : $"EPB{ch:D2}";
@@ -1263,7 +1277,20 @@ namespace Controller
 
                     try
                     {
-                        recorder.FlushRecentTo(ch, lastN, subDir, includeRunningCycle: true);
+                        if (ch == alarmChannel)
+                        {
+                            alarmEvidence = recorder.SealAndExportAlarmCycle(
+                                ch,
+                                alarmCycleNumber,
+                                subDir,
+                                DateTime.UtcNow);
+                            if (alarmEvidence.IsValid)
+                                recorder.FlushRecentTo(ch, lastN, subDir, includeRunningCycle: false);
+                        }
+                        else
+                        {
+                            recorder.FlushRecentTo(ch, lastN, subDir, includeRunningCycle: true);
+                        }
                     }
                     catch (Exception ex)
                     {
@@ -1272,10 +1299,16 @@ namespace Controller
                 }
 
                 var alarmSubDir = System.IO.Path.Combine(snapshotDir, $"EPB{alarmChannel:D2}_ALARM");
-                var hasSnapshotFiles = AlarmSnapshotFileEvidence.HasCsvAndBin(
-                    alarmSubDir,
-                    alarmChannel,
-                    alarmCycleNumber);
+                alarmEvidence ??= new AlarmCycleSnapshotEvidence
+                {
+                    CsvPath = System.IO.Path.Combine(
+                        alarmSubDir,
+                        $"EPB{alarmChannel}_Cycle_{alarmCycleNumber:D6}.csv"),
+                    BinPath = System.IO.Path.Combine(
+                        alarmSubDir,
+                        $"EPB{alarmChannel}_Cycle_{alarmCycleNumber:D6}.bin"),
+                    ValidationError = "报警圈未完成原子封存。"
+                };
 
                 // DO时间线和错峰计划是辅助证据；其写入失败不得改变当前报警圈
                 // 由CSV/BIN完整性决定的 alarm/failed 结果。
@@ -1286,7 +1319,7 @@ namespace Controller
                         alarmChannel,
                         alarmCycleNumber,
                         reason,
-                        hasSnapshotFiles,
+                        alarmEvidence,
                         alarmUtc);
                 }
                 catch (Exception ex)
@@ -1314,14 +1347,15 @@ namespace Controller
                     _log.Warn($"报警电源遥测导出失败：EPB[{alarmChannel}] {ex.Message}", "落盘");
                 }
 
-                if (hasSnapshotFiles)
+                if (alarmEvidence.IsValid)
                     _log.Warn($"报警快照已导出：EPB[{alarmChannel}] {reason} -> {snapshotDir}", "落盘");
                 else
                     _log.Warn(
-                        $"报警快照缺少当前圈文件：EPB[{alarmChannel}] Cycle={alarmCycleNumber} -> {snapshotDir}",
+                        $"报警快照校验失败：EPB[{alarmChannel}] Cycle={alarmCycleNumber} " +
+                        $"Error={alarmEvidence.ValidationError} -> {snapshotDir}",
                         "落盘");
 
-                return hasSnapshotFiles;
+                return alarmEvidence;
             }
             finally
             {
@@ -1402,7 +1436,7 @@ namespace Controller
             var groupId = GetElectricalGroupId(channel);
             if (groupId <= 0) return;
             var members = _cfg.Test.Groups.FirstOrDefault(x => x.Id == groupId)?.Members ?? new List<int>();
-            if (members.Any(IsHydraulicParticipant) || members.Any(x => _timers.ContainsKey(x))) return;
+            if (!IsPowerGroupIdle(members, IsHydraulicParticipant, x => _timers.ContainsKey(x))) return;
             _ = Task.Run(async () =>
             {
                 try { await _powerSupply.DisableGroupAsync(groupId, reason, CancellationToken.None).ConfigureAwait(false); }
@@ -1415,9 +1449,93 @@ namespace Controller
             });
         }
 
+        internal static bool IsPowerGroupIdle(
+            IEnumerable<int> members,
+            Func<int, bool> isHydraulicParticipant,
+            Func<int, bool> hasRunningTimer)
+        {
+            if (members == null) return true;
+            return !members.Any(
+                channel =>
+                    (isHydraulicParticipant?.Invoke(channel) ?? false) ||
+                    (hasRunningTimer?.Invoke(channel) ?? false));
+        }
+
         private int GetElectricalGroupId(int channel)
         {
             return _cfg.Test.Groups.FirstOrDefault(x => x.Members.Contains(channel))?.Id ?? 0;
+        }
+
+        internal void RequestElectricalGroupEmergencyShutdown(int sourceChannel, string reason)
+        {
+            var groupId = GetElectricalGroupId(sourceChannel);
+            if (groupId <= 0)
+            {
+                _log.Error(
+                    $"EPB[{sourceChannel}] 请求电源组紧急关闭，但未找到电气组映射。Reason={reason}",
+                    "程控电源");
+                return;
+            }
+            if (!_emergencyPowerGroupLatch.TryAdd(groupId, 0)) return;
+
+            var members = _cfg.Test.Groups
+                .FirstOrDefault(x => x.Id == groupId)?
+                .Members
+                .Distinct()
+                .OrderBy(x => x)
+                .ToArray() ?? new[] { sourceChannel };
+
+            _log.Error(
+                $"电源组{groupId}触发失效安全联锁：Source=EPB{sourceChannel} " +
+                $"Affected=[{string.Join(",", members)}] Reason={reason}",
+                "程控电源");
+
+            // 先在当前线程阻止同组任何通道继续执行，并逐路发出高优先级DO关闭；
+            // 网络电源关闭及回读随后独立执行，不能阻塞采样回调。
+            foreach (var member in members)
+            {
+                try { UnmarkHydraulicParticipant(member); } catch { }
+                try { CancelStopCts(member); } catch { }
+                if (_timers.TryGetValue(member, out var timer))
+                {
+                    try { timer.Stop(); } catch { }
+                    _timers.Remove(member);
+                }
+                if (_timerCache.TryGetValue(member, out var cached))
+                {
+                    try { cached.Stop(); } catch { }
+                    _timerCache.Remove(member);
+                }
+                try { CommandEpbOffHighPriority(member, nameof(RequestElectricalGroupEmergencyShutdown)); }
+                catch { }
+                try { _ = HydraulicMarkReleaseAsync(member); }
+                catch { }
+            }
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    if (_powerSupply != null)
+                        await _powerSupply.DisableGroupAsync(
+                                groupId,
+                                $"EPB失效安全联锁 Source={sourceChannel} Reason={reason}",
+                                CancellationToken.None)
+                            .ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _log.Error(
+                        $"电源组{groupId}紧急关闭未得到可靠回读：{ex.Message}",
+                        "程控电源",
+                        ex);
+                }
+                finally
+                {
+                    if (_powerSupply == null || _powerSupply.ActiveGroups.Count == 0)
+                        EndPowerSupplyTelemetryRecording();
+                }
+            });
         }
 
         private void EnsureStrictCurveControl(IEnumerable<int> channels)

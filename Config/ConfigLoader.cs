@@ -47,6 +47,9 @@ namespace Config
         public int PressureThresholdBar { get; set; }
         public int DurationMs { get; set; }
         public int HoldAfterReachedMs { get; set; }
+        public double ReleaseSafePressureBar { get; set; } = 5;
+        public int ReleaseStableMs { get; set; } = 100;
+        public int ReleaseTimeoutMs { get; set; } = 5000;
         public int PressureDoId { get; set; }
 
         // 新增：该液压路所覆盖的卡钳通道（如 1..6 或 7..12）
@@ -356,6 +359,9 @@ public static class ConfigLoader
                 PressureThresholdBar = (int)GetDouble(n, "PressureThresholdBar", 20),
                 DurationMs = GetInt(n, "DurationMs", 0),
                 HoldAfterReachedMs = GetInt(n, "HoldAfterReachedMs", 0),
+                ReleaseSafePressureBar = GetDouble(n, "ReleaseSafePressureBar", 5),
+                ReleaseStableMs = GetInt(n, "ReleaseStableMs", 100),
+                ReleaseTimeoutMs = GetInt(n, "ReleaseTimeoutMs", 5000),
                 PressureDoId = GetInt(n, "PressureDoId", 1)
             };
 
@@ -427,7 +433,15 @@ public static class ConfigLoader
                 RevEmptyFixedMs = GetInt(r, "RevEmptyFixedMs", 0),
                 PreReleaseKeepMs = TryGetNullableInt(r, "PreReleaseKeepMs"),
                 PreReleaseDetectTimeoutMs = TryGetNullableInt(r, "PreReleaseDetectTimeoutMs"),
-                PeakIgnoreMs = GetInt(r, "PeakIgnoreMs", 0)
+                PeakIgnoreMs = GetInt(r, "PeakIgnoreMs", 0),
+                ForwardProgressConfirmMs = GetInt(r, "ForwardProgressConfirmMs", 200),
+                ForwardMinimumRiseSlopeAperMs = GetDouble(r, "ForwardMinimumRiseSlopeAperMs", 0.001),
+                ForwardProgressDeadlineMs = GetInt(r, "ForwardProgressDeadlineMs", 3000),
+                ReverseProgressConfirmMs = GetInt(r, "ReverseProgressConfirmMs", 200),
+                ReverseMinimumDecaySlopeAperMs = GetDouble(r, "ReverseMinimumDecaySlopeAperMs", 0.001),
+                ReverseProgressDeadlineMs = GetInt(r, "ReverseProgressDeadlineMs", 2500),
+                OffCurrentClearThresholdA = GetDouble(r, "OffCurrentClearThresholdA", 0.1),
+                OffCurrentClearTimeoutMs = GetInt(r, "OffCurrentClearTimeoutMs", 100)
             };
 
             // 软边界钳制（防御性）
@@ -435,6 +449,18 @@ public static class ConfigLoader
             item.HoldMs = Math.Max(0, item.HoldMs);
             item.RevDecayRigidMaxMs = Math.Max(0, item.RevDecayRigidMaxMs);
             item.RevEmptyFixedMs = Math.Max(0, item.RevEmptyFixedMs);
+            item.ForwardProgressConfirmMs = Math.Max(20, item.ForwardProgressConfirmMs);
+            item.ForwardMinimumRiseSlopeAperMs = Math.Max(0.00001, item.ForwardMinimumRiseSlopeAperMs);
+            item.ForwardProgressDeadlineMs = Math.Max(
+                item.ForwardProgressConfirmMs,
+                item.ForwardProgressDeadlineMs);
+            item.ReverseProgressConfirmMs = Math.Max(20, item.ReverseProgressConfirmMs);
+            item.ReverseMinimumDecaySlopeAperMs = Math.Max(0.00001, item.ReverseMinimumDecaySlopeAperMs);
+            item.ReverseProgressDeadlineMs = Math.Max(
+                item.ReverseProgressConfirmMs,
+                item.ReverseProgressDeadlineMs);
+            item.OffCurrentClearThresholdA = Math.Max(0.01, item.OffCurrentClearThresholdA);
+            item.OffCurrentClearTimeoutMs = Math.Max(20, item.OffCurrentClearTimeoutMs);
 
             cfg.EpbCycleRunner.Channels[ch] = item; // 覆盖写入
         }
@@ -706,6 +732,11 @@ public static class ConfigLoader
             AddHydraulicElement("PressureThresholdBar", hydraulic.PressureThresholdBar.ToString());
             AddHydraulicElement("DurationMs", hydraulic.DurationMs.ToString());
             AddHydraulicElement("HoldAfterReachedMs", hydraulic.HoldAfterReachedMs.ToString());
+            AddHydraulicElement(
+                "ReleaseSafePressureBar",
+                hydraulic.ReleaseSafePressureBar.ToString(CultureInfo.InvariantCulture));
+            AddHydraulicElement("ReleaseStableMs", hydraulic.ReleaseStableMs.ToString());
+            AddHydraulicElement("ReleaseTimeoutMs", hydraulic.ReleaseTimeoutMs.ToString());
             AddHydraulicElement("PressureDoId", hydraulic.PressureDoId.ToString());
 
             // 保存 Members
@@ -813,6 +844,17 @@ public static class ConfigLoader
             Add("PreReleaseKeepMs", it.PreReleaseKeepMs?.ToString() ?? "");
             Add("PreReleaseDetectTimeoutMs", it.PreReleaseDetectTimeoutMs?.ToString() ?? "");
             Add("PeakIgnoreMs", it.PeakIgnoreMs.ToString());
+            Add("ForwardProgressConfirmMs", it.ForwardProgressConfirmMs.ToString());
+            Add("ForwardMinimumRiseSlopeAperMs",
+                it.ForwardMinimumRiseSlopeAperMs.ToString(CultureInfo.InvariantCulture));
+            Add("ForwardProgressDeadlineMs", it.ForwardProgressDeadlineMs.ToString());
+            Add("ReverseProgressConfirmMs", it.ReverseProgressConfirmMs.ToString());
+            Add("ReverseMinimumDecaySlopeAperMs",
+                it.ReverseMinimumDecaySlopeAperMs.ToString(CultureInfo.InvariantCulture));
+            Add("ReverseProgressDeadlineMs", it.ReverseProgressDeadlineMs.ToString());
+            Add("OffCurrentClearThresholdA",
+                it.OffCurrentClearThresholdA.ToString(CultureInfo.InvariantCulture));
+            Add("OffCurrentClearTimeoutMs", it.OffCurrentClearTimeoutMs.ToString());
 
             epbNode.AppendChild(rec);
         }

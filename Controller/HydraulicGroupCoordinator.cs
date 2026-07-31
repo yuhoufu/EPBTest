@@ -7,6 +7,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -17,6 +18,23 @@ using NullLogger = Config.NullLogger;
 
 namespace Controller
 {
+    internal sealed class HydraulicReleaseTimeoutException : TimeoutException
+    {
+        public HydraulicReleaseTimeoutException(
+            int hydraulicId,
+            double lastPressureBar,
+            double safePressureBar,
+            int timeoutMs,
+            string detail = null)
+            : base(
+                $"HydraulicReleaseTimeout Hydraulic={hydraulicId} " +
+                $"LastPressure={lastPressureBar:F3}bar SafePressure={safePressureBar:F3}bar " +
+                $"Timeout={timeoutMs}ms" +
+                (string.IsNullOrWhiteSpace(detail) ? string.Empty : $" Detail={detail}"))
+        {
+        }
+    }
+
     internal sealed class HydraulicGroupCoordinator
     {
         private readonly AoController _ao;
@@ -33,6 +51,7 @@ namespace Controller
         private readonly ConcurrentDictionary<int, Latch> _latches = new();
         private readonly IAppLogger _log;
         private readonly Func<int, double> _readPressure;
+        private readonly Func<int, Task> _testReleaseAction;
         private readonly TestConfig _test;
 
         public HydraulicGroupCoordinator(TestConfig test,
@@ -68,6 +87,26 @@ namespace Controller
                         _channel2Hyd[r.Channel] = r.HydraulicId.Value;
         }
 
+        internal HydraulicGroupCoordinator(
+            TestConfig test,
+            Func<int, double> readPressure,
+            Func<int, Task> releaseAction,
+            IAppLogger log = null)
+        {
+            _test = test ?? throw new ArgumentNullException(nameof(test));
+            _doCfg = new DoConfig();
+            _readPressure = readPressure;
+            _testReleaseAction = releaseAction ?? throw new ArgumentNullException(nameof(releaseAction));
+            _log = log ?? NullLogger.Instance;
+
+            foreach (var h in _test.Hydraulics)
+            {
+                if (h?.Enabled != true || h.Members == null) continue;
+                foreach (var ch in h.Members.Distinct())
+                    _channel2Hyd[ch] = h.Id;
+            }
+        }
+
         /// <summary>
         ///     ★ 接入点（上电前调用）：声明“我这个通道要开始电控了”，若该组还没建压则先建压。
         ///     - 若有 _hydCtl：启动 BuildAndHoldAsync(hydId, token)，并把 ReleaseAction 绑定为 _hydCtl.Release(hydId)
@@ -83,24 +122,51 @@ namespace Controller
 
             var latch = _latches.GetOrAdd(hydId, _ => new Latch()); // 每个 hydId 一份
 
-            lock (latch.Gate) // 
+            while (true)
             {
-                latch.InFlight.Add(epbChannel);
-            }
+                Task priorRelease = null;
+                bool needBuild;
+                lock (latch.Gate)
+                {
+                    if (latch.ReleaseStarted)
+                    {
+                        priorRelease = latch.ReleaseCompletion?.Task ?? Task.CompletedTask;
+                        needBuild = false;
+                    }
+                    else
+                    {
+                        needBuild = !latch.PressureOn;
+                        if (needBuild)
+                        {
+                            latch.Generation++;
+                            latch.PressureOn = true;
+                            latch.ReleaseStarted = false;
+                            latch.ReleaseCompletion =
+                                new TaskCompletionSource<bool>(
+                                    TaskCreationOptions.RunContinuationsAsynchronously);
+                        }
 
-            bool needBuild;
-            lock (latch.Gate)
-            {
-                needBuild = !latch.PressureOn;
-            }
+                        latch.InFlight.Add(epbChannel);
+                    }
+                }
 
-            if (!needBuild) return;
+                if (priorRelease == null)
+                {
+                    if (!needBuild) return;
+                    break;
+                }
+
+                await priorRelease.ConfigureAwait(false);
+                token.ThrowIfCancellationRequested();
+            }
 
             try
             {
-                lock (latch.Gate)
+                if (_testReleaseAction != null)
                 {
-                    latch.PressureOn = true;
+                    lock (latch.Gate)
+                        latch.ReleaseActionAsync = () => _testReleaseAction(hydId);
+                    return;
                 }
 
                 if (_hydCtl != null)
@@ -188,6 +254,8 @@ namespace Controller
                 lock (latch.Gate)
                 {
                     latch.PressureOn = false;
+                    latch.ReleaseStarted = false;
+                    latch.ReleaseCompletion?.TrySetException(ex);
                 }
 
                 _log.Error($"液压[{hydId}] 建压保持失败：{ex.Message}", "液压协调", ex);
@@ -205,54 +273,146 @@ namespace Controller
             if (!_latches.TryGetValue(hydId, out var latch)) return;
 
             bool needReleaseNow;
+            int generation;
+            Task releaseCompletion;
+            Func<Task> releaseAction;
             lock (latch.Gate)
             {
                 latch.InFlight.Remove(epbChannel);
-                needReleaseNow = latch.PressureOn && latch.InFlight.Count == 0;
+                if (!latch.PressureOn || latch.ReleaseCompletion == null)
+                    return;
+
+                generation = latch.Generation;
+                releaseCompletion = latch.ReleaseCompletion.Task;
+                needReleaseNow = latch.InFlight.Count == 0 && !latch.ReleaseStarted;
+                if (needReleaseNow)
+                    latch.ReleaseStarted = true;
+                releaseAction = latch.ReleaseActionAsync;
             }
 
-            if (!needReleaseNow) return;
-
-            try
+            if (needReleaseNow)
             {
-                _log.Info($"液压[{hydId}] 本轮所有成员已到电压释放点：统一释压。", "液压协调");
-
-                if (latch.ReleaseActionAsync != null)
+                try
                 {
-                    await latch.ReleaseActionAsync(); // 优先交由控制器或 Fallback 收尾
+                    _log.Info(
+                        $"液压[{hydId}] 本轮所有成员已到电压释放点：统一释压并等待低压确认。",
+                        "液压协调");
+
+                    if (releaseAction != null)
+                    {
+                        await releaseAction().ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        try
+                        {
+                            _do?.SetPressure(hydId, false);
+                        }
+                        catch
+                        {
+                        }
+
+                        try
+                        {
+                            var dev = hydId == 1 ? "Cylinder1" : "Cylinder2";
+                            _ao?.WritePressure(dev, 0);
+                        }
+                        catch
+                        {
+                        }
+                    }
+
+                    await WaitForSafePressureAsync(hydId).ConfigureAwait(false);
+                    latch.ReleaseCompletion.TrySetResult(true);
+                }
+                catch (Exception ex)
+                {
+                    latch.ReleaseCompletion.TrySetException(ex);
+                }
+                finally
+                {
+                    lock (latch.Gate)
+                    {
+                        if (latch.Generation == generation)
+                        {
+                            latch.InFlight.Clear();
+                            latch.PressureOn = false;
+                            latch.ReleaseStarted = false;
+                            latch.Cts?.Dispose();
+                            latch.Cts = null;
+                            latch.ReleaseActionAsync = null;
+                        }
+                    }
+                }
+            }
+
+            await releaseCompletion.ConfigureAwait(false);
+        }
+
+        private async Task WaitForSafePressureAsync(int hydId)
+        {
+            var item = _test.Hydraulics.FirstOrDefault(h => h.Id == hydId);
+            var safePressureBar = Math.Max(0, item?.ReleaseSafePressureBar ?? 5);
+            var stableMs = Math.Max(0, item?.ReleaseStableMs ?? 100);
+            var timeoutMs = Math.Max(1, item?.ReleaseTimeoutMs ?? 5000);
+            if (_readPressure == null)
+            {
+                throw new HydraulicReleaseTimeoutException(
+                    hydId,
+                    double.NaN,
+                    safePressureBar,
+                    timeoutMs,
+                    "PressureReaderUnavailable");
+            }
+
+            var clock = Stopwatch.StartNew();
+            long? stableSinceMs = null;
+            var lastPressureBar = double.NaN;
+            while (clock.ElapsedMilliseconds <= timeoutMs)
+            {
+                try
+                {
+                    lastPressureBar = _readPressure(hydId);
+                }
+                catch (Exception ex)
+                {
+                    throw new HydraulicReleaseTimeoutException(
+                        hydId,
+                        double.NaN,
+                        safePressureBar,
+                        timeoutMs,
+                        "PressureReadFailed:" + ex.Message);
+                }
+
+                var safe = !double.IsNaN(lastPressureBar) &&
+                           !double.IsInfinity(lastPressureBar) &&
+                           lastPressureBar <= safePressureBar;
+                if (safe)
+                {
+                    if (!stableSinceMs.HasValue)
+                        stableSinceMs = clock.ElapsedMilliseconds;
+                    if (clock.ElapsedMilliseconds - stableSinceMs.Value >= stableMs)
+                    {
+                        _log.Info(
+                            $"液压[{hydId}] 释压确认完成：Pressure={lastPressureBar:F3}bar，" +
+                            $"阈值={safePressureBar:F3}bar，稳定={stableMs}ms。",
+                            "液压协调");
+                        return;
+                    }
                 }
                 else
                 {
-                    // 极端兜底
-                    try
-                    {
-                        _do.SetPressure(hydId, false);
-                    }
-                    catch
-                    {
-                    }
+                    stableSinceMs = null;
+                }
 
-                    try
-                    {
-                        var dev = hydId == 1 ? "Cylinder1" : "Cylinder2";
-                        _ao?.WritePressure(dev, 0);
-                    }
-                    catch
-                    {
-                    }
-                }
+                await Task.Delay(10).ConfigureAwait(false);
             }
-            finally
-            {
-                lock (latch.Gate)
-                {
-                    latch.InFlight.Clear();
-                    latch.PressureOn = false;
-                    latch.Cts?.Dispose();
-                    latch.Cts = null;
-                    latch.ReleaseActionAsync = null;
-                }
-            }
+
+            throw new HydraulicReleaseTimeoutException(
+                hydId,
+                lastPressureBar,
+                safePressureBar,
+                timeoutMs);
         }
 
         // —— 回退保持实现：DO 打开 + AO 输出百分比，达到阈值后保持，直到外部取消 —— //
@@ -320,6 +480,9 @@ namespace Controller
             public readonly HashSet<int> InFlight = new(); // 仍未到“电压释放点”的通道
             public CancellationTokenSource Cts; // Fallback 持有的 CTS（仅回退方案用）
             public bool PressureOn; // 是否已进入“建压保持”状态
+            public bool ReleaseStarted;
+            public int Generation;
+            public TaskCompletionSource<bool> ReleaseCompletion;
             public Func<Task> ReleaseActionAsync; // 统一“释压”动作（优先使用 HydraulicController）
         }
     }

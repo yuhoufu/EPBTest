@@ -100,5 +100,8 @@ namespace Config
         /// 同一报警源在该时间窗内只触发一次快照（ms）。
         /// </summary>
         public int SnapshotCooldownMs { get; set; } = 2000;
+
+        /// <summary>立即断电后继续保留的报警电流/压力尾部（ms）。</summary>
+        public int SnapshotPostOffTailMs { get; set; } = 1000;
     }
 }

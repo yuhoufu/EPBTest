@@ -125,6 +125,38 @@ namespace Controller.Adaptive
     }
 
     /// <summary>
+    /// 电流进展与断电代理确认的安全参数。默认值即使旧 XML 未配置也会生效。
+    /// </summary>
+    public sealed class EpbAdaptiveSafetyLimits
+    {
+        public int ForwardProgressConfirmMs { get; set; } = 200;
+        public double ForwardMinimumRiseSlopeAperMs { get; set; } = 0.001;
+        public int ForwardProgressDeadlineMs { get; set; } = 3000;
+        public int ReverseProgressConfirmMs { get; set; } = 200;
+        public double ReverseMinimumDecaySlopeAperMs { get; set; } = 0.001;
+        public int ReverseProgressDeadlineMs { get; set; } = 2500;
+        public double OffCurrentClearThresholdA { get; set; } = 0.1;
+        public int OffCurrentClearTimeoutMs { get; set; } = 100;
+
+        public EpbAdaptiveSafetyLimits Normalized()
+        {
+            var forwardConfirm = Math.Max(20, ForwardProgressConfirmMs);
+            var reverseConfirm = Math.Max(20, ReverseProgressConfirmMs);
+            return new EpbAdaptiveSafetyLimits
+            {
+                ForwardProgressConfirmMs = forwardConfirm,
+                ForwardMinimumRiseSlopeAperMs = Math.Max(0.00001, ForwardMinimumRiseSlopeAperMs),
+                ForwardProgressDeadlineMs = Math.Max(forwardConfirm, ForwardProgressDeadlineMs),
+                ReverseProgressConfirmMs = reverseConfirm,
+                ReverseMinimumDecaySlopeAperMs = Math.Max(0.00001, ReverseMinimumDecaySlopeAperMs),
+                ReverseProgressDeadlineMs = Math.Max(reverseConfirm, ReverseProgressDeadlineMs),
+                OffCurrentClearThresholdA = Math.Max(0.01, OffCurrentClearThresholdA),
+                OffCurrentClearTimeoutMs = Math.Max(20, OffCurrentClearTimeoutMs)
+            };
+        }
+    }
+
+    /// <summary>
     /// 纯电流判定状态机。它不直接操作 DO，也不执行日志/文件 IO，可用于实时控制和离线波形测试。
     /// </summary>
     public sealed class EpbAdaptiveCurrentStateMachine
@@ -132,12 +164,9 @@ namespace Controller.Adaptive
         private const int StableWindowMs = 150;
         private const int StableWindowMinCoverageMs = 120;
         private const int ForwardEmptyWindowMinCoverageMs = 100;
-        private const int ReverseWindowMs = 200;
-        private const int ReverseWindowMinCoverageMs = 120;
         private const int WindowMinimumSamples = 8;
         private const int WindowRetentionMs = 350;
         private const int PredictionSlopeWindowMs = 30;
-        private const int ReleaseConfirmMs = 200;
         private const int NearZeroFaultMs = 200;
         private const double NearZeroA = 0.10;
         private const double MinimumPredictionSlopeAperMs = 0.001;
@@ -154,7 +183,6 @@ namespace Controller.Adaptive
         private long _lastSampleTick;
         private long _releaseCandidateTick;
         private long _nearZeroStartTick;
-        private long _highPlateauStartTick;
         private int _inrushIgnoreMs;
         private int _absoluteMaxMs;
         private int _softLimitMs;
@@ -173,6 +201,9 @@ namespace Controller.Adaptive
         private double _observedReverseEmptyA;
         private double _loadRisePeakA;
         private long _loadRiseDropStartTick;
+        private long _loadRiseStartTick;
+        private EpbAdaptiveSafetyLimits _safetyLimits = new EpbAdaptiveSafetyLimits();
+        private int _reverseNoModelDeadlineMs;
 
         public EpbAdaptiveCurrentStateMachine(EpbAdaptiveProfile profile)
         {
@@ -216,11 +247,13 @@ namespace Controller.Adaptive
             int absoluteMaxMs,
             double forwardA,
             double safetyMarginA,
-            double overshootDeltaA)
+            double overshootDeltaA,
+            EpbAdaptiveSafetyLimits safetyLimits = null)
         {
             lock (_gate)
             {
                 ResetDirection(startTick, inrushIgnoreMs, absoluteMaxMs);
+                _safetyLimits = (safetyLimits ?? new EpbAdaptiveSafetyLimits()).Normalized();
                 _forwardDirection = true;
                 _forwardA = Math.Max(0, forwardA);
                 _safetyMarginA = Math.Max(0, safetyMarginA);
@@ -241,11 +274,17 @@ namespace Controller.Adaptive
             int absoluteMaxMs,
             double reverseDecayLimitA,
             double overshootDeltaA,
-            double forwardReferenceA = 0)
+            double forwardReferenceA = 0,
+            EpbAdaptiveSafetyLimits safetyLimits = null,
+            int reverseNoModelDeadlineMs = 0)
         {
             lock (_gate)
             {
                 ResetDirection(startTick, inrushIgnoreMs, absoluteMaxMs);
+                _safetyLimits = (safetyLimits ?? new EpbAdaptiveSafetyLimits()).Normalized();
+                _reverseNoModelDeadlineMs = reverseNoModelDeadlineMs > 0
+                    ? Math.Max(_safetyLimits.ReverseProgressConfirmMs, reverseNoModelDeadlineMs)
+                    : 0;
                 _forwardDirection = false;
                 _reverseDecayLimitA = Math.Max(0.1, reverseDecayLimitA);
                 _overshootDeltaA = Math.Max(0, overshootDeltaA);
@@ -331,7 +370,7 @@ namespace Controller.Adaptive
                 if (_forwardDirection)
                     EvaluateForward(tick, current, elapsedMs, decision);
                 else
-                    EvaluateReverse(tick, current, decision);
+                    EvaluateReverse(tick, current, elapsedMs, decision);
 
                 if (!decision.HardFault && !decision.ClampReached && !decision.ReleaseCompleted)
                     EvaluateAbnormalHighPlateau(tick, elapsedMs, decision);
@@ -418,6 +457,7 @@ namespace Controller.Adaptive
                     if (current >= loadRiseThreshold && WindowSlopeAperMs() > 0.001)
                     {
                         SetStage(EpbCurrentStage.LoadRise);
+                        _loadRiseStartTick = tick;
                         decision.StateChanged = true;
                         decision.Reason = "LoadRise";
                     }
@@ -429,6 +469,17 @@ namespace Controller.Adaptive
                 Fault(
                     decision,
                     $"CurveSequenceInvalid ThresholdBeforeLoadRise I={current:F3}A Target={_forwardA:F3}A");
+                return;
+            }
+
+            if (_stage == EpbCurrentStage.EmptyTravel &&
+                elapsedMs >= GetForwardProgressDeadlineMs())
+            {
+                var deadlineMs = GetForwardProgressDeadlineMs();
+                Fault(
+                    decision,
+                    $"ForwardLoadRiseNotStarted elapsed={elapsedMs}ms " +
+                    $"deadline={deadlineMs}ms I={current:F3}A Target={_forwardA:F3}A");
                 return;
             }
 
@@ -462,6 +513,29 @@ namespace Controller.Adaptive
                     _loadRiseDropStartTick = 0;
                 }
 
+                if (_loadRiseStartTick != 0 &&
+                    ElapsedMs(_loadRiseStartTick, tick) >= _safetyLimits.ForwardProgressConfirmMs &&
+                    TryGetLinearSlope(
+                        tick,
+                        _safetyLimits.ForwardProgressConfirmMs + 20,
+                        _safetyLimits.ForwardProgressConfirmMs,
+                        out var progressStats,
+                        out var progressSlope) &&
+                    current < _forwardA &&
+                    progressStats.P90 < _forwardA &&
+                    progressSlope <= _safetyLimits.ForwardMinimumRiseSlopeAperMs)
+                {
+                    ApplyWindowDiagnostics(decision, progressStats);
+                    decision.EstimatedSlopeAperMs = progressSlope;
+                    Fault(
+                        decision,
+                        $"ForwardCurrentRiseStalled slope={progressSlope:F6}A/ms " +
+                        $"limit={_safetyLimits.ForwardMinimumRiseSlopeAperMs:F6}A/ms " +
+                        $"window={progressStats.SpanMs}ms median={progressStats.Median:F3}A " +
+                        $"Target={_forwardA:F3}A");
+                    return;
+                }
+
                 // 实际电流达到目标时立即断电；预测触发则仍要求连续三点，抵抗孤立毛刺。
                 var directTargetReached = current >= _forwardA;
                 var predictionReached =
@@ -487,7 +561,11 @@ namespace Controller.Adaptive
             }
         }
 
-        private void EvaluateReverse(long tick, double current, EpbAdaptiveDecision decision)
+        private void EvaluateReverse(
+            long tick,
+            double current,
+            int elapsedMs,
+            EpbAdaptiveDecision decision)
         {
             if (_stage != EpbCurrentStage.ReleaseDecay) return;
 
@@ -500,27 +578,45 @@ namespace Controller.Adaptive
             if (decision.WindowQualified)
             {
                 _observedReverseEmptyA = stats.Median;
-                if (_releaseCandidateTick == 0)
-                {
-                    _releaseCandidateTick = tick;
-                    return;
-                }
-
-                decision.ReleaseCandidateElapsedMs = ElapsedMs(_releaseCandidateTick, tick);
-                if (decision.ReleaseCandidateElapsedMs >= ReleaseConfirmMs)
-                {
-                    SetStage(EpbCurrentStage.Released);
-                    decision.ReleaseCompleted = true;
-                    decision.StateChanged = true;
-                    decision.Reason =
-                        $"Released I={current:F3}A median={stats.Median:F3}A " +
-                        $"p90={stats.P90:F3}A threshold={decision.ReleaseThresholdA:F3}A " +
-                        $"spread={stats.P90 - stats.P10:F3}A allowed={decision.AllowedSpreadA:F3}A";
-                }
+                _releaseCandidateTick = tick;
+                decision.ReleaseCandidateElapsedMs = stats.SpanMs;
+                SetStage(EpbCurrentStage.Released);
+                decision.ReleaseCompleted = true;
+                decision.StateChanged = true;
+                decision.Reason =
+                    $"Released I={current:F3}A median={stats.Median:F3}A " +
+                    $"p90={stats.P90:F3}A threshold={decision.ReleaseThresholdA:F3}A " +
+                    $"spread={stats.P90 - stats.P10:F3}A allowed={decision.AllowedSpreadA:F3}A " +
+                    $"confirm={stats.SpanMs}ms";
+                return;
             }
             else
             {
                 _releaseCandidateTick = 0;
+            }
+
+            var progressDeadlineMs = GetReverseProgressDeadlineMs();
+            if (elapsedMs < progressDeadlineMs) return;
+            if (!TryGetLinearSlope(
+                    tick,
+                    _safetyLimits.ReverseProgressConfirmMs + 20,
+                    _safetyLimits.ReverseProgressConfirmMs,
+                    out var progressStats,
+                    out var progressSlope))
+                return;
+
+            if (progressStats.P10 > decision.ReleaseThresholdA &&
+                progressSlope >= -_safetyLimits.ReverseMinimumDecaySlopeAperMs)
+            {
+                ApplyWindowDiagnostics(decision, progressStats);
+                decision.EstimatedSlopeAperMs = progressSlope;
+                Fault(
+                    decision,
+                    $"ReverseCurrentDecayStalled slope={progressSlope:F6}A/ms " +
+                    $"limit=-{_safetyLimits.ReverseMinimumDecaySlopeAperMs:F6}A/ms " +
+                    $"elapsed={elapsedMs}ms deadline={progressDeadlineMs}ms " +
+                    $"window={progressStats.SpanMs}ms median={progressStats.Median:F3}A " +
+                    $"releaseThreshold={decision.ReleaseThresholdA:F3}A");
             }
         }
 
@@ -531,14 +627,16 @@ namespace Controller.Adaptive
         {
             if (!TryGetWindowStats(
                     tick,
-                    ReverseWindowMs,
-                    ReverseWindowMinCoverageMs,
+                    _safetyLimits.ReverseProgressConfirmMs + 20,
+                    _safetyLimits.ReverseProgressConfirmMs,
                     WindowMinimumSamples,
                     out stats))
                 return false;
 
             var lowLoadThreshold = _profile.IsStable && _profile.ReverseEmptyCurrentA > 0
-                ? _profile.ReverseEmptyCurrentA + Math.Max(0.30, 4.0 * _profile.ReverseEmptyMadA)
+                ? Math.Max(
+                    _reverseDecayLimitA,
+                    _profile.ReverseEmptyCurrentA + Math.Max(0.30, 4.0 * _profile.ReverseEmptyMadA))
                 : _reverseDecayLimitA;
             var allowedSpread = Math.Max(
                 0.30,
@@ -556,18 +654,25 @@ namespace Controller.Adaptive
 
         private void EvaluateAbnormalHighPlateau(long tick, int elapsedMs, EpbAdaptiveDecision decision)
         {
-            if (elapsedMs < _inrushIgnoreMs + 200 || !WindowIsStable(out var median, out _))
+            const int highPlateauConfirmMs = 200;
+            if (elapsedMs < _inrushIgnoreMs + highPlateauConfirmMs ||
+                !TryGetWindowStats(
+                    tick,
+                    highPlateauConfirmMs + 20,
+                    highPlateauConfirmMs,
+                    WindowMinimumSamples,
+                    out var stats) ||
+                stats.Range > Math.Max(0.15, 6.0 * stats.Mad))
             {
-                _highPlateauStartTick = 0;
                 return;
             }
+            var median = stats.Median;
 
             double abnormalThreshold;
             if (_forwardDirection)
             {
                 if (_stage != EpbCurrentStage.EmptyTravel)
                 {
-                    _highPlateauStartTick = 0;
                     return;
                 }
                 var emptyBaseline = _profile.IsStable && _profile.ForwardEmptyCurrentA > 0
@@ -582,19 +687,13 @@ namespace Controller.Adaptive
 
             if (median < abnormalThreshold)
             {
-                _highPlateauStartTick = 0;
                 return;
             }
 
-            if (_highPlateauStartTick == 0)
-            {
-                _highPlateauStartTick = tick;
-                return;
-            }
-
-            if (ElapsedMs(_highPlateauStartTick, tick) >= 200)
-                Fault(decision,
-                    $"AbnormalHighCurrentPlateau median={median:F3}A threshold={abnormalThreshold:F3}A");
+            ApplyWindowDiagnostics(decision, stats);
+            Fault(decision,
+                $"AbnormalHighCurrentPlateau median={median:F3}A threshold={abnormalThreshold:F3}A " +
+                $"window={stats.SpanMs}ms");
         }
 
         private EpbAdaptiveDecision Fault(EpbAdaptiveDecision decision, string reason)
@@ -624,7 +723,6 @@ namespace Controller.Adaptive
             _lastSampleTick = 0;
             _releaseCandidateTick = 0;
             _nearZeroStartTick = 0;
-            _highPlateauStartTick = 0;
             _inrushIgnoreMs = Math.Max(0, inrushIgnoreMs);
             _absoluteMaxMs = Math.Max(1, absoluteMaxMs);
             _softLimitMs = 0;
@@ -638,6 +736,8 @@ namespace Controller.Adaptive
             _observedReverseEmptyA = 0;
             _loadRisePeakA = 0;
             _loadRiseDropStartTick = 0;
+            _loadRiseStartTick = 0;
+            _reverseNoModelDeadlineMs = 0;
             CutoffCurrentA = 0;
             CutoffSlopeAperMs = 0;
             PredictedPeakA = 0;
@@ -648,7 +748,12 @@ namespace Controller.Adaptive
         private void AddWindow(long tick, double current)
         {
             _window.Enqueue(new Sample(tick, current));
-            while (_window.Count > 0 && ElapsedMs(_window.Peek().Tick, tick) > WindowRetentionMs)
+            var retentionMs = Math.Max(
+                WindowRetentionMs,
+                Math.Max(
+                    _safetyLimits.ForwardProgressConfirmMs,
+                    _safetyLimits.ReverseProgressConfirmMs) + 50);
+            while (_window.Count > 0 && ElapsedMs(_window.Peek().Tick, tick) > retentionMs)
                 _window.Dequeue();
         }
 
@@ -773,6 +878,90 @@ namespace Controller.Adaptive
             var last = samples[samples.Length - 1];
             var elapsed = ElapsedMs(first.Tick, last.Tick);
             return elapsed <= 0 ? 0 : (last.CurrentA - first.CurrentA) / elapsed;
+        }
+
+        private bool TryGetLinearSlope(
+            long tick,
+            int windowMs,
+            int minimumCoverageMs,
+            out WindowStats stats,
+            out double slopeAperMs)
+        {
+            slopeAperMs = 0;
+            if (!TryGetWindowStats(
+                    tick,
+                    windowMs,
+                    minimumCoverageMs,
+                    WindowMinimumSamples,
+                    out stats))
+                return false;
+
+            var samples = _window
+                .Where(x => ElapsedMs(x.Tick, tick) <= windowMs)
+                .ToArray();
+            if (samples.Length < WindowMinimumSamples) return false;
+
+            var firstTick = samples[0].Tick;
+            var times = samples
+                .Select(x => (x.Tick - firstTick) * 1000.0 / Stopwatch.Frequency)
+                .ToArray();
+            var meanTime = times.Average();
+            var meanCurrent = samples.Average(x => x.CurrentA);
+            double covariance = 0;
+            double variance = 0;
+            for (var i = 0; i < samples.Length; i++)
+            {
+                var dt = times[i] - meanTime;
+                covariance += dt * (samples[i].CurrentA - meanCurrent);
+                variance += dt * dt;
+            }
+
+            if (variance <= 1e-9) return false;
+            slopeAperMs = covariance / variance;
+            return !double.IsNaN(slopeAperMs) && !double.IsInfinity(slopeAperMs);
+        }
+
+        private int GetForwardProgressDeadlineMs()
+        {
+            var configured = Math.Max(
+                _inrushIgnoreMs + _safetyLimits.ForwardProgressConfirmMs,
+                _safetyLimits.ForwardProgressDeadlineMs);
+            if (!_profile.IsStable || _profile.ForwardClampMedianMs <= 0)
+                return Math.Min(_absoluteMaxMs, configured);
+
+            var learned = (int)Math.Ceiling(
+                _profile.ForwardClampMedianMs +
+                Math.Max(300.0, 4.0 * _profile.ForwardClampMadMs));
+            return Math.Min(
+                _absoluteMaxMs,
+                Math.Max(
+                    _inrushIgnoreMs + _safetyLimits.ForwardProgressConfirmMs,
+                    Math.Min(configured, learned)));
+        }
+
+        private int GetReverseProgressDeadlineMs()
+        {
+            var configured = Math.Max(
+                _inrushIgnoreMs + _safetyLimits.ReverseProgressConfirmMs,
+                _safetyLimits.ReverseProgressDeadlineMs);
+            if (!_profile.IsStable || _profile.ReverseReleaseMedianMs <= 0)
+            {
+                var fallback = _reverseNoModelDeadlineMs > 0
+                    ? _reverseNoModelDeadlineMs
+                    : configured;
+                return Math.Min(
+                    _absoluteMaxMs,
+                    Math.Max(_inrushIgnoreMs + _safetyLimits.ReverseProgressConfirmMs, fallback));
+            }
+
+            var learned = (int)Math.Ceiling(
+                _profile.ReverseReleaseMedianMs +
+                Math.Max(300.0, 4.0 * _profile.ReverseReleaseMadMs));
+            return Math.Min(
+                _absoluteMaxMs,
+                Math.Max(
+                    _inrushIgnoreMs + _safetyLimits.ReverseProgressConfirmMs,
+                    Math.Min(configured, learned)));
         }
 
         private double PredictionSlopeAperMs()

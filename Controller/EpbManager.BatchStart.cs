@@ -72,6 +72,7 @@ namespace Controller
             try
             {
                 _activeBatchId = Guid.NewGuid();
+                _emergencyPowerGroupLatch.Clear();
                 BeginPowerSupplyTelemetryRecording(_activeBatchId);
                 EnsureStrictCurveControl(selected);
                 if (_powerSupply != null)

@@ -46,6 +46,14 @@ namespace Config
                         cfg.Behavior.AdaptiveOvershootConfirmCycles));
                 cfg.Behavior.SnapshotLastNCycles = GetIntAttr(behaviorNode, "SnapshotLastNCycles", cfg.Behavior.SnapshotLastNCycles);
                 cfg.Behavior.SnapshotCooldownMs = GetIntAttr(behaviorNode, "SnapshotCooldownMs", cfg.Behavior.SnapshotCooldownMs);
+                cfg.Behavior.SnapshotPostOffTailMs = Math.Max(
+                    0,
+                    Math.Min(
+                        3000,
+                        GetIntAttr(
+                            behaviorNode,
+                            "SnapshotPostOffTailMs",
+                            cfg.Behavior.SnapshotPostOffTailMs)));
             }
 
             // Mappings

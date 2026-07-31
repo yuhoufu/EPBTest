@@ -86,6 +86,7 @@
     - AdaptiveOvershootConfirmCycles：连续超出平衡带多少圈才升级硬故障
     - SnapshotLastNCycles：报警快照导出最近 N 圈（默认 10，且包含当前 running 圈）
     - SnapshotCooldownMs：同一通道报警快照去抖窗（ms）
+    - SnapshotPostOffTailMs：立即断电后继续保留的电流/压力尾部（ms，0..3000）
   -->
   <Behavior
     BuzzerEnabled="true"
@@ -98,5 +99,6 @@
     AdaptiveOvershootWarningDeltaA="0.8"
     AdaptiveOvershootConfirmCycles="3"
     SnapshotLastNCycles="10"
-    SnapshotCooldownMs="2000" />
+    SnapshotCooldownMs="2000"
+    SnapshotPostOffTailMs="1000" />
 </AlarmConfig>

@@ -162,6 +162,9 @@
 			<!-- 模式含时长时使用 -->
 			<HoldAfterReachedMs>0</HoldAfterReachedMs>
 			<!-- 达阈后再保持多久再泄压 -->
+			<ReleaseSafePressureBar>5</ReleaseSafePressureBar>
+			<ReleaseStableMs>100</ReleaseStableMs>
+			<ReleaseTimeoutMs>5000</ReleaseTimeoutMs>
 			<PressureDoId>1</PressureDoId>
 			<!-- 对应 DOConfig/Pressure/Record/编号 -->
 			<!-- 新增：该液压路控制的卡钳 -->
@@ -176,6 +179,9 @@
 			<PressureThresholdBar>100</PressureThresholdBar>
 			<DurationMs>0</DurationMs>
 			<HoldAfterReachedMs>200</HoldAfterReachedMs>
+			<ReleaseSafePressureBar>5</ReleaseSafePressureBar>
+			<ReleaseStableMs>100</ReleaseStableMs>
+			<ReleaseTimeoutMs>5000</ReleaseTimeoutMs>
 			<PressureDoId>2</PressureDoId>
 			<Members>7,8,9,10,11,12</Members>
 		</Hydraulic>
@@ -195,6 +201,14 @@
 			<RevEmptyFixedMs>2000</RevEmptyFixedMs>
 			<PreReleaseKeepMs>500</PreReleaseKeepMs>
 			<PeakIgnoreMs>100</PeakIgnoreMs>
+			<ForwardProgressConfirmMs>200</ForwardProgressConfirmMs>
+			<ForwardMinimumRiseSlopeAperMs>0.001</ForwardMinimumRiseSlopeAperMs>
+			<ForwardProgressDeadlineMs>3000</ForwardProgressDeadlineMs>
+			<ReverseProgressConfirmMs>200</ReverseProgressConfirmMs>
+			<ReverseMinimumDecaySlopeAperMs>0.001</ReverseMinimumDecaySlopeAperMs>
+			<ReverseProgressDeadlineMs>2500</ReverseProgressDeadlineMs>
+			<OffCurrentClearThresholdA>0.1</OffCurrentClearThresholdA>
+			<OffCurrentClearTimeoutMs>100</OffCurrentClearTimeoutMs>
 		</Record>
 		<Record>
 			<Channel>2</Channel>
@@ -208,6 +222,14 @@
 			<RevEmptyFixedMs>2000</RevEmptyFixedMs>
 			<PreReleaseKeepMs>500</PreReleaseKeepMs>
 			<PeakIgnoreMs>100</PeakIgnoreMs>
+			<ForwardProgressConfirmMs>200</ForwardProgressConfirmMs>
+			<ForwardMinimumRiseSlopeAperMs>0.001</ForwardMinimumRiseSlopeAperMs>
+			<ForwardProgressDeadlineMs>3000</ForwardProgressDeadlineMs>
+			<ReverseProgressConfirmMs>200</ReverseProgressConfirmMs>
+			<ReverseMinimumDecaySlopeAperMs>0.001</ReverseMinimumDecaySlopeAperMs>
+			<ReverseProgressDeadlineMs>2500</ReverseProgressDeadlineMs>
+			<OffCurrentClearThresholdA>0.1</OffCurrentClearThresholdA>
+			<OffCurrentClearTimeoutMs>100</OffCurrentClearTimeoutMs>
 		</Record>
 		<Record>
 			<Channel>3</Channel>
@@ -221,6 +243,14 @@
 			<RevEmptyFixedMs>2000</RevEmptyFixedMs>
 			<PreReleaseKeepMs>500</PreReleaseKeepMs>
 			<PeakIgnoreMs>100</PeakIgnoreMs>
+			<ForwardProgressConfirmMs>200</ForwardProgressConfirmMs>
+			<ForwardMinimumRiseSlopeAperMs>0.001</ForwardMinimumRiseSlopeAperMs>
+			<ForwardProgressDeadlineMs>3000</ForwardProgressDeadlineMs>
+			<ReverseProgressConfirmMs>200</ReverseProgressConfirmMs>
+			<ReverseMinimumDecaySlopeAperMs>0.001</ReverseMinimumDecaySlopeAperMs>
+			<ReverseProgressDeadlineMs>2500</ReverseProgressDeadlineMs>
+			<OffCurrentClearThresholdA>0.1</OffCurrentClearThresholdA>
+			<OffCurrentClearTimeoutMs>100</OffCurrentClearTimeoutMs>
 		</Record>
 		<Record>
 			<Channel>4</Channel>
@@ -234,6 +264,14 @@
 			<RevEmptyFixedMs>2000</RevEmptyFixedMs>
 			<PreReleaseKeepMs>500</PreReleaseKeepMs>
 			<PeakIgnoreMs>100</PeakIgnoreMs>
+			<ForwardProgressConfirmMs>200</ForwardProgressConfirmMs>
+			<ForwardMinimumRiseSlopeAperMs>0.001</ForwardMinimumRiseSlopeAperMs>
+			<ForwardProgressDeadlineMs>3000</ForwardProgressDeadlineMs>
+			<ReverseProgressConfirmMs>200</ReverseProgressConfirmMs>
+			<ReverseMinimumDecaySlopeAperMs>0.001</ReverseMinimumDecaySlopeAperMs>
+			<ReverseProgressDeadlineMs>2500</ReverseProgressDeadlineMs>
+			<OffCurrentClearThresholdA>0.1</OffCurrentClearThresholdA>
+			<OffCurrentClearTimeoutMs>100</OffCurrentClearTimeoutMs>
 		</Record>
 		<Record>
 			<Channel>5</Channel>
@@ -247,6 +285,14 @@
 			<RevEmptyFixedMs>2000</RevEmptyFixedMs>
 			<PreReleaseKeepMs>500</PreReleaseKeepMs>
 			<PeakIgnoreMs>100</PeakIgnoreMs>
+			<ForwardProgressConfirmMs>200</ForwardProgressConfirmMs>
+			<ForwardMinimumRiseSlopeAperMs>0.001</ForwardMinimumRiseSlopeAperMs>
+			<ForwardProgressDeadlineMs>3000</ForwardProgressDeadlineMs>
+			<ReverseProgressConfirmMs>200</ReverseProgressConfirmMs>
+			<ReverseMinimumDecaySlopeAperMs>0.001</ReverseMinimumDecaySlopeAperMs>
+			<ReverseProgressDeadlineMs>2500</ReverseProgressDeadlineMs>
+			<OffCurrentClearThresholdA>0.1</OffCurrentClearThresholdA>
+			<OffCurrentClearTimeoutMs>100</OffCurrentClearTimeoutMs>
 		</Record>
 		<Record>
 			<Channel>6</Channel>
@@ -260,6 +306,14 @@
 			<RevEmptyFixedMs>2000</RevEmptyFixedMs>
 			<PreReleaseKeepMs>500</PreReleaseKeepMs>
 			<PeakIgnoreMs>100</PeakIgnoreMs>
+			<ForwardProgressConfirmMs>200</ForwardProgressConfirmMs>
+			<ForwardMinimumRiseSlopeAperMs>0.001</ForwardMinimumRiseSlopeAperMs>
+			<ForwardProgressDeadlineMs>3000</ForwardProgressDeadlineMs>
+			<ReverseProgressConfirmMs>200</ReverseProgressConfirmMs>
+			<ReverseMinimumDecaySlopeAperMs>0.001</ReverseMinimumDecaySlopeAperMs>
+			<ReverseProgressDeadlineMs>2500</ReverseProgressDeadlineMs>
+			<OffCurrentClearThresholdA>0.1</OffCurrentClearThresholdA>
+			<OffCurrentClearTimeoutMs>100</OffCurrentClearTimeoutMs>
 		</Record>
 		<Record>
 			<Channel>7</Channel>
@@ -273,6 +327,14 @@
 			<RevEmptyFixedMs>2000</RevEmptyFixedMs>
 			<PreReleaseKeepMs>500</PreReleaseKeepMs>
 			<PeakIgnoreMs>100</PeakIgnoreMs>
+			<ForwardProgressConfirmMs>200</ForwardProgressConfirmMs>
+			<ForwardMinimumRiseSlopeAperMs>0.001</ForwardMinimumRiseSlopeAperMs>
+			<ForwardProgressDeadlineMs>3000</ForwardProgressDeadlineMs>
+			<ReverseProgressConfirmMs>200</ReverseProgressConfirmMs>
+			<ReverseMinimumDecaySlopeAperMs>0.001</ReverseMinimumDecaySlopeAperMs>
+			<ReverseProgressDeadlineMs>2500</ReverseProgressDeadlineMs>
+			<OffCurrentClearThresholdA>0.1</OffCurrentClearThresholdA>
+			<OffCurrentClearTimeoutMs>100</OffCurrentClearTimeoutMs>
 		</Record>
 		<Record>
 			<Channel>8</Channel>
@@ -286,6 +348,14 @@
 			<RevEmptyFixedMs>2000</RevEmptyFixedMs>
 			<PreReleaseKeepMs>500</PreReleaseKeepMs>
 			<PeakIgnoreMs>100</PeakIgnoreMs>
+			<ForwardProgressConfirmMs>200</ForwardProgressConfirmMs>
+			<ForwardMinimumRiseSlopeAperMs>0.001</ForwardMinimumRiseSlopeAperMs>
+			<ForwardProgressDeadlineMs>3000</ForwardProgressDeadlineMs>
+			<ReverseProgressConfirmMs>200</ReverseProgressConfirmMs>
+			<ReverseMinimumDecaySlopeAperMs>0.001</ReverseMinimumDecaySlopeAperMs>
+			<ReverseProgressDeadlineMs>2500</ReverseProgressDeadlineMs>
+			<OffCurrentClearThresholdA>0.1</OffCurrentClearThresholdA>
+			<OffCurrentClearTimeoutMs>100</OffCurrentClearTimeoutMs>
 		</Record>
 		<Record>
 			<Channel>9</Channel>
@@ -299,6 +369,14 @@
 			<RevEmptyFixedMs>2000</RevEmptyFixedMs>
 			<PreReleaseKeepMs>500</PreReleaseKeepMs>
 			<PeakIgnoreMs>100</PeakIgnoreMs>
+			<ForwardProgressConfirmMs>200</ForwardProgressConfirmMs>
+			<ForwardMinimumRiseSlopeAperMs>0.001</ForwardMinimumRiseSlopeAperMs>
+			<ForwardProgressDeadlineMs>3000</ForwardProgressDeadlineMs>
+			<ReverseProgressConfirmMs>200</ReverseProgressConfirmMs>
+			<ReverseMinimumDecaySlopeAperMs>0.001</ReverseMinimumDecaySlopeAperMs>
+			<ReverseProgressDeadlineMs>2500</ReverseProgressDeadlineMs>
+			<OffCurrentClearThresholdA>0.1</OffCurrentClearThresholdA>
+			<OffCurrentClearTimeoutMs>100</OffCurrentClearTimeoutMs>
 		</Record>
 		<Record>
 			<Channel>10</Channel>
@@ -312,6 +390,14 @@
 			<RevEmptyFixedMs>2000</RevEmptyFixedMs>
 			<PreReleaseKeepMs>500</PreReleaseKeepMs>
 			<PeakIgnoreMs>100</PeakIgnoreMs>
+			<ForwardProgressConfirmMs>200</ForwardProgressConfirmMs>
+			<ForwardMinimumRiseSlopeAperMs>0.001</ForwardMinimumRiseSlopeAperMs>
+			<ForwardProgressDeadlineMs>3000</ForwardProgressDeadlineMs>
+			<ReverseProgressConfirmMs>200</ReverseProgressConfirmMs>
+			<ReverseMinimumDecaySlopeAperMs>0.001</ReverseMinimumDecaySlopeAperMs>
+			<ReverseProgressDeadlineMs>2500</ReverseProgressDeadlineMs>
+			<OffCurrentClearThresholdA>0.1</OffCurrentClearThresholdA>
+			<OffCurrentClearTimeoutMs>100</OffCurrentClearTimeoutMs>
 		</Record>
 		<Record>
 			<Channel>11</Channel>
@@ -325,6 +411,14 @@
 			<RevEmptyFixedMs>2000</RevEmptyFixedMs>
 			<PreReleaseKeepMs>500</PreReleaseKeepMs>
 			<PeakIgnoreMs>100</PeakIgnoreMs>
+			<ForwardProgressConfirmMs>200</ForwardProgressConfirmMs>
+			<ForwardMinimumRiseSlopeAperMs>0.001</ForwardMinimumRiseSlopeAperMs>
+			<ForwardProgressDeadlineMs>3000</ForwardProgressDeadlineMs>
+			<ReverseProgressConfirmMs>200</ReverseProgressConfirmMs>
+			<ReverseMinimumDecaySlopeAperMs>0.001</ReverseMinimumDecaySlopeAperMs>
+			<ReverseProgressDeadlineMs>2500</ReverseProgressDeadlineMs>
+			<OffCurrentClearThresholdA>0.1</OffCurrentClearThresholdA>
+			<OffCurrentClearTimeoutMs>100</OffCurrentClearTimeoutMs>
 		</Record>
 		<Record>
 			<Channel>12</Channel>
@@ -338,6 +432,14 @@
 			<RevEmptyFixedMs>2000</RevEmptyFixedMs>
 			<PreReleaseKeepMs>500</PreReleaseKeepMs>
 			<PeakIgnoreMs>100</PeakIgnoreMs>
+			<ForwardProgressConfirmMs>200</ForwardProgressConfirmMs>
+			<ForwardMinimumRiseSlopeAperMs>0.001</ForwardMinimumRiseSlopeAperMs>
+			<ForwardProgressDeadlineMs>3000</ForwardProgressDeadlineMs>
+			<ReverseProgressConfirmMs>200</ReverseProgressConfirmMs>
+			<ReverseMinimumDecaySlopeAperMs>0.001</ReverseMinimumDecaySlopeAperMs>
+			<ReverseProgressDeadlineMs>2500</ReverseProgressDeadlineMs>
+			<OffCurrentClearThresholdA>0.1</OffCurrentClearThresholdA>
+			<OffCurrentClearTimeoutMs>100</OffCurrentClearTimeoutMs>
 		</Record>
 	</EpbCycleRunnerConfig>
 

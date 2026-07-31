@@ -199,6 +199,18 @@ namespace Controller
             _adaptiveProfile = adaptiveProfile?.Clone() ?? new EpbAdaptiveProfile { Channel = channel };
             _saveAdaptiveProfile = saveAdaptiveProfile;
             _adaptiveStateMachine = new EpbAdaptiveCurrentStateMachine(_adaptiveProfile);
+            var safetyRecord = _cfg?.Test.EpbCycleRunner.GetRunnerChannel(channel);
+            _adaptiveSafetyLimits = new EpbAdaptiveSafetyLimits
+            {
+                ForwardProgressConfirmMs = safetyRecord?.ForwardProgressConfirmMs ?? 200,
+                ForwardMinimumRiseSlopeAperMs = safetyRecord?.ForwardMinimumRiseSlopeAperMs ?? 0.001,
+                ForwardProgressDeadlineMs = safetyRecord?.ForwardProgressDeadlineMs ?? 3000,
+                ReverseProgressConfirmMs = safetyRecord?.ReverseProgressConfirmMs ?? 200,
+                ReverseMinimumDecaySlopeAperMs = safetyRecord?.ReverseMinimumDecaySlopeAperMs ?? 0.001,
+                ReverseProgressDeadlineMs = safetyRecord?.ReverseProgressDeadlineMs ?? 2500,
+                OffCurrentClearThresholdA = safetyRecord?.OffCurrentClearThresholdA ?? 0.1,
+                OffCurrentClearTimeoutMs = safetyRecord?.OffCurrentClearTimeoutMs ?? 100
+            }.Normalized();
 
             // 在此处设置epb卡钳的实际运行参数
             DefaultPreReleaseKeepMs = _cfg?.Test.EpbCycleRunner.GetRunnerChannel(channel).PreReleaseKeepMs ?? 500; // 预释放保持时长
@@ -1211,7 +1223,9 @@ namespace Controller
                 waitMs,
                 Math.Max(0.1, RevDecayLimitA),
                 0,
-                _posThrA);
+                _posThrA,
+                _adaptiveSafetyLimits,
+                RevDecayRigidMaxMs);
 
             while (true)
             {

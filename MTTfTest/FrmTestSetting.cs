@@ -701,6 +701,14 @@ namespace MtEmbTest
                     PreReleaseKeepMs = r?.PreReleaseKeepMs,
                     PreReleaseDetectTimeoutMs = r?.PreReleaseDetectTimeoutMs,
                     PeakIgnoreMs = r?.PeakIgnoreMs ?? 0,
+                    ForwardProgressConfirmMs = r?.ForwardProgressConfirmMs ?? 200,
+                    ForwardMinimumRiseSlopeAperMs = r?.ForwardMinimumRiseSlopeAperMs ?? 0.001,
+                    ForwardProgressDeadlineMs = r?.ForwardProgressDeadlineMs ?? 3000,
+                    ReverseProgressConfirmMs = r?.ReverseProgressConfirmMs ?? 200,
+                    ReverseMinimumDecaySlopeAperMs = r?.ReverseMinimumDecaySlopeAperMs ?? 0.001,
+                    ReverseProgressDeadlineMs = r?.ReverseProgressDeadlineMs ?? 2500,
+                    OffCurrentClearThresholdA = r?.OffCurrentClearThresholdA ?? 0.1,
+                    OffCurrentClearTimeoutMs = r?.OffCurrentClearTimeoutMs ?? 100,
                     // ★ 额外：目标次数
                     TargetTotalCount = targetTotal
                 });
@@ -744,6 +752,14 @@ namespace MtEmbTest
                 AddCol(nameof(EpbRow.PreReleaseKeepMs), "预释放维持(ms)", 233);
                 AddCol(nameof(EpbRow.PreReleaseDetectTimeoutMs), "预释放判定超时(ms)", 270);
                 AddCol(nameof(EpbRow.PeakIgnoreMs), "峰值忽略(ms)", 212);
+                AddCol(nameof(EpbRow.ForwardProgressConfirmMs), "正向失速确认(ms)", 220);
+                AddCol(nameof(EpbRow.ForwardMinimumRiseSlopeAperMs), "正向最小斜率(A/ms)", 245);
+                AddCol(nameof(EpbRow.ForwardProgressDeadlineMs), "正向进展期限(ms)", 220);
+                AddCol(nameof(EpbRow.ReverseProgressConfirmMs), "反向失速确认(ms)", 220);
+                AddCol(nameof(EpbRow.ReverseMinimumDecaySlopeAperMs), "反向最小衰减(A/ms)", 255);
+                AddCol(nameof(EpbRow.ReverseProgressDeadlineMs), "反向进展期限(ms)", 220);
+                AddCol(nameof(EpbRow.OffCurrentClearThresholdA), "断电清零阈值(A)", 210);
+                AddCol(nameof(EpbRow.OffCurrentClearTimeoutMs), "断电清零超时(ms)", 220);
 
 
                 // 整体按内容自动调整列宽
@@ -788,7 +804,15 @@ namespace MtEmbTest
                     RevEmptyFixedMs = r?.RevEmptyFixedMs ?? 0,
                     PreReleaseKeepMs = r?.PreReleaseKeepMs,
                     PreReleaseDetectTimeoutMs = r?.PreReleaseDetectTimeoutMs,
-                    PeakIgnoreMs = r?.PeakIgnoreMs ?? 0
+                    PeakIgnoreMs = r?.PeakIgnoreMs ?? 0,
+                    ForwardProgressConfirmMs = r?.ForwardProgressConfirmMs ?? 200,
+                    ForwardMinimumRiseSlopeAperMs = r?.ForwardMinimumRiseSlopeAperMs ?? 0.001,
+                    ForwardProgressDeadlineMs = r?.ForwardProgressDeadlineMs ?? 3000,
+                    ReverseProgressConfirmMs = r?.ReverseProgressConfirmMs ?? 200,
+                    ReverseMinimumDecaySlopeAperMs = r?.ReverseMinimumDecaySlopeAperMs ?? 0.001,
+                    ReverseProgressDeadlineMs = r?.ReverseProgressDeadlineMs ?? 2500,
+                    OffCurrentClearThresholdA = r?.OffCurrentClearThresholdA ?? 0.1,
+                    OffCurrentClearTimeoutMs = r?.OffCurrentClearTimeoutMs ?? 100
                 });
             }
 
@@ -842,6 +866,14 @@ namespace MtEmbTest
                 AddCol(nameof(EpbRow.PreReleaseKeepMs), "预释放维持(ms)", 99f);
                 AddCol(nameof(EpbRow.PreReleaseDetectTimeoutMs), "预释放判定超时(ms)", 118f);
                 AddCol(nameof(EpbRow.PeakIgnoreMs), "峰值忽略(ms)", 90f);
+                AddCol(nameof(EpbRow.ForwardProgressConfirmMs), "正失速确认(ms)", 95f);
+                AddCol(nameof(EpbRow.ForwardMinimumRiseSlopeAperMs), "正最小斜率", 95f);
+                AddCol(nameof(EpbRow.ForwardProgressDeadlineMs), "正进展期限", 95f);
+                AddCol(nameof(EpbRow.ReverseProgressConfirmMs), "反失速确认(ms)", 95f);
+                AddCol(nameof(EpbRow.ReverseMinimumDecaySlopeAperMs), "反最小衰减", 95f);
+                AddCol(nameof(EpbRow.ReverseProgressDeadlineMs), "反进展期限", 95f);
+                AddCol(nameof(EpbRow.OffCurrentClearThresholdA), "清零阈值(A)", 90f);
+                AddCol(nameof(EpbRow.OffCurrentClearTimeoutMs), "清零超时(ms)", 90f);
                 // ★ 新增：每个 EPB 的目标次数
                 AddCol(nameof(EpbRow.TargetTotalCount), "目标次数", 80f);
 
@@ -1449,7 +1481,19 @@ namespace MtEmbTest
                     RevEmptyFixedMs = Math.Max(0, r.RevEmptyFixedMs),
                     PreReleaseKeepMs = r.PreReleaseKeepMs,
                     PreReleaseDetectTimeoutMs = r.PreReleaseDetectTimeoutMs,
-                    PeakIgnoreMs = Math.Max(0, r.PeakIgnoreMs)
+                    PeakIgnoreMs = Math.Max(0, r.PeakIgnoreMs),
+                    ForwardProgressConfirmMs = Math.Max(20, r.ForwardProgressConfirmMs),
+                    ForwardMinimumRiseSlopeAperMs = Math.Max(0.00001, r.ForwardMinimumRiseSlopeAperMs),
+                    ForwardProgressDeadlineMs = Math.Max(
+                        Math.Max(20, r.ForwardProgressConfirmMs),
+                        r.ForwardProgressDeadlineMs),
+                    ReverseProgressConfirmMs = Math.Max(20, r.ReverseProgressConfirmMs),
+                    ReverseMinimumDecaySlopeAperMs = Math.Max(0.00001, r.ReverseMinimumDecaySlopeAperMs),
+                    ReverseProgressDeadlineMs = Math.Max(
+                        Math.Max(20, r.ReverseProgressConfirmMs),
+                        r.ReverseProgressDeadlineMs),
+                    OffCurrentClearThresholdA = Math.Max(0.01, r.OffCurrentClearThresholdA),
+                    OffCurrentClearTimeoutMs = Math.Max(20, r.OffCurrentClearTimeoutMs)
                 };
                 dict[r.Channel] = item;
             }

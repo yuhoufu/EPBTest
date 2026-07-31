@@ -7,6 +7,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using Controller.Adaptive;
+using DataOperation;
 
 namespace Controller
 {
@@ -34,6 +35,19 @@ namespace Controller
         public EpbDoCommand Command { get; set; }
         public bool DoCommandResult { get; set; }
         public double BranchCurrentA { get; set; }
+    }
+
+    internal sealed class TerminalOffSafetyEvidence
+    {
+        public DateTime CommandUtc { get; set; }
+        public string Reason { get; set; }
+        public bool CommandSucceeded { get; set; }
+        public double CommandElapsedMs { get; set; }
+        public DateTime? VerificationUtc { get; set; }
+        public double? VerificationCurrentA { get; set; }
+        public double? VerificationThresholdA { get; set; }
+        public int? VerificationWaitMs { get; set; }
+        public bool? ElectricalCurrentCleared { get; set; }
     }
 
     /// <summary>
@@ -82,11 +96,64 @@ namespace Controller
     {
         private const int MaxRetainedStaggerPlans = 64;
         private readonly DoControlTraceBuffer _doControlTrace = new();
+        private readonly ConcurrentDictionary<int, TerminalOffSafetyEvidence> _terminalOffSafetyEvidence =
+            new();
         private readonly ConcurrentDictionary<int, Guid> _runIdByChannel = new();
         private readonly ConcurrentDictionary<int, ChannelStaggerAssignment> _staggerAssignmentByChannel = new();
         private readonly ConcurrentDictionary<int, DateTime> _electricalPhaseDueByChannel = new();
         private readonly ConcurrentDictionary<Guid, ElectricalStaggerPlan> _staggerPlansByRun = new();
         private readonly ConcurrentQueue<Guid> _staggerPlanOrder = new();
+
+        internal void RecordTerminalOffCommand(
+            int channel,
+            string reason,
+            bool commandSucceeded,
+            double commandElapsedMs)
+        {
+            _terminalOffSafetyEvidence[channel] = new TerminalOffSafetyEvidence
+            {
+                CommandUtc = DateTime.UtcNow,
+                Reason = reason ?? string.Empty,
+                CommandSucceeded = commandSucceeded,
+                CommandElapsedMs = commandElapsedMs
+            };
+        }
+
+        internal void RecordTerminalOffCurrentVerification(
+            int channel,
+            double currentA,
+            double thresholdA,
+            int waitMs,
+            bool cleared)
+        {
+            _terminalOffSafetyEvidence.AddOrUpdate(
+                channel,
+                _ => new TerminalOffSafetyEvidence
+                {
+                    CommandUtc = DateTime.UtcNow,
+                    Reason = "TerminalOffCommandEvidenceMissing",
+                    VerificationUtc = DateTime.UtcNow,
+                    VerificationCurrentA = currentA,
+                    VerificationThresholdA = thresholdA,
+                    VerificationWaitMs = waitMs,
+                    ElectricalCurrentCleared = cleared
+                },
+                (_, existing) =>
+                {
+                    return new TerminalOffSafetyEvidence
+                    {
+                        CommandUtc = existing.CommandUtc,
+                        Reason = existing.Reason,
+                        CommandSucceeded = existing.CommandSucceeded,
+                        CommandElapsedMs = existing.CommandElapsedMs,
+                        VerificationUtc = DateTime.UtcNow,
+                        VerificationCurrentA = currentA,
+                        VerificationThresholdA = thresholdA,
+                        VerificationWaitMs = waitMs,
+                        ElectricalCurrentCleared = cleared
+                    };
+                });
+        }
 
         private void RegisterRunContext(Guid runId, ElectricalStaggerPlan plan)
         {
@@ -214,7 +281,7 @@ namespace Controller
             int alarmChannel,
             int alarmCycleNumber,
             string reason,
-            bool csvAndBinComplete,
+            AlarmCycleSnapshotEvidence snapshotEvidence,
             DateTime alarmUtc)
         {
             _runIdByChannel.TryGetValue(alarmChannel, out var runId);
@@ -225,7 +292,8 @@ namespace Controller
                 alarmUtc,
                 runId,
                 alarmChannel);
-            var latestAdaptiveDecision = adaptiveEvents.LastOrDefault();
+            var latestAdaptiveDecision = SelectAlarmDecision(adaptiveEvents, alarmUtc);
+            _terminalOffSafetyEvidence.TryGetValue(alarmChannel, out var terminalOffEvidence);
 
             TryWriteControlEvidence(
                 "alarm-metadata.json",
@@ -234,13 +302,14 @@ namespace Controller
                     alarmChannel,
                     alarmCycleNumber,
                     reason,
-                    csvAndBinComplete,
+                    snapshotEvidence,
                     alarmUtc,
                     runId,
                     alarmAssignment,
                     plan,
                     events,
-                    latestAdaptiveDecision));
+                    latestAdaptiveDecision,
+                    terminalOffEvidence));
             TryWriteControlEvidence(
                 "electrical-stagger-plan.json",
                 () => WriteStaggerPlan(
@@ -271,6 +340,20 @@ namespace Controller
             }
         }
 
+        internal static AdaptiveDecisionTraceEvent SelectAlarmDecision(
+            IEnumerable<AdaptiveDecisionTraceEvent> events,
+            DateTime alarmUtc)
+        {
+            var eligible = (events ?? Enumerable.Empty<AdaptiveDecisionTraceEvent>())
+                .Where(x => x != null && x.SampleUtc <= alarmUtc)
+                .OrderBy(x => x.SampleUtc)
+                .ThenBy(x => x.MonotonicTicks)
+                .ToArray();
+            return eligible.LastOrDefault(
+                       x => string.Equals(x.Action, "HardFault", StringComparison.OrdinalIgnoreCase)) ??
+                   eligible.LastOrDefault();
+        }
+
         internal static void WriteAlarmMetadata(
             string path,
             int alarmChannel,
@@ -282,7 +365,37 @@ namespace Controller
             ChannelStaggerAssignment assignment,
             ElectricalStaggerPlan plan,
             IReadOnlyList<DoControlTraceEvent> events,
-            AdaptiveDecisionTraceEvent latestAdaptiveDecision = null)
+            AdaptiveDecisionTraceEvent latestAdaptiveDecision = null,
+            TerminalOffSafetyEvidence terminalOffEvidence = null)
+        {
+            WriteAlarmMetadata(
+                path,
+                alarmChannel,
+                alarmCycleNumber,
+                reason,
+                new AlarmCycleSnapshotEvidence { IsValid = csvAndBinComplete },
+                alarmUtc,
+                runId,
+                assignment,
+                plan,
+                events,
+                latestAdaptiveDecision,
+                terminalOffEvidence);
+        }
+
+        internal static void WriteAlarmMetadata(
+            string path,
+            int alarmChannel,
+            int alarmCycleNumber,
+            string reason,
+            AlarmCycleSnapshotEvidence snapshotEvidence,
+            DateTime alarmUtc,
+            Guid runId,
+            ChannelStaggerAssignment assignment,
+            ElectricalStaggerPlan plan,
+            IReadOnlyList<DoControlTraceEvent> events,
+            AdaptiveDecisionTraceEvent latestAdaptiveDecision = null,
+            TerminalOffSafetyEvidence terminalOffEvidence = null)
         {
             var groupAssignments = plan?.Assignments.Values
                 .Where(x => assignment != null && x.ElectricalGroupId == assignment.ElectricalGroupId)
@@ -297,10 +410,13 @@ namespace Controller
             var lastReverse = channelEvents.LastOrDefault(x => x.Command == EpbDoCommand.Reverse);
             var lastOff = channelEvents.LastOrDefault(
                 x => x.Command == EpbDoCommand.Off || x.Command == EpbDoCommand.OffHighPriority);
-
+            snapshotEvidence ??= new AlarmCycleSnapshotEvidence
+            {
+                ValidationError = "SnapshotEvidenceMissing"
+            };
             var json = new StringBuilder();
             json.AppendLine("{");
-            json.AppendLine("  \"schemaVersion\": 2,");
+            json.AppendLine("  \"schemaVersion\": 4,");
             json.AppendLine($"  \"alarmUtc\": \"{alarmUtc:O}\",");
             json.AppendLine($"  \"runId\": \"{runId:N}\",");
             json.AppendLine($"  \"alarmChannel\": {alarmChannel},");
@@ -310,7 +426,15 @@ namespace Controller
             json.AppendLine($"  \"staggerMs\": {assignment?.StaggerMs ?? 0},");
             json.AppendLine($"  \"plannedPhaseMs\": {assignment?.PhaseMs ?? 0},");
             json.AppendLine($"  \"reason\": \"{EscapeJson(reason)}\",");
-            json.AppendLine($"  \"alarmCycleCsvAndBinComplete\": {csvAndBinComplete.ToString().ToLowerInvariant()},");
+            json.AppendLine(
+                $"  \"alarmCycleCsvAndBinComplete\": {snapshotEvidence.IsValid.ToString().ToLowerInvariant()},");
+            json.AppendLine($"  \"evidenceSampleCount\": {snapshotEvidence.SampleCount},");
+            json.AppendLine(
+                $"  \"evidenceFirstSampleUtc\": {JsonDate(snapshotEvidence.FirstSampleUtc)},");
+            json.AppendLine(
+                $"  \"evidenceLastSampleUtc\": {JsonDate(snapshotEvidence.LastSampleUtc)},");
+            json.AppendLine(
+                $"  \"evidenceValidationError\": \"{EscapeJson(snapshotEvidence.ValidationError)}\",");
             json.AppendLine(
                 $"  \"selectedChannelsInElectricalGroup\": [{string.Join(", ", groupAssignments.Select(x => x.Channel))}],");
             json.AppendLine("  \"electricalGroupPlan\": [");
@@ -327,12 +451,51 @@ namespace Controller
             AppendCommandJson(json, "reverse", lastReverse, true);
             AppendCommandJson(json, "off", lastOff, false);
             json.AppendLine("  },");
+            AppendTerminalOffSafetyJson(json, terminalOffEvidence);
             AppendAdaptiveDecisionJson(json, latestAdaptiveDecision);
             json.AppendLine("  \"doCommandResultMeaning\": \"软件DO方法返回值；不代表继电器触点或负载端物理通断确认\",");
             json.AppendLine("  \"physicalOffStatus\": \"NotMeasured\",");
             json.AppendLine("  \"physicalPowerState\": \"NotMeasured\"");
             json.AppendLine("}");
             File.WriteAllText(path, json.ToString(), new UTF8Encoding(false));
+        }
+
+        private static void AppendTerminalOffSafetyJson(
+            StringBuilder json,
+            TerminalOffSafetyEvidence item)
+        {
+            json.Append("  \"terminalOffSafety\": ");
+            if (item == null)
+            {
+                json.AppendLine("null,");
+                return;
+            }
+
+            var verificationCurrent = item.VerificationCurrentA.HasValue &&
+                                      !double.IsNaN(item.VerificationCurrentA.Value) &&
+                                      !double.IsInfinity(item.VerificationCurrentA.Value)
+                ? item.VerificationCurrentA.Value.ToString("F6", CultureInfo.InvariantCulture)
+                : "null";
+            var verificationThreshold = item.VerificationThresholdA.HasValue
+                ? item.VerificationThresholdA.Value.ToString("F6", CultureInfo.InvariantCulture)
+                : "null";
+            var currentCleared = item.ElectricalCurrentCleared.HasValue
+                ? item.ElectricalCurrentCleared.Value.ToString().ToLowerInvariant()
+                : "null";
+            json.Append("{");
+            json.Append($"\"commandUtc\": \"{item.CommandUtc:O}\", ");
+            json.Append($"\"reason\": \"{EscapeJson(item.Reason)}\", ");
+            json.Append($"\"commandSucceeded\": {item.CommandSucceeded.ToString().ToLowerInvariant()}, ");
+            json.Append(
+                $"\"commandElapsedMs\": {item.CommandElapsedMs.ToString("F3", CultureInfo.InvariantCulture)}, ");
+            json.Append(
+                $"\"verificationUtc\": {(item.VerificationUtc.HasValue ? $"\"{item.VerificationUtc.Value:O}\"" : "null")}, ");
+            json.Append($"\"verificationCurrentA\": {verificationCurrent}, ");
+            json.Append($"\"verificationThresholdA\": {verificationThreshold}, ");
+            json.Append($"\"verificationWaitMs\": {item.VerificationWaitMs?.ToString() ?? "null"}, ");
+            json.Append($"\"electricalCurrentCleared\": {currentCleared}, ");
+            json.Append("\"physicalOffStatus\": \"NotMeasured\"");
+            json.AppendLine("},");
         }
 
         private static void AppendCommandJson(
@@ -403,6 +566,11 @@ namespace Controller
             return double.IsNaN(value) || double.IsInfinity(value)
                 ? "null"
                 : value.ToString("F6", CultureInfo.InvariantCulture);
+        }
+
+        private static string JsonDate(DateTime? value)
+        {
+            return value.HasValue ? $"\"{value.Value.ToUniversalTime():O}\"" : "null";
         }
 
         internal static void WriteStaggerPlan(string path, Guid runId, ElectricalStaggerPlan plan)

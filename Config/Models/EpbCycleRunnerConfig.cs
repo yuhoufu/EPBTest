@@ -58,6 +58,30 @@ namespace Config.Models
 
             /// <summary>上电涌流忽略时间（ms）。</summary>
             public int PeakIgnoreMs { get; set; }
+
+            /// <summary>正向电流无进展确认窗口（ms）。</summary>
+            public int ForwardProgressConfirmMs { get; set; } = 200;
+
+            /// <summary>正向最小有效上升斜率（A/ms）。</summary>
+            public double ForwardMinimumRiseSlopeAperMs { get; set; } = 0.001;
+
+            /// <summary>正向进入有效负载上升的安全期限上限（ms）。</summary>
+            public int ForwardProgressDeadlineMs { get; set; } = 3000;
+
+            /// <summary>反向电流无衰减确认窗口（ms）。</summary>
+            public int ReverseProgressConfirmMs { get; set; } = 200;
+
+            /// <summary>反向最小有效衰减斜率绝对值（A/ms）。</summary>
+            public double ReverseMinimumDecaySlopeAperMs { get; set; } = 0.001;
+
+            /// <summary>反向正常承载阶段的安全期限上限（ms）。</summary>
+            public int ReverseProgressDeadlineMs { get; set; } = 2500;
+
+            /// <summary>断电后用于电气代理确认的电流阈值（A）。</summary>
+            public double OffCurrentClearThresholdA { get; set; } = 0.1;
+
+            /// <summary>断电后等待电流清零的最长时间（ms）。</summary>
+            public int OffCurrentClearTimeoutMs { get; set; } = 100;
         }
 
         /// <summary>

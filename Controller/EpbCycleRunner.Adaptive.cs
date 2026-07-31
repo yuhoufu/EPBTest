@@ -28,6 +28,8 @@ namespace Controller
         private double _adaptiveForwardPeakA;
         private int _adaptiveClampPeakCaptureStarted;
         private string _adaptiveDirection = string.Empty;
+        private readonly EpbAdaptiveSafetyLimits _adaptiveSafetyLimits;
+        private int _adaptiveTerminalOffLatched;
 
         internal event Action<AdaptiveDecisionTraceEvent> AdaptiveDecisionObserved;
 
@@ -65,6 +67,7 @@ namespace Controller
             _adaptiveReverseEmptyA = 0;
             _adaptiveForwardPeakA = 0;
             Interlocked.Exchange(ref _adaptiveClampPeakCaptureStarted, 0);
+            Interlocked.Exchange(ref _adaptiveTerminalOffLatched, 0);
 
             lock (_adaptiveGate)
             {
@@ -81,7 +84,8 @@ namespace Controller
                 GetForwardAbsoluteMaxMs(periodMs),
                 _posThrA,
                 margin,
-                _overshootAlarmDeltaA);
+                _overshootAlarmDeltaA,
+                _adaptiveSafetyLimits);
             _adaptiveDirection = "Forward";
         }
 
@@ -115,13 +119,17 @@ namespace Controller
             {
                 _adaptiveReverseCompletion = NewAdaptiveCompletion();
             }
+            Interlocked.Exchange(ref _adaptiveTerminalOffLatched, 0);
 
             _adaptiveStateMachine.ArmReverse(
                 AdaptiveNowTicks(),
                 Math.Max(100, _peakIgnoreMs),
                 GetReverseAbsoluteMaxMs(periodMs),
                 RevDecayLimitA,
-                _overshootAlarmDeltaA);
+                _overshootAlarmDeltaA,
+                _posThrA,
+                _adaptiveSafetyLimits,
+                RevDecayRigidMaxMs);
             _adaptiveDirection = "Reverse";
         }
 
@@ -186,8 +194,24 @@ namespace Controller
                 return;
             }
 
-            PublishAdaptiveTrace(tick, sampleUtc, decision);
-            HandleAdaptiveDecision(decision);
+            DispatchAdaptiveDecisionInSafetyOrder(
+                decision,
+                () => EnsureAdaptiveTerminalPowerOff(decision),
+                () => PublishAdaptiveTrace(tick, sampleUtc, decision),
+                () => HandleAdaptiveDecision(decision));
+        }
+
+        internal static void DispatchAdaptiveDecisionInSafetyOrder(
+            EpbAdaptiveDecision decision,
+            Action terminalOff,
+            Action publishTrace,
+            Action handleDecision)
+        {
+            if (decision == null) return;
+            if (decision.HardFault || decision.ClampReached || decision.ReleaseCompleted)
+                terminalOff?.Invoke();
+            publishTrace?.Invoke();
+            handleDecision?.Invoke();
         }
 
         private void PublishAdaptiveTrace(
@@ -240,6 +264,7 @@ namespace Controller
         private void HandleAdaptiveDecision(EpbAdaptiveDecision decision)
         {
             if (decision == null || !decision.HasAction) return;
+            EnsureAdaptiveTerminalPowerOff(decision);
 
             if (decision.StateChanged &&
                 decision.Stage == EpbCurrentStage.LoadRise &&
@@ -284,9 +309,6 @@ namespace Controller
 
             if (Interlocked.Exchange(ref _adaptiveFaultLatched, 1) != 0) return;
 
-            try { CommandOffHighPriority(); }
-            catch { /* 报警链路仍继续 */ }
-
             TaskCompletionSource<EpbAdaptiveDecision> forward;
             TaskCompletionSource<EpbAdaptiveDecision> reverse;
             lock (_adaptiveGate)
@@ -300,6 +322,161 @@ namespace Controller
 
             try { AlarmRaised?.Invoke(_channel, "AdaptiveHardFault " + decision.Reason); }
             catch { /* 上层报警订阅者异常不允许回流采集线程 */ }
+        }
+
+        private void EnsureAdaptiveTerminalPowerOff(EpbAdaptiveDecision decision)
+        {
+            if (decision == null ||
+                (!decision.HardFault && !decision.ClampReached && !decision.ReleaseCompleted) ||
+                _epbControlMode != EpbControlMode.AdaptiveCurrent)
+                return;
+            if (Interlocked.Exchange(ref _adaptiveTerminalOffLatched, 1) != 0) return;
+
+            var reason = string.IsNullOrWhiteSpace(decision.Reason)
+                ? decision.Stage.ToString()
+                : decision.Reason;
+            var commandElapsedMs = 0.0;
+            var commandSucceeded = ExecuteTerminalOffWithEscalation(
+                () =>
+                {
+                    var commandStarted = Stopwatch.GetTimestamp();
+                    try { return CommandOffHighPriority(); }
+                    finally
+                    {
+                        commandElapsedMs =
+                            (Stopwatch.GetTimestamp() - commandStarted) * 1000.0 /
+                            Stopwatch.Frequency;
+                    }
+                },
+                () => _manager?.RequestElectricalGroupEmergencyShutdown(
+                    _channel,
+                    $"TerminalOffCommandFailed {reason}"));
+            _manager?.RecordTerminalOffCommand(
+                _channel,
+                reason,
+                commandSucceeded,
+                commandElapsedMs);
+
+            if (!commandSucceeded)
+            {
+                _log?.Error(
+                    $"EPB[{_channel}] 终态高优先级断电失败，立即触发电源组联锁。" +
+                    $"Reason={reason} CommandElapsed={commandElapsedMs:F3}ms",
+                    "EPB");
+                try
+                {
+                    AlarmRaised?.Invoke(
+                        _channel,
+                        $"AdaptiveHardFault TerminalOffCommandFailed {reason}");
+                }
+                catch { }
+                return;
+            }
+
+            _log?.Info(
+                $"EPB[{_channel}] 终态断电命令已优先执行。" +
+                $"Reason={reason} CommandElapsed={commandElapsedMs:F3}ms " +
+                "PhysicalOffStatus=NotMeasured",
+                "EPB");
+            BeginTerminalOffCurrentVerification(reason);
+        }
+
+        private void BeginTerminalOffCurrentVerification(string reason)
+        {
+            var thresholdA = _adaptiveSafetyLimits.OffCurrentClearThresholdA;
+            var timeoutMs = _adaptiveSafetyLimits.OffCurrentClearTimeoutMs;
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await Task.Delay(timeoutMs).ConfigureAwait(false);
+                    var currentA = Math.Abs(_readCurrent(_channel));
+                    var cleared = VerifyOffCurrentOrEscalate(
+                        currentA,
+                        thresholdA,
+                        () => _manager?.RequestElectricalGroupEmergencyShutdown(
+                            _channel,
+                            $"OffCurrentNotCleared Current={currentA:F3}A Threshold={thresholdA:F3}A"));
+                    _manager?.RecordTerminalOffCurrentVerification(
+                        _channel,
+                        currentA,
+                        thresholdA,
+                        timeoutMs,
+                        cleared);
+                    if (cleared)
+                    {
+                        _log?.Info(
+                            $"EPB[{_channel}] 断电电流代理确认通过：" +
+                            $"ElectricalCurrentCleared=true Current={currentA:F3}A " +
+                            $"Threshold={thresholdA:F3}A Wait={timeoutMs}ms " +
+                            "PhysicalOffStatus=NotMeasured",
+                            "EPB");
+                        return;
+                    }
+
+                    _log?.Error(
+                        $"EPB[{_channel}] 断电后电流未清零，立即触发电源组联锁：" +
+                        $"ElectricalCurrentCleared=false Current={currentA:F3}A " +
+                        $"Threshold={thresholdA:F3}A Wait={timeoutMs}ms " +
+                        $"Reason={reason} PhysicalOffStatus=NotMeasured",
+                        "EPB");
+                    try
+                    {
+                        AlarmRaised?.Invoke(
+                            _channel,
+                            $"AdaptiveHardFault OffCurrentNotCleared " +
+                            $"Current={currentA:F3}A Threshold={thresholdA:F3}A");
+                    }
+                    catch { }
+                }
+                catch (Exception ex)
+                {
+                    _manager?.RecordTerminalOffCurrentVerification(
+                        _channel,
+                        double.NaN,
+                        thresholdA,
+                        timeoutMs,
+                        false);
+                    _log?.Error(
+                        $"EPB[{_channel}] 断电电流代理确认无法完成，按失效安全触发电源组联锁：" +
+                        $"{ex.Message} PhysicalOffStatus=NotMeasured",
+                        "EPB");
+                    _manager?.RequestElectricalGroupEmergencyShutdown(
+                        _channel,
+                        "OffCurrentVerificationFailed " + ex.Message);
+                    try
+                    {
+                        AlarmRaised?.Invoke(
+                            _channel,
+                            "AdaptiveHardFault OffCurrentVerificationFailed " + ex.Message);
+                    }
+                    catch { }
+                }
+            });
+        }
+
+        internal static bool ExecuteTerminalOffWithEscalation(
+            Func<bool> commandOff,
+            Action emergencyShutdown)
+        {
+            var succeeded = false;
+            try { succeeded = commandOff?.Invoke() == true; }
+            catch { succeeded = false; }
+            if (!succeeded) emergencyShutdown?.Invoke();
+            return succeeded;
+        }
+
+        internal static bool VerifyOffCurrentOrEscalate(
+            double currentA,
+            double thresholdA,
+            Action emergencyShutdown)
+        {
+            var cleared =
+                !double.IsNaN(currentA) &&
+                !double.IsInfinity(currentA) &&
+                Math.Abs(currentA) <= Math.Max(0.01, thresholdA);
+            if (!cleared) emergencyShutdown?.Invoke();
+            return cleared;
         }
 
         private void EnsureAdaptiveClampPeakCaptureStarted()
@@ -344,11 +521,14 @@ namespace Controller
                 var watchdog = _adaptiveStateMachine.CheckWatchdog(watchdogTick);
                 if (watchdog.HardFault)
                 {
-                    PublishAdaptiveTrace(
-                        watchdogTick,
-                        DateTime.UtcNow,
-                        watchdog);
-                    HandleAdaptiveDecision(watchdog);
+                    DispatchAdaptiveDecisionInSafetyOrder(
+                        watchdog,
+                        () => EnsureAdaptiveTerminalPowerOff(watchdog),
+                        () => PublishAdaptiveTrace(
+                            watchdogTick,
+                            DateTime.UtcNow,
+                            watchdog),
+                        () => HandleAdaptiveDecision(watchdog));
                     return watchdog;
                 }
             }
@@ -391,7 +571,6 @@ namespace Controller
                     return EpbCycleOutcome.HardFault(forward.Stage, "ForwardEndedWithoutClamp");
                 }
 
-                CommandOffHighPriority();
                 CompleteAdaptiveForwardMonitoring(forward.ElapsedMs);
 
                 var holdTask = _holdMs > 0
@@ -544,7 +723,6 @@ namespace Controller
                     return EpbCycleOutcome.HardFault(reverse.Stage, "ReverseEndedWithoutRelease");
                 }
 
-                CommandOffHighPriority();
                 _adaptiveReverseEmptyA = _adaptiveStateMachine.ObservedReverseEmptyA;
                 _adaptiveStateMachine.Disarm();
 
@@ -585,6 +763,16 @@ namespace Controller
                     $"Trigger={outcome.CutoffReason}，结果={outcome.Kind}。",
                     "EPB");
                 return outcome;
+            }
+            catch (HydraulicReleaseTimeoutException ex)
+            {
+                try { CommandOffHighPriority(); } catch { }
+                DisarmAdaptiveMonitoring();
+                const string code = "HydraulicReleaseTimeout";
+                try { AlarmRaised?.Invoke(_channel, "AdaptiveHardFault " + code + " " + ex.Message); } catch { }
+                return EpbCycleOutcome.HardFault(
+                    _adaptiveStateMachine?.Stage ?? EpbCurrentStage.Faulted,
+                    code + ": " + ex.Message);
             }
             catch (OperationCanceledException)
             {
