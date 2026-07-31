@@ -595,7 +595,7 @@ public sealed class EpbDiskWriter : IDisposable
         }
     }
 
-    /// <summary>逐条校验报警 CSV/BIN 对的数量、圈号、序号和时间范围。</summary>
+    /// <summary>逐条校验圈快照 CSV/BIN 对的数量、圈号、序号和时间范围。</summary>
     public static AlarmCycleSnapshotEvidence ValidateAlarmCycleSnapshotPair(
         string csvPath,
         string binPath,
@@ -620,7 +620,7 @@ public sealed class EpbDiskWriter : IDisposable
         try
         {
             if (!File.Exists(csvPath) || !File.Exists(binPath))
-                throw new InvalidDataException("报警快照 CSV/BIN 文件不完整。");
+                throw new InvalidDataException("圈快照 CSV/BIN 文件不完整。");
 
             var binLength = new FileInfo(binPath).Length;
             if ((!allowEmpty && binLength <= 0) || binLength % SampleRecord.Size != 0)
@@ -694,7 +694,7 @@ public sealed class EpbDiskWriter : IDisposable
         catch (Exception ex)
         {
             evidence.IsValid = false;
-            evidence.ValidationError = $"EPB[{epbId}] Cycle={cycleNumber} 报警证据校验失败：{ex.Message}";
+            evidence.ValidationError = $"EPB[{epbId}] Cycle={cycleNumber} 圈快照证据校验失败：{ex.Message}";
         }
 
         return evidence;

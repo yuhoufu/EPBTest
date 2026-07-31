@@ -84,6 +84,7 @@ namespace AdaptiveControlTests
                 Run("同组硬故障仅停止故障通道", HardFaultDoesNotStopSiblingChannel);
                 Run("2000Hz样本时间严格递增5000 ticks", TwoKilohertzSampleTimestamps);
                 Run("DAQ追赶回调不造成相邻批时间重叠", CatchUpCallbackDoesNotOverlapBatches);
+                Run("DAQ重叠回调保持时间分配与入队同序", OverlappingCallbacksCommitInTimestampOrder);
                 Run("采集重启重建高精度时基", HighResolutionClockReset);
                 Run("新项目清零且不改旧项目", NewProjectIsIsolatedAndReset);
                 Run("进度摘要默认选择最小已启动通道", InitialSummarySelectsFirstStarted);
@@ -1665,6 +1666,61 @@ namespace AdaptiveControlTests
             Assert(clock.StartTimestamp >= firstOrigin, "重启后单调时钟起点未更新");
             Assert(Math.Abs((clock.Now() - secondWall).TotalSeconds) < 1,
                 "重启后仍继承上一次采集的运行时间");
+        }
+
+        private static void OverlappingCallbacksCommitInTimestampOrder()
+        {
+            var origin = new DateTime(2026, 7, 31, 11, 48, 0, DateTimeKind.Utc);
+            var coordinator = new DeviceBatchTimestampCoordinator();
+            coordinator.Reset(origin, "Dev2");
+
+            var firstEntered = new System.Threading.ManualResetEventSlim(false);
+            var releaseFirst = new System.Threading.ManualResetEventSlim(false);
+            var commits = new List<DateTime>();
+            var gate = new object();
+
+            var first = Task.Run(() =>
+                coordinator.AdvanceAndCommit(
+                    "Dev2",
+                    origin.AddMilliseconds(10),
+                    20,
+                    2000,
+                    (_, current, __) =>
+                    {
+                        firstEntered.Set();
+                        releaseFirst.Wait();
+                        lock (gate) commits.Add(current);
+                    }));
+
+            Assert(firstEntered.Wait(1000), "首个回调未进入提交区");
+            var second = Task.Run(() =>
+                coordinator.AdvanceAndCommit(
+                    "Dev2",
+                    origin.AddMilliseconds(20),
+                    20,
+                    2000,
+                    (_, current, __) =>
+                    {
+                        lock (gate) commits.Add(current);
+                    }));
+
+            System.Threading.Thread.Sleep(30);
+            lock (gate)
+                Assert(commits.Count == 0, "后到回调越过了仍在提交的前一批");
+
+            releaseFirst.Set();
+            Assert(Task.WaitAll(new[] { first, second }, 2000), "重叠回调提交超时");
+
+            lock (gate)
+            {
+                Assert(commits.Count == 2, "提交批次数错误");
+                Assert(commits[1] > commits[0], "批次入队顺序与时间戳顺序不一致");
+                var secondBatch = HighResolutionSampleClock.BuildBatchTimestamps(
+                    commits[1],
+                    20,
+                    2000);
+                Assert(secondBatch[0] > commits[0], "相邻批次仍发生时间重叠");
+            }
         }
 
         private static void NewProjectIsIsolatedAndReset()

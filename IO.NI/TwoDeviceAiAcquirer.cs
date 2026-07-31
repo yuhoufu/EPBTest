@@ -83,10 +83,8 @@ namespace IO.NI
             maxSlewAperSec: 0 // 每秒最大电流变化（A/s），依硬件调
         );
 
-        // 顶部字段处 - 统一时间基准（两设备共用，避免长时间漂移）
-        private readonly Dictionary<string, DateTime> _lastTimestampByDevice =
-            new(StringComparer.OrdinalIgnoreCase);
-        private readonly object _deviceClockLock = new object();
+        // 同一设备的“时间戳分配 + 入队”必须原子有序，避免重叠回调把 A/B/C 批写成 A/C/B。
+        private readonly DeviceBatchTimestampCoordinator _batchTimestampCoordinator = new();
 
 
         /// <summary>
@@ -681,14 +679,8 @@ namespace IO.NI
             InitTimeBase();
 
 
-            // 两块采集卡共享同一时间原点，但必须各自推进批次时间。
-            // 若共用一个 last，Dev1/Dev2 每次回调都会重复推进 n/Fs，随后被主机时间纠偏回拨。
-            lock (_deviceClockLock)
-            {
-                _lastTimestampByDevice.Clear();
-                _lastTimestampByDevice["Dev1"] = _t0;
-                _lastTimestampByDevice["Dev2"] = _t0;
-            }
+            // 两块采集卡共享同一时间原点，但分别推进；提交动作也由协调器串行化。
+            _batchTimestampCoordinator.Reset(_t0, "Dev1", "Dev2");
 
 
 
@@ -779,32 +771,33 @@ namespace IO.NI
                 var raw = reader.EndReadMultiSample(ar); // [ch, n]
                 int n = raw.GetLength(1);
 
-                // ① 先 re-arm 下一批，减小回调耗时对节拍的影响
-                reader.BeginReadMultiSample(_samplesPerChannel, again, task);
-
-                // ② 使用统一时间原点、按设备独立推进的采样时钟
+                // ① 使用统一时间原点、按设备独立推进的采样时钟。
+                // 时间戳分配与入队在同一顺序门内完成，不能移到门外。
+                // 下一次 BeginRead 也必须等本批入队后再挂起，否则后一个回调
+                // 可能在当前线程被抢占时先取得顺序门，造成数据批次交换。
                 DateTime last;
                 DateTime current;
                 double driftMs;
-                lock (_deviceClockLock)
-                {
-                    if (!_lastTimestampByDevice.TryGetValue(device, out last))
-                        last = _t0;
+                var hostNow = _sampleClock.Now();
+                last = default;
+                current = default;
+                driftMs = 0;
+                _batchTimestampCoordinator.AdvanceAndCommit(
+                    device,
+                    hostNow,
+                    n,
+                    _sampleRate,
+                    (previousEnd, currentEnd, drift) =>
+                    {
+                        last = previousEnd;
+                        current = currentEnd;
+                        driftMs = drift;
+                        _queue.Enqueue(new Item(device, raw, currentEnd, previousEnd));
+                    });
 
-                    //  两种时间：主机"实测" + 按采样率推进的"理想"
-                    var hostNow = _sampleClock.Now();
-                    var idealNow = HighResolutionSampleClock.AddSamples(last, n, _sampleRate);
-
-                    // ③ 轻微纠偏；批尾至少前进一整批，避免追赶回调造成相邻批时间重叠。
-                    driftMs = (hostNow - idealNow).TotalMilliseconds;
-                    current = HighResolutionSampleClock.AdvanceBatchEnd(
-                        last,
-                        hostNow,
-                        n,
-                        _sampleRate);
-
-                    _lastTimestampByDevice[device] = current;
-                }
+                // ② 当前批已完成编号并入队，立即 re-arm 下一批。
+                // 滤波、快速值和 UI 回调仍放在 re-arm 之后，不占用采集关键路径。
+                reader.BeginReadMultiSample(_samplesPerChannel, again, task);
 
                 // —— 诊断：批大小/回调间隔/到达延迟 ——
                 // 说明：current 是“数据时间”（按采样率推进并纠偏）；arrivalUtc 是“回调进入时刻”。
@@ -917,10 +910,7 @@ namespace IO.NI
                 #endregion
 
 
-                // 1) 原始矩阵入队（后台转工程值 + 滤波）
-                _queue.Enqueue(new Item(device, raw, current, last));
-
-                // 2) 立刻把原始矩阵回调给窗体（UI/落盘）
+                // 原始矩阵已在时间戳顺序门内入队。这里仅回调窗体。
                 //    注意：为了降低“控制用 fast 电流事件”的滞后，上面的 fast 分支已被前移到此处之前。
                 //    若 UI/落盘处理较重导致阻塞，此处会拉长回调线程占用时间，但不会影响 fast 事件的最早触发。
                 OnRawBatch?.Invoke(device, raw, current, last);

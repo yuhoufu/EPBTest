@@ -633,23 +633,23 @@ namespace Controller
                                         runner.ApplyLearnSample(sample);
                                 }
 
-                                SealLearningCycle(
+                                await SealLearningCycleAsync(
                                     ch,
                                     learningCycleNumber,
                                     learningRunId,
                                     learningOrdinal,
-                                    "learning_completed");
+                                    "learning_completed").ConfigureAwait(false);
                             }
                             catch (OperationCanceledException)
                             {
                                 if (!IsAlarmStopRequested(ch))
                                 {
-                                    SealLearningCycle(
+                                    await SealLearningCycleAsync(
                                         ch,
                                         learningCycleNumber,
                                         learningRunId,
                                         learningOrdinal,
-                                        "learning_canceled");
+                                        "learning_canceled").ConfigureAwait(false);
                                 }
                                 throw;
                             }
@@ -659,12 +659,12 @@ namespace Controller
                                 // 硬故障由报警后台在断电尾部后封为 alarm；其它失败在学习目录封存。
                                 if (!IsAlarmStopRequested(ch))
                                 {
-                                    SealLearningCycle(
+                                    await SealLearningCycleAsync(
                                         ch,
                                         learningCycleNumber,
                                         learningRunId,
                                         learningOrdinal,
-                                        "learning_failed");
+                                        "learning_failed").ConfigureAwait(false);
                                 }
                                 throw;
                             }
@@ -732,7 +732,7 @@ namespace Controller
             try { cts.Cancel(); } catch { }
         }
 
-        private void SealLearningCycle(
+        private async Task SealLearningCycleAsync(
             int channel,
             int cycleNumber,
             Guid runId,
@@ -766,9 +766,32 @@ namespace Controller
             if (!evidence.WasClaimed)
                 return;
             if (!evidence.IsValid)
-                throw new InvalidOperationException(
+            {
+                var reason =
                     $"EPB[{channel}] 学习圈落盘失败：Cycle={cycleNumber} Status={status} " +
-                    $"Error={evidence.ValidationError}");
+                    $"Error={evidence.ValidationError}";
+
+                // 数据证据失败不是电机硬故障，数据库仍保持 learning_failed；
+                // 但它会使本次试验不可追溯，必须锁存并点亮对应通道报警灯。
+                _alarmStopLatch.TryRequestStop(channel);
+                CancelActiveLearningPhase();
+                _log?.Error(reason, "报警");
+                FlushPersistentLog();
+                try { ChannelAlarmRaised?.Invoke(channel, reason); } catch { }
+                try
+                {
+                    if (Alarm != null)
+                        await Alarm.SetAlarmAsync(channel, true, reason).ConfigureAwait(false);
+                }
+                catch (Exception alarmEx)
+                {
+                    _log?.Warn(
+                        $"EPB[{channel}] 学习圈落盘失败后报警灯输出失败：{alarmEx.Message}",
+                        "报警");
+                }
+
+                throw new InvalidOperationException(reason);
+            }
 
             _log?.Info(
                 $"EPB[{channel}] 学习圈已封存：Run={runId:N} LearnCycle={learningOrdinal} " +

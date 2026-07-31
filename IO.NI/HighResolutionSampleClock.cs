@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 
 namespace IO.NI
@@ -97,6 +98,69 @@ namespace IO.NI
             return hostNow > idealBatchEnd
                 ? hostNow
                 : idealBatchEnd;
+        }
+    }
+
+    /// <summary>
+    /// Serializes per-device timestamp advancement with the caller's batch commit.
+    /// The commit must stay inside the same gate as timestamp allocation; otherwise
+    /// overlapping DAQ callbacks can allocate A/B/C in order but enqueue A/C/B.
+    /// </summary>
+    public sealed class DeviceBatchTimestampCoordinator
+    {
+        private readonly object _gate = new object();
+        private readonly Dictionary<string, DateTime> _lastTimestampByDevice =
+            new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+        private DateTime _origin;
+
+        public void Reset(DateTime origin, params string[] devices)
+        {
+            lock (_gate)
+            {
+                _origin = origin;
+                _lastTimestampByDevice.Clear();
+                if (devices == null) return;
+                foreach (var device in devices)
+                {
+                    if (!string.IsNullOrWhiteSpace(device))
+                        _lastTimestampByDevice[device] = origin;
+                }
+            }
+        }
+
+        public void AdvanceAndCommit(
+            string device,
+            DateTime hostNow,
+            int sampleCount,
+            double sampleRate,
+            Action<DateTime, DateTime, double> commit)
+        {
+            if (string.IsNullOrWhiteSpace(device))
+                throw new ArgumentException("device is required", nameof(device));
+            if (commit == null)
+                throw new ArgumentNullException(nameof(commit));
+
+            lock (_gate)
+            {
+                if (!_lastTimestampByDevice.TryGetValue(device, out var previousEnd))
+                    previousEnd = _origin;
+
+                var idealEnd = HighResolutionSampleClock.AddSamples(
+                    previousEnd,
+                    sampleCount,
+                    sampleRate);
+                var driftMs = (hostNow - idealEnd).TotalMilliseconds;
+                var currentEnd = HighResolutionSampleClock.AdvanceBatchEnd(
+                    previousEnd,
+                    hostNow,
+                    sampleCount,
+                    sampleRate);
+
+                // Commit before releasing the ordering gate. This is intentionally
+                // limited to a non-blocking queue enqueue at the call site.
+                commit(previousEnd, currentEnd, driftMs);
+                _lastTimestampByDevice[device] = currentEnd;
+            }
         }
     }
 }
