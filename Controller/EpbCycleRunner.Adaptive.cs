@@ -30,6 +30,12 @@ namespace Controller
         private string _adaptiveDirection = string.Empty;
         private readonly EpbAdaptiveSafetyLimits _adaptiveSafetyLimits;
         private int _adaptiveTerminalOffLatched;
+        private double _adaptivePreEnergizationCurrentA = double.NaN;
+
+        private const double OffCurrentBaselineWindowMs = 500.0;
+        private const double OffCurrentBaselineAllowanceA = 0.05;
+        private const double MaxTrustedOffCurrentBaselineA = 0.20;
+        private const double MaxAdaptiveOffCurrentThresholdA = 0.25;
 
         internal event Action<AdaptiveDecisionTraceEvent> AdaptiveDecisionObserved;
 
@@ -52,6 +58,44 @@ namespace Controller
         private static int GetReverseAbsoluteMaxMs(int periodMs)
         {
             return Math.Min(5_000, Math.Max(2_000, (int)Math.Ceiling(Math.Max(0, periodMs) * 0.35)));
+        }
+
+        private void CaptureAdaptivePreEnergizationCurrent()
+        {
+            var nowTick = AdaptiveNowTicks();
+            var windowTicks = (long)Math.Ceiling(
+                OffCurrentBaselineWindowMs * Stopwatch.Frequency / 1000.0);
+            var baselineA = _currentBus[_channel].MedianAbsolute(
+                nowTick - windowTicks,
+                nowTick);
+            if (double.IsNaN(baselineA) || double.IsInfinity(baselineA))
+            {
+                try { baselineA = Math.Abs(_readCurrent(_channel)); }
+                catch { baselineA = double.NaN; }
+            }
+
+            _adaptivePreEnergizationCurrentA = baselineA;
+        }
+
+        internal static double ResolveOffCurrentClearThreshold(
+            double configuredThresholdA,
+            double preEnergizationCurrentA)
+        {
+            var configuredA =
+                double.IsNaN(configuredThresholdA) ||
+                double.IsInfinity(configuredThresholdA)
+                    ? 0.1
+                    : Math.Max(0.01, configuredThresholdA);
+            if (double.IsNaN(preEnergizationCurrentA) ||
+                double.IsInfinity(preEnergizationCurrentA) ||
+                preEnergizationCurrentA < 0 ||
+                preEnergizationCurrentA > MaxTrustedOffCurrentBaselineA)
+                return configuredA;
+
+            var baselineAwareA = Math.Min(
+                MaxAdaptiveOffCurrentThresholdA,
+                preEnergizationCurrentA + OffCurrentBaselineAllowanceA);
+            return Math.Max(configuredA, baselineAwareA);
         }
 
         private void BeginAdaptiveForwardMonitoring(int periodMs)
@@ -383,7 +427,11 @@ namespace Controller
 
         private void BeginTerminalOffCurrentVerification(string reason)
         {
-            var thresholdA = _adaptiveSafetyLimits.OffCurrentClearThresholdA;
+            var configuredThresholdA = _adaptiveSafetyLimits.OffCurrentClearThresholdA;
+            var baselineA = _adaptivePreEnergizationCurrentA;
+            var thresholdA = ResolveOffCurrentClearThreshold(
+                configuredThresholdA,
+                baselineA);
             var timeoutMs = _adaptiveSafetyLimits.OffCurrentClearTimeoutMs;
             _ = Task.Run(async () =>
             {
@@ -414,7 +462,9 @@ namespace Controller
                         _log?.Info(
                             $"EPB[{_channel}] 断电电流代理确认通过：" +
                             $"ElectricalCurrentCleared=true Current={currentA:F3}A " +
-                            $"Threshold={thresholdA:F3}A Wait={verification.ElapsedMs}ms " +
+                            $"ConfiguredThreshold={configuredThresholdA:F3}A " +
+                            $"PreEnergizationBaseline={baselineA:F3}A " +
+                            $"EffectiveThreshold={thresholdA:F3}A Wait={verification.ElapsedMs}ms " +
                             "PhysicalOffStatus=NotMeasured",
                             "EPB");
                         return;
@@ -423,7 +473,9 @@ namespace Controller
                     _log?.Error(
                         $"EPB[{_channel}] 断电后电流未清零，立即触发电源组联锁：" +
                         $"ElectricalCurrentCleared=false Current={currentA:F3}A " +
-                        $"Threshold={thresholdA:F3}A Wait={verification.ElapsedMs}ms " +
+                        $"ConfiguredThreshold={configuredThresholdA:F3}A " +
+                        $"PreEnergizationBaseline={baselineA:F3}A " +
+                        $"EffectiveThreshold={thresholdA:F3}A Wait={verification.ElapsedMs}ms " +
                         $"Reason={reason} PhysicalOffStatus=NotMeasured",
                         "EPB");
                     try
@@ -431,7 +483,10 @@ namespace Controller
                         AlarmRaised?.Invoke(
                             _channel,
                             $"AdaptiveHardFault OffCurrentNotCleared " +
-                            $"Current={currentA:F3}A Threshold={thresholdA:F3}A");
+                            $"Current={currentA:F3}A " +
+                            $"ConfiguredThreshold={configuredThresholdA:F3}A " +
+                            $"PreEnergizationBaseline={baselineA:F3}A " +
+                            $"EffectiveThreshold={thresholdA:F3}A");
                     }
                     catch { }
                 }
@@ -613,6 +668,7 @@ namespace Controller
                 if (_manager != null)
                     await _manager.HydraulicEnterAsync(_channel, token).ConfigureAwait(false);
 
+                CaptureAdaptivePreEnergizationCurrent();
                 BeginAdaptiveForwardMonitoring(targetPeriodMs);
                 CommandForward();
                 _log?.Info(

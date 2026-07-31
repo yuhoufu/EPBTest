@@ -54,6 +54,7 @@ namespace AdaptiveControlTests
                 Run("终态断电先于阻塞诊断发布", TerminalOffPrecedesBlockingDiagnostics);
                 Run("DO失败与电流未清零触发组级联锁", OffFailureEscalatesToPowerGroup);
                 Run("断电电流在窗口内清零不联锁且超时只失败一次", OffCurrentPollingWindow);
+                Run("断电清零阈值适配现场零偏且保持安全上限", OffCurrentThresholdTracksTrustedBaseline);
                 Run("失速安全配置XML往返无损", SafetyLimitsXmlRoundTrip);
                 Run("旧项目100ms断电清零配置自动迁移", LegacyShortOffTimeoutIsMigrated);
                 Run("模型原子保存与重载", ProfilePersistence);
@@ -82,6 +83,7 @@ namespace AdaptiveControlTests
                 Run("报警辅助证据包含计划和DO时序", AlarmControlEvidenceIsReconstructable);
                 Run("同组硬故障仅停止故障通道", HardFaultDoesNotStopSiblingChannel);
                 Run("2000Hz样本时间严格递增5000 ticks", TwoKilohertzSampleTimestamps);
+                Run("DAQ追赶回调不造成相邻批时间重叠", CatchUpCallbackDoesNotOverlapBatches);
                 Run("采集重启重建高精度时基", HighResolutionClockReset);
                 Run("新项目清零且不改旧项目", NewProjectIsIsolatedAndReset);
                 Run("进度摘要默认选择最小已启动通道", InitialSummarySelectsFirstStarted);
@@ -747,6 +749,37 @@ namespace AdaptiveControlTests
                 () => escalations++);
             Assert(!timedOut.Cleared && !cleared && escalations == 1,
                 "断电电流持续超限未在窗口结束后只触发一次联锁");
+        }
+
+        private static void OffCurrentThresholdTracksTrustedBaseline()
+        {
+            var fieldThreshold = EpbCycleRunner.ResolveOffCurrentClearThreshold(
+                0.1,
+                0.109919);
+            Assert(Math.Abs(fieldThreshold - 0.159919) < 1e-9,
+                "现场约0.11A零偏未转换为带裕量的有效清零阈值");
+            Assert(0.111596 <= fieldThreshold,
+                "现场断电后已回到基线的电流仍会被误判");
+            Assert(0.35 > fieldThreshold,
+                "真正未清零的电流被零偏阈值掩盖");
+
+            var untrustedHighBaseline = EpbCycleRunner.ResolveOffCurrentClearThreshold(
+                0.1,
+                0.35);
+            Assert(Math.Abs(untrustedHighBaseline - 0.1) < 1e-9,
+                "异常高的上电前电流被错误信任");
+
+            var cappedThreshold = EpbCycleRunner.ResolveOffCurrentClearThreshold(
+                0.1,
+                0.20);
+            Assert(Math.Abs(cappedThreshold - 0.25) < 1e-9,
+                "零偏自适应阈值未保持0.25A安全上限");
+
+            var explicitHigherThreshold = EpbCycleRunner.ResolveOffCurrentClearThreshold(
+                0.3,
+                0.10);
+            Assert(Math.Abs(explicitHigherThreshold - 0.3) < 1e-9,
+                "项目显式配置的更高阈值被自适应逻辑错误降低");
         }
 
         private static void ProfilePersistence()
@@ -1580,6 +1613,42 @@ namespace AdaptiveControlTests
                     timestamps[i].Ticks - timestamps[i - 1].Ticks == 5000,
                     $"样本{i}未按5000 ticks递增");
             Assert(timestamps.Distinct().Count() == timestamps.Length, "绝对时间戳出现重复");
+        }
+
+        private static void CatchUpCallbackDoesNotOverlapBatches()
+        {
+            var previousEnd = new DateTime(
+                2026,
+                7,
+                31,
+                11,
+                29,
+                40,
+                DateTimeKind.Utc);
+            var catchUpHostNow = previousEnd.AddTicks(778);
+            var nextEnd = HighResolutionSampleClock.AdvanceBatchEnd(
+                previousEnd,
+                catchUpHostNow,
+                20,
+                2000);
+            var nextBatch = HighResolutionSampleClock.BuildBatchTimestamps(
+                nextEnd,
+                20,
+                2000);
+
+            Assert(nextBatch[0] > previousEnd,
+                "追赶回调使用过早的主机时间，导致下一批与上一批重叠");
+            Assert(nextBatch[0].Ticks - previousEnd.Ticks == 5000,
+                "下一批首样本未保持2kHz连续采样间隔");
+
+            var delayedHostNow = previousEnd.AddMilliseconds(25);
+            var delayedEnd = HighResolutionSampleClock.AdvanceBatchEnd(
+                previousEnd,
+                delayedHostNow,
+                20,
+                2000);
+            Assert(delayedEnd == delayedHostNow,
+                "明显滞后的主机时间未用于向前纠偏");
         }
 
         private static void HighResolutionClockReset()

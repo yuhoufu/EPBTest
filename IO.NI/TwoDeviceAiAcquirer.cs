@@ -795,10 +795,13 @@ namespace IO.NI
                     var hostNow = _sampleClock.Now();
                     var idealNow = HighResolutionSampleClock.AddSamples(last, n, _sampleRate);
 
-                    // ③ 轻微纠偏（例如 >5ms 时用主机时间，否则用理想时间，避免长期漂移）
+                    // ③ 轻微纠偏；批尾至少前进一整批，避免追赶回调造成相邻批时间重叠。
                     driftMs = (hostNow - idealNow).TotalMilliseconds;
-                    var corrected = Math.Abs(driftMs) > 5 ? hostNow : idealNow;
-                    current = corrected > last ? corrected : idealNow;
+                    current = HighResolutionSampleClock.AdvanceBatchEnd(
+                        last,
+                        hostNow,
+                        n,
+                        _sampleRate);
 
                     _lastTimestampByDevice[device] = current;
                 }

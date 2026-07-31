@@ -1790,6 +1790,39 @@ namespace Controller
                     return null;
                 }
             }
+
+            /// <summary>
+            /// 返回时间窗口内电流幅值的中位数；没有有效样本时返回 NaN。
+            /// </summary>
+            public double MedianAbsolute(long startTick, long endTick)
+            {
+                lock (_lock)
+                {
+                    if (_count == 0 || endTick < startTick) return double.NaN;
+
+                    var values = new List<double>();
+                    // 从最新样本反向扫描，越过窗口起点立即结束，避免每圈遍历整个大环形缓冲。
+                    var idx = (_head - 1 + _buf.Length) % _buf.Length;
+                    for (var left = _count; left > 0; left--)
+                    {
+                        var sample = _buf[idx];
+                        if (sample.Tick < startTick) break;
+                        if (sample.Tick >= startTick &&
+                            sample.Tick <= endTick &&
+                            !double.IsNaN(sample.I) &&
+                            !double.IsInfinity(sample.I))
+                            values.Add(Math.Abs(sample.I));
+                        idx = (idx - 1 + _buf.Length) % _buf.Length;
+                    }
+
+                    if (values.Count == 0) return double.NaN;
+                    values.Sort();
+                    var middle = values.Count / 2;
+                    return values.Count % 2 == 0
+                        ? (values[middle - 1] + values[middle]) / 2.0
+                        : values[middle];
+                }
+            }
         }
     }
 }

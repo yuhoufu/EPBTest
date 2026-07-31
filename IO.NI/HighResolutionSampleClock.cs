@@ -74,5 +74,29 @@ namespace IO.NI
                 result[i] = first.AddTicks(SampleOffsetTicks(i, sampleRate));
             return result;
         }
+
+        /// <summary>
+        /// 计算下一批的批尾时间。主机时间可用于向前纠偏，但不得让批尾早于
+        /// “上一批尾 + 本批采样时长”，否则向前回推批内时间戳会与上一批重叠。
+        /// </summary>
+        public static DateTime AdvanceBatchEnd(
+            DateTime previousBatchEnd,
+            DateTime hostNow,
+            int sampleCount,
+            double sampleRate,
+            double correctionThresholdMs = 5.0)
+        {
+            var idealBatchEnd = AddSamples(
+                previousBatchEnd,
+                sampleCount,
+                sampleRate);
+            var driftMs = (hostNow - idealBatchEnd).TotalMilliseconds;
+            if (Math.Abs(driftMs) <= Math.Max(0, correctionThresholdMs))
+                return idealBatchEnd;
+
+            return hostNow > idealBatchEnd
+                ? hostNow
+                : idealBatchEnd;
+        }
     }
 }
