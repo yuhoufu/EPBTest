@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Data.SQLite;
 using DataOperation;
 
 namespace EpbDiskWriterTests
@@ -28,7 +29,9 @@ namespace EpbDiskWriterTests
                 Run("归档失败不删除索引", FailedArchiveKeepsIndex);
                 Run("所有 CSV 出口包含相对时间", AllCsvExportsContainRelativeTime);
                 Run("2000Hz CSV保留0.5ms时间分辨率", TwoKilohertzCsvKeepsSubMillisecondTime);
-                Console.WriteLine($"PASS {_passed}/9");
+                Run("报警圈原子封存与数据库边界一致", AlarmSealMatchesDatabaseBoundary);
+                Run("报警CSV和BIN不一致时校验失败", AlarmPairValidatorRejectsMismatch);
+                Console.WriteLine($"PASS {_passed}/{_passed}");
                 return 0;
             }
             catch (Exception ex)
@@ -348,6 +351,75 @@ namespace EpbDiskWriterTests
                 FileSizeMb = 1,
                 RetainAllData = true
             };
+        }
+
+        private static void AlarmSealMatchesDatabaseBoundary()
+        {
+            WithRoot(root =>
+            {
+                var policy = NewPolicy(root);
+                var start = DateTime.UtcNow;
+                var exportDir = Path.Combine(root, "alarm");
+                using (var writer = new EpbDiskWriter(policy))
+                {
+                    writer.BeginCycle(9, 63, start);
+                    WriteSamples(writer, 9, 7, start);
+                    var evidence = writer.SealAndExportAlarmCycle(
+                        9,
+                        63,
+                        exportDir,
+                        start.AddSeconds(1));
+                    Assert(evidence.IsValid, "报警圈原子封存失败：" + evidence.ValidationError);
+                    Assert(evidence.SampleCount == 7, "报警证据样本数未冻结为实际导出边界。");
+                    Assert(evidence.LastSampleUtc.HasValue, "报警证据缺少末样本时间。");
+                }
+
+                using (var connection = new SQLiteConnection(
+                           $"Data Source={Path.Combine(policy.IndexAndExportPath, policy.IndexDbFile)}"))
+                {
+                    connection.Open();
+                    using var command = connection.CreateCommand();
+                    command.CommandText =
+                        "SELECT sample_count,status,end_time FROM epb_cycles WHERE epb_id=9 AND cycle_number=63";
+                    using var reader = command.ExecuteReader();
+                    Assert(reader.Read(), "报警圈数据库记录不存在。");
+                    Assert(reader.GetInt32(0) == 7, "数据库样本数与报警证据不一致。");
+                    Assert(reader.GetString(1) == "alarm", "完整证据未封存为 alarm。");
+                    Assert(!reader.IsDBNull(2), "报警圈数据库缺少末样本时间。");
+                }
+            });
+        }
+
+        private static void AlarmPairValidatorRejectsMismatch()
+        {
+            WithRoot(root =>
+            {
+                var policy = NewPolicy(root);
+                var start = DateTime.UtcNow;
+                var exportDir = Path.Combine(root, "alarm");
+                AlarmCycleSnapshotEvidence evidence;
+                using (var writer = new EpbDiskWriter(policy))
+                {
+                    writer.BeginCycle(10, 63, start);
+                    WriteSamples(writer, 10, 6, start);
+                    evidence = writer.SealAndExportAlarmCycle(
+                        10,
+                        63,
+                        exportDir,
+                        start.AddSeconds(1));
+                }
+
+                Assert(evidence.IsValid, "测试前置报警证据未通过校验。");
+                var csvLines = File.ReadAllLines(evidence.CsvPath);
+                File.WriteAllLines(evidence.CsvPath, csvLines.Take(csvLines.Length - 1));
+                var invalid = EpbDiskWriter.ValidateAlarmCycleSnapshotPair(
+                    evidence.CsvPath,
+                    evidence.BinPath,
+                    10,
+                    63);
+                Assert(!invalid.IsValid && invalid.ValidationError.Contains("样本数不一致"),
+                    "CSV/BIN 数量不一致未被拒绝。");
+            });
         }
 
         private static void WriteCompletedCycle(

@@ -4,10 +4,13 @@ using System.Globalization;
 using System.IO;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using Config;
 using Controller;
 using Controller.Adaptive;
 using Controller.Alarm;
+using DataOperation;
 using IO.NI;
 using Timing;
 
@@ -30,12 +33,14 @@ namespace AdaptiveControlTests
                 Run("未识别负载上升前到阈值立即停机", ThresholdBeforeLoadRiseFaults);
                 Run("夹紧阈值必须连续三样本确认", ClampNeedsThreeSamples);
                 Run("稳定模型后连续50圈仍记录正向空行程", StableProfileKeepsLearningForFiftyCycles);
-                Run("长空行程只软预警", LongEmptyTravelWarning);
+                Run("正向未进入负载上升按模型期限硬停", ForwardLoadRiseDeadlineFaults);
+                Run("EPB9型正向平台200ms内硬停", ForwardCurrentRiseStallFaults);
                 Run("反向动态释放", ReverseRelease);
                 Run("反向17ms采样节拍仍可释放", ReverseReleaseWithSeventeenMillisecondCadence);
                 Run("反向释放窗口忽略孤立毛刺", ReverseReleaseIgnoresSparseOutliers);
                 Run("现场EPB8和EPB9曲线可释放", MeasuredReverseFixturesRelease);
-                Run("反向持续高负载仍触发绝对时限", SustainedReverseLoadDoesNotRelease);
+                Run("反向3到9A平台按模型期限硬停", SustainedReverseLoadFaultsAtProgressDeadline);
+                Run("反向低电流平台200ms确认释放", ReverseLowPlateauReleasesInOneWindow);
                 Run("预释放6.5A平台按15A目标不误报", PreReleaseNormalPlatformUsesForwardReference);
                 Run("预释放持续超过9A触发高平台保护", PreReleaseHighPlatformStillFaults);
                 Run("预释放失败阻止学习阶段", PreReleaseFailureBlocksLearning);
@@ -46,6 +51,9 @@ namespace AdaptiveControlTests
                 Run("单点噪声不误停", NoiseSpike);
                 Run("绝对上电超限", AbsoluteOnTime);
                 Run("异常高电流平台", AbnormalHighPlateau);
+                Run("终态断电先于阻塞诊断发布", TerminalOffPrecedesBlockingDiagnostics);
+                Run("DO失败与电流未清零触发组级联锁", OffFailureEscalatesToPowerGroup);
+                Run("失速安全配置XML往返无损", SafetyLimitsXmlRoundTrip);
                 Run("模型原子保存与重载", ProfilePersistence);
                 Run("控流模型五圈收敛到目标带", CutoffModelConvergesWithinFiveCycles);
                 Run("峰值系统偏差用于提前断电补偿", PeakBiasCorrectionIsLearned);
@@ -78,9 +86,10 @@ namespace AdaptiveControlTests
                 Run("进度摘要完成后切换且全完成保持", SummaryAdvancesAfterCompletion);
                 Run("EPB勾选仅按设置到电源到曲线单向传播", EpbSelectionPropagatesOneWay);
                 Run("DHMS运行时间格式", DhmsFormatting);
+                _passed += HydraulicGroupCoordinatorTests.RunAll();
                 _passed += PowerSupplyCoordinatorTests.RunAll();
                 _passed += ProjectLogStoreTests.RunAll();
-                Console.WriteLine($"PASS {_passed}/69");
+                Console.WriteLine($"PASS {_passed}/{_passed}");
                 return 0;
             }
             catch (Exception ex)
@@ -280,22 +289,47 @@ namespace AdaptiveControlTests
             Assert(profile.ForwardEmptyHistoryA.Count == 30, "空行程滚动历史没有保持容量上限");
         }
 
-        private static void LongEmptyTravelWarning()
+        private static void ForwardLoadRiseDeadlineFaults()
         {
             var profile = StableProfile();
             var machine = new EpbAdaptiveCurrentStateMachine(profile);
             machine.ArmForward(Tick(0), 100, 6500, 15, 1, 3);
-            var sawWarning = false;
+            EpbAdaptiveDecision terminal = null;
             for (var ms = 0; ms <= 4500; ms += 10)
             {
                 var decision = machine.OnSample(Tick(ms), 1.0);
-                sawWarning |= decision.SoftWarning;
-                Assert(!decision.HardFault, "软时限错误触发硬故障");
+                if (!decision.HardFault) continue;
+                terminal = decision;
+                break;
             }
 
-            Assert(sawWarning, "超过软时限未预警");
-            var clamp = Feed(machine, 4510, 5100, 10, ms => 1.0 + (ms - 4510) * 0.03);
-            Assert(clamp.ClampReached, "长空行程后未在同圈夹紧");
+            Assert(
+                terminal != null &&
+                terminal.Reason.Contains("ForwardLoadRiseNotStarted") &&
+                terminal.ElapsedMs <= 3300,
+                "正向无负载上升仍等待绝对时限");
+        }
+
+        private static void ForwardCurrentRiseStallFaults()
+        {
+            var machine = new EpbAdaptiveCurrentStateMachine(StableProfile());
+            machine.ArmForward(Tick(0), 100, 9000, 15, 0, 3);
+            Feed(machine, 0, 1000, 10, _ => 1.0);
+            var ramp = Feed(
+                machine,
+                1010,
+                2500,
+                10,
+                ms => Math.Min(13.6, 1.0 + (ms - 1000) * 0.0085));
+            Assert(!ramp.ClampReached && !ramp.HardFault, "正向13.6A平台形成前已误判终态");
+
+            var fault = Feed(machine, 2510, 2900, 10, _ => 13.6);
+            Assert(
+                fault.HardFault &&
+                fault.Reason.Contains("ForwardCurrentRiseStalled") &&
+                fault.WindowSpanMs >= 200 &&
+                fault.ElapsedMs <= 2720,
+                "EPB9型正向平台未在完整200ms窗口后立即硬停");
         }
 
         private static void ReverseRelease()
@@ -418,7 +452,7 @@ namespace AdaptiveControlTests
                 validSampleCount: 5);
         }
 
-        private static void SustainedReverseLoadDoesNotRelease()
+        private static void SustainedReverseLoadFaultsAtProgressDeadline()
         {
             var machine = NewReverseMachine(StableProfile());
 
@@ -432,8 +466,23 @@ namespace AdaptiveControlTests
 
             if (last == null || !last.HardFault)
                 last = machine.CheckWatchdog(Tick(3500));
-            Assert(last.HardFault && last.Reason.Contains("ReverseAbsoluteOnTimeExceeded"),
-                "持续高负载没有保留反向绝对上电保护");
+            Assert(
+                last.HardFault &&
+                last.Reason.Contains("ReverseCurrentDecayStalled") &&
+                last.ElapsedMs <= 1520,
+                "持续3到9A反向平台仍等待绝对上电时限");
+        }
+
+        private static void ReverseLowPlateauReleasesInOneWindow()
+        {
+            var machine = NewReverseMachine(StableProfile());
+            var released = Feed(machine, 0, 600, 10, _ => 1.0);
+            Assert(
+                released.ReleaseCompleted &&
+                !released.HardFault &&
+                released.ReleaseCandidateElapsedMs >= 200 &&
+                released.ElapsedMs <= 220,
+                "低于3A的稳定反向平台没有在单个200ms窗口后断电");
         }
 
         private static void HoldDoesNotFault()
@@ -494,7 +543,14 @@ namespace AdaptiveControlTests
         private static void AbsoluteOnTime()
         {
             var machine = NewMachine();
-            machine.ArmForward(Tick(0), 100, 6000, 15, 1, 3);
+            machine.ArmForward(
+                Tick(0),
+                100,
+                6000,
+                15,
+                1,
+                3,
+                new EpbAdaptiveSafetyLimits { ForwardProgressDeadlineMs = 6000 });
             Feed(machine, 0, 5990, 10, _ => 1.0);
             var fault = machine.OnSample(Tick(6000), 1.0);
             Assert(fault.HardFault && fault.Reason.Contains("AbsoluteOnTime"), "绝对时限未触发");
@@ -509,6 +565,105 @@ namespace AdaptiveControlTests
             var fault = Feed(machine, 0, 1200, 10, _ => 10.0);
             Assert(fault.HardFault && fault.Reason.Contains("AbnormalHighCurrentPlateau"),
                 "异常高电流平台未触发");
+        }
+
+        private static void TerminalOffPrecedesBlockingDiagnostics()
+        {
+            var order = new List<string>();
+            using (var publishEntered = new ManualResetEventSlim(false))
+            using (var releasePublish = new ManualResetEventSlim(false))
+            {
+                var decision = new EpbAdaptiveDecision
+                {
+                    HardFault = true,
+                    Stage = EpbCurrentStage.Faulted,
+                    Reason = "ForwardCurrentRiseStalled"
+                };
+                var dispatch = Task.Run(() =>
+                    EpbCycleRunner.DispatchAdaptiveDecisionInSafetyOrder(
+                        decision,
+                        () => order.Add("off"),
+                        () =>
+                        {
+                            order.Add("publish");
+                            publishEntered.Set();
+                            releasePublish.Wait();
+                        },
+                        () => order.Add("handle")));
+
+                Assert(publishEntered.Wait(1000), "阻塞诊断发布未进入");
+                Assert(order.Count >= 2 && order[0] == "off" && order[1] == "publish",
+                    "终态断电没有先于诊断发布执行");
+                releasePublish.Set();
+                Assert(dispatch.Wait(1000), "终态调度未完成");
+                Assert(order.SequenceEqual(new[] { "off", "publish", "handle" }),
+                    "终态调度顺序不正确");
+            }
+        }
+
+        private static void SafetyLimitsXmlRoundTrip()
+        {
+            var source = Path.GetFullPath(Path.Combine(
+                AppDomain.CurrentDomain.BaseDirectory,
+                "..",
+                "..",
+                "..",
+                "..",
+                "MTTfTest",
+                "Config",
+                "TestConfig.xml"));
+            var directory = CreateTempDir();
+            var target = Path.Combine(directory, "TestConfig.xml");
+            try
+            {
+                File.Copy(source, target);
+                var config = ConfigLoader.LoadTest(target, NullLogger.Instance);
+                var channel = config.EpbCycleRunner.GetRunnerChannel(9);
+                Assert(channel.ForwardProgressConfirmMs == 200 &&
+                       Math.Abs(channel.ForwardMinimumRiseSlopeAperMs - 0.001) < 1e-9 &&
+                       channel.ForwardProgressDeadlineMs == 3000 &&
+                       channel.ReverseProgressConfirmMs == 200 &&
+                       Math.Abs(channel.ReverseMinimumDecaySlopeAperMs - 0.001) < 1e-9 &&
+                       channel.ReverseProgressDeadlineMs == 2500 &&
+                       Math.Abs(channel.OffCurrentClearThresholdA - 0.1) < 1e-9 &&
+                       channel.OffCurrentClearTimeoutMs == 100,
+                    "失速安全默认配置读取错误");
+
+                channel.ForwardProgressConfirmMs = 240;
+                channel.ReverseProgressDeadlineMs = 2300;
+                ConfigLoader.SaveTest(target, config);
+                var reloaded = ConfigLoader.LoadTest(target, NullLogger.Instance)
+                    .EpbCycleRunner
+                    .GetRunnerChannel(9);
+                Assert(reloaded.ForwardProgressConfirmMs == 240 &&
+                       reloaded.ReverseProgressDeadlineMs == 2300,
+                    "失速安全配置保存后未能无损重载");
+            }
+            finally
+            {
+                Directory.Delete(directory, true);
+            }
+        }
+
+        private static void OffFailureEscalatesToPowerGroup()
+        {
+            var escalations = 0;
+            var commandResult = EpbCycleRunner.ExecuteTerminalOffWithEscalation(
+                () => false,
+                () => escalations++);
+            Assert(!commandResult && escalations == 1, "DO关闭失败未触发组级联锁");
+
+            var currentCleared = EpbCycleRunner.VerifyOffCurrentOrEscalate(
+                0.35,
+                0.1,
+                () => escalations++);
+            Assert(!currentCleared && escalations == 2, "断电后电流未清零未触发组级联锁");
+
+            var validClear = EpbCycleRunner.VerifyOffCurrentOrEscalate(
+                0.05,
+                0.1,
+                () => escalations++);
+            Assert(validClear && escalations == 2, "电流已清零仍错误触发组级联锁");
         }
 
         private static void ProfilePersistence()
@@ -993,7 +1148,13 @@ namespace AdaptiveControlTests
                     9,
                     42,
                     "堵转\"故障\n复测",
-                    true,
+                    new AlarmCycleSnapshotEvidence
+                    {
+                        IsValid = true,
+                        SampleCount = 7000,
+                        FirstSampleUtc = utc.AddSeconds(-3.5),
+                        LastSampleUtc = utc
+                    },
                     utc,
                     runId,
                     plan.Get(9),
@@ -1023,7 +1184,19 @@ namespace AdaptiveControlTests
                             BranchCurrentA = 12.3456
                         }
                     },
-                    adaptiveDecision);
+                    adaptiveDecision,
+                    new TerminalOffSafetyEvidence
+                    {
+                        CommandUtc = utc,
+                        Reason = "ForwardCurrentRiseStalled",
+                        CommandSucceeded = true,
+                        CommandElapsedMs = 1.25,
+                        VerificationUtc = utc.AddMilliseconds(100),
+                        VerificationCurrentA = 0.05,
+                        VerificationThresholdA = 0.1,
+                        VerificationWaitMs = 100,
+                        ElectricalCurrentCleared = true
+                    });
                 EpbManager.WriteStaggerPlan(
                     Path.Combine(directory, "electrical-stagger-plan.json"),
                     runId,
@@ -1075,10 +1248,16 @@ namespace AdaptiveControlTests
                 var adaptiveTimeline = File.ReadAllText(
                     Path.Combine(directory, "adaptive-decision-timeline.csv"));
 
-                Assert(metadata.Contains("\"schemaVersion\": 2"),
-                    "报警元数据未升级到包含自适应判定的schema 2");
+                Assert(metadata.Contains("\"schemaVersion\": 4") &&
+                       metadata.Contains("\"terminalOffSafety\":"),
+                    "报警元数据未升级到包含终态断电证据的schema 4");
+                Assert(metadata.Contains("\"electricalCurrentCleared\": true") &&
+                       metadata.Contains("\"physicalOffStatus\": \"NotMeasured\""),
+                    "报警元数据未正确区分电流代理确认与物理触点状态");
                 Assert(metadata.Contains("\"alarmCycleCsvAndBinComplete\": true"),
                     "报警元数据未记录CSV/BIN完整性");
+                Assert(metadata.Contains("\"evidenceSampleCount\": 7000"),
+                    "报警元数据未记录冻结后的证据样本数");
                 Assert(metadata.Contains("\"physicalPowerState\": \"NotMeasured\""),
                     "报警元数据误将DO返回值当成物理断电确认");
                 Assert(metadata.Contains("\"selectedChannelsInElectricalGroup\": [8, 9]") &&
@@ -1101,6 +1280,22 @@ namespace AdaptiveControlTests
                        adaptiveTimeline.Contains("ReleaseThresholdA") &&
                        adaptiveTimeline.Contains("ReverseAbsoluteOnTimeExceeded"),
                     "自适应判定时间线缺少窗口、阈值或报警原因");
+
+                var selected = EpbManager.SelectAlarmDecision(
+                    new[]
+                    {
+                        adaptiveDecision,
+                        new AdaptiveDecisionTraceEvent
+                        {
+                            SampleUtc = utc,
+                            MonotonicTicks = 125,
+                            Action = string.Empty,
+                            Reason = string.Empty
+                        }
+                    },
+                    utc);
+                Assert(selected == adaptiveDecision,
+                    "报警元数据被故障后的空判定覆盖，未保留HardFault原因");
             }
             finally
             {
