@@ -413,6 +413,200 @@ public sealed class EpbDiskWriter : IDisposable
     }
 
     /// <summary>
+    /// 在单通道锁内冻结当前报警圈，原子导出 CSV/BIN，校验后以相同边界封存数据库。
+    /// </summary>
+    public AlarmCycleSnapshotEvidence SealAndExportAlarmCycle(
+        int epbId,
+        int cycleNumber,
+        string exportDir,
+        DateTime fallbackEndUtc)
+    {
+        if (string.IsNullOrWhiteSpace(exportDir))
+            throw new ArgumentException("exportDir is required", nameof(exportDir));
+
+        var stem = $"EPB{epbId}_Cycle_{cycleNumber:D6}";
+        var csvPath = Path.Combine(exportDir, stem + ".csv");
+        var binPath = Path.Combine(exportDir, stem + ".bin");
+        var evidence = new AlarmCycleSnapshotEvidence
+        {
+            CsvPath = csvPath,
+            BinPath = binPath
+        };
+        var s = GetState(epbId);
+        lock (s.Gate)
+        {
+            var finalSampleCount = Math.Max(0, s.CurrentSampleIndex);
+            var endUtc = fallbackEndUtc.Kind == DateTimeKind.Utc
+                ? fallbackEndUtc
+                : fallbackEndUtc.ToUniversalTime();
+            try
+            {
+                if (s.CurrentCycle != cycleNumber)
+                {
+                    throw new InvalidOperationException(
+                        $"EPB[{epbId}] 当前圈 {s.CurrentCycle?.ToString() ?? "null"} 与报警圈 {cycleNumber} 不一致。");
+                }
+
+                var cycle = GetCycleInfo(epbId, cycleNumber);
+                cycle.SampleCount = finalSampleCount;
+                if (cycle.SampleCount <= 0)
+                    throw new InvalidDataException($"EPB[{epbId}] Cycle={cycleNumber} 没有可封存样本。");
+
+                var records = ReadCycleRecordsFromRing(epbId, cycle, s.CapacityRecords);
+                endUtc = DateTime.FromBinary(records[records.Count - 1].TimestampBinary).ToUniversalTime();
+                Directory.CreateDirectory(exportDir);
+                var csvTemp = GetTempPath(csvPath);
+                var binTemp = GetTempPath(binPath);
+                try
+                {
+                    using (var sw = new StreamWriter(csvTemp, false, Encoding.UTF8))
+                        WriteCsvRecords(sw, records, new ExportFormatOptions());
+                    using (var fs = new FileStream(binTemp, FileMode.Create, FileAccess.Write, FileShare.Read))
+                    using (var bw = new BinaryWriter(fs))
+                        WriteBinRecords(bw, records);
+                    CommitPair(csvTemp, csvPath, binTemp, binPath);
+                }
+                finally
+                {
+                    TryDeleteFile(csvTemp);
+                    TryDeleteFile(binTemp);
+                }
+
+                evidence = ValidateAlarmCycleSnapshotPair(
+                    csvPath,
+                    binPath,
+                    epbId,
+                    cycleNumber);
+                if (!evidence.IsValid)
+                    throw new InvalidDataException(evidence.ValidationError);
+
+                MarkCycleAlarm(epbId, cycleNumber, evidence.SampleCount, evidence.LastSampleUtc ?? endUtc);
+            }
+            catch (Exception ex)
+            {
+                evidence.IsValid = false;
+                evidence.SampleCount = finalSampleCount;
+                evidence.ValidationError = ex.Message;
+                try
+                {
+                    MarkCycleAborted(
+                        epbId,
+                        cycleNumber,
+                        finalSampleCount,
+                        evidence.LastSampleUtc ?? endUtc,
+                        "failed");
+                }
+                catch (Exception dbEx)
+                {
+                    evidence.ValidationError += " | DBFinalizeFailed: " + dbEx.Message;
+                }
+            }
+            finally
+            {
+                s.CurrentCycle = null;
+                s.CurrentSampleIndex = 0;
+            }
+        }
+
+        return evidence;
+    }
+
+    /// <summary>逐条校验报警 CSV/BIN 对的数量、圈号、序号和时间范围。</summary>
+    public static AlarmCycleSnapshotEvidence ValidateAlarmCycleSnapshotPair(
+        string csvPath,
+        string binPath,
+        int epbId,
+        int cycleNumber)
+    {
+        var evidence = new AlarmCycleSnapshotEvidence
+        {
+            CsvPath = csvPath,
+            BinPath = binPath
+        };
+        try
+        {
+            if (!File.Exists(csvPath) || !File.Exists(binPath))
+                throw new InvalidDataException("报警快照 CSV/BIN 文件不完整。");
+
+            var binLength = new FileInfo(binPath).Length;
+            if (binLength <= 0 || binLength % SampleRecord.Size != 0)
+                throw new InvalidDataException(
+                    $"BIN 长度 {binLength} 不是 {SampleRecord.Size} 字节记录的整数倍。");
+
+            var binCount = checked((int)(binLength / SampleRecord.Size));
+            DateTime? firstUtc = null;
+            DateTime? lastUtc = null;
+            using (var fs = new FileStream(binPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            using (var br = new BinaryReader(fs))
+            {
+                for (var i = 0; i < binCount; i++)
+                {
+                    var tsBinary = br.ReadInt64();
+                    var actualCycle = br.ReadInt32();
+                    var sampleIndex = br.ReadInt32();
+                    br.ReadDouble();
+                    br.ReadDouble();
+                    if (actualCycle != cycleNumber)
+                        throw new InvalidDataException(
+                            $"BIN 圈号不一致：Expected={cycleNumber} Actual={actualCycle} Index={i}。");
+                    if (sampleIndex != i)
+                        throw new InvalidDataException(
+                            $"BIN 样本序号不连续：Expected={i} Actual={sampleIndex}。");
+
+                    var utc = DateTime.FromBinary(tsBinary).ToUniversalTime();
+                    if (lastUtc.HasValue && utc < lastUtc.Value)
+                        throw new InvalidDataException($"BIN 时间戳回退：Index={i}。");
+                    firstUtc ??= utc;
+                    lastUtc = utc;
+                }
+            }
+
+            var csvCount = 0;
+            using (var sr = new StreamReader(csvPath, Encoding.UTF8, true))
+            {
+                var header = sr.ReadLine();
+                if (!string.Equals(header, CSV_HEADER, StringComparison.Ordinal))
+                    throw new InvalidDataException("CSV 表头不符合报警证据格式。");
+                string line;
+                while ((line = sr.ReadLine()) != null)
+                {
+                    if (string.IsNullOrWhiteSpace(line)) continue;
+                    var fields = line.Split(',');
+                    if (fields.Length < 4 ||
+                        !int.TryParse(fields[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out var actualCycle) ||
+                        !int.TryParse(fields[3], NumberStyles.Integer, CultureInfo.InvariantCulture, out var sampleIndex))
+                    {
+                        throw new InvalidDataException($"CSV 第 {csvCount + 2} 行无法解析圈号或样本序号。");
+                    }
+                    if (actualCycle != cycleNumber || sampleIndex != csvCount)
+                    {
+                        throw new InvalidDataException(
+                            $"CSV 证据不连续：ExpectedCycle={cycleNumber} ActualCycle={actualCycle} " +
+                            $"ExpectedIndex={csvCount} ActualIndex={sampleIndex}。");
+                    }
+                    csvCount++;
+                }
+            }
+
+            if (csvCount != binCount)
+                throw new InvalidDataException($"CSV/BIN 样本数不一致：CSV={csvCount} BIN={binCount}。");
+
+            evidence.IsValid = true;
+            evidence.SampleCount = binCount;
+            evidence.FirstSampleUtc = firstUtc;
+            evidence.LastSampleUtc = lastUtc;
+            evidence.ValidationError = string.Empty;
+        }
+        catch (Exception ex)
+        {
+            evidence.IsValid = false;
+            evidence.ValidationError = $"EPB[{epbId}] Cycle={cycleNumber} 报警证据校验失败：{ex.Message}";
+        }
+
+        return evidence;
+    }
+
+    /// <summary>
     /// 将未完整完成的圈封为 canceled/failed。此类圈不参与成功计数和正常圈导出。
     /// </summary>
     public void AbortCycle(
@@ -1546,7 +1740,32 @@ SELECT epb_id, cycle_number, start_time, end_time, start_position, sample_count,
     /// <param name="epbId">EPB 通道号（1..12）</param>
     /// <param name="latestN">需要的圈数（取最近的 N 圈）</param>
     /// <returns>按圈号升序排列的圈信息列表。</returns>
-        private List<CycleInfo> GetLatestCycles(int epbId, int latestN, bool includeRunningCycle)
+    private CycleInfo GetCycleInfo(int epbId, int cycleNumber)
+    {
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = $@"
+SELECT epb_id, cycle_number, start_time, end_time, start_position, sample_count, status
+  FROM {TABLE_CYCLES}
+ WHERE epb_id=@e AND cycle_number=@c
+ LIMIT 1";
+        cmd.Parameters.AddWithValue("@e", epbId);
+        cmd.Parameters.AddWithValue("@c", cycleNumber);
+        using var rd = cmd.ExecuteReader();
+        if (!rd.Read())
+            throw new InvalidDataException($"EPB[{epbId}] Cycle={cycleNumber} 索引不存在。");
+        return new CycleInfo
+        {
+            EpbId = rd.GetInt32(0),
+            CycleNumber = rd.GetInt32(1),
+            StartTimeUtc = DateTime.Parse(rd.GetString(2)),
+            EndTimeUtc = rd.IsDBNull(3) ? (DateTime?)null : DateTime.Parse(rd.GetString(3)),
+            StartRecordIndex = rd.GetInt64(4),
+            SampleCount = rd.GetInt32(5),
+            Status = rd.GetString(6)
+        };
+    }
+
+    private List<CycleInfo> GetLatestCycles(int epbId, int latestN, bool includeRunningCycle)
     {
         latestN = Math.Max(1, latestN);
 
@@ -1620,7 +1839,19 @@ public sealed class CycleInfo
     public string Status { get; set; }
 }
 
-#region 接口（保持你原文件里的接口/适配器，未改动其签名）
+/// <summary>报警圈原子封存和文件校验结果。</summary>
+public sealed class AlarmCycleSnapshotEvidence
+{
+    public bool IsValid { get; set; }
+    public int SampleCount { get; set; }
+    public DateTime? FirstSampleUtc { get; set; }
+    public DateTime? LastSampleUtc { get; set; }
+    public string CsvPath { get; set; }
+    public string BinPath { get; set; }
+    public string ValidationError { get; set; }
+}
+
+#region 圈记录器接口与适配器
 
 /// <summary>
 ///     供 EpbManager 调用的“圈级记录器”接口；
@@ -1651,6 +1882,13 @@ public interface IEpbCycleRecorder
     /// <param name="finalN">截至报警发生时的样本数。</param>
     /// <param name="utcNow">报警发生时间（UTC）。</param>
     void AlarmCycle(int epbId, int cycleNumber, int finalN, DateTime utcNow);
+
+    /// <summary>原子冻结、导出、校验并封存当前报警圈。</summary>
+    AlarmCycleSnapshotEvidence SealAndExportAlarmCycle(
+        int epbId,
+        int cycleNumber,
+        string exportDir,
+        DateTime fallbackEndUtc);
 
     /// <summary>将取消/失败的半圈封账，但不计为成功圈。</summary>
     void AbortCycle(int epbId, int cycleNumber, int finalN, DateTime utcNow, string status);
@@ -1734,6 +1972,19 @@ public sealed class DiskWriterRecorderAdapter : IEpbCycleRecorder
     public void AlarmCycle(int epbId, int cycleNumber, int finalN, DateTime utcNow)
     {
         _writer.AlarmCycle(epbId, cycleNumber, finalN, utcNow);
+    }
+
+    public AlarmCycleSnapshotEvidence SealAndExportAlarmCycle(
+        int epbId,
+        int cycleNumber,
+        string exportDir,
+        DateTime fallbackEndUtc)
+    {
+        return _writer.SealAndExportAlarmCycle(
+            epbId,
+            cycleNumber,
+            exportDir,
+            fallbackEndUtc);
     }
 
     public void AbortCycle(int epbId, int cycleNumber, int finalN, DateTime utcNow, string status)
