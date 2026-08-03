@@ -34,10 +34,10 @@ namespace AdaptiveControlTests
                 Run("夹紧阈值必须连续三样本确认", ClampNeedsThreeSamples);
                 Run("稳定模型后连续50圈仍记录正向空行程", StableProfileKeepsLearningForFiftyCycles);
                 Run("正向未进入负载上升按模型期限硬停", ForwardLoadRiseDeadlineFaults);
-                Run("正向平台不足1000ms不误报且满窗硬停", ForwardCurrentRiseStallFaults);
+                Run("正向低平台200ms立即断电并软预警", ForwardCurrentRiseStallWarnsAndCutsPower);
                 Run("14.6A近目标平台200ms软完成", NearTargetPlateauCompletesWithWarning);
                 Run("13.9A短平台恢复后不误停", LowPlateauRecoversBeforeFaultWindow);
-                Run("13.9A持续1000ms按真实失速硬停", Sustained139AmpPlateauFaults);
+                Run("13.9A持续平台按低目标预警完成", Sustained139AmpPlateauWarns);
                 Run("EPB10第28圈全数据峰值回放", Epb10Cycle28FullRatePeakReplay);
                 Run("正向正常爬升穿越半目标值不误报平台", ForwardRampThroughHalfTargetDoesNotFault);
                 Run("反向动态释放", ReverseRelease);
@@ -64,12 +64,14 @@ namespace AdaptiveControlTests
                 Run("项目XML不再保存程序级安全参数", ProjectXmlIgnoresProgramSafetySettings);
                 Run("EXE安全配置缺失非法时使用安全默认值", ProgramSafetySettingsValidation);
                 Run("程序安全配置快照包含值与来源", ProgramSafetySnapshotIsAuditable);
+                Run("报警配置加载正向低平台连续5圈", AlarmConfigLoadsForwardStallConfirmation);
                 Run("旧项目100ms断电清零配置自动迁移", LegacyShortOffTimeoutIsMigrated);
                 Run("模型原子保存与重载", ProfilePersistence);
                 Run("控流模型五圈收敛到目标带", CutoffModelConvergesWithinFiveCycles);
                 Run("峰值系统偏差用于提前断电补偿", PeakBiasCorrectionIsLearned);
                 Run("偶发超调不累计为连续硬故障", OvershootStreakRequiresConsecutiveCycles);
-                Run("版本1模型无损升级到版本2", VersionOneProfileMigrates);
+                Run("正向低平台连续5圈确认且正常圈清零", ForwardStallStreakRequiresFiveCycles);
+                Run("版本1模型无损升级到版本3", VersionOneProfileMigrates);
                 Run("损坏模型回退", CorruptProfileFallback);
                 Run("周期超限不追赶且圈号连续", TimerDoesNotCatchUp);
                 Run("新运行复位报警停机锁存", AlarmStopLatchResetsForNewRun);
@@ -305,7 +307,7 @@ namespace AdaptiveControlTests
 
         private static void ForwardLoadRiseDeadlineFaults()
         {
-            // 首次完全释放后的学习圈尚无稳定模型，应使用配置的5000ms空行程期限。
+            // 首次完全释放后的学习圈尚无稳定模型，应使用配置的3000ms空行程期限。
             var machine = NewMachine();
             machine.ArmForward(Tick(0), 100, 6500, 15, 1, 3);
             EpbAdaptiveDecision terminal = null;
@@ -320,12 +322,12 @@ namespace AdaptiveControlTests
             Assert(
                 terminal != null &&
                 terminal.Reason.Contains("ForwardLoadRiseNotStarted") &&
-                terminal.ElapsedMs >= 5000 &&
-                terminal.ElapsedMs <= 5050,
-                "首次完全释放后的空行程未按5000ms进展期限硬停");
+                terminal.ElapsedMs >= 3000 &&
+                terminal.ElapsedMs <= 3050,
+                "首次完全释放后的空行程未按3000ms进展期限硬停");
         }
 
-        private static void ForwardCurrentRiseStallFaults()
+        private static void ForwardCurrentRiseStallWarnsAndCutsPower()
         {
             var machine = new EpbAdaptiveCurrentStateMachine(StableProfile());
             machine.ArmForward(Tick(0), 100, 9000, 15, 0, 3);
@@ -338,16 +340,21 @@ namespace AdaptiveControlTests
                 ms => Math.Min(13.6, 1.0 + (ms - 1000) * 0.0085));
             Assert(!ramp.ClampReached && !ramp.HardFault, "正向13.6A平台形成前已误判终态");
 
-            var transient = Feed(machine, 2510, 3370, 10, _ => 13.6);
-            Assert(!transient.HardFault, "不足1000ms的正向平台被误报失速");
-
-            var fault = Feed(machine, 3380, 3600, 10, _ => 13.6);
+            var transient = Feed(machine, 2510, 2620, 10, _ => 13.6);
             Assert(
-                fault.HardFault &&
-                fault.Reason.Contains("ForwardCurrentRiseStalled") &&
-                fault.WindowSpanMs >= 1000 &&
-                fault.ElapsedMs <= 3540,
-                "正向平台未在完整1000ms确认窗口后硬停");
+                !transient.HardFault && !transient.ClampReached,
+                "不足200ms的正向平台被提前断电");
+
+            var warning = Feed(machine, 2630, 2850, 10, _ => 13.6);
+            Assert(
+                warning.ClampReached &&
+                warning.SoftWarning &&
+                !warning.HardFault &&
+                warning.CutoffReason == "LowTargetPlateau" &&
+                warning.Reason.Contains("ClampReachedLowTargetPlateau") &&
+                warning.WindowSpanMs >= 200 &&
+                warning.ElapsedMs <= 2760,
+                "正向低平台未在完整200ms确认窗口后断电并软预警");
         }
 
         private static void NearTargetPlateauCompletesWithWarning()
@@ -385,17 +392,17 @@ namespace AdaptiveControlTests
                 10,
                 ms => Math.Min(13.9, 1.0 + (ms - 1000) * 0.0085));
 
-            var shortPlateau = Feed(machine, 2610, 3400, 10, _ => 13.9);
+            var shortPlateau = Feed(machine, 2610, 2660, 10, _ => 13.9);
             Assert(
                 !shortPlateau.HardFault && !shortPlateau.ClampReached,
-                "13.9A不足1000ms的短平台被误停");
+                "13.9A不足200ms的短平台被误停");
 
             var recovered = Feed(
                 machine,
-                3410,
-                3700,
+                2670,
+                3100,
                 10,
-                ms => Math.Min(15.0, 13.9 + (ms - 3400) * 0.01));
+                ms => Math.Min(15.0, 13.9 + (ms - 2660) * 0.01));
             Assert(
                 recovered.ClampReached && !recovered.HardFault,
                 "13.9A短平台恢复上升后未能正常夹紧");
@@ -425,7 +432,7 @@ namespace AdaptiveControlTests
                 "EPB10第28圈未按15.301A全数据峰值正常断电");
         }
 
-        private static void Sustained139AmpPlateauFaults()
+        private static void Sustained139AmpPlateauWarns()
         {
             var machine = new EpbAdaptiveCurrentStateMachine(StableProfile());
             machine.ArmForward(Tick(0), 100, 9000, 15, 0, 3);
@@ -437,12 +444,14 @@ namespace AdaptiveControlTests
                 10,
                 ms => Math.Min(13.9, 1.0 + (ms - 1000) * 0.0085));
 
-            var fault = Feed(machine, 2610, 3800, 10, _ => 13.9);
+            var warning = Feed(machine, 2610, 3000, 10, _ => 13.9);
             Assert(
-                fault.HardFault &&
-                fault.Reason.Contains("ForwardCurrentRiseStalled") &&
-                fault.WindowSpanMs >= 1000,
-                "低于14.2A的13.9A平台持续1000ms后未按真实失速硬停");
+                warning.ClampReached &&
+                warning.SoftWarning &&
+                !warning.HardFault &&
+                warning.CutoffReason == "LowTargetPlateau" &&
+                warning.WindowSpanMs >= 200,
+                "低于14.2A的13.9A平台持续200ms后未断电并转为软预警");
         }
 
         private static void ForwardRampThroughHalfTargetDoesNotFault()
@@ -809,11 +818,11 @@ namespace AdaptiveControlTests
                     new System.Collections.Specialized.NameValueCollection(),
                     NullLogger.Instance);
                 Assert(
-                    program.ForwardProgressConfirmMs == 1000 &&
-                    program.ForwardProgressDeadlineMs == 5000 &&
+                    program.ForwardProgressConfirmMs == 200 &&
+                    program.ForwardProgressDeadlineMs == 3000 &&
                     program.ReverseProgressConfirmMs == 200 &&
                     program.OffCurrentClearTimeoutMs == 1000,
-                    "旧项目200/3000错误覆盖了程序级安全策略");
+                    "程序级安全策略未采用已恢复的200/3000默认值");
             }
             finally
             {
@@ -827,9 +836,9 @@ namespace AdaptiveControlTests
                 new System.Collections.Specialized.NameValueCollection(),
                 NullLogger.Instance);
             Assert(
-                missing.ForwardProgressConfirmMs == 1000 &&
+                missing.ForwardProgressConfirmMs == 200 &&
                 Math.Abs(missing.ForwardMinimumRiseSlopeAperMs - 0.001) < 1e-9 &&
-                missing.ForwardProgressDeadlineMs == 5000 &&
+                missing.ForwardProgressDeadlineMs == 3000 &&
                 missing.ForwardNearTargetConfirmMs == 200 &&
                 Math.Abs(missing.ForwardAcceptableUndershootA - 0.8) < 1e-9 &&
                 missing.ReverseProgressConfirmMs == 200 &&
@@ -840,9 +849,9 @@ namespace AdaptiveControlTests
 
             var invalidValues = new System.Collections.Specialized.NameValueCollection
             {
-                ["EpbForwardProgressConfirmMs"] = "200",
+                ["EpbForwardProgressConfirmMs"] = "20",
                 ["EpbForwardMinimumRiseSlopeAperMs"] = "not-a-number",
-                ["EpbForwardProgressDeadlineMs"] = "3000",
+                ["EpbForwardProgressDeadlineMs"] = "300",
                 ["EpbForwardNearTargetConfirmMs"] = "20",
                 ["EpbForwardAcceptableUndershootA"] = "-1",
                 ["EpbReverseProgressConfirmMs"] = "100",
@@ -854,9 +863,9 @@ namespace AdaptiveControlTests
                 invalidValues,
                 NullLogger.Instance);
             Assert(
-                normalized.ForwardProgressConfirmMs == 1000 &&
+                normalized.ForwardProgressConfirmMs == 200 &&
                 Math.Abs(normalized.ForwardMinimumRiseSlopeAperMs - 0.001) < 1e-9 &&
-                normalized.ForwardProgressDeadlineMs == 5000 &&
+                normalized.ForwardProgressDeadlineMs == 3000 &&
                 normalized.ForwardNearTargetConfirmMs == 100 &&
                 Math.Abs(normalized.ForwardAcceptableUndershootA - 0.8) < 1e-9 &&
                 normalized.ReverseProgressConfirmMs == 200 &&
@@ -882,7 +891,7 @@ namespace AdaptiveControlTests
                 var path = settings.SaveEffectiveSnapshot(directory, NullLogger.Instance);
                 var xml = File.ReadAllText(path);
                 Assert(
-                    xml.Contains("policyVersion=\"2026.07.31.1\"") &&
+                    xml.Contains("policyVersion=\"2026.07.31.2\"") &&
                     xml.Contains("key=\"EpbForwardProgressConfirmMs\" value=\"1200\" source=\"appSettings\"") &&
                     xml.Contains("key=\"EpbForwardProgressDeadlineMs\" value=\"6000\" source=\"appSettings\"") &&
                     xml.Contains("key=\"EpbReverseProgressConfirmMs\" value=\"200\" source=\"compiled-default\""),
@@ -892,6 +901,23 @@ namespace AdaptiveControlTests
             {
                 Directory.Delete(directory, true);
             }
+        }
+
+        private static void AlarmConfigLoadsForwardStallConfirmation()
+        {
+            var source = Path.GetFullPath(Path.Combine(
+                AppDomain.CurrentDomain.BaseDirectory,
+                "..",
+                "..",
+                "..",
+                "..",
+                "MTTfTest",
+                "Config",
+                "AlarmConfig.xml"));
+            var loaded = AlarmConfigLoader.Load(source);
+            Assert(
+                loaded.Behavior.AdaptiveForwardStallConfirmCycles == 5,
+                "AlarmConfig.xml 未加载正向低平台连续5圈确认值");
         }
 
         private static void LegacyShortOffTimeoutIsMigrated()
@@ -1033,13 +1059,16 @@ namespace AdaptiveControlTests
                 for (var i = 0; i < 5; i++)
                     profile.AddSuccessfulCycle(1.0 + i * 0.01, 0.8 + i * 0.01, 3000 + i * 10, 1200 + i * 5);
                 profile.TryAddCutoffObservation(15.0, 14.5, 0.05, 15.0, out _);
+                profile.UpdateForwardStallStreak(true);
+                profile.UpdateForwardStallStreak(true);
                 store.Save(profile);
 
                 var loaded = new EpbAdaptiveProfileStore(dir).GetOrCreate(10);
                 Assert(loaded.ValidSampleCount == 5, "模型样本数未持久化");
                 Assert(loaded.IsStable, "五圈后模型未进入稳定状态");
-                Assert(loaded.ModelVersion == 2, "控流模型未保存为版本2");
+                Assert(loaded.ModelVersion == 3, "控流模型未保存为版本3");
                 Assert(loaded.ValidCutoffSampleCount == 1, "控流样本数未持久化");
+                Assert(loaded.ConsecutiveForwardStallCount == 2, "正向低平台连续计数未持久化");
                 Assert(Math.Abs(loaded.ForwardCutoffLeadMedianMs - 10.0) < 0.01,
                     "控流提前时间未持久化");
                 Assert(File.Exists(Path.Combine(dir, "EpbAdaptiveProfiles.xml")), "模型文件不存在");
@@ -1110,6 +1139,40 @@ namespace AdaptiveControlTests
                 "连续超调第3圈未达到确认值");
         }
 
+        private static void ForwardStallStreakRequiresFiveCycles()
+        {
+            var profile = StableProfile();
+            for (var cycle = 1; cycle <= 4; cycle++)
+            {
+                Assert(
+                    profile.UpdateForwardStallStreak(true) == cycle,
+                    $"正向低平台第{cycle}圈连续计数错误");
+                Assert(
+                    profile.ConsecutiveForwardStallCount < 5,
+                    $"正向低平台第{cycle}圈被过早确认为硬故障");
+                Assert(
+                    !EpbCycleRunner.IsForwardStallConfirmed(
+                        profile.ConsecutiveForwardStallCount,
+                        5),
+                    $"正向低平台第{cycle}圈被升级策略过早确认");
+            }
+
+            Assert(
+                profile.UpdateForwardStallStreak(true) == 5,
+                "正向低平台第5圈未达到硬故障确认值");
+            Assert(
+                EpbCycleRunner.IsForwardStallConfirmed(
+                    profile.ConsecutiveForwardStallCount,
+                    5),
+                "正向低平台第5圈未被升级策略确认");
+            Assert(
+                profile.UpdateForwardStallStreak(false) == 0,
+                "正常或近目标圈未清零正向低平台连续计数");
+            Assert(
+                profile.UpdateForwardStallStreak(true) == 1,
+                "清零后的下一次低平台未从1重新计数");
+        }
+
         private static void VersionOneProfileMigrates()
         {
             var dir = CreateTempDir();
@@ -1142,9 +1205,11 @@ namespace AdaptiveControlTests
                 loaded.TryAddCutoffObservation(15.0, 14.5, 0.05, 15.0, out _);
                 store.Save(loaded);
                 var migrated = new EpbAdaptiveProfileStore(dir).GetOrCreate(10);
-                Assert(migrated.ModelVersion == 2, "版本1模型首次控流保存后未升级");
+                Assert(migrated.ModelVersion == 3, "版本1模型首次控流保存后未升级");
                 Assert(migrated.ValidSampleCount == 5 && migrated.ValidCutoffSampleCount == 1,
                     "模型升级破坏原有样本或新增控流样本");
+                Assert(migrated.ConsecutiveForwardStallCount == 0,
+                    "旧模型迁移时错误产生正向低平台连续计数");
             }
             finally
             {
@@ -1747,7 +1812,7 @@ namespace AdaptiveControlTests
                 $"状态窗口样本未保持有界：max={maximumRetainedSamples}");
 
             // 同一套策略仍须及时拦截真实低平台、开路和DAQ断流。
-            ForwardCurrentRiseStallFaults();
+            ForwardCurrentRiseStallWarnsAndCutsPower();
             OpenCircuit();
             DaqStale();
         }

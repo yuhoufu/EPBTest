@@ -39,6 +39,11 @@ namespace Controller
         private const double MaxTrustedOffCurrentBaselineA = 0.20;
         private const double MaxAdaptiveOffCurrentThresholdA = 0.25;
 
+        internal static bool IsForwardStallConfirmed(int streak, int confirmCycles)
+        {
+            return streak >= Math.Max(1, confirmCycles);
+        }
+
         internal event Action<AdaptiveDecisionTraceEvent> AdaptiveDecisionObserved;
 
         public EpbCycleOutcome LastCycleOutcome { get; private set; } =
@@ -342,7 +347,13 @@ namespace Controller
             if (decision.SoftWarning)
             {
                 _adaptiveSoftWarningSeen = true;
-                if (Interlocked.Exchange(ref _adaptiveWarningLatched, 1) == 0)
+                var deferLowPlateauWarning =
+                    string.Equals(
+                        decision.CutoffReason,
+                        "LowTargetPlateau",
+                        StringComparison.Ordinal);
+                if (!deferLowPlateauWarning &&
+                    Interlocked.Exchange(ref _adaptiveWarningLatched, 1) == 0)
                     RaiseAdaptiveWarning(decision.Reason);
             }
 
@@ -786,6 +797,65 @@ namespace Controller
                         "EPB");
                 }
 
+                var acceptableFloorA = Math.Max(
+                    0,
+                    _posThrA - _adaptiveSafetyLimits.ForwardAcceptableUndershootA);
+                var observedPeakA = peakCaptureValid
+                    ? _adaptiveForwardPeakA
+                    : Math.Max(
+                        Math.Max(0, forward.CutoffCurrentA),
+                        double.IsNaN(forward.ObservedFullRatePeakA) ||
+                        double.IsInfinity(forward.ObservedFullRatePeakA)
+                            ? 0
+                            : forward.ObservedFullRatePeakA);
+                var lowTargetPlateau =
+                    string.Equals(
+                        forward.CutoffReason,
+                        "LowTargetPlateau",
+                        StringComparison.Ordinal) &&
+                    observedPeakA < acceptableFloorA;
+                var stallStreak = _adaptiveProfile.UpdateForwardStallStreak(lowTargetPlateau);
+                _adaptiveStateMachine.UpdateProfile(_adaptiveProfile);
+                try { _saveAdaptiveProfile?.Invoke(_adaptiveProfile.Clone()); }
+                catch (Exception ex)
+                {
+                    _log?.Warn($"EPB[{_channel}] 正向低平台连续计数保存失败：{ex.Message}", "EPB");
+                }
+
+                if (lowTargetPlateau &&
+                    IsForwardStallConfirmed(
+                        stallStreak,
+                        _adaptiveForwardStallConfirmCycles))
+                {
+                    await hydraulicReleaseTask.ConfigureAwait(false);
+                    DisarmAdaptiveMonitoring();
+                    var reason =
+                        $"ForwardCurrentRiseStalled Peak={observedPeakA:F3}A " +
+                        $"Floor={acceptableFloorA:F3}A Target={_posThrA:F3}A " +
+                        $"slope={forward.EstimatedSlopeAperMs:F6}A/ms " +
+                        $"window={forward.WindowSpanMs}ms median={forward.WindowMedianA:F3}A " +
+                        $"Streak={stallStreak}/{_adaptiveForwardStallConfirmCycles}";
+                    try { AlarmRaised?.Invoke(_channel, "AdaptiveHardFault " + reason); }
+                    catch { }
+                    return new EpbCycleOutcome
+                    {
+                        Kind = EpbCycleOutcomeKind.HardFault,
+                        Stage = EpbCurrentStage.ClampReached,
+                        Reason = reason,
+                        ForwardElapsedMs = _adaptiveForwardElapsedMs,
+                        PeakCurrentA = observedPeakA,
+                        ControlPeakCurrentA = _adaptiveForwardControlPeakA,
+                        TargetCurrentA = _posThrA,
+                        CutoffCurrentA = forward.CutoffCurrentA,
+                        EstimatedSlopeAperMs = forward.EstimatedSlopeAperMs,
+                        PredictedPeakA = forward.PredictedPeakA,
+                        PredictionLeadMs = forward.PredictionLeadMs,
+                        PeakErrorA = observedPeakA - _posThrA,
+                        CutoffReason = forward.CutoffReason,
+                        ForwardEmptyCurrentA = _adaptiveForwardEmptyA
+                    };
+                }
+
                 var immediateOvershoot =
                     peakCaptureValid &&
                     _overshootAlarmDeltaA > 0 &&
@@ -837,12 +907,26 @@ namespace Controller
                         "本圈继续完成反向释放，控流模型已提前修正下一圈断电点。");
                 }
 
-                if (peakCaptureValid && peakErrorA < -balancedUndershootWarningA)
+                if (peakCaptureValid &&
+                    !lowTargetPlateau &&
+                    peakErrorA < -balancedUndershootWarningA)
                 {
                     _adaptiveSoftWarningSeen = true;
                     RaiseAdaptiveWarning(
                         $"正向实际峰值低于目标：Peak={_adaptiveForwardPeakA:F3}A，" +
                         $"Target={_posThrA:F3}A，Error={peakErrorA:F3}A；控流模型将自动缩短提前量。");
+                }
+
+                if (lowTargetPlateau)
+                {
+                    _adaptiveSoftWarningSeen = true;
+                    RaiseAdaptiveWarning(
+                        $"正向低于合格下限的平台停滞：Peak={observedPeakA:F3}A，" +
+                        $"Floor={acceptableFloorA:F3}A，Target={_posThrA:F3}A，" +
+                        $"Slope={forward.EstimatedSlopeAperMs:F6}A/ms，" +
+                        $"Window={forward.WindowSpanMs}ms，" +
+                        $"连续={stallStreak}/{_adaptiveForwardStallConfirmCycles}；" +
+                        "已立即断开正向电，本圈继续完成反向释放并计数。");
                 }
 
                 await hydraulicReleaseTask.ConfigureAwait(false);

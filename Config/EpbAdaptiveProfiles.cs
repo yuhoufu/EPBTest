@@ -25,7 +25,7 @@ namespace Config
     /// </summary>
     public sealed class EpbAdaptiveProfile
     {
-        public const int CurrentModelVersion = 2;
+        public const int CurrentModelVersion = 3;
         private const int HistoryCapacity = 30;
         private const double MinimumCutoffSlopeAperMs = 0.001;
         private const double MaximumCutoffLeadMs = 100.0;
@@ -52,6 +52,7 @@ namespace Config
         public double ForwardPeakErrorMadA { get; set; }
         public int ValidCutoffSampleCount { get; set; }
         public int ConsecutiveForwardOvershootCount { get; set; }
+        public int ConsecutiveForwardStallCount { get; set; }
         public DateTime UpdatedUtc { get; set; }
 
         [XmlArrayItem("Value")]
@@ -184,6 +185,19 @@ namespace Config
             return ConsecutiveForwardOvershootCount;
         }
 
+        /// <summary>
+        /// 更新正向低于合格下限的平台停滞连续圈数；任一正常或近目标圈立即清零。
+        /// </summary>
+        public int UpdateForwardStallStreak(bool lowTargetPlateau)
+        {
+            ConsecutiveForwardStallCount = lowTargetPlateau
+                ? ConsecutiveForwardStallCount + 1
+                : 0;
+            ModelVersion = CurrentModelVersion;
+            UpdatedUtc = DateTime.UtcNow;
+            return ConsecutiveForwardStallCount;
+        }
+
         public EpbAdaptiveProfile Clone()
         {
             return new EpbAdaptiveProfile
@@ -206,6 +220,7 @@ namespace Config
                 ForwardPeakErrorMadA = ForwardPeakErrorMadA,
                 ValidCutoffSampleCount = ValidCutoffSampleCount,
                 ConsecutiveForwardOvershootCount = ConsecutiveForwardOvershootCount,
+                ConsecutiveForwardStallCount = ConsecutiveForwardStallCount,
                 UpdatedUtc = UpdatedUtc,
                 ForwardEmptyHistoryA = new List<double>(ForwardEmptyHistoryA ?? new List<double>()),
                 ReverseEmptyHistoryA = new List<double>(ReverseEmptyHistoryA ?? new List<double>()),

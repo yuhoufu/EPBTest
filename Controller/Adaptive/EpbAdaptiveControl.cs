@@ -134,9 +134,9 @@ namespace Controller.Adaptive
     /// </summary>
     public sealed class EpbAdaptiveSafetyLimits
     {
-        public int ForwardProgressConfirmMs { get; set; } = 1000;
+        public int ForwardProgressConfirmMs { get; set; } = 200;
         public double ForwardMinimumRiseSlopeAperMs { get; set; } = 0.001;
-        public int ForwardProgressDeadlineMs { get; set; } = 5000;
+        public int ForwardProgressDeadlineMs { get; set; } = 3000;
         public int ForwardNearTargetConfirmMs { get; set; } = 200;
         public double ForwardAcceptableUndershootA { get; set; } = 0.8;
         public int ReverseProgressConfirmMs { get; set; } = 200;
@@ -147,7 +147,7 @@ namespace Controller.Adaptive
 
         public EpbAdaptiveSafetyLimits Normalized()
         {
-            var forwardConfirm = Math.Max(1000, ForwardProgressConfirmMs);
+            var forwardConfirm = Math.Max(200, ForwardProgressConfirmMs);
             var nearTargetConfirm = Math.Max(
                 100,
                 Math.Min(forwardConfirm, ForwardNearTargetConfirmMs));
@@ -156,7 +156,7 @@ namespace Controller.Adaptive
             {
                 ForwardProgressConfirmMs = forwardConfirm,
                 ForwardMinimumRiseSlopeAperMs = Math.Max(0.00001, ForwardMinimumRiseSlopeAperMs),
-                ForwardProgressDeadlineMs = Math.Max(5000, Math.Max(forwardConfirm, ForwardProgressDeadlineMs)),
+                ForwardProgressDeadlineMs = Math.Max(3000, Math.Max(forwardConfirm, ForwardProgressDeadlineMs)),
                 ForwardNearTargetConfirmMs = nearTargetConfirm,
                 ForwardAcceptableUndershootA = Math.Max(0.1, ForwardAcceptableUndershootA),
                 ReverseProgressConfirmMs = reverseConfirm,
@@ -568,7 +568,15 @@ namespace Controller.Adaptive
                 }
 
                 var stallProbeMs = _safetyLimits.ForwardNearTargetConfirmMs;
+                var forwardEmptyBaselineA =
+                    _profile.IsStable && _profile.ForwardEmptyCurrentA > 0
+                        ? _profile.ForwardEmptyCurrentA
+                        : Math.Max(1.0, _observedForwardEmptyA);
+                var highLoadPlateauFloorA = Math.Max(
+                    forwardEmptyBaselineA + 2.0,
+                    _forwardA * 0.60);
                 if (_loadRiseStartTick != 0 &&
+                    effectiveObservedPeakA >= highLoadPlateauFloorA &&
                     TryGetLinearSlope(
                         tick,
                         stallProbeMs + 20,
@@ -618,12 +626,19 @@ namespace Controller.Adaptive
                     {
                         ApplyWindowDiagnostics(decision, progressStats);
                         decision.EstimatedSlopeAperMs = progressSlope;
-                        Fault(
+                        decision.SoftWarning = true;
+                        CompleteForwardClamp(
                             decision,
-                            $"ForwardCurrentRiseStalled slope={progressSlope:F6}A/ms " +
+                            current,
+                            progressSlope,
+                            effectiveObservedPeakA,
+                            0,
+                            "LowTargetPlateau",
+                            $"ClampReachedLowTargetPlateau Peak={effectiveObservedPeakA:F3}A " +
+                            $"I={current:F3}A Floor={acceptableFloorA:F3}A Target={_forwardA:F3}A " +
+                            $"slope={progressSlope:F6}A/ms " +
                             $"limit={_safetyLimits.ForwardMinimumRiseSlopeAperMs:F6}A/ms " +
-                            $"window={progressStats.SpanMs}ms median={progressStats.Median:F3}A " +
-                            $"Target={_forwardA:F3}A");
+                            $"confirm={progressStats.SpanMs}ms");
                         return;
                     }
                 }

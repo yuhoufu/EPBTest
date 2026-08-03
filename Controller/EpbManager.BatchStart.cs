@@ -967,6 +967,8 @@ namespace Controller
                     AlarmConfig?.Behavior?.AdaptiveOvershootWarningDeltaA ?? 0.8,
                 adaptiveOvershootConfirmCycles:
                     AlarmConfig?.Behavior?.AdaptiveOvershootConfirmCycles ?? 3,
+                adaptiveForwardStallConfirmCycles:
+                    AlarmConfig?.Behavior?.AdaptiveForwardStallConfirmCycles ?? 5,
                 safetyMarginControlMode: _safetyMarginControlMode,
                 epbControlMode: GetEpbControlMode(channel),
                 adaptiveShadowMode: _adaptiveShadowMode,

@@ -95,6 +95,7 @@ namespace Controller
         private readonly double _overshootAlarmDeltaA = 0; // 正向峰值超阈值报警增量（A）；<=0 表示禁用（由 AlarmConfig.xml 注入）
         private readonly double _adaptiveOvershootWarningDeltaA = 0.8;
         private readonly int _adaptiveOvershootConfirmCycles = 3;
+        private readonly int _adaptiveForwardStallConfirmCycles = 5;
 
         /// <summary>
         ///     报警事件：由 Runner 判定“异常/过流”等场景触发。
@@ -176,6 +177,7 @@ namespace Controller
             double overshootAlarmDeltaA = 0, // ★ 新增：峰值超限报警增量（A），<=0 禁用
             double adaptiveOvershootWarningDeltaA = 0.8,
             int adaptiveOvershootConfirmCycles = 3,
+            int adaptiveForwardStallConfirmCycles = 5,
             SafetyMarginControlMode safetyMarginControlMode = SafetyMarginControlMode.Legacy20251010,
             EpbControlMode epbControlMode = EpbControlMode.LegacyFixedTiming,
             bool adaptiveShadowMode = true,
@@ -194,6 +196,7 @@ namespace Controller
             _overshootAlarmDeltaA = overshootAlarmDeltaA;
             _adaptiveOvershootWarningDeltaA = Math.Max(0.1, adaptiveOvershootWarningDeltaA);
             _adaptiveOvershootConfirmCycles = Math.Max(1, adaptiveOvershootConfirmCycles);
+            _adaptiveForwardStallConfirmCycles = Math.Max(1, adaptiveForwardStallConfirmCycles);
             _safetyMarginControlMode = safetyMarginControlMode;
             _epbControlMode = epbControlMode;
             _adaptiveShadowMode = adaptiveShadowMode;

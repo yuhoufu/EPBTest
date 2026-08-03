@@ -92,6 +92,12 @@ namespace Config
         public int AdaptiveOvershootConfirmCycles { get; set; } = 3;
 
         /// <summary>
+        /// 自适应正向峰值低于合格下限且低斜率平台连续出现多少圈后升级为硬故障。
+        /// 单圈只立即断正向电、软预警并继续完成反向释放。
+        /// </summary>
+        public int AdaptiveForwardStallConfirmCycles { get; set; } = 5;
+
+        /// <summary>
         /// 报警触发时导出最近 N 圈（含当前 running 圈）。
         /// </summary>
         public int SnapshotLastNCycles { get; set; } = 10;
