@@ -19,6 +19,64 @@ using System.Threading.Tasks;
 
 namespace IO.NI
 {
+    /// <summary>带新鲜度证据的压力快照。</summary>
+    public readonly struct PressureSample
+    {
+        public PressureSample(int hydraulicId, double valueBar, DateTime timestampUtc, long monotonicTicks)
+        {
+            HydraulicId = hydraulicId;
+            ValueBar = valueBar;
+            TimestampUtc = timestampUtc.Kind == DateTimeKind.Utc
+                ? timestampUtc
+                : timestampUtc.ToUniversalTime();
+            MonotonicTicks = monotonicTicks;
+        }
+
+        public int HydraulicId { get; }
+        public double ValueBar { get; }
+        public DateTime TimestampUtc { get; }
+        public long MonotonicTicks { get; }
+        public bool IsFinite => !double.IsNaN(ValueBar) && !double.IsInfinity(ValueBar);
+        public double AgeMs => MonotonicTicks <= 0
+            ? double.PositiveInfinity
+            : (Stopwatch.GetTimestamp() - MonotonicTicks) * 1000.0 / Stopwatch.Frequency;
+    }
+
+    public sealed class DaqFreshnessSnapshot
+    {
+        public string Device { get; set; } = string.Empty;
+        public long LastArrivalMonotonicTicks { get; set; }
+        public double AgeMs { get; set; }
+        public bool IsFresh { get; set; }
+    }
+
+    public sealed class DaqRecoveryResult
+    {
+        public string Device { get; set; } = string.Empty;
+        public bool Recovered { get; set; }
+        public int FreshCallbacks { get; set; }
+        public int RequiredFreshCallbacks { get; set; }
+        public int ElapsedMs { get; set; }
+        public string FailureReason { get; set; } = string.Empty;
+    }
+
+    public sealed class PeakCaptureToken
+    {
+        public Guid CaptureId { get; set; }
+        public Guid TestRunId { get; set; }
+        public int Channel { get; set; }
+        public int CycleNumber { get; set; }
+        public DateTime StartUtc { get; set; }
+    }
+
+    public sealed class PeakCaptureResult
+    {
+        public PeakCaptureToken Token { get; set; }
+        public TwoDeviceAiAcquirer.EpbCurrentPeak Peak { get; set; }
+        public bool IsMatched { get; set; }
+        public string QualityReason { get; set; } = string.Empty;
+    }
+
     /// <summary>
     ///     双设备（Dev1/Dev2）AI 连续采样管理器：
     ///     - DAQ 回调线程提供低时延的“最后一个样本”快速工程值（未滤波），并写入 _lastFastValue；
@@ -43,6 +101,7 @@ namespace IO.NI
 
         // 2) 滤波后快照（在后台线程中写入）：已滤波、用于 UI / 统计 / 报表
         private readonly ConcurrentDictionary<string, double> _lastFilteredValue = new();
+        private readonly ConcurrentDictionary<string, PressureSample> _lastPressureSample = new();
 
         private readonly ILogger _log;
         private readonly int _medianLens;
@@ -50,6 +109,7 @@ namespace IO.NI
         private readonly ConcurrentQueue<Item> _queue = new();
         private readonly double _sampleRate;
         private readonly int _samplesPerChannel;
+        public double SampleRate => _sampleRate;
 
         // 时间戳（模仿 FrmMainMonitor）
         private readonly HighResolutionSampleClock _sampleClock = new();
@@ -120,6 +180,7 @@ namespace IO.NI
         ///     DAQ 回调节拍诊断状态表：key 为设备名（如 Dev1/Dev2）。
         /// </summary>
         private readonly ConcurrentDictionary<string, CallbackTimingDiag> _callbackTimingDiag = new();
+        private readonly ConcurrentDictionary<string, SemaphoreSlim> _recoveryGates = new();
 
         // EPB 通道 -> 设备（Dev1/Dev2）映射：用于把“触发时回调节拍”关联到具体 EPB 通道
         private readonly Dictionary<int, string> _epbChannelToDevice = new();
@@ -602,6 +663,15 @@ namespace IO.NI
             return 0.0;
         }
 
+        /// <summary>读取实际压力及其采集新鲜度；尚未收到样本时返回无效快照。</summary>
+        public PressureSample ReadPressureSample(int id)
+        {
+            var key = $"Pressure_{id}";
+            return _lastPressureSample.TryGetValue(key, out var sample)
+                ? sample
+                : new PressureSample(id, double.NaN, DateTime.MinValue, 0);
+        }
+
         /// <summary>
         ///     明确读取滤波后的压力值（UI/统计推荐使用）。
         /// </summary>
@@ -669,6 +739,95 @@ namespace IO.NI
             batchN = diag.LastBatchN;
             fs = diag.LastFs;
             return true;
+        }
+
+        public string GetDeviceForEpbChannel(int epbChannel)
+        {
+            return _epbChannelToDevice.TryGetValue(epbChannel, out var device) ? device : null;
+        }
+
+        public DaqFreshnessSnapshot GetDaqFreshnessSnapshot(string device, double maxAgeMs = 100)
+        {
+            if (string.IsNullOrWhiteSpace(device) ||
+                !_callbackTimingDiag.TryGetValue(device, out var diag))
+                return new DaqFreshnessSnapshot
+                {
+                    Device = device ?? string.Empty,
+                    AgeMs = double.PositiveInfinity,
+                    IsFresh = false
+                };
+
+            var tick = Interlocked.Read(ref diag.LastArrivalSwTick);
+            var ageMs = tick <= 0
+                ? double.PositiveInfinity
+                : (Stopwatch.GetTimestamp() - tick) * 1000.0 / Stopwatch.Frequency;
+            return new DaqFreshnessSnapshot
+            {
+                Device = device,
+                LastArrivalMonotonicTicks = tick,
+                AgeMs = ageMs,
+                IsFresh = tick > 0 && ageMs <= Math.Max(1, maxAgeMs)
+            };
+        }
+
+        /// <summary>串行重建指定EPB所属DAQ，并等待连续新鲜回调。</summary>
+        public async Task<DaqRecoveryResult> RecoverForEpbAsync(
+            int epbChannel,
+            int timeoutMs = 3000,
+            int requiredFreshCallbacks = 10,
+            int maxAgeMs = 100,
+            CancellationToken token = default)
+        {
+            var device = GetDeviceForEpbChannel(epbChannel);
+            if (string.IsNullOrWhiteSpace(device))
+                return new DaqRecoveryResult { FailureReason = $"EPB[{epbChannel}]未映射DAQ设备" };
+
+            var gate = _recoveryGates.GetOrAdd(device, _ => new SemaphoreSlim(1, 1));
+            await gate.WaitAsync(token).ConfigureAwait(false);
+            try
+            {
+                RestartDevice(device);
+                var clock = Stopwatch.StartNew();
+                var freshCount = 0;
+                long lastTick = 0;
+                while (clock.ElapsedMilliseconds <= Math.Max(1, timeoutMs))
+                {
+                    token.ThrowIfCancellationRequested();
+                    var snapshot = GetDaqFreshnessSnapshot(device, maxAgeMs);
+                    if (snapshot.IsFresh && snapshot.LastArrivalMonotonicTicks > lastTick)
+                    {
+                        lastTick = snapshot.LastArrivalMonotonicTicks;
+                        freshCount++;
+                        if (freshCount >= Math.Max(1, requiredFreshCallbacks))
+                            return new DaqRecoveryResult
+                            {
+                                Device = device,
+                                Recovered = true,
+                                FreshCallbacks = freshCount,
+                                RequiredFreshCallbacks = requiredFreshCallbacks,
+                                ElapsedMs = (int)clock.ElapsedMilliseconds
+                            };
+                    }
+                    else if (!snapshot.IsFresh)
+                    {
+                        freshCount = 0;
+                    }
+                    await Task.Delay(5, token).ConfigureAwait(false);
+                }
+                return new DaqRecoveryResult
+                {
+                    Device = device,
+                    Recovered = false,
+                    FreshCallbacks = freshCount,
+                    RequiredFreshCallbacks = requiredFreshCallbacks,
+                    ElapsedMs = (int)clock.ElapsedMilliseconds,
+                    FailureReason = "DaqRecoveryFreshnessTimeout"
+                };
+            }
+            finally
+            {
+                gate.Release();
+            }
         }
 
         public void Start(double aiMin = -10, double aiMax = 10,
@@ -1058,7 +1217,7 @@ namespace IO.NI
 
 
                     // 刷新“最近值”供控制逻辑查询（**改动：写入 _lastFilteredValue**）
-                    UpdateLastSnapshot(engFiltered, item.Device);
+                    UpdateLastSnapshot(engFiltered, item.Device, item.Current.ToUniversalTime());
 
                     // —— fast 快照语义 ——
                     // - 当 fast 来源为 DaqCallback：fast 由 DAQ 回调线程更新，后台线程不得覆盖；
@@ -1428,7 +1587,7 @@ namespace IO.NI
         /// </summary>
         /// <param name="engFiltered">滤波后的工程值矩阵（channels x samples）。</param>
         /// <param name="device">设备名（"Dev1" 或 "Dev2"）。</param>
-        private void UpdateLastSnapshot(double[,] engFiltered, string device)
+        private void UpdateLastSnapshot(double[,] engFiltered, string device, DateTime batchUtc)
         {
             var devRecs = _enabled
                 .Where(r => r.物理通道.StartsWith(device + "/"))
@@ -1440,8 +1599,25 @@ namespace IO.NI
             {
                 var rec = devRecs[c];
                 // 写入滤波后的快照（不覆盖 fast）
-                _lastFilteredValue[rec.参数名] = engFiltered[c, n - 1];
+                var value = engFiltered[c, n - 1];
+                _lastFilteredValue[rec.参数名] = value;
+                if (TryParsePressureId(rec.参数名, out var pressureId))
+                    _lastPressureSample[rec.参数名] = new PressureSample(
+                        pressureId,
+                        value,
+                        batchUtc,
+                        Stopwatch.GetTimestamp());
             }
+        }
+
+        private static bool TryParsePressureId(string parameterName, out int pressureId)
+        {
+            pressureId = 0;
+            if (string.IsNullOrWhiteSpace(parameterName)) return false;
+            const string prefix = "Pressure_";
+            return parameterName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) &&
+                   int.TryParse(parameterName.Substring(prefix.Length), out pressureId) &&
+                   pressureId > 0;
         }
 
         // —— 工具 —— //
@@ -1589,6 +1765,7 @@ namespace IO.NI
             public DateTime MaxAt;
             public double MaxAmp;
             public long SampleCount;
+            public PeakCaptureToken Token;
 
 
 
@@ -1597,7 +1774,7 @@ namespace IO.NI
 
 
             /// <summary>进入捕获状态并复位统计。</summary>
-            public void Arm(DateTime t0)
+            public void Arm(DateTime t0, PeakCaptureToken token = null)
             {
                 Active = true;
                 StartAt = t0;
@@ -1606,6 +1783,7 @@ namespace IO.NI
                 MaxAt = t0;
                 SampleCount = 0;
                 CutoffLocal = null; // 清空上次的截止
+                Token = token;
             }
 
             /// <summary>纳入一个样本（全数据逐点）。</summary>
@@ -1701,6 +1879,116 @@ namespace IO.NI
                 t.Arm(DateTime.Now);
             }
             _log?.Info($"EPB[{epbChannel}]（全数据）峰值捕获开始。", "AI");
+        }
+
+        /// <summary>以运行/圈身份开始峰值捕获；同通道新捕获会明确覆盖并复位旧状态。</summary>
+        public PeakCaptureToken BeginEpbCurrentPeak(int epbChannel, Guid testRunId, int cycleNumber)
+        {
+            if (epbChannel < 1 || epbChannel > 12)
+                throw new ArgumentOutOfRangeException(nameof(epbChannel));
+            var token = new PeakCaptureToken
+            {
+                CaptureId = Guid.NewGuid(),
+                TestRunId = testRunId,
+                Channel = epbChannel,
+                CycleNumber = cycleNumber,
+                StartUtc = DateTime.UtcNow
+            };
+            var tracker = _peakTrackers.GetOrAdd(epbChannel, _ => new PeakTracker());
+            lock (tracker.Sync) tracker.Arm(DateTime.Now, token);
+            _log?.Info(
+                $"EPB[{epbChannel}] 峰值捕获开始 CaptureId={token.CaptureId:N} " +
+                $"Run={testRunId:N} Cycle={cycleNumber}",
+                "AI");
+            return token;
+        }
+
+        public async Task<PeakCaptureResult> EndEpbCurrentPeakAsync(
+            PeakCaptureToken token,
+            int delayMs,
+            bool cutoffAfterDelay,
+            CancellationToken cancellationToken = default)
+        {
+            if (token == null) throw new ArgumentNullException(nameof(token));
+            if (!_peakTrackers.TryGetValue(token.Channel, out var tracker))
+                return new PeakCaptureResult { Token = token, IsMatched = false, QualityReason = "TrackerMissing" };
+            lock (tracker.Sync)
+            {
+                if (!IsPeakCaptureIdentityMatch(tracker.Token, token))
+                    return new PeakCaptureResult
+                    {
+                        Token = token,
+                        Peak = tracker.Snapshot(token.Channel),
+                        IsMatched = false,
+                        QualityReason = "CaptureIdentityMismatch"
+                    };
+            }
+
+            var peak = await EndEpbCurrentPeakAsync(
+                    token.Channel,
+                    delayMs,
+                    cutoffAfterDelay,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            var timeMatched = peak.StartAt.ToUniversalTime() >= token.StartUtc.AddMilliseconds(-50) &&
+                              peak.EndAt.ToUniversalTime() >= token.StartUtc;
+            return new PeakCaptureResult
+            {
+                Token = token,
+                Peak = peak,
+                IsMatched = timeMatched && peak.SampleCount > 0,
+                QualityReason = timeMatched && peak.SampleCount > 0 ? "Qualified" : "CaptureWindowInvalid"
+            };
+        }
+
+        public PeakCaptureResult PeekEpbCurrentPeak(PeakCaptureToken token)
+        {
+            if (token == null) throw new ArgumentNullException(nameof(token));
+            if (!_peakTrackers.TryGetValue(token.Channel, out var tracker))
+                return new PeakCaptureResult
+                {
+                    Token = token,
+                    IsMatched = false,
+                    QualityReason = "TrackerMissing"
+                };
+            lock (tracker.Sync)
+            {
+                var matched = IsPeakCaptureIdentityMatch(tracker.Token, token);
+                return new PeakCaptureResult
+                {
+                    Token = token,
+                    Peak = tracker.Snapshot(token.Channel),
+                    IsMatched = matched,
+                    QualityReason = matched ? "Qualified" : "CaptureIdentityMismatch"
+                };
+            }
+        }
+
+        public bool CancelEpbCurrentPeak(PeakCaptureToken token)
+        {
+            if (token == null) return false;
+            if (!_peakTrackers.TryGetValue(token.Channel, out var tracker)) return false;
+            lock (tracker.Sync)
+            {
+                if (!IsPeakCaptureIdentityMatch(tracker.Token, token)) return false;
+                tracker.Active = false;
+                tracker.SampleCount = 0;
+                tracker.MaxAmp = 0.0;
+                tracker.Token = null;
+            }
+            _log?.Warn(
+                $"EPB[{token.Channel}] 峰值捕获已按令牌取消 CaptureId={token.CaptureId:N}。",
+                "AI");
+            return true;
+        }
+
+        public static bool IsPeakCaptureIdentityMatch(PeakCaptureToken active, PeakCaptureToken requested)
+        {
+            return active != null && requested != null &&
+                   active.CaptureId == requested.CaptureId &&
+                   active.TestRunId == requested.TestRunId &&
+                   active.Channel == requested.Channel &&
+                   active.CycleNumber == requested.CycleNumber;
         }
 
         /// <summary>

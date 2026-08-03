@@ -9,6 +9,22 @@ using Task = System.Threading.Tasks.Task;
 
 namespace IO.NI
 {
+    public readonly struct AoWriteResult
+    {
+        public AoWriteResult(bool success, string deviceName, double commandPressureBar, double voltage)
+        {
+            Success = success;
+            DeviceName = deviceName ?? string.Empty;
+            CommandPressureBar = commandPressureBar;
+            Voltage = voltage;
+        }
+
+        public bool Success { get; }
+        public string DeviceName { get; }
+        public double CommandPressureBar { get; }
+        public double Voltage { get; }
+    }
+
     /// <summary>
     /// AO 控制器：基于配置文件统一管理多个 AO 通道（液压比例控制）。
     /// - 支持按百分比写入（内部转电压）
@@ -96,9 +112,15 @@ namespace IO.NI
         /// 按压力写入电压。
         /// </summary>
         public bool WritePressure(string deviceName, double pressure)
+            => WritePressureDetailed(deviceName, pressure).Success;
+
+        /// <summary>按压力标定写入，并返回实际限幅命令及换算电压。</summary>
+        public AoWriteResult WritePressureDetailed(string deviceName, double pressure)
         {
-            if (!_writers.TryGetValue(deviceName, out var writer)) return false;
-            if (!_cfg.Devices.TryGetValue(deviceName, out var dev)) return false;
+            if (!_writers.TryGetValue(deviceName, out var writer))
+                return new AoWriteResult(false, deviceName, pressure, double.NaN);
+            if (!_cfg.Devices.TryGetValue(deviceName, out var dev))
+                return new AoWriteResult(false, deviceName, pressure, double.NaN);
 
             // 限幅
             pressure = Math.Min(Math.Max(pressure, _cfg.MinPressure), _cfg.MaxPressure);
@@ -110,13 +132,13 @@ namespace IO.NI
             try
             {
                 writer.WriteSingleSample(true, v);
-                _log.Info($"AO[{deviceName}] 输出压力 {pressure:F1}% -> 电压 {v:F2} V", "AO");
-                return true;
+                _log.Info($"AO[{deviceName}] CommandPressure={pressure:F1}bar AoVoltage={v:F3}V", "AO");
+                return new AoWriteResult(true, deviceName, pressure, v);
             }
             catch (Exception ex)
             {
                 _log.Error($"AO[{deviceName}] 输出失败：{ex.Message}", "AO", ex);
-                return false;
+                return new AoWriteResult(false, deviceName, pressure, v);
             }
         }
 

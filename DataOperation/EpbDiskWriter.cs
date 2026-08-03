@@ -50,6 +50,15 @@ public sealed class DataRetentionPolicy
 
     /// <summary>SQLite 索引文件名（默认 "index.db"）。</summary>
     public string IndexDbFile { get; set; } = "index.db";
+
+    /// <summary>活动圈最大样本数；0表示不单独限制。</summary>
+    public int MaxActiveCycleRecords { get; set; }
+}
+
+public sealed class ActiveCycleDataLimitExceededException : InvalidOperationException
+{
+    public ActiveCycleDataLimitExceededException(int epbId, int cycleNumber, int limit)
+        : base($"ActiveCycleDataLimitExceeded EPB={epbId} Cycle={cycleNumber} Limit={limit}") { }
 }
 
 /// <summary>
@@ -160,6 +169,17 @@ public sealed class EpbDiskWriter : IDisposable
     private readonly SQLiteConnection _conn;
 
     private bool _disposed;
+
+    /// <summary>
+    /// 设置单个活动圈允许接收的最大样本数。0 表示不限制。
+    /// 该值只影响尚未写入的后续批次，不改写已经封存的数据。
+    /// </summary>
+    public void SetMaxActiveCycleRecords(int maxRecords)
+    {
+        if (maxRecords < 0)
+            throw new ArgumentOutOfRangeException(nameof(maxRecords));
+        _policy.MaxActiveCycleRecords = maxRecords;
+    }
 
     #endregion
 
@@ -737,6 +757,12 @@ public sealed class EpbDiskWriter : IDisposable
             if (s.CurrentCycle.HasValue)
             {
                 cycle = s.CurrentCycle.Value;
+                if (_policy.MaxActiveCycleRecords > 0 &&
+                    s.CurrentSampleIndex >= _policy.MaxActiveCycleRecords)
+                    throw new ActiveCycleDataLimitExceededException(
+                        epbId,
+                        cycle,
+                        _policy.MaxActiveCycleRecords);
                 sampleIndex = s.CurrentSampleIndex++;
             }
             else if (s.FreeRunOn)
@@ -782,8 +808,21 @@ public sealed class EpbDiskWriter : IDisposable
         if (tsUtc.Length != epbCurrents.Length || tsUtc.Length != groupPressures.Length)
             throw new ArgumentException("tsUtc/epbCurrents/groupPressures 长度必须一致");
 
-        for (var i = 0; i < tsUtc.Length; i++)
-            WriteSample(epbId, tsUtc[i], epbCurrents[i], groupPressures[i]);
+        var state = GetState(epbId);
+        lock (state.Gate)
+        {
+            if (state.CurrentCycle.HasValue &&
+                _policy.MaxActiveCycleRecords > 0 &&
+                state.CurrentSampleIndex + tsUtc.Length > _policy.MaxActiveCycleRecords)
+                throw new ActiveCycleDataLimitExceededException(
+                    epbId,
+                    state.CurrentCycle.Value,
+                    _policy.MaxActiveCycleRecords);
+
+            // Monitor 可重入；持有圈锁可保证整批要么全部接收，要么在上限检查处全部拒绝。
+            for (var i = 0; i < tsUtc.Length; i++)
+                WriteSample(epbId, tsUtc[i], epbCurrents[i], groupPressures[i]);
+        }
     }
 
     /// <summary>
@@ -887,6 +926,42 @@ public sealed class EpbDiskWriter : IDisposable
 
         Directory.CreateDirectory(exportDir);
         ExportCycleList(epbId, latestList, exportDir);
+    }
+
+    public CycleSnapshotEvidence ExportCompletedCycleTo(
+        int epbId,
+        int cycleNumber,
+        string exportDir,
+        bool saveCsv,
+        bool saveBin)
+    {
+        if (!saveCsv && !saveBin)
+            throw new ArgumentException("至少启用CSV或BIN一种快照格式。");
+        var cycle = GetCycleInfo(epbId, cycleNumber);
+        if (!string.Equals(cycle.Status, "completed", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException(
+                $"EPB[{epbId}] Cycle={cycleNumber} Status={cycle.Status} 不是完整正式圈。");
+        Directory.CreateDirectory(exportDir);
+        var csv = saveCsv ? Path.Combine(exportDir, $"EPB{epbId}_Cycle_{cycleNumber:D6}.csv") : null;
+        var bin = saveBin ? Path.Combine(exportDir, $"EPB{epbId}_Cycle_{cycleNumber:D6}.bin") : null;
+        if (saveCsv && saveBin)
+            ExportCyclePair(epbId, cycle, csv, bin, new ExportFormatOptions());
+        else if (saveCsv)
+            ExportCycleToCsv(epbId, cycle, csv);
+        else
+            ExportCycleToBin(epbId, cycle, bin);
+
+        return new CycleSnapshotEvidence
+        {
+            EpbId = epbId,
+            CycleNumber = cycleNumber,
+            FirstSampleUtc = cycle.StartTimeUtc,
+            LastSampleUtc = cycle.EndTimeUtc ?? cycle.StartTimeUtc,
+            SampleCount = cycle.SampleCount,
+            IsCompleteCycle = true,
+            CsvPath = csv,
+            BinPath = bin
+        };
     }
 
 
@@ -2055,10 +2130,37 @@ public interface IEpbCycleRecorder
     void FlushRecentTo(int epbId, int lastNCycles, string exportDir, bool includeRunningCycle);
 }
 
+public sealed class CycleSnapshotEvidence
+{
+    public int EpbId { get; set; }
+    public int CycleNumber { get; set; }
+    public DateTime FirstSampleUtc { get; set; }
+    public DateTime LastSampleUtc { get; set; }
+    public int SampleCount { get; set; }
+    public bool IsCompleteCycle { get; set; }
+    public string CsvPath { get; set; }
+    public string BinPath { get; set; }
+}
+
+public interface ICycleEvidenceExporter
+{
+    CycleSnapshotEvidence ExportCompletedCycleTo(
+        int epbId,
+        int cycleNumber,
+        string exportDir,
+        bool saveCsv,
+        bool saveBin);
+}
+
+public interface IActiveCycleLimitConfigurator
+{
+    void SetMaxActiveCycleRecords(int maxRecords);
+}
+
 /// <summary>
 ///     将 EpbDiskWriter 适配为 IEpbCycleRecorder，避免 EpbManager 直接依赖具体类。
 /// </summary>
-public sealed class DiskWriterRecorderAdapter : IEpbCycleRecorder
+public sealed class DiskWriterRecorderAdapter : IEpbCycleRecorder, ICycleEvidenceExporter, IActiveCycleLimitConfigurator
 {
     private readonly EpbDiskWriter _writer;
 
@@ -2103,6 +2205,17 @@ public sealed class DiskWriterRecorderAdapter : IEpbCycleRecorder
 
     public void FlushRecentTo(int epbId, int lastNCycles, string exportDir, bool includeRunningCycle)
         => _writer.ExportLatestCyclesTo(epbId, Math.Max(1, lastNCycles), exportDir, includeRunningCycle);
+
+    public CycleSnapshotEvidence ExportCompletedCycleTo(
+        int epbId,
+        int cycleNumber,
+        string exportDir,
+        bool saveCsv,
+        bool saveBin)
+        => _writer.ExportCompletedCycleTo(epbId, cycleNumber, exportDir, saveCsv, saveBin);
+
+    public void SetMaxActiveCycleRecords(int maxRecords)
+        => _writer.SetMaxActiveCycleRecords(maxRecords);
 
     /// <summary>
     ///  查询指定 EPB 通道当前已存在的“最大正式圈号”（cycle_number），仅统计 CycleNumber &gt; 0。

@@ -30,9 +30,6 @@
     <Reference Include="System.Core" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="..\..\IO.NI\HighResolutionSampleClock.cs">
-      <Link>HighResolutionSampleClock.cs</Link>
-    </Compile>
     <Compile Include="Program.cs" />
     <Compile Include="HydraulicGroupCoordinatorTests.cs" />
     <Compile Include="PowerSupplyCoordinatorTests.cs" />
@@ -55,6 +52,10 @@
     <ProjectReference Include="..\..\DataOperation\DataOperation.csproj">
       <Project>{FCE7FD92-9529-40DF-83AB-92B6B4DC469C}</Project>
       <Name>DataOperation</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\..\IO.NI\IO.NI.csproj">
+      <Project>{1FDE7D08-9014-474C-90C4-A13814D94327}</Project>
+      <Name>IO.NI</Name>
     </ProjectReference>
     <ProjectReference Include="..\..\PowerSupply.Core\PowerSupply.Core.csproj">
       <Name>PowerSupply.Core</Name>

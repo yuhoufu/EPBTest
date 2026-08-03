@@ -10,6 +10,18 @@ namespace Config
         public AlarmMappings Mappings { get; set; } = new();
         public AlarmCommands Commands { get; set; } = new();
         public AlarmBehavior Behavior { get; set; } = new();
+        public WarningSnapshotConfig WarningSnapshots { get; set; } = new();
+    }
+
+    public sealed class WarningSnapshotConfig
+    {
+        public bool Enabled { get; set; } = true;
+        public string RootDirectory { get; set; } = "WarningSnapshots";
+        public bool SaveCsv { get; set; } = true;
+        public bool SaveBin { get; set; } = true;
+        public int HardAlarmLastNCycles { get; set; } = 10;
+        public long SoftWarningQuotaMb { get; set; }
+        public long DiskFreeWarningMb { get; set; } = 10240;
     }
 
     public sealed class AlarmSerialConfig

@@ -8,6 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Config;
 using Controller.Adaptive;
+using Controller.Alarm;
 using IO.NI;
 using ILogger = Config.IAppLogger;
 using NLogger = Config.NullLogger;
@@ -107,6 +108,10 @@ namespace Controller
         /// 软预警事件：只用于黄色提示和日志，不触发停机或蜂鸣器。
         /// </summary>
         public event Action<int, string> WarningRaised;
+        public event Action<AdaptiveWarningEvent> WarningEvidenceRaised;
+
+        /// <summary>已经先断电的可恢复故障；上层可在安全释压后执行一次受控恢复。</summary>
+        public event Action<int, string> RecoverableFaultRaised;
 
 
         public EpbCycleRunner(
@@ -230,13 +235,23 @@ namespace Controller
         /// <returns>执行是否顺利（仅在明确判定到反向空行程时返回 true）。</returns>
         public async Task<bool> PreReleaseAsync(int? keepMs, CancellationToken token)
         {
+            return await PreReleaseAsync(keepMs, null, token).ConfigureAwait(false);
+        }
+
+        /// <summary>执行一次预释放，并允许上层仅调整检测预算；所有电流硬保护保持不变。</summary>
+        public async Task<bool> PreReleaseAsync(
+            int? keepMs,
+            int? detectTimeoutMs,
+            CancellationToken token)
+        {
             var holdMs = keepMs ?? DefaultPreReleaseKeepMs;
             if (holdMs < 0) holdMs = 0;
+            var detectMs = Math.Max(1, detectTimeoutMs ?? DefaultPreReleaseDetectTimeoutMs);
 
             try
             {
                 _log.Info(
-                    $"EPB[{_channel}] 预释放：开始（判定超时 {DefaultPreReleaseDetectTimeoutMs}ms，" +
+                    $"EPB[{_channel}] 预释放：开始（判定超时 {detectMs}ms，" +
                     $"进入空行程后保持 {holdMs}ms）。",
                     "EPB");
 
@@ -248,7 +263,7 @@ namespace Controller
                 // 复用正式自适应反向释放的鲁棒窗口：有稳定模型时按历史基线，
                 // 无模型时按 RevDecayLimitA + 分位数/离散度判定，禁止固定猜测 -0.5A。
                 var tuple = await WaitForReverseEmptyPlateauAsync(
-                    DefaultPreReleaseDetectTimeoutMs,
+                    detectMs,
                     token).ConfigureAwait(false);
 
                 var okRel = tuple.ok;

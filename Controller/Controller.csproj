@@ -40,6 +40,8 @@
     </Reference>
     <Reference Include="System.Core" />
     <Reference Include="System.Configuration" />
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.IO.Compression.FileSystem" />
     <Reference Include="System.Memory, Version=4.0.1.1, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51, processorArchitecture=MSIL">
       <HintPath>..\packages\System.Memory.4.5.3\lib\netstandard2.0\System.Memory.dll</HintPath>
     </Reference>
@@ -64,6 +66,7 @@
     <Compile Include="Alarm\AlarmManager.cs" />
     <Compile Include="Alarm\AlarmSnapshotFileEvidence.cs" />
     <Compile Include="Alarm\ChannelAlarmStopLatch.cs" />
+    <Compile Include="Alarm\WarningSnapshotModels.cs" />
     <Compile Include="EpbCycleRunner.Adaptive.cs" />
     <Compile Include="EpbCycleRunner.DoTrace.cs" />
     <Compile Include="Alarm\M7055dSerialClient.cs" />
@@ -72,6 +75,7 @@
     <Compile Include="DoControlTrace.cs" />
     <Compile Include="ElectricalStaggerPlan.cs" />
     <Compile Include="EpbManager.BatchStart.cs" />
+    <Compile Include="EpbManager.WarningSnapshots.cs" />
     <Compile Include="EpbManager.AdaptiveTrace.cs" />
     <Compile Include="EpbManager.cs" />
     <Compile Include="SafetyMarginControlMode.cs" />
@@ -79,6 +83,7 @@
     <Compile Include="HydraulicGroupCoordinator.cs" />
     <Compile Include="PowerSupplyCoordinator.cs" />
     <Compile Include="PowerSupplyTelemetryCsvRecorder.cs" />
+    <Compile Include="StopContext.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>

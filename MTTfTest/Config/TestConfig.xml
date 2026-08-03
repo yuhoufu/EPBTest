@@ -165,6 +165,12 @@
 			<ReleaseSafePressureBar>5</ReleaseSafePressureBar>
 			<ReleaseStableMs>100</ReleaseStableMs>
 			<ReleaseTimeoutMs>5000</ReleaseTimeoutMs>
+			<BuildTimeoutMs>5000</BuildTimeoutMs>
+			<BuildStableMs>200</BuildStableMs>
+			<PressureSampleMaxAgeMs>100</PressureSampleMaxAgeMs>
+			<HoldDropToleranceBar>5</HoldDropToleranceBar>
+			<HoldDropConfirmMs>100</HoldDropConfirmMs>
+			<BarrierTimeoutMs>0</BarrierTimeoutMs>
 			<PressureDoId>1</PressureDoId>
 			<!-- 对应 DOConfig/Pressure/Record/编号 -->
 			<!-- 新增：该液压路控制的卡钳 -->
@@ -182,6 +188,12 @@
 			<ReleaseSafePressureBar>5</ReleaseSafePressureBar>
 			<ReleaseStableMs>100</ReleaseStableMs>
 			<ReleaseTimeoutMs>5000</ReleaseTimeoutMs>
+			<BuildTimeoutMs>5000</BuildTimeoutMs>
+			<BuildStableMs>200</BuildStableMs>
+			<PressureSampleMaxAgeMs>100</PressureSampleMaxAgeMs>
+			<HoldDropToleranceBar>5</HoldDropToleranceBar>
+			<HoldDropConfirmMs>100</HoldDropConfirmMs>
+			<BarrierTimeoutMs>0</BarrierTimeoutMs>
 			<PressureDoId>2</PressureDoId>
 			<Members>7,8,9,10,11,12</Members>
 		</Hydraulic>

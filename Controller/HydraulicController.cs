@@ -9,6 +9,48 @@ using NullLogger = Config.NullLogger;
 
 namespace Controller
 {
+    public sealed class PressureQualification
+    {
+        public PressureQualification(int hydraulicId, long generationId, double targetBar, double actualBar,
+            DateTime reachedUtc, int stableMs, double minBar, double maxBar,
+            double aoCommandPressureBar, double aoVoltage)
+        {
+            HydraulicId = hydraulicId;
+            GenerationId = generationId;
+            TargetBar = targetBar;
+            ActualBar = actualBar;
+            ReachedUtc = reachedUtc;
+            StableMs = stableMs;
+            MinBar = minBar;
+            MaxBar = maxBar;
+            AoCommandPressureBar = aoCommandPressureBar;
+            AoVoltage = aoVoltage;
+        }
+
+        public int HydraulicId { get; }
+        public long GenerationId { get; }
+        public double TargetBar { get; }
+        public double ActualBar { get; }
+        public DateTime ReachedUtc { get; }
+        public int StableMs { get; }
+        public double MinBar { get; }
+        public double MaxBar { get; }
+        public double AoCommandPressureBar { get; }
+        public double AoVoltage { get; }
+    }
+
+    public class HydraulicBuildException : InvalidOperationException
+    {
+        public HydraulicBuildException(string message) : base(message) { }
+    }
+
+    public sealed class HydraulicBuildTimeoutException : TimeoutException
+    {
+        public HydraulicBuildTimeoutException(int hydraulicId, double targetBar, double actualBar, int timeoutMs, string detail)
+            : base($"HydraulicBuildTimeout Hydraulic={hydraulicId} Target={targetBar:F3}bar " +
+                   $"Actual={actualBar:F3}bar Timeout={timeoutMs}ms Detail={detail}") { }
+    }
+
     /// <summary>
     ///     液压控制器：
     ///     - 负责单路液压的启/停与到达判定；
@@ -24,7 +66,7 @@ namespace Controller
             = new();
 
         private readonly IAppLogger _log;
-        private readonly Func<int, double> _readPressure; // 读取压力：传入 hydId 返回 bar
+        private readonly Func<int, PressureSample> _readPressureSample;
 
         //等待“释压”信号的表：key=hydId
         private readonly ConcurrentDictionary<int, TaskCompletionSource<bool>> _releaseWaiters = new();
@@ -36,12 +78,157 @@ namespace Controller
             Func<int, double> readPressure,
             AoController aoController,
             IAppLogger log = null)
+            : this(
+                doController,
+                test,
+                id => new PressureSample(id, readPressure(id), DateTime.UtcNow, System.Diagnostics.Stopwatch.GetTimestamp()),
+                aoController,
+                log)
+        {
+        }
+
+        public HydraulicController(DoController doController,
+            TestConfig test,
+            Func<int, PressureSample> readPressureSample,
+            AoController aoController,
+            IAppLogger log = null)
         {
             _do = doController ?? throw new ArgumentNullException(nameof(doController));
             _test = test ?? throw new ArgumentNullException(nameof(test));
-            _readPressure = readPressure ?? throw new ArgumentNullException(nameof(readPressure));
+            _readPressureSample = readPressureSample ?? throw new ArgumentNullException(nameof(readPressureSample));
             _ao = aoController ?? throw new ArgumentNullException(nameof(aoController));
             _log = log ?? NullLogger.Instance;
+        }
+
+        /// <summary>
+        /// 打开液压输出并等待实际压力连续稳定达到配置目标。返回前输出保持开启；
+        /// 任意失败都会立即回零DO/AO，调用方不得在异常时给电机上电。
+        /// </summary>
+        public async Task<PressureQualification> BuildAndQualifyAsync(
+            int hydId,
+            long generationId,
+            CancellationToken token)
+        {
+            var item = _test.Hydraulics.Find(h => h.Id == hydId);
+            if (item == null || !item.Enabled)
+                throw new HydraulicBuildException($"Hydraulic={hydId} 未启用或缺少配置，拒绝绕过压力资格。");
+
+            var aoDevName = hydId == 1 ? "Cylinder1" : "Cylinder2";
+            var outputArmed = false;
+            try
+            {
+                if (!_do.SetPressure(hydId, true))
+                    throw new HydraulicBuildException($"Hydraulic={hydId} PressureDOOpenFailed");
+
+                outputArmed = true;
+                var aoResult = _ao.WritePressureDetailed(aoDevName, item.PressureThresholdBar);
+                if (!aoResult.Success)
+                    throw new HydraulicBuildException($"Hydraulic={hydId} PressureAOWriteFailed Device={aoDevName}");
+
+                _log.Info(
+                    $"HydraulicQualificationStarted Hydraulic={hydId} Generation={generationId} " +
+                    $"TargetPressureBar={item.PressureThresholdBar:F3} " +
+                    $"AoCommandPressureBar={aoResult.CommandPressureBar:F3} AoVoltage={aoResult.Voltage:F3}",
+                    "液压");
+
+                var timeoutMs = Math.Max(1, item.BuildTimeoutMs);
+                var stableMs = Math.Max(0, item.BuildStableMs);
+                var clock = System.Diagnostics.Stopwatch.StartNew();
+                long? stableSince = null;
+                var min = double.PositiveInfinity;
+                var max = double.NegativeInfinity;
+                var last = double.NaN;
+                var lastDetail = "NoPressureSample";
+
+                while (clock.ElapsedMilliseconds <= timeoutMs)
+                {
+                    token.ThrowIfCancellationRequested();
+                    var sample = _readPressureSample(hydId);
+                    last = sample.ValueBar;
+                    var fresh = IsPressureSampleQualified(
+                        sample,
+                        double.NegativeInfinity,
+                        item.PressureSampleMaxAgeMs);
+                    if (fresh)
+                    {
+                        min = Math.Min(min, last);
+                        max = Math.Max(max, last);
+                        lastDetail = last >= item.PressureThresholdBar ? "Stabilizing" : "BelowTarget";
+                        if (last >= item.PressureThresholdBar)
+                        {
+                            if (!stableSince.HasValue) stableSince = clock.ElapsedMilliseconds;
+                            if (clock.ElapsedMilliseconds - stableSince.Value >= stableMs)
+                            {
+                                var reachedUtc = DateTime.UtcNow;
+                                var qualification = new PressureQualification(
+                                    hydId,
+                                    generationId,
+                                    item.PressureThresholdBar,
+                                    last,
+                                    reachedUtc,
+                                    stableMs,
+                                    double.IsPositiveInfinity(min) ? last : min,
+                                    double.IsNegativeInfinity(max) ? last : max,
+                                    aoResult.CommandPressureBar,
+                                    aoResult.Voltage);
+                                _log.Info(
+                                    $"PressureQualified Hydraulic={hydId} Generation={generationId} " +
+                                    $"TargetPressureBar={qualification.TargetBar:F3} ActualPressureBar={last:F3} " +
+                                    $"StableMs={stableMs} MinBar={qualification.MinBar:F3} MaxBar={qualification.MaxBar:F3}",
+                                    "液压");
+                                return qualification;
+                            }
+                        }
+                        else
+                        {
+                            stableSince = null;
+                        }
+                    }
+                    else
+                    {
+                        stableSince = null;
+                        lastDetail = sample.IsFinite
+                            ? $"PressureSampleStale AgeMs={sample.AgeMs:F1}"
+                            : "PressureSampleInvalid";
+                    }
+
+                    await Task.Delay(10, token).ConfigureAwait(false);
+                }
+
+                throw new HydraulicBuildTimeoutException(
+                    hydId,
+                    item.PressureThresholdBar,
+                    last,
+                    timeoutMs,
+                    lastDetail + "; inspect caliper cracks, joints, pipes and brake-fluid leakage");
+            }
+            catch
+            {
+                if (outputArmed)
+                    await ForceReleaseAsync(hydId).ConfigureAwait(false);
+                throw;
+            }
+        }
+
+        public static bool IsPressureSampleQualified(
+            PressureSample sample,
+            double minimumBar,
+            int maximumAgeMs)
+        {
+            return sample.IsFinite &&
+                   sample.AgeMs >= 0 &&
+                   sample.AgeMs <= Math.Max(1, maximumAgeMs) &&
+                   sample.ValueBar >= minimumBar;
+        }
+
+        /// <summary>无条件撤销液压DO并将AO回零；该方法不等待压力反馈。</summary>
+        public Task ForceReleaseAsync(int hydId)
+        {
+            var aoDevName = hydId == 1 ? "Cylinder1" : "Cylinder2";
+            try { _do.SetPressure(hydId, false); } catch { }
+            try { _ao.WritePressure(aoDevName, 0); } catch { }
+            _log.Warn($"HydraulicForceRelease Hydraulic={hydId} DO=Off AO=0", "液压");
+            return Task.CompletedTask;
         }
 
 
@@ -90,22 +277,7 @@ namespace Controller
 
             try
             {
-                if (!_do.SetPressure(hydId, true))
-                {
-                    _log.Error($"液压[{hydId}] DO 打开失败。", "液压");
-                    _holdTcs.TryRemove(hydId, out _);
-                    return false;
-                }
-
-                if (!_ao.WritePressure(aoDevName, item.PressureThresholdBar))
-                {
-                    _log.Error($"液压[{hydId}] AO 输出失败。", "液压");
-                    _do.SetPressure(hydId, false);
-                    _holdTcs.TryRemove(hydId, out _);
-                    return false;
-                }
-
-                _log.Info($"液压[{hydId}] 建压并保持：{item.PressureThresholdBar:F1}%（HoldUntilRelease）", "液压");
+                await BuildAndQualifyAsync(hydId, 0, token).ConfigureAwait(false);
 
                 using var reg = token.Register(() => tcs.TrySetCanceled(token));
                 await tcs.Task; // 等待外部 Release()
@@ -124,21 +296,7 @@ namespace Controller
             finally
             {
                 // 统一落位
-                try
-                {
-                    _do.SetPressure(hydId, false);
-                }
-                catch
-                {
-                }
-
-                try
-                {
-                    _ao.WritePressure(aoDevName, 0);
-                }
-                catch
-                {
-                }
+                await ForceReleaseAsync(hydId).ConfigureAwait(false);
 
                 _holdTcs.TryRemove(hydId, out _);
                 _log.Info($"液压[{hydId}] 已释压回零。", "液压");
@@ -195,7 +353,7 @@ namespace Controller
                 while (!token.IsCancellationRequested)
                 {
                     var elapsedMs = (DateTime.Now - tStart).TotalMilliseconds;
-                    var pBar = _readPressure(hydId);
+                    var pBar = _readPressureSample(hydId).ValueBar;
 
                     switch (item.Mode)
                     {

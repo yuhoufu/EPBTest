@@ -16,7 +16,7 @@ namespace Controller.Adaptive
     /// </summary>
     public sealed class EpbProgramSafetySettings
     {
-        public const string SafetyPolicyVersion = "2026.07.31.2";
+        public const string SafetyPolicyVersion = "2026.08.03.1";
 
         public const int DefaultForwardProgressConfirmMs = 200;
         public const double DefaultForwardMinimumRiseSlopeAperMs = 0.001;
@@ -28,6 +28,7 @@ namespace Controller.Adaptive
         public const int DefaultReverseProgressDeadlineMs = 2500;
         public const double DefaultOffCurrentClearThresholdA = 0.1;
         public const int DefaultOffCurrentClearTimeoutMs = 1000;
+        public const double DefaultPeakEvidenceMismatchToleranceA = 1.0;
 
         private readonly Dictionary<string, string> _sources =
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -42,6 +43,7 @@ namespace Controller.Adaptive
         public int ReverseProgressDeadlineMs { get; private set; }
         public double OffCurrentClearThresholdA { get; private set; }
         public int OffCurrentClearTimeoutMs { get; private set; }
+        public double PeakEvidenceMismatchToleranceA { get; private set; }
 
         public static EpbProgramSafetySettings Load(IAppLogger logger = null)
         {
@@ -127,6 +129,12 @@ namespace Controller.Adaptive
                 DefaultOffCurrentClearTimeoutMs,
                 DefaultOffCurrentClearTimeoutMs,
                 logger);
+            result.PeakEvidenceMismatchToleranceA = result.ReadPositiveDouble(
+                values,
+                "EpbPeakEvidenceMismatchToleranceA",
+                DefaultPeakEvidenceMismatchToleranceA,
+                DefaultPeakEvidenceMismatchToleranceA,
+                logger);
 
             logger?.Info(
                 "EPB 程序级安全策略已加载：" + result.ToLogText(),
@@ -163,7 +171,8 @@ namespace Controller.Adaptive
                 $"RevConfirm={ReverseProgressConfirmMs}ms " +
                 $"RevSlope={ReverseMinimumDecaySlopeAperMs:F6}A/ms " +
                 $"RevDeadline={ReverseProgressDeadlineMs}ms " +
-                $"OffClear={OffCurrentClearThresholdA:F3}A/{OffCurrentClearTimeoutMs}ms";
+                $"OffClear={OffCurrentClearThresholdA:F3}A/{OffCurrentClearTimeoutMs}ms " +
+                $"PeakMismatchTolerance={PeakEvidenceMismatchToleranceA:F3}A";
         }
 
         public string ToAuditLogText()
@@ -181,7 +190,8 @@ namespace Controller.Adaptive
                     AuditValue("EpbReverseMinimumDecaySlopeAperMs", ReverseMinimumDecaySlopeAperMs),
                     AuditValue("EpbReverseProgressDeadlineMs", ReverseProgressDeadlineMs),
                     AuditValue("EpbOffCurrentClearThresholdA", OffCurrentClearThresholdA),
-                    AuditValue("EpbOffCurrentClearTimeoutMs", OffCurrentClearTimeoutMs)
+                    AuditValue("EpbOffCurrentClearTimeoutMs", OffCurrentClearTimeoutMs),
+                    AuditValue("EpbPeakEvidenceMismatchToleranceA", PeakEvidenceMismatchToleranceA)
                 });
         }
 
@@ -216,6 +226,7 @@ namespace Controller.Adaptive
                     WriteValue(writer, "EpbReverseProgressDeadlineMs", ReverseProgressDeadlineMs);
                     WriteValue(writer, "EpbOffCurrentClearThresholdA", OffCurrentClearThresholdA);
                     WriteValue(writer, "EpbOffCurrentClearTimeoutMs", OffCurrentClearTimeoutMs);
+                    WriteValue(writer, "EpbPeakEvidenceMismatchToleranceA", PeakEvidenceMismatchToleranceA);
                     writer.WriteEndElement();
                     writer.WriteEndDocument();
                 }

@@ -62,6 +62,27 @@ namespace Config
                             cfg.Behavior.SnapshotPostOffTailMs)));
             }
 
+            var warningNode = doc.SelectSingleNode("//AlarmConfig/WarningSnapshots") as XmlElement;
+            if (warningNode != null)
+            {
+                cfg.WarningSnapshots.Enabled = GetBoolAttr(warningNode, "Enabled", cfg.WarningSnapshots.Enabled);
+                cfg.WarningSnapshots.RootDirectory = GetAttr(
+                    warningNode,
+                    "RootDirectory",
+                    cfg.WarningSnapshots.RootDirectory);
+                cfg.WarningSnapshots.SaveCsv = GetBoolAttr(warningNode, "SaveCsv", cfg.WarningSnapshots.SaveCsv);
+                cfg.WarningSnapshots.SaveBin = GetBoolAttr(warningNode, "SaveBin", cfg.WarningSnapshots.SaveBin);
+                cfg.WarningSnapshots.HardAlarmLastNCycles = Math.Max(
+                    1,
+                    GetIntAttr(warningNode, "HardAlarmLastNCycles", cfg.WarningSnapshots.HardAlarmLastNCycles));
+                cfg.WarningSnapshots.SoftWarningQuotaMb = Math.Max(
+                    0,
+                    GetLongAttr(warningNode, "SoftWarningQuotaMb", cfg.WarningSnapshots.SoftWarningQuotaMb));
+                cfg.WarningSnapshots.DiskFreeWarningMb = Math.Max(
+                    0,
+                    GetLongAttr(warningNode, "DiskFreeWarningMb", cfg.WarningSnapshots.DiskFreeWarningMb));
+            }
+
             // Mappings
             var epbNodes = doc.SelectNodes("//AlarmConfig/Mappings/Epb");
             if (epbNodes != null)
@@ -134,6 +155,9 @@ namespace Config
 
         private static int GetIntAttr(XmlElement e, string name, int def)
             => int.TryParse(GetAttr(e, name, def.ToString(CultureInfo.InvariantCulture)), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v) ? v : def;
+
+        private static long GetLongAttr(XmlElement e, string name, long def)
+            => long.TryParse(GetAttr(e, name, def.ToString(CultureInfo.InvariantCulture)), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v) ? v : def;
 
         private static bool GetBoolAttr(XmlElement e, string name, bool def)
             => bool.TryParse(GetAttr(e, name, def.ToString()), out var v) ? v : def;

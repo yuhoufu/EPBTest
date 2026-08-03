@@ -4,6 +4,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using Config;
 using Controller.Adaptive;
+using Controller.Alarm;
+using IO.NI;
 
 namespace Controller
 {
@@ -29,6 +31,7 @@ namespace Controller
         private double _adaptiveForwardPeakA;
         private double _adaptiveForwardControlPeakA;
         private int _adaptiveClampPeakCaptureStarted;
+        private PeakCaptureToken _adaptivePeakCaptureToken;
         private string _adaptiveDirection = string.Empty;
         private readonly EpbAdaptiveSafetyLimits _adaptiveSafetyLimits;
         private int _adaptiveTerminalOffLatched;
@@ -219,9 +222,16 @@ namespace Controller
         {
             if (Interlocked.Exchange(ref _adaptiveClampPeakCaptureStarted, 0) != 0)
             {
-                try { _acq?.CancelEpbCurrentPeak(_channel); }
+                try
+                {
+                    if (_adaptivePeakCaptureToken != null)
+                        _acq?.CancelEpbCurrentPeak(_adaptivePeakCaptureToken);
+                    else
+                        _acq?.CancelEpbCurrentPeak(_channel);
+                }
                 catch { }
             }
+            _adaptivePeakCaptureToken = null;
             _adaptiveStateMachine?.Disarm();
             _adaptiveDirection = string.Empty;
             lock (_adaptiveGate)
@@ -248,9 +258,11 @@ namespace Controller
                 {
                     try
                     {
-                        var peak = _acq.PeekEpbCurrentPeak(_channel);
-                        if (peak.SampleCount > 0)
-                            fullRatePeakA = peak.MaxAmp;
+                        var evidence = _adaptivePeakCaptureToken == null
+                            ? null
+                            : _acq.PeekEpbCurrentPeak(_adaptivePeakCaptureToken);
+                        if (evidence?.IsMatched == true && evidence.Peak.SampleCount > 0)
+                            fullRatePeakA = evidence.Peak.MaxAmp;
                     }
                     catch
                     {
@@ -398,6 +410,13 @@ namespace Controller
 
             forward?.TrySetResult(decision);
             reverse?.TrySetResult(decision);
+
+            if (decision.Reason?.IndexOf("DaqSampleStale", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                try { RecoverableFaultRaised?.Invoke(_channel, decision.Reason); }
+                catch { }
+                return;
+            }
 
             try { AlarmRaised?.Invoke(_channel, "AdaptiveHardFault " + decision.Reason); }
             catch { /* 上层报警订阅者异常不允许回流采集线程 */ }
@@ -639,11 +658,18 @@ namespace Controller
                 return;
             try
             {
-                _acq.BeginEpbCurrentPeak(_channel);
+                var runId = Guid.Empty;
+                var cycleNumber = 0;
+                _manager?.GetPeakCaptureIdentity(_channel, out runId, out cycleNumber);
+                _adaptivePeakCaptureToken = _acq.BeginEpbCurrentPeak(
+                    _channel,
+                    runId,
+                    cycleNumber);
             }
             catch
             {
                 Interlocked.Exchange(ref _adaptiveClampPeakCaptureStarted, 0);
+                _adaptivePeakCaptureToken = null;
             }
         }
 
@@ -651,6 +677,16 @@ namespace Controller
         {
             try { WarningRaised?.Invoke(_channel, reason ?? "AdaptiveWarning"); }
             catch { /* UI 订阅者异常不得影响控制 */ }
+        }
+
+        private void RaiseAdaptiveWarning(AdaptiveWarningEvent warning)
+        {
+            if (warning == null) return;
+            warning.Channel = _channel;
+            if (warning.OccurredUtc == default) warning.OccurredUtc = DateTime.UtcNow;
+            try { WarningEvidenceRaised?.Invoke(warning); }
+            catch { }
+            RaiseAdaptiveWarning(warning.Reason);
         }
 
         private async Task<EpbAdaptiveDecision> WaitAdaptiveDecisionAsync(
@@ -736,36 +772,65 @@ namespace Controller
                     hydraulicReleaseTask = _manager.HydraulicMarkReleaseAsync(_channel);
 
                 var peakCaptureValid = false;
+                string peakEvidenceFailure = null;
                 try
                 {
                     if (_acq != null &&
                         Interlocked.CompareExchange(ref _adaptiveClampPeakCaptureStarted, 1, 1) == 1)
                     {
-                        var peak = await _acq.EndEpbCurrentPeakAsync(
-                                _channel,
+                        var captureResult = await _acq.EndEpbCurrentPeakAsync(
+                                _adaptivePeakCaptureToken,
                                 postOffPeakCaptureMs,
                                 cutoffAfterDelay: true,
-                                token: token)
+                                cancellationToken: token)
                             .ConfigureAwait(false);
-                        _adaptiveForwardPeakA = Math.Max(
-                            forward.CutoffCurrentA,
-                            Math.Max(_adaptiveForwardPeakA, peak.MaxAmp));
-                        peakCaptureValid = peak.SampleCount > 0 &&
-                                           peak.MaxAmp > 0 &&
-                                           !double.IsNaN(peak.MaxAmp) &&
-                                           !double.IsInfinity(peak.MaxAmp);
+                        var peak = captureResult.Peak;
+                        peakCaptureValid = captureResult.IsMatched &&
+                                           peak.SampleCount > 0 && peak.MaxAmp > 0 &&
+                                           !double.IsNaN(peak.MaxAmp) && !double.IsInfinity(peak.MaxAmp);
+                        if (!captureResult.IsMatched)
+                            peakEvidenceFailure = captureResult.QualityReason;
+                        else
+                        {
+                            _adaptiveForwardPeakA = peak.MaxAmp;
+                            var quickPeak = forward.ObservedFullRatePeakA;
+                            if (!double.IsNaN(quickPeak) && !double.IsInfinity(quickPeak) && quickPeak > 0 &&
+                                Math.Abs(quickPeak - peak.MaxAmp) >
+                                _programSafetySettings.PeakEvidenceMismatchToleranceA)
+                                peakEvidenceFailure =
+                                    $"QuickPeak={quickPeak:F3}A FullRatePeak={peak.MaxAmp:F3}A " +
+                                    $"Tolerance={_programSafetySettings.PeakEvidenceMismatchToleranceA:F3}A " +
+                                    $"CaptureId={_adaptivePeakCaptureToken?.CaptureId:N}";
+                        }
                         Interlocked.Exchange(ref _adaptiveClampPeakCaptureStarted, 0);
+                        _adaptivePeakCaptureToken = null;
                     }
                 }
                 catch (Exception ex)
                 {
                     if (Interlocked.Exchange(ref _adaptiveClampPeakCaptureStarted, 0) != 0)
                     {
-                        try { _acq?.CancelEpbCurrentPeak(_channel); }
+                        try
+                        {
+                            if (_adaptivePeakCaptureToken != null)
+                                _acq?.CancelEpbCurrentPeak(_adaptivePeakCaptureToken);
+                            else
+                                _acq?.CancelEpbCurrentPeak(_channel);
+                        }
                         catch { }
                     }
+                    _adaptivePeakCaptureToken = null;
                     // 峰值封口失败不改变已经由快速样本确认的夹紧结果。
                     _log?.Warn($"EPB[{_channel}] 断电后峰值捕获失败：{ex.Message}", "EPB");
+                }
+
+                if (!string.IsNullOrWhiteSpace(peakEvidenceFailure))
+                {
+                    await hydraulicReleaseTask.ConfigureAwait(false);
+                    DisarmAdaptiveMonitoring();
+                    var reason = "PeakEvidenceMismatch " + peakEvidenceFailure;
+                    try { AlarmRaised?.Invoke(_channel, "AdaptiveHardFault " + reason); } catch { }
+                    return EpbCycleOutcome.HardFault(EpbCurrentStage.ClampReached, reason);
                 }
 
                 var peakErrorA = peakCaptureValid
@@ -900,11 +965,22 @@ namespace Controller
                 if (peakCaptureValid && peakErrorA > _adaptiveOvershootWarningDeltaA)
                 {
                     _adaptiveSoftWarningSeen = true;
-                    RaiseAdaptiveWarning(
-                        $"正向实际峰值单圈超出平衡带：Peak={_adaptiveForwardPeakA:F3}A，" +
-                        $"Target={_posThrA:F3}A，Error={peakErrorA:+0.000;-0.000;0.000}A，" +
-                        $"连续={overshootStreak}/{_adaptiveOvershootConfirmCycles}；" +
-                        "本圈继续完成反向释放，控流模型已提前修正下一圈断电点。");
+                    RaiseAdaptiveWarning(new AdaptiveWarningEvent
+                    {
+                        Code = AdaptiveWarningCode.ForwardPeakOvershootWarning,
+                        PeakCurrentA = _adaptiveForwardPeakA,
+                        TargetCurrentA = _posThrA,
+                        PeakErrorA = peakErrorA,
+                        SlopeAperMs = forward.EstimatedSlopeAperMs,
+                        WindowSpanMs = forward.WindowSpanMs,
+                        Streak = overshootStreak,
+                        ConfirmThreshold = _adaptiveOvershootConfirmCycles,
+                        Reason =
+                            $"正向实际峰值单圈超出平衡带：Peak={_adaptiveForwardPeakA:F3}A，" +
+                            $"Target={_posThrA:F3}A，Error={peakErrorA:+0.000;-0.000;0.000}A，" +
+                            $"连续={overshootStreak}/{_adaptiveOvershootConfirmCycles}；" +
+                            "本圈继续完成反向释放，控流模型已提前修正下一圈断电点。"
+                    });
                 }
 
                 if (peakCaptureValid &&
@@ -920,13 +996,24 @@ namespace Controller
                 if (lowTargetPlateau)
                 {
                     _adaptiveSoftWarningSeen = true;
-                    RaiseAdaptiveWarning(
-                        $"正向低于合格下限的平台停滞：Peak={observedPeakA:F3}A，" +
-                        $"Floor={acceptableFloorA:F3}A，Target={_posThrA:F3}A，" +
-                        $"Slope={forward.EstimatedSlopeAperMs:F6}A/ms，" +
-                        $"Window={forward.WindowSpanMs}ms，" +
-                        $"连续={stallStreak}/{_adaptiveForwardStallConfirmCycles}；" +
-                        "已立即断开正向电，本圈继续完成反向释放并计数。");
+                    RaiseAdaptiveWarning(new AdaptiveWarningEvent
+                    {
+                        Code = AdaptiveWarningCode.ForwardCurrentRiseStallWarning,
+                        PeakCurrentA = observedPeakA,
+                        TargetCurrentA = _posThrA,
+                        PeakErrorA = observedPeakA - _posThrA,
+                        SlopeAperMs = forward.EstimatedSlopeAperMs,
+                        WindowSpanMs = forward.WindowSpanMs,
+                        Streak = stallStreak,
+                        ConfirmThreshold = _adaptiveForwardStallConfirmCycles,
+                        Reason =
+                            $"正向低于合格下限的平台停滞：Peak={observedPeakA:F3}A，" +
+                            $"Floor={acceptableFloorA:F3}A，Target={_posThrA:F3}A，" +
+                            $"Slope={forward.EstimatedSlopeAperMs:F6}A/ms，" +
+                            $"Window={forward.WindowSpanMs}ms，" +
+                            $"连续={stallStreak}/{_adaptiveForwardStallConfirmCycles}；" +
+                            "已立即断开正向电，本圈继续完成反向释放并计数。"
+                    });
                 }
 
                 await hydraulicReleaseTask.ConfigureAwait(false);

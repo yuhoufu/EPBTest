@@ -103,4 +103,12 @@
     SnapshotLastNCycles="10"
     SnapshotCooldownMs="2000"
     SnapshotPostOffTailMs="1000" />
+  <WarningSnapshots
+    Enabled="true"
+    RootDirectory="WarningSnapshots"
+    SaveCsv="true"
+    SaveBin="true"
+    HardAlarmLastNCycles="10"
+    SoftWarningQuotaMb="0"
+    DiskFreeWarningMb="10240" />
 </AlarmConfig>

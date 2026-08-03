@@ -1,14 +1,45 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Config;
 using Config.Models;
+using DataOperation;
 using Timing;
 
 namespace Controller
 {
+    public sealed class ChannelStartFault
+    {
+        public ChannelStartFault(int channel, string stage, string reason, FaultScope scope)
+        {
+            Channel = channel;
+            Stage = stage ?? string.Empty;
+            Reason = reason ?? string.Empty;
+            Scope = scope;
+        }
+        public int Channel { get; }
+        public string Stage { get; }
+        public string Reason { get; }
+        public FaultScope Scope { get; }
+    }
+
+    public sealed class BatchStartResult
+    {
+        public BatchStartResult(Guid testRunId, int[] startedChannels, ChannelStartFault[] faults)
+        {
+            TestRunId = testRunId;
+            StartedChannels = startedChannels ?? Array.Empty<int>();
+            Faults = faults ?? Array.Empty<ChannelStartFault>();
+        }
+        public Guid TestRunId { get; }
+        public int[] StartedChannels { get; }
+        public ChannelStartFault[] Faults { get; }
+        public int[] QuarantinedChannels => Faults.Select(x => x.Channel).Distinct().OrderBy(x => x).ToArray();
+    }
+
     /// <summary>
     ///     EpbManager 扩展：批量启动（学习 + 正式），并为每个压力组建立“锚点时间轴”，
     ///     让每个通道以固定相位（电源组内索引 × Δ）锁相到这条时间轴，保证“每圈对齐 + 组内错峰”。
@@ -62,6 +93,14 @@ namespace Controller
         /// <exception cref="ArgumentException">当 <paramref name="channels" /> 为空时抛出。</exception>
         public async Task StartBatchSynchronizedAsync(int[] channels, int learnCycles, CancellationToken token)
         {
+            await StartBatchSynchronizedWithResultAsync(channels, learnCycles, token).ConfigureAwait(false);
+        }
+
+        public async Task<BatchStartResult> StartBatchSynchronizedWithResultAsync(
+            int[] channels,
+            int learnCycles,
+            CancellationToken token)
+        {
             if (channels == null || channels.Length == 0)
                 throw new ArgumentException("channels 不能为空", nameof(channels));
 
@@ -70,10 +109,17 @@ namespace Controller
                 throw new InvalidOperationException("严格完整曲线控制要求 LearnCycle 至少为5圈。");
             var staggerPlan = ElectricalStaggerPlanner.Build(selected, _cfg.Test.Groups, PeriodMs);
             var sessionToken = BeginBatchSession(token);
+            var startFaults = new List<ChannelStartFault>();
             try
             {
                 _activeBatchId = Guid.NewGuid();
+                var warningConfig = AlarmConfig?.WarningSnapshots ?? new WarningSnapshotConfig();
+                if (warningConfig.Enabled && !(Recorder is ICycleEvidenceExporter))
+                    throw new InvalidOperationException(
+                        "WarningSnapshots 已启用，但圈记录器不支持 ICycleEvidenceExporter；为避免静默丢失预警证据，拒绝启动。");
                 _emergencyPowerGroupLatch.Clear();
+                _daqRecoveryAttemptsByDevice.Clear();
+                _daqRecoveryTasks.Clear();
                 BeginPowerSupplyTelemetryRecording(_activeBatchId);
                 EnsureStrictCurveControl(selected);
                 SaveProgramSafetySnapshot();
@@ -116,23 +162,61 @@ namespace Controller
                         "EPB");
 
                     // keepMs=null → 由 Runner 内部使用 DefaultPreReleaseKeepMs
-                    await PreReleaseBatchWithPlanAsync(
+                    var preReleaseFailed = await PreReleaseBatchWithPlanAsync(
                             all,
                             /*keepMs*/ null,
                             staggerPlan,
                             sessionToken)
                         .ConfigureAwait(false);
+                    if (preReleaseFailed.Length > 0)
+                    {
+                        foreach (var failedChannel in preReleaseFailed)
+                        {
+                            startFaults.Add(new ChannelStartFault(
+                                failedChannel,
+                                "PreRelease",
+                                "三次有界预释放均未确认反向空行程。",
+                                FaultScope.Channel));
+                            UnmarkHydraulicParticipant(failedChannel);
+                            foreach (var list in groups.Values) list.Remove(failedChannel);
+                            _log?.Error(
+                                $"EPB[{failedChannel}] 预释放三次均失败，已隔离；健康通道继续启动。",
+                                "EPB");
+                        }
+                    }
                 }
+
+                var activeChannels = groups.Values.SelectMany(x => x).Distinct().OrderBy(x => x).ToArray();
+                if (activeChannels.Length == 0)
+                    throw new InvalidOperationException("全部选中通道均在预释放阶段被隔离，未启动正式试验。");
 
                 // —— 3) 学习阶段：次数不多，用“每圈循环 + 锚点屏障 + 相位延时”实现稳定对齐 —— //
                 if (learnCycles > 0)
-                    await RunLearningPhaseAsync(groups, t0OfGroup, learnCycles, staggerPlan, sessionToken)
+                {
+                    var learningFailed = await RunLearningPhaseAsync(
+                            groups, t0OfGroup, learnCycles, staggerPlan, sessionToken)
                         .ConfigureAwait(false);
+                    foreach (var failedChannel in learningFailed)
+                    {
+                        startFaults.Add(new ChannelStartFault(
+                            failedChannel,
+                            "Learning",
+                            "自学习失败，已隔离通道。",
+                            FaultScope.Channel));
+                        UnmarkHydraulicParticipant(failedChannel);
+                        foreach (var list in groups.Values) list.Remove(failedChannel);
+                    }
+                }
 
-                EnsureAdaptiveProfilesReady(selected);
+                activeChannels = groups.Values.SelectMany(x => x).Distinct().OrderBy(x => x).ToArray();
+                if (activeChannels.Length == 0)
+                    throw new InvalidOperationException("全部选中通道均在学习阶段被隔离，未启动正式试验。");
+
+                EnsureAdaptiveProfilesReady(activeChannels);
 
                 // —— 4) 正式阶段：为每个通道创建对齐到“锚点+相位”的高精计时器 —— //
                 StartFormalPhaseTimers(groups, t0OfGroup, staggerPlan, sessionToken);
+                return new BatchStartResult(_activeBatchId, activeChannels, startFaults.ToArray());
             }
             catch (Exception ex)
             {
@@ -148,16 +232,23 @@ namespace Controller
                     }
                 }
 
-                if (_powerSupply != null)
+                try
                 {
-                    try
-                    {
-                        await _powerSupply.DisableAllAsync("批量启动异常回滚", CancellationToken.None)
-                            .ConfigureAwait(false);
-                    }
-                    catch { }
+                    await CompleteStopSafetyAsync(
+                            new StopContext
+                            {
+                                Source = StopSource.StartupRollback,
+                                Reason = ex.Message,
+                                Initiator = nameof(StartBatchSynchronizedWithResultAsync),
+                                CorrelationId = _activeBatchId == Guid.Empty
+                                    ? Guid.NewGuid().ToString("N")
+                                    : _activeBatchId.ToString("N"),
+                                RequestedUtc = DateTime.UtcNow
+                            },
+                            CancellationToken.None)
+                        .ConfigureAwait(false);
                 }
-                EndPowerSupplyTelemetryRecording();
+                catch { }
 
                 throw;
             }
@@ -285,10 +376,11 @@ namespace Controller
                     var baseCycle = last ?? 0;   // 这次试验第1圈就是 baseCycle + 1
 
                     var runs = EpbTestCycle[ch]; // 正式阶段总圈数（可调）
+                    var successfulCycles = 0;
                     
                     // —— 计时器每圈工作（cycleIndex 从 1 开始） —— //
                     _ = timer.StartAsync(
-                        repeat: runs, // 总圈数
+                        repeat: null, // 由成功圈计数停止；可恢复失败尝试不消耗目标圈数
                         initialDelay,
                         async (cycleIndex, ct) =>
                         {
@@ -308,11 +400,19 @@ namespace Controller
                                 $"ActualUtc={actualStartUtc:O} DeviationMs={(actualStartUtc - plannedStartUtc).TotalMilliseconds:F3}",
                                 "EPB");
 
+                            await WaitForDaqRecoveryAsync(ch, token).ConfigureAwait(false);
+
                             // 1) 在本圈锚点时刻为该压力组建压：
                             //    对本组所有参与通道调用 EnterElectricalPhaseAsync，
                             //    这样 HydraulicGroupCoordinator 能正确维护 InFlight 集合。
                             var participants = GetHydraulicParticipantsInPressureGroupSnapshot(pg, enabled);
-                            await HydraulicEnterAtGroupAnchorAsync(pg, participants, token).ConfigureAwait(false);
+                            var hydraulicKey = new HydraulicGenerationKey(
+                                _activeBatchId,
+                                pg,
+                                HydraulicPhaseKind.Formal,
+                                phaseSlot);
+                            await HydraulicEnterAtGroupAnchorAsync(hydraulicKey, participants, token)
+                                .ConfigureAwait(false);
 
                             // 2) 计算本圈的绝对“硬截止”时刻（用于 Runner 保证统一收尾）
                             var elapsedFromAnchorMs = Math.Max(0, (DateTime.UtcNow - t0).TotalMilliseconds);
@@ -376,7 +476,12 @@ namespace Controller
                                     }
                                     else if (runner.LastCycleOutcome.IsSuccess)
                                     {
-                                        recorder.CompleteCycle(ch, cycleNumber, finalN, DateTime.UtcNow);
+                                        CompleteCycleAndScheduleEvidence(
+                                            recorder,
+                                            ch,
+                                            cycleNumber,
+                                            finalN,
+                                            DateTime.UtcNow);
                                     }
                                     else
                                     {
@@ -401,8 +506,12 @@ namespace Controller
 
                             // 若该通道自然完成最后一圈：统一收尾（含“停止即存最近10圈”），
                             // 并从运行集合中移除，避免影响其它仍在运行通道的逻辑。
-                            if (cycleIndex >= runs)
+                            if (runner.LastCycleOutcome.IsSuccess &&
+                                Interlocked.Increment(ref successfulCycles) >= runs)
+                            {
                                 FinalizeChannelAfterNaturalCompletion(ch);
+                                timer.Stop();
+                            }
 
                             return ok;
 
@@ -483,7 +592,7 @@ namespace Controller
         /// </param>
         /// <param name="learnCycles">学习圈数（&gt;0）。</param>
         /// <param name="token">取消令牌。</param>
-        private async Task RunLearningPhaseAsync(
+        private async Task<int[]> RunLearningPhaseAsync(
             Dictionary<int, List<int>> groups,
             Dictionary<int, DateTime> t0OfGroup,
             int learnCycles,
@@ -492,7 +601,7 @@ namespace Controller
         {
             // —— 保护：无任务直接返回 —— //
             if (groups == null || groups.Count == 0 || learnCycles <= 0)
-                return;
+                return Array.Empty<int>();
 
             using var learningFaultCts = new CancellationTokenSource();
             using var learningScope = new LearningPhaseCancellationScope(this, learningFaultCts);
@@ -502,6 +611,7 @@ namespace Controller
             var phaseToken = phaseLinkedCts.Token;
             var stopCtsByChannel = new Dictionary<int, CancellationTokenSource>();
             var learningRunId = _activeBatchId;
+            var quarantined = new ConcurrentDictionary<int, string>();
 
             // —— 0) 让所有 Runner 进入“无① + ⑧外壳收尾（学习不等尾）”模式，并开启聚合 —— //
             foreach (var list in groups.Values)
@@ -553,10 +663,16 @@ namespace Controller
                     var tk = t0.AddMilliseconds(k * PeriodMs);
 
                     // —— 1.2) 组内通道：相位错峰（0/Δ/2Δ）+ 过时滚动到未来 —— //
-                    var enabled = list.OrderBy(x => x).ToList();
+                    var enabled = list.Where(ch => !quarantined.ContainsKey(ch)).OrderBy(x => x).ToList();
+                    if (enabled.Count == 0) continue;
 
                     // —— 1.1) 组锚点任务（屏障） —— //
-                    var anchorTask = HydraulicEnterAtGroupAnchorAsync(pg, enabled, phaseToken);
+                    var hydraulicKey = new HydraulicGenerationKey(
+                        learningRunId,
+                        pg,
+                        HydraulicPhaseKind.Learning,
+                        k + 1L);
+                    var anchorTask = HydraulicEnterAtGroupAnchorAsync(hydraulicKey, enabled, phaseToken);
                     tasksAllGroups.Add(anchorTask); // 并入等待，便于异常汇总
 
                     for (var i = 0; i < enabled.Count; i++)
@@ -612,10 +728,44 @@ namespace Controller
                                 var runner = GetRunner(ch);
                                 if (GetEpbControlMode(ch) == Adaptive.EpbControlMode.AdaptiveCurrent)
                                 {
-                                    var outcome = await runner.RunOneAdaptiveLearningAsync(
-                                            PeriodMs,
-                                            channelToken)
+                                    var outcome = await runner.RunOneAdaptiveLearningAsync(PeriodMs, channelToken)
                                         .ConfigureAwait(false);
+
+                                    if (!outcome.IsSuccess &&
+                                        outcome.Reason?.IndexOf(
+                                            "DaqSampleStale",
+                                            StringComparison.OrdinalIgnoreCase) >= 0)
+                                    {
+                                        // 第一次陈旧尝试不计入逻辑学习圈：先封存失败证据，
+                                        // 完成设备级安全恢复后用新的负圈号重试同一 learningOrdinal。
+                                        await SealLearningCycleAsync(
+                                            ch,
+                                            learningCycleNumber,
+                                            learningRunId,
+                                            learningOrdinal,
+                                            "learning_failed").ConfigureAwait(false);
+                                        learningCycleNumber = 0;
+                                        await WaitForDaqRecoveryAsync(ch, channelToken).ConfigureAwait(false);
+
+                                        var recoveryKey = new HydraulicGenerationKey(
+                                            learningRunId,
+                                            pg,
+                                            HydraulicPhaseKind.Recovery,
+                                            (k + 1L) * 100L + ch);
+                                        await HydraulicEnterAtGroupAnchorAsync(
+                                                recoveryKey,
+                                                new[] { ch },
+                                                channelToken)
+                                            .ConfigureAwait(false);
+                                        learningCycleNumber =
+                                            Recorder?.BeginLearningCycle(ch, DateTime.UtcNow) ?? 0;
+                                        if (learningCycleNumber != 0)
+                                            MarkCurrentCycleNumber(ch, learningCycleNumber);
+                                        outcome = await runner.RunOneAdaptiveLearningAsync(
+                                                PeriodMs,
+                                                channelToken)
+                                            .ConfigureAwait(false);
+                                    }
 
                                     if (outcome.Kind == Adaptive.EpbCycleOutcomeKind.Canceled)
                                         throw new OperationCanceledException(channelToken);
@@ -641,6 +791,19 @@ namespace Controller
                                     learningOrdinal,
                                     "learning_completed").ConfigureAwait(false);
                             }
+                            catch (OperationCanceledException) when (!phaseToken.IsCancellationRequested)
+                            {
+                                quarantined[ch] = "ChannelCanceled";
+                                if (!IsAlarmStopRequested(ch))
+                                {
+                                    await SealLearningCycleAsync(
+                                        ch,
+                                        learningCycleNumber,
+                                        learningRunId,
+                                        learningOrdinal,
+                                        "learning_canceled").ConfigureAwait(false);
+                                }
+                            }
                             catch (OperationCanceledException)
                             {
                                 if (!IsAlarmStopRequested(ch))
@@ -654,9 +817,11 @@ namespace Controller
                                 }
                                 throw;
                             }
-                            catch
+                            catch (Exception ex)
                             {
-                                CancelActiveLearningPhase();
+                                quarantined[ch] = ex.Message;
+                                UnmarkHydraulicParticipant(ch);
+                                try { CommandEpbOff(ch, "LearningChannelIsolation"); } catch { }
                                 // 硬故障由报警后台在断电尾部后封为 alarm；其它失败在学习目录封存。
                                 if (!IsAlarmStopRequested(ch))
                                 {
@@ -667,7 +832,10 @@ namespace Controller
                                         learningOrdinal,
                                         "learning_failed").ConfigureAwait(false);
                                 }
-                                throw;
+                                _log?.Error(
+                                    $"EPB[{ch}] 学习失败已按通道隔离，其他健康通道继续。原因={ex.Message}",
+                                    "EPB",
+                                    ex);
                             }
                         }, phaseToken));
                     }
@@ -686,6 +854,7 @@ namespace Controller
                 for (var i = 0; i < enabled.Count; i++)
                 {
                     var ch = enabled[i];
+                    if (quarantined.ContainsKey(ch)) continue;
                     var r = GetRunner(ch);
 
                     if (GetEpbControlMode(ch) == Adaptive.EpbControlMode.AdaptiveCurrent)
@@ -699,6 +868,8 @@ namespace Controller
                     }
                 }
             }
+
+            return quarantined.Keys.OrderBy(x => x).ToArray();
         }
 
         private sealed class LearningPhaseCancellationScope : IDisposable
@@ -1003,6 +1174,12 @@ namespace Controller
             runner.WarningRaised -= OnRunnerWarningRaised;
             runner.WarningRaised += OnRunnerWarningRaised;
 
+            runner.WarningEvidenceRaised -= OnRunnerWarningEvidenceRaised;
+            runner.WarningEvidenceRaised += OnRunnerWarningEvidenceRaised;
+
+            runner.RecoverableFaultRaised -= OnRunnerRecoverableFaultRaised;
+            runner.RecoverableFaultRaised += OnRunnerRecoverableFaultRaised;
+
             runner.AdaptiveDecisionObserved -= OnRunnerAdaptiveDecisionObserved;
             runner.AdaptiveDecisionObserved += OnRunnerAdaptiveDecisionObserved;
         }
@@ -1050,19 +1227,21 @@ namespace Controller
         /// <param name="pressureGroupId">压力组编号：1 表示 1..6，2 表示 7..12。</param>
         /// <param name="channelsInGroup">本压力组内，本轮实际参与的 EPB 通道列表。</param>
         /// <param name="token">取消令牌。</param>
-        private Task HydraulicEnterAtGroupAnchorAsync(
-            int pressureGroupId,
+        private async Task HydraulicEnterAtGroupAnchorAsync(
+            HydraulicGenerationKey generationKey,
             IReadOnlyList<int> channelsInGroup,
             CancellationToken token)
         {
+            if (generationKey == null) throw new ArgumentNullException(nameof(generationKey));
+            var pressureGroupId = generationKey.HydraulicId;
             if (_hydCoordinator == null)
             {
                 _log.Warn($"压力组[{pressureGroupId}] 无可用液压协调器，跳过建压保持", "液压协调");
-                return Task.CompletedTask;
+                return;
             }
 
             if (channelsInGroup == null || channelsInGroup.Count == 0)
-                return Task.CompletedTask;
+                return;
 
             // 保险起见，再按 pressureGroupId 过滤一遍
             var channelList = channelsInGroup
@@ -1073,22 +1252,13 @@ namespace Controller
                 .ToArray();
 
             if (channelList.Length == 0)
-                return Task.CompletedTask;
+                return;
 
-            var tasks = new List<Task>(channelList.Length);
-
+            var lease = await _hydCoordinator.EnterGenerationAsync(generationKey, channelList, token)
+                .ConfigureAwait(false);
             foreach (var ch in channelList)
-            {
-                // 注意：这里传入的是“真实 EPB 通道号”，
-                // HydraulicGroupCoordinator 会用它来：
-                //  1) 找到 hydId；
-                //  2) 将该通道加入 InFlight 集合；
-                //  3) 仅在第一次进入该 hydId 时触发 BuildAndHold。
-                tasks.Add(_hydCoordinator.EnterElectricalPhaseAsync(ch, token));
-            }
-
-            // 多个通道的建压/登记并行完成
-            return Task.WhenAll(tasks);
+                _hydraulicLeaseByChannel[ch] = lease;
+            try { PressureQualificationChanged?.Invoke(lease.Qualification); } catch { }
         }
 
         #endregion
@@ -1213,7 +1383,9 @@ namespace Controller
         /// </summary>
         void FinalizeLearnAggregation();
 
+        int DefaultPreReleaseDetectTimeoutMs { get; }
         Task<bool> PreReleaseAsync(int? keepMs, CancellationToken token);
+        Task<bool> PreReleaseAsync(int? keepMs, int? detectTimeoutMs, CancellationToken token);
         void BeginSafetyMarginLearning();
         void FinalizeSafetyMarginLearning();
     }

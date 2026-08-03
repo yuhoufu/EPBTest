@@ -36,6 +36,8 @@ namespace EpbDiskWriterTests
                 Run("学习负圈号跨重启连续且唯一", LearningCycleNumbersSurviveRestart);
                 Run("报警与学习收尾并发只封存一次", ConcurrentSealClaimsOnce);
                 Run("正式圈保留策略不删除学习索引", FormalRetentionKeepsLearningRows);
+                Run("按通道圈号精确导出完整证据", ExactCompletedCycleExport);
+                Run("活动圈样本硬上限阻止覆盖", ActiveCycleSampleLimitStopsWrites);
                 Console.WriteLine($"PASS {_passed}/{_passed}");
                 return 0;
             }
@@ -319,6 +321,51 @@ namespace EpbDiskWriterTests
                     var expected = (i * 0.0005).ToString("F7", CultureInfo.InvariantCulture);
                     Assert(relative == expected, $"CSV相对时间错误：{relative} != {expected}");
                 }
+            });
+        }
+
+        private static void ExactCompletedCycleExport()
+        {
+            WithRoot(root =>
+            {
+                var policy = NewPolicy(root);
+                var start = DateTime.UtcNow;
+                using var writer = new EpbDiskWriter(policy);
+                WriteCompletedCycle(writer, 3, 41, 4, start);
+                WriteCompletedCycle(writer, 3, 42, 6, start.AddSeconds(2));
+                var evidence = writer.ExportCompletedCycleTo(
+                    3,
+                    41,
+                    Path.Combine(root, "exact"),
+                    true,
+                    true);
+                Assert(evidence.IsCompleteCycle, "精确导出的圈未标记为完整圈");
+                Assert(evidence.SampleCount == 4, "精确导出错误混入相邻圈样本");
+                Assert(File.Exists(evidence.CsvPath) && File.Exists(evidence.BinPath),
+                    "精确导出未生成 CSV/BIN");
+            });
+        }
+
+        private static void ActiveCycleSampleLimitStopsWrites()
+        {
+            WithRoot(root =>
+            {
+                var policy = NewPolicy(root);
+                policy.MaxActiveCycleRecords = 3;
+                using var writer = new EpbDiskWriter(policy);
+                writer.BeginCycle(4, 7, DateTime.UtcNow);
+                WriteSamples(writer, 4, 3, DateTime.UtcNow);
+                var thrown = false;
+                try
+                {
+                    WriteSamples(writer, 4, 1, DateTime.UtcNow.AddSeconds(1));
+                }
+                catch (ActiveCycleDataLimitExceededException)
+                {
+                    thrown = true;
+                }
+                Assert(thrown, "达到活动圈样本硬上限后仍继续接收数据");
+                Assert(writer.GetCurrentCycleSampleCount(4) == 3, "越界批次写入了半成品样本");
             });
         }
 

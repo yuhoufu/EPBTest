@@ -13,6 +13,7 @@ using Controller.Alarm;
 using DataOperation;
 using IO.NI;
 using Timing;
+using NullLogger = Config.NullLogger;
 
 namespace AdaptiveControlTests
 {
@@ -66,6 +67,7 @@ namespace AdaptiveControlTests
                 Run("程序安全配置快照包含值与来源", ProgramSafetySnapshotIsAuditable);
                 Run("报警配置加载正向低平台连续5圈", AlarmConfigLoadsForwardStallConfirmation);
                 Run("旧项目100ms断电清零配置自动迁移", LegacyShortOffTimeoutIsMigrated);
+                Run("旧项目液压安全节点使用默认值并在保存时补齐", LegacyHydraulicSafetyDefaultsAreCompleted);
                 Run("模型原子保存与重载", ProfilePersistence);
                 Run("控流模型五圈收敛到目标带", CutoffModelConvergesWithinFiveCycles);
                 Run("峰值系统偏差用于提前断电补偿", PeakBiasCorrectionIsLearned);
@@ -94,6 +96,7 @@ namespace AdaptiveControlTests
                 Run("同组硬故障仅停止故障通道", HardFaultDoesNotStopSiblingChannel);
                 Run("2000Hz样本时间严格递增5000 ticks", TwoKilohertzSampleTimestamps);
                 Run("DAQ追赶回调不造成相邻批时间重叠", CatchUpCallbackDoesNotOverlapBatches);
+                Run("峰值令牌拒绝跨圈和跨运行身份", PeakCaptureTokenRejectsCrossCycleIdentity);
                 Run("DAQ重叠回调保持时间分配与入队同序", OverlappingCallbacksCommitInTimestampOrder);
                 Run("采集重启重建高精度时基", HighResolutionClockReset);
                 Run("新项目清零且不改旧项目", NewProjectIsIsolatedAndReset);
@@ -844,7 +847,8 @@ namespace AdaptiveControlTests
                 missing.ReverseProgressConfirmMs == 200 &&
                 missing.ReverseProgressDeadlineMs == 2500 &&
                 Math.Abs(missing.OffCurrentClearThresholdA - 0.1) < 1e-9 &&
-                missing.OffCurrentClearTimeoutMs == 1000,
+                missing.OffCurrentClearTimeoutMs == 1000 &&
+                Math.Abs(missing.PeakEvidenceMismatchToleranceA - 1.0) < 1e-9,
                 "缺少EXE配置时未使用完整编译安全默认值");
 
             var invalidValues = new System.Collections.Specialized.NameValueCollection
@@ -857,7 +861,8 @@ namespace AdaptiveControlTests
                 ["EpbReverseProgressConfirmMs"] = "100",
                 ["EpbReverseProgressDeadlineMs"] = "300",
                 ["EpbOffCurrentClearThresholdA"] = "0",
-                ["EpbOffCurrentClearTimeoutMs"] = "100"
+                ["EpbOffCurrentClearTimeoutMs"] = "100",
+                ["EpbPeakEvidenceMismatchToleranceA"] = "0.5"
             };
             var normalized = EpbProgramSafetySettings.FromAppSettings(
                 invalidValues,
@@ -871,7 +876,8 @@ namespace AdaptiveControlTests
                 normalized.ReverseProgressConfirmMs == 200 &&
                 normalized.ReverseProgressDeadlineMs == 2500 &&
                 Math.Abs(normalized.OffCurrentClearThresholdA - 0.1) < 1e-9 &&
-                normalized.OffCurrentClearTimeoutMs == 1000,
+                normalized.OffCurrentClearTimeoutMs == 1000 &&
+                Math.Abs(normalized.PeakEvidenceMismatchToleranceA - 1.0) < 1e-9,
                 "非法EXE安全参数未按安全下限钳制");
         }
 
@@ -891,10 +897,11 @@ namespace AdaptiveControlTests
                 var path = settings.SaveEffectiveSnapshot(directory, NullLogger.Instance);
                 var xml = File.ReadAllText(path);
                 Assert(
-                    xml.Contains("policyVersion=\"2026.07.31.2\"") &&
+                    xml.Contains("policyVersion=\"2026.08.03.1\"") &&
                     xml.Contains("key=\"EpbForwardProgressConfirmMs\" value=\"1200\" source=\"appSettings\"") &&
                     xml.Contains("key=\"EpbForwardProgressDeadlineMs\" value=\"6000\" source=\"appSettings\"") &&
-                    xml.Contains("key=\"EpbReverseProgressConfirmMs\" value=\"200\" source=\"compiled-default\""),
+                    xml.Contains("key=\"EpbReverseProgressConfirmMs\" value=\"200\" source=\"compiled-default\"") &&
+                    xml.Contains("key=\"EpbPeakEvidenceMismatchToleranceA\" value=\"1\" source=\"compiled-default\""),
                     "程序安全快照未完整记录策略版本、生效值和来源");
             }
             finally
@@ -916,8 +923,42 @@ namespace AdaptiveControlTests
                 "AlarmConfig.xml"));
             var loaded = AlarmConfigLoader.Load(source);
             Assert(
-                loaded.Behavior.AdaptiveForwardStallConfirmCycles == 5,
-                "AlarmConfig.xml 未加载正向低平台连续5圈确认值");
+                loaded.Behavior.AdaptiveForwardStallConfirmCycles == 5 &&
+                loaded.WarningSnapshots.Enabled &&
+                loaded.WarningSnapshots.SaveCsv &&
+                loaded.WarningSnapshots.SaveBin &&
+                loaded.WarningSnapshots.HardAlarmLastNCycles == 10 &&
+                loaded.WarningSnapshots.SoftWarningQuotaMb == 0 &&
+                loaded.WarningSnapshots.DiskFreeWarningMb == 10240,
+                "AlarmConfig.xml 未加载连续阈值或预警快照安全默认值");
+        }
+
+        private static void PeakCaptureTokenRejectsCrossCycleIdentity()
+        {
+            var runId = Guid.NewGuid();
+            var active = new PeakCaptureToken
+            {
+                CaptureId = Guid.NewGuid(), TestRunId = runId, Channel = 8,
+                CycleNumber = 11383, StartUtc = DateTime.UtcNow
+            };
+            var same = new PeakCaptureToken
+            {
+                CaptureId = active.CaptureId, TestRunId = runId, Channel = 8,
+                CycleNumber = 11383, StartUtc = active.StartUtc
+            };
+            var stale = new PeakCaptureToken
+            {
+                CaptureId = active.CaptureId, TestRunId = runId, Channel = 8,
+                CycleNumber = 11382, StartUtc = active.StartUtc
+            };
+            Assert(TwoDeviceAiAcquirer.IsPeakCaptureIdentityMatch(active, same),
+                "完全一致的峰值令牌被拒绝");
+            Assert(!TwoDeviceAiAcquirer.IsPeakCaptureIdentityMatch(active, stale),
+                "跨圈陈旧峰值令牌未被拒绝");
+            stale.CycleNumber = active.CycleNumber;
+            stale.TestRunId = Guid.NewGuid();
+            Assert(!TwoDeviceAiAcquirer.IsPeakCaptureIdentityMatch(active, stale),
+                "跨运行峰值令牌未被拒绝");
         }
 
         private static void LegacyShortOffTimeoutIsMigrated()
@@ -959,6 +1000,48 @@ namespace AdaptiveControlTests
                     .GetRunnerChannel(8);
                 Assert(reloaded.OffCurrentClearTimeoutMs == 1000,
                     "迁移后的1000ms断电清零超时未持久化");
+            }
+            finally
+            {
+                Directory.Delete(directory, true);
+            }
+        }
+
+        private static void LegacyHydraulicSafetyDefaultsAreCompleted()
+        {
+            var source = Path.GetFullPath(Path.Combine(
+                AppDomain.CurrentDomain.BaseDirectory,
+                "..", "..", "..", "..", "MTTfTest", "Config", "TestConfig.xml"));
+            var directory = CreateTempDir();
+            var target = Path.Combine(directory, "TestConfig.xml");
+            try
+            {
+                var xml = File.ReadAllText(source);
+                foreach (var element in new[]
+                         {
+                             "BuildTimeoutMs", "BuildStableMs", "PressureSampleMaxAgeMs",
+                             "HoldDropToleranceBar", "HoldDropConfirmMs", "BarrierTimeoutMs"
+                         })
+                {
+                    xml = System.Text.RegularExpressions.Regex.Replace(
+                        xml,
+                        $@"\s*<{element}>.*?</{element}>",
+                        string.Empty);
+                }
+                File.WriteAllText(target, xml);
+                var loaded = ConfigLoader.LoadTest(target, NullLogger.Instance);
+                Assert(loaded.Hydraulics.All(x =>
+                        x.BuildTimeoutMs == 5000 && x.BuildStableMs == 200 &&
+                        x.PressureSampleMaxAgeMs == 100 &&
+                        Math.Abs(x.HoldDropToleranceBar - 5) < 1e-9 &&
+                        x.HoldDropConfirmMs == 100 && x.BarrierTimeoutMs == 0),
+                    "旧项目缺少液压安全节点时未使用安全默认值");
+                ConfigLoader.SaveTest(target, loaded);
+                var saved = File.ReadAllText(target);
+                Assert(saved.Contains("<BuildTimeoutMs>5000</BuildTimeoutMs>") &&
+                       saved.Contains("<PressureSampleMaxAgeMs>100</PressureSampleMaxAgeMs>") &&
+                       saved.Contains("<BarrierTimeoutMs>0</BarrierTimeoutMs>"),
+                    "保存旧项目时未补齐液压安全节点");
             }
             finally
             {

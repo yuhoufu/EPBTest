@@ -1,0 +1,497 @@
+using System;
+using System.Collections.Concurrent;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Security.Cryptography;
+using System.IO.Compression;
+using System.Text;
+using System.Threading.Tasks;
+using Config;
+using Controller.Alarm;
+using DataOperation;
+
+namespace Controller
+{
+    public sealed partial class EpbManager
+    {
+        public event Action<AdaptiveWarningEvent> ChannelWarningEvidenceRaised;
+        public event Action<string> SnapshotExportFailed;
+        public event Action<WarningSnapshotStorageStatus> WarningSnapshotStorageChanged;
+
+        private readonly ConcurrentDictionary<string, WarningSnapshotRequest> _pendingWarningSnapshots = new();
+        private readonly ConcurrentDictionary<string, byte> _warningSnapshotJobs = new();
+        private readonly ConcurrentDictionary<string, ConcurrentQueue<WarningSnapshotLink>> _warningChains = new();
+
+        private void OnRunnerWarningEvidenceRaised(AdaptiveWarningEvent warning)
+        {
+            if (warning == null) return;
+            try { ChannelWarningEvidenceRaised?.Invoke(warning); } catch { }
+            var cfg = AlarmConfig?.WarningSnapshots ?? new WarningSnapshotConfig();
+            if (!cfg.Enabled) return;
+            if (!_currentCycleNumberByChannel.TryGetValue(warning.Channel, out var cycleNumber) || cycleNumber <= 0)
+            {
+                ReportSnapshotFailure($"EPB[{warning.Channel}] 预警发生时没有有效正式圈号，未保存软预警快照。");
+                return;
+            }
+            if (!(Recorder is ICycleEvidenceExporter))
+            {
+                ReportSnapshotFailure("当前圈记录器不支持 ICycleEvidenceExporter，已拒绝静默丢失预警证据。");
+                return;
+            }
+
+            var request = new WarningSnapshotRequest
+            {
+                TestRunId = _activeBatchId,
+                Channel = warning.Channel,
+                CycleNumber = cycleNumber,
+                Warning = warning
+            };
+            if (_pendingWarningSnapshots.TryAdd(request.IdempotencyKey, request))
+            {
+                // 在控制回调只登记不可变请求与确定性路径；实际文件导出仍在封圈后的后台线程。
+                // 这样硬报警紧随其后时 warning-chain 不依赖后台IO完成时序。
+                var chainKey = GetWarningChainKey(request.Channel, warning.Code);
+                var queue = _warningChains.GetOrAdd(chainKey, _ => new ConcurrentQueue<WarningSnapshotLink>());
+                queue.Enqueue(new WarningSnapshotLink
+                {
+                    CycleNumber = request.CycleNumber,
+                    Streak = warning.Streak,
+                    ConfirmThreshold = warning.ConfirmThreshold,
+                    RelativePath = MakeRelativePath(
+                        Path.Combine(_cfg.Test.StoreDir, _cfg.Test.TestName),
+                        GetWarningSnapshotDirectory(request, cfg))
+                });
+            }
+        }
+
+        private void CompleteCycleAndScheduleEvidence(
+            IEpbCycleRecorder recorder,
+            int channel,
+            int cycleNumber,
+            int finalSampleCount,
+            DateTime endUtc)
+        {
+            recorder?.CompleteCycle(channel, cycleNumber, finalSampleCount, endUtc);
+            if (recorder == null) return;
+
+            foreach (var item in _pendingWarningSnapshots.ToArray())
+            {
+                var request = item.Value;
+                if (request.Channel != channel || request.CycleNumber != cycleNumber) continue;
+                if (!_pendingWarningSnapshots.TryRemove(item.Key, out request)) continue;
+                QueueWarningSnapshot(request);
+            }
+
+            QueueRollingHistoricalSnapshot(channel, cycleNumber);
+        }
+
+        private void QueueWarningSnapshot(WarningSnapshotRequest request)
+        {
+            if (request == null || !_warningSnapshotJobs.TryAdd(request.IdempotencyKey, 0)) return;
+            _ = Task.Run(() => ExportWarningSnapshot(request));
+        }
+
+        private void ExportWarningSnapshot(WarningSnapshotRequest request)
+        {
+            try
+            {
+                var cfg = AlarmConfig?.WarningSnapshots ?? new WarningSnapshotConfig();
+                var exporter = Recorder as ICycleEvidenceExporter
+                    ?? throw new InvalidOperationException("Recorder does not implement ICycleEvidenceExporter.");
+                var warning = request.Warning;
+                var directory = GetWarningSnapshotDirectory(request, cfg);
+                Directory.CreateDirectory(directory);
+                PublishWarningSnapshotStorageStatus();
+
+                var evidence = exporter.ExportCompletedCycleTo(
+                    request.Channel,
+                    request.CycleNumber,
+                    directory,
+                    cfg.SaveCsv,
+                    cfg.SaveBin);
+                var hashes = new ConcurrentDictionary<string, string>();
+                foreach (var path in new[] { evidence.CsvPath, evidence.BinPath }.Where(File.Exists))
+                    hashes[Path.GetFileName(path)] = ComputeSha256(path);
+
+                var chainKey = GetWarningChainKey(request.Channel, warning.Code);
+                var linkedAlarmPath = _warningChains.TryGetValue(chainKey, out var registeredLinks)
+                    ? registeredLinks.FirstOrDefault(x =>
+                        x.CycleNumber == request.CycleNumber && x.Streak == warning.Streak)
+                        ?.LinkedAlarmRelativePath ?? string.Empty
+                    : string.Empty;
+
+                File.WriteAllText(
+                    Path.Combine(directory, "warning-metadata.json"),
+                    BuildWarningMetadataJson(request, evidence, hashes, linkedAlarmPath),
+                    new UTF8Encoding(false));
+                File.WriteAllLines(
+                    Path.Combine(directory, "checksums.sha256"),
+                    hashes.OrderBy(x => x.Key).Select(x => $"{x.Value}  {x.Key}"),
+                    new UTF8Encoding(false));
+
+                _log.Info($"软预警完整单圈快照已保存：{directory}", "落盘");
+                EnforceSoftWarningQuota(request.TestRunId, cfg);
+                PublishWarningSnapshotStorageStatus();
+            }
+            catch (Exception ex)
+            {
+                ReportSnapshotFailure(
+                    $"WarningSnapshotExportFailed Key={request.IdempotencyKey} Error={ex.Message}",
+                    ex);
+            }
+        }
+
+        private void QueueRollingHistoricalSnapshot(int channel, int cycleNumber)
+        {
+            if (!(Recorder is ICycleEvidenceExporter exporter)) return;
+            _ = Task.Run(() =>
+            {
+                try
+                {
+                    var root = Path.Combine(
+                        _cfg.Test.StoreDir,
+                        _cfg.Test.TestName,
+                        "HistoricalSnapshots",
+                        $"EPB{channel:D2}");
+                    var dir = Path.Combine(root, $"Cycle_{cycleNumber:D6}");
+                    exporter.ExportCompletedCycleTo(channel, cycleNumber, dir, false, true);
+                    var snapshotCount = AlarmConfig?.WarningSnapshots?.HardAlarmLastNCycles
+                                        ?? AlarmConfig?.Behavior?.SnapshotLastNCycles
+                                        ?? 10;
+                    var keep = Math.Max(3, snapshotCount + 2);
+                    foreach (var old in new DirectoryInfo(root).EnumerateDirectories("Cycle_*")
+                                 .OrderByDescending(x => x.Name).Skip(keep))
+                    {
+                        try { old.Delete(true); } catch { }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    ReportSnapshotFailure(
+                        $"HistoricalSnapshotExportFailed EPB={channel} Cycle={cycleNumber} Error={ex.Message}",
+                        ex);
+                }
+            });
+        }
+
+        private string GetWarningSnapshotDirectory(
+            WarningSnapshotRequest request,
+            WarningSnapshotConfig cfg)
+        {
+            var rootName = string.IsNullOrWhiteSpace(cfg?.RootDirectory)
+                ? "WarningSnapshots"
+                : cfg.RootDirectory.Trim();
+            var warning = request.Warning;
+            var folder =
+                $"{warning.OccurredUtc.ToLocalTime():yyyyMMdd_HHmmssfff}-" +
+                $"Cycle{request.CycleNumber:D6}-Streak{warning.Streak}of{warning.ConfirmThreshold}";
+            return Path.Combine(
+                _cfg.Test.StoreDir,
+                _cfg.Test.TestName,
+                rootName,
+                $"EPB{request.Channel:D2}",
+                warning.Code.ToString(),
+                folder);
+        }
+
+        private void WriteWarningChain(string alarmSnapshotDirectory, int channel, string reason, int terminalCycle)
+        {
+            AdaptiveWarningCode? code = null;
+            if (reason?.IndexOf("ForwardPeakOvershoot", StringComparison.OrdinalIgnoreCase) >= 0)
+                code = AdaptiveWarningCode.ForwardPeakOvershootWarning;
+            else if (reason?.IndexOf("ForwardCurrentRiseStall", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                     reason?.IndexOf("ForwardCurrentRiseStalled", StringComparison.OrdinalIgnoreCase) >= 0)
+                code = AdaptiveWarningCode.ForwardCurrentRiseStallWarning;
+            if (!code.HasValue) return;
+
+            var links = Array.Empty<WarningSnapshotLink>();
+            if (_warningChains.TryGetValue(GetWarningChainKey(channel, code.Value), out var queue))
+            {
+                var candidates = queue.Where(x => x.CycleNumber < terminalCycle)
+                    .OrderByDescending(x => x.CycleNumber)
+                    .ToArray();
+                var threshold = candidates.FirstOrDefault()?.ConfirmThreshold ?? 0;
+                var selected = new System.Collections.Generic.List<WarningSnapshotLink>();
+                for (var expected = threshold - 1; expected >= 1; expected--)
+                {
+                    var match = candidates.FirstOrDefault(x => x.Streak == expected);
+                    if (match == null) break;
+                    selected.Add(match);
+                    candidates = candidates.Where(x => x.CycleNumber < match.CycleNumber).ToArray();
+                }
+                if (selected.Count == Math.Max(0, threshold - 1))
+                    links = selected.OrderBy(x => x.Streak).ToArray();
+            }
+            if (links.Length == 0) return;
+            var testRoot = Path.Combine(_cfg.Test.StoreDir, _cfg.Test.TestName);
+            var linkedAlarmRelativePath = MakeRelativePath(testRoot, alarmSnapshotDirectory);
+            foreach (var link in links)
+            {
+                link.LinkedAlarmRelativePath = linkedAlarmRelativePath;
+                TryUpdateWarningMetadataLink(testRoot, link);
+            }
+            var sb = new StringBuilder();
+            sb.Append("{\n  \"WarningCode\": \"").Append(code.Value).Append("\",")
+                .Append("\n  \"HardAlarmTerminalCycle\": ").Append(terminalCycle).Append(',')
+                .Append("\n  \"Links\": [");
+            for (var i = 0; i < links.Length; i++)
+            {
+                if (i > 0) sb.Append(',');
+                sb.Append("\n    {\"CycleNumber\": ").Append(links[i].CycleNumber)
+                    .Append(", \"Streak\": ").Append(links[i].Streak)
+                    .Append(", \"ConfirmThreshold\": ").Append(links[i].ConfirmThreshold)
+                    .Append(", \"Path\": \"").Append(JsonEscape(links[i].RelativePath)).Append("\"}");
+            }
+            sb.Append("\n  ]\n}\n");
+            File.WriteAllText(
+                Path.Combine(alarmSnapshotDirectory, "warning-chain.json"),
+                sb.ToString(),
+                new UTF8Encoding(false));
+        }
+
+        private static void WriteAlarmSnapshotManifest(
+            string snapshotDirectory,
+            int alarmChannel,
+            int alarmCycle,
+            int requestedCycles,
+            string reason)
+        {
+            var files = Directory.EnumerateFiles(snapshotDirectory, "*.*", SearchOption.AllDirectories)
+                .Where(path => path.EndsWith(".csv", StringComparison.OrdinalIgnoreCase) ||
+                               path.EndsWith(".bin", StringComparison.OrdinalIgnoreCase))
+                .OrderBy(path => path)
+                .ToArray();
+            var alarmFolder = $"EPB{alarmChannel:D2}_ALARM";
+            var alarmCycleToken = $"_{alarmCycle:D6}.";
+            var alarmCycles = files
+                .Where(path => path.IndexOf(alarmFolder, StringComparison.OrdinalIgnoreCase) >= 0)
+                .Select(Path.GetFileNameWithoutExtension)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Count();
+            var sb = new StringBuilder();
+            sb.Append("{\n  \"AlarmChannel\": ").Append(alarmChannel).Append(',')
+                .Append("\n  \"AlarmCycle\": ").Append(alarmCycle).Append(',')
+                .Append("\n  \"Reason\": \"").Append(JsonEscape(reason)).Append("\",")
+                .Append("\n  \"RequestedCycles\": ").Append(requestedCycles).Append(',')
+                .Append("\n  \"ExportedCycles\": ").Append(alarmCycles).Append(',')
+                .Append("\n  \"ShortfallReason\": \"")
+                .Append(alarmCycles < requestedCycles
+                    ? $"Only {alarmCycles} completed/alarm cycles were available"
+                    : string.Empty)
+                .Append("\",")
+                .Append("\n  \"Files\": [");
+            for (var i = 0; i < files.Length; i++)
+            {
+                var relative = MakeRelativePath(snapshotDirectory, files[i]);
+                var inAlarmFolder = relative.IndexOf(alarmFolder, StringComparison.OrdinalIgnoreCase) >= 0;
+                var role = inAlarmFolder
+                    ? relative.IndexOf(alarmCycleToken, StringComparison.OrdinalIgnoreCase) >= 0
+                        ? alarmCycle < 0 ? "LearningCycle" : "AlarmCycle"
+                        : "HistoricalCompletedCycle"
+                    : "AuxiliaryRunningPartial";
+                if (i > 0) sb.Append(',');
+                sb.Append("\n    {\"Path\": \"").Append(JsonEscape(relative))
+                    .Append("\", \"Role\": \"").Append(role)
+                    .Append("\", \"IsComplete\": ").Append(role == "AuxiliaryRunningPartial" ? "false" : "true")
+                    .Append(", \"Sha256\": \"").Append(ComputeSha256(files[i])).Append("\"}");
+            }
+            sb.Append("\n  ]\n}\n");
+            File.WriteAllText(
+                Path.Combine(snapshotDirectory, "snapshot-manifest.json"),
+                sb.ToString(),
+                new UTF8Encoding(false));
+        }
+
+        private static string BuildWarningMetadataJson(
+            WarningSnapshotRequest request,
+            CycleSnapshotEvidence evidence,
+            ConcurrentDictionary<string, string> hashes,
+            string linkedAlarmSnapshotPath)
+        {
+            var w = request.Warning;
+            var files = string.Join(",\n", hashes.OrderBy(x => x.Key).Select(x =>
+                $"    \"{JsonEscape(x.Key)}\": \"{x.Value}\""));
+            return "{\n" +
+                   $"  \"TestRunId\": \"{request.TestRunId:N}\",\n" +
+                   $"  \"Channel\": {request.Channel},\n" +
+                   $"  \"CycleNumber\": {request.CycleNumber},\n" +
+                   $"  \"WarningCode\": \"{w.Code}\",\n" +
+                   $"  \"OccurredUtc\": \"{w.OccurredUtc:O}\",\n" +
+                   $"  \"PeakCurrentA\": {w.PeakCurrentA.ToString("R", CultureInfo.InvariantCulture)},\n" +
+                   $"  \"TargetCurrentA\": {w.TargetCurrentA.ToString("R", CultureInfo.InvariantCulture)},\n" +
+                   $"  \"PeakErrorA\": {w.PeakErrorA.ToString("R", CultureInfo.InvariantCulture)},\n" +
+                   $"  \"SlopeAperMs\": {w.SlopeAperMs.ToString("R", CultureInfo.InvariantCulture)},\n" +
+                   $"  \"WindowSpanMs\": {w.WindowSpanMs},\n" +
+                   $"  \"Streak\": {w.Streak},\n" +
+                   $"  \"ConfirmThreshold\": {w.ConfirmThreshold},\n" +
+                   $"  \"FirstSampleUtc\": \"{evidence.FirstSampleUtc:O}\",\n" +
+                   $"  \"LastSampleUtc\": \"{evidence.LastSampleUtc:O}\",\n" +
+                   $"  \"SampleCount\": {evidence.SampleCount},\n" +
+                   $"  \"IsCompleteCycle\": {(evidence.IsCompleteCycle ? "true" : "false")},\n" +
+                   $"  \"LinkedAlarmSnapshotPath\": \"{JsonEscape(linkedAlarmSnapshotPath)}\",\n" +
+                   "  \"FileSha256\": {\n" + files + "\n  }\n}\n";
+        }
+
+        private static void TryUpdateWarningMetadataLink(string testRoot, WarningSnapshotLink link)
+        {
+            try
+            {
+                var metadataPath = Path.Combine(testRoot, link.RelativePath, "warning-metadata.json");
+                if (!File.Exists(metadataPath)) return;
+                var json = File.ReadAllText(metadataPath);
+                const string marker = "\"LinkedAlarmSnapshotPath\": \"\"";
+                if (json.IndexOf(marker, StringComparison.Ordinal) < 0) return;
+                json = json.Replace(
+                    marker,
+                    $"\"LinkedAlarmSnapshotPath\": \"{JsonEscape(link.LinkedAlarmRelativePath)}\"");
+                var temporary = metadataPath + ".tmp." + Guid.NewGuid().ToString("N");
+                File.WriteAllText(temporary, json, new UTF8Encoding(false));
+                File.Replace(temporary, metadataPath, null);
+            }
+            catch
+            {
+                // 链文件本身仍是主关联证据；元数据补链失败由后续清单校验发现。
+            }
+        }
+
+        private void ReportSnapshotFailure(string message, Exception exception = null)
+        {
+            _log.Error(message, "落盘", exception);
+            try
+            {
+                var path = Path.Combine(
+                    _cfg.Test.StoreDir,
+                    _cfg.Test.TestName,
+                    "snapshot-export-errors.log");
+                Directory.CreateDirectory(Path.GetDirectoryName(path));
+                File.AppendAllText(
+                    path,
+                    $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {message}{Environment.NewLine}",
+                    new UTF8Encoding(false));
+            }
+            catch { }
+            try { SnapshotExportFailed?.Invoke(message); } catch { }
+        }
+
+        public WarningSnapshotStorageStatus GetWarningSnapshotStorageStatus()
+        {
+            var cfg = AlarmConfig?.WarningSnapshots ?? new WarningSnapshotConfig();
+            var root = Path.Combine(
+                _cfg.Test.StoreDir,
+                _cfg.Test.TestName,
+                string.IsNullOrWhiteSpace(cfg.RootDirectory) ? "WarningSnapshots" : cfg.RootDirectory.Trim());
+            var used = Directory.Exists(root)
+                ? Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
+                    .Where(x => x.IndexOf(Path.DirectorySeparatorChar + "Archive" + Path.DirectorySeparatorChar,
+                        StringComparison.OrdinalIgnoreCase) < 0)
+                    .Sum(x => { try { return new FileInfo(x).Length; } catch { return 0L; } })
+                : 0L;
+            long free = 0;
+            try { free = new DriveInfo(Path.GetPathRoot(Path.GetFullPath(root))).AvailableFreeSpace; } catch { }
+            var snapshots = Directory.Exists(root)
+                ? Directory.EnumerateFiles(root, "warning-metadata.json", SearchOption.AllDirectories).Count()
+                : 0;
+            var average = snapshots > 0 ? Math.Max(1L, used / snapshots) : 0L;
+            return new WarningSnapshotStorageStatus
+            {
+                RootDirectory = root,
+                UsedBytes = used,
+                FreeBytes = free,
+                EstimatedAdditionalCycles = average > 0 ? free / average : 0,
+                IsBelowFreeSpaceWarning = free > 0 &&
+                    free < Math.Max(0L, cfg.DiskFreeWarningMb) * 1024L * 1024L
+            };
+        }
+
+        private void PublishWarningSnapshotStorageStatus()
+        {
+            try
+            {
+                var status = GetWarningSnapshotStorageStatus();
+                WarningSnapshotStorageChanged?.Invoke(status);
+                if (status.IsBelowFreeSpaceWarning)
+                    _log.Warn(
+                        $"WarningSnapshots 磁盘余量低：Free={status.FreeBytes / 1024d / 1024d:F0}MB " +
+                        $"Root={status.RootDirectory}",
+                        "落盘");
+            }
+            catch { }
+        }
+
+        private void EnforceSoftWarningQuota(Guid currentRunId, WarningSnapshotConfig cfg)
+        {
+            if (cfg == null || cfg.SoftWarningQuotaMb <= 0 || currentRunId == Guid.Empty) return;
+            var root = Path.Combine(
+                _cfg.Test.StoreDir,
+                _cfg.Test.TestName,
+                string.IsNullOrWhiteSpace(cfg.RootDirectory) ? "WarningSnapshots" : cfg.RootDirectory.Trim());
+            if (!Directory.Exists(root)) return;
+            var quotaBytes = cfg.SoftWarningQuotaMb * 1024L * 1024L;
+            var currentToken = $"\"TestRunId\": \"{currentRunId:N}\"";
+            var candidates = Directory.EnumerateFiles(root, "warning-metadata.json", SearchOption.AllDirectories)
+                .Where(x => x.IndexOf(Path.DirectorySeparatorChar + "Archive" + Path.DirectorySeparatorChar,
+                    StringComparison.OrdinalIgnoreCase) < 0)
+                .Select(Path.GetDirectoryName)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Where(dir =>
+                {
+                    try { return !File.ReadAllText(Path.Combine(dir, "warning-metadata.json")).Contains(currentToken); }
+                    catch { return false; }
+                })
+                .OrderBy(dir => new DirectoryInfo(dir).CreationTimeUtc)
+                .ToArray();
+
+            foreach (var directory in candidates)
+            {
+                if (GetWarningSnapshotStorageStatus().UsedBytes <= quotaBytes) break;
+                ArchiveVerifiedSoftWarning(directory, root);
+            }
+        }
+
+        private void ArchiveVerifiedSoftWarning(string directory, string root)
+        {
+            var archiveRoot = Path.Combine(root, "Archive");
+            Directory.CreateDirectory(archiveRoot);
+            var baseName = Path.GetFileName(directory) + "-" + Guid.NewGuid().ToString("N");
+            var temporary = Path.Combine(archiveRoot, baseName + ".zip.tmp");
+            var completed = Path.Combine(archiveRoot, baseName + ".zip");
+            ZipFile.CreateFromDirectory(directory, temporary, CompressionLevel.Optimal, false);
+            using (var archive = ZipFile.OpenRead(temporary))
+            {
+                if (archive.Entries.Count == 0)
+                    throw new InvalidDataException("软预警归档为空，拒绝删除源目录。");
+            }
+            File.Move(temporary, completed);
+            File.WriteAllText(completed + ".sha256", ComputeSha256(completed), new UTF8Encoding(false));
+            Directory.Delete(directory, true);
+            _log.Info($"旧批次软预警已校验归档：{completed}", "落盘");
+        }
+
+        private static string ComputeSha256(string path)
+        {
+            using var stream = File.OpenRead(path);
+            using var sha = SHA256.Create();
+            return BitConverter.ToString(sha.ComputeHash(stream)).Replace("-", string.Empty).ToLowerInvariant();
+        }
+
+        private static string GetWarningChainKey(int channel, AdaptiveWarningCode code) => $"{channel}:{code}";
+        private static string JsonEscape(string value) => (value ?? string.Empty)
+            .Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "\\r").Replace("\n", "\\n");
+        private static string MakeRelativePath(string root, string path)
+        {
+            var rootUri = new Uri(Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar);
+            var pathUri = new Uri(Path.GetFullPath(path));
+            return Uri.UnescapeDataString(rootUri.MakeRelativeUri(pathUri).ToString()).Replace('/', Path.DirectorySeparatorChar);
+        }
+
+        private sealed class WarningSnapshotLink
+        {
+            public int CycleNumber;
+            public int Streak;
+            public int ConfirmThreshold;
+            public string RelativePath;
+            public string LinkedAlarmRelativePath;
+        }
+    }
+}

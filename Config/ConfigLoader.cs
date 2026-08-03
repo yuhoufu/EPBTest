@@ -50,6 +50,13 @@ namespace Config
         public double ReleaseSafePressureBar { get; set; } = 5;
         public int ReleaseStableMs { get; set; } = 100;
         public int ReleaseTimeoutMs { get; set; } = 5000;
+        public int BuildTimeoutMs { get; set; } = 5000;
+        public int BuildStableMs { get; set; } = 200;
+        public int PressureSampleMaxAgeMs { get; set; } = 100;
+        public double HoldDropToleranceBar { get; set; } = 5;
+        public int HoldDropConfirmMs { get; set; } = 100;
+        /// <summary>0 表示使用当前试验周期作为屏障上限。</summary>
+        public int BarrierTimeoutMs { get; set; }
         public int PressureDoId { get; set; }
 
         // 新增：该液压路所覆盖的卡钳通道（如 1..6 或 7..12）
@@ -362,6 +369,12 @@ public static class ConfigLoader
                 ReleaseSafePressureBar = GetDouble(n, "ReleaseSafePressureBar", 5),
                 ReleaseStableMs = GetInt(n, "ReleaseStableMs", 100),
                 ReleaseTimeoutMs = GetInt(n, "ReleaseTimeoutMs", 5000),
+                BuildTimeoutMs = GetInt(n, "BuildTimeoutMs", 5000),
+                BuildStableMs = GetInt(n, "BuildStableMs", 200),
+                PressureSampleMaxAgeMs = GetInt(n, "PressureSampleMaxAgeMs", 100),
+                HoldDropToleranceBar = GetDouble(n, "HoldDropToleranceBar", 5),
+                HoldDropConfirmMs = GetInt(n, "HoldDropConfirmMs", 100),
+                BarrierTimeoutMs = GetInt(n, "BarrierTimeoutMs", 0),
                 PressureDoId = GetInt(n, "PressureDoId", 1)
             };
 
@@ -739,6 +752,14 @@ public static class ConfigLoader
                 hydraulic.ReleaseSafePressureBar.ToString(CultureInfo.InvariantCulture));
             AddHydraulicElement("ReleaseStableMs", hydraulic.ReleaseStableMs.ToString());
             AddHydraulicElement("ReleaseTimeoutMs", hydraulic.ReleaseTimeoutMs.ToString());
+            AddHydraulicElement("BuildTimeoutMs", hydraulic.BuildTimeoutMs.ToString());
+            AddHydraulicElement("BuildStableMs", hydraulic.BuildStableMs.ToString());
+            AddHydraulicElement("PressureSampleMaxAgeMs", hydraulic.PressureSampleMaxAgeMs.ToString());
+            AddHydraulicElement(
+                "HoldDropToleranceBar",
+                hydraulic.HoldDropToleranceBar.ToString(CultureInfo.InvariantCulture));
+            AddHydraulicElement("HoldDropConfirmMs", hydraulic.HoldDropConfirmMs.ToString());
+            AddHydraulicElement("BarrierTimeoutMs", hydraulic.BarrierTimeoutMs.ToString());
             AddHydraulicElement("PressureDoId", hydraulic.PressureDoId.ToString());
 
             // 保存 Members
