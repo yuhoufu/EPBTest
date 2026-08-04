@@ -32,6 +32,7 @@ namespace MtEmbTest
         public Main_Frm()
         {
             InitializeComponent();
+            Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath);
             Text = BuildWindowTitle();
             ConfigureMenuStrip();
 

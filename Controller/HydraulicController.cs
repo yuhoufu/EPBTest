@@ -46,8 +46,16 @@ namespace Controller
 
     public sealed class HydraulicBuildTimeoutException : TimeoutException
     {
-        public HydraulicBuildTimeoutException(int hydraulicId, double targetBar, double actualBar, int timeoutMs, string detail)
+        public HydraulicBuildTimeoutException(
+            int hydraulicId,
+            double targetBar,
+            double toleranceBar,
+            double actualBar,
+            int timeoutMs,
+            string detail)
             : base($"HydraulicBuildTimeout Hydraulic={hydraulicId} Target={targetBar:F3}bar " +
+                   $"Tolerance=±{toleranceBar:F3}bar " +
+                   $"Allowed=[{targetBar - toleranceBar:F3},{targetBar + toleranceBar:F3}]bar " +
                    $"Actual={actualBar:F3}bar Timeout={timeoutMs}ms Detail={detail}") { }
     }
 
@@ -128,11 +136,13 @@ namespace Controller
                 _log.Info(
                     $"HydraulicQualificationStarted Hydraulic={hydId} Generation={generationId} " +
                     $"TargetPressureBar={item.PressureThresholdBar:F3} " +
+                    $"ToleranceBar=±{Math.Max(0, item.PressureToleranceBar):F3} " +
                     $"AoCommandPressureBar={aoResult.CommandPressureBar:F3} AoVoltage={aoResult.Voltage:F3}",
                     "液压");
 
                 var timeoutMs = Math.Max(1, item.BuildTimeoutMs);
                 var stableMs = Math.Max(0, item.BuildStableMs);
+                var toleranceBar = Math.Max(0, item.PressureToleranceBar);
                 var clock = System.Diagnostics.Stopwatch.StartNew();
                 long? stableSince = null;
                 var min = double.PositiveInfinity;
@@ -153,8 +163,16 @@ namespace Controller
                     {
                         min = Math.Min(min, last);
                         max = Math.Max(max, last);
-                        lastDetail = last >= item.PressureThresholdBar ? "Stabilizing" : "BelowTarget";
-                        if (last >= item.PressureThresholdBar)
+                        var inTargetWindow = IsPressureWithinTarget(
+                            last,
+                            item.PressureThresholdBar,
+                            toleranceBar);
+                        lastDetail = inTargetWindow
+                            ? "StabilizingWithinTolerance"
+                            : last < item.PressureThresholdBar - toleranceBar
+                                ? "BelowToleranceWindow"
+                                : "AboveToleranceWindow";
+                        if (inTargetWindow)
                         {
                             if (!stableSince.HasValue) stableSince = clock.ElapsedMilliseconds;
                             if (clock.ElapsedMilliseconds - stableSince.Value >= stableMs)
@@ -174,6 +192,7 @@ namespace Controller
                                 _log.Info(
                                     $"PressureQualified Hydraulic={hydId} Generation={generationId} " +
                                     $"TargetPressureBar={qualification.TargetBar:F3} ActualPressureBar={last:F3} " +
+                                    $"ToleranceBar=±{toleranceBar:F3} " +
                                     $"StableMs={stableMs} MinBar={qualification.MinBar:F3} MaxBar={qualification.MaxBar:F3}",
                                     "液压");
                                 return qualification;
@@ -198,6 +217,7 @@ namespace Controller
                 throw new HydraulicBuildTimeoutException(
                     hydId,
                     item.PressureThresholdBar,
+                    toleranceBar,
                     last,
                     timeoutMs,
                     lastDetail + "; inspect caliper cracks, joints, pipes and brake-fluid leakage");
@@ -208,6 +228,15 @@ namespace Controller
                     await ForceReleaseAsync(hydId).ConfigureAwait(false);
                 throw;
             }
+        }
+
+        public static bool IsPressureWithinTarget(double actualBar, double targetBar, double toleranceBar)
+        {
+            if (double.IsNaN(actualBar) || double.IsInfinity(actualBar) ||
+                double.IsNaN(targetBar) || double.IsInfinity(targetBar))
+                return false;
+            var tolerance = Math.Max(0, toleranceBar);
+            return actualBar >= targetBar - tolerance && actualBar <= targetBar + tolerance;
         }
 
         public static bool IsPressureSampleQualified(
@@ -358,7 +387,7 @@ namespace Controller
                     switch (item.Mode)
                     {
                         case HydraulicMode.ByPressure:
-                            if (pBar >= item.PressureThresholdBar) reached = true;
+                            if (IsPressureWithinTarget(pBar, item.PressureThresholdBar, item.PressureToleranceBar)) reached = true;
                             break;
 
                         case HydraulicMode.ByDuration:
@@ -366,12 +395,12 @@ namespace Controller
                             break;
 
                         case HydraulicMode.Either:
-                            if (pBar >= item.PressureThresholdBar || elapsedMs >= item.DurationMs) reached = true;
+                            if (IsPressureWithinTarget(pBar, item.PressureThresholdBar, item.PressureToleranceBar) || elapsedMs >= item.DurationMs) reached = true;
                             break;
 
 
                         case HydraulicMode.HoldUntilRelease: // 新模式：建压判定仍然按阈值/时长逻辑
-                            if (pBar >= item.PressureThresholdBar || elapsedMs >= item.DurationMs) reached = true;
+                            if (IsPressureWithinTarget(pBar, item.PressureThresholdBar, item.PressureToleranceBar) || elapsedMs >= item.DurationMs) reached = true;
                             break;
                     }
 

@@ -895,7 +895,10 @@ namespace Controller
                 while (!token.IsCancellationRequested)
                     try
                     {
-                        if (_readPressure(hydId) >= item.PressureThresholdBar) break;
+                        if (HydraulicController.IsPressureWithinTarget(
+                                _readPressure(hydId),
+                                item.PressureThresholdBar,
+                                item.PressureToleranceBar)) break;
                         await Task.Delay(5, token);
                     }
                     catch (OperationCanceledException)

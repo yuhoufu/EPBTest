@@ -45,6 +45,8 @@ namespace Config
         public HydraulicMode Mode { get; set; }
         public double SetPercent { get; set; }
         public int PressureThresholdBar { get; set; }
+        /// <summary>建压合格窗口为目标压力 ± 此容差；旧项目缺省为 5 bar。</summary>
+        public double PressureToleranceBar { get; set; } = 5;
         public int DurationMs { get; set; }
         public int HoldAfterReachedMs { get; set; }
         public double ReleaseSafePressureBar { get; set; } = 5;
@@ -364,6 +366,7 @@ public static class ConfigLoader
                 Mode = ParseMode(GetString(n, "Mode", "ByPressure")),
                 SetPercent = GetDouble(n, "SetPercent", 30),
                 PressureThresholdBar = (int)GetDouble(n, "PressureThresholdBar", 20),
+                PressureToleranceBar = Math.Max(0, GetDouble(n, "PressureToleranceBar", 5)),
                 DurationMs = GetInt(n, "DurationMs", 0),
                 HoldAfterReachedMs = GetInt(n, "HoldAfterReachedMs", 0),
                 ReleaseSafePressureBar = GetDouble(n, "ReleaseSafePressureBar", 5),
@@ -745,6 +748,9 @@ public static class ConfigLoader
             AddHydraulicElement("Mode", hydraulic.Mode.ToString());
             AddHydraulicElement("SetPercent", hydraulic.SetPercent.ToString(CultureInfo.InvariantCulture));
             AddHydraulicElement("PressureThresholdBar", hydraulic.PressureThresholdBar.ToString());
+            AddHydraulicElement(
+                "PressureToleranceBar",
+                Math.Max(0, hydraulic.PressureToleranceBar).ToString(CultureInfo.InvariantCulture));
             AddHydraulicElement("DurationMs", hydraulic.DurationMs.ToString());
             AddHydraulicElement("HoldAfterReachedMs", hydraulic.HoldAfterReachedMs.ToString());
             AddHydraulicElement(

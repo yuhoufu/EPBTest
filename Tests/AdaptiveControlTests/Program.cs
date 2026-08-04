@@ -68,6 +68,7 @@ namespace AdaptiveControlTests
                 Run("报警配置加载正向低平台连续5圈", AlarmConfigLoadsForwardStallConfirmation);
                 Run("旧项目100ms断电清零配置自动迁移", LegacyShortOffTimeoutIsMigrated);
                 Run("旧项目液压安全节点使用默认值并在保存时补齐", LegacyHydraulicSafetyDefaultsAreCompleted);
+                Run("液压目标压力默认正负5bar判定", HydraulicPressureToleranceWindow);
                 Run("模型原子保存与重载", ProfilePersistence);
                 Run("控流模型五圈收敛到目标带", CutoffModelConvergesWithinFiveCycles);
                 Run("峰值系统偏差用于提前断电补偿", PeakBiasCorrectionIsLearned);
@@ -1019,7 +1020,7 @@ namespace AdaptiveControlTests
                 var xml = File.ReadAllText(source);
                 foreach (var element in new[]
                          {
-                             "BuildTimeoutMs", "BuildStableMs", "PressureSampleMaxAgeMs",
+                             "BuildTimeoutMs", "BuildStableMs", "PressureSampleMaxAgeMs", "PressureToleranceBar",
                              "HoldDropToleranceBar", "HoldDropConfirmMs", "BarrierTimeoutMs"
                          })
                 {
@@ -1033,12 +1034,14 @@ namespace AdaptiveControlTests
                 Assert(loaded.Hydraulics.All(x =>
                         x.BuildTimeoutMs == 5000 && x.BuildStableMs == 200 &&
                         x.PressureSampleMaxAgeMs == 100 &&
+                        Math.Abs(x.PressureToleranceBar - 5) < 1e-9 &&
                         Math.Abs(x.HoldDropToleranceBar - 5) < 1e-9 &&
                         x.HoldDropConfirmMs == 100 && x.BarrierTimeoutMs == 0),
                     "旧项目缺少液压安全节点时未使用安全默认值");
                 ConfigLoader.SaveTest(target, loaded);
                 var saved = File.ReadAllText(target);
                 Assert(saved.Contains("<BuildTimeoutMs>5000</BuildTimeoutMs>") &&
+                       saved.Contains("<PressureToleranceBar>5</PressureToleranceBar>") &&
                        saved.Contains("<PressureSampleMaxAgeMs>100</PressureSampleMaxAgeMs>") &&
                        saved.Contains("<BarrierTimeoutMs>0</BarrierTimeoutMs>"),
                     "保存旧项目时未补齐液压安全节点");
@@ -1047,6 +1050,20 @@ namespace AdaptiveControlTests
             {
                 Directory.Delete(directory, true);
             }
+        }
+
+        private static void HydraulicPressureToleranceWindow()
+        {
+            Assert(HydraulicController.IsPressureWithinTarget(67.922, 70, 5),
+                "70bar目标下67.922bar应在默认±5bar窗口内");
+            Assert(HydraulicController.IsPressureWithinTarget(65, 70, 5),
+                "容差窗口下边界应合格");
+            Assert(HydraulicController.IsPressureWithinTarget(75, 70, 5),
+                "容差窗口上边界应合格");
+            Assert(!HydraulicController.IsPressureWithinTarget(64.999, 70, 5),
+                "低于容差窗口不应合格");
+            Assert(!HydraulicController.IsPressureWithinTarget(75.001, 70, 5),
+                "高于容差窗口不应合格");
         }
 
         private static void OffFailureEscalatesToPowerGroup()

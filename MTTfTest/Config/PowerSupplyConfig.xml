@@ -16,12 +16,12 @@
   <Supply Id="1" ElectricalGroupId="1" DisplayName="电源1"
           Host="192.168.1.101" Port="2268" Terminator="\r\n"
           ExpectedModel="" ExpectedSerial=""
-          VoltageV="12" CurrentA="45" OvpV="33" OcpA="118.8"
+          VoltageV="12" CurrentA="45" OvpV="33" OcpA="79.2"
           MinimumOutputVoltageV="6" SetpointTolerance="0.05" />
   <Supply Id="2" ElectricalGroupId="2" DisplayName="电源2"
           Host="192.168.1.102" Port="2268" Terminator="\r\n"
           ExpectedModel="" ExpectedSerial=""
-          VoltageV="12" CurrentA="45" OvpV="33" OcpA="118.8"
+          VoltageV="12" CurrentA="45" OvpV="33" OcpA="79.2"
           MinimumOutputVoltageV="6" SetpointTolerance="0.05" />
   <Supply Id="3" ElectricalGroupId="3" DisplayName="电源3"
           Host="192.168.1.103" Port="2268" Terminator="\r\n"

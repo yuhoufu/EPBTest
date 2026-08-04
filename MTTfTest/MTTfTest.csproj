@@ -8,6 +8,7 @@
     <OutputType>Exe</OutputType>
     <RootNamespace>MTEmbTest</RootNamespace>
     <AssemblyName>MTTFTest</AssemblyName>
+    <ApplicationIcon>..\image\epb-icon-candidates\epb-icon-08.ico</ApplicationIcon>
     <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
     <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
