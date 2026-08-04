@@ -301,7 +301,7 @@ namespace Controller
             var aoDevName = hydId == 1 ? "Cylinder1" : "Cylinder2";
             try { _do.SetPressure(hydId, false); } catch { }
             try { _ao.WritePressure(aoDevName, 0); } catch { }
-            _log.Warn($"HydraulicForceRelease Hydraulic={hydId} DO=Off AO=0", "液压");
+            _log.Info($"HydraulicForceRelease Hydraulic={hydId} DO=Off AO=0", "液压");
             return Task.CompletedTask;
         }
 

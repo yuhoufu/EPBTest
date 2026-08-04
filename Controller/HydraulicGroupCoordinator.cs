@@ -93,16 +93,23 @@ namespace Controller
         internal HydraulicCycleLease(
             HydraulicGenerationKey key,
             IReadOnlyList<int> members,
-            PressureQualification qualification)
+            PressureQualification qualification,
+            DateTime actuationAnchorUtc)
         {
             Key = key;
             Members = members;
             Qualification = qualification;
+            ActuationAnchorUtc = actuationAnchorUtc;
         }
 
         public HydraulicGenerationKey Key { get; }
         public IReadOnlyList<int> Members { get; }
         public PressureQualification Qualification { get; }
+        /// <summary>
+        /// 同一液压代次内所有电机相位共同使用的未来锚点。该值只在资格完成时生成一次，
+        /// 防止多个等待者分别以自己的恢复时刻计算相位而重新聚拢。
+        /// </summary>
+        public DateTime ActuationAnchorUtc { get; }
     }
 
     internal sealed class HydraulicReleaseTimeoutException : TimeoutException
@@ -440,7 +447,14 @@ namespace Controller
                 state.Qualification = qualification;
                 state.MonitorCts = CancellationTokenSource.CreateLinkedTokenSource(token);
                 state.MonitorTask = MonitorQualifiedPressureAsync(state, state.MonitorCts.Token);
-                return new HydraulicCycleLease(state.Key, state.Members, qualification);
+                // 所有等待同一 InitializeTask 的通道拿到完全相同的未来执行锚点。
+                // 留出极小调度裕量，保证零相位也不会以“过期任务”立即补发。
+                var actuationAnchorUtc = DateTime.UtcNow.AddMilliseconds(2);
+                return new HydraulicCycleLease(
+                    state.Key,
+                    state.Members,
+                    qualification,
+                    actuationAnchorUtc);
             }
             catch (Exception ex)
             {
@@ -833,7 +847,7 @@ namespace Controller
             var safePressureBar = Math.Max(0, item?.ReleaseSafePressureBar ?? 5);
             var stableMs = Math.Max(0, item?.ReleaseStableMs ?? 100);
             var timeoutMs = Math.Max(1, item?.ReleaseTimeoutMs ?? 5000);
-            if (_readPressure == null)
+            if (_readPressureSample == null)
             {
                 throw new HydraulicReleaseTimeoutException(
                     hydId,
@@ -846,11 +860,14 @@ namespace Controller
             var clock = Stopwatch.StartNew();
             long? stableSinceMs = null;
             var lastPressureBar = double.NaN;
+            var lastDetail = string.Empty;
             while (clock.ElapsedMilliseconds <= timeoutMs)
             {
+                PressureSample sample;
                 try
                 {
-                    lastPressureBar = _readPressure(hydId);
+                    sample = _readPressureSample(hydId);
+                    lastPressureBar = sample.ValueBar;
                 }
                 catch (Exception ex)
                 {
@@ -862,9 +879,14 @@ namespace Controller
                         "PressureReadFailed:" + ex.Message);
                 }
 
-                var safe = !double.IsNaN(lastPressureBar) &&
-                           !double.IsInfinity(lastPressureBar) &&
-                           lastPressureBar <= safePressureBar;
+                var sampleFailure = HydraulicController.ClassifyPressureSampleFailure(
+                    sample,
+                    double.NegativeInfinity,
+                    item?.PressureSampleMaxAgeMs ?? 100);
+                var safe = !sampleFailure.HasValue && lastPressureBar <= safePressureBar;
+                lastDetail = sampleFailure.HasValue
+                    ? $"PressureSample{sampleFailure.Value} AgeMs={sample.AgeMs:F1}"
+                    : string.Empty;
                 if (safe)
                 {
                     if (!stableSinceMs.HasValue)
@@ -890,7 +912,8 @@ namespace Controller
                 hydId,
                 lastPressureBar,
                 safePressureBar,
-                timeoutMs);
+                timeoutMs,
+                lastDetail);
         }
 
         // —— 回退保持实现：DO 打开 + AO 输出百分比，达到阈值后保持，直到外部取消 —— //

@@ -76,6 +76,7 @@
     <Compile Include="EpbCycleRunner.cs" />
     <Compile Include="DoControlTrace.cs" />
     <Compile Include="ChannelRuntimeStore.cs" />
+    <Compile Include="ChannelRuntimeState.cs" />
     <Compile Include="ElectricalStaggerPlan.cs" />
     <Compile Include="EpbManager.BatchStart.cs" />
     <Compile Include="EpbManager.WarningSnapshots.cs" />

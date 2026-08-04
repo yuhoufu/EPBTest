@@ -113,6 +113,7 @@ namespace Controller
             try
             {
                 _activeBatchId = Guid.NewGuid();
+                InvalidateStopSafetyCache();
                 var warningConfig = AlarmConfig?.WarningSnapshots ?? new WarningSnapshotConfig();
                 if (warningConfig.Enabled && !(Recorder is ICycleEvidenceExporter))
                     throw new InvalidOperationException(
@@ -120,11 +121,23 @@ namespace Controller
                 _emergencyPowerGroupLatch.Clear();
                 _daqRecoveryAttemptsByDevice.Clear();
                 _daqRecoveryTasks.Clear();
+                await EnsureDaqReadyBeforeStartAsync(selected, sessionToken).ConfigureAwait(false);
                 BeginPowerSupplyTelemetryRecording(_activeBatchId);
                 EnsureStrictCurveControl(selected);
                 SaveProgramSafetySnapshot();
                 if (_powerSupply != null)
                     await _powerSupply.PrepareAndEnableAsync(selected, sessionToken).ConfigureAwait(false);
+
+                // DAQ、电源及程序安全预检全部通过后，才允许旧停机锁存转为“启动中”。
+                foreach (var channel in selected)
+                    PublishChannelRuntimeState(
+                        channel,
+                        ChannelRuntimeState.Starting,
+                        "Starting",
+                        "安全预检通过，正在启动",
+                        affectedChannels: selected,
+                        correlationId: _activeBatchId,
+                        allowTerminalReset: true);
 
                 _activeStaggerPlan = staggerPlan;
                 RegisterRunContext(_activeBatchId, staggerPlan);
@@ -178,6 +191,14 @@ namespace Controller
                                 failedResult.Code,
                                 $"启动定位失败：Stage={failedResult.Stage}，{failedResult.Reason}",
                                 FaultScope.Channel));
+                            PublishChannelRuntimeState(
+                                failedChannel,
+                                ChannelRuntimeState.StartBlocked,
+                                failedResult.Code,
+                                failedResult.Reason,
+                                failedChannel,
+                                new[] { failedChannel },
+                                _activeBatchId);
                             UnmarkHydraulicParticipant(failedChannel);
                             foreach (var list in groups.Values) list.Remove(failedChannel);
                             _log?.Error(
@@ -195,6 +216,14 @@ namespace Controller
                 // —— 3) 学习阶段：次数不多，用“每圈循环 + 锚点屏障 + 相位延时”实现稳定对齐 —— //
                 if (learnCycles > 0)
                 {
+                    foreach (var channel in activeChannels)
+                        PublishChannelRuntimeState(
+                            channel,
+                            ChannelRuntimeState.Learning,
+                            "Learning",
+                            "正在执行自学习",
+                            affectedChannels: activeChannels,
+                            correlationId: _activeBatchId);
                     var learningFailed = await RunLearningPhaseAsync(
                             groups, t0OfGroup, learnCycles, staggerPlan, sessionToken)
                         .ConfigureAwait(false);
@@ -205,6 +234,14 @@ namespace Controller
                             "Learning",
                             "自学习失败，已隔离通道。",
                             FaultScope.Channel));
+                        PublishChannelRuntimeState(
+                            failedChannel,
+                            ChannelRuntimeState.StartBlocked,
+                            "LearningFailed",
+                            "自学习失败，已隔离通道",
+                            failedChannel,
+                            new[] { failedChannel },
+                            _activeBatchId);
                         UnmarkHydraulicParticipant(failedChannel);
                         foreach (var list in groups.Values) list.Remove(failedChannel);
                     }
@@ -215,6 +252,15 @@ namespace Controller
                     throw new InvalidOperationException("全部选中通道均在学习阶段被隔离，未启动正式试验。");
 
                 EnsureAdaptiveProfilesReady(activeChannels);
+
+                foreach (var channel in activeChannels)
+                    PublishChannelRuntimeState(
+                        channel,
+                        ChannelRuntimeState.Running,
+                        "Running",
+                        "正式试验运行中",
+                        affectedChannels: activeChannels,
+                        correlationId: _activeBatchId);
 
                 // —— 4) 正式阶段：为每个通道创建对齐到“锚点+相位”的高精计时器 —— //
                 StartFormalPhaseTimers(groups, t0OfGroup, staggerPlan, sessionToken);
@@ -233,6 +279,18 @@ namespace Controller
                 EndBatchSession(cancel: true);
 
                 foreach (var channel in selected)
+                    PublishChannelRuntimeState(
+                        channel,
+                        expectedCancellation
+                            ? ChannelRuntimeState.ManualStopped
+                            : ChannelRuntimeState.StartBlocked,
+                        expectedCancellation ? "StartCanceled" : "StartFailed",
+                        ex.Message,
+                        affectedChannels: selected,
+                        correlationId: _activeBatchId,
+                        allowTerminalReset: !expectedCancellation);
+
+                foreach (var channel in selected)
                 {
                     try { StopChannel(channel); }
                     catch (Exception stopEx)
@@ -243,7 +301,7 @@ namespace Controller
 
                 try
                 {
-                    await CompleteStopSafetyAsync(
+                    await StopAllAsync(
                             new StopContext
                             {
                                 Source = StopSource.StartupRollback,
@@ -261,6 +319,33 @@ namespace Controller
 
                 throw;
             }
+        }
+
+        private async Task EnsureDaqReadyBeforeStartAsync(
+            int[] selected,
+            CancellationToken token)
+        {
+            if (_acq == null)
+                throw new InvalidOperationException("DAQ采集器未初始化，拒绝启动试验。Code=DaqNotInitialized");
+
+            var results = await _acq.EnsureChannelsReadyAsync(
+                    selected,
+                    timeoutMs: 3000,
+                    requiredFreshCallbacks: 3,
+                    maxAgeMs: 100,
+                    token: token)
+                .ConfigureAwait(false);
+            var failed = results.Where(r => !r.Recovered).ToArray();
+            if (failed.Length > 0)
+            {
+                var details = string.Join("；", failed.Select(r =>
+                    $"{r.Device}: {r.FailureReason}, Fresh={r.FreshCallbacks}/{r.RequiredFreshCallbacks}"));
+                throw new InvalidOperationException(
+                    $"DAQ启动健康检查失败，未使能电源与液压。Code=DaqStartPreflightFailed；{details}");
+            }
+
+            var devices = string.Join(",", results.Select(r => r.Device).Distinct());
+            _log?.Info($"DAQ启动健康检查通过：Devices=[{devices}]。", "AI");
         }
 
         internal static bool IsExpectedBatchCancellation(
@@ -404,19 +489,12 @@ namespace Controller
                         {
                             using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, stopCts.Token);
                             var token = linked.Token;
-                            var actualStartUtc = DateTime.UtcNow;
+                            var callbackUtc = DateTime.UtcNow;
                             var phaseBaseUtc = t0.AddMilliseconds(phase);
-                            var elapsedSincePhaseMs = (actualStartUtc - phaseBaseUtc).TotalMilliseconds;
+                            var elapsedSincePhaseMs = (callbackUtc - phaseBaseUtc).TotalMilliseconds;
                             var phaseSlot = elapsedSincePhaseMs <= 0
                                 ? 0L
                                 : (long)Math.Floor(elapsedSincePhaseMs / PeriodMs);
-                            var plannedStartUtc = phaseBaseUtc.AddMilliseconds(phaseSlot * PeriodMs);
-                            MarkElectricalPhaseDue(ch, plannedStartUtc);
-                            _log?.Info(
-                                $"正式阶段启动 Run={_activeBatchId:N} EPB={ch} Group={staggerPlan.Get(ch).ElectricalGroupId} " +
-                                $"Cycle={cycleIndex} Phase={phase}ms PlannedUtc={plannedStartUtc:O} " +
-                                $"ActualUtc={actualStartUtc:O} DeviationMs={(actualStartUtc - plannedStartUtc).TotalMilliseconds:F3}",
-                                "EPB");
 
                             await WaitForDaqRecoveryAsync(ch, token).ConfigureAwait(false);
 
@@ -429,14 +507,46 @@ namespace Controller
                                 pg,
                                 HydraulicPhaseKind.Formal,
                                 phaseSlot);
-                            await HydraulicEnterAtGroupAnchorAsync(hydraulicKey, participants, token)
+                            var lease = await HydraulicEnterAtGroupAnchorAsync(
+                                    hydraulicKey,
+                                    participants,
+                                    token)
                                 .ConfigureAwait(false);
 
-                            // 2) 计算本圈的绝对“硬截止”时刻（用于 Runner 保证统一收尾）
-                            var elapsedFromAnchorMs = Math.Max(0, (DateTime.UtcNow - t0).TotalMilliseconds);
-                            var nextBoundarySlot =
-                                Math.Max(1, (long)Math.Floor(elapsedFromAnchorMs / PeriodMs) + 1);
-                            var deadlineUtc = t0.AddMilliseconds(nextBoundarySlot * PeriodMs);
+                            // 液压资格完成后，所有等待同一代次的通道使用同一个未来锚点，
+                            // 再叠加各自电气相位。不能让过期的0/800ms相位同时补发。
+                            var maxPhaseMs = participants.Count == 0
+                                ? phase
+                                : participants.Max(member => staggerPlan.Get(member).PhaseMs);
+                            var phaseWindow = ElectricalStaggerExecutor.CreateQualifiedPhaseWindow(
+                                lease?.ActuationAnchorUtc ?? DateTime.UtcNow.AddMilliseconds(2),
+                                t0,
+                                PeriodMs,
+                                maxPhaseMs);
+                            var plannedStartUtc = phaseWindow.GetDueUtc(phase);
+                            var delay = plannedStartUtc - DateTime.UtcNow;
+                            if (delay.TotalMilliseconds > 1)
+                                await Task.Delay(delay, token).ConfigureAwait(false);
+                            else
+                            {
+                                token.ThrowIfCancellationRequested();
+                                await Task.Yield();
+                            }
+
+                            token.ThrowIfCancellationRequested();
+                            if (IsAlarmStopRequested(ch)) return false;
+
+                            var actualStartUtc = DateTime.UtcNow;
+                            MarkElectricalPhaseDue(ch, plannedStartUtc);
+                            _log?.Info(
+                                $"正式阶段启动 Run={_activeBatchId:N} EPB={ch} Group={staggerPlan.Get(ch).ElectricalGroupId} " +
+                                $"Cycle={cycleIndex} Phase={phase}ms PlannedUtc={plannedStartUtc:O} " +
+                                $"ActualUtc={actualStartUtc:O} DeviationMs={(actualStartUtc - plannedStartUtc).TotalMilliseconds:F3} " +
+                                $"HydraulicQualifiedUtc={lease?.Qualification?.ReachedUtc:O}",
+                                "EPB");
+
+                            // 本压力组按最后一个相位选择统一墙钟截止点；资格过晚时整组共同顺延。
+                            var deadlineUtc = phaseWindow.DeadlineUtc;
 
                             // 2.5) ★ 圈开始：通知 Recorder
                             var cycleNumber = cycleIndex + baseCycle;
@@ -1270,7 +1380,7 @@ namespace Controller
         /// <param name="pressureGroupId">压力组编号：1 表示 1..6，2 表示 7..12。</param>
         /// <param name="channelsInGroup">本压力组内，本轮实际参与的 EPB 通道列表。</param>
         /// <param name="token">取消令牌。</param>
-        private async Task HydraulicEnterAtGroupAnchorAsync(
+        private async Task<HydraulicCycleLease> HydraulicEnterAtGroupAnchorAsync(
             HydraulicGenerationKey generationKey,
             IReadOnlyList<int> channelsInGroup,
             CancellationToken token)
@@ -1280,11 +1390,11 @@ namespace Controller
             if (_hydCoordinator == null)
             {
                 _log.Warn($"压力组[{pressureGroupId}] 无可用液压协调器，跳过建压保持", "液压协调");
-                return;
+                return null;
             }
 
             if (channelsInGroup == null || channelsInGroup.Count == 0)
-                return;
+                return null;
 
             // 保险起见，再按 pressureGroupId 过滤一遍
             var channelList = channelsInGroup
@@ -1295,13 +1405,14 @@ namespace Controller
                 .ToArray();
 
             if (channelList.Length == 0)
-                return;
+                return null;
 
             var lease = await _hydCoordinator.EnterGenerationAsync(generationKey, channelList, token)
                 .ConfigureAwait(false);
             foreach (var ch in channelList)
                 _hydraulicLeaseByChannel[ch] = lease;
             try { PressureQualificationChanged?.Invoke(lease.Qualification); } catch { }
+            return lease;
         }
 
         #endregion
@@ -1314,6 +1425,13 @@ namespace Controller
         /// <param name="sessionRunCount">本次试验 Session 内的运行次数（从 1 开始）。</param>
         private void OnRunnerChannelCycleCompleted(int channel, int sessionRunCount)
         {
+            var current = _channelRuntimeStateStore.Get(channel);
+            if (current?.State == ChannelRuntimeState.WarningRunning)
+                PublishChannelRuntimeState(
+                    channel,
+                    ChannelRuntimeState.Running,
+                    "WarningCleared",
+                    "后续完整圈正常，软预警已解除");
             // 直接转发给 Manager 自己的事件
             ChannelCycleCompleted?.Invoke(channel, sessionRunCount);
         }

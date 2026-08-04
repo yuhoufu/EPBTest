@@ -75,6 +75,7 @@ namespace Controller
         public event Action<ControlFault> ControlFaultRaised;
         public event Action<DaqRecoveryResult> DaqRecoveryStateChanged;
         public event Action<PressureQualification> PressureQualificationChanged;
+        public event Action<ChannelRuntimeStateChangedEvent> ChannelRuntimeStateChanged;
 
         /// <summary>
         /// 人工复位指定电源组的故障锁存。只有输出已关闭、保护已解除且身份校验通过时才会成功；
@@ -99,6 +100,8 @@ namespace Controller
         private readonly IPowerSupplyCoordinator _powerSupply;
         private readonly bool _requirePowerSupply;
         private PowerSupplyTelemetryCsvRecorder _powerTelemetryRecorder;
+        private readonly ConcurrentDictionary<string, long> _observedSafetyFaults = new();
+        private readonly ChannelRuntimeStateStore _channelRuntimeStateStore = new();
 
         private readonly SafetyMarginControlMode _safetyMarginControlMode;
         private readonly EpbControlMode _epbControlMode;
@@ -132,6 +135,64 @@ namespace Controller
             {
                 // 日志刷新失败不得回流控制链路。
             }
+        }
+
+        public IReadOnlyList<ChannelRuntimeStateChangedEvent> GetChannelRuntimeStates()
+        {
+            return _channelRuntimeStateStore.Snapshot();
+        }
+
+        private void PublishChannelRuntimeState(
+            int channel,
+            ChannelRuntimeState state,
+            string reasonCode,
+            string reasonText,
+            int? sourceChannel = null,
+            IEnumerable<int> affectedChannels = null,
+            Guid correlationId = default,
+            bool allowTerminalReset = false)
+        {
+            var update = _channelRuntimeStateStore.Publish(
+                new ChannelRuntimeStateChangedEvent
+                {
+                    Channel = channel,
+                    State = state,
+                    ReasonCode = reasonCode ?? string.Empty,
+                    ReasonText = reasonText ?? string.Empty,
+                    SourceChannel = sourceChannel,
+                    AffectedChannels = (affectedChannels ?? new[] { channel }).Distinct().ToArray(),
+                    TimestampUtc = DateTime.UtcNow,
+                    CorrelationId = correlationId,
+                    RunId = _activeBatchId
+                },
+                allowTerminalReset);
+            try { ChannelRuntimeStateChanged?.Invoke(update); }
+            catch { }
+        }
+
+        private void PublishFaultRuntimeStates(ControlFault fault, int? sourceChannel)
+        {
+            if (fault == null) return;
+            var active = (fault.AffectedChannels ?? Array.Empty<int>())
+                .Where(channel =>
+                    channel == sourceChannel ||
+                    _timers.ContainsKey(channel) ||
+                    _runners.ContainsKey(channel) ||
+                    IsHydraulicParticipant(channel))
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
+            foreach (var channel in active)
+                PublishChannelRuntimeState(
+                    channel,
+                    channel == sourceChannel
+                        ? ChannelRuntimeState.AlarmStopped
+                        : ChannelRuntimeState.InterlockStopped,
+                    fault.Code,
+                    fault.Reason,
+                    sourceChannel,
+                    active,
+                    fault.CorrelationId);
         }
 
         private void WriteRecorderBatchSafely(
@@ -175,6 +236,9 @@ namespace Controller
         private readonly ConcurrentDictionary<string, int> _daqRecoveryAttemptsByDevice = new();
         private readonly ConcurrentDictionary<string, Task<DaqRecoveryResult>> _daqRecoveryTasks = new();
         private readonly object _daqRecoveryGate = new();
+        private readonly object _stopSafetyGate = new();
+        private Task<StopSafetyResult> _stopSafetyTask;
+        private StopSafetyResult _lastStopSafetyResult;
 
         /// <summary>
         ///     将指定通道标记为“参与液压判定”。
@@ -340,7 +404,8 @@ namespace Controller
 
             // 4) 安全落位：断电 + 请求液压释放
             try { CommandEpbOff(channel, nameof(FinalizeChannelAfterNaturalCompletion)); } catch { /* ignore */ }
-            try { _ = HydraulicMarkReleaseAsync(channel); } catch { /* ignore */ }
+            try { ObserveSafetyTask(HydraulicMarkReleaseAsync(channel), "NaturalCompletionRelease", channel); }
+            catch { /* ignore */ }
 
             // 5) 停止即存最近10圈：不阻塞当前线程
             try
@@ -365,6 +430,11 @@ namespace Controller
             }
 
             TryEndBatchSessionWhenIdle();
+            PublishChannelRuntimeState(
+                channel,
+                ChannelRuntimeState.Completed,
+                "Completed",
+                "已完成全部目标圈数");
             FlushPersistentLog();
         }
 
@@ -479,6 +549,7 @@ namespace Controller
 
 
             // —— 订阅“低时延电流样本”并转发给对应 Runner —— //
+            _acq.DeviceFaultDetected += OnDaqDeviceFaultDetected;
             _acq.OnFastEpbCurrent += (ch, amps, ts) =>
             {
                 if (_runners.TryGetValue(ch, out var r))
@@ -569,6 +640,14 @@ namespace Controller
                 _hydraulic,
                 _log);
             _hydCoordinator.FaultRaised += OnHydraulicFaultRaised;
+
+            for (var channel = 1; channel <= 12; channel++)
+                PublishChannelRuntimeState(
+                    channel,
+                    ChannelRuntimeState.NotEnabled,
+                    "NotEnabled",
+                    "本轮未启用",
+                    allowTerminalReset: true);
         }
 
         private void SaveProgramSafetySnapshot()
@@ -652,6 +731,43 @@ namespace Controller
             }
         }
 
+        private void ObserveSafetyTask(Task task, string operation, int channel)
+        {
+            if (task == null) return;
+            _ = task.ContinueWith(
+                completed =>
+                {
+                    try
+                    {
+                        var ex = completed.Exception?.GetBaseException();
+                        var now = Stopwatch.GetTimestamp();
+                        var faultKey = $"{ex?.GetType().FullName}:{ex?.Message}";
+                        if (!_observedSafetyFaults.TryAdd(faultKey, now))
+                        {
+                            if (!_observedSafetyFaults.TryGetValue(faultKey, out var previous) ||
+                                (now - previous) * 1000.0 / Stopwatch.Frequency < 10_000 ||
+                                !_observedSafetyFaults.TryUpdate(faultKey, now, previous))
+                                return;
+                        }
+                        if (_observedSafetyFaults.Count > 256)
+                        {
+                            foreach (var item in _observedSafetyFaults)
+                                if ((now - item.Value) * 1000.0 / Stopwatch.Frequency > 60_000)
+                                    _observedSafetyFaults.TryRemove(item.Key, out _);
+                        }
+                        _log?.Error(
+                            $"安全异步操作失败：Operation={operation} EPB={channel} " +
+                            $"Error={ex?.Message}",
+                            "EPB",
+                            ex);
+                    }
+                    catch { }
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+
         // （保留你已有的 StartChannelAsync / Pause/Resume/Stop 等实现，不改对外签名）
         public async Task StartChannelAsync(int channel, CancellationToken uiToken = default)
         {
@@ -661,10 +777,38 @@ namespace Controller
                 return;
             }
 
-            EnsureStrictCurveControl(new[] { channel });
-            SaveProgramSafetySnapshot();
-            if (_powerSupply != null)
-                await _powerSupply.PrepareAndEnableAsync(new[] { channel }, uiToken).ConfigureAwait(false);
+            var singleRunId = Guid.NewGuid();
+            _activeBatchId = singleRunId;
+            InvalidateStopSafetyCache();
+            try
+            {
+                await EnsureDaqReadyBeforeStartAsync(new[] { channel }, uiToken).ConfigureAwait(false);
+                EnsureStrictCurveControl(new[] { channel });
+                SaveProgramSafetySnapshot();
+                if (_powerSupply != null)
+                    await _powerSupply.PrepareAndEnableAsync(new[] { channel }, uiToken).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                PublishChannelRuntimeState(
+                    channel,
+                    ChannelRuntimeState.StartBlocked,
+                    "PreflightFailed",
+                    ex.Message,
+                    channel,
+                    new[] { channel },
+                    singleRunId,
+                    allowTerminalReset: true);
+                throw;
+            }
+
+            PublishChannelRuntimeState(
+                channel,
+                ChannelRuntimeState.Starting,
+                "Starting",
+                "安全预检通过，正在启动",
+                correlationId: singleRunId,
+                allowTerminalReset: true);
 
             // 若上一次因报警触发过停机，这里允许重新启动
             _alarmStopLatch.BeginRun(channel);
@@ -690,7 +834,6 @@ namespace Controller
                 new[] { channel },
                 _cfg.Test.Groups,
                 periodMs);
-            var singleRunId = Guid.NewGuid();
             RegisterRunContext(singleRunId, singleChannelPlan);
             var singleAssignment = singleChannelPlan.Get(channel);
             var staggerMs = singleAssignment.PhaseMs;
@@ -715,6 +858,12 @@ namespace Controller
 
             if (learnCycles > 0)
             {
+                PublishChannelRuntimeState(
+                    channel,
+                    ChannelRuntimeState.Learning,
+                    "Learning",
+                    "正在执行自学习",
+                    correlationId: singleRunId);
                 _log.Info($"EPB[{channel}] 启动前自学习 {learnCycles} 次。", "EPB");
                 try
                 {
@@ -735,6 +884,12 @@ namespace Controller
                 }
             }
 
+            PublishChannelRuntimeState(
+                channel,
+                ChannelRuntimeState.Running,
+                "Running",
+                "正式试验运行中",
+                correlationId: singleRunId);
             var singleFormalAnchorUtc = DateTime.UtcNow.AddMilliseconds(staggerMs);
             _ = timer.StartAsync(_cfg.Test.TestTarget, staggerMs, async (i, token) =>
             {
@@ -826,12 +981,14 @@ namespace Controller
         public void PauseChannel(int channel)
         {
             if (_timers.TryGetValue(channel, out var t)) t.Pause();
+            PublishChannelRuntimeState(channel, ChannelRuntimeState.Paused, "Paused", "试验已暂停");
             ChannelPaused?.Invoke(channel);
         }
 
         public void ResumeChannel(int channel)
         {
             if (_timers.TryGetValue(channel, out var t)) t.Resume();
+            PublishChannelRuntimeState(channel, ChannelRuntimeState.Running, "Running", "试验已恢复");
             ChannelResumed?.Invoke(channel);
         }
 
@@ -865,7 +1022,7 @@ namespace Controller
 
             try
             {
-                _ = HydraulicMarkReleaseAsync(channel);
+                ObserveSafetyTask(HydraulicMarkReleaseAsync(channel), "StopChannelRelease", channel);
             }
             catch
             {
@@ -885,6 +1042,11 @@ namespace Controller
             }
 
             TryEndBatchSessionWhenIdle();
+            PublishChannelRuntimeState(
+                channel,
+                ChannelRuntimeState.ManualStopped,
+                "ManualStopped",
+                "人工停止");
             TryDisableIdlePowerGroup(channel, "通道停止后电源组已无运行通道");
         }
 
@@ -909,7 +1071,8 @@ namespace Controller
 
             // —— 安全落位：立即断电 + 请求液压释放 —— //
             try { CommandEpbOffHighPriority(channel, nameof(StopChannelOnAlarm)); } catch { /* ignore */ }
-            try { _ = HydraulicMarkReleaseAsync(channel); } catch { /* ignore */ }
+            try { ObserveSafetyTask(HydraulicMarkReleaseAsync(channel), "AlarmStopRelease", channel); }
+            catch { /* ignore */ }
 
             RemoveRunnerRuntime(channel, nameof(StopChannelOnAlarm));
 
@@ -993,6 +1156,7 @@ namespace Controller
                 "报警");
             FlushPersistentLog();
             try { ControlFaultRaised?.Invoke(channelFault); } catch { }
+            PublishFaultRuntimeStates(channelFault, channel);
             ChannelAlarmRaised?.Invoke(channel, reason);
 
             // 不阻塞 Runner/定时器线程
@@ -1050,34 +1214,99 @@ namespace Controller
             lock (_daqRecoveryGate)
             {
                 if (_daqRecoveryTasks.TryGetValue(device, out recoveryTask) && !recoveryTask.IsCompleted)
-                    return; // 同一设备同一次断流的兄弟通道加入现有恢复，不重复计数。
-
-                var attempt = _daqRecoveryAttemptsByDevice.AddOrUpdate(device, 1, (_, old) => old + 1);
-                if (attempt > 1)
-                {
-                    var affected = GetDaqGroupChannels(device);
-                    PublishDaqGroupFault(
-                        device,
-                        "RepeatedDaqSampleStale",
-                        reason,
-                        affected);
-                    foreach (var affectedChannel in affected)
-                        OnRunnerAlarmRaised(
-                            affectedChannel,
-                            $"DaqGroupHardFault Device={device} RepeatedDaqSampleStale {reason}");
-                    return;
-                }
+                    return; // 同一设备同一次断流只生成一个关联故障和一个恢复任务。
 
                 var affectedChannels = GetDaqGroupChannels(device);
-                foreach (var affectedChannel in affectedChannels)
-                {
-                    try { CommandEpbOff(affectedChannel, "DaqRecoverableFault"); } catch { }
-                    try { _ = HydraulicMarkReleaseAsync(affectedChannel); } catch { }
-                }
+                if (affectedChannels.Length == 0)
+                    affectedChannels = new[] { channel };
+
+                _daqRecoveryAttemptsByDevice.AddOrUpdate(device, 1, (_, old) => old + 1);
+                LatchDaqGroupHardFault(channel, device, affectedChannels, reason);
 
                 recoveryTask = RecoverDaqDeviceAsync(channel, device, affectedChannels, reason);
                 _daqRecoveryTasks[device] = recoveryTask;
             }
+        }
+
+        private void OnDaqDeviceFaultDetected(DaqDeviceFault deviceFault)
+        {
+            if (deviceFault == null) return;
+            var affected = GetDaqGroupChannels(deviceFault.Device);
+            if (affected.Length == 0)
+            {
+                PublishDaqGroupFault(
+                    deviceFault.Device,
+                    deviceFault.Code,
+                    deviceFault.Reason,
+                    Array.Empty<int>());
+                return;
+            }
+            LatchDaqGroupHardFault(
+                affected[0],
+                deviceFault.Device,
+                affected,
+                deviceFault.Code + " " + deviceFault.Reason);
+        }
+
+        private void LatchDaqGroupHardFault(
+            int triggeringChannel,
+            string device,
+            int[] affectedChannels,
+            string reason)
+        {
+            var alarmUtc = DateTime.UtcNow;
+            var fault = new ControlFault(
+                "DaqSampleStale",
+                $"Device={device} {reason}",
+                FaultScope.DaqGroup,
+                affectedChannels ?? Array.Empty<int>(),
+                null,
+                alarmUtc,
+                Guid.NewGuid());
+
+            _log.Error(
+                $"DAQ有效样本超过100ms未提交，设备级失效安全停机并锁存。" +
+                $"Device={device} TriggerEPB={triggeringChannel} " +
+                $"Affected=[{string.Join(",", fault.AffectedChannels)}] " +
+                $"CorrelationId={fault.CorrelationId:N} Reason={reason}",
+                "AI");
+            FlushPersistentLog();
+            try { ControlFaultRaised?.Invoke(fault); } catch { }
+            PublishFaultRuntimeStates(fault, triggeringChannel);
+
+            foreach (var affectedChannel in fault.AffectedChannels.Distinct().OrderBy(x => x))
+            {
+                _alarmStopLatch.TryRequestStop(affectedChannel);
+                try { CancelStopCts(affectedChannel); } catch { }
+                try { StopChannelOnAlarm(affectedChannel); } catch { }
+                if (affectedChannel != triggeringChannel)
+                    TryFinalizeCurrentCycleAfterSnapshot(affectedChannel, false);
+            }
+
+            try { ChannelAlarmRaised?.Invoke(triggeringChannel, fault.Reason); } catch { }
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    if (Alarm != null)
+                        await Alarm.SetAlarmAsync(triggeringChannel, true, fault.Reason).ConfigureAwait(false);
+                }
+                catch { }
+
+                try
+                {
+                    var snapshot = await ExportAlarmSnapshotAsync(triggeringChannel, fault.Reason, alarmUtc)
+                        .ConfigureAwait(false);
+                    if (snapshot == null)
+                        TryFinalizeCurrentCycleAfterSnapshot(triggeringChannel, false);
+                    else
+                        _currentCycleNumberByChannel.TryRemove(triggeringChannel, out _);
+                }
+                catch
+                {
+                    TryFinalizeCurrentCycleAfterSnapshot(triggeringChannel, false);
+                }
+            });
         }
 
         private async Task<DaqRecoveryResult> RecoverDaqDeviceAsync(
@@ -1102,15 +1331,12 @@ namespace Controller
             {
                 _log.Info(
                     $"DAQ安全恢复完成 Device={device} FreshCallbacks={result.FreshCallbacks}/" +
-                    $"{result.RequiredFreshCallbacks} ElapsedMs={result.ElapsedMs}",
+                    $"{result.RequiredFreshCallbacks} ElapsedMs={result.ElapsedMs}；" +
+                    "报警停机状态保持锁存，不自动重新上电。",
                     "AI");
                 return result;
             }
 
-            foreach (var channel in affectedChannels)
-                OnRunnerAlarmRaised(
-                    channel,
-                    $"DaqGroupHardFault Device={device} RecoveryFailed={result.FailureReason}");
             PublishDaqGroupFault(
                 device,
                 "DaqRecoveryFailed",
@@ -1138,6 +1364,7 @@ namespace Controller
                 $"CorrelationId={fault.CorrelationId:N} Reason={reason}",
                 "AI");
             try { ControlFaultRaised?.Invoke(fault); } catch { }
+            PublishFaultRuntimeStates(fault, null);
         }
 
         private int[] GetDaqGroupChannels(string device)
@@ -1190,6 +1417,9 @@ namespace Controller
         {
             if (fault == null) return;
             try { ControlFaultRaised?.Invoke(fault); } catch { }
+            PublishFaultRuntimeStates(
+                fault,
+                fault.AffectedChannels?.Distinct().OrderBy(x => x).Cast<int?>().FirstOrDefault());
 
             // 故障回调首先执行不等待IO的电机断电；液压控制器已在发布事件前回零输出。
             foreach (var channel in fault.AffectedChannels.Distinct())
@@ -1263,6 +1493,9 @@ namespace Controller
                 fault.TimestampUtc == default ? DateTime.UtcNow : fault.TimestampUtc,
                 Guid.NewGuid());
             try { ControlFaultRaised?.Invoke(controlFault); } catch { }
+            PublishFaultRuntimeStates(
+                controlFault,
+                controlFault.AffectedChannels.Distinct().OrderBy(x => x).Cast<int?>().FirstOrDefault());
             try { PowerSupplyFaultRaised?.Invoke(fault); } catch { }
 
             _ = Task.Run(async () =>
@@ -1314,6 +1547,11 @@ namespace Controller
         private void OnRunnerWarningRaised(int channel, string reason)
         {
             _log.Warn($"EPB[{channel}] 自适应软预警：{reason}", "EPB");
+            PublishChannelRuntimeState(
+                channel,
+                ChannelRuntimeState.WarningRunning,
+                ExtractFaultCode(reason),
+                reason);
             try { ChannelWarningRaised?.Invoke(channel, reason); }
             catch { /* UI 订阅者异常不得影响控制线程 */ }
         }
@@ -1447,6 +1685,20 @@ namespace Controller
                 var snapshotDir = System.IO.Path.Combine(baseDir, $"{stamp}-EPB{alarmChannel:D2}");
                 System.IO.Directory.CreateDirectory(snapshotDir);
 
+                try
+                {
+                    var diagnosticDevices = ResolveAlarmSnapshotAffectedChannels(alarmChannel, reason)
+                        .Select(_acq.GetDeviceForEpbChannel)
+                        .Where(device => !string.IsNullOrWhiteSpace(device))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToArray();
+                    _acq.ExportDiagnostics(snapshotDir, diagnosticDevices, TimeSpan.FromSeconds(60));
+                }
+                catch (Exception ex)
+                {
+                    _log.Warn($"DAQ 60秒时序诊断快照导出失败：{ex.Message}", "AI");
+                }
+
                 int[] running;
                 try
                 {
@@ -1457,10 +1709,14 @@ namespace Controller
                     running = Array.Empty<int>();
                 }
 
+                var affectedChannels = ResolveAlarmSnapshotAffectedChannels(alarmChannel, reason);
+
                 // 先冻结报警通道，保证 PostOffTailMs 是明确边界；其它通道随后作为辅助证据导出。
                 // StopChannelOnAlarm 通常已把报警通道从 _timers 移除，因此显式放到首位。
                 running = new[] { alarmChannel }
+                    .Concat(affectedChannels.Where(channel => channel != alarmChannel))
                     .Concat(running.Where(channel => channel != alarmChannel))
+                    .Distinct()
                     .ToArray();
 
                 AlarmCycleSnapshotEvidence alarmEvidence = null;
@@ -1549,7 +1805,8 @@ namespace Controller
                         alarmChannel,
                         alarmCycleNumber,
                         lastN,
-                        reason);
+                        reason,
+                        affectedChannels);
                     WriteWarningChain(snapshotDir, alarmChannel, reason, alarmCycleNumber);
                 }
                 catch (Exception ex)
@@ -1585,102 +1842,192 @@ namespace Controller
             StopAll(StopContext.Legacy(caller));
         }
 
+        private int[] ResolveAlarmSnapshotAffectedChannels(int alarmChannel, string reason)
+        {
+            IEnumerable<int> affected = new[] { alarmChannel };
+            if (reason?.IndexOf("Daq", StringComparison.OrdinalIgnoreCase) >= 0 && _acq != null)
+            {
+                var device = _acq.GetDeviceForEpbChannel(alarmChannel);
+                if (!string.IsNullOrWhiteSpace(device))
+                    affected = Enumerable.Range(1, 12)
+                        .Where(ch => string.Equals(
+                            _acq.GetDeviceForEpbChannel(ch), device, StringComparison.OrdinalIgnoreCase));
+            }
+            else if (reason?.IndexOf("PowerSupply", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                var groupId = GetElectricalGroupId(alarmChannel);
+                affected = _cfg.Test.Groups.FirstOrDefault(x => x.Id == groupId)?.Members
+                           ?? new List<int> { alarmChannel };
+            }
+            else if (reason?.IndexOf("Hydraulic", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                affected = _cfg.Test.Hydraulics
+                    .FirstOrDefault(x => x.Members.Contains(alarmChannel))?.Members
+                           ?? new List<int> { alarmChannel };
+            }
+
+            return affected
+                .Where(ch => ch == alarmChannel || _currentCycleNumberByChannel.ContainsKey(ch))
+                .Distinct()
+                .OrderBy(ch => ch)
+                .ToArray();
+        }
+
         public void StopAll(StopContext context)
         {
-            context ??= StopContext.Legacy(null);
-            var safetyStartedUtc = DateTime.UtcNow;
-            _log.Info(
-                $"收到停止全部 EPB 请求：{context.ToLogText()}; SafetyActionStartedUtc={safetyStartedUtc:O}",
-                "EPB");
-            // 学习阶段尚未创建通道 Timer 时，也必须能通过控制层自己的 CTS 停止。
-            EndBatchSession(cancel: true);
-
-            var keys = _timers.Keys.Concat(_runners.Keys).Concat(_hydraulicParticipants.Keys)
-                .Distinct().ToArray();
-            for (int i = 0; i < keys.Length; i++)
-                StopChannel(keys[i]);
-
-            ClearChannelRuntimes(nameof(StopAll));
-            _ = CompleteStopSafetyNoThrowAsync(context);
-            _log.Info(
-                $"全部 EPB 电机断电请求已提交：CorrelationId={context.CorrelationId}; MotorOffRequestedUtc={DateTime.UtcNow:O}",
-                "EPB");
-            FlushPersistentLog();
+            _ = StopAllAsync(context ?? StopContext.Legacy(null), CancellationToken.None);
         }
 
-        /// <summary>停止全部 EPB，并等待四台程控电源输出关闭回读完成。</summary>
-        public async Task StopAllAsync(CancellationToken token = default)
+        /// <summary>幂等停止全部 EPB，并分别返回电机DO、电源回读和压力证据。</summary>
+        public Task<StopSafetyResult> StopAllAsync(CancellationToken token = default)
         {
-            await StopAllAsync(StopContext.Legacy(nameof(StopAllAsync)), token).ConfigureAwait(false);
+            return StopAllAsync(StopContext.Legacy(nameof(StopAllAsync)), token);
         }
 
-        public async Task StopAllAsync(StopContext context, CancellationToken token = default)
+        public Task<StopSafetyResult> StopAllAsync(StopContext context, CancellationToken token = default)
         {
             context ??= StopContext.Legacy(null);
-            var safetyStartedUtc = DateTime.UtcNow;
+            lock (_stopSafetyGate)
+            {
+                if (_stopSafetyTask != null && !_stopSafetyTask.IsCompleted)
+                    return _stopSafetyTask;
+                if (_lastStopSafetyResult != null && _activeBatchId == Guid.Empty &&
+                    _lastStopSafetyResult.CanReleaseAcquisition)
+                    return Task.FromResult(_lastStopSafetyResult.Clone(reused: true));
+                _stopSafetyTask = RunStopSafetyAsync(context, token);
+                return _stopSafetyTask;
+            }
+        }
+
+        private async Task<StopSafetyResult> RunStopSafetyAsync(StopContext context, CancellationToken token)
+        {
+            var startedUtc = DateTime.UtcNow;
+            var runId = _activeBatchId;
             _log.Info(
-                $"收到停止全部 EPB 请求：{context.ToLogText()}; SafetyActionStartedUtc={safetyStartedUtc:O}",
+                $"收到停止全部 EPB 请求：{context.ToLogText()}; SafetyActionStartedUtc={startedUtc:O}",
                 "EPB");
+
+            // 1. 冻结新启动并取消学习、Timer 和 Runner。
             EndBatchSession(cancel: true);
-            var keys = _timers.Keys
+            var channels = _timers.Keys
                 .Concat(_runners.Keys)
                 .Concat(_hydraulicParticipants.Keys)
+                .Concat(_stopCtsByChannel.Keys)
                 .Distinct()
+                .OrderBy(x => x)
                 .ToArray();
-            foreach (var channel in keys)
+
+            // 2. 对活动通道发送高优先级全关，并独立记录命令结果。
+            var motorOk = true;
+            var motorErrors = new List<string>();
+            foreach (var channel in channels)
             {
-                try { StopChannel(channel); } catch { }
+                UnmarkHydraulicParticipant(channel);
+                try { CancelStopCts(channel); } catch { }
+                RemoveTimerRuntime(channel, nameof(RunStopSafetyAsync));
+                RemoveRunnerRuntime(channel, nameof(RunStopSafetyAsync));
+                try
+                {
+                    if (!CommandEpbOffHighPriority(channel, nameof(RunStopSafetyAsync)))
+                    {
+                        motorOk = false;
+                        motorErrors.Add($"EPB{channel:D2}:DO返回失败");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    motorOk = false;
+                    motorErrors.Add($"EPB{channel:D2}:{ex.Message}");
+                }
+                PublishChannelRuntimeState(
+                    channel,
+                    ChannelRuntimeState.ManualStopped,
+                    "StopAll",
+                    context.Reason ?? "停止全部",
+                    affectedChannels: channels);
             }
-            ClearChannelRuntimes(nameof(StopAllAsync));
-            await CompleteStopSafetyAsync(context, token).ConfigureAwait(false);
+            ClearChannelRuntimes(nameof(RunStopSafetyAsync));
+
+            // 3. 液压释放/压力确认和程控电源Disable/回读并行，互不遮蔽结果。
+            var pressureTask = ConfirmPressureSafeForStopAsync(context);
+            var powerTask = ConfirmPowerOffForStopAsync(context, token);
+            var pressure = await pressureTask.ConfigureAwait(false);
+            var power = await powerTask.ConfigureAwait(false);
+
+            var result = new StopSafetyResult
+            {
+                CorrelationId = context.CorrelationId ?? string.Empty,
+                RunId = runId,
+                MotorOffCommandSucceeded = motorOk,
+                PowerOffConfirmed = power.ok,
+                PressureSafeConfirmed = pressure.ok,
+                StartedUtc = startedUtc,
+                CompletedUtc = DateTime.UtcNow,
+                MotorError = string.Join("; ", motorErrors),
+                PowerError = power.error,
+                PressureError = pressure.error
+            };
+
+            lock (_stopSafetyGate) _lastStopSafetyResult = result.Clone();
+            var logText =
+                $"StopAll分项结果：CorrelationId={result.CorrelationId}; " +
+                $"MotorDO={(result.MotorOffCommandSucceeded ? "Confirmed" : "Unconfirmed")}; " +
+                $"Power={(result.PowerOffConfirmed ? "Confirmed" : "Unconfirmed")}; " +
+                $"Pressure={(result.PressureSafeConfirmed ? "Confirmed" : "Unconfirmed")}; " +
+                $"MotorError={result.MotorError}; PowerError={result.PowerError}; PressureError={result.PressureError}";
+            if (result.FullyConfirmed)
+                _log.Info(logText, "EPB");
+            else if (result.CanReleaseAcquisition)
+                _log.Warn("【仅压力证据未确认，电机DO和程控电源均已确认关闭】" + logText, "EPB");
+            else
+                _log.Error(logText, "EPB");
+            EndPowerSupplyTelemetryRecording();
+            FlushPersistentLog();
+            return result;
         }
 
-        private async Task CompleteStopSafetyAsync(StopContext context, CancellationToken token)
+        private async Task<(bool ok, string error)> ConfirmPressureSafeForStopAsync(StopContext context)
         {
             try
             {
                 var hydraulicIds = _cfg.Test.Hydraulics.Select(x => x.Id).Distinct().ToArray();
-                var releaseTasks = hydraulicIds.Select(id =>
-                    _hydCoordinator.ForceReleaseAsync(id, $"StopAll:{context.Source}"));
-                await Task.WhenAll(releaseTasks).ConfigureAwait(false);
-                var pressureSafeUtc = DateTime.UtcNow;
+                await Task.WhenAll(hydraulicIds.Select(id =>
+                        _hydCoordinator.ForceReleaseAsync(id, $"StopAll:{context.Source}")))
+                    .ConfigureAwait(false);
+                return (true, string.Empty);
+            }
+            catch (Exception ex)
+            {
+                return (false, ex.Message);
+            }
+        }
 
+        private async Task<(bool ok, string error)> ConfirmPowerOffForStopAsync(
+            StopContext context,
+            CancellationToken token)
+        {
+            try
+            {
                 if (_powerSupply != null)
                     await _powerSupply.DisableAllAsync(
                             $"StopAll Source={context.Source} CorrelationId={context.CorrelationId}",
                             token)
                         .ConfigureAwait(false);
-
-                _log.Info(
-                    $"StopAll 安全收尾完成：CorrelationId={context.CorrelationId}; " +
-                    $"PressureSafeConfirmedUtc={pressureSafeUtc:O}; " +
-                    $"MotorPowerOffConfirmedUtc={DateTime.UtcNow:O}; CompletedUtc={DateTime.UtcNow:O}",
-                    "EPB");
+                return (true, string.Empty);
             }
             catch (Exception ex)
             {
-                _log.Error(
-                    $"StopAll 安全收尾未完全确认：CorrelationId={context.CorrelationId}; {ex.Message}",
-                    "EPB",
-                    ex);
-                throw;
-            }
-            finally
-            {
-                EndPowerSupplyTelemetryRecording();
-                FlushPersistentLog();
+                return (false, ex.Message);
             }
         }
 
-        private async Task CompleteStopSafetyNoThrowAsync(StopContext context)
+        private void InvalidateStopSafetyCache()
         {
-            try
+            lock (_stopSafetyGate)
             {
-                await CompleteStopSafetyAsync(context, CancellationToken.None).ConfigureAwait(false);
-            }
-            catch
-            {
-                // CompleteStopSafetyAsync 已持久化详细故障；兼容同步入口不能产生未观察任务异常。
+                _lastStopSafetyResult = null;
+                if (_stopSafetyTask?.IsCompleted == true)
+                    _stopSafetyTask = null;
             }
         }
 
@@ -1731,6 +2078,27 @@ namespace Controller
             return _cfg.Test.Groups.FirstOrDefault(x => x.Members.Contains(channel))?.Id ?? 0;
         }
 
+        internal bool TryGetFreshPowerSupplyCurrent(
+            int channel,
+            out double measuredCurrentA,
+            out double ageMs,
+            out bool outputEnabled)
+        {
+            measuredCurrentA = double.NaN;
+            ageMs = double.PositiveInfinity;
+            outputEnabled = false;
+            var groupId = GetElectricalGroupId(channel);
+            var snapshot = groupId > 0 ? _powerSupply?.GetLatestSnapshot(groupId) : null;
+            if (snapshot == null) return false;
+            ageMs = Math.Max(0, (DateTime.UtcNow - snapshot.TimestampUtc).TotalMilliseconds);
+            measuredCurrentA = snapshot.MeasuredCurrent;
+            outputEnabled = snapshot.OutputEnabled;
+            return snapshot.IsConnected &&
+                   !double.IsNaN(measuredCurrentA) &&
+                   !double.IsInfinity(measuredCurrentA) &&
+                   ageMs <= 1000;
+        }
+
         internal void RequestElectricalGroupEmergencyShutdown(int sourceChannel, string reason)
         {
             CancelActiveLearningPhase();
@@ -1756,6 +2124,17 @@ namespace Controller
                 $"Affected=[{string.Join(",", members)}] Reason={reason}",
                 "程控电源");
 
+            var interlockFault = new ControlFault(
+                ExtractFaultCode(reason),
+                reason,
+                FaultScope.ElectricalGroup,
+                members,
+                groupId,
+                DateTime.UtcNow,
+                Guid.NewGuid());
+            try { ControlFaultRaised?.Invoke(interlockFault); } catch { }
+            PublishFaultRuntimeStates(interlockFault, sourceChannel);
+
             // 先在当前线程阻止同组任何通道继续执行，并逐路发出高优先级DO关闭；
             // 网络电源关闭及回读随后独立执行，不能阻塞采样回调。
             foreach (var member in members)
@@ -1766,7 +2145,13 @@ namespace Controller
                 RemoveRunnerRuntime(member, nameof(RequestElectricalGroupEmergencyShutdown));
                 try { CommandEpbOffHighPriority(member, nameof(RequestElectricalGroupEmergencyShutdown)); }
                 catch { }
-                try { _ = HydraulicMarkReleaseAsync(member); }
+                try
+                {
+                    ObserveSafetyTask(
+                        HydraulicMarkReleaseAsync(member),
+                        "ElectricalGroupEmergencyRelease",
+                        member);
+                }
                 catch { }
             }
 

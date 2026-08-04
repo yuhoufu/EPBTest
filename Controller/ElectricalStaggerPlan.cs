@@ -214,6 +214,61 @@ namespace Controller
     /// </summary>
     internal static class ElectricalStaggerExecutor
     {
+        internal sealed class QualifiedPhaseWindow
+        {
+            internal QualifiedPhaseWindow(DateTime actuationAnchorUtc, DateTime deadlineUtc)
+            {
+                ActuationAnchorUtc = actuationAnchorUtc;
+                DeadlineUtc = deadlineUtc;
+            }
+
+            public DateTime ActuationAnchorUtc { get; }
+            public DateTime DeadlineUtc { get; }
+
+            public DateTime GetDueUtc(int phaseMs)
+            {
+                if (phaseMs < 0) throw new ArgumentOutOfRangeException(nameof(phaseMs));
+                return ActuationAnchorUtc.AddMilliseconds(phaseMs);
+            }
+        }
+
+        /// <summary>
+        /// 在液压资格完成后创建整组共享的执行窗口。截止点按本组最后一个相位统一选择；
+        /// 若资格过晚跨过当前墙钟周期，则整组共同顺延，不能让各通道独自跨期。
+        /// </summary>
+        internal static QualifiedPhaseWindow CreateQualifiedPhaseWindow(
+            DateTime actuationAnchorUtc,
+            DateTime wallClockAnchorUtc,
+            int periodMs,
+            int maxPhaseMs)
+        {
+            if (periodMs <= 0) throw new ArgumentOutOfRangeException(nameof(periodMs));
+            if (maxPhaseMs < 0) throw new ArgumentOutOfRangeException(nameof(maxPhaseMs));
+
+            var anchor = actuationAnchorUtc.Kind == DateTimeKind.Utc
+                ? actuationAnchorUtc
+                : actuationAnchorUtc.ToUniversalTime();
+            var wallAnchor = wallClockAnchorUtc.Kind == DateTimeKind.Utc
+                ? wallClockAnchorUtc
+                : wallClockAnchorUtc.ToUniversalTime();
+            var elapsedAnchorMs = Math.Max(0, (anchor - wallAnchor).TotalMilliseconds);
+            var anchorSlot = Math.Max(0L, (long)Math.Floor(elapsedAnchorMs / periodMs));
+            var currentBoundaryUtc = wallAnchor.AddMilliseconds((anchorSlot + 1L) * periodMs);
+            var lastDueUtc = anchor.AddMilliseconds(maxPhaseMs);
+            if (lastDueUtc >= currentBoundaryUtc)
+            {
+                // 最后一个相位会跨出本墙钟周期时，整组从下一周期边界重新开始；
+                // 禁止零相位留在旧周期而后续相位单独跨期。
+                anchor = currentBoundaryUtc;
+                lastDueUtc = anchor.AddMilliseconds(maxPhaseMs);
+            }
+
+            var elapsedMs = Math.Max(0, (lastDueUtc - wallAnchor).TotalMilliseconds);
+            var boundarySlot = Math.Max(1L, (long)Math.Floor(elapsedMs / periodMs) + 1L);
+            var deadlineUtc = wallAnchor.AddMilliseconds(boundarySlot * (long)periodMs);
+            return new QualifiedPhaseWindow(anchor, deadlineUtc);
+        }
+
         internal static DateTime EnsureAnchorInFuture(
             DateTime anchorUtc,
             DateTime nowUtc,
