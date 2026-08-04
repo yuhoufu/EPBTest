@@ -70,6 +70,10 @@ namespace MTEmbTest
                     $"DAQ恢复 {result.Device}：{(result.Recovered ? "成功" : "失败")}，" +
                     $"新鲜样本={result.FreshCallbacks}/{result.RequiredFreshCallbacks}，{result.ElapsedMs}ms。",
                     !result.Recovered);
+                manager.DaqPersistenceStateChanged += state => PostSafetyStatus(
+                    $"DAQ持久化 {state.Device}：{state.State}，队列={state.QueueDepth}，" +
+                    $"最老批次={state.OldestBatchAgeMs:F0}ms，关联号={state.CorrelationId:N}。",
+                    state.State == DaqPersistenceState.Failed);
                 manager.ControlFaultRaised += fault =>
                 {
                     var hint = fault.Scope == FaultScope.HydraulicGroup

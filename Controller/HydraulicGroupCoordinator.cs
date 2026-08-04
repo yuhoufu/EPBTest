@@ -360,6 +360,7 @@ namespace Controller
                 if (state.Remaining.Count == 0 && !state.ReleaseStarted)
                 {
                     state.ReleaseStarted = true;
+                    state.BarrierReached.TrySetResult(true);
                     releaseNow = true;
                 }
             }
@@ -372,18 +373,45 @@ namespace Controller
                 ? item.BarrierTimeoutMs
                 : Math.Max(1, _test.PeriodMs);
             var completed = await Task.WhenAny(
-                    state.Completion.Task,
+                    state.BarrierReached.Task,
                     Task.Delay(timeoutMs))
                 .ConfigureAwait(false);
-            if (completed != state.Completion.Task)
+            if (completed != state.BarrierReached.Task)
             {
+                // 定时器与最后一个成员可能在同一时刻竞争完成。先复查屏障状态，
+                // 避免最后成员已经移除后仍构造 Pending=[] 的假超时。
+                if (state.BarrierReached.Task.IsCompleted)
+                {
+                    await state.BarrierReached.Task.ConfigureAwait(false);
+                    await state.Completion.Task.ConfigureAwait(false);
+                    return;
+                }
+
                 int[] pending;
                 lock (state.Gate) pending = state.Remaining.OrderBy(x => x).ToArray();
+                if (pending.Length == 0)
+                {
+                    await state.BarrierReached.Task.ConfigureAwait(false);
+                    await state.Completion.Task.ConfigureAwait(false);
+                    return;
+                }
+
+                if (state.BarrierReached.Task.IsCompleted)
+                {
+                    await state.BarrierReached.Task.ConfigureAwait(false);
+                    await state.Completion.Task.ConfigureAwait(false);
+                    return;
+                }
+
                 var ex = new HydraulicBarrierTimeoutException(lease.Key, timeoutMs, pending);
                 await FailGenerationAsync(state, ex).ConfigureAwait(false);
                 throw ex;
             }
 
+            // BarrierTimeout 只约束同代次成员到达释放点的等待时间。
+            // 全员到齐后的实际释压由 ReleaseTimeoutMs 独立约束，不能把两段时间叠加后
+            // 误报成 Pending=[] 的屏障超时。
+            await state.BarrierReached.Task.ConfigureAwait(false);
             await state.Completion.Task.ConfigureAwait(false);
         }
 
@@ -544,6 +572,7 @@ namespace Controller
             }
             finally
             {
+                state.BarrierReached.TrySetException(exception);
                 state.Completion.TrySetException(exception);
                 if (publishFault)
                     PublishFault(state, exception);
@@ -1006,6 +1035,8 @@ namespace Controller
             public Task<HydraulicCycleLease> InitializeTask;
             public PressureQualification Qualification;
             public readonly TaskCompletionSource<bool> Completion =
+                new(TaskCreationOptions.RunContinuationsAsynchronously);
+            public readonly TaskCompletionSource<bool> BarrierReached =
                 new(TaskCreationOptions.RunContinuationsAsynchronously);
             public CancellationTokenSource MonitorCts;
             public Task MonitorTask;
