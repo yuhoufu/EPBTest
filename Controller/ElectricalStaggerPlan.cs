@@ -214,6 +214,21 @@ namespace Controller
     /// </summary>
     internal static class ElectricalStaggerExecutor
     {
+        internal static DateTime EnsureAnchorInFuture(
+            DateTime anchorUtc,
+            DateTime nowUtc,
+            int safetyMs = 2)
+        {
+            var normalizedNow = nowUtc.Kind == DateTimeKind.Utc
+                ? nowUtc
+                : nowUtc.ToUniversalTime();
+            var normalizedAnchor = anchorUtc.Kind == DateTimeKind.Utc
+                ? anchorUtc
+                : anchorUtc.ToUniversalTime();
+            var minimumAnchor = normalizedNow.AddMilliseconds(Math.Max(1, safetyMs));
+            return normalizedAnchor >= minimumAnchor ? normalizedAnchor : minimumAnchor;
+        }
+
         public static Task RunAsync(
             IEnumerable<int> channels,
             ElectricalStaggerPlan plan,
@@ -225,9 +240,11 @@ namespace Controller
             if (plan == null) throw new ArgumentNullException(nameof(plan));
             if (work == null) throw new ArgumentNullException(nameof(work));
 
+            // 整体平移过期锚点，保留同组 0/Δ/2Δ 的相对相位；禁止过期任务全部 Task.Yield 后同刻放行。
+            var effectiveAnchorUtc = EnsureAnchorInFuture(anchorUtc, DateTime.UtcNow);
             var tasks = channels.Distinct().OrderBy(x => x).Select(async channel =>
             {
-                var dueUtc = anchorUtc.AddMilliseconds(plan.Get(channel).PhaseMs);
+                var dueUtc = effectiveAnchorUtc.AddMilliseconds(plan.Get(channel).PhaseMs);
                 var delay = dueUtc - DateTime.UtcNow;
                 if (delay.TotalMilliseconds > 1)
                     await Task.Delay(delay, token).ConfigureAwait(false);

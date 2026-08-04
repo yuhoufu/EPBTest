@@ -95,7 +95,8 @@ namespace Controller
 
         private readonly double _overshootAlarmDeltaA = 0; // 正向峰值超阈值报警增量（A）；<=0 表示禁用（由 AlarmConfig.xml 注入）
         private readonly double _adaptiveOvershootWarningDeltaA = 0.8;
-        private readonly int _adaptiveOvershootConfirmCycles = 3;
+        private readonly int _adaptiveOvershootConfirmCycles = 5;
+        private readonly int _peakEvidenceMismatchConfirmCycles = 3;
         private readonly int _adaptiveForwardStallConfirmCycles = 5;
 
         /// <summary>
@@ -181,8 +182,9 @@ namespace Controller
             EpbManager manager = null,
             double overshootAlarmDeltaA = 0, // ★ 新增：峰值超限报警增量（A），<=0 禁用
             double adaptiveOvershootWarningDeltaA = 0.8,
-            int adaptiveOvershootConfirmCycles = 3,
+            int adaptiveOvershootConfirmCycles = 5,
             int adaptiveForwardStallConfirmCycles = 5,
+            int peakEvidenceMismatchConfirmCycles = 3,
             SafetyMarginControlMode safetyMarginControlMode = SafetyMarginControlMode.Legacy20251010,
             EpbControlMode epbControlMode = EpbControlMode.LegacyFixedTiming,
             bool adaptiveShadowMode = true,
@@ -202,6 +204,7 @@ namespace Controller
             _adaptiveOvershootWarningDeltaA = Math.Max(0.1, adaptiveOvershootWarningDeltaA);
             _adaptiveOvershootConfirmCycles = Math.Max(1, adaptiveOvershootConfirmCycles);
             _adaptiveForwardStallConfirmCycles = Math.Max(1, adaptiveForwardStallConfirmCycles);
+            _peakEvidenceMismatchConfirmCycles = Math.Max(1, peakEvidenceMismatchConfirmCycles);
             _safetyMarginControlMode = safetyMarginControlMode;
             _epbControlMode = epbControlMode;
             _adaptiveShadowMode = adaptiveShadowMode;
@@ -224,15 +227,13 @@ namespace Controller
 
 
         /// <summary>
-        ///     对当前通道执行一次“预释放”：
-        ///     反向上电 → 忽略涌流 → 等待进入反向空行程（Ewma 稳定判据）→ 保持 keepMs → 断电。
-        ///     若未稳定判定到反向空行程，立即断电并向上层返回失败。
+        ///     兼容入口：执行统一启动定位（正向确认位置 → 断电确认 → 单次反向释放）。
         /// </summary>
         /// <param name="keepMs">
         ///     反向空行程保持时长（毫秒）。为 <c>null</c> 时使用 <see cref="DefaultPreReleaseKeepMs" />。
         /// </param>
         /// <param name="token">取消令牌。</param>
-        /// <returns>执行是否顺利（仅在明确判定到反向空行程时返回 true）。</returns>
+        /// <returns>是否完成启动定位并具备进入学习/正式阶段的条件。</returns>
         public async Task<bool> PreReleaseAsync(int? keepMs, CancellationToken token)
         {
             return await PreReleaseAsync(keepMs, null, token).ConfigureAwait(false);
@@ -244,61 +245,19 @@ namespace Controller
             int? detectTimeoutMs,
             CancellationToken token)
         {
-            var holdMs = keepMs ?? DefaultPreReleaseKeepMs;
-            if (holdMs < 0) holdMs = 0;
-            var detectMs = Math.Max(1, detectTimeoutMs ?? DefaultPreReleaseDetectTimeoutMs);
-
-            try
-            {
+            var result = await StartupPositioningAsync(keepMs, detectTimeoutMs, token)
+                .ConfigureAwait(false);
+            if (result.Succeeded)
                 _log.Info(
-                    $"EPB[{_channel}] 预释放：开始（判定超时 {detectMs}ms，" +
-                    $"进入空行程后保持 {holdMs}ms）。",
+                    $"EPB[{_channel}] 启动定位完成：{result.CompletionKind}，" +
+                    $"Peak={result.PeakCurrentA:F3}A Elapsed={result.ElapsedMs}ms。",
                     "EPB");
-
-                // 1) 反向上电 → 忽略涌流（去抖）
-                CommandReverse();
-                await Task.Delay(_peakIgnoreMs, token).ConfigureAwait(false);
-
-                // 2) 判定进入反向空行程。
-                // 复用正式自适应反向释放的鲁棒窗口：有稳定模型时按历史基线，
-                // 无模型时按 RevDecayLimitA + 分位数/离散度判定，禁止固定猜测 -0.5A。
-                var tuple = await WaitForReverseEmptyPlateauAsync(
-                    detectMs,
-                    token).ConfigureAwait(false);
-
-                var okRel = tuple.ok;
-                var iEmptyRel = tuple.iAvg;
-
-                if (okRel)
-                {
-                    _log.Info($"EPB[{_channel}] 预释放：已进入反向空行程，Iempty-≈{iEmptyRel:F2}A。保持 {holdMs}ms。", "EPB");
-                    if (holdMs > 0)
-                        await Task.Delay(holdMs, token).ConfigureAwait(false);
-                }
-                else
-                    _log.Warn(
-                        $"EPB[{_channel}] 预释放：{tuple.reason}；未稳定判定到反向空行程，" +
-                        "拒绝进入后续学习/正式阶段。",
-                        "EPB");
-
-                return okRel;
-            }
-            catch (OperationCanceledException)
-            {
-                // 传递取消（上层通常会统一断电）
-                throw;
-            }
-            catch (Exception ex)
-            {
-                _log.Warn($"EPB[{_channel}] 预释放阶段异常：{ex.Message}；拒绝进入后续阶段。", "EPB");
-                return false;
-            }
-            finally
-            {
-                // 4) 断电（始终）
-                CommandOff();
-                _log.Info($"EPB[{_channel}] 预释放：完成，已断电。", "EPB");
-            }
+            else
+                _log.Warn(
+                    $"EPB[{_channel}] 启动定位失败：Stage={result.Stage} Code={result.Code} " +
+                    $"Reason={result.Reason}",
+                    "EPB");
+            return result.Succeeded;
         }
 
 
@@ -463,51 +422,18 @@ namespace Controller
                 $"plateau(win={PlateauWindowMs}ms, flat≤{PlateauFlatRangeA:F2}A, +emptyMargin≥{PlateauAboveEmptyMarginA:F2}A)。",
                 "EPB");
 
-            // 预释放
-            if (DefaultPreReleaseKeepMs > 0)
-                try
-                {
-                    _log.Info(
-                        $"EPB[{_channel}] 自学习预处理：先反向释放，最多判定 " +
-                        $"{DefaultPreReleaseDetectTimeoutMs}ms，进入反向空行程后保持 " +
-                        $"{DefaultPreReleaseKeepMs}ms。",
-                        "EPB");
-                    CommandReverse();
-                    await Task.Delay(_peakIgnoreMs, token).ConfigureAwait(false);
-
-                    var (okRel, _, iEmptyRel, reason) =
-                        await WaitForReverseEmptyPlateauAsync(
-                            DefaultPreReleaseDetectTimeoutMs,
-                            token).ConfigureAwait(false);
-                    if (okRel)
-                    {
-                        _log.Info(
-                            $"EPB[{_channel}] 预释放：已进入反向空行程，Iempty-≈{iEmptyRel:F2}A。保持 {DefaultPreReleaseKeepMs}ms。",
-                            "EPB");
-                        if (_iEmptyRevA == 0) _iEmptyRevA = iEmptyRel;
-                    }
-                    else
-                    {
-                        _log.Warn(
-                            $"EPB[{_channel}] 预释放：{reason}；未稳定判定到反向空行程，" +
-                            $"仍按 {DefaultPreReleaseKeepMs}ms 定时保持。",
-                            "EPB");
-                    }
-
-                    await Task.Delay(DefaultPreReleaseKeepMs, token).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException)
-                {
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    _log.Warn($"EPB[{_channel}] 预释放阶段异常：{ex.Message}（忽略继续）。", "EPB");
-                }
-                finally
-                {
-                    CommandOff();
-                }
+            // 所有学习入口共用同一启动定位，禁止旧逻辑直接反向顶住机械端。
+            var startup = await StartupPositioningAsync(
+                    DefaultPreReleaseKeepMs,
+                    DefaultPreReleaseDetectTimeoutMs,
+                    token)
+                .ConfigureAwait(false);
+            if (!startup.Succeeded)
+            {
+                if (_manager != null)
+                    await _manager.PublishStartupPositioningFailureAsync(startup).ConfigureAwait(false);
+                return false;
+            }
 
             // 采样统计容器
             var fwdPeakList = new List<double>();

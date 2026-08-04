@@ -719,7 +719,9 @@ namespace Controller
                 try
                 {
                     MarkElectricalPhaseDue(channel, DateTime.UtcNow);
-                    await runner.LearnAsync(learnCycles, uiToken, periodMs).ConfigureAwait(false);
+                    var learned = await runner.LearnAsync(learnCycles, uiToken, periodMs).ConfigureAwait(false);
+                    if (!learned)
+                        throw new InvalidOperationException($"EPB[{channel}] 启动定位或自学习失败，已拒绝进入正式试验。");
                     _log.Info($"EPB[{channel}] 自学习完成，进入正式试验。", "EPB");
                 }
                 catch (OperationCanceledException)
@@ -728,7 +730,8 @@ namespace Controller
                 }
                 catch (Exception ex)
                 {
-                    _log.Warn($"EPB[{channel}] 自学习异常：{ex.Message}，仍将尝试进入正式试验。", "EPB");
+                    _log.Error($"EPB[{channel}] 自学习异常：{ex.Message}，已拒绝进入正式试验。", "EPB", ex);
+                    throw;
                 }
             }
 
@@ -1882,7 +1885,7 @@ namespace Controller
         #region 卡钳预释放
 
         /// <summary>
-        /// 批量执行“预释放”（反向进入空行程并保持）。
+        /// 批量执行启动定位（正向确认位置、断电确认、反向释放）。
         /// </summary>
         /// <param name="channels">要执行预释放的通道号（1..12）。</param>
         /// <param name="keepMs">
@@ -1893,7 +1896,7 @@ namespace Controller
         /// <returns>全部通道任务完成的 <see cref="Task"/>。</returns>
         /// <remarks>
         /// - 按本次选中集合生成XML驱动的不可变错峰计划；不同电源组可并行，同组按计划相位启动。<br/>
-        /// - 预释放同样受实际压力资格联锁保护，压力未达标时不会给卡钳电机上电。
+        /// - 启动定位同样受实际压力资格联锁保护，压力未达标时不会给卡钳电机上电。
         /// </remarks>
         public async Task PreReleaseBatchAsync(int[] channels, int? keepMs, CancellationToken token)
         {
@@ -1906,7 +1909,7 @@ namespace Controller
             RegisterRunContext(runId, plan);
             LogStaggerPlan(runId, plan);
             var failed = await PreReleaseBatchWithPlanAsync(enabled, keepMs, plan, token).ConfigureAwait(false);
-            EnsurePreReleaseBatchSucceeded(failed, _log);
+            EnsurePreReleaseBatchSucceeded(failed.Select(x => x.Channel), _log);
         }
 
         /// <summary>
@@ -1931,13 +1934,13 @@ namespace Controller
                 $"PreReleaseBatchStaggeredAsync 的 deltaMs={deltaMs} 已忽略；实际使用XML ElectricalGroups/StaggerMs。",
                 "EPB");
             var failed = await PreReleaseBatchWithPlanAsync(enabled, keepMs, plan, token).ConfigureAwait(false);
-            EnsurePreReleaseBatchSucceeded(failed, _log);
+            EnsurePreReleaseBatchSucceeded(failed.Select(x => x.Channel), _log);
         }
 
         /// <summary>
-        /// 按批次不可变错峰计划启动预释放。所有任务一次性创建，不等待前一相位完成。
+        /// 按批次不可变错峰计划启动定位。所有任务一次性创建，不等待前一相位完成。
         /// </summary>
-        private async Task<int[]> PreReleaseBatchWithPlanAsync(
+        private async Task<StartupPositioningResult[]> PreReleaseBatchWithPlanAsync(
             int[] channels,
             int? keepMs,
             ElectricalStaggerPlan staggerPlan,
@@ -1949,8 +1952,7 @@ namespace Controller
                 throw new ArgumentNullException(nameof(staggerPlan));
 
             var enabled = channels.Distinct().OrderBy(x => x).ToArray();
-            var anchorUtc = DateTime.UtcNow.AddMilliseconds(500);
-            var failedChannels = new ConcurrentBag<int>();
+            var failedResults = new ConcurrentBag<StartupPositioningResult>();
             var runId = _activeBatchId == Guid.Empty ? Guid.NewGuid() : _activeBatchId;
 
             // P0：任何预释放电机动作前，先按压力组完成实际压力资格。
@@ -1964,6 +1966,12 @@ namespace Controller
                     .ConfigureAwait(false);
             }
 
+            // 液压资格确认可能耗时数秒。锚点必须在资格确认完成后创建，
+            // 否则 0/800ms 相位均会过期并被同刻放行。
+            var anchorUtc = ElectricalStaggerExecutor.EnsureAnchorInFuture(
+                DateTime.UtcNow.AddMilliseconds(500),
+                DateTime.UtcNow);
+
             try
             {
                 await ElectricalStaggerExecutor.RunAsync(
@@ -1972,34 +1980,27 @@ namespace Controller
                     anchorUtc,
                     async (ch, ct) =>
                     {
-                    var assignment = staggerPlan.Get(ch);
-                    var plannedStartUtc = anchorUtc.AddMilliseconds(assignment.PhaseMs);
-                    var actualStartUtc = DateTime.UtcNow;
-                    MarkElectricalPhaseDue(ch, plannedStartUtc);
-                    _log.Info(
-                        $"EPB[{ch}] 预释放计划启动：Group={assignment.ElectricalGroupId}，" +
-                        $"Index={assignment.SelectedIndexInGroup}，Phase={assignment.PhaseMs}ms，" +
-                        $"PlannedUtc={plannedStartUtc:O}，ActualUtc={actualStartUtc:O}，" +
-                        $"DeviationMs={(actualStartUtc - plannedStartUtc).TotalMilliseconds:F3}。",
-                        "EPB");
-                    var runner = GetRunner(ch);
-                    var baseDetectMs = Math.Max(1, runner.DefaultPreReleaseDetectTimeoutMs);
-                    var released = false;
-                    for (var attempt = 0; attempt < 3 && !released; attempt++)
-                    {
-                        var detectMs = Math.Min(baseDetectMs * 2, baseDetectMs + attempt * 500);
-                        released = await runner.PreReleaseAsync(keepMs, detectMs, ct).ConfigureAwait(false);
-                        if (!released && attempt < 2)
+                        var assignment = staggerPlan.Get(ch);
+                        var plannedStartUtc = anchorUtc.AddMilliseconds(assignment.PhaseMs);
+                        var actualStartUtc = DateTime.UtcNow;
+                        MarkElectricalPhaseDue(ch, plannedStartUtc);
+                        _log.Info(
+                            $"EPB[{ch}] 启动定位计划：Group={assignment.ElectricalGroupId}，" +
+                            $"Index={assignment.SelectedIndexInGroup}，Phase={assignment.PhaseMs}ms，" +
+                            $"PlannedUtc={plannedStartUtc:O}，ActualUtc={actualStartUtc:O}，" +
+                            $"DeviationMs={(actualStartUtc - plannedStartUtc).TotalMilliseconds:F3}。",
+                            "EPB");
+                        var runner = GetRunner(ch);
+                        var concreteRunner = runner as EpbCycleRunner
+                            ?? throw new InvalidOperationException($"EPB[{ch}] Runner 类型不支持启动定位。");
+                        var detectMs = Math.Max(1, runner.DefaultPreReleaseDetectTimeoutMs);
+                        var result = await concreteRunner.StartupPositioningAsync(keepMs, detectMs, ct)
+                            .ConfigureAwait(false);
+                        if (!result.Succeeded)
                         {
-                            _log.Warn(
-                                $"EPB[{ch}] 预释放第{attempt + 1}次未确认，已断电250ms后按有界预算重试；" +
-                                "过流和绝对上电保护不放宽。",
-                                "EPB");
-                            await Task.Delay(250, ct).ConfigureAwait(false);
+                            failedResults.Add(result);
+                            await PublishStartupPositioningFailureAsync(result).ConfigureAwait(false);
                         }
-                    }
-                    if (!released)
-                        failedChannels.Add(ch);
                     },
                     token).ConfigureAwait(false);
             }
@@ -2009,15 +2010,20 @@ namespace Controller
                 try { await Task.WhenAll(releases).ConfigureAwait(false); } catch { }
             }
 
-            var failed = failedChannels.Distinct().OrderBy(x => x).ToArray();
-            if (failed.Length == 0) return Array.Empty<int>();
+            var failed = failedResults
+                .GroupBy(x => x.Channel)
+                .Select(x => x.First())
+                .OrderBy(x => x.Channel)
+                .ToArray();
+            if (failed.Length == 0) return Array.Empty<StartupPositioningResult>();
 
-            foreach (var channel in failed)
+            foreach (var item in failed)
             {
+                var channel = item.Channel;
                 try { CommandEpbOff(channel, nameof(PreReleaseBatchWithPlanAsync)); }
                 catch (Exception ex)
                 {
-                    _log.Warn($"预释放失败回滚时 EPB[{channel}] 断电命令异常：{ex.Message}", "EPB");
+                    _log.Warn($"启动定位失败回滚时 EPB[{channel}] 断电命令异常：{ex.Message}", "EPB");
                 }
             }
 
@@ -2035,7 +2041,7 @@ namespace Controller
             if (failed.Length == 0) return;
 
             var message =
-                $"批量预释放失败：通道[{string.Join(",", failed)}]未在检测预算内确认进入反向空行程；" +
+                $"批量启动定位失败：通道[{string.Join(",", failed)}]未完成正向定位及反向释放；" +
                 "已拒绝进入学习/正式阶段。";
             logger?.Error(message, "EPB");
             throw new InvalidOperationException(message);

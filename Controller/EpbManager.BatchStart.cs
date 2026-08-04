@@ -153,12 +153,12 @@ namespace Controller
                     t0OfGroup[pg] = CeilToBoundary(warm, PeriodMs);
                 }
 
-                // —— 2) （可选）学习前“预释放”：三波错峰，仅做一次，避免每圈额外能耗 —— //
+                // —— 2) （可选）学习前启动定位：按电气组错峰，仅做一次 —— //
                 if (learnCycles > 0)
                 {
                     var all = groups.Values.SelectMany(v => v).Distinct().OrderBy(x => x).ToArray();
                     _log?.Info(
-                        $"批量预释放：通道[{string.Join(",", all)}]，按XML电气组计划错峰。",
+                        $"批量启动定位：通道[{string.Join(",", all)}]，按XML电气组计划错峰。",
                         "EPB");
 
                     // keepMs=null → 由 Runner 内部使用 DefaultPreReleaseKeepMs
@@ -170,17 +170,19 @@ namespace Controller
                         .ConfigureAwait(false);
                     if (preReleaseFailed.Length > 0)
                     {
-                        foreach (var failedChannel in preReleaseFailed)
+                        foreach (var failedResult in preReleaseFailed)
                         {
+                            var failedChannel = failedResult.Channel;
                             startFaults.Add(new ChannelStartFault(
                                 failedChannel,
-                                "PreRelease",
-                                "三次有界预释放均未确认反向空行程。",
+                                failedResult.Code,
+                                $"启动定位失败：Stage={failedResult.Stage}，{failedResult.Reason}",
                                 FaultScope.Channel));
                             UnmarkHydraulicParticipant(failedChannel);
                             foreach (var list in groups.Values) list.Remove(failedChannel);
                             _log?.Error(
-                                $"EPB[{failedChannel}] 预释放三次均失败，已隔离；健康通道继续启动。",
+                                $"EPB[{failedChannel}] 启动定位失败，已隔离；健康通道继续启动。" +
+                                $"Stage={failedResult.Stage} Code={failedResult.Code}。",
                                 "EPB");
                         }
                     }
@@ -220,7 +222,14 @@ namespace Controller
             }
             catch (Exception ex)
             {
-                _log?.Error($"批量启动异常：{ex}", "EPB", ex);
+                var expectedCancellation = IsExpectedBatchCancellation(
+                    ex,
+                    sessionToken.IsCancellationRequested,
+                    token.IsCancellationRequested);
+                if (expectedCancellation)
+                    _log?.Info($"批量启动已取消：{ex.Message}", "EPB");
+                else
+                    _log?.Error($"批量启动异常：{ex}", "EPB", ex);
                 EndBatchSession(cancel: true);
 
                 foreach (var channel in selected)
@@ -252,6 +261,15 @@ namespace Controller
 
                 throw;
             }
+        }
+
+        internal static bool IsExpectedBatchCancellation(
+            Exception exception,
+            bool sessionCancellationRequested,
+            bool externalCancellationRequested)
+        {
+            return exception is OperationCanceledException &&
+                   (sessionCancellationRequested || externalCancellationRequested);
         }
 
         private CancellationToken BeginBatchSession(CancellationToken externalToken)
@@ -1134,9 +1152,11 @@ namespace Controller
                 adaptiveOvershootWarningDeltaA:
                     AlarmConfig?.Behavior?.AdaptiveOvershootWarningDeltaA ?? 0.8,
                 adaptiveOvershootConfirmCycles:
-                    AlarmConfig?.Behavior?.AdaptiveOvershootConfirmCycles ?? 3,
+                    AlarmConfig?.Behavior?.AdaptiveOvershootConfirmCycles ?? 5,
                 adaptiveForwardStallConfirmCycles:
                     AlarmConfig?.Behavior?.AdaptiveForwardStallConfirmCycles ?? 5,
+                peakEvidenceMismatchConfirmCycles:
+                    AlarmConfig?.Behavior?.PeakEvidenceMismatchConfirmCycles ?? 3,
                 safetyMarginControlMode: _safetyMarginControlMode,
                 epbControlMode: GetEpbControlMode(channel),
                 adaptiveShadowMode: _adaptiveShadowMode,
