@@ -50,6 +50,15 @@ namespace IO.NI
         public bool IsFresh { get; set; }
     }
 
+    /// <summary>DAQ 回调入队后到后台开始处理的积压证据。</summary>
+    public sealed class DaqProcessingSnapshot
+    {
+        public string Device { get; set; } = string.Empty;
+        public int QueueDepth { get; set; }
+        public double OldestBatchAgeMs { get; set; }
+        public DateTime ObservedUtc { get; set; }
+    }
+
     public sealed class DaqRecoveryResult
     {
         public string Device { get; set; } = string.Empty;
@@ -107,6 +116,7 @@ namespace IO.NI
         private readonly int _medianLens;
 
         private readonly ConcurrentQueue<Item> _queue = new();
+        private long _lastProcessingLagLogTicks;
         private readonly double _sampleRate;
         private readonly int _samplesPerChannel;
         public double SampleRate => _sampleRate;
@@ -588,6 +598,7 @@ namespace IO.NI
         /// <param name="amps">电流（A，已做零漂/比例/偏置换算）。</param>
         /// <param name="ts">样本时间戳。</param>
         public event Action<int, double, DateTime> OnFastEpbCurrent;
+        public event Action<DaqProcessingSnapshot> ProcessingLagDetected;
 
 
         /// <summary>
@@ -951,7 +962,12 @@ namespace IO.NI
                         last = previousEnd;
                         current = currentEnd;
                         driftMs = drift;
-                        _queue.Enqueue(new Item(device, raw, currentEnd, previousEnd));
+                        _queue.Enqueue(new Item(
+                            device,
+                            raw,
+                            currentEnd,
+                            previousEnd,
+                            Stopwatch.GetTimestamp()));
                     });
 
                 // ② 当前批已完成编号并入队，立即 re-arm 下一批。
@@ -1054,6 +1070,15 @@ namespace IO.NI
                                 eng = _fastFilter.Update(rec.参数名, eng, current);
 
                                 _lastFastValue[rec.参数名] = eng;
+
+                                // 压力新鲜度属于安全控制输入，必须在 DAQ 回调低时延路径刷新；
+                                // 后台滤波快照仍用于 UI/统计，但不得决定“压力是否过期”。
+                                if (TryParsePressureId(rec.参数名, out var pressureId))
+                                    _lastPressureSample[rec.参数名] = new PressureSample(
+                                        pressureId,
+                                        eng,
+                                        current.ToUniversalTime(),
+                                        Stopwatch.GetTimestamp());
 
                                 var epbCh = TryParseEpbChannel(rec.参数名);
                                 if (epbCh >= 1 && epbCh <= 12)
@@ -1201,6 +1226,34 @@ namespace IO.NI
                     {
                         await Task.Delay(1, _cts.Token);
                         continue;
+                    }
+
+                    var processStartTicks = Stopwatch.GetTimestamp();
+                    var queueAgeMs =
+                        (processStartTicks - item.EnqueuedMonotonicTicks) * 1000.0 /
+                        Stopwatch.Frequency;
+                    if (queueAgeMs > 100)
+                    {
+                        var lastLog = Interlocked.Read(ref _lastProcessingLagLogTicks);
+                        if (lastLog <= 0 ||
+                            (processStartTicks - lastLog) * 1000.0 / Stopwatch.Frequency >= 1000)
+                        {
+                            Interlocked.Exchange(ref _lastProcessingLagLogTicks, processStartTicks);
+                            var snapshot = new DaqProcessingSnapshot
+                            {
+                                Device = item.Device,
+                                QueueDepth = _queue.Count,
+                                OldestBatchAgeMs = queueAgeMs,
+                                ObservedUtc = DateTime.UtcNow
+                            };
+                            _log?.Warn(
+                                $"DAQ后台处理积压：Device={snapshot.Device} " +
+                                $"QueueDepth={snapshot.QueueDepth} " +
+                                $"OldestBatchAge={snapshot.OldestBatchAgeMs:F1}ms。",
+                                "AI");
+                            try { ProcessingLagDetected?.Invoke(snapshot); }
+                            catch { /* 诊断订阅者不得影响采集处理。 */ }
+                        }
                     }
 
                     // 转工程值（使用配置）
@@ -1716,12 +1769,27 @@ namespace IO.NI
         }
 
         // —— 后台处理队列，避免在 DAQ 回调里阻塞 —— //
-        private record Item(string Device, double[,] Raw, DateTime Current, DateTime Last)
+        private sealed class Item
         {
-            public string Device { get; } = Device;
-            public double[,] Raw { get; } = Raw;
-            public DateTime Current { get; } = Current;
-            public DateTime Last { get; } = Last;
+            public Item(
+                string device,
+                double[,] raw,
+                DateTime current,
+                DateTime last,
+                long enqueuedMonotonicTicks)
+            {
+                Device = device;
+                Raw = raw;
+                Current = current;
+                Last = last;
+                EnqueuedMonotonicTicks = enqueuedMonotonicTicks;
+            }
+
+            public string Device { get; }
+            public double[,] Raw { get; }
+            public DateTime Current { get; }
+            public DateTime Last { get; }
+            public long EnqueuedMonotonicTicks { get; }
         }
 
 
