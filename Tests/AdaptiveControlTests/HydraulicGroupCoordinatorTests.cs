@@ -15,6 +15,7 @@ namespace AdaptiveControlTests
             var passed = 0;
             Run("液压非末成员等待全组低压确认", NonLastMemberWaitsForSafePressure, ref passed);
             Run("液压释放超时产生指定硬故障", ReleaseTimeoutIsExplicit, ref passed);
+            Run("陈旧低压不得通过释压确认", StaleLowPressureCannotConfirmRelease, ref passed);
             Run("液压同代次重复进入不重新登记已释放成员", SameGenerationReentryDoesNotReAddReleasedMember, ref passed);
             Run("液压代次屏障缺员在一个周期内超时", GenerationBarrierTimeoutIsBounded, ref passed);
             Run("液压样本无效或陈旧时资格判定失败", InvalidPressureSamplesAreRejected, ref passed);
@@ -104,6 +105,39 @@ namespace AdaptiveControlTests
 
             var secondRelease = coordinator.MarkVoltageReleaseAsync(sameLease, 11);
             Task.WaitAll(firstRelease, secondRelease);
+        }
+
+        private static void StaleLowPressureCannotConfirmRelease()
+        {
+            var staleTick = Stopwatch.GetTimestamp() - Stopwatch.Frequency;
+            var config = new TestConfig();
+            var hydraulic = new HydraulicItem
+            {
+                Id = 2,
+                Enabled = true,
+                ReleaseSafePressureBar = 5,
+                ReleaseStableMs = 10,
+                ReleaseTimeoutMs = 50,
+                PressureSampleMaxAgeMs = 100
+            };
+            hydraulic.Members.Add(10);
+            config.Hydraulics.Add(hydraulic);
+            var coordinator = new HydraulicGroupCoordinator(
+                config,
+                _ => new PressureSample(2, 0, DateTime.UtcNow, staleTick),
+                _ => Task.CompletedTask,
+                NullLogger.Instance);
+            coordinator.EnterElectricalPhaseAsync(10, CancellationToken.None).GetAwaiter().GetResult();
+            try
+            {
+                coordinator.MarkVoltageReleaseAsync(10).GetAwaiter().GetResult();
+                throw new InvalidOperationException("陈旧0bar样本错误通过释压确认。");
+            }
+            catch (HydraulicReleaseTimeoutException ex)
+            {
+                Assert(ex.Message.Contains("PressureSampleStaleSample"),
+                    "陈旧压力超时未记录样本陈旧原因。");
+            }
         }
 
         private static void GenerationBarrierTimeoutIsBounded()

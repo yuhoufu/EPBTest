@@ -69,6 +69,7 @@ namespace AdaptiveControlTests
                 Run("终态断电先于阻塞诊断发布", TerminalOffPrecedesBlockingDiagnostics);
                 Run("DO失败与电流未清零触发组级联锁", OffFailureEscalatesToPowerGroup);
                 Run("断电电流在窗口内清零不联锁且超时只失败一次", OffCurrentPollingWindow);
+                Run("DAQ陈旧时不得把冻结电流判为未清零", StaleOffCurrentIsUnverifiable);
                 Run("反向残余负电流不能误判为断电清零", NegativeOffCurrentDoesNotClear);
                 Run("断电清零阈值适配现场零偏且保持安全上限", OffCurrentThresholdTracksTrustedBaseline);
                 Run("项目XML不再保存程序级安全参数", ProjectXmlIgnoresProgramSafetySettings);
@@ -78,6 +79,7 @@ namespace AdaptiveControlTests
                 Run("峰值证据连续3圈且有效圈清零", PeakEvidenceMismatchRequiresThreeCycles);
                 Run("报警界面提示不暴露英文故障码", AlarmMessagesAreLocalized);
                 Run("UI配置并发保存保持有效XML", ConcurrentUiConfigSaveIsAtomic);
+                Run("UI勾选保存防抖并保留最终状态", UiConfigUpdateIsDebounced);
                 Run("旧项目100ms断电清零配置自动迁移", LegacyShortOffTimeoutIsMigrated);
                 Run("旧项目液压安全节点使用默认值并在保存时补齐", LegacyHydraulicSafetyDefaultsAreCompleted);
                 Run("液压容差缺省10bar且显式配置不迁移", HydraulicPressureToleranceDefaults);
@@ -106,6 +108,14 @@ namespace AdaptiveControlTests
                 Run("错峰最大相位越周期被拒绝", StaggerRejectsPhaseBeyondPeriod);
                 Run("错峰单通道相位为零", StaggerSingleChannelStartsAtZero);
                 Run("错峰任务不等待前相位完成", StaggerExecutorDoesNotSerialize);
+                Run("正式圈液压950ms达标后仍保持800ms相位", FormalStaggerSurvivesLateHydraulicQualification);
+                Run("正式圈液压早于第二相位时不同时补发", FormalStaggerDoesNotCollapseBeforeSecondPhase);
+                Run("正式圈连续500圈相位无累积漂移", FormalStaggerHasNoCumulativeDrift);
+                Run("EPB5报警且EPB4联锁状态保持锁存", RuntimeStateDistinguishesSourceAndInterlock);
+                Run("DAQ恢复不得解除报警停机状态", RuntimeStateRecoveryCannotClearAlarm);
+                Run("新运行预检后可复位旧停机状态", RuntimeStateResetsOnlyForNewRun);
+                Run("安全退出仅允许压力证据单项缺失", StopSafetyExitPolicy);
+                Run("Dev1与Dev2有界队列容量互不影响", DaqBoundedQueuesAreIndependent);
                 Run("12通道并发首次创建运行对象", TwelveChannelsCreateRuntimesConcurrently);
                 Run("12通道错过锚点仍保留800ms相位", OverdueTwelveChannelReleaseCreatesSafely);
                 Run("人工停止取消不记为批量启动异常", ManualCancellationIsExpected);
@@ -1442,6 +1452,20 @@ namespace AdaptiveControlTests
             Assert(!result.Cleared, "反向残余负电流被有符号比较误判为已清零");
         }
 
+        private static void StaleOffCurrentIsUnverifiable()
+        {
+            var result = EpbCycleRunner.PollOffCurrentUntilClearAsync(
+                    () => new EpbCycleRunner.OffCurrentSample(0.35, false, 147_000),
+                    0.1,
+                    1000,
+                    20,
+                    CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+            Assert(!result.Cleared && !result.SampleFresh && result.ElapsedMs < 100,
+                "DAQ陈旧样本仍被重复轮询或被误分类为真实电流未清零");
+        }
+
         private static void OffCurrentThresholdTracksTrustedBaseline()
         {
             var fieldThreshold = EpbCycleRunner.ResolveOffCurrentClearThreshold(
@@ -1595,6 +1619,14 @@ namespace AdaptiveControlTests
                    !message.Contains("PeakEvidenceMismatch") &&
                    !message.Contains("AdaptiveHardFault"),
                 "峰值证据报警未转换为完整中文提示");
+
+            var staleRelease = AlarmMessageLocalizer.ToUserMessage(
+                "HydraulicReleaseTimeout Hydraulic=1 LastPressure=69.390bar " +
+                "Detail=PressureSampleStaleSample AgeMs=147250.2");
+            Assert(staleRelease.Contains("压力采样数据过期") &&
+                   staleRelease.Contains("无法确认释压状态") &&
+                   !staleRelease.Contains("泄漏"),
+                "陈旧压力释压故障仍给出误导性液压提示");
         }
 
         private static void ConcurrentUiConfigSaveIsAtomic()
@@ -1618,6 +1650,29 @@ namespace AdaptiveControlTests
                     "并发保存后UI配置不是有效XML");
                 Assert(Directory.GetFiles(directory, "*.tmp").Length == 0,
                     "并发保存后遗留临时文件");
+            }
+            finally
+            {
+                Directory.Delete(directory, true);
+            }
+        }
+
+        private static void UiConfigUpdateIsDebounced()
+        {
+            var directory = CreateTempDir();
+            var path = Path.Combine(directory, "UIConfig.xml");
+            try
+            {
+                var cfg = new UiConfig();
+                for (var i = 0; i < 20; i++)
+                    ConfigLoader.UpdateUIChecked(
+                        path, cfg, "Main", "CheckEpbA1", (i & 1) == 1);
+                Thread.Sleep(800);
+                var loaded = ConfigLoader.LoadUI(path);
+                Assert(loaded.GetOrAddForm("Main").GetOrAdd("CheckEpbA1").Checked,
+                    "防抖保存未保留最后一次勾选状态");
+                Assert(Directory.GetFiles(directory, "*.tmp").Length == 0,
+                    "防抖保存遗留临时文件");
             }
             finally
             {
@@ -1964,6 +2019,181 @@ namespace AdaptiveControlTests
 
             Assert(starts[9] - starts[8] >= 35, "后一相位没有按计划延迟");
             Assert(starts[9] < ends[8], "后一相位等待前一任务完成，错峰退化成串行");
+        }
+
+        private static void FormalStaggerSurvivesLateHydraulicQualification()
+        {
+            var wall = new DateTime(2026, 8, 4, 9, 0, 0, DateTimeKind.Utc);
+            var qualifiedAnchor = wall.AddMilliseconds(950);
+            var window = ElectricalStaggerExecutor.CreateQualifiedPhaseWindow(
+                qualifiedAnchor,
+                wall,
+                15_000,
+                800);
+
+            var first = window.GetDueUtc(0);
+            var second = window.GetDueUtc(800);
+            Assert((second - first).TotalMilliseconds == 800,
+                "液压资格晚于第二个旧相位后，最终DO计划未保持800ms");
+            Assert(window.DeadlineUtc == wall.AddMilliseconds(15_000),
+                "正常建压完成后未保持本圈统一墙钟截止点");
+        }
+
+        private static void FormalStaggerDoesNotCollapseBeforeSecondPhase()
+        {
+            var wall = new DateTime(2026, 8, 4, 9, 0, 0, DateTimeKind.Utc);
+            var window = ElectricalStaggerExecutor.CreateQualifiedPhaseWindow(
+                wall.AddMilliseconds(400),
+                wall,
+                15_000,
+                800);
+
+            Assert(window.GetDueUtc(0) == wall.AddMilliseconds(400),
+                "零相位未锚定到液压资格后的共享时刻");
+            Assert(window.GetDueUtc(800) == wall.AddMilliseconds(1200),
+                "第二相位在资格完成时被提前同时补发");
+
+            var late = ElectricalStaggerExecutor.CreateQualifiedPhaseWindow(
+                wall.AddMilliseconds(14_900),
+                wall,
+                15_000,
+                800);
+            Assert(late.GetDueUtc(0) == wall.AddMilliseconds(15_000) &&
+                   late.GetDueUtc(800) == wall.AddMilliseconds(15_800),
+                "资格过晚时没有把全部相位整组顺延到下一墙钟周期");
+            Assert(late.DeadlineUtc == wall.AddMilliseconds(30_000),
+                "资格过晚时没有按最后相位整组顺延截止点");
+        }
+
+        private static void FormalStaggerHasNoCumulativeDrift()
+        {
+            var wall = new DateTime(2026, 8, 4, 9, 0, 0, DateTimeKind.Utc);
+            for (var cycle = 0; cycle < 500; cycle++)
+            {
+                var cycleWall = wall.AddMilliseconds(cycle * 15_000L);
+                var qualified = cycleWall.AddMilliseconds(300 + cycle % 701);
+                var window = ElectricalStaggerExecutor.CreateQualifiedPhaseWindow(
+                    qualified,
+                    wall,
+                    15_000,
+                    800);
+                Assert((window.GetDueUtc(800) - window.GetDueUtc(0)).TotalMilliseconds == 800,
+                    $"第{cycle + 1}圈相位差发生累积漂移");
+                Assert(window.DeadlineUtc > window.GetDueUtc(800),
+                    $"第{cycle + 1}圈统一截止点早于最后相位");
+            }
+        }
+
+        private static void RuntimeStateDistinguishesSourceAndInterlock()
+        {
+            var store = new ChannelRuntimeStateStore();
+            var correlation = Guid.NewGuid();
+            var affected = new[] { 4, 5 };
+            store.Publish(new ChannelRuntimeStateChangedEvent
+            {
+                Channel = 5,
+                State = ChannelRuntimeState.AlarmStopped,
+                ReasonCode = "DaqSampleStale",
+                ReasonText = "Dev1有效样本超过100ms未提交",
+                SourceChannel = 5,
+                AffectedChannels = affected,
+                CorrelationId = correlation
+            });
+            store.Publish(new ChannelRuntimeStateChangedEvent
+            {
+                Channel = 4,
+                State = ChannelRuntimeState.InterlockStopped,
+                ReasonCode = "DaqSampleStale",
+                ReasonText = "同设备DAQ故障联锁",
+                SourceChannel = 5,
+                AffectedChannels = affected,
+                CorrelationId = correlation
+            });
+            Assert(store.Get(5).State == ChannelRuntimeState.AlarmStopped, "EPB5未标记为故障源报警停机");
+            Assert(store.Get(4).State == ChannelRuntimeState.InterlockStopped, "EPB4未标记为联锁停机");
+            Assert(store.Get(4).SourceChannel == 5, "联锁状态未保留故障源EPB5");
+            Assert(store.Get(4).CorrelationId == store.Get(5).CorrelationId, "关联故障号不一致");
+        }
+
+        private static void RuntimeStateRecoveryCannotClearAlarm()
+        {
+            var store = new ChannelRuntimeStateStore();
+            store.Publish(new ChannelRuntimeStateChangedEvent
+            {
+                Channel = 5,
+                State = ChannelRuntimeState.AlarmStopped,
+                ReasonCode = "DaqSampleStale"
+            });
+            store.Publish(new ChannelRuntimeStateChangedEvent
+            {
+                Channel = 5,
+                State = ChannelRuntimeState.Running,
+                ReasonCode = "DaqRecovered"
+            });
+            Assert(store.Get(5).State == ChannelRuntimeState.AlarmStopped,
+                "DAQ恢复错误解除了报警停机锁存");
+        }
+
+        private static void RuntimeStateResetsOnlyForNewRun()
+        {
+            var store = new ChannelRuntimeStateStore();
+            store.Publish(new ChannelRuntimeStateChangedEvent
+            {
+                Channel = 5,
+                State = ChannelRuntimeState.AlarmStopped
+            });
+            store.Publish(new ChannelRuntimeStateChangedEvent
+            {
+                Channel = 5,
+                State = ChannelRuntimeState.Starting,
+                RunId = Guid.NewGuid()
+            }, allowTerminalReset: true);
+            Assert(store.Get(5).State == ChannelRuntimeState.Starting,
+                "新运行通过启动入口后未能复位旧锁存");
+        }
+
+        private static void StopSafetyExitPolicy()
+        {
+            var pressureOnly = new StopSafetyResult
+            {
+                MotorOffCommandSucceeded = true,
+                PowerOffConfirmed = true,
+                PressureSafeConfirmed = false
+            };
+            Assert(pressureOnly.CanReleaseAcquisition && !pressureOnly.FullyConfirmed,
+                "仅压力证据缺失时应允许释放DAQ但不得标记完全确认");
+
+            var powerMissing = new StopSafetyResult
+            {
+                MotorOffCommandSucceeded = true,
+                PowerOffConfirmed = false,
+                PressureSafeConfirmed = true
+            };
+            Assert(!powerMissing.CanReleaseAcquisition,
+                "程控电源关闭未确认时不应允许释放DAQ");
+
+            var motorMissing = new StopSafetyResult
+            {
+                MotorOffCommandSucceeded = false,
+                PowerOffConfirmed = true,
+                PressureSafeConfirmed = true
+            };
+            Assert(!motorMissing.CanReleaseAcquisition,
+                "电机DO关闭未确认时不应允许释放DAQ");
+        }
+
+        private static void DaqBoundedQueuesAreIndependent()
+        {
+            var dev1Count = 0;
+            var dev2Count = 0;
+            for (var i = 0; i < 64; i++)
+                Assert(DaqQueueAdmission.TryEnter(ref dev1Count, 64), "Dev1队列未到容量即拒绝入队");
+            Assert(!DaqQueueAdmission.TryEnter(ref dev1Count, 64), "Dev1队列满载后仍允许入队");
+            Assert(dev1Count == 64, "Dev1满载拒绝后计数被破坏");
+            Assert(DaqQueueAdmission.TryEnter(ref dev2Count, 64),
+                "Dev1满载错误阻塞了独立的Dev2队列");
+            DaqQueueAdmission.Release(ref dev2Count);
+            Assert(dev2Count == 0 && dev1Count == 64, "Dev2出队错误修改了Dev1队列状态");
         }
 
         private static void TwelveChannelsCreateRuntimesConcurrently()
