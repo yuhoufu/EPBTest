@@ -109,6 +109,15 @@ namespace IO.NI
         public double RearmMs { get; set; }
         public double QueueAgeMs { get; set; }
         public double ProcessingMs { get; set; }
+        public double ConvertMs { get; set; }
+        public double FilterMs { get; set; }
+        public double PeakMs { get; set; }
+        public double DiskBatchBuildMs { get; set; }
+        public double DiskDispatchMs { get; set; }
+        public double UiNotifyMs { get; set; }
+        public double PersistenceWaitMs { get; set; }
+        public double RingWriteMs { get; set; }
+        public double SqliteMs { get; set; }
         public int Gc0 { get; set; }
         public int Gc1 { get; set; }
         public int Gc2 { get; set; }
@@ -116,6 +125,75 @@ namespace IO.NI
         public int WorkerThreadsAvailable { get; set; }
         public int IoThreadsAvailable { get; set; }
         public string Detail { get; set; } = string.Empty;
+    }
+
+    public sealed class DaqDiskChannelBatch
+    {
+        internal DaqDiskChannelBatch(int epbId, double[] currents)
+        {
+            EpbId = epbId;
+            Currents = currents;
+        }
+
+        public int EpbId { get; }
+        public double[] Currents { get; }
+    }
+
+    /// <summary>
+    /// 独占所有权的持久化批次。订阅者必须在消费完成或拒绝批次时调用 Dispose。
+    /// </summary>
+    public sealed class DaqDiskBatch : IDisposable
+    {
+        private int _disposed;
+
+        internal DaqDiskBatch(
+            string device,
+            long generation,
+            long sequence,
+            int sampleCount,
+            DateTime[] timestampsUtc,
+            DaqDiskChannelBatch[] channels,
+            double[] pressureGroup1,
+            double[] pressureGroup2,
+            long enqueuedMonotonicTicks)
+        {
+            Device = device;
+            Generation = generation;
+            Sequence = sequence;
+            SampleCount = sampleCount;
+            TimestampsUtc = timestampsUtc;
+            Channels = channels ?? Array.Empty<DaqDiskChannelBatch>();
+            PressureGroup1 = pressureGroup1;
+            PressureGroup2 = pressureGroup2;
+            EnqueuedMonotonicTicks = enqueuedMonotonicTicks;
+            EnqueuedUtc = DateTime.UtcNow;
+        }
+
+        public string Device { get; }
+        public long Generation { get; }
+        public long Sequence { get; }
+        public int SampleCount { get; }
+        public DateTime[] TimestampsUtc { get; }
+        public IReadOnlyList<DaqDiskChannelBatch> Channels { get; }
+        public double[] PressureGroup1 { get; }
+        public double[] PressureGroup2 { get; }
+        public long EnqueuedMonotonicTicks { get; }
+        public DateTime EnqueuedUtc { get; }
+
+        public double AgeMs => EnqueuedMonotonicTicks <= 0
+            ? 0
+            : (Stopwatch.GetTimestamp() - EnqueuedMonotonicTicks) * 1000.0 / Stopwatch.Frequency;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            if (TimestampsUtc != null) ArrayPool<DateTime>.Shared.Return(TimestampsUtc, clearArray: false);
+            foreach (var channel in Channels)
+                if (channel?.Currents != null)
+                    ArrayPool<double>.Shared.Return(channel.Currents, clearArray: false);
+            if (PressureGroup1 != null) ArrayPool<double>.Shared.Return(PressureGroup1, clearArray: false);
+            if (PressureGroup2 != null) ArrayPool<double>.Shared.Return(PressureGroup2, clearArray: false);
+        }
     }
 
     public sealed class PeakCaptureToken
@@ -210,6 +288,10 @@ namespace IO.NI
         private readonly object _taskGateDev2 = new();
         private long _generationDev1;
         private long _generationDev2;
+        private long _batchSequenceDev1;
+        private long _batchSequenceDev2;
+        private long _diskPublishedSequenceDev1;
+        private long _diskPublishedSequenceDev2;
         private double _aiMin = -10;
         private double _aiMax = 10;
         private AITerminalConfiguration _terminalConfiguration = AITerminalConfiguration.Rse;
@@ -506,14 +588,26 @@ namespace IO.NI
                 {
                     Interlocked.Exchange(ref lastProbe, nowTicks);
                     ThreadPool.GetAvailableThreads(out var worker, out var io);
-                    record.Gc0 = GC.CollectionCount(0);
-                    record.Gc1 = GC.CollectionCount(1);
-                    record.Gc2 = GC.CollectionCount(2);
-                    record.ManagedMemoryBytes = GC.GetTotalMemory(false);
-                    record.WorkerThreadsAvailable = worker;
-                    record.IoThreadsAvailable = io;
+                    EnqueueDiagnostic(new DaqTimingRecord
+                    {
+                        TimestampUtc = record.TimestampUtc,
+                        Device = record.Device,
+                        Kind = "Runtime",
+                        Generation = record.Generation,
+                        Gc0 = GC.CollectionCount(0),
+                        Gc1 = GC.CollectionCount(1),
+                        Gc2 = GC.CollectionCount(2),
+                        ManagedMemoryBytes = GC.GetTotalMemory(false),
+                        WorkerThreadsAvailable = worker,
+                        IoThreadsAvailable = io
+                    });
                 }
             }
+            EnqueueDiagnostic(record);
+        }
+
+        private void EnqueueDiagnostic(DaqTimingRecord record)
+        {
             _timingDiagnostics.Enqueue(record);
             Interlocked.Increment(ref _timingDiagnosticCount);
             while (Volatile.Read(ref _timingDiagnosticCount) > DiagnosticCapacity &&
@@ -539,22 +633,29 @@ namespace IO.NI
             var timingPath = Path.Combine(directory, "daq_timing.csv");
             using (var writer = new StreamWriter(timingPath, false, new UTF8Encoding(true)))
             {
-                writer.WriteLine("TimestampUtc,Device,Kind,Generation,BatchSize,QueueDepth,CallbackIntervalMs,EndReadMs,RearmMs,QueueAgeMs,ProcessingMs,Detail");
-                foreach (var x in records.Where(x => x.ManagedMemoryBytes > 0))
+                writer.WriteLine("TimestampUtc,Device,Kind,Generation,BatchSize,QueueDepth,CallbackIntervalMs,EndReadMs,RearmMs,QueueAgeMs,ProcessingMs,ConvertMs,FilterMs,PeakMs,DiskBatchBuildMs,DiskDispatchMs,UiNotifyMs,PersistenceWaitMs,RingWriteMs,SqliteMs,Detail");
+                foreach (var x in records.Where(x => !string.Equals(x.Kind, "Runtime", StringComparison.OrdinalIgnoreCase)))
                     writer.WriteLine(
                         $"{x.TimestampUtc:O},{Csv(x.Device)},{Csv(x.Kind)},{x.Generation},{x.BatchSize},{x.QueueDepth}," +
-                        $"{x.CallbackIntervalMs:F3},{x.EndReadMs:F3},{x.RearmMs:F3},{x.QueueAgeMs:F3},{x.ProcessingMs:F3},{Csv(x.Detail)}");
+                        $"{x.CallbackIntervalMs:F3},{x.EndReadMs:F3},{x.RearmMs:F3},{x.QueueAgeMs:F3},{x.ProcessingMs:F3}," +
+                        $"{x.ConvertMs:F3},{x.FilterMs:F3},{x.PeakMs:F3},{x.DiskBatchBuildMs:F3},{x.DiskDispatchMs:F3}," +
+                        $"{x.UiNotifyMs:F3},{x.PersistenceWaitMs:F3},{x.RingWriteMs:F3},{x.SqliteMs:F3},{Csv(x.Detail)}");
             }
             var runtimePath = Path.Combine(directory, "daq_runtime.csv");
             using (var writer = new StreamWriter(runtimePath, false, new UTF8Encoding(true)))
             {
                 writer.WriteLine("TimestampUtc,Device,Kind,GC0,GC1,GC2,ManagedMemoryBytes,WorkerThreadsAvailable,IoThreadsAvailable");
-                foreach (var x in records)
+                foreach (var x in records.Where(x => string.Equals(x.Kind, "Runtime", StringComparison.OrdinalIgnoreCase)))
                     writer.WriteLine(
                         $"{x.TimestampUtc:O},{Csv(x.Device)},{Csv(x.Kind)},{x.Gc0},{x.Gc1},{x.Gc2}," +
                         $"{x.ManagedMemoryBytes},{x.WorkerThreadsAvailable},{x.IoThreadsAvailable}");
             }
             return new[] { timingPath, runtimePath };
+        }
+
+        public void RecordExternalDiagnostic(DaqTimingRecord record)
+        {
+            AppendDiagnostic(record);
         }
 
         private static string Csv(string value)
@@ -814,6 +915,9 @@ namespace IO.NI
         /// pressureGroup1: 组1（EPB1..6）对应的压力数组（长度 = n；若不存在则为 null）
         /// pressureGroup2: 组2（EPB7..12）对应的压力数组（长度 = n；若不存在则为 null）
         /// </summary>
+        public event Action<DaqDiskBatch> DiskBatchReady;
+
+        [Obsolete("Use DiskBatchReady. The legacy event allocates compatibility copies.")]
         public event Action<string, DateTime[], Dictionary<int, double[]>, double[], double[]> OnDiskBatch;
 
 
@@ -828,6 +932,21 @@ namespace IO.NI
         public event Action<int, double, DateTime> OnFastEpbCurrent;
         public event Action<DaqProcessingSnapshot> ProcessingLagDetected;
         public event Action<DaqDeviceFault> DeviceFaultDetected;
+
+        public long GetCurrentGeneration(string device)
+            => string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase)
+                ? Interlocked.Read(ref _generationDev1)
+                : Interlocked.Read(ref _generationDev2);
+
+        public long GetLastProducedSequence(string device)
+            => string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase)
+                ? Interlocked.Read(ref _batchSequenceDev1)
+                : Interlocked.Read(ref _batchSequenceDev2);
+
+        public long GetLastDiskPublishedSequence(string device)
+            => string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase)
+                ? Interlocked.Read(ref _diskPublishedSequenceDev1)
+                : Interlocked.Read(ref _diskPublishedSequenceDev2);
 
 
         /// <summary>
@@ -1033,7 +1152,8 @@ namespace IO.NI
             int timeoutMs = 3000,
             int requiredFreshCallbacks = 10,
             int maxAgeMs = 100,
-            CancellationToken token = default)
+            CancellationToken token = default,
+            bool forceRecreate = false)
         {
             if (!string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase) &&
                 !string.Equals(device, "Dev2", StringComparison.OrdinalIgnoreCase))
@@ -1061,7 +1181,7 @@ namespace IO.NI
                 // 可能已有另一条恢复请求刚刚完成。进入串行门后若设备已恢复新鲜，
                 // 直接复用其结果，避免紧接着再次 Stop/Start。
                 var current = GetDaqFreshnessSnapshot(device, maxAgeMs);
-                if (current.IsFresh)
+                if (!forceRecreate && current.IsFresh)
                 {
                     var stableCount = 0;
                     var stableTick = current.LastArrivalMonotonicTicks;
@@ -1322,9 +1442,13 @@ namespace IO.NI
                         last = previousEnd;
                         current = currentEnd;
                         driftMs = drift;
+                        var sequence = string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase)
+                            ? Interlocked.Increment(ref _batchSequenceDev1)
+                            : Interlocked.Increment(ref _batchSequenceDev2);
                         EnqueueForProcessing(new Item(
                             device,
                             generation,
+                            sequence,
                             raw,
                             currentEnd,
                             previousEnd,
@@ -1677,17 +1801,24 @@ namespace IO.NI
                         }
                     }
 
+                    var convertStartedTicks = Stopwatch.GetTimestamp();
                     // 转工程值（使用配置）
                     var eng = ConvertToEngineering(item.Raw, item.Device);
+                    var convertMs = (Stopwatch.GetTimestamp() - convertStartedTicks) * 1000.0 / Stopwatch.Frequency;
                     // 滤波（每通道独立中值/降点，与你项目一致）
                     //var engFiltered = MedianFilterEachChannel(eng, _medianLens); // 暂时去掉滤波
                     //var engFiltered = eng;
 
 
                     // 因果中值滤波（无延迟，控制用）
+                    var filterStartedTicks = Stopwatch.GetTimestamp();
                     var engSmoothed =item.Device.Equals("Dev1") ?  _dev1MedianCausal.Process(eng) : _dev2MedianCausal.Process(eng);
 
                     var engFiltered = engSmoothed;
+                    var filterMs = (Stopwatch.GetTimestamp() - filterStartedTicks) * 1000.0 / Stopwatch.Frequency;
+                    var diskBuildStartedTicks = Stopwatch.GetTimestamp();
+                    var peakMs = 0.0;
+                    var diskDispatchMs = 0.0;
 
 
                     // 刷新“最近值”供控制逻辑查询（**改动：写入 _lastFilteredValue**）
@@ -1704,17 +1835,21 @@ namespace IO.NI
                     #region 生成“落盘批次”并触发 OnDiskBatch（使用 engFiltered，不取绝对值） On 2025.09.16 
 
                     // ====== 生成“落盘批次”并触发 OnDiskBatch（使用 engFiltered，不取绝对值） ======
+                    DateTime[] pooledTimestamps = null;
+                    List<DaqDiskChannelBatch> pooledCurrents = null;
+                    double[] pooledPressure1 = null;
+                    double[] pooledPressure2 = null;
+                    DaqDiskBatch ownedDiskBatch = null;
                     try
                     {
                         // 1) 计算时间戳数组（以本批最后一个样本对齐 item.Current，向前按 Fs 均匀回推）
                         var n = engFiltered.GetLength(1);
-                        var tsUtc = HighResolutionSampleClock.BuildBatchTimestamps(
-                            item.Current.ToUniversalTime(),
-                            n,
-                            _sampleRate);
+                        var tsUtc = pooledTimestamps = ArrayPool<DateTime>.Shared.Rent(n);
+                        HighResolutionSampleClock.FillBatchTimestamps(
+                            item.Current.ToUniversalTime(), tsUtc, n, _sampleRate);
 
                         // 2) 构建“每 EPB 通道”的电流数组（从当前 device 的工程值矩阵提取）
-                        var currentsByEpb = new Dictionary<int, double[]>();
+                        var currentsByEpb = pooledCurrents = new List<DaqDiskChannelBatch>();
                         var devRecs = GetDeviceRecords(item.Device);
                         var chCount = engFiltered.GetLength(0);
                         for (int c = 0; c < chCount; c++)
@@ -1723,9 +1858,9 @@ namespace IO.NI
                             int epb = TryParseEpbChannel(name);
                             if (epb >= 1 && epb <= 12)
                             {
-                                var arr = new double[n];
+                                var arr = ArrayPool<double>.Shared.Rent(n);
                                 for (int i = 0; i < n; i++) arr[i] = engFiltered[c, i]; // 不取绝对值
-                                currentsByEpb[epb] = arr;
+                                currentsByEpb.Add(new DaqDiskChannelBatch(epb, arr));
                             }
                         }
 
@@ -1736,12 +1871,12 @@ namespace IO.NI
                         double[] pressure1 = null, pressure2 = null;
                         if (colP1 >= 0)
                         {
-                            pressure1 = new double[n];
+                            pressure1 = pooledPressure1 = ArrayPool<double>.Shared.Rent(n);
                             for (int i = 0; i < n; i++) pressure1[i] = engFiltered[colP1, i];
                         }
                         if (colP2 >= 0)
                         {
-                            pressure2 = new double[n];
+                            pressure2 = pooledPressure2 = ArrayPool<double>.Shared.Rent(n);
                             for (int i = 0; i < n; i++) pressure2[i] = engFiltered[colP2, i];
                         }
 
@@ -1749,14 +1884,15 @@ namespace IO.NI
                         #region 获取一段时间内的最大值
 
                         // === 基于“全数据”的峰值捕获：逐样本扫描（仅对处于捕获状态的通道进行） ===
+                        var peakStartedTicks = Stopwatch.GetTimestamp();
                         try
                         {
                             if (AnyPeakArmed && tsUtc != null && tsUtc.Length > 0)
                             {
                                 foreach (var kv in currentsByEpb)
                                 {
-                                    int epb = kv.Key;              // 1..12
-                                    var data = kv.Value;           // double[n]
+                                    int epb = kv.EpbId;              // 1..12
+                                    var data = kv.Currents;           // double[n]
                                     PeakTracker tracker;
                                     if (!_peakTrackers.TryGetValue(epb, out tracker)) continue;
 
@@ -1766,7 +1902,7 @@ namespace IO.NI
                                     if (!active) continue;
 
                                     // 逐样本纳入峰值统计（时间转为本地时间）
-                                    for (int i = 0; i < data.Length; i++)
+                                    for (int i = 0; i < n; i++)
                                     {
                                         // tsUtc 与 data 一一对应
                                         var tLocal = tsUtc[i].ToLocalTime();
@@ -1783,27 +1919,103 @@ namespace IO.NI
                         {
                             _log?.Warn($"全数据峰值捕获更新异常（已忽略）：{ex.Message}", "AI");
                         }
+                        peakMs = (Stopwatch.GetTimestamp() - peakStartedTicks) * 1000.0 / Stopwatch.Frequency;
 
                         #endregion
 
 
 
-                        // 4) 触发“写盘批次”事件（上层订阅后直接喂给 _diskWriter.WriteBatch）
-                        OnDiskBatch?.Invoke(item.Device, tsUtc, currentsByEpb, pressure1, pressure2);
+                        // 4) 所有权转移给独立持久化队列；当前线程只做 O(1) 投递。
+                        for (var c = 0; c < currentsByEpb.Count; c++)
+                        {
+                            var data = currentsByEpb[c].Currents;
+                            for (var i = 0; i < n; i++) data[i] = Math.Abs(data[i]);
+                        }
+                        var diskBatch = ownedDiskBatch = new DaqDiskBatch(
+                            item.Device,
+                            item.Generation,
+                            item.Sequence,
+                            n,
+                            tsUtc,
+                            currentsByEpb.ToArray(),
+                            pressure1,
+                            pressure2,
+                            Stopwatch.GetTimestamp());
+                        var transferred = false;
+                        try
+                        {
+                            var dispatchStartedTicks = Stopwatch.GetTimestamp();
+                            var handler = DiskBatchReady;
+                            if (handler != null)
+                            {
+                                handler(diskBatch);
+                                transferred = true;
+                            }
+
+                            var legacy = OnDiskBatch;
+                            if (legacy != null)
+                            {
+                                var legacyTs = new DateTime[n];
+                                Array.Copy(tsUtc, legacyTs, n);
+                                var legacyCurrents = new Dictionary<int, double[]>();
+                                foreach (var channel in currentsByEpb)
+                                {
+                                    var copy = new double[n];
+                                    Array.Copy(channel.Currents, copy, n);
+                                    legacyCurrents[channel.EpbId] = copy;
+                                }
+                                double[] p1 = null, p2 = null;
+                                if (pressure1 != null) { p1 = new double[n]; Array.Copy(pressure1, p1, n); }
+                                if (pressure2 != null) { p2 = new double[n]; Array.Copy(pressure2, p2, n); }
+                                legacy(item.Device, legacyTs, legacyCurrents, p1, p2);
+                            }
+                            diskDispatchMs = (Stopwatch.GetTimestamp() - dispatchStartedTicks) * 1000.0 / Stopwatch.Frequency;
+                        }
+                        finally
+                        {
+                            if (string.Equals(item.Device, "Dev1", StringComparison.OrdinalIgnoreCase))
+                                Interlocked.Exchange(ref _diskPublishedSequenceDev1, item.Sequence);
+                            else
+                                Interlocked.Exchange(ref _diskPublishedSequenceDev2, item.Sequence);
+                            if (!transferred) diskBatch.Dispose();
+                        }
                     }
                     catch (Exception ex)
                     {
+                        if (ownedDiskBatch == null)
+                        {
+                            if (pooledTimestamps != null)
+                                ArrayPool<DateTime>.Shared.Return(pooledTimestamps, clearArray: false);
+                            if (pooledCurrents != null)
+                                foreach (var channel in pooledCurrents)
+                                    if (channel?.Currents != null)
+                                        ArrayPool<double>.Shared.Return(channel.Currents, clearArray: false);
+                            if (pooledPressure1 != null)
+                                ArrayPool<double>.Shared.Return(pooledPressure1, clearArray: false);
+                            if (pooledPressure2 != null)
+                                ArrayPool<double>.Shared.Return(pooledPressure2, clearArray: false);
+                        }
                         _log?.Warn($"生成写盘批次时出现异常（已忽略）：{ex.Message}", "AI");
+                    }
+                    finally
+                    {
+                        if (string.Equals(item.Device, "Dev1", StringComparison.OrdinalIgnoreCase))
+                            Interlocked.Exchange(ref _diskPublishedSequenceDev1, item.Sequence);
+                        else
+                            Interlocked.Exchange(ref _diskPublishedSequenceDev2, item.Sequence);
                     }
                     
 
                     #endregion
-                    
+                    var diskBatchBuildMs =
+                        (Stopwatch.GetTimestamp() - diskBuildStartedTicks) * 1000.0 / Stopwatch.Frequency;
+
                     // 4) 生成发给 UI 的绝对值副本（不修改 engFiltered）
                     //    这样 UI 看到的是绝对值，但内部仍保留带符号的数据用于控制/记录等。
                     var uiEng = MakeEngineeringAbsoluteCopy(engFiltered);
 
                     // 5) 通知 UI（全通道、已滤波、已取绝对值的工程值）
+                    var uiStartedTicks = Stopwatch.GetTimestamp();
                     try { OnEngBatch?.Invoke(item.Device, uiEng, item.Current, item.Last); }
                     catch (Exception ex)
                     {
@@ -1811,6 +2023,7 @@ namespace IO.NI
                             $"{item.Device} 工程值批次订阅者异常（已隔离）：{ex.Message}",
                             "AI");
                     }
+                    var uiNotifyMs = (Stopwatch.GetTimestamp() - uiStartedTicks) * 1000.0 / Stopwatch.Frequency;
 
                     AppendDiagnostic(new DaqTimingRecord
                     {
@@ -1821,7 +2034,13 @@ namespace IO.NI
                         BatchSize = item.Raw.GetLength(1),
                         QueueDepth = queue.Count,
                         QueueAgeMs = queueAgeMs,
-                        ProcessingMs = (Stopwatch.GetTimestamp() - processStartTicks) * 1000.0 / Stopwatch.Frequency
+                        ProcessingMs = (Stopwatch.GetTimestamp() - processStartTicks) * 1000.0 / Stopwatch.Frequency,
+                        ConvertMs = convertMs,
+                        FilterMs = filterMs,
+                        PeakMs = peakMs,
+                        DiskBatchBuildMs = diskBatchBuildMs,
+                        DiskDispatchMs = diskDispatchMs,
+                        UiNotifyMs = uiNotifyMs
                     });
 
                     //OnFastEpbCurrent?.Invoke(epbCh, eng, item.Current);
@@ -2344,6 +2563,7 @@ namespace IO.NI
             public Item(
                 string device,
                 long generation,
+                long sequence,
                 double[,] raw,
                 DateTime current,
                 DateTime last,
@@ -2351,6 +2571,7 @@ namespace IO.NI
             {
                 Device = device;
                 Generation = generation;
+                Sequence = sequence;
                 Raw = raw;
                 Current = current;
                 Last = last;
@@ -2359,6 +2580,7 @@ namespace IO.NI
 
             public string Device { get; }
             public long Generation { get; }
+            public long Sequence { get; }
             public double[,] Raw { get; }
             public DateTime Current { get; }
             public DateTime Last { get; }

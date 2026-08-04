@@ -328,6 +328,12 @@ namespace Controller
             if (_acq == null)
                 throw new InvalidOperationException("DAQ采集器未初始化，拒绝启动试验。Code=DaqNotInitialized");
 
+            foreach (var device in (selected ?? Array.Empty<int>())
+                         .Select(_acq.GetDeviceForEpbChannel)
+                         .Where(x => !string.IsNullOrWhiteSpace(x))
+                         .Distinct(StringComparer.OrdinalIgnoreCase))
+                _persistence.ResumeAdmission(device);
+
             var results = await _acq.EnsureChannelsReadyAsync(
                     selected,
                     timeoutMs: 3000,
@@ -487,7 +493,11 @@ namespace Controller
                         initialDelay,
                         async (cycleIndex, ct) =>
                         {
-                            using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, stopCts.Token);
+                            var cyclePauseCts = RenewCyclePauseCts(ch);
+                            using var linked = CancellationTokenSource.CreateLinkedTokenSource(
+                                ct,
+                                stopCts.Token,
+                                cyclePauseCts.Token);
                             var token = linked.Token;
                             var callbackUtc = DateTime.UtcNow;
                             var phaseBaseUtc = t0.AddMilliseconds(phase);
@@ -600,7 +610,12 @@ namespace Controller
                                     }
                                     else if (runner.LastCycleOutcome.Kind == Adaptive.EpbCycleOutcomeKind.HardFault)
                                     {
-                                        recorder.AbortCycle(ch, cycleNumber, finalN, DateTime.UtcNow, "failed");
+                                        AbortCycleAfterPersistence(
+                                            recorder,
+                                            ch,
+                                            cycleNumber,
+                                            DateTime.UtcNow,
+                                            "failed");
                                     }
                                     else if (runner.LastCycleOutcome.IsSuccess)
                                     {
@@ -613,10 +628,10 @@ namespace Controller
                                     }
                                     else
                                     {
-                                        recorder.AbortCycle(
+                                        AbortCycleAfterPersistence(
+                                            recorder,
                                             ch,
                                             cycleNumber,
-                                            finalN,
                                             DateTime.UtcNow,
                                             runner.LastCycleOutcome.Kind == Adaptive.EpbCycleOutcomeKind.Canceled
                                                 ? "canceled"
@@ -641,6 +656,7 @@ namespace Controller
                                 timer.Stop();
                             }
 
+                            ReleaseCyclePauseCts(ch, cyclePauseCts);
                             return ok;
 
                         });
@@ -704,11 +720,11 @@ namespace Controller
         #region 学习阶段（循环+延时：轻量且每圈对齐）
 
         /// <summary>
-        ///     学习阶段外壳：并发“圈 × 组”，同组内按固定相位（0/Δ/2Δ）错峰起跑，每圈都与压力组锚点对齐。<br />
+        ///     学习阶段外壳：并发“圈 × 组”，同组内在液压资格完成后的共享窗口中按固定相位（0/Δ/2Δ）错峰起跑。<br />
         ///     关键增强：
         ///     <list type="number">
         ///         <item>对每个“圈 × 组”先创建 <c>HydraulicEnterAtGroupAnchorAsync</c> 任务作为屏障；</item>
-        ///         <item>若计算得到的 <c>at = tk + phase</c> 已落后于当前时刻，则按 <c>PeriodMs</c> 向前“整周期滚动”到未来；</item>
+        ///         <item>液压资格完成后整组共享执行锚点，避免不同相位被拆到相邻周期；</item>
         ///         <item>确保首圈也不会出现负延时导致的“同刻上电”。</item>
         ///         <item>【新增】在学习阶段的首尾对 <c>SafetyMargin</c> 做“开始聚合/收敛落地”。</item>
         ///     </list>
@@ -790,7 +806,7 @@ namespace Controller
                     var t0 = t0OfGroup[pg];
                     var tk = t0.AddMilliseconds(k * PeriodMs);
 
-                    // —— 1.2) 组内通道：相位错峰（0/Δ/2Δ）+ 过时滚动到未来 —— //
+                    // —— 1.2) 组内通道：液压资格后的共享窗口 + 相位错峰（0/Δ/2Δ） —— //
                     var enabled = list.Where(ch => !quarantined.ContainsKey(ch)).OrderBy(x => x).ToList();
                     if (enabled.Count == 0) continue;
 
@@ -802,12 +818,12 @@ namespace Controller
                         k + 1L);
                     var anchorTask = HydraulicEnterAtGroupAnchorAsync(hydraulicKey, enabled, phaseToken);
                     tasksAllGroups.Add(anchorTask); // 并入等待，便于异常汇总
+                    var maxPhaseMs = enabled.Max(member => staggerPlan.Get(member).PhaseMs);
 
                     for (var i = 0; i < enabled.Count; i++)
                     {
                         var ch = enabled[i];
                         var phase = staggerPlan.Get(ch).PhaseMs;
-                        var at = tk.AddMilliseconds(phase);
                         var stopCts = stopCtsByChannel[ch];
 
                         tasksAllGroups.Add(Task.Run(async () =>
@@ -819,15 +835,22 @@ namespace Controller
                             var channelToken = channelLinkedCts.Token;
 
                             // ① 等待液压锚点到位（屏障：确保本组已经建压 + 所有通道已登记 InFlight）
-                            await anchorTask.ConfigureAwait(false);
+                            var lease = await anchorTask.ConfigureAwait(false);
 
-                            // ② 若 at 已过时 → 推进到未来
+                            // ② 液压资格完成后整组共享同一执行窗口。
+                            // 禁止各通道按自己的原始相位独立滚动，否则资格时刻恰好落在
+                            // 0ms 与 800ms 相位之间时，会把同代次成员拆到相邻两个周期。
+                            var phaseWindow = ElectricalStaggerExecutor.CreateQualifiedPhaseWindow(
+                                lease?.ActuationAnchorUtc ?? DateTime.UtcNow.AddMilliseconds(2),
+                                tk,
+                                PeriodMs,
+                                maxPhaseMs);
+                            var atFuture = phaseWindow.GetDueUtc(phase);
                             var now = DateTime.UtcNow;
-                            var atFuture = RollForwardToFuture(at, now, PeriodMs, /*safetyMs:*/ 2);
 
                             var delay = atFuture - now;
                             _log?.Info(
-                                $"通道{ch}: tk={tk:HH:mm:ss.fff}, phase={phase}ms, at={at:HH:mm:ss.fff}, delay={delay.TotalMilliseconds}ms");
+                                $"通道{ch}: tk={tk:HH:mm:ss.fff}, phase={phase}ms, qualified-at={atFuture:HH:mm:ss.fff}, delay={delay.TotalMilliseconds}ms");
 
                             var ms = (int)Math.Floor(delay.TotalMilliseconds);
                             if (ms > 0)
@@ -1098,27 +1121,6 @@ namespace Controller
                 $"InternalCycle={cycleNumber} Status={status} Samples={evidence.SampleCount} " +
                 $"Dir={exportDir}",
                 "落盘");
-        }
-
-
-        /// <summary>
-        ///     若 <paramref name="at" /> 已早于 <paramref name="now" />（或离现在太近），
-        ///     则按 <paramref name="periodMs" /> 的整周期，把它前滚到 <c>now + safetyMs</c> 之后，
-        ///     同时保持“原有相位（相对周期边界）”不变。<br />
-        ///     例如：at=10:00:30.350 已过时，period=5000ms（5s），则滚到 10:00:35.350/10:00:40.350/... 中的第一个 ≥ now+safetyMs 的时刻。
-        /// </summary>
-        private static DateTime RollForwardToFuture(DateTime at, DateTime now, int periodMs, int safetyMs)
-        {
-            // 允许留一个极小的“安全裕度”，避免边界上 now≈at 导致 0/负延时
-            var refTime = now.AddMilliseconds(Math.Max(0, safetyMs));
-
-            // 未过时，原样返回
-            if (at >= refTime) return at;
-
-            // 需要滚动的毫秒差
-            var diffMs = (refTime - at).TotalMilliseconds;
-            var n = (int)Math.Ceiling(diffMs / Math.Max(1, periodMs)); // 至少滚 1 个周期
-            return at.AddMilliseconds(n * periodMs);
         }
 
         #endregion

@@ -76,6 +76,23 @@ namespace IO.NI
             return result;
         }
 
+        public static void FillBatchTimestamps(
+            DateTime batchLastSampleUtc,
+            DateTime[] destination,
+            int sampleCount,
+            double sampleRate)
+        {
+            if (destination == null) throw new ArgumentNullException(nameof(destination));
+            if (sampleCount < 0 || sampleCount > destination.Length)
+                throw new ArgumentOutOfRangeException(nameof(sampleCount));
+            if (sampleCount == 0) return;
+
+            var first = batchLastSampleUtc.AddTicks(
+                -SampleOffsetTicks(sampleCount - 1, sampleRate));
+            for (var i = 0; i < sampleCount; i++)
+                destination[i] = first.AddTicks(SampleOffsetTicks(i, sampleRate));
+        }
+
         /// <summary>
         /// 计算下一批的批尾时间。主机时间可用于向前纠偏，但不得让批尾早于
         /// “上一批尾 + 本批采样时长”，否则向前回推批内时间戳会与上一批重叠。

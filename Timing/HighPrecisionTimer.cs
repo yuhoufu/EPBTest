@@ -17,6 +17,7 @@ public sealed class HighPrecisionTimer
     private readonly int _periodMs;
     private readonly OverrunPolicy _policy;
     private volatile bool _running;
+    private long _pauseStartedTimestamp;
 
     private long _ticksStart; // 计划起点
 
@@ -134,6 +135,7 @@ public sealed class HighPrecisionTimer
     /// <summary>暂停周期执行。</summary>
     public void Pause()
     {
+        Interlocked.CompareExchange(ref _pauseStartedTimestamp, Stopwatch.GetTimestamp(), 0);
         _pauseGate.Reset();
         _log.Info("定时器已暂停。", "Timer");
     }
@@ -141,6 +143,12 @@ public sealed class HighPrecisionTimer
     /// <summary>恢复周期执行。</summary>
     public void Resume()
     {
+        var pausedAt = Interlocked.Exchange(ref _pauseStartedTimestamp, 0);
+        if (pausedAt != 0)
+        {
+            var pausedMs = (Stopwatch.GetTimestamp() - pausedAt) * 1000L / Stopwatch.Frequency;
+            Interlocked.Add(ref _ticksStart, pausedMs);
+        }
         _pauseGate.Set();
         _log.Info("定时器已恢复。", "Timer");
     }

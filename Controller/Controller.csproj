@@ -75,6 +75,7 @@
     <Compile Include="EpbCycleRunner.Advance.Sync.cs" />
     <Compile Include="EpbCycleRunner.cs" />
     <Compile Include="DoControlTrace.cs" />
+    <Compile Include="DaqPersistenceCoordinator.cs" />
     <Compile Include="ChannelRuntimeStore.cs" />
     <Compile Include="ChannelRuntimeState.cs" />
     <Compile Include="ElectricalStaggerPlan.cs" />

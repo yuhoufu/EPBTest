@@ -2,6 +2,8 @@
 // ReSharper disable RedundantNameQualifier
 
 using System;
+using System.Buffers;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Data;
 using System.Data.SQLite;
@@ -10,6 +12,7 @@ using System.IO;
 using System.IO.MemoryMappedFiles;
 using System.Linq;
 using System.Text;
+using System.Threading;
 
 namespace DataOperation;
 
@@ -135,6 +138,8 @@ public sealed class EpbDiskWriter : IDisposable
         public long CapacityRecords; // 文件可容纳记录数
         public int? CurrentCycle; // 正式圈号（null=未开圈）
         public int CurrentSampleIndex; // 当前圈内样本序号（0..）
+        public DateTime CurrentCycleStartUtc;
+        public DateTime? CurrentCycleEndUtc;
         public bool FreeRunOn; // 是否开启 Free-Run
         public int FreeRunSampleIndex; // Free-Run 下的“伪圈”样本序号
         public string StopAction = "archive";
@@ -167,6 +172,14 @@ public sealed class EpbDiskWriter : IDisposable
     private const long VIEW_ALIGN = 64L * 1024; // 64KB（Windows allocation granularity）
 
     private readonly SQLiteConnection _conn;
+    private readonly object _dbGate = new();
+    private SQLiteTransaction _activeBatchTransaction;
+    private readonly object[] _latestExportGates = Enumerable.Range(0, EPB_COUNT + 1)
+        .Select(_ => new object())
+        .ToArray();
+    private long _latestExportSequence;
+    private readonly ConcurrentDictionary<string, object> _exportTargetGates =
+        new(StringComparer.OrdinalIgnoreCase);
 
     private bool _disposed;
 
@@ -382,6 +395,8 @@ public sealed class EpbDiskWriter : IDisposable
             UpsertCycleStart(epbId, cycleNumber, startUtc.ToLocalTime(), startIndex);
             s.CurrentCycle = cycleNumber;
             s.CurrentSampleIndex = 0;
+            s.CurrentCycleStartUtc = startUtc.ToUniversalTime();
+            s.CurrentCycleEndUtc = null;
         }
     }
 
@@ -404,6 +419,8 @@ public sealed class EpbDiskWriter : IDisposable
             UpsertCycleStart(epbId, cycleNumber, startUtc.ToLocalTime(), startIndex);
             s.CurrentCycle = cycleNumber;
             s.CurrentSampleIndex = 0;
+            s.CurrentCycleStartUtc = startUtc.ToUniversalTime();
+            s.CurrentCycleEndUtc = null;
             return cycleNumber;
         }
     }
@@ -419,6 +436,7 @@ public sealed class EpbDiskWriter : IDisposable
             MarkCycleCompleted(epbId, cycleNumber, finalSampleCount, endUtc);
             s.CurrentCycle = null;
             s.CurrentSampleIndex = 0;
+            s.CurrentCycleEndUtc = null;
 
             // 注释掉，不去处理旧的记录
             // 处理 StopTrigger=EndOfCurrentCycle 或 AfterKMoreCycles
@@ -454,6 +472,7 @@ public sealed class EpbDiskWriter : IDisposable
             MarkCycleAlarm(epbId, cycleNumber, finalSampleCount, endUtc);
             s.CurrentCycle = null;
             s.CurrentSampleIndex = 0;
+            s.CurrentCycleEndUtc = null;
         }
     }
 
@@ -591,6 +610,7 @@ public sealed class EpbDiskWriter : IDisposable
             {
                 s.CurrentCycle = null;
                 s.CurrentSampleIndex = 0;
+                s.CurrentCycleEndUtc = null;
             }
         }
 
@@ -739,6 +759,7 @@ public sealed class EpbDiskWriter : IDisposable
             MarkCycleAborted(epbId, cycleNumber, finalSampleCount, endUtc, normalized);
             s.CurrentCycle = null;
             s.CurrentSampleIndex = 0;
+            s.CurrentCycleEndUtc = null;
         }
     }
 
@@ -802,26 +823,136 @@ public sealed class EpbDiskWriter : IDisposable
     ///     批量写入（传相同长度的时间戳/电流/压力数组）。内部逐点调用写入（便于复用一致的并发/索引逻辑）。
     /// </summary>
     public void WriteBatch(int epbId, DateTime[] tsUtc, double[] epbCurrents, double[] groupPressures)
+        => WriteBatch(epbId, tsUtc, epbCurrents, groupPressures, tsUtc?.Length ?? 0);
+
+    public void WriteBatch(
+        int epbId,
+        DateTime[] tsUtc,
+        double[] epbCurrents,
+        double[] groupPressures,
+        int count)
     {
         if (tsUtc == null || epbCurrents == null || groupPressures == null)
             throw new ArgumentNullException("tsUtc/epbCurrents/groupPressures");
-        if (tsUtc.Length != epbCurrents.Length || tsUtc.Length != groupPressures.Length)
-            throw new ArgumentException("tsUtc/epbCurrents/groupPressures 长度必须一致");
+        if (count < 0 || count > tsUtc.Length || count > epbCurrents.Length || count > groupPressures.Length)
+            throw new ArgumentOutOfRangeException(nameof(count));
 
         var state = GetState(epbId);
         lock (state.Gate)
         {
+            var from = 0;
+            var to = count;
+            if (state.CurrentCycle.HasValue)
+            {
+                while (from < to && tsUtc[from].ToUniversalTime() < state.CurrentCycleStartUtc) from++;
+                if (state.CurrentCycleEndUtc.HasValue)
+                    while (to > from && tsUtc[to - 1].ToUniversalTime() > state.CurrentCycleEndUtc.Value) to--;
+            }
+            var accepted = to - from;
+            if (accepted <= 0) return;
+
             if (state.CurrentCycle.HasValue &&
                 _policy.MaxActiveCycleRecords > 0 &&
-                state.CurrentSampleIndex + tsUtc.Length > _policy.MaxActiveCycleRecords)
+                state.CurrentSampleIndex + accepted > _policy.MaxActiveCycleRecords)
                 throw new ActiveCycleDataLimitExceededException(
                     epbId,
                     state.CurrentCycle.Value,
                     _policy.MaxActiveCycleRecords);
 
-            // Monitor 可重入；持有圈锁可保证整批要么全部接收，要么在上限检查处全部拒绝。
-            for (var i = 0; i < tsUtc.Length; i++)
-                WriteSample(epbId, tsUtc[i], epbCurrents[i], groupPressures[i]);
+            var cycle = state.CurrentCycle ?? (state.FreeRunOn ? 0 : int.MinValue);
+            if (cycle == int.MinValue) return;
+            var firstSampleIndex = cycle > 0 || cycle < 0
+                ? state.CurrentSampleIndex
+                : state.FreeRunSampleIndex;
+            var records = ArrayPool<SampleRecord>.Shared.Rent(accepted);
+            try
+            {
+                for (var i = 0; i < accepted; i++)
+                {
+                    var source = from + i;
+                    records[i] = new SampleRecord
+                    {
+                        TimestampBinary = tsUtc[source].ToLocalTime().ToBinary(),
+                        CycleNumber = cycle,
+                        SampleIndex = firstSampleIndex + i,
+                        EpbCurrent = epbCurrents[source],
+                        GroupPressure = groupPressures[source]
+                    };
+                }
+
+                WriteRecordBatch(epbId, state, records, accepted);
+                if (cycle == 0) state.FreeRunSampleIndex += accepted;
+                else state.CurrentSampleIndex += accepted;
+                state.TotalWritten += accepted;
+
+                // 每通道每批最多一次 SQLite 进度更新。
+                if (cycle != 0)
+                    UpdateCycleProgress(epbId, cycle, state.CurrentSampleIndex, tsUtc[to - 1]);
+            }
+            finally
+            {
+                ArrayPool<SampleRecord>.Shared.Return(records, clearArray: false);
+            }
+        }
+    }
+
+    public void WriteDeviceBatch(
+        DateTime[] timestampsUtc,
+        IReadOnlyList<EpbChannelDiskBatch> channels,
+        int count)
+    {
+        if (channels == null) throw new ArgumentNullException(nameof(channels));
+        var ordered = channels
+            .Where(x => x != null)
+            .OrderBy(x => x.EpbId)
+            .ToArray();
+        WithChannelStateLocks(ordered, 0, () =>
+        {
+            lock (_dbGate)
+            {
+                using var transaction = _conn.BeginTransaction();
+                _activeBatchTransaction = transaction;
+                try
+                {
+                    foreach (var channel in ordered)
+                        WriteBatch(
+                            channel.EpbId,
+                            timestampsUtc,
+                            channel.Currents,
+                            channel.Pressures,
+                            count);
+                    transaction.Commit();
+                }
+                finally
+                {
+                    _activeBatchTransaction = null;
+                }
+            }
+        });
+    }
+
+    private void WithChannelStateLocks(
+        IReadOnlyList<EpbChannelDiskBatch> channels,
+        int index,
+        Action action)
+    {
+        if (index >= channels.Count)
+        {
+            action();
+            return;
+        }
+        var state = GetState(channels[index].EpbId);
+        lock (state.Gate)
+            WithChannelStateLocks(channels, index + 1, action);
+    }
+
+    public void SealCycleWindow(int epbId, int cycleNumber, DateTime endUtc)
+    {
+        var state = GetState(epbId);
+        lock (state.Gate)
+        {
+            if (state.CurrentCycle == cycleNumber)
+                state.CurrentCycleEndUtc = endUtc.ToUniversalTime();
         }
     }
 
@@ -890,23 +1021,48 @@ public sealed class EpbDiskWriter : IDisposable
     /// <param name="latestN">需要导出的“最近圈数”（默认 10）。</param>
     public void ExportLatestCyclesNow(int epbId, int latestN = 10)
     {
-        latestN = Math.Max(1, latestN);
+        lock (_latestExportGates[epbId])
+        {
+            latestN = Math.Max(1, latestN);
+            var latestList = GetLatestCycles(epbId, latestN, includeRunningCycle: false);
+            if (latestList.Count == 0) return;
 
-        // 查询最近 N 个已完成的正式圈
-        var latestList = GetLatestCycles(epbId, latestN, includeRunningCycle: false);
-        if (latestList.Count == 0)
-            return;
+            var dir = Path.Combine(_indexDir, "Latest", $"EPB{epbId}");
+            Directory.CreateDirectory(dir);
+            var sequence = Interlocked.Increment(ref _latestExportSequence);
+            var name = $"{DateTime.Now:yyyyMMdd_HHmmss_fff}-{sequence:D6}";
+            var staging = Path.Combine(dir, $".{name}.tmp-{Guid.NewGuid():N}");
+            var final = Path.Combine(dir, name);
+            Directory.CreateDirectory(staging);
+            try
+            {
+                ExportCycleList(epbId, latestList, staging);
+                ValidateExportDirectory(epbId, latestList, staging);
+                Directory.Move(staging, final);
+            }
+            finally
+            {
+                if (Directory.Exists(staging))
+                {
+                    try { Directory.Delete(staging, true); } catch { }
+                }
+            }
+        }
+    }
 
-        // 与 Archive 区分开，新建 Latest 目录
-        var dir = Path.Combine(_indexDir, "Latest", $"EPB{epbId}");
-        Directory.CreateDirectory(dir);
-
-        // 以圈开始时间命名子目录，便于回放/检索
-        // var tsFolder = cy.StartTimeUtc.ToLocalTime().ToString("yyyyMMdd_HHmmss");
-        var tsFolder = DateTime.Now.ToLocalTime().ToString(@"yyyyMMdd_HHmmss");
-        var subDir = Path.Combine(dir, tsFolder);
-        Directory.CreateDirectory(subDir);
-        ExportCycleList(epbId, latestList, subDir);
+    private static void ValidateExportDirectory(
+        int epbId,
+        IEnumerable<CycleInfo> cycles,
+        string directory)
+    {
+        foreach (var cycle in cycles)
+        {
+            var csv = Path.Combine(directory, $"EPB{epbId}_Cycle_{cycle.CycleNumber:D6}.csv");
+            var bin = Path.Combine(directory, $"EPB{epbId}_Cycle_{cycle.CycleNumber:D6}.bin");
+            var validation = ValidateAlarmCycleSnapshotPair(csv, bin, epbId, cycle.CycleNumber);
+            if (!validation.IsValid || validation.SampleCount != cycle.SampleCount)
+                throw new InvalidDataException(validation.ValidationError);
+        }
     }
 
 
@@ -920,12 +1076,15 @@ public sealed class EpbDiskWriter : IDisposable
         if (string.IsNullOrWhiteSpace(exportDir))
             throw new ArgumentException("exportDir is required", nameof(exportDir));
 
-        var latestList = GetLatestCycles(epbId, latestN, includeRunningCycle);
-        if (latestList.Count == 0)
-            return;
-
-        Directory.CreateDirectory(exportDir);
-        ExportCycleList(epbId, latestList, exportDir);
+        var fullDirectory = Path.GetFullPath(exportDir);
+        var gate = _exportTargetGates.GetOrAdd(fullDirectory, _ => new object());
+        lock (gate)
+        {
+            var latestList = GetLatestCycles(epbId, latestN, includeRunningCycle);
+            if (latestList.Count == 0) return;
+            Directory.CreateDirectory(fullDirectory);
+            ExportCycleList(epbId, latestList, fullDirectory);
+        }
     }
 
     public CycleSnapshotEvidence ExportCompletedCycleTo(
@@ -1342,15 +1501,22 @@ public sealed class EpbDiskWriter : IDisposable
         string binTemp,
         string binPath)
     {
-        var csvBackup = csvPath + ".bak." + Guid.NewGuid().ToString("N");
-        var binBackup = binPath + ".bak." + Guid.NewGuid().ToString("N");
+        if (File.Exists(csvPath) && File.Exists(binPath) &&
+            FilesEqual(csvTemp, csvPath) && FilesEqual(binTemp, binPath))
+        {
+            TryDeleteFile(csvTemp);
+            TryDeleteFile(binTemp);
+            return;
+        }
+        var conflictSuffix = $".conflict.{DateTime.Now:yyyyMMdd_HHmmss_fff}.{Guid.NewGuid():N}";
+        var csvBackup = csvPath + conflictSuffix;
+        var binBackup = binPath + conflictSuffix;
         var hadCsv = File.Exists(csvPath);
         var hadBin = File.Exists(binPath);
         var csvBackedUp = false;
         var binBackedUp = false;
         var csvCommitted = false;
         var binCommitted = false;
-        var succeeded = false;
         try
         {
             if (hadCsv)
@@ -1369,7 +1535,6 @@ public sealed class EpbDiskWriter : IDisposable
             csvCommitted = true;
             File.Move(binTemp, binPath);
             binCommitted = true;
-            succeeded = true;
         }
         catch
         {
@@ -1381,13 +1546,26 @@ public sealed class EpbDiskWriter : IDisposable
                 File.Move(binBackup, binPath);
             throw;
         }
-        finally
+    }
+
+    private static bool FilesEqual(string left, string right)
+    {
+        var leftInfo = new FileInfo(left);
+        var rightInfo = new FileInfo(right);
+        if (!leftInfo.Exists || !rightInfo.Exists || leftInfo.Length != rightInfo.Length) return false;
+        const int bufferSize = 64 * 1024;
+        var leftBuffer = new byte[bufferSize];
+        var rightBuffer = new byte[bufferSize];
+        using var leftStream = new FileStream(left, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var rightStream = new FileStream(right, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        while (true)
         {
-            if (succeeded)
-            {
-                TryDeleteFile(csvBackup);
-                TryDeleteFile(binBackup);
-            }
+            var leftRead = leftStream.Read(leftBuffer, 0, leftBuffer.Length);
+            var rightRead = rightStream.Read(rightBuffer, 0, rightBuffer.Length);
+            if (leftRead != rightRead) return false;
+            if (leftRead == 0) return true;
+            for (var i = 0; i < leftRead; i++)
+                if (leftBuffer[i] != rightBuffer[i]) return false;
         }
     }
 
@@ -1554,6 +1732,8 @@ public sealed class EpbDiskWriter : IDisposable
     /// <returns>若无正式圈记录，则返回 0。</returns>
     public int GetMaxCycleNumber(int epbId)
     {
+        lock (_dbGate)
+        {
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = $@"
 SELECT COALESCE(MAX(cycle_number), 0)
@@ -1563,11 +1743,14 @@ SELECT COALESCE(MAX(cycle_number), 0)
         cmd.Parameters.AddWithValue("@e", epbId);
         var obj = cmd.ExecuteScalar();
         return Convert.ToInt32(obj);
+        }
     }
 
     /// <summary>返回下一个负数学习圈号；调用方必须持有对应通道锁。</summary>
     private int GetNextLearningCycleNumber(int epbId)
     {
+        lock (_dbGate)
+        {
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = $@"
 SELECT COALESCE(MIN(cycle_number), 0)
@@ -1579,6 +1762,7 @@ SELECT COALESCE(MIN(cycle_number), 0)
         if (currentMinimum == int.MinValue)
             throw new InvalidOperationException($"EPB[{epbId}] 学习圈号已耗尽。");
         return currentMinimum < 0 ? currentMinimum - 1 : -1;
+        }
     }
 
 
@@ -1619,6 +1803,8 @@ SELECT COALESCE(MIN(cycle_number), 0)
         /// </remarks>
         public int GetClosedCycleCount(int epbId)
         {
+            lock (_dbGate)
+            {
                 using var cmd = _conn.CreateCommand();
                 cmd.CommandText = $@"
 SELECT COUNT(1)
@@ -1629,6 +1815,7 @@ SELECT COUNT(1)
                 cmd.Parameters.AddWithValue("@e", epbId);
                 var obj = cmd.ExecuteScalar();
                 return Convert.ToInt32(obj);
+            }
         }
 
 
@@ -1709,6 +1896,30 @@ SELECT COUNT(1)
         v.Write(off + 24, r.GroupPressure);
     }
 
+    private void WriteRecordBatch(int epbId, EpbState state, SampleRecord[] records, int count)
+    {
+        var startIndex = state.TotalWritten % state.CapacityRecords;
+        var firstCount = (int)Math.Min(count, state.CapacityRecords - startIndex);
+        WriteRecordSegment(epbId, startIndex, records, 0, firstCount);
+        if (firstCount < count)
+            WriteRecordSegment(epbId, 0, records, firstCount, count - firstCount);
+    }
+
+    private void WriteRecordSegment(
+        int epbId,
+        long recordIndex,
+        SampleRecord[] records,
+        int sourceIndex,
+        int count)
+    {
+        if (count <= 0) return;
+        var fileOffset = recordIndex * SampleRecord.Size;
+        var bytes = (long)count * SampleRecord.Size;
+        EnsureViewCovers(epbId, fileOffset, bytes);
+        var viewOffset = fileOffset - _viewBaseOffsets[epbId];
+        _views[epbId].WriteArray(viewOffset, records, sourceIndex, count);
+    }
+
     /// <summary>
     ///     读取一条记录（自动窗口化）。
     /// </summary>
@@ -1765,7 +1976,8 @@ SELECT COUNT(1)
     private long RestoreNextWritePosition(int epbId, long capacityRecords)
     {
         if (capacityRecords <= 0) return 0;
-
+        lock (_dbGate)
+        {
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = $@"
 SELECT start_position, COALESCE(sample_count, 0)
@@ -1784,10 +1996,13 @@ SELECT start_position, COALESCE(sample_count, 0)
         // TotalWritten 保留“至少已写过这些数据”的语义；真正访问环形文件时统一取模。
         // 不能直接只保存余数，否则刚好写满一圈时余数为 0，会被 Free-Run 误判为从未写入。
         return logicalEnd >= 0 ? logicalEnd : ModNN(logicalEnd, capacityRecords);
+        }
     }
 
     private void InitSchema()
     {
+        lock (_dbGate)
+        {
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = $@"
 CREATE TABLE IF NOT EXISTS {TABLE_CYCLES}(
@@ -1804,6 +2019,7 @@ CREATE TABLE IF NOT EXISTS {TABLE_CYCLES}(
 );
 CREATE INDEX IF NOT EXISTS idx_cycles_epb ON {TABLE_CYCLES}(epb_id, cycle_number);";
         cmd.ExecuteNonQuery();
+        }
     }
 
     /// <summary>
@@ -1812,58 +2028,57 @@ CREATE INDEX IF NOT EXISTS idx_cycles_epb ON {TABLE_CYCLES}(epb_id, cycle_number
     /// </summary>
     private void UpsertCycleStart(int epbId, int cycleNumber, DateTime startUtc, long startRecordIndex)
     {
-        using var cmd = _conn.CreateCommand();
-        cmd.CommandText = $@"
+        lock (_dbGate)
+        {
+            using var cmd = _conn.CreateCommand();
+            cmd.CommandText = $@"
 INSERT INTO {TABLE_CYCLES}(epb_id, cycle_number, start_time, start_position, status, sample_count)
 VALUES(@e,@c,@st,@pos,'running',0);";
-        cmd.Parameters.AddWithValue("@e", epbId);
-        cmd.Parameters.AddWithValue("@c", cycleNumber);
-        cmd.Parameters.AddWithValue("@st", startUtc.ToLocalTime().ToString("o"));
-        cmd.Parameters.AddWithValue("@pos", startRecordIndex);
-        cmd.ExecuteNonQuery();
+            cmd.Parameters.AddWithValue("@e", epbId);
+            cmd.Parameters.AddWithValue("@c", cycleNumber);
+            cmd.Parameters.AddWithValue("@st", startUtc.ToLocalTime().ToString("o"));
+            cmd.Parameters.AddWithValue("@pos", startRecordIndex);
+            cmd.ExecuteNonQuery();
+        }
     }
-
 
     private void UpdateCycleProgress(int epbId, int cycleNumber, int sampleCount, DateTime lastUtc)
     {
-        using var cmd = _conn.CreateCommand();
-        cmd.CommandText = $@"
-UPDATE {TABLE_CYCLES}
-   SET sample_count=@n, end_time=@et, status='running'
- WHERE epb_id=@e AND cycle_number=@c";
-        cmd.Parameters.AddWithValue("@n", sampleCount);
-        cmd.Parameters.AddWithValue("@et", lastUtc.ToLocalTime().ToString("o"));
-        cmd.Parameters.AddWithValue("@e", epbId);
-        cmd.Parameters.AddWithValue("@c", cycleNumber);
-        cmd.ExecuteNonQuery();
+        ExecuteCycleUpdate(epbId, cycleNumber, sampleCount, lastUtc, "running");
     }
 
     private void MarkCycleCompleted(int epbId, int cycleNumber, int finalSampleCount, DateTime endUtc)
     {
-        using var cmd = _conn.CreateCommand();
-        cmd.CommandText = $@"
-UPDATE {TABLE_CYCLES}
-   SET sample_count=@n, end_time=@et, status='completed'
- WHERE epb_id=@e AND cycle_number=@c";
-        cmd.Parameters.AddWithValue("@n", finalSampleCount);
-        cmd.Parameters.AddWithValue("@et", endUtc.ToLocalTime().ToString("o"));
-        cmd.Parameters.AddWithValue("@e", epbId);
-        cmd.Parameters.AddWithValue("@c", cycleNumber);
-        cmd.ExecuteNonQuery();
+        ExecuteCycleUpdate(epbId, cycleNumber, finalSampleCount, endUtc, "completed");
     }
 
     private void MarkCycleAlarm(int epbId, int cycleNumber, int finalSampleCount, DateTime endUtc)
     {
-        using var cmd = _conn.CreateCommand();
-        cmd.CommandText = $@"
+        ExecuteCycleUpdate(epbId, cycleNumber, finalSampleCount, endUtc, "alarm");
+    }
+
+    private void ExecuteCycleUpdate(
+        int epbId,
+        int cycleNumber,
+        int sampleCount,
+        DateTime endUtc,
+        string status)
+    {
+        lock (_dbGate)
+        {
+            using var cmd = _conn.CreateCommand();
+            cmd.Transaction = _activeBatchTransaction;
+            cmd.CommandText = $@"
 UPDATE {TABLE_CYCLES}
-   SET sample_count=@n, end_time=@et, status='alarm'
+   SET sample_count=@n, end_time=@et, status=@status
  WHERE epb_id=@e AND cycle_number=@c";
-        cmd.Parameters.AddWithValue("@n", finalSampleCount);
-        cmd.Parameters.AddWithValue("@et", endUtc.ToLocalTime().ToString("o"));
-        cmd.Parameters.AddWithValue("@e", epbId);
-        cmd.Parameters.AddWithValue("@c", cycleNumber);
-        cmd.ExecuteNonQuery();
+            cmd.Parameters.AddWithValue("@n", sampleCount);
+            cmd.Parameters.AddWithValue("@et", endUtc.ToLocalTime().ToString("o"));
+            cmd.Parameters.AddWithValue("@status", status);
+            cmd.Parameters.AddWithValue("@e", epbId);
+            cmd.Parameters.AddWithValue("@c", cycleNumber);
+            cmd.ExecuteNonQuery();
+        }
     }
 
     private void MarkCycleAborted(
@@ -1873,17 +2088,7 @@ UPDATE {TABLE_CYCLES}
         DateTime endUtc,
         string status)
     {
-        using var cmd = _conn.CreateCommand();
-        cmd.CommandText = $@"
-UPDATE {TABLE_CYCLES}
-   SET sample_count=@n, end_time=@et, status=@status
- WHERE epb_id=@e AND cycle_number=@c";
-        cmd.Parameters.AddWithValue("@n", finalSampleCount);
-        cmd.Parameters.AddWithValue("@et", endUtc.ToLocalTime().ToString("o"));
-        cmd.Parameters.AddWithValue("@status", status);
-        cmd.Parameters.AddWithValue("@e", epbId);
-        cmd.Parameters.AddWithValue("@c", cycleNumber);
-        cmd.ExecuteNonQuery();
+        ExecuteCycleUpdate(epbId, cycleNumber, finalSampleCount, endUtc, status);
     }
 
     private void MarkCycleFinalized(
@@ -1893,21 +2098,13 @@ UPDATE {TABLE_CYCLES}
         DateTime endUtc,
         string status)
     {
-        using var cmd = _conn.CreateCommand();
-        cmd.CommandText = $@"
-UPDATE {TABLE_CYCLES}
-   SET sample_count=@n, end_time=@et, status=@status
- WHERE epb_id=@e AND cycle_number=@c";
-        cmd.Parameters.AddWithValue("@n", finalSampleCount);
-        cmd.Parameters.AddWithValue("@et", endUtc.ToLocalTime().ToString("o"));
-        cmd.Parameters.AddWithValue("@status", status);
-        cmd.Parameters.AddWithValue("@e", epbId);
-        cmd.Parameters.AddWithValue("@c", cycleNumber);
-        cmd.ExecuteNonQuery();
+        ExecuteCycleUpdate(epbId, cycleNumber, finalSampleCount, endUtc, status);
     }
 
     private List<CycleInfo> GetCyclesToPurge(int epbId, int keepLatestN)
     {
+        lock (_dbGate)
+        {
         var list = new List<CycleInfo>();
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = $@"
@@ -1939,6 +2136,7 @@ SELECT epb_id, cycle_number, start_time, end_time, start_position, sample_count,
                 Status = rd.GetString(6)
             });
         return list;
+        }
     }
 
     /// <summary>
@@ -1949,6 +2147,8 @@ SELECT epb_id, cycle_number, start_time, end_time, start_position, sample_count,
     /// <returns>按圈号升序排列的圈信息列表。</returns>
     private CycleInfo GetCycleInfo(int epbId, int cycleNumber)
     {
+        lock (_dbGate)
+        {
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = $@"
 SELECT epb_id, cycle_number, start_time, end_time, start_position, sample_count, status
@@ -1970,10 +2170,13 @@ SELECT epb_id, cycle_number, start_time, end_time, start_position, sample_count,
             SampleCount = rd.GetInt32(5),
             Status = rd.GetString(6)
         };
+        }
     }
 
     private List<CycleInfo> GetLatestCycles(int epbId, int latestN, bool includeRunningCycle)
     {
+        lock (_dbGate)
+        {
         latestN = Math.Max(1, latestN);
 
         var list = new List<CycleInfo>();
@@ -2010,11 +2213,14 @@ SELECT epb_id, cycle_number, start_time, end_time, start_position, sample_count,
         // 为了导出时按圈号从小到大排序，重新升序排一下
         list.Sort((a, b) => a.CycleNumber.CompareTo(b.CycleNumber));
         return list;
+        }
     }
 
 
     private void DeleteCycles(IEnumerable<CycleInfo> cycles)
     {
+        lock (_dbGate)
+        {
         using var tx = _conn.BeginTransaction();
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = $"DELETE FROM {TABLE_CYCLES} WHERE epb_id=@e AND cycle_number=@c";
@@ -2029,6 +2235,7 @@ SELECT epb_id, cycle_number, start_time, end_time, start_position, sample_count,
         }
 
         tx.Commit();
+        }
     }
 
     #endregion
@@ -2130,6 +2337,31 @@ public interface IEpbCycleRecorder
     void FlushRecentTo(int epbId, int lastNCycles, string exportDir, bool includeRunningCycle);
 }
 
+/// <summary>支持池化缓冲区长度和周期时间窗的可选扩展。</summary>
+public interface IBatchedEpbCycleRecorder
+{
+    void WriteBatch(
+        int epbId,
+        DateTime[] timestampsUtc,
+        double[] currents,
+        double[] pressures,
+        int count);
+
+    void WriteDeviceBatch(
+        DateTime[] timestampsUtc,
+        IReadOnlyList<EpbChannelDiskBatch> channels,
+        int count);
+
+    void SealCycleWindow(int epbId, int cycleNumber, DateTime endUtc);
+}
+
+public sealed class EpbChannelDiskBatch
+{
+    public int EpbId { get; set; }
+    public double[] Currents { get; set; }
+    public double[] Pressures { get; set; }
+}
+
 public sealed class CycleSnapshotEvidence
 {
     public int EpbId { get; set; }
@@ -2160,7 +2392,7 @@ public interface IActiveCycleLimitConfigurator
 /// <summary>
 ///     将 EpbDiskWriter 适配为 IEpbCycleRecorder，避免 EpbManager 直接依赖具体类。
 /// </summary>
-public sealed class DiskWriterRecorderAdapter : IEpbCycleRecorder, ICycleEvidenceExporter, IActiveCycleLimitConfigurator
+public sealed class DiskWriterRecorderAdapter : IEpbCycleRecorder, IBatchedEpbCycleRecorder, ICycleEvidenceExporter, IActiveCycleLimitConfigurator
 {
     private readonly EpbDiskWriter _writer;
 
@@ -2183,6 +2415,23 @@ public sealed class DiskWriterRecorderAdapter : IEpbCycleRecorder, ICycleEvidenc
     {
         _writer.WriteBatch(epbId, tsUtc, currents, groupPressures);
     }
+
+    public void WriteBatch(
+        int epbId,
+        DateTime[] timestampsUtc,
+        double[] currents,
+        double[] pressures,
+        int count)
+        => _writer.WriteBatch(epbId, timestampsUtc, currents, pressures, count);
+
+    public void SealCycleWindow(int epbId, int cycleNumber, DateTime endUtc)
+        => _writer.SealCycleWindow(epbId, cycleNumber, endUtc);
+
+    public void WriteDeviceBatch(
+        DateTime[] timestampsUtc,
+        IReadOnlyList<EpbChannelDiskBatch> channels,
+        int count)
+        => _writer.WriteDeviceBatch(timestampsUtc, channels, count);
 
     public int GetCurrentCycleSampleCount(int epbId)
     {

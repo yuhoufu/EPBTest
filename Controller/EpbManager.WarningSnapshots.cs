@@ -1,11 +1,13 @@
 using System;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
 using System.IO.Compression;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using Config;
 using Controller.Alarm;
@@ -22,6 +24,7 @@ namespace Controller
         private readonly ConcurrentDictionary<string, WarningSnapshotRequest> _pendingWarningSnapshots = new();
         private readonly ConcurrentDictionary<string, byte> _warningSnapshotJobs = new();
         private readonly ConcurrentDictionary<string, ConcurrentQueue<WarningSnapshotLink>> _warningChains = new();
+        private readonly ConcurrentDictionary<Guid, string> _daqIncidentDirectories = new();
         private int _warningSnapshotFreeSpaceWarningActive;
 
         private void OnRunnerWarningEvidenceRaised(AdaptiveWarningEvent warning)
@@ -74,6 +77,12 @@ namespace Controller
             int finalSampleCount,
             DateTime endUtc)
         {
+            finalSampleCount = FinalizeCyclePersistence(
+                recorder,
+                channel,
+                cycleNumber,
+                endUtc,
+                finalSampleCount);
             recorder?.CompleteCycle(channel, cycleNumber, finalSampleCount, endUtc);
             if (recorder == null) return;
 
@@ -86,6 +95,134 @@ namespace Controller
             }
 
             QueueRollingHistoricalSnapshot(channel, cycleNumber);
+        }
+
+        private int FinalizeCyclePersistence(
+            IEpbCycleRecorder recorder,
+            int channel,
+            int cycleNumber,
+            DateTime endUtc,
+            int fallbackCount)
+        {
+            if (recorder == null) return fallbackCount;
+            try
+            {
+                if (recorder is IBatchedEpbCycleRecorder batched)
+                    batched.SealCycleWindow(channel, cycleNumber, endUtc);
+                var device = _acq.GetDeviceForEpbChannel(channel);
+                if (!string.IsNullOrWhiteSpace(device))
+                {
+                    var boundary = _acq.GetLastProducedSequence(device);
+                    var deadline = Stopwatch.GetTimestamp() +
+                                   (long)(_daqPersistenceRecoveryTimeoutMs / 1000.0 * Stopwatch.Frequency);
+                    while (_acq.GetLastDiskPublishedSequence(device) < boundary &&
+                           Stopwatch.GetTimestamp() < deadline)
+                        Thread.Sleep(2);
+                    var remainingMs = (int)Math.Max(
+                        1,
+                        (deadline - Stopwatch.GetTimestamp()) * 1000.0 / Stopwatch.Frequency);
+                    _persistence.WaitForPersistedAsync(
+                            device,
+                            boundary,
+                            remainingMs,
+                            CancellationToken.None)
+                        .GetAwaiter()
+                        .GetResult();
+                }
+                return recorder.GetCurrentCycleSampleCount(channel);
+            }
+            catch (Exception ex)
+            {
+                _log.Warn(
+                    $"EPB[{channel}] 圈封存屏障等待失败 Cycle={cycleNumber}: {ex.Message}",
+                    "落盘");
+                return recorder.GetCurrentCycleSampleCount(channel);
+            }
+        }
+
+        private void AbortCycleAfterPersistence(
+            IEpbCycleRecorder recorder,
+            int channel,
+            int cycleNumber,
+            DateTime endUtc,
+            string status)
+        {
+            if (recorder == null) return;
+            var finalN = FinalizeCyclePersistence(
+                recorder,
+                channel,
+                cycleNumber,
+                endUtc,
+                recorder.GetCurrentCycleSampleCount(channel));
+            recorder.AbortCycle(channel, cycleNumber, finalN, endUtc, status);
+        }
+
+        private async Task ExportDaqIncidentSnapshotAsync(
+            DaqAutoRecoveryContext context,
+            string reason,
+            string result)
+        {
+            if (context == null) return;
+            await Task.Run(() =>
+            {
+                try
+                {
+                    var root = Path.Combine(
+                        _cfg.Test.StoreDir,
+                        _cfg.Test.TestName,
+                        "IncidentSnapshots");
+                    Directory.CreateDirectory(root);
+                    var directory = _daqIncidentDirectories.GetOrAdd(
+                        context.CorrelationId,
+                        _ => Path.Combine(
+                            root,
+                            $"{context.StartedUtc.ToLocalTime():yyyyMMdd_HHmmss_fff}-" +
+                            $"{context.Device}-{context.CorrelationId:N}"));
+                    Directory.CreateDirectory(directory);
+                    var queue = _persistence.GetSnapshot(context.Device);
+                    File.WriteAllText(
+                        Path.Combine(directory, "incident.json"),
+                        "{\n" +
+                        $"  \"device\": \"{JsonEscape(context.Device)}\",\n" +
+                        $"  \"correlationId\": \"{context.CorrelationId:N}\",\n" +
+                        $"  \"faultCode\": \"{JsonEscape(context.TriggerCode)}\",\n" +
+                        $"  \"reason\": \"{JsonEscape(reason)}\",\n" +
+                        $"  \"generation\": {_acq.GetCurrentGeneration(context.Device)},\n" +
+                        $"  \"queueDepth\": {queue.QueueDepth},\n" +
+                        $"  \"oldestBatchAgeMs\": {queue.OldestBatchAgeMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
+                        $"  \"affectedChannels\": [{string.Join(",", context.AffectedChannels ?? Array.Empty<int>())}],\n" +
+                        $"  \"queueCapacity\": {_daqPersistenceQueueCapacity},\n" +
+                        $"  \"pauseDepth\": {_daqPersistencePauseDepth},\n" +
+                        $"  \"resumeDepth\": {_daqPersistenceResumeDepth},\n" +
+                        $"  \"pauseAgeMs\": {_daqPersistencePauseAgeMs.ToString("F0", CultureInfo.InvariantCulture)},\n" +
+                        $"  \"resumeAgeMs\": {_daqPersistenceResumeAgeMs.ToString("F0", CultureInfo.InvariantCulture)},\n" +
+                        $"  \"recoveryTimeoutMs\": {_daqPersistenceRecoveryTimeoutMs},\n" +
+                        $"  \"requiredFreshBatches\": {_daqPersistenceRequiredFreshBatches},\n" +
+                        $"  \"result\": \"{JsonEscape(result)}\",\n" +
+                        $"  \"updatedUtc\": \"{DateTime.UtcNow:O}\"\n" +
+                        "}\n",
+                        new UTF8Encoding(false));
+                    _acq.ExportDiagnostics(
+                        directory,
+                        new[] { context.Device },
+                        TimeSpan.FromSeconds(60));
+                    var recorder = Recorder;
+                    if (recorder != null)
+                    {
+                        foreach (var channel in context.AffectedChannels ?? Array.Empty<int>())
+                        {
+                            var sub = Path.Combine(directory, $"EPB{channel:D2}");
+                            Directory.CreateDirectory(sub);
+                            try { recorder.FlushRecentTo(channel, 10, sub, includeRunningCycle: true); }
+                            catch (Exception ex) { _log.Warn($"Incident EPB[{channel}] 证据导出失败：{ex.Message}", "落盘"); }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _log.Error($"DAQ IncidentSnapshot 导出失败：{ex.Message}", "落盘", ex);
+                }
+            }).ConfigureAwait(false);
         }
 
         private void QueueWarningSnapshot(WarningSnapshotRequest request)
