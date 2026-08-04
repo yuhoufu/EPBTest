@@ -53,10 +53,42 @@ namespace Controller
             double actualBar,
             int timeoutMs,
             string detail)
-            : base($"HydraulicBuildTimeout Hydraulic={hydraulicId} Target={targetBar:F3}bar " +
+            : base(BuildMessage(
+                hydraulicId,
+                targetBar,
+                toleranceBar,
+                actualBar,
+                timeoutMs,
+                detail)) { }
+
+        private static string BuildMessage(
+            int hydraulicId,
+            double targetBar,
+            double toleranceBar,
+            double actualBar,
+            int timeoutMs,
+            string detail)
+        {
+            var inspection = GetInspectionGuidance(detail);
+            return $"HydraulicBuildTimeout Hydraulic={hydraulicId} Target={targetBar:F3}bar " +
                    $"Tolerance=±{toleranceBar:F3}bar " +
                    $"Allowed=[{targetBar - toleranceBar:F3},{targetBar + toleranceBar:F3}]bar " +
-                   $"Actual={actualBar:F3}bar Timeout={timeoutMs}ms Detail={detail}") { }
+                   $"Actual={actualBar:F3}bar Timeout={timeoutMs}ms Detail={detail}; {inspection}";
+        }
+
+        private static string GetInspectionGuidance(string detail)
+        {
+            if (!string.IsNullOrEmpty(detail) &&
+                detail.IndexOf("AboveToleranceWindow", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "inspect pressure regulator/control valve, AO calibration, pressure-sensor scaling and control response";
+
+            if (!string.IsNullOrEmpty(detail) &&
+                (detail.IndexOf("PressureSample", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                 detail.IndexOf("NoPressureSample", StringComparison.OrdinalIgnoreCase) >= 0))
+                return "inspect pressure-sensor wiring, DAQ sampling and hydraulic-channel mapping";
+
+            return "inspect brake-fluid level/leakage, caliper cracks, joints, pipes, pump output and pressure calibration";
+        }
     }
 
     /// <summary>
@@ -220,7 +252,7 @@ namespace Controller
                     toleranceBar,
                     last,
                     timeoutMs,
-                    lastDetail + "; inspect caliper cracks, joints, pipes and brake-fluid leakage");
+                    lastDetail);
             }
             catch
             {
@@ -244,10 +276,23 @@ namespace Controller
             double minimumBar,
             int maximumAgeMs)
         {
-            return sample.IsFinite &&
-                   sample.AgeMs >= 0 &&
-                   sample.AgeMs <= Math.Max(1, maximumAgeMs) &&
-                   sample.ValueBar >= minimumBar;
+            return !ClassifyPressureSampleFailure(sample, minimumBar, maximumAgeMs).HasValue;
+        }
+
+        public static HydraulicPressureFailureReason? ClassifyPressureSampleFailure(
+            PressureSample sample,
+            double minimumBar,
+            int maximumAgeMs)
+        {
+            if (sample.MonotonicTicks <= 0 || sample.TimestampUtc == DateTime.MinValue)
+                return HydraulicPressureFailureReason.NoSample;
+            if (!sample.IsFinite)
+                return HydraulicPressureFailureReason.InvalidValue;
+            if (sample.AgeMs < 0 || sample.AgeMs > Math.Max(1, maximumAgeMs))
+                return HydraulicPressureFailureReason.StaleSample;
+            if (sample.ValueBar < minimumBar)
+                return HydraulicPressureFailureReason.BelowMinimum;
+            return null;
         }
 
         /// <summary>无条件撤销液压DO并将AO回零；该方法不等待压力反馈。</summary>

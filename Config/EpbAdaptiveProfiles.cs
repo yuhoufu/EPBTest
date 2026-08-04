@@ -52,6 +52,7 @@ namespace Config
         public double ForwardPeakErrorMadA { get; set; }
         public int ValidCutoffSampleCount { get; set; }
         public int ConsecutiveForwardOvershootCount { get; set; }
+        public int ConsecutivePeakEvidenceMismatchCount { get; set; }
         public int ConsecutiveForwardStallCount { get; set; }
         public DateTime UpdatedUtc { get; set; }
 
@@ -186,6 +187,20 @@ namespace Config
         }
 
         /// <summary>
+        /// 更新有效峰值证据偏差的连续圈数；任一有效匹配圈立即清零。
+        /// 调用方必须先排除捕获无效和证据处理滞后，避免把数据质量问题计为物理偏差。
+        /// </summary>
+        public int UpdatePeakEvidenceMismatchStreak(bool mismatched)
+        {
+            ConsecutivePeakEvidenceMismatchCount = mismatched
+                ? ConsecutivePeakEvidenceMismatchCount + 1
+                : 0;
+            ModelVersion = CurrentModelVersion;
+            UpdatedUtc = DateTime.UtcNow;
+            return ConsecutivePeakEvidenceMismatchCount;
+        }
+
+        /// <summary>
         /// 更新正向低于合格下限的平台停滞连续圈数；任一正常或近目标圈立即清零。
         /// </summary>
         public int UpdateForwardStallStreak(bool lowTargetPlateau)
@@ -220,6 +235,7 @@ namespace Config
                 ForwardPeakErrorMadA = ForwardPeakErrorMadA,
                 ValidCutoffSampleCount = ValidCutoffSampleCount,
                 ConsecutiveForwardOvershootCount = ConsecutiveForwardOvershootCount,
+                ConsecutivePeakEvidenceMismatchCount = ConsecutivePeakEvidenceMismatchCount,
                 ConsecutiveForwardStallCount = ConsecutiveForwardStallCount,
                 UpdatedUtc = UpdatedUtc,
                 ForwardEmptyHistoryA = new List<double>(ForwardEmptyHistoryA ?? new List<double>()),

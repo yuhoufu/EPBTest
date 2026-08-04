@@ -122,11 +122,33 @@ namespace Controller
         }
     }
 
+    public enum HydraulicPressureFailureReason
+    {
+        NoSample,
+        InvalidValue,
+        StaleSample,
+        BelowMinimum
+    }
+
     public sealed class HydraulicPressureLostException : InvalidOperationException
     {
-        public HydraulicPressureLostException(int hydraulicId, long generationId, double actualBar, double minimumBar)
+        public HydraulicPressureLostException(
+            int hydraulicId,
+            long generationId,
+            double actualBar,
+            double minimumBar,
+            HydraulicPressureFailureReason failureReason,
+            double sampleAgeMs)
             : base($"HydraulicPressureLost Hydraulic={hydraulicId} Generation={generationId} " +
-                   $"Actual={actualBar:F3}bar Minimum={minimumBar:F3}bar") { }
+                   $"Reason={failureReason} Actual={actualBar:F3}bar Minimum={minimumBar:F3}bar " +
+                   $"AgeMs={sampleAgeMs:F1}")
+        {
+            FailureReason = failureReason;
+            SampleAgeMs = sampleAgeMs;
+        }
+
+        public HydraulicPressureFailureReason FailureReason { get; }
+        public double SampleAgeMs { get; }
     }
 
     public sealed class HydraulicBarrierTimeoutException : TimeoutException
@@ -443,10 +465,11 @@ namespace Controller
                     }
 
                     var sample = _readPressureSample(state.Key.HydraulicId);
-                    var valid = HydraulicController.IsPressureSampleQualified(
+                    var failureReason = HydraulicController.ClassifyPressureSampleFailure(
                         sample,
                         minimumBar,
                         item.PressureSampleMaxAgeMs);
+                    var valid = !failureReason.HasValue;
                     if (!valid)
                     {
                         if (!lowSince.HasValue) lowSince = clock.ElapsedMilliseconds;
@@ -456,7 +479,9 @@ namespace Controller
                                 state.Key.HydraulicId,
                                 state.Key.Slot,
                                 sample.ValueBar,
-                                minimumBar);
+                                minimumBar,
+                                failureReason ?? HydraulicPressureFailureReason.InvalidValue,
+                                sample.AgeMs);
                             await FailGenerationAsync(state, ex).ConfigureAwait(false);
                             return;
                         }

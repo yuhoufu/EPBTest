@@ -201,6 +201,8 @@ namespace Controller.Adaptive
         private int _inrushIgnoreMs;
         private int _absoluteMaxMs;
         private int _softLimitMs;
+        private int _forwardProgressDeadlineOverrideMs;
+        private int _reverseProgressDeadlineOverrideMs;
         private double _forwardA;
         private double _safetyMarginA;
         private double _overshootDeltaA;
@@ -274,12 +276,14 @@ namespace Controller.Adaptive
             double forwardA,
             double safetyMarginA,
             double overshootDeltaA,
-            EpbAdaptiveSafetyLimits safetyLimits = null)
+            EpbAdaptiveSafetyLimits safetyLimits = null,
+            int forwardProgressDeadlineOverrideMs = 0)
         {
             lock (_gate)
             {
                 ResetDirection(startTick, inrushIgnoreMs, absoluteMaxMs);
                 _safetyLimits = (safetyLimits ?? new EpbAdaptiveSafetyLimits()).Normalized();
+                _forwardProgressDeadlineOverrideMs = Math.Max(0, forwardProgressDeadlineOverrideMs);
                 _forwardDirection = true;
                 _forwardA = Math.Max(0, forwardA);
                 _safetyMarginA = Math.Max(0, safetyMarginA);
@@ -302,7 +306,8 @@ namespace Controller.Adaptive
             double overshootDeltaA,
             double forwardReferenceA = 0,
             EpbAdaptiveSafetyLimits safetyLimits = null,
-            int reverseNoModelDeadlineMs = 0)
+            int reverseNoModelDeadlineMs = 0,
+            int reverseProgressDeadlineOverrideMs = 0)
         {
             lock (_gate)
             {
@@ -311,6 +316,7 @@ namespace Controller.Adaptive
                 _reverseNoModelDeadlineMs = reverseNoModelDeadlineMs > 0
                     ? Math.Max(_safetyLimits.ReverseProgressConfirmMs, reverseNoModelDeadlineMs)
                     : 0;
+                _reverseProgressDeadlineOverrideMs = Math.Max(0, reverseProgressDeadlineOverrideMs);
                 _forwardDirection = false;
                 _reverseDecayLimitA = Math.Max(0.1, reverseDecayLimitA);
                 _overshootDeltaA = Math.Max(0, overshootDeltaA);
@@ -778,11 +784,9 @@ namespace Controller.Adaptive
                     out var plateauSlope))
                 return false;
 
-            var lowLoadThreshold = _profile.IsStable && _profile.ReverseEmptyCurrentA > 0
-                ? Math.Min(
-                    _reverseDecayLimitA,
-                    _profile.ReverseEmptyCurrentA + Math.Max(0.30, 4.0 * _profile.ReverseEmptyMadA))
-                : _reverseDecayLimitA;
+            // RevDecayLimitA 是项目允许的释放带宽。历史空载画像只能用于判断
+            // 平台稳定度和审计，不能把释放阈值收紧到项目带宽以下。
+            var lowLoadThreshold = _reverseDecayLimitA;
             var allowedSpread = Math.Min(
                 MaximumPlateauSpreadA,
                 Math.Max(
@@ -891,6 +895,8 @@ namespace Controller.Adaptive
             _inrushIgnoreMs = Math.Max(0, inrushIgnoreMs);
             _absoluteMaxMs = Math.Max(1, absoluteMaxMs);
             _softLimitMs = 0;
+            _forwardProgressDeadlineOverrideMs = 0;
+            _reverseProgressDeadlineOverrideMs = 0;
             _consecutiveOverCurrent = 0;
             _clampConfirmSamples = 0;
             _softWarningRaised = false;
@@ -1090,6 +1096,15 @@ namespace Controller.Adaptive
 
         private int GetForwardProgressDeadlineMs()
         {
+            if (_forwardProgressDeadlineOverrideMs > 0)
+            {
+                return Math.Min(
+                    _absoluteMaxMs,
+                    Math.Max(
+                        _inrushIgnoreMs + _safetyLimits.ForwardProgressConfirmMs,
+                        _forwardProgressDeadlineOverrideMs));
+            }
+
             var configured = Math.Max(
                 _inrushIgnoreMs + _safetyLimits.ForwardProgressConfirmMs,
                 _safetyLimits.ForwardProgressDeadlineMs);
@@ -1108,6 +1123,15 @@ namespace Controller.Adaptive
 
         private int GetReverseProgressDeadlineMs()
         {
+            if (_reverseProgressDeadlineOverrideMs > 0)
+            {
+                return Math.Min(
+                    _absoluteMaxMs,
+                    Math.Max(
+                        _inrushIgnoreMs + _safetyLimits.ReverseProgressConfirmMs,
+                        _reverseProgressDeadlineOverrideMs));
+            }
+
             var configured = Math.Max(
                 _inrushIgnoreMs + _safetyLimits.ReverseProgressConfirmMs,
                 _safetyLimits.ReverseProgressDeadlineMs);

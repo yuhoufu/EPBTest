@@ -101,7 +101,13 @@ namespace Config
         public double AdaptiveOvershootWarningDeltaA { get; set; } = 0.8;
 
         /// <summary>自适应峰值连续超出平衡带多少圈后升级为硬故障。</summary>
-        public int AdaptiveOvershootConfirmCycles { get; set; } = 3;
+        public int AdaptiveOvershootConfirmCycles { get; set; } = 5;
+
+        /// <summary>
+        /// 快速峰值与完整峰值在证据有效且时效合格时，连续偏差多少圈后升级为硬故障。
+        /// 回到容差内立即清零；捕获无效或证据滞后不计入该次数。
+        /// </summary>
+        public int PeakEvidenceMismatchConfirmCycles { get; set; } = 3;
 
         /// <summary>
         /// 自适应正向峰值低于合格下限且低斜率平台连续出现多少圈后升级为硬故障。

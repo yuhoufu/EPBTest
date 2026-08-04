@@ -22,6 +22,7 @@ namespace Controller
         private readonly ConcurrentDictionary<string, WarningSnapshotRequest> _pendingWarningSnapshots = new();
         private readonly ConcurrentDictionary<string, byte> _warningSnapshotJobs = new();
         private readonly ConcurrentDictionary<string, ConcurrentQueue<WarningSnapshotLink>> _warningChains = new();
+        private int _warningSnapshotFreeSpaceWarningActive;
 
         private void OnRunnerWarningEvidenceRaised(AdaptiveWarningEvent warning)
         {
@@ -200,6 +201,10 @@ namespace Controller
             AdaptiveWarningCode? code = null;
             if (reason?.IndexOf("ForwardPeakOvershoot", StringComparison.OrdinalIgnoreCase) >= 0)
                 code = AdaptiveWarningCode.ForwardPeakOvershootWarning;
+            else if (reason?.IndexOf("PeakEvidenceMismatch", StringComparison.OrdinalIgnoreCase) >= 0)
+                code = AdaptiveWarningCode.PeakEvidenceMismatchWarning;
+            else if (reason?.IndexOf("PeakEvidenceLag", StringComparison.OrdinalIgnoreCase) >= 0)
+                code = AdaptiveWarningCode.PeakEvidenceLagWarning;
             else if (reason?.IndexOf("ForwardCurrentRiseStall", StringComparison.OrdinalIgnoreCase) >= 0 ||
                      reason?.IndexOf("ForwardCurrentRiseStalled", StringComparison.OrdinalIgnoreCase) >= 0)
                 code = AdaptiveWarningCode.ForwardCurrentRiseStallWarning;
@@ -411,10 +416,19 @@ namespace Controller
                 var status = GetWarningSnapshotStorageStatus();
                 WarningSnapshotStorageChanged?.Invoke(status);
                 if (status.IsBelowFreeSpaceWarning)
-                    _log.Warn(
-                        $"WarningSnapshots 磁盘余量低：Free={status.FreeBytes / 1024d / 1024d:F0}MB " +
-                        $"Root={status.RootDirectory}",
-                        "落盘");
+                {
+                    if (System.Threading.Interlocked.Exchange(
+                            ref _warningSnapshotFreeSpaceWarningActive, 1) == 0)
+                        _log.Warn(
+                            $"WarningSnapshots 磁盘余量低：Free={status.FreeBytes / 1024d / 1024d:F0}MB " +
+                            $"Root={status.RootDirectory}",
+                            "落盘");
+                }
+                else
+                {
+                    System.Threading.Interlocked.Exchange(
+                        ref _warningSnapshotFreeSpaceWarningActive, 0);
+                }
             }
             catch { }
         }

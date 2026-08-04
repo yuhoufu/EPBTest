@@ -30,6 +30,7 @@ namespace Controller
         private double _adaptiveReverseEmptyA;
         private double _adaptiveForwardPeakA;
         private double _adaptiveForwardControlPeakA;
+        private double _adaptiveDecisionPeakEvidenceLagMs = double.NaN;
         private int _adaptiveClampPeakCaptureStarted;
         private PeakCaptureToken _adaptivePeakCaptureToken;
         private string _adaptiveDirection = string.Empty;
@@ -43,6 +44,11 @@ namespace Controller
         private const double MaxAdaptiveOffCurrentThresholdA = 0.25;
 
         internal static bool IsForwardStallConfirmed(int streak, int confirmCycles)
+        {
+            return streak >= Math.Max(1, confirmCycles);
+        }
+
+        internal static bool IsPeakEvidenceMismatchConfirmed(int streak, int confirmCycles)
         {
             return streak >= Math.Max(1, confirmCycles);
         }
@@ -121,6 +127,7 @@ namespace Controller
             _adaptiveReverseEmptyA = 0;
             _adaptiveForwardPeakA = 0;
             _adaptiveForwardControlPeakA = 0;
+            _adaptiveDecisionPeakEvidenceLagMs = double.NaN;
             Interlocked.Exchange(ref _adaptiveClampPeakCaptureStarted, 0);
             Interlocked.Exchange(ref _adaptiveTerminalOffLatched, 0);
 
@@ -252,6 +259,7 @@ namespace Controller
             try
             {
                 var fullRatePeakA = double.NaN;
+                var evidenceThroughUtc = DateTime.MinValue;
                 if (_acq != null &&
                     string.Equals(_adaptiveDirection, "Forward", StringComparison.Ordinal) &&
                     Interlocked.CompareExchange(ref _adaptiveClampPeakCaptureStarted, 1, 1) == 1)
@@ -262,7 +270,10 @@ namespace Controller
                             ? null
                             : _acq.PeekEpbCurrentPeak(_adaptivePeakCaptureToken);
                         if (evidence?.IsMatched == true && evidence.Peak.SampleCount > 0)
+                        {
                             fullRatePeakA = evidence.Peak.MaxAmp;
+                            evidenceThroughUtc = evidence.Peak.EndAt.ToUniversalTime();
+                        }
                     }
                     catch
                     {
@@ -271,6 +282,16 @@ namespace Controller
                 }
 
                 decision = _adaptiveStateMachine.OnSample(tick, currentAmp, fullRatePeakA);
+                if (decision.ClampReached && evidenceThroughUtc != DateTime.MinValue)
+                {
+                    var normalizedSampleUtc = sampleUtc.Kind == DateTimeKind.Utc
+                        ? sampleUtc
+                        : sampleUtc.ToUniversalTime();
+                    lock (_adaptiveGate)
+                        _adaptiveDecisionPeakEvidenceLagMs = Math.Max(
+                            0,
+                            (normalizedSampleUtc - evidenceThroughUtc).TotalMilliseconds);
+                }
             }
             catch
             {
@@ -612,7 +633,7 @@ namespace Controller
                         (Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency));
                 if (!double.IsNaN(currentA) &&
                     !double.IsInfinity(currentA) &&
-                    currentA <= thresholdA)
+                    Math.Abs(currentA) <= thresholdA)
                 {
                     return new OffCurrentClearResult(true, currentA, elapsedMs);
                 }
@@ -772,7 +793,12 @@ namespace Controller
                     hydraulicReleaseTask = _manager.HydraulicMarkReleaseAsync(_channel);
 
                 var peakCaptureValid = false;
-                string peakEvidenceFailure = null;
+                string peakCaptureFailure = null;
+                string peakEvidenceMismatch = null;
+                var peakEvidenceLag = false;
+                double decisionEvidenceLagMs;
+                lock (_adaptiveGate)
+                    decisionEvidenceLagMs = _adaptiveDecisionPeakEvidenceLagMs;
                 try
                 {
                     if (_acq != null &&
@@ -789,18 +815,27 @@ namespace Controller
                                            peak.SampleCount > 0 && peak.MaxAmp > 0 &&
                                            !double.IsNaN(peak.MaxAmp) && !double.IsInfinity(peak.MaxAmp);
                         if (!captureResult.IsMatched)
-                            peakEvidenceFailure = captureResult.QualityReason;
+                            peakCaptureFailure = captureResult.QualityReason;
                         else
                         {
                             _adaptiveForwardPeakA = peak.MaxAmp;
                             var quickPeak = forward.ObservedFullRatePeakA;
-                            if (!double.IsNaN(quickPeak) && !double.IsInfinity(quickPeak) && quickPeak > 0 &&
-                                Math.Abs(quickPeak - peak.MaxAmp) >
-                                _programSafetySettings.PeakEvidenceMismatchToleranceA)
-                                peakEvidenceFailure =
+                            if (peakCaptureValid &&
+                                !double.IsNaN(quickPeak) && !double.IsInfinity(quickPeak) && quickPeak > 0)
+                            {
+                                peakEvidenceLag =
+                                    double.IsNaN(decisionEvidenceLagMs) ||
+                                    double.IsInfinity(decisionEvidenceLagMs) ||
+                                    decisionEvidenceLagMs >
+                                        _programSafetySettings.PeakEvidenceMaximumLagMs;
+                                if (!peakEvidenceLag &&
+                                    Math.Abs(quickPeak - peak.MaxAmp) >
+                                    _programSafetySettings.PeakEvidenceMismatchToleranceA)
+                                    peakEvidenceMismatch =
                                     $"QuickPeak={quickPeak:F3}A FullRatePeak={peak.MaxAmp:F3}A " +
                                     $"Tolerance={_programSafetySettings.PeakEvidenceMismatchToleranceA:F3}A " +
                                     $"CaptureId={_adaptivePeakCaptureToken?.CaptureId:N}";
+                            }
                         }
                         Interlocked.Exchange(ref _adaptiveClampPeakCaptureStarted, 0);
                         _adaptivePeakCaptureToken = null;
@@ -824,13 +859,84 @@ namespace Controller
                     _log?.Warn($"EPB[{_channel}] 断电后峰值捕获失败：{ex.Message}", "EPB");
                 }
 
-                if (!string.IsNullOrWhiteSpace(peakEvidenceFailure))
+                if (!string.IsNullOrWhiteSpace(peakCaptureFailure))
                 {
                     await hydraulicReleaseTask.ConfigureAwait(false);
                     DisarmAdaptiveMonitoring();
-                    var reason = "PeakEvidenceMismatch " + peakEvidenceFailure;
+                    var reason = "PeakCaptureInvalid " + peakCaptureFailure;
                     try { AlarmRaised?.Invoke(_channel, "AdaptiveHardFault " + reason); } catch { }
                     return EpbCycleOutcome.HardFault(EpbCurrentStage.ClampReached, reason);
+                }
+
+                var mismatchStreak =
+                    _adaptiveProfile?.ConsecutivePeakEvidenceMismatchCount ?? 0;
+                if (peakEvidenceLag)
+                {
+                    var lagText = double.IsNaN(decisionEvidenceLagMs) ||
+                                  double.IsInfinity(decisionEvidenceLagMs)
+                        ? "无法确定"
+                        : $"{decisionEvidenceLagMs:F1}ms";
+                    _adaptiveSoftWarningSeen = true;
+                    RaiseAdaptiveWarning(new AdaptiveWarningEvent
+                    {
+                        Code = AdaptiveWarningCode.PeakEvidenceLagWarning,
+                        PeakCurrentA = _adaptiveForwardPeakA,
+                        TargetCurrentA = _posThrA,
+                        Streak = mismatchStreak,
+                        ConfirmThreshold = _peakEvidenceMismatchConfirmCycles,
+                        Reason =
+                            $"峰值完整数据处理滞后：滞后={lagText}，" +
+                            $"允许={_programSafetySettings.PeakEvidenceMaximumLagMs}ms；" +
+                            "本圈不参与峰值证据偏差连续计数，请检查采集后台队列和落盘耗时。"
+                    });
+                }
+                else if (!string.IsNullOrWhiteSpace(peakEvidenceMismatch))
+                {
+                    mismatchStreak = _adaptiveProfile.UpdatePeakEvidenceMismatchStreak(true);
+                    _adaptiveStateMachine.UpdateProfile(_adaptiveProfile);
+                    try { _saveAdaptiveProfile?.Invoke(_adaptiveProfile.Clone()); }
+                    catch (Exception ex)
+                    {
+                        _log?.Warn($"EPB[{_channel}] 峰值证据偏差连续计数保存失败：{ex.Message}", "EPB");
+                    }
+
+                    if (IsPeakEvidenceMismatchConfirmed(
+                            mismatchStreak,
+                            _peakEvidenceMismatchConfirmCycles))
+                    {
+                        await hydraulicReleaseTask.ConfigureAwait(false);
+                        DisarmAdaptiveMonitoring();
+                        var reason =
+                            $"PeakEvidenceMismatch {peakEvidenceMismatch} " +
+                            $"Streak={mismatchStreak}/{_peakEvidenceMismatchConfirmCycles}";
+                        try { AlarmRaised?.Invoke(_channel, "AdaptiveHardFault " + reason); }
+                        catch { }
+                        return EpbCycleOutcome.HardFault(EpbCurrentStage.ClampReached, reason);
+                    }
+
+                    _adaptiveSoftWarningSeen = true;
+                    RaiseAdaptiveWarning(new AdaptiveWarningEvent
+                    {
+                        Code = AdaptiveWarningCode.PeakEvidenceMismatchWarning,
+                        PeakCurrentA = _adaptiveForwardPeakA,
+                        TargetCurrentA = _posThrA,
+                        Streak = mismatchStreak,
+                        ConfirmThreshold = _peakEvidenceMismatchConfirmCycles,
+                        Reason =
+                            $"快速峰值与完整数据峰值偏差超限：{peakEvidenceMismatch}，" +
+                            $"连续={mismatchStreak}/{_peakEvidenceMismatchConfirmCycles}；" +
+                            "本圈继续完成反向释放。"
+                    });
+                }
+                else if (peakCaptureValid && mismatchStreak > 0)
+                {
+                    _adaptiveProfile.UpdatePeakEvidenceMismatchStreak(false);
+                    _adaptiveStateMachine.UpdateProfile(_adaptiveProfile);
+                    try { _saveAdaptiveProfile?.Invoke(_adaptiveProfile.Clone()); }
+                    catch (Exception ex)
+                    {
+                        _log?.Warn($"EPB[{_channel}] 峰值证据偏差计数清零保存失败：{ex.Message}", "EPB");
+                    }
                 }
 
                 var peakErrorA = peakCaptureValid

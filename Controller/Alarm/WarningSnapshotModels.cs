@@ -6,7 +6,9 @@ namespace Controller.Alarm
     public enum AdaptiveWarningCode
     {
         ForwardPeakOvershootWarning,
-        ForwardCurrentRiseStallWarning
+        ForwardCurrentRiseStallWarning,
+        PeakEvidenceMismatchWarning,
+        PeakEvidenceLagWarning
     }
 
     public sealed class AdaptiveWarningEvent

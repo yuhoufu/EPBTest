@@ -84,6 +84,7 @@
     - OvershootAlarmDeltaA：峰值超阈值增量报警阈值（Imax >= Thr + Delta 才触发）
     - AdaptiveOvershootWarningDeltaA：自适应峰值平衡带；单圈超出只软预警
     - AdaptiveOvershootConfirmCycles：连续超出平衡带多少圈才升级硬故障
+    - PeakEvidenceMismatchConfirmCycles：有效且新鲜的快速/完整峰值连续偏差多少圈才升级硬故障
     - AdaptiveForwardStallConfirmCycles：正向低于合格下限的平台停滞连续多少圈才升级硬故障
     - SnapshotLastNCycles：报警快照导出最近 N 圈（默认 10，且包含当前 running 圈）
     - SnapshotCooldownMs：同一通道报警快照去抖窗（ms）
@@ -98,7 +99,8 @@
     Retry="2"
     OvershootAlarmDeltaA="3.0"
     AdaptiveOvershootWarningDeltaA="0.8"
-    AdaptiveOvershootConfirmCycles="3"
+    AdaptiveOvershootConfirmCycles="5"
+    PeakEvidenceMismatchConfirmCycles="3"
     AdaptiveForwardStallConfirmCycles="5"
     SnapshotLastNCycles="10"
     SnapshotCooldownMs="2000"

@@ -44,6 +44,12 @@ namespace Config
                         behaviorNode,
                         "AdaptiveOvershootConfirmCycles",
                         cfg.Behavior.AdaptiveOvershootConfirmCycles));
+                cfg.Behavior.PeakEvidenceMismatchConfirmCycles = Math.Max(
+                    1,
+                    GetIntAttr(
+                        behaviorNode,
+                        "PeakEvidenceMismatchConfirmCycles",
+                        cfg.Behavior.PeakEvidenceMismatchConfirmCycles));
                 cfg.Behavior.AdaptiveForwardStallConfirmCycles = Math.Max(
                     1,
                     GetIntAttr(

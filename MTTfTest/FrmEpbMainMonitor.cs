@@ -1077,6 +1077,7 @@ namespace MTEmbTest
                 // 1) 创建写盘器（使用 DataRetentionPolicy）
                 // 2) 注入到 EpbManager，数据落盘由 EpbManager 控制
                 _epb.Recorder = _recorder;
+                AttachSafetyUiEvents();
 
 
                 #region 曲线勾选控件相关
@@ -1357,7 +1358,7 @@ namespace MTEmbTest
             var record = EnsureEpbRecord(channel);
             lock (_epbRecordsLock) record.SetAlarm();
             RefreshCurrentEpbSummary(channel);
-            LogInfo($"卡钳{channel} 报警：{reason}");
+            LogInfo($"卡钳{channel} 报警：{AlarmMessageLocalizer.ToUserMessage(reason)}");
         }
 
         private void OnEpbChannelPaused(int channel)
@@ -2398,13 +2399,18 @@ namespace MTEmbTest
                 LogInfo($"准备启动卡钳：{string.Join(",", channels)}；自学习 {learnCycles} 圈。");
                 try
                 {
-                    await _epb.StartBatchSynchronizedAsync(
+                    var startResult = await _epb.StartBatchSynchronizedWithResultAsync(
                         channels, // 批量要跑的通道
                         learnCycles, // 自学习圈数（按你期望）
                         _batchCts.Token // 取消令牌（Stop 按钮用）
                     );
 
-                    LogInfo("批量启动完成：学习阶段已对齐并错峰，上线后每圈对齐运行中…");
+                    if (startResult.Faults.Length > 0)
+                        LogInfo(
+                            $"[安全] 批量部分启动：运行卡钳[{string.Join(",", startResult.StartedChannels)}]；" +
+                            $"隔离卡钳[{string.Join(",", startResult.Faults.Select(x => x.Channel))}]。请查看上方通道报警及 AlarmSnapshots。");
+                    else
+                        LogInfo("批量启动完成：学习阶段已对齐并错峰，上线后每圈对齐运行中…");
                 }
                 catch (OperationCanceledException)
                 {

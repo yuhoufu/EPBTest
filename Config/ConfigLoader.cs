@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -45,8 +46,8 @@ namespace Config
         public HydraulicMode Mode { get; set; }
         public double SetPercent { get; set; }
         public int PressureThresholdBar { get; set; }
-        /// <summary>建压合格窗口为目标压力 ± 此容差；旧项目缺省为 5 bar。</summary>
-        public double PressureToleranceBar { get; set; } = 5;
+        /// <summary>建压合格窗口为目标压力 ± 此容差；旧项目缺少节点时缺省为 10 bar。</summary>
+        public double PressureToleranceBar { get; set; } = 10;
         public int DurationMs { get; set; }
         public int HoldAfterReachedMs { get; set; }
         public double ReleaseSafePressureBar { get; set; } = 5;
@@ -247,7 +248,8 @@ public static class ConfigLoader
     public static string CurrentProjectRootDir { get; private set; }
 
     // 1) 在 ConfigLoader 类里补这个字段（线程安全用）
-    private static readonly object _uiFileLock = new();
+    private static readonly ConcurrentDictionary<string, object> UiFileLocks =
+        new(StringComparer.OrdinalIgnoreCase);
 
 
     /// <summary>加载 AO/DO/Test 三类配置并组合成 <see cref="GlobalConfig" />。</summary>
@@ -366,7 +368,7 @@ public static class ConfigLoader
                 Mode = ParseMode(GetString(n, "Mode", "ByPressure")),
                 SetPercent = GetDouble(n, "SetPercent", 30),
                 PressureThresholdBar = (int)GetDouble(n, "PressureThresholdBar", 20),
-                PressureToleranceBar = Math.Max(0, GetDouble(n, "PressureToleranceBar", 5)),
+                PressureToleranceBar = Math.Max(0, GetDouble(n, "PressureToleranceBar", 10)),
                 DurationMs = GetInt(n, "DurationMs", 0),
                 HoldAfterReachedMs = GetInt(n, "HoldAfterReachedMs", 0),
                 ReleaseSafePressureBar = GetDouble(n, "ReleaseSafePressureBar", 5),
@@ -601,9 +603,10 @@ public static class ConfigLoader
     // ========== Save ==========
     public static void SaveUI(string path, UiConfig cfg)
     {
-        path = ResolveUiPath(path);
+        path = Path.GetFullPath(ResolveUiPath(path));
+        var fileLock = UiFileLocks.GetOrAdd(path, _ => new object());
 
-        lock (_uiFileLock)
+        lock (fileLock)
         {
             var doc = new XmlDocument();
             var decl = doc.CreateXmlDeclaration("1.0", "utf-8", null);
@@ -644,37 +647,44 @@ public static class ConfigLoader
                 root.AppendChild(formNode);
             }
 
-            var tmp = path + ".tmp";
-            doc.Save(tmp);
-
-            if (File.Exists(path))
+            var tmp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            try
             {
-                var replaced = false;
+                doc.Save(tmp);
+                if (!File.Exists(path))
+                {
+                    File.Move(tmp, path);
+                    return;
+                }
 
-                // 对偶发文件占用（如杀毒/索引或并发写）做少量重试
-                for (var i = 0; i < 3 && !replaced; i++)
+                IOException lastError = null;
+                for (var i = 0; i < 3; i++)
                 {
                     try
                     {
                         File.Replace(tmp, path, null);
-                        replaced = true;
+                        return;
                     }
-                    catch (IOException) when (i < 2)
+                    catch (IOException ex)
                     {
-                        System.Threading.Thread.Sleep(50);
+                        lastError = ex;
+                        if (i < 2) Thread.Sleep(50);
                     }
                 }
 
-                if (!replaced)
-                {
-                    // 兜底：删除后移动，避免 .tmp 遗留
-                    File.Delete(path);
-                    File.Move(tmp, path);
-                }
+                // 原文件始终保留；替换持续失败时明确上抛，禁止“先删后移”造成配置窗口期丢失。
+                throw new IOException("UI 配置原子替换失败，原配置文件已保留。", lastError);
             }
-            else
+            finally
             {
-                File.Move(tmp, path);
+                try
+                {
+                    if (File.Exists(tmp)) File.Delete(tmp);
+                }
+                catch
+                {
+                    // 临时文件清理失败不覆盖真正的保存异常。
+                }
             }
         }
     }
