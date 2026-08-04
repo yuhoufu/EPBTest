@@ -111,8 +111,10 @@ namespace Controller
         // —— 回调（采样） —— //
         private readonly EpbCycleRunner.ReadCurrentDelegate _readCurrent;
 
-        private readonly Dictionary<int, EpbCycleRunner> _runners = new();
-        private readonly Dictionary<int, HighPrecisionTimer> _timers = new();
+        private readonly ChannelRuntimeStore<EpbCycleRunner> _runnerRuntime = new();
+        private readonly ChannelRuntimeStore<HighPrecisionTimer> _timerRuntime = new();
+        private ConcurrentDictionary<int, EpbCycleRunner> _runners => _runnerRuntime.Active;
+        private ConcurrentDictionary<int, HighPrecisionTimer> _timers => _timerRuntime.Active;
         private readonly long _wallBaseTicks = Stopwatch.GetTimestamp();
         private readonly DateTime _wallBaseUtc = DateTime.UtcNow;
         private readonly HydraulicGroupCoordinator _hydCoordinator; // ★ 新增：液压组协调器
@@ -332,28 +334,9 @@ namespace Controller
             // 2) 取消并释放硬停机 CTS（该通道已完成）
             try { CancelStopCts(channel); } catch { /* ignore */ }
 
-            // 3) 从运行表移除：避免后续逻辑（例如“导出所有运行通道”）误把它当成仍在运行
-            try { _timers.Remove(channel); } catch { /* ignore */ }
-            try { _timerCache.Remove(channel); } catch { /* ignore */ }
-
-            if (_runners.TryGetValue(channel, out var runnerObj))
-            {
-                try
-                {
-                    runnerObj.ChannelCycleCompleted -= OnRunnerChannelCycleCompleted;
-                    runnerObj.AlarmRaised -= OnRunnerAlarmRaised;
-                    runnerObj.WarningRaised -= OnRunnerWarningRaised;
-                    runnerObj.RecoverableFaultRaised -= OnRunnerRecoverableFaultRaised;
-                }
-                catch
-                {
-                    // ignore
-                }
-
-                try { _runners.Remove(channel); } catch { /* ignore */ }
-            }
-
-            try { _runnerCache.Remove(channel); } catch { /* ignore */ }
+            // 3) 原子移除运行对象，避免与并发启动/采集路由交叉。
+            RemoveTimerRuntime(channel, nameof(FinalizeChannelAfterNaturalCompletion));
+            RemoveRunnerRuntime(channel, nameof(FinalizeChannelAfterNaturalCompletion));
 
             // 4) 安全落位：断电 + 请求液压释放
             try { CommandEpbOff(channel, nameof(FinalizeChannelAfterNaturalCompletion)); } catch { /* ignore */ }
@@ -689,8 +672,6 @@ namespace Controller
             // 本次启动为该通道刷新“硬停机”取消源
             var stopCts = RenewStopCts(channel);
 
-            var hydId = channel <= 6 ? 1 : 2;
-
             //var rcfg = _cfg.Test?.EpbCycleRunner ?? new EpbCycleRunnerConfig();
             var rcfg = _cfg.Test?.EpbCycleRunner.GetRunnerChannel(channel);
 
@@ -722,60 +703,12 @@ namespace Controller
             _log.Info($"高精度定时器，  EPB[{channel}] 周期 {periodMs}ms，采样 {sampleMs}ms，前进阈值 {forwardA}A，保持时间 {holdMs}ms",
                 "EPB");
 
-            var timer = new HighPrecisionTimer(periodMs, _cfg.Test.OverrunPolicy, _log);
-            _timers[channel] = timer;
+            var timer = GetTimer(channel, periodMs, _cfg.Test.OverrunPolicy);
 
             // 标记为“参与液压判定”（用于后续批量建压锚点过滤；单通道模式也保持一致）
             MarkHydraulicParticipant(channel);
 
-            // 峰值超限报警增量阈值（可配；<=0 表示禁用）
-            var overshootDeltaA = 0.0;
-            try
-            {
-                var m = AlarmConfig?.Mappings?.Epb?.FirstOrDefault(x => x.Channel == channel);
-                overshootDeltaA = m?.OvershootAlarmDeltaA ?? AlarmConfig?.Behavior?.OvershootAlarmDeltaA ?? 0.0;
-            }
-            catch
-            {
-                overshootDeltaA = 0.0;
-            }
-
-
-            var runner = new EpbCycleRunner(
-                channel,
-                hydId,
-                _readCurrent,
-                _do,
-                _acq,
-                _hydraulic,
-                forwardA,
-                holdMs,
-                sampleMs,
-                rcfg.PeakIgnoreMs,
-                _log,
-                _cfg,
-                this,
-                overshootAlarmDeltaA: overshootDeltaA,
-                adaptiveOvershootWarningDeltaA:
-                    AlarmConfig?.Behavior?.AdaptiveOvershootWarningDeltaA ?? 0.8,
-                adaptiveOvershootConfirmCycles:
-                    AlarmConfig?.Behavior?.AdaptiveOvershootConfirmCycles ?? 3,
-                adaptiveForwardStallConfirmCycles:
-                    AlarmConfig?.Behavior?.AdaptiveForwardStallConfirmCycles ?? 5,
-                safetyMarginControlMode: _safetyMarginControlMode,
-                epbControlMode: GetEpbControlMode(channel),
-                adaptiveShadowMode: _adaptiveShadowMode,
-                adaptiveProfile: GetAdaptiveProfile(channel),
-                saveAdaptiveProfile: SaveAdaptiveProfile,
-                programSafetySettings: _programSafetySettings);
-
-            runner.AlarmRaised += OnRunnerAlarmRaised;
-            runner.WarningRaised += OnRunnerWarningRaised;
-            runner.WarningEvidenceRaised += OnRunnerWarningEvidenceRaised;
-            runner.RecoverableFaultRaised += OnRunnerRecoverableFaultRaised;
-
-            // —— 新增：登记 Runner —— //
-            _runners[channel] = runner;
+            var runner = (EpbCycleRunner)GetRunner(channel);
 
             var learnCycles = GetProp<int>(rcfg, "LearnCycles");
             if (learnCycles <= 0) learnCycles = 5;
@@ -915,37 +848,7 @@ namespace Controller
             // 先取消“硬停机”Token，尽快中断当前圈内仍在运行的异步逻辑
             try { CancelStopCts(channel); } catch { /* ignore */ }
 
-            // —— 停止“当前轮”的计时器 —— //
-            HighPrecisionTimer t;
-            if (_timers.TryGetValue(channel, out t))
-            {
-                try
-                {
-                    t.Stop();
-                }
-                catch
-                {
-                    /* 忽略 Stop 异常 */
-                }
-
-                _timers.Remove(channel);
-            }
-
-            // —— 同步清理“缓存计时器”，只 Stop + Remove，不做 Dispose（类型未实现 IDisposable）—— //
-            HighPrecisionTimer cached;
-            if (_timerCache.TryGetValue(channel, out cached))
-            {
-                try
-                {
-                    cached.Stop();
-                }
-                catch
-                {
-                    /* 忽略 */
-                }
-
-                _timerCache.Remove(channel); // 关键：不要留下以免二次启动被误复用
-            }
+            RemoveTimerRuntime(channel, nameof(StopChannel));
 
             // —— 安全落位（优先）：尽快断电并请求液压释放 —— //
             try
@@ -966,19 +869,7 @@ namespace Controller
                 /* 忽略 */
             }
 
-            // —— Runner 同样清理：运行表与缓存表都移除 —— //
-            EpbCycleRunner runnerObj;
-            if (_runners.TryGetValue(channel, out runnerObj))
-            {
-                // 退出前解绑事件，防止潜在内存泄漏
-                runnerObj.ChannelCycleCompleted -= OnRunnerChannelCycleCompleted;
-                runnerObj.AlarmRaised -= OnRunnerAlarmRaised;
-                runnerObj.WarningRaised -= OnRunnerWarningRaised;
-
-                _runners.Remove(channel);
-            }
-
-            _runnerCache.Remove(channel);
+            RemoveRunnerRuntime(channel, nameof(StopChannel));
 
             // —— 收尾：落盘导出（Stop 场景保留原逻辑）—— //
             try
@@ -1011,43 +902,13 @@ namespace Controller
             // 先取消“硬停机”Token，尽快中断当前圈内仍在运行的异步逻辑
             try { CancelStopCts(channel); } catch { /* ignore */ }
 
-            // —— 停止“当前轮”的计时器 —— //
-            if (_timers.TryGetValue(channel, out var t))
-            {
-                try { t.Stop(); } catch { /* ignore */ }
-                _timers.Remove(channel);
-            }
-
-            // —— 同步清理“缓存计时器” —— //
-            if (_timerCache.TryGetValue(channel, out var cached))
-            {
-                try { cached.Stop(); } catch { /* ignore */ }
-                _timerCache.Remove(channel);
-            }
+            RemoveTimerRuntime(channel, nameof(StopChannelOnAlarm));
 
             // —— 安全落位：立即断电 + 请求液压释放 —— //
             try { CommandEpbOffHighPriority(channel, nameof(StopChannelOnAlarm)); } catch { /* ignore */ }
             try { _ = HydraulicMarkReleaseAsync(channel); } catch { /* ignore */ }
 
-            // —— 清理 Runner（避免继续喂样本/回调）—— //
-            if (_runners.TryGetValue(channel, out var runnerObj))
-            {
-                try
-                {
-                    runnerObj.ChannelCycleCompleted -= OnRunnerChannelCycleCompleted;
-                    runnerObj.AlarmRaised -= OnRunnerAlarmRaised;
-                    runnerObj.WarningRaised -= OnRunnerWarningRaised;
-                    runnerObj.WarningEvidenceRaised -= OnRunnerWarningEvidenceRaised;
-                }
-                catch
-                {
-                    // ignore
-                }
-
-                _runners.Remove(channel);
-            }
-
-            _runnerCache.Remove(channel);
+            RemoveRunnerRuntime(channel, nameof(StopChannelOnAlarm));
 
             // —— 现场要求：停止即存最近10圈 ——
             // 说明：报警停机路径不应阻塞 Runner/定时器线程，因此这里用后台任务异步 Flush。
@@ -1731,15 +1592,12 @@ namespace Controller
             // 学习阶段尚未创建通道 Timer 时，也必须能通过控制层自己的 CTS 停止。
             EndBatchSession(cancel: true);
 
-            var keys = _timers.Keys.ToArray(); // 拷贝快照，避免枚举期间修改
+            var keys = _timers.Keys.Concat(_runners.Keys).Concat(_hydraulicParticipants.Keys)
+                .Distinct().ToArray();
             for (int i = 0; i < keys.Length; i++)
                 StopChannel(keys[i]);
 
-            // 兜底清空（防御式）
-            _timers.Clear();
-            _runnerCache.Clear();
-            _timerCache.Clear();
-            _runners.Clear();
+            ClearChannelRuntimes(nameof(StopAll));
             _ = CompleteStopSafetyNoThrowAsync(context);
             _log.Info(
                 $"全部 EPB 电机断电请求已提交：CorrelationId={context.CorrelationId}; MotorOffRequestedUtc={DateTime.UtcNow:O}",
@@ -1770,10 +1628,7 @@ namespace Controller
             {
                 try { StopChannel(channel); } catch { }
             }
-            _timers.Clear();
-            _runnerCache.Clear();
-            _timerCache.Clear();
-            _runners.Clear();
+            ClearChannelRuntimes(nameof(StopAllAsync));
             await CompleteStopSafetyAsync(context, token).ConfigureAwait(false);
         }
 
@@ -1904,16 +1759,8 @@ namespace Controller
             {
                 try { UnmarkHydraulicParticipant(member); } catch { }
                 try { CancelStopCts(member); } catch { }
-                if (_timers.TryGetValue(member, out var timer))
-                {
-                    try { timer.Stop(); } catch { }
-                    _timers.Remove(member);
-                }
-                if (_timerCache.TryGetValue(member, out var cached))
-                {
-                    try { cached.Stop(); } catch { }
-                    _timerCache.Remove(member);
-                }
+                RemoveTimerRuntime(member, nameof(RequestElectricalGroupEmergencyShutdown));
+                RemoveRunnerRuntime(member, nameof(RequestElectricalGroupEmergencyShutdown));
                 try { CommandEpbOffHighPriority(member, nameof(RequestElectricalGroupEmergencyShutdown)); }
                 catch { }
                 try { _ = HydraulicMarkReleaseAsync(member); }

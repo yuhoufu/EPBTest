@@ -92,6 +92,11 @@ namespace AdaptiveControlTests
                 Run("错峰最大相位越周期被拒绝", StaggerRejectsPhaseBeyondPeriod);
                 Run("错峰单通道相位为零", StaggerSingleChannelStartsAtZero);
                 Run("错峰任务不等待前相位完成", StaggerExecutorDoesNotSerialize);
+                Run("12通道并发首次创建运行对象", TwelveChannelsCreateRuntimesConcurrently);
+                Run("12通道错过锚点同时放行仍可安全创建", OverdueTwelveChannelReleaseCreatesSafely);
+                Run("同通道并发只创建一个运行对象", SameChannelCreatesExactlyOneRuntime);
+                Run("12通道启动停止抢占不损坏运行表", ConcurrentStartStopDoesNotCorruptRuntimeStore);
+                Run("12通道连续启动停止不残留运行对象", TwelveChannelsRestartWithoutRuntimeLeaks);
                 Run("DO追踪缓冲按运行过滤并限时", DoTraceBufferFiltersRunAndAge);
                 Run("报警辅助证据包含计划和DO时序", AlarmControlEvidenceIsReconstructable);
                 Run("同组硬故障仅停止故障通道", HardFaultDoesNotStopSiblingChannel);
@@ -1578,6 +1583,147 @@ namespace AdaptiveControlTests
 
             Assert(starts[9] - starts[8] >= 35, "后一相位没有按计划延迟");
             Assert(starts[9] < ends[8], "后一相位等待前一任务完成，错峰退化成串行");
+        }
+
+        private static void TwelveChannelsCreateRuntimesConcurrently()
+        {
+            var store = new ChannelRuntimeStore<object>();
+            var factoryCounts = new int[13];
+            var tasks = Enumerable.Range(1, 12)
+                .SelectMany(channel => Enumerable.Range(0, 16).Select(ignored => Task.Run(() =>
+                    store.GetOrCreate(
+                        channel,
+                        () =>
+                        {
+                            Interlocked.Increment(ref factoryCounts[channel]);
+                            return new object();
+                        },
+                        activate: null,
+                        out var created))))
+                .ToArray();
+
+            Task.WaitAll(tasks);
+            Assert(store.Active.Count == 12 && store.Cache.Count == 12,
+                "12通道并发创建后运行表或缓存表数量错误");
+            for (var channel = 1; channel <= 12; channel++)
+                Assert(factoryCounts[channel] == 1, $"EPB{channel}被重复创建运行对象");
+        }
+
+        private static void SameChannelCreatesExactlyOneRuntime()
+        {
+            var store = new ChannelRuntimeStore<object>();
+            var factoryCount = 0;
+            var results = Enumerable.Range(0, 256)
+                .Select(ignored => Task.Run(() => store.GetOrCreate(
+                    11,
+                    () =>
+                    {
+                        Interlocked.Increment(ref factoryCount);
+                        return new object();
+                    },
+                    activate: null,
+                    out var created)))
+                .ToArray();
+
+            Task.WaitAll(results);
+            var first = results[0].Result;
+            Assert(factoryCount == 1, "同一通道并发进入时工厂执行次数不为1");
+            Assert(results.All(x => ReferenceEquals(first, x.Result)),
+                "同一通道并发进入返回了不同实例");
+        }
+
+        private static void OverdueTwelveChannelReleaseCreatesSafely()
+        {
+            var channels = Enumerable.Range(1, 12).ToArray();
+            var groups = new[]
+            {
+                NewElectricalGroup(1, 800, 1, 2, 3),
+                NewElectricalGroup(2, 800, 4, 5, 6),
+                NewElectricalGroup(3, 800, 7, 8, 9),
+                NewElectricalGroup(4, 800, 10, 11, 12)
+            };
+            var plan = ElectricalStaggerPlanner.Build(channels, groups, 15_000);
+            var store = new ChannelRuntimeStore<object>();
+            var factoryCounts = new int[13];
+
+            ElectricalStaggerExecutor.RunAsync(
+                    channels,
+                    plan,
+                    DateTime.UtcNow.AddSeconds(-10),
+                    (channel, token) =>
+                    {
+                        store.GetOrCreate(
+                            channel,
+                            () =>
+                            {
+                                Interlocked.Increment(ref factoryCounts[channel]);
+                                return new object();
+                            },
+                            activate: null,
+                            out var created);
+                        return Task.CompletedTask;
+                    },
+                    CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+
+            Assert(store.Active.Count == 12 && store.Cache.Count == 12,
+                "错过锚点同时放行后未创建全部12个通道");
+            Assert(Enumerable.Range(1, 12).All(channel => factoryCounts[channel] == 1),
+                "错过锚点同时放行造成重复创建");
+        }
+
+        private static void TwelveChannelsRestartWithoutRuntimeLeaks()
+        {
+            var store = new ChannelRuntimeStore<object>();
+            for (var cycle = 0; cycle < 50; cycle++)
+            {
+                var starts = Enumerable.Range(1, 12)
+                    .Select(channel => Task.Run(() => store.GetOrCreate(
+                        channel,
+                        () => new object(),
+                        activate: null,
+                        out var created)))
+                    .ToArray();
+                Task.WaitAll(starts);
+                Assert(store.Active.Count == 12 && store.Cache.Count == 12,
+                    $"第{cycle + 1}轮启动后通道数量错误");
+
+                var stops = Enumerable.Range(1, 12)
+                    .Select(channel => Task.Run(() => store.Remove(channel)))
+                    .ToArray();
+                Task.WaitAll(stops);
+                Assert(store.Active.IsEmpty && store.Cache.IsEmpty,
+                    $"第{cycle + 1}轮停止后仍有运行对象残留");
+            }
+        }
+
+        private static void ConcurrentStartStopDoesNotCorruptRuntimeStore()
+        {
+            var store = new ChannelRuntimeStore<object>();
+            var operations = Enumerable.Range(0, 2_400)
+                .Select(index => Task.Run(() =>
+                {
+                    var channel = index % 12 + 1;
+                    if ((index & 1) == 0)
+                        store.GetOrCreate(channel, () => new object(), null, out var created);
+                    else
+                        store.Remove(channel);
+                }))
+                .ToArray();
+            Task.WaitAll(operations);
+
+            store.Clear();
+            Assert(store.Active.IsEmpty && store.Cache.IsEmpty,
+                "并发启动停止后运行表无法安全清空");
+
+            var restart = Enumerable.Range(1, 12)
+                .Select(channel => Task.Run(() => store.GetOrCreate(
+                    channel, () => new object(), null, out var created)))
+                .ToArray();
+            Task.WaitAll(restart);
+            Assert(store.Active.Count == 12 && store.Cache.Count == 12,
+                "并发启动停止后无法重新启动全部12通道");
         }
 
         private static void DoTraceBufferFiltersRunAndAge()

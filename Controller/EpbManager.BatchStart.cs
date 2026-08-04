@@ -49,8 +49,8 @@ namespace Controller
     public partial class EpbManager
     {
         // 字段区
-        private readonly Dictionary<int, EpbCycleRunner> _runnerCache = new();
-        private readonly Dictionary<int, HighPrecisionTimer> _timerCache = new();
+        private ConcurrentDictionary<int, EpbCycleRunner> _runnerCache => _runnerRuntime.Cache;
+        private ConcurrentDictionary<int, HighPrecisionTimer> _timerCache => _timerRuntime.Cache;
         private int _batchSessionActive;
         private CancellationTokenSource _batchSessionCts;
         private CancellationTokenSource _learningPhaseFaultCts;
@@ -1080,30 +1080,27 @@ namespace Controller
         /// </summary>
         private IEpbCycleRunner GetRunner(int channel)
         {
-            // ① 缓存命中：把旧 Runner 重新放回 _runners（关键修复点）
-            EpbCycleRunner cachedRunner;
-            if (_runnerCache.TryGetValue(channel, out cachedRunner))
-            {
-                _runners[channel] = cachedRunner; // 重新登记，让 OnFastEpbCurrent 能找到它
-                AttachRunnerEvents(cachedRunner);
-                return cachedRunner;
-            }
+            var runner = _runnerRuntime.GetOrCreate(
+                channel,
+                () => CreateRunner(channel),
+                AttachRunnerEvents,
+                out var created);
+            _log?.Info(
+                $"EPB[{channel}] Runner {(created ? "已创建" : "缓存命中并激活")}，" +
+                $"Instance={System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(runner)}。",
+                "EPB并发");
+            return runner;
+        }
 
-            // ② 正在运行表命中：也放回缓存表，保持一致性
-            EpbCycleRunner existingRunner;
-            if (_runners.TryGetValue(channel, out existingRunner))
-            {
-                _runnerCache[channel] = existingRunner;
-                AttachRunnerEvents(existingRunner);
-                return existingRunner;
-            }
-
-            // ③ 都未命中：创建新 Runner
+        private EpbCycleRunner CreateRunner(int channel)
+        {
             var hydId = channel <= 6 ? 1 : 2;
             var rcfg = _cfg.Test?.EpbCycleRunner.GetRunnerChannel(channel);
+            if (rcfg == null)
+                throw new InvalidOperationException($"EPB[{channel}] 缺少循环运行配置。");
 
             var sampleMs = 2;
-            var forwardA = rcfg!.ForwardA;
+            var forwardA = rcfg.ForwardA;
             var holdMs = rcfg.HoldMs;
             holdMs = holdMs <= 0 ? 1000 : holdMs;
 
@@ -1147,11 +1144,6 @@ namespace Controller
                 saveAdaptiveProfile: SaveAdaptiveProfile,
                 programSafetySettings: _programSafetySettings);
 
-            _runnerCache[channel] = runner;
-            _runners[channel] = runner; // 立即登记，保证采集回调可用
-
-            AttachRunnerEvents(runner);
-
             return runner;
         }
 
@@ -1184,30 +1176,61 @@ namespace Controller
             runner.AdaptiveDecisionObserved += OnRunnerAdaptiveDecisionObserved;
         }
 
+        private void DetachRunnerEvents(EpbCycleRunner runner)
+        {
+            if (runner == null) return;
+            runner.ChannelCycleCompleted -= OnRunnerChannelCycleCompleted;
+            runner.AlarmRaised -= OnRunnerAlarmRaised;
+            runner.WarningRaised -= OnRunnerWarningRaised;
+            runner.WarningEvidenceRaised -= OnRunnerWarningEvidenceRaised;
+            runner.RecoverableFaultRaised -= OnRunnerRecoverableFaultRaised;
+            runner.AdaptiveDecisionObserved -= OnRunnerAdaptiveDecisionObserved;
+        }
+
+        private void RemoveRunnerRuntime(int channel, string reason)
+        {
+            var removed = _runnerRuntime.Remove(channel, DetachRunnerEvents);
+            foreach (var runner in removed)
+                _log?.Info(
+                    $"EPB[{channel}] Runner 已移除，" +
+                    $"Instance={System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(runner)} Reason={reason}。",
+                    "EPB并发");
+        }
+
+        private void RemoveTimerRuntime(int channel, string reason)
+        {
+            var removed = _timerRuntime.Remove(channel, timer =>
+            {
+                try { timer.Stop(); } catch { }
+            });
+            foreach (var timer in removed)
+                _log?.Info(
+                    $"EPB[{channel}] Timer 已停止并移除，" +
+                    $"Instance={System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(timer)} Reason={reason}。",
+                    "EPB并发");
+        }
+
+        private void ClearChannelRuntimes(string reason)
+        {
+            foreach (var channel in _timers.Keys.Concat(_timerCache.Keys).Distinct().ToArray())
+                RemoveTimerRuntime(channel, reason);
+            foreach (var channel in _runners.Keys.Concat(_runnerCache.Keys).Distinct().ToArray())
+                RemoveRunnerRuntime(channel, reason);
+        }
+
 
         /// <summary>获取指定通道的高精计时器（必须在 StartChannelAsync 后调用）</summary>
         private HighPrecisionTimer GetTimer(int ch, int periodMs, OverrunPolicy overrunPolicy)
         {
-            // 如果已经在 _timers 字典中存在，则直接返回
-            if (_timers.TryGetValue(ch, out var existingTimer))
-                return existingTimer;
-
-            /*// 暂时注释
-            // 如果缓存中存在，则返回并放入 _timers 字典
-            if (_timerCache.TryGetValue(ch, out var cachedTimer))
-            {
-                _timers[ch] = cachedTimer;
-                return cachedTimer;
-            }*/
-
-            // 创建新的 HighPrecisionTimer 实例
-            // 使用与 StartChannelAsync 相同的参数和创建方式
-            var timer = new HighPrecisionTimer(periodMs, overrunPolicy, _log);
-
-            // 同时放入两个字典以保持一致性
-            _timers[ch] = timer;
-            _timerCache[ch] = timer;
-
+            var timer = _timerRuntime.GetOrCreate(
+                ch,
+                () => new HighPrecisionTimer(periodMs, overrunPolicy, _log),
+                activate: null,
+                out var created);
+            _log?.Info(
+                $"EPB[{ch}] Timer {(created ? "已创建" : "缓存命中并激活")}，" +
+                $"Instance={System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(timer)}。",
+                "EPB并发");
             return timer;
         }
 
