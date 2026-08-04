@@ -271,13 +271,17 @@ namespace Controller
                 CommandOff(nameof(StartupPositioningAsync));
                 stage = StartupPositioningStage.ForwardOffVerification;
                 var off = await PollOffCurrentUntilClearAsync(
-                        () => _readCurrent(_channel),
+                        ReadOffCurrentSample,
                         _adaptiveSafetyLimits.OffCurrentClearThresholdA,
                         _adaptiveSafetyLimits.OffCurrentClearTimeoutMs,
                         _sampleMs,
                         token)
                     .ConfigureAwait(false);
                 AddTrace(off.CurrentA, off.Cleared ? "ForwardOffCleared" : "ForwardOffNotCleared");
+                if (!off.SampleFresh)
+                    return Result(false, stage, StartupPositioningCompletionKind.None,
+                        "DaqSampleStale",
+                        $"正向断电确认时DAQ样本陈旧：Age={off.SampleAgeMs:F1}ms，无法判断电流是否清零。");
                 if (!off.Cleared)
                     return Result(false, stage, StartupPositioningCompletionKind.None,
                         "ForwardOffCurrentNotCleared",

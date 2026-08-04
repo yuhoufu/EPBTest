@@ -513,13 +513,44 @@ namespace Controller
                 try
                 {
                     var verification = await PollOffCurrentUntilClearAsync(
-                            () => Math.Abs(_readCurrent(_channel)),
+                            ReadOffCurrentSample,
                             thresholdA,
                             timeoutMs,
                             20,
                             CancellationToken.None)
                         .ConfigureAwait(false);
                     var currentA = verification.CurrentA;
+                    if (!verification.SampleFresh)
+                    {
+                        _manager?.RecordTerminalOffCurrentVerification(
+                            _channel,
+                            currentA,
+                            thresholdA,
+                            verification.ElapsedMs,
+                            false);
+                        var powerEvidence = string.Empty;
+                        if (_manager != null &&
+                            _manager.TryGetFreshPowerSupplyCurrent(
+                                _channel,
+                                out var groupCurrentA,
+                                out var powerAgeMs,
+                                out var powerOutputEnabled))
+                            powerEvidence =
+                                $" PowerGroupIOut={groupCurrentA:F3}A " +
+                                $"PowerTelemetryAge={powerAgeMs:F1}ms Output={powerOutputEnabled}";
+                        var staleReason =
+                            $"OffCurrentUnverifiableDaqStale AgeMs={verification.SampleAgeMs:F1}" +
+                            powerEvidence;
+                        _manager?.RequestElectricalGroupEmergencyShutdown(_channel, staleReason);
+                        _log?.Error(
+                            $"EPB[{_channel}] DAQ样本陈旧，无法确认断电电流；按失效安全触发电源组联锁：" +
+                            $"LastCurrent={currentA:F3}A SampleAge={verification.SampleAgeMs:F1}ms " +
+                            $"Reason={reason} PhysicalOffStatus=NotMeasured",
+                            "EPB");
+                        try { AlarmRaised?.Invoke(_channel, "AdaptiveHardFault " + staleReason); }
+                        catch { }
+                        return;
+                    }
                     var cleared = VerifyOffCurrentOrEscalate(
                         currentA,
                         thresholdA,
@@ -593,16 +624,47 @@ namespace Controller
 
         internal readonly struct OffCurrentClearResult
         {
-            public OffCurrentClearResult(bool cleared, double currentA, int elapsedMs)
+            public OffCurrentClearResult(
+                bool cleared,
+                double currentA,
+                int elapsedMs,
+                bool sampleFresh = true,
+                double sampleAgeMs = 0)
             {
                 Cleared = cleared;
                 CurrentA = currentA;
                 ElapsedMs = elapsedMs;
+                SampleFresh = sampleFresh;
+                SampleAgeMs = sampleAgeMs;
             }
 
             public bool Cleared { get; }
             public double CurrentA { get; }
             public int ElapsedMs { get; }
+            public bool SampleFresh { get; }
+            public double SampleAgeMs { get; }
+        }
+
+        internal readonly struct OffCurrentSample
+        {
+            public OffCurrentSample(double currentA, bool isFresh, double ageMs)
+            {
+                CurrentA = currentA;
+                IsFresh = isFresh;
+                AgeMs = ageMs;
+            }
+            public double CurrentA { get; }
+            public bool IsFresh { get; }
+            public double AgeMs { get; }
+        }
+
+        private OffCurrentSample ReadOffCurrentSample()
+        {
+            var currentA = Math.Abs(_readCurrent(_channel));
+            if (_acq == null) return new OffCurrentSample(currentA, true, 0);
+            var device = _acq.GetDeviceForEpbChannel(_channel);
+            var freshness = _acq.GetDaqFreshnessSnapshot(device, 100);
+            return new OffCurrentSample(currentA, freshness.IsFresh, freshness.AgeMs);
         }
 
         /// <summary>
@@ -617,6 +679,23 @@ namespace Controller
             CancellationToken token)
         {
             if (readCurrent == null) throw new ArgumentNullException(nameof(readCurrent));
+            return await PollOffCurrentUntilClearAsync(
+                    () => new OffCurrentSample(readCurrent(), true, 0),
+                    thresholdA,
+                    timeoutMs,
+                    pollMs,
+                    token)
+                .ConfigureAwait(false);
+        }
+
+        internal static async Task<OffCurrentClearResult> PollOffCurrentUntilClearAsync(
+            Func<OffCurrentSample> readCurrent,
+            double thresholdA,
+            int timeoutMs,
+            int pollMs,
+            CancellationToken token)
+        {
+            if (readCurrent == null) throw new ArgumentNullException(nameof(readCurrent));
             var boundedTimeoutMs = Math.Max(20, timeoutMs);
             var boundedPollMs = Math.Max(1, pollMs);
             var started = Stopwatch.GetTimestamp();
@@ -625,12 +704,16 @@ namespace Controller
             while (true)
             {
                 token.ThrowIfCancellationRequested();
-                currentA = readCurrent();
+                var sample = readCurrent();
+                currentA = sample.CurrentA;
                 var elapsedMs = (int)Math.Min(
                     int.MaxValue,
                     Math.Max(
                         0,
                         (Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency));
+                if (!sample.IsFresh)
+                    return new OffCurrentClearResult(
+                        false, currentA, elapsedMs, false, sample.AgeMs);
                 if (!double.IsNaN(currentA) &&
                     !double.IsInfinity(currentA) &&
                     Math.Abs(currentA) <= thresholdA)

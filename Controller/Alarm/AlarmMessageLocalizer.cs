@@ -21,6 +21,9 @@ namespace Controller.Alarm
                 ["DaqSampleStale"] = "采集数据过期",
                 ["RepeatedDaqSampleStale"] = "采集数据连续过期",
                 ["DaqRecoveryFailed"] = "采集设备恢复失败",
+                ["DaqTaskRecreateFailed"] = "采集任务重建失败",
+                ["DaqStartPreflightFailed"] = "启动前采集健康检查失败",
+                ["OffCurrentUnverifiableDaqStale"] = "采集数据过期，无法确认断电电流",
                 ["ForwardAbsoluteOnTimeExceeded"] = "正向上电时间超过安全上限",
                 ["ReverseAbsoluteOnTimeExceeded"] = "反向上电时间超过安全上限",
                 ["ForwardEndedWithoutClamp"] = "正向动作未确认夹紧",
@@ -28,6 +31,7 @@ namespace Controller.Alarm
                 ["AbnormalHighCurrentPlateau"] = "电流异常高位停滞",
                 ["HydraulicPressureLost"] = "液压保压资格丢失",
                 ["HydraulicBuildTimeout"] = "液压建压超时",
+                ["PressureSampleStale"] = "压力采样数据过期，无法确认释压状态",
                 ["HydraulicReleaseTimeout"] = "液压释压超时",
                 ["HydraulicBarrierTimeout"] = "液压组同步等待超时",
                 ["PressureSampleInvalid"] = "压力采样无效",
@@ -51,6 +55,16 @@ namespace Controller.Alarm
         public static string ToUserMessage(string raw)
         {
             if (string.IsNullOrWhiteSpace(raw)) return "系统检测到异常，已执行安全保护。";
+
+            // 释压超时若根因是采样陈旧，必须优先呈现“无法确认”，不能落入
+            // 普通液压超时提示后误导现场排查泄漏或制动液。
+            if (raw.IndexOf("HydraulicReleaseTimeout", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                raw.IndexOf("PressureSampleStale", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                var staleDetails = BuildDetails(raw);
+                return "压力采样数据过期，无法确认释压状态" +
+                       (string.IsNullOrWhiteSpace(staleDetails) ? "。" : "：" + staleDetails + "。");
+            }
 
             foreach (var item in CodeNames)
             {

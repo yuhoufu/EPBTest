@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Xml;
 using Config;
 using Config.Models;
@@ -249,6 +250,8 @@ public static class ConfigLoader
 
     // 1) 在 ConfigLoader 类里补这个字段（线程安全用）
     private static readonly ConcurrentDictionary<string, object> UiFileLocks =
+        new(StringComparer.OrdinalIgnoreCase);
+    private static readonly ConcurrentDictionary<string, long> UiSaveVersions =
         new(StringComparer.OrdinalIgnoreCase);
 
 
@@ -658,7 +661,7 @@ public static class ConfigLoader
                 }
 
                 IOException lastError = null;
-                for (var i = 0; i < 3; i++)
+                for (var i = 0; i < 5; i++)
                 {
                     try
                     {
@@ -668,12 +671,14 @@ public static class ConfigLoader
                     catch (IOException ex)
                     {
                         lastError = ex;
-                        if (i < 2) Thread.Sleep(50);
+                        if (i < 4) Thread.Sleep(50 * (1 << i));
                     }
                 }
 
                 // 原文件始终保留；替换持续失败时明确上抛，禁止“先删后移”造成配置窗口期丢失。
-                throw new IOException("UI 配置原子替换失败，原配置文件已保留。", lastError);
+                throw new IOException(
+                    $"UI 配置原子替换失败，原配置文件已保留。Path={path}",
+                    lastError);
             }
             finally
             {
@@ -1274,11 +1279,14 @@ public static class ConfigLoader
     {
         path = ResolveUiPath(path);
 
-        var form = cfg.GetOrAddForm(formName);
-        var c = form.GetOrAdd(ctrlName);
-        c.Checked = isChecked;
-        if (enabled.HasValue) c.Enabled = enabled.Value;
-        SaveUI(path, cfg);
+        lock (cfg)
+        {
+            var form = cfg.GetOrAddForm(formName);
+            var c = form.GetOrAdd(ctrlName);
+            c.Checked = isChecked;
+            if (enabled.HasValue) c.Enabled = enabled.Value;
+        }
+        ScheduleUiSave(path, cfg);
     }
 
     // 不带 path 的重载
@@ -1294,16 +1302,56 @@ public static class ConfigLoader
     {
         path = ResolveUiPath(path);
 
-        var form = cfg.GetOrAddForm(formName);
-        var c = form.GetOrAdd(ctrlName);
-        c.DefaultChecked = defaultChecked;
-        SaveUI(path, cfg);
+        lock (cfg)
+        {
+            var form = cfg.GetOrAddForm(formName);
+            var c = form.GetOrAdd(ctrlName);
+            c.DefaultChecked = defaultChecked;
+        }
+        ScheduleUiSave(path, cfg);
     }
 
     // 不带 path 的重载
     public static void UpdateUIDefaultChecked(UiConfig cfg, string formName, string ctrlName, bool defaultChecked)
     {
         UpdateUIDefaultChecked(null, cfg, formName, ctrlName, defaultChecked);
+    }
+
+    private static void ScheduleUiSave(string path, UiConfig cfg)
+    {
+        var fullPath = Path.GetFullPath(ResolveUiPath(path));
+        var version = UiSaveVersions.AddOrUpdate(fullPath, 1, (_, current) => current + 1);
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(300).ConfigureAwait(false);
+            if (!UiSaveVersions.TryGetValue(fullPath, out var latest) || latest != version) return;
+            UiConfig snapshot;
+            lock (cfg) snapshot = CloneUiConfig(cfg);
+            try { SaveUI(fullPath, snapshot); }
+            catch (Exception ex)
+            {
+                // 非关键UI状态保存失败不冒泡到UI线程；原配置文件由 SaveUI 保留。
+                System.Diagnostics.Trace.TraceWarning(ex.ToString());
+            }
+        });
+    }
+
+    private static UiConfig CloneUiConfig(UiConfig source)
+    {
+        var clone = new UiConfig();
+        foreach (var formPair in source.Forms)
+        {
+            var form = clone.GetOrAddForm(formPair.Key);
+            foreach (var controlPair in formPair.Value.Controls)
+            {
+                var sourceControl = controlPair.Value;
+                var control = form.GetOrAdd(controlPair.Key);
+                control.Checked = sourceControl.Checked;
+                control.Enabled = sourceControl.Enabled;
+                control.DefaultChecked = sourceControl.DefaultChecked;
+            }
+        }
+        return clone;
     }
 
     #endregion

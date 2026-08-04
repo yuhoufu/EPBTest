@@ -2494,8 +2494,64 @@ namespace MTEmbTest
         /// <summary>
         ///     窗体关闭：标记关闭状态，解绑事件，停止 UI 定时器与采集，避免回调打到已销毁的 UI。
         /// </summary>
-        private void FrmEpbMainMonitor_FormClosing(object sender, FormClosingEventArgs e)
+        private async void FrmEpbMainMonitor_FormClosing(object sender, FormClosingEventArgs e)
         {
+            // 首次关闭只启动一次安全收尾；确认后重入本处理器，再释放DAQ及其它资源。
+            if (Volatile.Read(ref _closingReentry) != 2)
+            {
+                e.Cancel = true;
+                if (Interlocked.CompareExchange(ref _closingReentry, 1, 0) != 0) return;
+                _isClosing = true;
+                StopSafetyResult safety;
+                try
+                {
+                    using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10)))
+                        safety = await _epb.StopAllAsync(
+                            new StopContext
+                            {
+                                Source = StopSource.ApplicationClosing,
+                                Reason = "主窗体关闭",
+                                Initiator = nameof(FrmEpbMainMonitor_FormClosing),
+                                CorrelationId = Guid.NewGuid().ToString("N"),
+                                RequestedUtc = DateTime.UtcNow
+                            },
+                            cts.Token);
+                }
+                catch (Exception ex)
+                {
+                    safety = new StopSafetyResult
+                    {
+                        MotorError = ex.Message,
+                        PowerError = ex.Message
+                    };
+                }
+
+                if (!safety.CanReleaseAcquisition)
+                {
+                    var items = new List<string>();
+                    if (!safety.MotorOffCommandSucceeded)
+                        items.Add("电机DO关闭未确认：" + (safety.MotorError ?? "无详细信息"));
+                    if (!safety.PowerOffConfirmed)
+                        items.Add("程控电源关闭回读未确认：" + (safety.PowerError ?? "无详细信息"));
+                    MessageBox.Show(
+                        string.Join("\r\n", items) + "\r\n\r\n窗口保持打开，请检查后重试关闭。",
+                        "安全关闭未确认",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Error);
+                    _isClosing = false;
+                    Interlocked.Exchange(ref _closingReentry, 0);
+                    return;
+                }
+
+                if (!safety.PressureSafeConfirmed)
+                    LogInfo("[安全警告] 电机DO和程控电源均已确认关闭；仅压力安全证据因采样陈旧/不可用未确认，按现场策略继续退出。" +
+                            (string.IsNullOrWhiteSpace(safety.PressureError) ? string.Empty : " " + safety.PressureError));
+
+                Interlocked.Exchange(ref _closingReentry, 2);
+                _ = BeginInvoke((Action)Close);
+                return;
+            }
+
             // 只执行一次
             if (Interlocked.Exchange(ref _formClosedFlag, 1) != 0) return;
             _isClosing = true;
@@ -2617,7 +2673,7 @@ namespace MTEmbTest
                 StopTimer(ref _daqStatTimerDev2);
 
                 // 修复：使用Task.Run异步执行Flush操作，避免UI线程阻塞
-                System.Threading.Tasks.Task.Run(async () =>
+                _ = System.Threading.Tasks.Task.Run(async () =>
                 {
                     try
                     {

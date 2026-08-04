@@ -30,9 +30,10 @@ namespace Controller
             try { ChannelWarningEvidenceRaised?.Invoke(warning); } catch { }
             var cfg = AlarmConfig?.WarningSnapshots ?? new WarningSnapshotConfig();
             if (!cfg.Enabled) return;
-            if (!_currentCycleNumberByChannel.TryGetValue(warning.Channel, out var cycleNumber) || cycleNumber <= 0)
+            // 正式圈为正数，学习圈为负数；只有 0/不存在才表示尚未进入任何圈。
+            if (!_currentCycleNumberByChannel.TryGetValue(warning.Channel, out var cycleNumber) || cycleNumber == 0)
             {
-                ReportSnapshotFailure($"EPB[{warning.Channel}] 预警发生时没有有效正式圈号，未保存软预警快照。");
+                ReportSnapshotFailure($"EPB[{warning.Channel}] 预警发生时没有有效圈号，未保存软预警快照。");
                 return;
             }
             if (!(Recorder is ICycleEvidenceExporter))
@@ -260,7 +261,8 @@ namespace Controller
             int alarmChannel,
             int alarmCycle,
             int requestedCycles,
-            string reason)
+            string reason,
+            int[] affectedChannels)
         {
             var files = Directory.EnumerateFiles(snapshotDirectory, "*.*", SearchOption.AllDirectories)
                 .Where(path => path.EndsWith(".csv", StringComparison.OrdinalIgnoreCase) ||
@@ -278,6 +280,10 @@ namespace Controller
             sb.Append("{\n  \"AlarmChannel\": ").Append(alarmChannel).Append(',')
                 .Append("\n  \"AlarmCycle\": ").Append(alarmCycle).Append(',')
                 .Append("\n  \"Reason\": \"").Append(JsonEscape(reason)).Append("\",")
+                .Append("\n  \"AffectedChannels\": [")
+                .Append(string.Join(",", affectedChannels ?? new[] { alarmChannel })).Append("],")
+                .Append("\n  \"GroupCoverage\": \"Primary alarm cycle is sealed for AlarmChannel; ")
+                .Append("sibling channels are exported as recent/running auxiliary evidence\",")
                 .Append("\n  \"RequestedCycles\": ").Append(requestedCycles).Append(',')
                 .Append("\n  \"ExportedCycles\": ").Append(alarmCycles).Append(',')
                 .Append("\n  \"ShortfallReason\": \"")

@@ -1,8 +1,10 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Linq;
 using System.Threading;
 using System.Windows.Forms;
+using Config;
 using Controller;
 using Controller.Alarm;
 
@@ -15,6 +17,11 @@ namespace MTEmbTest
         private int _warningSnapshotStorageWarningShown;
         private bool _trimmingSafetyInfoDisplay;
         private ToolTip _powerSupplyToolTip;
+        private ToolTip _channelRuntimeToolTip;
+        private readonly Dictionary<int, Label> _channelRuntimeLabels = new Dictionary<int, Label>();
+        private readonly Dictionary<int, ChannelRuntimeStateChangedEvent> _channelRuntimeStates =
+            new Dictionary<int, ChannelRuntimeStateChangedEvent>();
+        private readonly HashSet<int> _powerGroupInterlockLatches = new HashSet<int>();
         private const int SafetyInfoMaxDisplayLines = 2000;
         private const int SafetyInfoTrimmedDisplayLines = 1500;
 
@@ -24,6 +31,7 @@ namespace MTEmbTest
             AttachSafetyUiEvents();
             if (Interlocked.Exchange(ref _powerSupplyUiInitialized, 1) != 0) return;
             InitializeBoundedSafetyInfoDisplay();
+            InitializeChannelRuntimeStatusUi();
             _powerSupplyToolTip = new ToolTip();
             var boxes = new[] { uiGroupBox4, uiGroupBox5, uiGroupBox6, uiGroupBox7 };
             for (var index = 0; index < boxes.Length; index++)
@@ -35,7 +43,6 @@ namespace MTEmbTest
                 boxes[index].DoubleClick += async (sender, args) =>
                     await ResetPowerSupplyFaultFromUiAsync(groupId);
             }
-            FormClosing += ClosePowerSuppliesBeforeExit;
         }
 
         private void AttachSafetyUiEvents()
@@ -47,6 +54,7 @@ namespace MTEmbTest
             {
                 manager.PowerSupplyTelemetryUpdated += UpdatePowerSupplyStatus;
                 manager.PowerSupplyFaultRaised += ShowPowerSupplyFault;
+                manager.ChannelRuntimeStateChanged += OnChannelRuntimeStateChanged;
                 manager.ChannelWarningRaised += (channel, reason) => PostSafetyStatus(
                     $"卡钳{channel} 警告：{AlarmMessageLocalizer.ToUserMessage(reason)}",
                     false);
@@ -80,11 +88,208 @@ namespace MTEmbTest
                 };
                 var initialStorage = manager.GetWarningSnapshotStorageStatus();
                 ShowWarningSnapshotStorageWarning(initialStorage);
+                foreach (var state in manager.GetChannelRuntimeStates())
+                    OnChannelRuntimeStateChanged(state);
             }
             catch
             {
                 Interlocked.Exchange(ref _powerSupplyUiAttached, 0);
                 throw;
+            }
+        }
+
+        private void InitializeChannelRuntimeStatusUi()
+        {
+            if (_channelRuntimeLabels.Count > 0) return;
+            _channelRuntimeToolTip = new ToolTip
+            {
+                AutoPopDelay = 15000,
+                InitialDelay = 250,
+                ReshowDelay = 100
+            };
+            var panels = new[]
+            {
+                uiTableLayoutPanel10, uiTableLayoutPanel11,
+                uiTableLayoutPanel12, uiTableLayoutPanel13
+            };
+            for (var groupIndex = 0; groupIndex < panels.Length; groupIndex++)
+            {
+                for (var row = 0; row < 3; row++)
+                {
+                    var channel = groupIndex * 3 + row + 1;
+                    var label = new Label
+                    {
+                        Name = $"RuntimeStateEpb{channel}",
+                        Dock = DockStyle.Fill,
+                        Margin = new Padding(4, 12, 4, 12),
+                        TextAlign = ContentAlignment.MiddleCenter,
+                        AutoEllipsis = true,
+                        Font = new Font("Microsoft YaHei UI", 8.5F, FontStyle.Bold),
+                        ForeColor = Color.White,
+                        BackColor = Color.FromArgb(120, 120, 120),
+                        Text = "未启用",
+                        Cursor = Cursors.Help
+                    };
+                    panels[groupIndex].Controls.Add(label, 3, row);
+                    _channelRuntimeLabels[channel] = label;
+                }
+            }
+
+            ChannelRuntimeStateChangedEvent[] pending;
+            lock (_channelRuntimeStates)
+                pending = _channelRuntimeStates.Values.Select(x => x.Clone()).ToArray();
+            foreach (var state in pending)
+                ApplyChannelRuntimeState(state);
+            UpdateChannelRuntimeSummary();
+        }
+
+        private void OnChannelRuntimeStateChanged(ChannelRuntimeStateChangedEvent state)
+        {
+            if (state == null || state.Channel < 1 || state.Channel > 12) return;
+            lock (_channelRuntimeStates)
+                _channelRuntimeStates[state.Channel] = state.Clone();
+            if (IsDisposed || Disposing) return;
+            try
+            {
+                if (InvokeRequired)
+                    BeginInvoke((Action)(() => ApplyChannelRuntimeState(state)));
+                else
+                    ApplyChannelRuntimeState(state);
+            }
+            catch { }
+        }
+
+        private void ApplyChannelRuntimeState(ChannelRuntimeStateChangedEvent state)
+        {
+            if (!_channelRuntimeLabels.TryGetValue(state.Channel, out var label)) return;
+            var localTime = state.TimestampUtc == default
+                ? DateTime.Now
+                : state.TimestampUtc.ToLocalTime();
+            var shortReason = ShortRuntimeReason(state.ReasonText);
+            label.Text = GetRuntimeStateText(state.State) + "\r\n" + localTime.ToString("HH:mm:ss") +
+                         (string.IsNullOrWhiteSpace(shortReason) ? string.Empty : " " + shortReason);
+            label.BackColor = GetRuntimeStateColor(state.State);
+            label.ForeColor = Color.White;
+            _channelRuntimeToolTip?.SetToolTip(
+                label,
+                $"EPB{state.Channel:D2} {GetRuntimeStateText(state.State)}\r\n" +
+                $"时间：{localTime:yyyy-MM-dd HH:mm:ss.fff}\r\n" +
+                $"原因：{state.ReasonText ?? state.ReasonCode ?? "-"}\r\n" +
+                $"故障源：{(state.SourceChannel.HasValue ? "EPB" + state.SourceChannel.Value.ToString("D2") : "-")}\r\n" +
+                $"关联号：{(state.CorrelationId == Guid.Empty ? "-" : state.CorrelationId.ToString("N"))}");
+
+            if (EpbGroup[state.Channel - 1]?.CtrlRunning != null)
+            {
+                var shouldShowRun = state.State == ChannelRuntimeState.Starting ||
+                                    state.State == ChannelRuntimeState.Learning ||
+                                    state.State == ChannelRuntimeState.Running ||
+                                    state.State == ChannelRuntimeState.WarningRunning ||
+                                    state.State == ChannelRuntimeState.Paused;
+                if (EpbGroup[state.Channel - 1].CtrlRunning.Checked != shouldShowRun)
+                    EpbGroup[state.Channel - 1].CtrlRunning.Checked = shouldShowRun;
+            }
+
+            var record = EnsureEpbRecord(state.Channel);
+            lock (_epbRecordsLock)
+                record.Status = MapRuntimeRecordStatus(state.State);
+            RefreshCurrentEpbSummary(state.Channel);
+
+            if (state.State == ChannelRuntimeState.InterlockStopped)
+                ShowPowerGroupInterlockLatch(state.Channel);
+            else if (state.State == ChannelRuntimeState.Starting)
+                ClearPowerGroupInterlockLatchAfterPreflight(state.Channel);
+            UpdateChannelRuntimeSummary();
+        }
+
+        private void UpdateChannelRuntimeSummary()
+        {
+            ChannelRuntimeStateChangedEvent[] states;
+            lock (_channelRuntimeStates)
+                states = _channelRuntimeStates.Values.ToArray();
+            var running = states.Count(x => x.State == ChannelRuntimeState.Starting ||
+                                            x.State == ChannelRuntimeState.Learning ||
+                                            x.State == ChannelRuntimeState.Running);
+            var warning = states.Count(x => x.State == ChannelRuntimeState.WarningRunning);
+            var alarm = states.Count(x => x.State == ChannelRuntimeState.AlarmStopped ||
+                                          x.State == ChannelRuntimeState.StartBlocked);
+            var interlock = states.Count(x => x.State == ChannelRuntimeState.InterlockStopped);
+            var completed = states.Count(x => x.State == ChannelRuntimeState.Completed);
+            EPBGroupBox.Text = $"EPB 控制｜运行 {running}  预警 {warning}  报警 {alarm}  联锁 {interlock}  完成 {completed}";
+        }
+
+        private void ShowPowerGroupInterlockLatch(int channel)
+        {
+            var group = _cfg?.Test?.Groups?.FirstOrDefault(x => x.Members.Contains(channel));
+            if (group == null || group.Id < 1 || group.Id > 4) return;
+            var boxes = new[] { uiGroupBox4, uiGroupBox5, uiGroupBox6, uiGroupBox7 };
+            _powerGroupInterlockLatches.Add(group.Id);
+            boxes[group.Id - 1].Text = $"电源{group.Id} 联锁锁存";
+            boxes[group.Id - 1].ForeColor = Color.OrangeRed;
+        }
+
+        private void ClearPowerGroupInterlockLatchAfterPreflight(int channel)
+        {
+            var group = _cfg?.Test?.Groups?.FirstOrDefault(x => x.Members.Contains(channel));
+            if (group != null) _powerGroupInterlockLatches.Remove(group.Id);
+        }
+
+        private static string ShortRuntimeReason(string reason)
+        {
+            if (string.IsNullOrWhiteSpace(reason)) return string.Empty;
+            var localized = AlarmMessageLocalizer.ToUserMessage(reason).Replace("\r", " ").Replace("\n", " ").Trim();
+            return localized.Length <= 12 ? localized : localized.Substring(0, 12) + "…";
+        }
+
+        private static string GetRuntimeStateText(ChannelRuntimeState state)
+        {
+            switch (state)
+            {
+                case ChannelRuntimeState.Starting: return "启动中";
+                case ChannelRuntimeState.Learning: return "学习中";
+                case ChannelRuntimeState.Running: return "运行";
+                case ChannelRuntimeState.WarningRunning: return "软预警";
+                case ChannelRuntimeState.Paused: return "暂停";
+                case ChannelRuntimeState.AlarmStopped: return "报警停机";
+                case ChannelRuntimeState.InterlockStopped: return "联锁停机";
+                case ChannelRuntimeState.ManualStopped: return "人工停止";
+                case ChannelRuntimeState.Completed: return "正常完成";
+                case ChannelRuntimeState.StartBlocked: return "启动受阻";
+                default: return "未启用";
+            }
+        }
+
+        private static Color GetRuntimeStateColor(ChannelRuntimeState state)
+        {
+            switch (state)
+            {
+                case ChannelRuntimeState.Running: return Color.FromArgb(32, 166, 82);
+                case ChannelRuntimeState.Starting:
+                case ChannelRuntimeState.Learning: return Color.FromArgb(41, 128, 185);
+                case ChannelRuntimeState.WarningRunning: return Color.FromArgb(230, 126, 34);
+                case ChannelRuntimeState.AlarmStopped:
+                case ChannelRuntimeState.StartBlocked: return Color.FromArgb(198, 40, 40);
+                case ChannelRuntimeState.InterlockStopped: return Color.FromArgb(230, 74, 25);
+                case ChannelRuntimeState.Completed: return Color.FromArgb(0, 121, 107);
+                case ChannelRuntimeState.Paused: return Color.FromArgb(117, 117, 117);
+                default: return Color.FromArgb(120, 120, 120);
+            }
+        }
+
+        private static EpbTestStatus MapRuntimeRecordStatus(ChannelRuntimeState state)
+        {
+            switch (state)
+            {
+                case ChannelRuntimeState.Starting:
+                case ChannelRuntimeState.Running:
+                case ChannelRuntimeState.WarningRunning: return EpbTestStatus.Running;
+                case ChannelRuntimeState.Learning: return EpbTestStatus.Learning;
+                case ChannelRuntimeState.Paused: return EpbTestStatus.Paused;
+                case ChannelRuntimeState.AlarmStopped: return EpbTestStatus.Alarm;
+                case ChannelRuntimeState.InterlockStopped: return EpbTestStatus.Interlocked;
+                case ChannelRuntimeState.ManualStopped: return EpbTestStatus.ManualStopped;
+                case ChannelRuntimeState.Completed: return EpbTestStatus.Completed;
+                case ChannelRuntimeState.StartBlocked: return EpbTestStatus.StartBlocked;
+                default: return EpbTestStatus.NotStarted;
             }
         }
 
@@ -193,6 +398,12 @@ namespace MTEmbTest
                     var boxes = new[] { uiGroupBox4, uiGroupBox5, uiGroupBox6, uiGroupBox7 };
                     if (telemetry.SupplyId < 1 || telemetry.SupplyId > boxes.Length) return;
                     var box = boxes[telemetry.SupplyId - 1];
+                    if (_powerGroupInterlockLatches.Contains(telemetry.ElectricalGroupId))
+                    {
+                        box.Text = $"电源{telemetry.SupplyId} 联锁锁存";
+                        box.ForeColor = Color.OrangeRed;
+                        return;
+                    }
                     var snapshot = telemetry.Snapshot;
                     if (snapshot == null)
                     {
@@ -242,31 +453,5 @@ namespace MTEmbTest
             catch { }
         }
 
-        private void ClosePowerSuppliesBeforeExit(object sender, FormClosingEventArgs e)
-        {
-            if (_epb == null) return;
-            try
-            {
-                using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(8)))
-                    _epb.StopAllAsync(
-                            new StopContext
-                            {
-                                Source = StopSource.ApplicationClosing,
-                                Reason = "主窗体关闭",
-                                Initiator = nameof(ClosePowerSuppliesBeforeExit),
-                                CorrelationId = Guid.NewGuid().ToString("N")
-                            },
-                            cts.Token)
-                        .GetAwaiter().GetResult();
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show(
-                    "未能确认全部程控电源已经关闭，请立即检查电源面板和急停回路。\r\n" + ex.Message,
-                    "电源关闭未确认",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Error);
-            }
-        }
     }
 }

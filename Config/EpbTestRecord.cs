@@ -396,6 +396,18 @@ namespace Config
         Completed = 3,
 
         /// <summary>出现报警/故障。</summary>
-        Alarm = 4
+        Alarm = 4,
+
+        /// <summary>人工停止。</summary>
+        ManualStopped = 5,
+
+        /// <summary>因同组或同设备故障被联锁停止。</summary>
+        Interlocked = 6,
+
+        /// <summary>安全预检或启动流程受阻。</summary>
+        StartBlocked = 7,
+
+        /// <summary>正在执行学习阶段。</summary>
+        Learning = 8
     }
 }
