@@ -34,7 +34,7 @@ namespace AdaptiveControlTests
                 Run("未识别负载上升前到阈值立即停机", ThresholdBeforeLoadRiseFaults);
                 Run("夹紧阈值必须连续三样本确认", ClampNeedsThreeSamples);
                 Run("稳定模型后连续50圈仍记录正向空行程", StableProfileKeepsLearningForFiftyCycles);
-                Run("正向未进入负载上升按模型期限硬停", ForwardLoadRiseDeadlineFaults);
+                Run("正式控制仍按程序级期限拦截无负载上升", ForwardLoadRiseDeadlineFaults);
                 Run("正向低平台200ms立即断电并软预警", ForwardCurrentRiseStallWarnsAndCutsPower);
                 Run("14.6A近目标平台200ms软完成", NearTargetPlateauCompletesWithWarning);
                 Run("13.9A短平台恢复后不误停", LowPlateauRecoversBeforeFaultWindow);
@@ -48,9 +48,17 @@ namespace AdaptiveControlTests
                 Run("现场EPB8和EPB9曲线可释放", MeasuredReverseFixturesRelease);
                 Run("反向3到9A平台按模型期限硬停", SustainedReverseLoadFaultsAtProgressDeadline);
                 Run("反向低电流平台200ms确认释放", ReverseLowPlateauReleasesInOneWindow);
+                Run("反向3A配置带不被稳定模型收紧", ReverseConfiguredReleaseBandOverridesStableModel);
+                Run("反向3A边界严格判定", ReverseConfiguredReleaseBoundary);
                 Run("预释放6.5A平台按15A目标不误报", PreReleaseNormalPlatformUsesForwardReference);
                 Run("预释放持续超过9A触发高平台保护", PreReleaseHighPlatformStillFaults);
                 Run("预释放失败阻止学习阶段", PreReleaseFailureBlocksLearning);
+                Run("启动定位涌流后连续三点高电流确认", StartupPositioningConfirmsHighCurrentAfterInrush);
+                Run("启动定位真正过流优先于终点确认", StartupPositioningOverCurrentTakesPriority);
+                Run("启动定位拆分进展期限与绝对上电上限", StartupPositioningSeparatesForwardTimingBudgets);
+                Run("10358-029四路启动快照不再在3秒误停", StartupPositioningFieldSnapshotsSurviveThreeSeconds);
+                Run("启动定位反向不复用正式循环历史期限", StartupPositioningSeparatesReverseTimingBudgets);
+                Run("10358-029四路启动反向快照均可释放", StartupPositioningReverseFieldSnapshotsRelease);
                 Run("保持阶段不误报断流", HoldDoesNotFault);
                 Run("三样本过流", ThreeSampleOverCurrent);
                 Run("开路检测", OpenCircuit);
@@ -61,18 +69,24 @@ namespace AdaptiveControlTests
                 Run("终态断电先于阻塞诊断发布", TerminalOffPrecedesBlockingDiagnostics);
                 Run("DO失败与电流未清零触发组级联锁", OffFailureEscalatesToPowerGroup);
                 Run("断电电流在窗口内清零不联锁且超时只失败一次", OffCurrentPollingWindow);
+                Run("反向残余负电流不能误判为断电清零", NegativeOffCurrentDoesNotClear);
                 Run("断电清零阈值适配现场零偏且保持安全上限", OffCurrentThresholdTracksTrustedBaseline);
                 Run("项目XML不再保存程序级安全参数", ProjectXmlIgnoresProgramSafetySettings);
                 Run("EXE安全配置缺失非法时使用安全默认值", ProgramSafetySettingsValidation);
                 Run("程序安全配置快照包含值与来源", ProgramSafetySnapshotIsAuditable);
                 Run("报警配置加载正向低平台连续5圈", AlarmConfigLoadsForwardStallConfirmation);
+                Run("峰值证据连续3圈且有效圈清零", PeakEvidenceMismatchRequiresThreeCycles);
+                Run("报警界面提示不暴露英文故障码", AlarmMessagesAreLocalized);
+                Run("UI配置并发保存保持有效XML", ConcurrentUiConfigSaveIsAtomic);
                 Run("旧项目100ms断电清零配置自动迁移", LegacyShortOffTimeoutIsMigrated);
                 Run("旧项目液压安全节点使用默认值并在保存时补齐", LegacyHydraulicSafetyDefaultsAreCompleted);
-                Run("液压目标压力默认正负5bar判定", HydraulicPressureToleranceWindow);
+                Run("液压容差缺省10bar且显式配置不迁移", HydraulicPressureToleranceDefaults);
+                Run("液压目标压力正负10bar判定", HydraulicPressureToleranceWindow);
+                Run("液压建压超时提示按失败方向区分", HydraulicBuildTimeoutGuidance);
                 Run("模型原子保存与重载", ProfilePersistence);
                 Run("控流模型五圈收敛到目标带", CutoffModelConvergesWithinFiveCycles);
                 Run("峰值系统偏差用于提前断电补偿", PeakBiasCorrectionIsLearned);
-                Run("偶发超调不累计为连续硬故障", OvershootStreakRequiresConsecutiveCycles);
+                Run("普通过冲连续5圈才达到确认值", OvershootStreakRequiresConsecutiveCycles);
                 Run("正向低平台连续5圈确认且正常圈清零", ForwardStallStreakRequiresFiveCycles);
                 Run("版本1模型无损升级到版本3", VersionOneProfileMigrates);
                 Run("损坏模型回退", CorruptProfileFallback);
@@ -93,7 +107,8 @@ namespace AdaptiveControlTests
                 Run("错峰单通道相位为零", StaggerSingleChannelStartsAtZero);
                 Run("错峰任务不等待前相位完成", StaggerExecutorDoesNotSerialize);
                 Run("12通道并发首次创建运行对象", TwelveChannelsCreateRuntimesConcurrently);
-                Run("12通道错过锚点同时放行仍可安全创建", OverdueTwelveChannelReleaseCreatesSafely);
+                Run("12通道错过锚点仍保留800ms相位", OverdueTwelveChannelReleaseCreatesSafely);
+                Run("人工停止取消不记为批量启动异常", ManualCancellationIsExpected);
                 Run("同通道并发只创建一个运行对象", SameChannelCreatesExactlyOneRuntime);
                 Run("12通道启动停止抢占不损坏运行表", ConcurrentStartStopDoesNotCorruptRuntimeStore);
                 Run("12通道连续启动停止不残留运行对象", TwelveChannelsRestartWithoutRuntimeLeaks);
@@ -316,7 +331,7 @@ namespace AdaptiveControlTests
 
         private static void ForwardLoadRiseDeadlineFaults()
         {
-            // 首次完全释放后的学习圈尚无稳定模型，应使用配置的3000ms空行程期限。
+            // 正式控制未提供启动定位覆盖值时，仍使用程序级3000ms进展期限。
             var machine = NewMachine();
             machine.ArmForward(Tick(0), 100, 6500, 15, 1, 3);
             EpbAdaptiveDecision terminal = null;
@@ -554,6 +569,222 @@ namespace AdaptiveControlTests
             Assert(!learningStarted, "预释放失败后仍进入学习阶段");
         }
 
+        private static void StartupPositioningConfirmsHighCurrentAfterInrush()
+        {
+            var detector = new StartupPositioningCurrentClassifier(100, 14.2, 17.0, 3);
+            Assert(detector.Evaluate(20, 18.0) == StartupCurrentClassification.None,
+                "涌流忽略窗口内的高电流被错误确认");
+            Assert(detector.Evaluate(100, 15.1) == StartupCurrentClassification.None,
+                "单个高电流样本被错误确认");
+            Assert(detector.Evaluate(102, 15.3) == StartupCurrentClassification.None,
+                "两个高电流样本被错误确认");
+            Assert(detector.Evaluate(104, 15.2) == StartupCurrentClassification.HighCurrentConfirmed,
+                "涌流后连续三点高电流未确认启动位置");
+        }
+
+        private static void StartupPositioningOverCurrentTakesPriority()
+        {
+            var detector = new StartupPositioningCurrentClassifier(100, 14.2, 17.0, 3);
+            detector.Evaluate(100, -17.5);
+            detector.Evaluate(102, -17.6);
+            Assert(detector.Evaluate(104, -17.7) == StartupCurrentClassification.OverCurrent,
+                "真正连续过流被错误当成机械终点完成");
+        }
+
+        private static void StartupPositioningSeparatesForwardTimingBudgets()
+        {
+            var limits = new EpbAdaptiveSafetyLimits
+            {
+                ForwardProgressConfirmMs = 200,
+                ForwardProgressDeadlineMs = 3000
+            };
+            var channels = new[]
+            {
+                new { Channel = 4, Median = 2482.0, Mad = 57.0 },
+                new { Channel = 5, Median = 2867.0, Mad = 39.0 },
+                new { Channel = 9, Median = 2842.0, Mad = 40.0 },
+                new { Channel = 10, Median = 3346.0, Mad = 141.0 }
+            };
+
+            foreach (var item in channels)
+            {
+                var profile = new EpbAdaptiveProfile
+                {
+                    Channel = item.Channel,
+                    ForwardClampMedianMs = item.Median,
+                    ForwardClampMadMs = item.Mad,
+                    ValidSampleCount = 5
+                };
+                var budget = EpbCycleRunner.ResolveStartupForwardTiming(
+                    15_000,
+                    100,
+                    limits,
+                    profile,
+                    projectForwardLimitMs: 3000);
+
+                Assert(budget.ProgramProgressDeadlineMs == 3000,
+                    $"EPB{item.Channel}程序级期限审计值错误");
+                Assert(budget.ProjectForwardLimitMs == 3000,
+                    $"EPB{item.Channel}项目旧时限未保留为审计值");
+                Assert(budget.EffectiveProgressDeadlineMs >= 5000,
+                    $"EPB{item.Channel}启动定位仍会在3秒附近误停");
+                Assert(budget.AbsoluteOnTimeMs == 9000,
+                    $"EPB{item.Channel}启动定位未使用15秒周期对应的9秒绝对硬上限");
+                Assert(budget.EffectiveProgressDeadlineMs < budget.AbsoluteOnTimeMs,
+                    $"EPB{item.Channel}进展期限与绝对硬上限未真正拆分");
+            }
+        }
+
+        private static void StartupPositioningFieldSnapshotsSurviveThreeSeconds()
+        {
+            var path = Path.Combine(
+                AppDomain.CurrentDomain.BaseDirectory,
+                "Fixtures",
+                "20260804_10358-029_startup_positioning.txt");
+            var rows = ReadStartupFixture(path);
+            var expectedChannels = new[] { 4, 5, 9, 10 };
+            Assert(expectedChannels.All(rows.ContainsKey), "10358-029启动定位夹具缺少报警通道");
+
+            foreach (var channel in expectedChannels)
+            {
+                var points = rows[channel];
+                var profile = StartupFieldProfile(channel);
+                var limits = new EpbAdaptiveSafetyLimits
+                {
+                    ForwardProgressConfirmMs = 200,
+                    ForwardProgressDeadlineMs = 3000
+                };
+                var budget = EpbCycleRunner.ResolveStartupForwardTiming(
+                    15_000,
+                    100,
+                    limits,
+                    profile,
+                    projectForwardLimitMs: 3000);
+                var machine = new EpbAdaptiveCurrentStateMachine(profile);
+                machine.ArmForward(
+                    Tick(0),
+                    100,
+                    budget.AbsoluteOnTimeMs,
+                    15,
+                    2,
+                    3,
+                    limits,
+                    budget.EffectiveProgressDeadlineMs);
+
+                EpbAdaptiveDecision last = null;
+                foreach (var point in points)
+                {
+                    last = machine.OnSample(Tick(point.ElapsedMs), point.CurrentA);
+                    Assert(!last.HardFault,
+                        $"EPB{channel}现场启动快照在{point.ElapsedMs}ms仍被误判：{last.Reason}");
+                }
+
+                Assert(last != null && last.ElapsedMs >= 2780,
+                    $"EPB{channel}现场启动快照覆盖不足，无法验证原报警边界");
+            }
+        }
+
+        private static void StartupPositioningSeparatesReverseTimingBudgets()
+        {
+            var limits = new EpbAdaptiveSafetyLimits
+            {
+                ReverseProgressConfirmMs = 200,
+                ReverseProgressDeadlineMs = 2500
+            };
+            var profile = StartupReverseFieldProfile(4);
+            var budget = EpbCycleRunner.ResolveStartupReverseTiming(
+                100,
+                limits,
+                profile,
+                3000,
+                3.0);
+
+            Assert(budget.ProgramProgressDeadlineMs == 2500,
+                "启动定位反向程序级进展期限错误");
+            Assert(budget.LearnedProgressDeadlineMs == 2001,
+                "EPB4正式循环历史释放期限审计值错误");
+            Assert(budget.EffectiveProgressDeadlineMs == 2500,
+                "启动定位仍被正式循环历史释放期限提前截断");
+            Assert(budget.AbsoluteOnTimeMs == 3000,
+                "启动定位反向绝对上电上限不再是3000ms");
+            Assert(Math.Abs(budget.ReleaseThresholdA - 3.0) < 1e-9,
+                "启动定位反向释放阈值不再是项目3A带宽");
+
+            var machine = new EpbAdaptiveCurrentStateMachine(profile);
+            machine.ArmReverse(
+                Tick(0),
+                100,
+                budget.AbsoluteOnTimeMs,
+                budget.ReleaseThresholdA,
+                3.0,
+                15.0,
+                limits,
+                1000,
+                budget.EffectiveProgressDeadlineMs);
+            var beforeProgramDeadline = Feed(machine, 0, 2200, 10, _ => 4.5);
+            Assert(!beforeProgramDeadline.ReleaseCompleted && !beforeProgramDeadline.HardFault,
+                "启动定位反向仍在EPB4历史2001ms期限附近提前硬停");
+            var terminal = Feed(machine, 2210, 2600, 10, _ => 4.5);
+            Assert(
+                terminal.HardFault &&
+                terminal.Reason.Contains("ReverseCurrentDecayStalled") &&
+                terminal.ElapsedMs >= 2500 && terminal.ElapsedMs <= 2520,
+                "启动定位反向未在程序级2500ms进展期限硬停");
+        }
+
+        private static void StartupPositioningReverseFieldSnapshotsRelease()
+        {
+            var path = Path.Combine(
+                AppDomain.CurrentDomain.BaseDirectory,
+                "Fixtures",
+                "20260804_10358-029_startup_reverse_release.csv");
+            var rows = ReadReverseFixture(path);
+            var expectedReleaseMs = new Dictionary<int, int>
+            {
+                [4] = 485,
+                [5] = 501,
+                [9] = 394,
+                [10] = 470
+            };
+            Assert(expectedReleaseMs.Keys.All(rows.ContainsKey),
+                "10358-029启动反向夹具缺少报警通道");
+
+            foreach (var expected in expectedReleaseMs)
+            {
+                var machine = new EpbAdaptiveCurrentStateMachine(
+                    StartupReverseFieldProfile(expected.Key));
+                machine.ArmReverse(
+                    Tick(0),
+                    100,
+                    3000,
+                    3.0,
+                    3.0,
+                    15.0,
+                    new EpbAdaptiveSafetyLimits(),
+                    1000,
+                    2500);
+
+                EpbAdaptiveDecision terminal = null;
+                foreach (var point in rows[expected.Key])
+                {
+                    var decision = machine.OnSample(Tick(point.ElapsedMs), point.CurrentA);
+                    if (!decision.ReleaseCompleted && !decision.HardFault) continue;
+                    terminal = decision;
+                    break;
+                }
+
+                Assert(
+                    terminal != null && terminal.ReleaseCompleted && !terminal.HardFault,
+                    $"EPB{expected.Key}启动反向现场快照仍未识别释放：{terminal?.Reason}");
+                Assert(Math.Abs(terminal.ReleaseThresholdA - 3.0) < 1e-9,
+                    $"EPB{expected.Key}现场回放生效阈值不是3A");
+                Assert(
+                    Math.Abs(terminal.ElapsedMs - expected.Value) <= 40 &&
+                    terminal.ElapsedMs <= 600,
+                    $"EPB{expected.Key}现场回放释放时点异常：{terminal.ElapsedMs}ms");
+            }
+        }
+
         private static void ReverseReleaseIgnoresSparseOutliers()
         {
             var machine = NewReverseMachine(StableProfile());
@@ -665,6 +896,30 @@ namespace AdaptiveControlTests
                 released.ReleaseCandidateElapsedMs >= 200 &&
                 released.ElapsedMs <= 220,
                 "低于3A的稳定反向平台没有在单个200ms窗口后断电");
+        }
+
+        private static void ReverseConfiguredReleaseBandOverridesStableModel()
+        {
+            var machine = NewReverseMachine(StartupReverseFieldProfile(4));
+            var released = Feed(machine, 0, 600, 10, _ => 1.65);
+            Assert(
+                released.ReleaseCompleted &&
+                !released.HardFault &&
+                Math.Abs(released.ReleaseThresholdA - 3.0) < 1e-9,
+                "稳定画像仍把项目3A释放带收紧到历史空载电流附近");
+        }
+
+        private static void ReverseConfiguredReleaseBoundary()
+        {
+            var atBoundary = NewReverseMachine(StartupReverseFieldProfile(4));
+            var released = Feed(atBoundary, 0, 600, 10, _ => 3.0);
+            Assert(released.ReleaseCompleted && !released.HardFault,
+                "稳定3A平台未按项目释放边界放行");
+
+            var aboveBoundary = NewReverseMachine(StartupReverseFieldProfile(4));
+            var pending = Feed(aboveBoundary, 0, 600, 10, _ => 3.01);
+            Assert(!pending.ReleaseCompleted && !pending.HardFault,
+                "高于3A的稳定平台被错误识别为已经释放");
         }
 
         private static void HoldDoesNotFault()
@@ -854,7 +1109,8 @@ namespace AdaptiveControlTests
                 missing.ReverseProgressDeadlineMs == 2500 &&
                 Math.Abs(missing.OffCurrentClearThresholdA - 0.1) < 1e-9 &&
                 missing.OffCurrentClearTimeoutMs == 1000 &&
-                Math.Abs(missing.PeakEvidenceMismatchToleranceA - 1.0) < 1e-9,
+                Math.Abs(missing.PeakEvidenceMismatchToleranceA - 1.0) < 1e-9 &&
+                missing.PeakEvidenceMaximumLagMs == 100,
                 "缺少EXE配置时未使用完整编译安全默认值");
 
             var invalidValues = new System.Collections.Specialized.NameValueCollection
@@ -868,7 +1124,8 @@ namespace AdaptiveControlTests
                 ["EpbReverseProgressDeadlineMs"] = "300",
                 ["EpbOffCurrentClearThresholdA"] = "0",
                 ["EpbOffCurrentClearTimeoutMs"] = "100",
-                ["EpbPeakEvidenceMismatchToleranceA"] = "0.5"
+                ["EpbPeakEvidenceMismatchToleranceA"] = "0.5",
+                ["EpbPeakEvidenceMaximumLagMs"] = "1"
             };
             var normalized = EpbProgramSafetySettings.FromAppSettings(
                 invalidValues,
@@ -883,7 +1140,8 @@ namespace AdaptiveControlTests
                 normalized.ReverseProgressDeadlineMs == 2500 &&
                 Math.Abs(normalized.OffCurrentClearThresholdA - 0.1) < 1e-9 &&
                 normalized.OffCurrentClearTimeoutMs == 1000 &&
-                Math.Abs(normalized.PeakEvidenceMismatchToleranceA - 1.0) < 1e-9,
+                Math.Abs(normalized.PeakEvidenceMismatchToleranceA - 1.0) < 1e-9 &&
+                normalized.PeakEvidenceMaximumLagMs == 100,
                 "非法EXE安全参数未按安全下限钳制");
         }
 
@@ -903,11 +1161,12 @@ namespace AdaptiveControlTests
                 var path = settings.SaveEffectiveSnapshot(directory, NullLogger.Instance);
                 var xml = File.ReadAllText(path);
                 Assert(
-                    xml.Contains("policyVersion=\"2026.08.03.1\"") &&
+                    xml.Contains("policyVersion=\"2026.08.04.1\"") &&
                     xml.Contains("key=\"EpbForwardProgressConfirmMs\" value=\"1200\" source=\"appSettings\"") &&
                     xml.Contains("key=\"EpbForwardProgressDeadlineMs\" value=\"6000\" source=\"appSettings\"") &&
                     xml.Contains("key=\"EpbReverseProgressConfirmMs\" value=\"200\" source=\"compiled-default\"") &&
-                    xml.Contains("key=\"EpbPeakEvidenceMismatchToleranceA\" value=\"1\" source=\"compiled-default\""),
+                    xml.Contains("key=\"EpbPeakEvidenceMismatchToleranceA\" value=\"1\" source=\"compiled-default\"") &&
+                    xml.Contains("key=\"EpbPeakEvidenceMaximumLagMs\" value=\"100\" source=\"compiled-default\""),
                     "程序安全快照未完整记录策略版本、生效值和来源");
             }
             finally
@@ -930,6 +1189,8 @@ namespace AdaptiveControlTests
             var loaded = AlarmConfigLoader.Load(source);
             Assert(
                 loaded.Behavior.AdaptiveForwardStallConfirmCycles == 5 &&
+                loaded.Behavior.AdaptiveOvershootConfirmCycles == 5 &&
+                loaded.Behavior.PeakEvidenceMismatchConfirmCycles == 3 &&
                 loaded.WarningSnapshots.Enabled &&
                 loaded.WarningSnapshots.SaveCsv &&
                 loaded.WarningSnapshots.SaveBin &&
@@ -1039,14 +1300,14 @@ namespace AdaptiveControlTests
                 Assert(loaded.Hydraulics.All(x =>
                         x.BuildTimeoutMs == 5000 && x.BuildStableMs == 200 &&
                         x.PressureSampleMaxAgeMs == 100 &&
-                        Math.Abs(x.PressureToleranceBar - 5) < 1e-9 &&
+                        Math.Abs(x.PressureToleranceBar - 10) < 1e-9 &&
                         Math.Abs(x.HoldDropToleranceBar - 5) < 1e-9 &&
                         x.HoldDropConfirmMs == 100 && x.BarrierTimeoutMs == 0),
                     "旧项目缺少液压安全节点时未使用安全默认值");
                 ConfigLoader.SaveTest(target, loaded);
                 var saved = File.ReadAllText(target);
                 Assert(saved.Contains("<BuildTimeoutMs>5000</BuildTimeoutMs>") &&
-                       saved.Contains("<PressureToleranceBar>5</PressureToleranceBar>") &&
+                       saved.Contains("<PressureToleranceBar>10</PressureToleranceBar>") &&
                        saved.Contains("<PressureSampleMaxAgeMs>100</PressureSampleMaxAgeMs>") &&
                        saved.Contains("<BarrierTimeoutMs>0</BarrierTimeoutMs>"),
                     "保存旧项目时未补齐液压安全节点");
@@ -1057,18 +1318,63 @@ namespace AdaptiveControlTests
             }
         }
 
+        private static void HydraulicPressureToleranceDefaults()
+        {
+            var source = Path.GetFullPath(Path.Combine(
+                AppDomain.CurrentDomain.BaseDirectory,
+                "..", "..", "..", "..", "MTTfTest", "Config", "TestConfig.xml"));
+            var directory = CreateTempDir();
+            var target = Path.Combine(directory, "TestConfig.xml");
+            try
+            {
+                var xml = File.ReadAllText(source);
+                xml = new System.Text.RegularExpressions.Regex(
+                        "<PressureToleranceBar>10</PressureToleranceBar>")
+                    .Replace(xml, "<PressureToleranceBar>5</PressureToleranceBar>", 1);
+                File.WriteAllText(target, xml);
+
+                var loaded = ConfigLoader.LoadTest(target, NullLogger.Instance);
+                Assert(Math.Abs(loaded.Hydraulics[0].PressureToleranceBar - 5) < 1e-9,
+                    "显式配置的±5bar容差被错误迁移");
+                Assert(Math.Abs(loaded.Hydraulics[1].PressureToleranceBar - 10) < 1e-9,
+                    "未修改的模板容差不再是±10bar");
+            }
+            finally
+            {
+                Directory.Delete(directory, true);
+            }
+        }
+
         private static void HydraulicPressureToleranceWindow()
         {
-            Assert(HydraulicController.IsPressureWithinTarget(67.922, 70, 5),
-                "70bar目标下67.922bar应在默认±5bar窗口内");
-            Assert(HydraulicController.IsPressureWithinTarget(65, 70, 5),
+            Assert(HydraulicController.IsPressureWithinTarget(75.983, 70, 10),
+                "现场75.983bar应在默认±10bar窗口内");
+            Assert(HydraulicController.IsPressureWithinTarget(60, 70, 10),
                 "容差窗口下边界应合格");
-            Assert(HydraulicController.IsPressureWithinTarget(75, 70, 5),
+            Assert(HydraulicController.IsPressureWithinTarget(80, 70, 10),
                 "容差窗口上边界应合格");
-            Assert(!HydraulicController.IsPressureWithinTarget(64.999, 70, 5),
+            Assert(!HydraulicController.IsPressureWithinTarget(59.999, 70, 10),
                 "低于容差窗口不应合格");
-            Assert(!HydraulicController.IsPressureWithinTarget(75.001, 70, 5),
+            Assert(!HydraulicController.IsPressureWithinTarget(80.001, 70, 10),
                 "高于容差窗口不应合格");
+        }
+
+        private static void HydraulicBuildTimeoutGuidance()
+        {
+            var below = new HydraulicBuildTimeoutException(1, 70, 10, 55, 5000, "BelowToleranceWindow");
+            var above = new HydraulicBuildTimeoutException(2, 70, 10, 85, 5000, "AboveToleranceWindow");
+            var stale = new HydraulicBuildTimeoutException(2, 70, 10, double.NaN, 5000,
+                "PressureSampleStale AgeMs=150.0");
+
+            Assert(below.Message.Contains("brake-fluid level/leakage") &&
+                   !below.Message.Contains("pressure regulator/control valve"),
+                "低压超时未给出泄漏和供压方向提示");
+            Assert(above.Message.Contains("pressure regulator/control valve") &&
+                   !above.Message.Contains("caliper cracks"),
+                "超调超时仍错误提示检查卡钳泄漏");
+            Assert(stale.Message.Contains("pressure-sensor wiring") &&
+                   stale.Message.Contains("DAQ sampling"),
+                "压力采样异常未给出传感器和DAQ方向提示");
         }
 
         private static void OffFailureEscalatesToPowerGroup()
@@ -1121,6 +1427,19 @@ namespace AdaptiveControlTests
                 () => escalations++);
             Assert(!timedOut.Cleared && !cleared && escalations == 1,
                 "断电电流持续超限未在窗口结束后只触发一次联锁");
+        }
+
+        private static void NegativeOffCurrentDoesNotClear()
+        {
+            var result = EpbCycleRunner.PollOffCurrentUntilClearAsync(
+                    () => -15.0,
+                    0.1,
+                    40,
+                    10,
+                    CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+            Assert(!result.Cleared, "反向残余负电流被有符号比较误判为已清零");
         }
 
         private static void OffCurrentThresholdTracksTrustedBaseline()
@@ -1241,7 +1560,69 @@ namespace AdaptiveControlTests
             Assert(profile.UpdateForwardOvershootStreak(0.95, 0.8) == 2,
                 "连续超调第2圈计数错误");
             Assert(profile.UpdateForwardOvershootStreak(0.85, 0.8) == 3,
-                "连续超调第3圈未达到确认值");
+                "连续超调第3圈计数错误");
+            Assert(profile.UpdateForwardOvershootStreak(0.9, 0.8) == 4,
+                "连续超调第4圈计数错误");
+            Assert(profile.UpdateForwardOvershootStreak(0.88, 0.8) == 5,
+                "连续超调第5圈未达到确认值");
+        }
+
+        private static void PeakEvidenceMismatchRequiresThreeCycles()
+        {
+            var profile = StableProfile();
+            Assert(profile.UpdatePeakEvidenceMismatchStreak(true) == 1,
+                "峰值证据首次偏差计数错误");
+            Assert(profile.UpdatePeakEvidenceMismatchStreak(true) == 2,
+                "峰值证据第2圈偏差计数错误");
+            Assert(!EpbCycleRunner.IsPeakEvidenceMismatchConfirmed(2, 3),
+                "峰值证据第2圈被过早升级为硬故障");
+            Assert(profile.UpdatePeakEvidenceMismatchStreak(true) == 3,
+                "峰值证据第3圈未达到确认值");
+            Assert(EpbCycleRunner.IsPeakEvidenceMismatchConfirmed(3, 3),
+                "峰值证据第3圈未升级为硬故障");
+            Assert(profile.UpdatePeakEvidenceMismatchStreak(false) == 0,
+                "有效匹配圈未清零峰值证据偏差计数");
+        }
+
+        private static void AlarmMessagesAreLocalized()
+        {
+            var message = AlarmMessageLocalizer.ToUserMessage(
+                "AdaptiveHardFault PeakEvidenceMismatch QuickPeak=15.0A " +
+                "FullRatePeak=17.0A Streak=3/3");
+            Assert(message.Contains("峰值证据连续偏差") &&
+                   message.Contains("快速峰值=15.0A") &&
+                   message.Contains("完整数据峰值=17.0A") &&
+                   !message.Contains("PeakEvidenceMismatch") &&
+                   !message.Contains("AdaptiveHardFault"),
+                "峰值证据报警未转换为完整中文提示");
+        }
+
+        private static void ConcurrentUiConfigSaveIsAtomic()
+        {
+            var directory = CreateTempDir();
+            var path = Path.Combine(directory, "UIConfig.xml");
+            try
+            {
+                var tasks = Enumerable.Range(0, 20).Select(index => Task.Run(() =>
+                {
+                    var cfg = new UiConfig();
+                    var control = cfg.GetOrAddForm("Main").GetOrAdd("CheckEpbA1");
+                    control.Checked = (index & 1) == 0;
+                    ConfigLoader.SaveUI(path, cfg);
+                })).ToArray();
+                Task.WaitAll(tasks);
+
+                var document = new System.Xml.XmlDocument();
+                document.Load(path);
+                Assert(document.DocumentElement?.Name == "UiConfig",
+                    "并发保存后UI配置不是有效XML");
+                Assert(Directory.GetFiles(directory, "*.tmp").Length == 0,
+                    "并发保存后遗留临时文件");
+            }
+            finally
+            {
+                Directory.Delete(directory, true);
+            }
         }
 
         private static void ForwardStallStreakRequiresFiveCycles()
@@ -1645,6 +2026,8 @@ namespace AdaptiveControlTests
             var plan = ElectricalStaggerPlanner.Build(channels, groups, 15_000);
             var store = new ChannelRuntimeStore<object>();
             var factoryCounts = new int[13];
+            var sw = Stopwatch.StartNew();
+            var starts = new long[13];
 
             ElectricalStaggerExecutor.RunAsync(
                     channels,
@@ -1652,6 +2035,7 @@ namespace AdaptiveControlTests
                     DateTime.UtcNow.AddSeconds(-10),
                     (channel, token) =>
                     {
+                        starts[channel] = sw.ElapsedMilliseconds;
                         store.GetOrCreate(
                             channel,
                             () =>
@@ -1668,9 +2052,41 @@ namespace AdaptiveControlTests
                 .GetResult();
 
             Assert(store.Active.Count == 12 && store.Cache.Count == 12,
-                "错过锚点同时放行后未创建全部12个通道");
+                "错过锚点平移后未创建全部12个通道");
             Assert(Enumerable.Range(1, 12).All(channel => factoryCounts[channel] == 1),
-                "错过锚点同时放行造成重复创建");
+                "错过锚点平移后造成重复创建");
+            foreach (var group in groups)
+            {
+                var selected = group.Members.OrderBy(x => x).ToArray();
+                for (var i = 1; i < selected.Length; i++)
+                {
+                    var delta = starts[selected[i]] - starts[selected[i - 1]];
+                    Assert(delta >= 750 && delta <= 850,
+                        $"过期锚点未保留组{group.Id}的800ms相位：delta={delta}ms");
+                }
+            }
+        }
+
+        private static void ManualCancellationIsExpected()
+        {
+            Assert(
+                EpbManager.IsExpectedBatchCancellation(
+                    new TaskCanceledException("manual stop"),
+                    sessionCancellationRequested: true,
+                    externalCancellationRequested: false),
+                "批次令牌取消仍会按ERROR记录");
+            Assert(
+                EpbManager.IsExpectedBatchCancellation(
+                    new OperationCanceledException("external stop"),
+                    sessionCancellationRequested: false,
+                    externalCancellationRequested: true),
+                "外部人工取消仍会按ERROR记录");
+            Assert(
+                !EpbManager.IsExpectedBatchCancellation(
+                    new InvalidOperationException("real fault"),
+                    sessionCancellationRequested: true,
+                    externalCancellationRequested: true),
+                "真实启动异常被错误降级");
         }
 
         private static void TwelveChannelsRestartWithoutRuntimeLeaks()
@@ -2104,6 +2520,133 @@ namespace AdaptiveControlTests
             return result;
         }
 
+        private static Dictionary<int, List<StartupFixturePoint>> ReadStartupFixture(string path)
+        {
+            if (!File.Exists(path)) throw new FileNotFoundException("启动定位现场回归夹具不存在。", path);
+            var result = new Dictionary<int, List<StartupFixturePoint>>();
+            using (var reader = new StreamReader(path))
+            {
+                reader.ReadLine();
+                string line;
+                while ((line = reader.ReadLine()) != null)
+                {
+                    if (string.IsNullOrWhiteSpace(line)) continue;
+                    var columns = line.Split(',');
+                    var channel = int.Parse(columns[0], CultureInfo.InvariantCulture);
+                    var point = new StartupFixturePoint(
+                        int.Parse(columns[1], CultureInfo.InvariantCulture),
+                        double.Parse(columns[2], CultureInfo.InvariantCulture));
+                    if (!result.TryGetValue(channel, out var points))
+                    {
+                        points = new List<StartupFixturePoint>();
+                        result[channel] = points;
+                    }
+                    points.Add(point);
+                }
+            }
+
+            return result;
+        }
+
+        private static EpbAdaptiveProfile StartupFieldProfile(int channel)
+        {
+            switch (channel)
+            {
+                case 4:
+                    return new EpbAdaptiveProfile
+                    {
+                        Channel = channel,
+                        ForwardEmptyCurrentA = 1.7638791730371453,
+                        ForwardEmptyMadA = 0.061438496255703079,
+                        ForwardClampMedianMs = 2482,
+                        ForwardClampMadMs = 57,
+                        ValidSampleCount = 5
+                    };
+                case 5:
+                    return new EpbAdaptiveProfile
+                    {
+                        Channel = channel,
+                        ForwardEmptyCurrentA = 1.6306128601549541,
+                        ForwardEmptyMadA = 0.017286232683002334,
+                        ForwardClampMedianMs = 2867,
+                        ForwardClampMadMs = 39,
+                        ValidSampleCount = 5
+                    };
+                case 9:
+                    return new EpbAdaptiveProfile
+                    {
+                        Channel = channel,
+                        ForwardEmptyCurrentA = 1.9289907016652137,
+                        ForwardEmptyMadA = 0.094433085513352388,
+                        ForwardClampMedianMs = 2842,
+                        ForwardClampMadMs = 40,
+                        ValidSampleCount = 5
+                    };
+                case 10:
+                    return new EpbAdaptiveProfile
+                    {
+                        Channel = channel,
+                        ForwardEmptyCurrentA = 2.0077799304917923,
+                        ForwardEmptyMadA = 0.048709805738773149,
+                        ForwardClampMedianMs = 3346,
+                        ForwardClampMadMs = 141,
+                        ValidSampleCount = 5
+                    };
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(channel), channel, "未知现场启动定位通道");
+            }
+        }
+
+        private static EpbAdaptiveProfile StartupReverseFieldProfile(int channel)
+        {
+            switch (channel)
+            {
+                case 4:
+                    return new EpbAdaptiveProfile
+                    {
+                        Channel = channel,
+                        ReverseEmptyCurrentA = 0.6225766765174765,
+                        ReverseEmptyMadA = 0.010721825239599969,
+                        ReverseReleaseMedianMs = 1701,
+                        ReverseReleaseMadMs = 16,
+                        ValidSampleCount = 9
+                    };
+                case 5:
+                    return new EpbAdaptiveProfile
+                    {
+                        Channel = channel,
+                        ReverseEmptyCurrentA = 0.633915706264814,
+                        ReverseEmptyMadA = 0.015226307956014429,
+                        ReverseReleaseMedianMs = 1803,
+                        ReverseReleaseMadMs = 7,
+                        ValidSampleCount = 5
+                    };
+                case 9:
+                    return new EpbAdaptiveProfile
+                    {
+                        Channel = channel,
+                        ReverseEmptyCurrentA = 0.56184642405941454,
+                        ReverseEmptyMadA = 0.0098082975266891026,
+                        ReverseReleaseMedianMs = 2425,
+                        ReverseReleaseMadMs = 22,
+                        ValidSampleCount = 5
+                    };
+                case 10:
+                    return new EpbAdaptiveProfile
+                    {
+                        Channel = channel,
+                        ReverseEmptyCurrentA = 0.53488574720542525,
+                        ReverseEmptyMadA = 0.010892402755025343,
+                        ReverseReleaseMedianMs = 2065,
+                        ReverseReleaseMadMs = 16,
+                        ValidSampleCount = 5
+                    };
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(channel), channel,
+                        "未知现场启动反向通道");
+            }
+        }
+
         private static void AssertFixtureReleases(
             int channel,
             List<ReverseFixturePoint> points,
@@ -2162,6 +2705,18 @@ namespace AdaptiveControlTests
         private sealed class ReverseFixturePoint
         {
             public ReverseFixturePoint(int elapsedMs, double currentA)
+            {
+                ElapsedMs = elapsedMs;
+                CurrentA = currentA;
+            }
+
+            public int ElapsedMs { get; }
+            public double CurrentA { get; }
+        }
+
+        private sealed class StartupFixturePoint
+        {
+            public StartupFixturePoint(int elapsedMs, double currentA)
             {
                 ElapsedMs = elapsedMs;
                 CurrentA = currentA;

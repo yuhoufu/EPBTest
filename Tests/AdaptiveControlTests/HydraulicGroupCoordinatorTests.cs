@@ -144,6 +144,20 @@ namespace AdaptiveControlTests
             Assert(HydraulicController.IsPressureSampleQualified(
                     new PressureSample(2, 80, DateTime.UtcNow, Stopwatch.GetTimestamp()), 70, 100),
                 "新鲜达标压力未通过资格判定");
+            Assert(HydraulicController.ClassifyPressureSampleFailure(
+                       default(PressureSample), 70, 100) ==
+                   HydraulicPressureFailureReason.NoSample,
+                "无压力样本未被识别为无样本");
+            Assert(HydraulicController.ClassifyPressureSampleFailure(
+                       new PressureSample(2, 80, DateTime.UtcNow,
+                           now - Stopwatch.Frequency), 70, 100) ==
+                   HydraulicPressureFailureReason.StaleSample,
+                "陈旧压力样本未被识别为样本过期");
+            Assert(HydraulicController.ClassifyPressureSampleFailure(
+                       new PressureSample(2, 60, DateTime.UtcNow,
+                           Stopwatch.GetTimestamp()), 70, 100) ==
+                   HydraulicPressureFailureReason.BelowMinimum,
+                "新鲜低压样本未被识别为压力不足");
         }
 
         private static void SustainedPressureLossFaultsGeneration()
