@@ -38,6 +38,9 @@ namespace EpbDiskWriterTests
                 Run("正式圈保留策略不删除学习索引", FormalRetentionKeepsLearningRows);
                 Run("按通道圈号精确导出完整证据", ExactCompletedCycleExport);
                 Run("活动圈样本硬上限阻止覆盖", ActiveCycleSampleLimitStopsWrites);
+                Run("批量时间窗边界与重启恢复", BatchedWindowBoundarySurvivesRestart);
+                Run("设备多通道批次事务写入", DeviceBatchWritesMultipleChannels);
+                Run("Latest并发导出原子且无临时残留", ConcurrentLatestExportsAreAtomic);
                 Console.WriteLine($"PASS {_passed}/{_passed}");
                 return 0;
             }
@@ -645,6 +648,92 @@ namespace EpbDiskWriterTests
                 $"Data Source={Path.Combine(policy.IndexAndExportPath, policy.IndexDbFile)}");
             connection.Open();
             return connection;
+        }
+
+        private static void BatchedWindowBoundarySurvivesRestart()
+        {
+            WithRoot(root =>
+            {
+                var policy = NewPolicy(root);
+                var start = DateTime.UtcNow;
+                using (var writer = new EpbDiskWriter(policy))
+                {
+                    writer.BeginCycle(1, 1, start);
+                    writer.SealCycleWindow(1, 1, start.AddMilliseconds(1));
+                    writer.WriteBatch(
+                        1,
+                        new[] { start.AddMilliseconds(-1), start, start.AddMilliseconds(1), start.AddMilliseconds(2) },
+                        new[] { 1d, 2d, 3d, 4d },
+                        new[] { 10d, 10d, 10d, 10d },
+                        4);
+                    writer.WriteBatch(
+                        1,
+                        new[] { start.AddMilliseconds(1), start.AddMilliseconds(2) },
+                        new[] { 5d, 6d },
+                        new[] { 10d, 10d },
+                        2);
+                    var final = writer.GetCurrentCycleSampleCount(1);
+                    Assert(final == 3, "开始/结束时间窗未正确截取批次");
+                    writer.CompleteCycle(1, 1, final, start.AddMilliseconds(1));
+                }
+                using (var writer = new EpbDiskWriter(policy))
+                {
+                    var export = Path.Combine(root, "restart-export");
+                    writer.ExportLatestCyclesTo(1, 1, export, false);
+                    AssertMonotonicRelativeTime(CsvPath(export, 1, 1), 3);
+                    Assert(File.Exists(BinPath(export, 1, 1)), "时间窗重启导出缺少BIN");
+                }
+            });
+        }
+
+        private static void DeviceBatchWritesMultipleChannels()
+        {
+            WithRoot(root =>
+            {
+                var start = DateTime.UtcNow;
+                using var writer = new EpbDiskWriter(NewPolicy(root));
+                writer.BeginCycle(4, 1, start);
+                writer.BeginCycle(5, 1, start);
+                var timestamps = new[] { start, start.AddMilliseconds(1), start.AddMilliseconds(2) };
+                writer.WriteDeviceBatch(
+                    timestamps,
+                    new[]
+                    {
+                        new EpbChannelDiskBatch { EpbId = 4, Currents = new[] { 1d, 2d, 3d }, Pressures = new[] { 10d, 10d, 10d } },
+                        new EpbChannelDiskBatch { EpbId = 5, Currents = new[] { 4d, 5d, 6d }, Pressures = new[] { 10d, 10d, 10d } }
+                    },
+                    3);
+                writer.CompleteCycle(4, 1, writer.GetCurrentCycleSampleCount(4), timestamps[2]);
+                writer.CompleteCycle(5, 1, writer.GetCurrentCycleSampleCount(5), timestamps[2]);
+                var export = Path.Combine(root, "multi");
+                writer.ExportLatestCyclesTo(4, 1, export, false);
+                writer.ExportLatestCyclesTo(5, 1, export, false);
+                AssertCsvCycle(export, 4, 1, 3);
+                AssertCsvCycle(export, 5, 1, 3);
+            });
+        }
+
+        private static void ConcurrentLatestExportsAreAtomic()
+        {
+            WithRoot(root =>
+            {
+                var policy = NewPolicy(root);
+                using var writer = new EpbDiskWriter(policy);
+                WriteCompletedCycle(writer, 1, 1, 4, DateTime.UtcNow);
+                Task.WaitAll(Enumerable.Range(0, 8)
+                    .Select(_ => Task.Run(() => writer.ExportLatestCyclesNow(1, 1)))
+                    .ToArray());
+                var latest = Path.Combine(policy.IndexAndExportPath, "Latest", "EPB1");
+                var directories = Directory.GetDirectories(latest);
+                Assert(directories.Length == 8, $"Latest最终目录数量错误：{directories.Length}");
+                Assert(!Directory.EnumerateDirectories(latest, ".*.tmp-*", SearchOption.TopDirectoryOnly).Any(),
+                    "Latest存在未清理暂存目录");
+                foreach (var directory in directories)
+                {
+                    Assert(Directory.GetFiles(directory, "*.csv").Length == 1, "Latest缺少CSV");
+                    Assert(Directory.GetFiles(directory, "*.bin").Length == 1, "Latest缺少BIN");
+                }
+            });
         }
 
         private static void WriteCompletedCycle(

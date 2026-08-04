@@ -28,10 +28,14 @@
   <ItemGroup>
     <Reference Include="System" />
     <Reference Include="System.Core" />
+    <Reference Include="System.Buffers">
+      <HintPath>..\..\packages\System.Buffers.4.4.0\lib\netstandard2.0\System.Buffers.dll</HintPath>
+    </Reference>
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Program.cs" />
+    <Compile Include="DaqPersistenceCoordinatorTests.cs" />
     <Compile Include="HydraulicGroupCoordinatorTests.cs" />
     <Compile Include="PowerSupplyCoordinatorTests.cs" />
     <Compile Include="ProjectLogStoreTests.cs" />

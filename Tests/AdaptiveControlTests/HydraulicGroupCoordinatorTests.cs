@@ -18,6 +18,7 @@ namespace AdaptiveControlTests
             Run("陈旧低压不得通过释压确认", StaleLowPressureCannotConfirmRelease, ref passed);
             Run("液压同代次重复进入不重新登记已释放成员", SameGenerationReentryDoesNotReAddReleasedMember, ref passed);
             Run("液压代次屏障缺员在一个周期内超时", GenerationBarrierTimeoutIsBounded, ref passed);
+            Run("全员到齐后释压时间不计入屏障超时", SafePressureWaitDoesNotConsumeBarrierTimeout, ref passed);
             Run("液压样本无效或陈旧时资格判定失败", InvalidPressureSamplesAreRejected, ref passed);
             Run("保压持续下降触发液压组故障", SustainedPressureLossFaultsGeneration, ref passed);
             Run("报警电源组仅在无兄弟通道活动时关闭", PowerGroupIdlePredicateIsScoped, ref passed);
@@ -160,6 +161,31 @@ namespace AdaptiveControlTests
             {
                 Assert(ex.Message.Contains("Pending=[11]"), "屏障超时未记录缺失成员。");
             }
+        }
+
+        private static void SafePressureWaitDoesNotConsumeBarrierTimeout()
+        {
+            var pressure = 80.0;
+            var coordinator = NewCoordinator(
+                () => Volatile.Read(ref pressure),
+                async () =>
+                {
+                    // 现场复现中全员已到释放点（Pending=[]），但低压确认跨过了
+                    // BarrierTimeout；这段时间应受 ReleaseTimeoutMs 约束。
+                    await Task.Delay(100).ConfigureAwait(false);
+                    Volatile.Write(ref pressure, 0.0);
+                },
+                stableMs: 20,
+                timeoutMs: 500,
+                barrierTimeoutMs: 60);
+            var key = new HydraulicGenerationKey(Guid.NewGuid(), 2, HydraulicPhaseKind.Learning, 1);
+            var lease = coordinator.EnterGenerationAsync(key, new[] { 8, 9 }, CancellationToken.None)
+                .GetAwaiter().GetResult();
+
+            var first = coordinator.MarkVoltageReleaseAsync(lease, 8);
+            Thread.Sleep(20);
+            var second = coordinator.MarkVoltageReleaseAsync(lease, 9);
+            Task.WaitAll(first, second);
         }
 
         private static void InvalidPressureSamplesAreRejected()
