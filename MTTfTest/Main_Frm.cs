@@ -131,6 +131,13 @@ namespace MtEmbTest
 
             // 加载配置文件
             Cfg = ConfigLoader.LoadAll($@"{Environment.CurrentDirectory}\Config", Logger);
+            var projectRestore = ConfigLoader.LastProjectRestoreResult;
+            if (projectRestore != null && projectRestore.SelectionFound && !projectRestore.Restored)
+                MessageBox.Show(
+                    projectRestore.Message + "\r\n\r\n程序将继续使用默认项目；原项目选择记录不会被清除。",
+                    "上次项目暂不可用",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
 
 
             try

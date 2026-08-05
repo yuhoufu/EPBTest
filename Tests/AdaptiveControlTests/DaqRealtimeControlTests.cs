@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using Config;
@@ -26,6 +27,7 @@ namespace AdaptiveControlTests
             Run("普通轨迹25Hz且动作轨迹不降采样", AdaptiveTraceRateAndActionRetention, ref passed);
             Run("控制诊断记录真实64批容量", ControlDiagnosticsUseRealCapacity, ref passed);
             Run("构建身份包含版本哈希位数与Git状态", BuildIdentityIsAuditable, ref passed);
+            Run("最后项目跨版本恢复且不可用时保留选择", LastProjectSelectionSurvivesUpgradeAndUnavailableStorage, ref passed);
             return passed;
         }
 
@@ -285,6 +287,62 @@ namespace AdaptiveControlTests
                    !string.IsNullOrWhiteSpace(identity.ConfigSha256), "版本或哈希字段缺失");
             Assert(json.Contains("\"gitCommit\"") && json.Contains("\"gitDirty\""),
                 "Git构建身份字段缺失");
+        }
+
+        private static void LastProjectSelectionSurvivesUpgradeAndUnavailableStorage()
+        {
+            var testRoot = Path.Combine(
+                Path.GetTempPath(),
+                "EPBTest-LastProjectSelection-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(testRoot);
+            try
+            {
+                var storeDir = Path.Combine(testRoot, "Data");
+                const string projectName = "10358-029";
+                var projectConfig = ConfigLoader.GetProjectTestConfigPath(storeDir, projectName);
+                Directory.CreateDirectory(Path.GetDirectoryName(projectConfig));
+                var template = Path.GetFullPath(Path.Combine(
+                    AppDomain.CurrentDomain.BaseDirectory,
+                    "..", "..", "..", "..", "MTTfTest", "Config", "TestConfig.xml"));
+                File.Copy(template, projectConfig);
+
+                var statePath = Path.Combine(testRoot, "UserState", "user-state.json");
+                Assert(LastProjectSelectionStore.TrySave(
+                    storeDir, projectName, out var saveError, statePath), saveError);
+                var json = File.ReadAllText(statePath);
+                Assert(json.Contains("10358-029") && !json.Contains("DaqControlHardFaultAgeMs"),
+                    "用户状态混入程序级安全配置");
+
+                var global = new GlobalConfig
+                {
+                    Test = new TestConfig { StoreDir = testRoot, TestName = "DefaultProject" }
+                };
+                var restored = LastProjectSelectionStore.Restore(
+                    global, null, Config.NullLogger.Instance, statePath);
+                Assert(restored.Restored && global.Test.TestName == projectName &&
+                       Path.GetFullPath(global.Test.StoreDir) == Path.GetFullPath(storeDir),
+                    "升级后未恢复最后项目");
+
+                File.Move(projectConfig, projectConfig + ".offline");
+                var unavailable = LastProjectSelectionStore.Restore(
+                    global, null, Config.NullLogger.Instance, statePath);
+                Assert(unavailable.SelectionFound && !unavailable.Restored && File.Exists(statePath),
+                    "项目暂不可用时错误清除了最后选择");
+                File.Move(projectConfig + ".offline", projectConfig);
+
+                var bootstrapState = Path.Combine(testRoot, "BootstrapState", "user-state.json");
+                var bootstrap = LastProjectSelectionStore.Restore(
+                    new GlobalConfig { Test = new TestConfig() },
+                    Path.Combine(storeDir, projectName),
+                    Config.NullLogger.Instance,
+                    bootstrapState);
+                Assert(bootstrap.Restored && bootstrap.UsedBootstrap && File.Exists(bootstrapState),
+                    "首次引导项目未写入独立用户状态");
+            }
+            finally
+            {
+                if (Directory.Exists(testRoot)) Directory.Delete(testRoot, true);
+            }
         }
 
         private static void Run(string name, Action test, ref int passed)

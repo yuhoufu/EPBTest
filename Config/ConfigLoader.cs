@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Configuration;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -242,6 +243,8 @@ public sealed class GlobalConfig
 /// </summary>
 public static class ConfigLoader
 {
+    public static LastProjectRestoreResult LastProjectRestoreResult { get; private set; }
+
     /// <summary>
     /// 当前已经解析并接管的项目根目录。项目日志适配器据此开始持久化，
     /// 避免在项目配置尚未确定时误写到默认模板目录。
@@ -268,7 +271,19 @@ public static class ConfigLoader
 
         var uiPath = Path.Combine(configDir, "UiConfig.xml");
         var ui = LoadUI(uiPath, log);
-        return new GlobalConfig { AO = ao, DO = dO, Test = test, UI = ui };
+        var global = new GlobalConfig { AO = ao, DO = dO, Test = test, UI = ui };
+        // 仅主程序自动恢复；测试程序和配置工具不会读取当前 Windows 用户的项目状态。
+        if (string.Equals(
+                Path.GetFileNameWithoutExtension(AppDomain.CurrentDomain.FriendlyName),
+                "MTTFTest",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            LastProjectRestoreResult = LastProjectSelectionStore.Restore(
+                global,
+                ConfigurationManager.AppSettings["InitialProjectPath"],
+                log);
+        }
+        return global;
     }
 
     /// <summary>读取 AOConfig.xml。</summary>

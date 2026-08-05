@@ -83,8 +83,8 @@ namespace MtEmbTest
             this.Size = new Size(1415, 780); // 设置窗体大小，适合在客户机子上运行,
             logger = new FormLoggerAdapter(MaxInfos, MaxWarns, MaxErrors,
                 LogInformation, LogWarn, LogError, this);
-            // 重新获取cfg
-            _cfg = ConfigLoader.LoadAll($@"{Environment.CurrentDirectory}\Config", logger);
+            // 主窗体已经恢复最后项目时复用同一个配置对象；独立打开时再重新加载。
+            _cfg = cfg ?? ConfigLoader.LoadAll($@"{Environment.CurrentDirectory}\Config", logger);
 
             
             _pressureSettings = new List<PressureSettingControl>(); // 初始化
@@ -1382,6 +1382,7 @@ namespace MtEmbTest
 
                     _cfg.Test = candidate;
                     ConfigLoader.UpdateDefaultTestFromProject(candidate, logger);
+                    RememberCurrentProjectOrWarn();
                     LoadCurrentProjectIntoUi();
                     await RefreshTestNameComboItemsAsync();
                     XtraMessageBox.Show(
@@ -1414,6 +1415,7 @@ namespace MtEmbTest
                 // —— 7) 保存后刷新“EPB 状态及进度”面板（必须回到 UI 线程） —— //
                 // 使设置页中的“EPB 启用/状态灯/已运行/剩余”等信息与最新配置保持一致。
                 RefreshEpbProgressViewsFromConfig();
+                RememberCurrentProjectOrWarn();
 
                 XtraMessageBox.Show("保存成功", "提示",
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -2312,6 +2314,7 @@ namespace MtEmbTest
                 // 候选配置完成保存并可重新解析后，才替换当前项目。
                 _cfg.Test = candidate;
                 ConfigLoader.UpdateDefaultTestFromProject(candidate, logger);
+                RememberCurrentProjectOrWarn();
                 LoadCurrentProjectIntoUi();
                 await RefreshTestNameComboItemsAsync();
                 _testNameBeforeEdit = candidate.TestName;
@@ -2331,6 +2334,28 @@ namespace MtEmbTest
                 SetBusy(false);
                 System.Threading.Interlocked.Exchange(ref _busy, 0);
             }
+        }
+
+        private void RememberCurrentProjectOrWarn()
+        {
+            if (_cfg?.Test == null) return;
+            if (LastProjectSelectionStore.TrySave(
+                    _cfg.Test.StoreDir,
+                    _cfg.Test.TestName,
+                    out var error))
+            {
+                logger?.Info(
+                    $"已记住当前项目：{ConfigLoader.GetProjectRootDir(_cfg.Test.StoreDir, _cfg.Test.TestName)}",
+                    "配置");
+                return;
+            }
+
+            logger?.Warn($"保存最后项目选择失败：{error}", "配置");
+            XtraMessageBox.Show(
+                "项目已成功切换/保存，但无法记住为下次启动项目：\r\n" + error,
+                "项目选择未保存",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
         }
 
         private void RestorePreviousTestName()
