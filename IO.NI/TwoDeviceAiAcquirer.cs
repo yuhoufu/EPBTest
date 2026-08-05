@@ -958,7 +958,9 @@ namespace IO.NI
             {
             }
 
-            _ = Task.Run(() => _log?.Error(
+            // 这是限频的节拍诊断，并不等同于采集失败；完整数据仍写入诊断记录。
+            // 使用 Info 避免正常的线程调度抖动污染 error.log / warning.log。
+            _ = Task.Run(() => _log?.Info(
                 $"[AI][{device}] DAQ回调节拍：N={batchSampleCount} (cfgN={_samplesPerChannel}) Fs={_sampleRate:F0}Hz" +
                 $" 期望批间隔≈{expectBatchMs:F2}ms 回调间隔≈{cbIntervalMs:F2}ms" +
                 $" 到达延迟(尾)≈{arrivalDelayToEndMs:F2}ms 到达延迟(首)≈{arrivalDelayToStartMs:F2}ms" +
@@ -4341,7 +4343,8 @@ namespace IO.NI
                 tracker.MaxAmp = 0.0;
                 tracker.Token = null;
             }
-            _log?.Warn(
+            // 正常圈结束、取消或安全停机都会走令牌取消，不属于报警。
+            _log?.Info(
                 $"EPB[{token.Channel}] 峰值捕获已按令牌取消 CaptureId={token.CaptureId:N}。",
                 "AI");
             return true;

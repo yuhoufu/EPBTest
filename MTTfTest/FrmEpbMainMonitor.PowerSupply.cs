@@ -104,10 +104,19 @@ namespace MTEmbTest
                     $"DAQ恢复 {result.Device}：{(result.Recovered ? "成功" : "失败")}，" +
                     $"新鲜样本={result.FreshCallbacks}/{result.RequiredFreshCallbacks}，{result.ElapsedMs}ms。",
                     !result.Recovered);
-                manager.DaqPersistenceStateChanged += state => PostSafetyStatus(
-                    $"DAQ持久化 {state.Device}：{state.State}，队列={state.QueueDepth}，" +
-                    $"最老批次={state.OldestBatchAgeMs:F0}ms，关联号={state.CorrelationId:N}。",
-                    state.State == DaqPersistenceState.Failed);
+                manager.DaqPersistenceStateChanged += state =>
+                {
+                    // Lagging 是尚未触发安全暂停的瞬时诊断态，可能每秒上报一次；
+                    // 不占用现场 UI 日志，只展示需要操作员知晓的状态迁移。
+                    if (state.State == DaqPersistenceState.Lagging) return;
+                    var correlation = state.CorrelationId == Guid.Empty
+                        ? "-"
+                        : state.CorrelationId.ToString("N");
+                    PostSafetyStatus(
+                        $"DAQ持久化 {state.Device}：{GetDaqPersistenceStateText(state.State)}，" +
+                        $"队列={state.QueueDepth}，最老批次={state.OldestBatchAgeMs:F0}ms，关联号={correlation}。",
+                        state.State == DaqPersistenceState.Failed);
+                };
                 manager.ControlFaultRaised += fault =>
                 {
                     var hint = fault.Scope == FaultScope.HydraulicGroup
@@ -204,9 +213,9 @@ namespace MTEmbTest
             var localTime = state.TimestampUtc == default
                 ? DateTime.Now
                 : state.TimestampUtc.ToLocalTime();
-            var shortReason = ShortRuntimeReason(state.ReasonText);
-            label.Text = GetRuntimeStateText(state.State) + "\r\n" + localTime.ToString("HH:mm:ss") +
-                         (string.IsNullOrWhiteSpace(shortReason) ? string.Empty : " " + shortReason);
+            // 状态格宽度很小，原来的第二行时间会被截成“运行1…”或“运行0…”，
+            // 容易被误解为数值状态。格内只保留状态，时间和原因放在悬浮提示中。
+            label.Text = GetRuntimeStateText(state.State);
             label.BackColor = GetRuntimeStateColor(state.State);
             label.ForeColor = Color.White;
             _channelRuntimeToolTip?.SetToolTip(
@@ -272,13 +281,6 @@ namespace MTEmbTest
             if (group != null) _powerGroupInterlockLatches.Remove(group.Id);
         }
 
-        private static string ShortRuntimeReason(string reason)
-        {
-            if (string.IsNullOrWhiteSpace(reason)) return string.Empty;
-            var localized = AlarmMessageLocalizer.ToUserMessage(reason).Replace("\r", " ").Replace("\n", " ").Trim();
-            return localized.Length <= 12 ? localized : localized.Substring(0, 12) + "…";
-        }
-
         private static string GetRuntimeStateText(ChannelRuntimeState state)
         {
             switch (state)
@@ -296,6 +298,18 @@ namespace MTEmbTest
                 case ChannelRuntimeState.Completed: return "正常完成";
                 case ChannelRuntimeState.StartBlocked: return "启动受阻";
                 default: return "未启用";
+            }
+        }
+
+        private static string GetDaqPersistenceStateText(DaqPersistenceState state)
+        {
+            switch (state)
+            {
+                case DaqPersistenceState.Paused: return "安全暂停";
+                case DaqPersistenceState.Recovering: return "正在恢复";
+                case DaqPersistenceState.Recovered: return "已恢复";
+                case DaqPersistenceState.Failed: return "恢复失败";
+                default: return "延迟";
             }
         }
 

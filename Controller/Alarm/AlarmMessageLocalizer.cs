@@ -18,6 +18,7 @@ namespace Controller.Alarm
                 ["ForwardPeakOvershoot"] = "正向峰值过冲",
                 ["ForwardCurrentRiseStall"] = "正向电流上升停滞",
                 ["ForwardCurrentRiseStalled"] = "正向电流上升停滞",
+                ["ClampReachedNearTargetPlateau"] = "接近目标的高负载平台，已停止正向供电并继续释放",
                 ["DaqSampleStale"] = "采集数据过期",
                 ["BackgroundQueueFull"] = "采集后台队列已满",
                 ["ControlQueueFull"] = "控制数据队列已满",
@@ -142,6 +143,10 @@ namespace Controller.Alarm
             AddMetric(parts, raw, "QuickPeak", "快速峰值");
             AddMetric(parts, raw, "FullRatePeak", "完整数据峰值");
             AddMetric(parts, raw, "Target", "目标");
+            AddMetric(parts, raw, "I", "当前电流");
+            AddMetric(parts, raw, "Floor", "合格下限");
+            AddMetric(parts, raw, "Slope", "平台斜率");
+            AddMetric(parts, raw, "ConfirmMs", "确认时长");
             AddMetric(parts, raw, "Error", "偏差");
             AddMetric(parts, raw, "Actual", "实际压力");
             AddMetric(parts, raw, "Minimum", "最低压力");

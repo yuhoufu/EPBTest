@@ -1630,6 +1630,18 @@ namespace AdaptiveControlTests
                    staleRelease.Contains("无法确认释压状态") &&
                    !staleRelease.Contains("泄漏"),
                 "陈旧压力释压故障仍给出误导性液压提示");
+
+            var nearTargetPlateau = AlarmMessageLocalizer.ToUserMessage(
+                "ClampReachedNearTargetPlateau Peak=14.617A I=13.927A " +
+                "Floor=14.200A Target=15.000A Slope=0.000857A/ms ConfirmMs=220ms");
+            Assert(nearTargetPlateau.Contains("接近目标的高负载平台") &&
+                   nearTargetPlateau.Contains("峰值=14.617A") &&
+                   nearTargetPlateau.Contains("当前电流=13.927A") &&
+                   nearTargetPlateau.Contains("合格下限=14.200A") &&
+                   nearTargetPlateau.Contains("平台斜率=0.000857A/ms") &&
+                   nearTargetPlateau.Contains("确认时长=220ms") &&
+                   !nearTargetPlateau.Contains("系统检测到异常"),
+                "近目标平台预警未转换为可操作的中文提示");
         }
 
         private static void ConcurrentUiConfigSaveIsAtomic()
