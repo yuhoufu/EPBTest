@@ -181,6 +181,15 @@ namespace Controller
                             $"{context.Device}-{context.CorrelationId:N}"));
                     Directory.CreateDirectory(directory);
                     var queue = _persistence.GetSnapshot(context.Device);
+                    var beforeClock = context.BeforeClock ?? new DaqFreshnessSnapshot();
+                    var afterClock = context.AfterClock ??
+                                     _acq.GetDaqFreshnessSnapshot(context.Device, 100);
+                    var requiredFresh = string.Equals(
+                        context.TriggerCode,
+                        "DaqClockModelInvalid",
+                        StringComparison.OrdinalIgnoreCase)
+                        ? _daqClockRecoveryFreshBatches
+                        : _daqPersistenceRequiredFreshBatches;
                     File.WriteAllText(
                         Path.Combine(directory, "incident.json"),
                         "{\n" +
@@ -189,6 +198,21 @@ namespace Controller
                         $"  \"faultCode\": \"{JsonEscape(context.TriggerCode)}\",\n" +
                         $"  \"reason\": \"{JsonEscape(reason)}\",\n" +
                         $"  \"generation\": {_acq.GetCurrentGeneration(context.Device)},\n" +
+                        $"  \"previousGeneration\": {context.PreviousGeneration},\n" +
+                        $"  \"recoveredGeneration\": {context.RecoveredGeneration},\n" +
+                        $"  \"firstVerifiedSequence\": {context.FirstVerifiedSequence},\n" +
+                        $"  \"lastVerifiedSequence\": {context.LastVerifiedSequence},\n" +
+                        $"  \"recoveryAttempt\": {context.RecoveryAttempt},\n" +
+                        $"  \"clockRecoveryMaxAttempts\": {_daqClockRecoveryMaxAttempts},\n" +
+                        $"  \"clockRecoveryWindowMinutes\": {_daqClockRecoveryWindowMinutes},\n" +
+                        $"  \"beforeClockState\": \"{beforeClock.ClockState}\",\n" +
+                        $"  \"beforeSampleRateHz\": {beforeClock.EffectiveSampleRateHz.ToString("F6", CultureInfo.InvariantCulture)},\n" +
+                        $"  \"beforeSkewPpm\": {beforeClock.EstimatedSkewPpm.ToString("F3", CultureInfo.InvariantCulture)},\n" +
+                        $"  \"beforeResidualMs\": {beforeClock.ClockResidualMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
+                        $"  \"afterClockState\": \"{afterClock.ClockState}\",\n" +
+                        $"  \"afterSampleRateHz\": {afterClock.EffectiveSampleRateHz.ToString("F6", CultureInfo.InvariantCulture)},\n" +
+                        $"  \"afterSkewPpm\": {afterClock.EstimatedSkewPpm.ToString("F3", CultureInfo.InvariantCulture)},\n" +
+                        $"  \"afterResidualMs\": {afterClock.ClockResidualMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
                         $"  \"queueDepth\": {queue.QueueDepth},\n" +
                         $"  \"oldestBatchAgeMs\": {queue.OldestBatchAgeMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
                         $"  \"affectedChannels\": [{string.Join(",", context.AffectedChannels ?? Array.Empty<int>())}],\n" +
@@ -198,7 +222,10 @@ namespace Controller
                         $"  \"pauseAgeMs\": {_daqPersistencePauseAgeMs.ToString("F0", CultureInfo.InvariantCulture)},\n" +
                         $"  \"resumeAgeMs\": {_daqPersistenceResumeAgeMs.ToString("F0", CultureInfo.InvariantCulture)},\n" +
                         $"  \"recoveryTimeoutMs\": {_daqPersistenceRecoveryTimeoutMs},\n" +
-                        $"  \"requiredFreshBatches\": {_daqPersistenceRequiredFreshBatches},\n" +
+                        $"  \"requiredFreshBatches\": {requiredFresh},\n" +
+                        $"  \"suppressedBatches\": {queue.SuppressedBatchCount},\n" +
+                        $"  \"discardedGenerationBatches\": {queue.DiscardedGenerationBatchCount},\n" +
+                        "  \"validBatchesDroppedByClockModel\": 0,\n" +
                         $"  \"result\": \"{JsonEscape(result)}\",\n" +
                         $"  \"updatedUtc\": \"{DateTime.UtcNow:O}\"\n" +
                         "}\n",

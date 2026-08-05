@@ -741,7 +741,8 @@ public sealed class EpbDiskWriter : IDisposable
     }
 
     /// <summary>
-    /// 将未完整完成的圈封为 canceled/failed。此类圈不参与成功计数和正常圈导出。
+    /// 将未完整完成的圈封为 canceled/failed/AbortedByDaqClockRecovery。
+    /// 此类圈不参与成功计数和正常圈导出。
     /// </summary>
     public void AbortCycle(
         int epbId,
@@ -752,7 +753,9 @@ public sealed class EpbDiskWriter : IDisposable
     {
         var normalized = string.Equals(status, "canceled", StringComparison.OrdinalIgnoreCase)
             ? "canceled"
-            : "failed";
+            : string.Equals(status, "AbortedByDaqClockRecovery", StringComparison.OrdinalIgnoreCase)
+                ? "AbortedByDaqClockRecovery"
+                : "failed";
         var s = GetState(epbId);
         lock (s.Gate)
         {

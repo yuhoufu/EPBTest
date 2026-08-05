@@ -16,6 +16,11 @@ namespace IO.NI
         public long CaptureMonotonicTicks { get; set; }
         public long EnqueuedMonotonicTicks { get; set; }
         public double SampleLeadMs { get; set; }
+        public double EffectiveSampleRateHz { get; set; }
+        public ClockState ClockState { get; set; }
+        public double EstimatedSkewPpm { get; set; }
+        public double ClockResidualMs { get; set; }
+        public double ClockWindowSeconds { get; set; }
         public double RepresentativeA { get; set; }
         public double FilteredA { get; set; }
         public FastSignalQualityFlags QualityFlags { get; set; }
@@ -37,6 +42,11 @@ namespace IO.NI
             public long CaptureMonotonicTicks;
             public long EnqueuedMonotonicTicks;
             public double SampleLeadMs;
+            public double EffectiveSampleRateHz;
+            public ClockState ClockState;
+            public double EstimatedSkewPpm;
+            public double ClockResidualMs;
+            public double ClockWindowSeconds;
             public double RepresentativeA;
             public double FilteredA;
             public FastSignalQualityFlags QualityFlags;
@@ -88,6 +98,11 @@ namespace IO.NI
             slot.CaptureMonotonicTicks = metadata.CaptureMonotonicTicks;
             slot.EnqueuedMonotonicTicks = metadata.EnqueuedMonotonicTicks;
             slot.SampleLeadMs = metadata.SampleLeadMs;
+            slot.EffectiveSampleRateHz = metadata.EffectiveSampleRateHz;
+            slot.ClockState = metadata.ClockState;
+            slot.EstimatedSkewPpm = metadata.EstimatedSkewPpm;
+            slot.ClockResidualMs = metadata.ClockResidualMs;
+            slot.ClockWindowSeconds = metadata.ClockWindowSeconds;
             slot.RepresentativeA = sample.RepresentativeA;
             slot.FilteredA = filteredA;
             slot.QualityFlags = metadata.QualityFlags;
@@ -97,7 +112,7 @@ namespace IO.NI
             Volatile.Write(ref slot.PublishedSequence, sequence);
         }
 
-        public FastCurrentEvidenceRecord[] Snapshot(int channel, DateTime cutoffUtc)
+        public FastCurrentEvidenceRecord[] Snapshot(int channel, long cutoffMonotonicTicks)
         {
             if (channel < 1 || channel > 12) return Array.Empty<FastCurrentEvidenceRecord>();
             var buffer = _channels[channel];
@@ -107,7 +122,8 @@ namespace IO.NI
             foreach (var slot in buffer.Slots)
             {
                 var before = Volatile.Read(ref slot.PublishedSequence);
-                if (before < earliest || before > latest || slot.SampleUtc < cutoffUtc) continue;
+                if (before < earliest || before > latest ||
+                    slot.CaptureMonotonicTicks < cutoffMonotonicTicks) continue;
                 var raw = new double[slot.RawTailCount];
                 for (var i = 0; i < raw.Length; i++) raw[i] = slot.RawTailVolts[i];
                 var record = new FastCurrentEvidenceRecord
@@ -122,6 +138,11 @@ namespace IO.NI
                     CaptureMonotonicTicks = slot.CaptureMonotonicTicks,
                     EnqueuedMonotonicTicks = slot.EnqueuedMonotonicTicks,
                     SampleLeadMs = slot.SampleLeadMs,
+                    EffectiveSampleRateHz = slot.EffectiveSampleRateHz,
+                    ClockState = slot.ClockState,
+                    EstimatedSkewPpm = slot.EstimatedSkewPpm,
+                    ClockResidualMs = slot.ClockResidualMs,
+                    ClockWindowSeconds = slot.ClockWindowSeconds,
                     RepresentativeA = slot.RepresentativeA,
                     FilteredA = slot.FilteredA,
                     QualityFlags = slot.QualityFlags,

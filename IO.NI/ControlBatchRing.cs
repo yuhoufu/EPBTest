@@ -87,6 +87,7 @@ namespace IO.NI
         NonFinite = 1,
         ProducerReentry = 2,
         SequenceDiscontinuity = 4,
+        // 数值保留用于兼容旧版证据；V2.10.2.3 起不再产生，也不再作为控制无效标志。
         TimelineFuture = 8,
         GenerationMismatch = 16,
         AdcNearRail = 32,
@@ -134,7 +135,6 @@ namespace IO.NI
             (QualityFlags & (FastSignalQualityFlags.NonFinite |
                              FastSignalQualityFlags.ProducerReentry |
                              FastSignalQualityFlags.SequenceDiscontinuity |
-                             FastSignalQualityFlags.TimelineFuture |
                              FastSignalQualityFlags.GenerationMismatch |
                              FastSignalQualityFlags.DuplicateBatch |
                              FastSignalQualityFlags.OutOfOrderBatch |
@@ -201,6 +201,39 @@ namespace IO.NI
             double sampleLeadMs,
             int producerThreadId,
             FastSignalQualityFlags qualityFlags)
+            : this(
+                generation,
+                sourceSequence,
+                sampleUtc,
+                callbackArrivalUtc,
+                captureMonotonicTicks,
+                enqueuedMonotonicTicks,
+                sampleLeadMs,
+                0,
+                ClockState.WarmingUp,
+                0,
+                0,
+                0,
+                producerThreadId,
+                qualityFlags)
+        {
+        }
+
+        public FastControlBatchMetadata(
+            long generation,
+            long sourceSequence,
+            DateTime sampleUtc,
+            DateTime callbackArrivalUtc,
+            long captureMonotonicTicks,
+            long enqueuedMonotonicTicks,
+            double sampleLeadMs,
+            double effectiveSampleRateHz,
+            ClockState clockState,
+            double estimatedSkewPpm,
+            double clockResidualMs,
+            double clockWindowSeconds,
+            int producerThreadId,
+            FastSignalQualityFlags qualityFlags)
         {
             Generation = generation;
             SourceSequence = sourceSequence;
@@ -211,6 +244,11 @@ namespace IO.NI
             CaptureMonotonicTicks = captureMonotonicTicks;
             EnqueuedMonotonicTicks = enqueuedMonotonicTicks;
             SampleLeadMs = sampleLeadMs;
+            EffectiveSampleRateHz = effectiveSampleRateHz;
+            ClockState = clockState;
+            EstimatedSkewPpm = estimatedSkewPpm;
+            ClockResidualMs = clockResidualMs;
+            ClockWindowSeconds = clockWindowSeconds;
             ProducerThreadId = producerThreadId;
             QualityFlags = qualityFlags;
         }
@@ -222,6 +260,11 @@ namespace IO.NI
         public long CaptureMonotonicTicks { get; }
         public long EnqueuedMonotonicTicks { get; }
         public double SampleLeadMs { get; }
+        public double EffectiveSampleRateHz { get; }
+        public ClockState ClockState { get; }
+        public double EstimatedSkewPpm { get; }
+        public double ClockResidualMs { get; }
+        public double ClockWindowSeconds { get; }
         public int ProducerThreadId { get; }
         public FastSignalQualityFlags QualityFlags { get; }
     }

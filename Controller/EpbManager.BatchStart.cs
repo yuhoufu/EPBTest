@@ -121,6 +121,7 @@ namespace Controller
                         "WarningSnapshots 已启用，但圈记录器不支持 ICycleEvidenceExporter；为避免静默丢失预警证据，拒绝启动。");
                 _emergencyPowerGroupLatch.Clear();
                 _daqRecoveryAttemptsByDevice.Clear();
+                _daqClockRecoveryAttempts.Clear();
                 _daqRecoveryTasks.Clear();
                 await EnsureDaqReadyBeforeStartAsync(selected, sessionToken).ConfigureAwait(false);
                 BeginPowerSupplyTelemetryRecording(_activeBatchId);
@@ -603,6 +604,14 @@ namespace Controller
                             {
                                 try
                                 {
+                                    if (TryConsumeDaqClockCycleAbort(ch, cycleNumber))
+                                    {
+                                        _log?.Warn(
+                                            $"EPB[{ch}] 周期 {cycleNumber} 已由DAQ时钟恢复流程封存，" +
+                                            "跳过周期尾重复记账。",
+                                            "落盘");
+                                        goto CyclePersistenceFinished;
+                                    }
                                     var finalN = recorder.GetCurrentCycleSampleCount(ch);
                                     if (IsAlarmStopRequested(ch))
                                     {
@@ -645,6 +654,7 @@ namespace Controller
                                 }
                             }
 
+                        CyclePersistenceFinished:
                             if (!IsAlarmStopRequested(ch))
                                 ClearCurrentCycleNumber(ch);
 

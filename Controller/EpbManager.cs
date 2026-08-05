@@ -19,6 +19,50 @@ using NullLogger = Config.NullLogger;
 
 namespace Controller
 {
+    internal sealed class DaqRecoveryAttemptWindow
+    {
+        private readonly object _gate = new object();
+        private readonly Dictionary<string, Queue<long>> _attempts =
+            new Dictionary<string, Queue<long>>(StringComparer.OrdinalIgnoreCase);
+        private readonly int _maximumAttempts;
+        private readonly long _windowTicks;
+
+        public DaqRecoveryAttemptWindow(int maximumAttempts, TimeSpan window)
+        {
+            _maximumAttempts = Math.Max(1, maximumAttempts);
+            _windowTicks = Math.Max(1L, (long)Math.Round(
+                Math.Max(1, window.TotalSeconds) * Stopwatch.Frequency,
+                MidpointRounding.AwayFromZero));
+        }
+
+        public bool TryRegister(string device, long nowTicks, out int attemptsInWindow)
+        {
+            lock (_gate)
+            {
+                if (!_attempts.TryGetValue(device ?? string.Empty, out var queue))
+                {
+                    queue = new Queue<long>();
+                    _attempts[device ?? string.Empty] = queue;
+                }
+                var cutoff = nowTicks - _windowTicks;
+                while (queue.Count > 0 && queue.Peek() <= cutoff) queue.Dequeue();
+                if (queue.Count >= _maximumAttempts)
+                {
+                    attemptsInWindow = queue.Count;
+                    return false;
+                }
+                queue.Enqueue(nowTicks);
+                attemptsInWindow = queue.Count;
+                return true;
+            }
+        }
+
+        public void Clear()
+        {
+            lock (_gate) _attempts.Clear();
+        }
+    }
+
     /// <summary>
     ///     12个卡钳统一编排：同组电控“首启”错峰（液压不延时），
     ///     每通道独立高精度定时器，可单独暂停/恢复/结束。
@@ -249,8 +293,13 @@ namespace Controller
         private readonly double _daqPersistenceResumeAgeMs;
         private readonly int _daqPersistenceRecoveryTimeoutMs;
         private readonly int _daqPersistenceRequiredFreshBatches;
+        private readonly int _daqClockRecoveryFreshBatches;
+        private readonly int _daqClockRecoveryMaxAttempts;
+        private readonly int _daqClockRecoveryWindowMinutes;
+        private readonly DaqRecoveryAttemptWindow _daqClockRecoveryAttempts;
         private readonly ConcurrentDictionary<string, DaqAutoRecoveryContext> _daqAutoRecovery =
             new(StringComparer.OrdinalIgnoreCase);
+        private readonly ConcurrentDictionary<long, byte> _daqClockAbortedCycles = new();
         private readonly object _stopSafetyGate = new();
         private Task<StopSafetyResult> _stopSafetyTask;
         private StopSafetyResult _lastStopSafetyResult;
@@ -265,6 +314,30 @@ namespace Controller
             public string TriggerCode;
             public int RestartDaq;
             public int Completing;
+            public int RecoveryAttempt;
+            public long PreviousGeneration;
+            public long RecoveredGeneration;
+            public long FirstVerifiedSequence;
+            public long LastVerifiedSequence;
+            public DaqFreshnessSnapshot BeforeClock;
+            public DaqFreshnessSnapshot AfterClock;
+        }
+
+        private static long DaqAbortedCycleKey(int channel, int cycleNumber)
+        {
+            return ((long)channel << 32) | (uint)cycleNumber;
+        }
+
+        private void MarkDaqClockCycleAborted(int channel, int cycleNumber)
+        {
+            _daqClockAbortedCycles[DaqAbortedCycleKey(channel, cycleNumber)] = 0;
+        }
+
+        private bool TryConsumeDaqClockCycleAbort(int channel, int cycleNumber)
+        {
+            return _daqClockAbortedCycles.TryRemove(
+                DaqAbortedCycleKey(channel, cycleNumber),
+                out _);
         }
 
         /// <summary>
@@ -600,6 +673,15 @@ namespace Controller
                 "DaqPersistenceRecoveryTimeoutMs", 10000, 1000, 60000);
             _daqPersistenceRequiredFreshBatches = ReadIntAppSetting(
                 "DaqPersistenceRequiredFreshBatches", 10, 1, 100);
+            _daqClockRecoveryFreshBatches = ReadIntAppSetting(
+                "DaqClockRecoveryFreshBatches", 10, 1, 100);
+            _daqClockRecoveryMaxAttempts = ReadIntAppSetting(
+                "DaqClockRecoveryMaxAttempts", 3, 1, 20);
+            _daqClockRecoveryWindowMinutes = ReadIntAppSetting(
+                "DaqClockRecoveryWindowMinutes", 10, 1, 1440);
+            _daqClockRecoveryAttempts = new DaqRecoveryAttemptWindow(
+                _daqClockRecoveryMaxAttempts,
+                TimeSpan.FromMinutes(_daqClockRecoveryWindowMinutes));
             _persistence = new DaqPersistenceCoordinator(
                 () => Recorder,
                 _log,
@@ -1344,15 +1426,42 @@ namespace Controller
             var affected = GetDaqGroupChannels(deviceFault.Device);
             if (affected.Length == 0)
                 affected = GetAllDaqDeviceChannels(deviceFault.Device);
-            if (string.Equals(deviceFault.Code, "BackgroundQueueFull", StringComparison.OrdinalIgnoreCase))
+            var isBackgroundQueue = string.Equals(
+                deviceFault.Code,
+                "BackgroundQueueFull",
+                StringComparison.OrdinalIgnoreCase);
+            var isClockModel = string.Equals(
+                deviceFault.Code,
+                "DaqClockModelInvalid",
+                StringComparison.OrdinalIgnoreCase);
+            if (isBackgroundQueue || isClockModel)
             {
+                var attempt = 0;
+                if (isClockModel &&
+                    !_daqClockRecoveryAttempts.TryRegister(
+                        deviceFault.Device,
+                        Stopwatch.GetTimestamp(),
+                        out attempt))
+                {
+                    LatchDaqGroupHardFault(
+                        affected.OrderBy(x => x).FirstOrDefault(),
+                        deviceFault.Device,
+                        affected,
+                        "DaqClockRecoveryLimitExceeded",
+                        $"Device={deviceFault.Device} {_daqClockRecoveryWindowMinutes}分钟内已执行" +
+                        $"{attempt}次DAQ时钟恢复，达到上限{_daqClockRecoveryMaxAttempts}次。" +
+                        "该状态属于DAQ软件/子系统恢复失败，不得归因为卡钳过流。",
+                        Guid.NewGuid());
+                    return;
+                }
                 _ = Task.Run(() => BeginDaqAutoRecoveryAsync(
                     deviceFault.Device,
                     deviceFault.Code,
                     deviceFault.Reason,
                     Guid.NewGuid(),
                     restartDaq: true,
-                    deviceFault.TimestampUtc));
+                    deviceFault.TimestampUtc,
+                    recoveryAttempt: attempt));
                 return;
             }
             var observation = ObserveDaqIncident(
@@ -1387,7 +1496,11 @@ namespace Controller
                 deviceFault.Code,
                 "BackgroundQueueFull",
                 StringComparison.OrdinalIgnoreCase);
-            ExecuteDaqDeviceFaultSafetyFirst(deviceFault.Device, backgroundQueue);
+            var clockRecoverable = string.Equals(
+                deviceFault.Code,
+                "DaqClockModelInvalid",
+                StringComparison.OrdinalIgnoreCase);
+            ExecuteDaqDeviceFaultSafetyFirst(deviceFault.Device, backgroundQueue || clockRecoverable);
         }
 
         private void OnDaqPersistenceStateChanged(DaqPersistenceStateChanged update)
@@ -1424,7 +1537,8 @@ namespace Controller
             string reason,
             Guid correlationId,
             bool restartDaq,
-            DateTime eventUtc)
+            DateTime eventUtc,
+            int recoveryAttempt = 0)
         {
             if (string.IsNullOrWhiteSpace(device)) return;
             var affected = GetDaqGroupChannels(device);
@@ -1437,9 +1551,16 @@ namespace Controller
                 CutoffUtc = eventUtc == default ? DateTime.UtcNow : eventUtc.ToUniversalTime(),
                 AffectedChannels = affected,
                 TriggerCode = string.IsNullOrWhiteSpace(code) ? "DaqPersistenceLag" : code,
-                RestartDaq = restartDaq ? 1 : 0
+                RestartDaq = restartDaq ? 1 : 0,
+                RecoveryAttempt = recoveryAttempt,
+                BeforeClock = _acq.GetDaqFreshnessSnapshot(device, 100),
+                PreviousGeneration = _acq.GetCurrentGeneration(device)
             };
             if (!_daqAutoRecovery.TryAdd(device, context)) return;
+            var isClockRecovery = string.Equals(
+                context.TriggerCode,
+                "DaqClockModelInvalid",
+                StringComparison.OrdinalIgnoreCase);
 
             _persistence.SuppressAfter(device, context.CutoffUtc, context.CorrelationId);
             foreach (var channel in affected)
@@ -1448,10 +1569,36 @@ namespace Controller
                     _currentCycleNumberByChannel.TryGetValue(channel, out var currentCycle))
                 {
                     try { batched.SealCycleWindow(channel, currentCycle, context.CutoffUtc); } catch { }
+                    if (isClockRecovery)
+                    {
+                        try
+                        {
+                            AbortCycleAfterPersistence(
+                                Recorder,
+                                channel,
+                                currentCycle,
+                                context.CutoffUtc,
+                                "AbortedByDaqClockRecovery");
+                            MarkDaqClockCycleAborted(channel, currentCycle);
+                            _currentCycleNumberByChannel.TryRemove(channel, out _);
+                        }
+                        catch (Exception ex)
+                        {
+                            _log.Warn(
+                                $"EPB[{channel}] DAQ时钟恢复圈封存失败：{ex.Message}",
+                                "落盘");
+                        }
+                    }
                 }
                 if (_timers.TryGetValue(channel, out var timer)) timer.Pause();
                 CancelCyclePauseCts(channel);
-                try { CommandEpbOffHighPriority(channel, "DaqPersistencePause"); } catch { }
+                try
+                {
+                    CommandEpbOffHighPriority(
+                        channel,
+                        isClockRecovery ? "DaqClockRecovery" : "DaqPersistencePause");
+                }
+                catch { }
                 UnmarkHydraulicParticipant(channel);
                 try { ObserveSafetyTask(HydraulicMarkReleaseAsync(channel), "DaqPersistencePauseRelease", channel); }
                 catch { }
@@ -1465,7 +1612,7 @@ namespace Controller
                 try { ChannelPaused?.Invoke(channel); } catch { }
             }
             _log.Warn(
-                $"DAQ持久化安全暂停 Device={device} Affected=[{string.Join(",", affected)}] " +
+                $"DAQ安全暂停 Device={device} Affected=[{string.Join(",", affected)}] " +
                 $"CorrelationId={context.CorrelationId:N} Code={context.TriggerCode}。",
                 "AI");
             try
@@ -1488,20 +1635,30 @@ namespace Controller
 
             if (restartDaq)
             {
+                var requiredFreshBatches = isClockRecovery
+                    ? _daqClockRecoveryFreshBatches
+                    : _daqPersistenceRequiredFreshBatches;
                 var result = await _acq.RecoverDeviceAsync(
                         device,
                         _daqPersistenceRecoveryTimeoutMs,
-                        _daqPersistenceRequiredFreshBatches,
+                        requiredFreshBatches,
                         (int)_daqPersistenceResumeAgeMs,
                         CancellationToken.None,
                         forceRecreate: true)
                     .ConfigureAwait(false);
                 try { DaqRecoveryStateChanged?.Invoke(result); } catch { }
+                context.PreviousGeneration = result.PreviousGeneration;
+                context.RecoveredGeneration = result.RecoveredGeneration;
+                context.FirstVerifiedSequence = result.FirstVerifiedSequence;
+                context.LastVerifiedSequence = result.LastVerifiedSequence;
+                context.AfterClock = _acq.GetDaqFreshnessSnapshot(device, _daqPersistenceResumeAgeMs);
                 if (!result.Recovered)
                 {
                     await EscalateDaqAutoRecoveryAsync(
                             device,
-                            "DaqPersistenceRecoveryTimeout",
+                            isClockRecovery
+                                ? "DaqClockRecoveryFailed"
+                                : "DaqPersistenceRecoveryTimeout",
                             result.FailureReason,
                             context.CorrelationId)
                         .ConfigureAwait(false);
@@ -1517,7 +1674,12 @@ namespace Controller
                     active.CorrelationId == context.CorrelationId)
                     await EscalateDaqAutoRecoveryAsync(
                             device,
-                            "DaqPersistenceRecoveryTimeout",
+                            string.Equals(
+                                context.TriggerCode,
+                                "DaqClockModelInvalid",
+                                StringComparison.OrdinalIgnoreCase)
+                                ? "DaqClockRecoveryFailed"
+                                : "DaqPersistenceRecoveryTimeout",
                             $"{_daqPersistenceRecoveryTimeoutMs}ms 内未满足自动恢复条件。",
                             context.CorrelationId)
                         .ConfigureAwait(false);
@@ -1541,11 +1703,17 @@ namespace Controller
                 var ready = await _acq.EnsureChannelsReadyAsync(
                         context.AffectedChannels,
                         _daqPersistenceRecoveryTimeoutMs,
-                        _daqPersistenceRequiredFreshBatches,
+                        string.Equals(
+                            context.TriggerCode,
+                            "DaqClockModelInvalid",
+                            StringComparison.OrdinalIgnoreCase)
+                            ? _daqClockRecoveryFreshBatches
+                            : _daqPersistenceRequiredFreshBatches,
                         (int)_daqPersistenceResumeAgeMs,
                         CancellationToken.None)
                     .ConfigureAwait(false);
                 if (ready.Any(x => !x.Recovered)) return;
+                context.AfterClock = _acq.GetDaqFreshnessSnapshot(device, _daqPersistenceResumeAgeMs);
                 if (_powerSupply != null)
                     await _powerSupply.PrepareAndEnableAsync(context.AffectedChannels, CancellationToken.None)
                         .ConfigureAwait(false);
@@ -1558,8 +1726,18 @@ namespace Controller
                     PublishChannelRuntimeState(
                         channel,
                         ChannelRuntimeState.Running,
-                        "DaqPersistenceRecovered",
-                        "DAQ持久化恢复，下一完整圈继续",
+                        string.Equals(
+                            context.TriggerCode,
+                            "DaqClockModelInvalid",
+                            StringComparison.OrdinalIgnoreCase)
+                            ? "DaqClockRecovered"
+                            : "DaqPersistenceRecovered",
+                        string.Equals(
+                            context.TriggerCode,
+                            "DaqClockModelInvalid",
+                            StringComparison.OrdinalIgnoreCase)
+                            ? "DAQ时钟模型恢复，下一完整圈继续"
+                            : "DAQ持久化恢复，下一完整圈继续",
                         affectedChannels: context.AffectedChannels,
                         correlationId: context.CorrelationId);
                     try { ChannelResumed?.Invoke(channel); } catch { }
@@ -1661,8 +1839,19 @@ namespace Controller
                     alarmUtc,
                     faultCorrelationId);
 
+                var softwareRecoveryExhausted = string.Equals(
+                    fault.Code,
+                    "DaqClockRecoveryLimitExceeded",
+                    StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(
+                        fault.Code,
+                        "DaqClockRecoveryFailed",
+                        StringComparison.OrdinalIgnoreCase);
                 _log.Error(
-                    $"DAQ设备级硬故障锁存。Code={fault.Code} " +
+                    (softwareRecoveryExhausted
+                        ? "DAQ软件/子系统恢复失败，已执行安全锁存。"
+                        : "DAQ设备级硬故障锁存。") +
+                    $"Code={fault.Code} " +
                     $"Device={device} TriggerEPB={primaryChannel} " +
                     $"Affected=[{string.Join(",", fault.AffectedChannels)}] " +
                     $"CorrelationId={fault.CorrelationId:N} Reason={reason}",

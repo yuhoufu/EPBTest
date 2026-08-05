@@ -40,6 +40,12 @@ namespace IO.NI
         public int ProducerThreadId;
         public long ProducerReentryCount;
         public double SampleLeadMs;
+        public double EffectiveSampleRateHz;
+        public double EstimatedSkewPpm;
+        public double ClockResidualMs;
+        public double ClockWindowSeconds;
+        public double ClockCorrectionPpm;
+        public string ClockState;
         public string QualityFlags;
         public string Detail;
 
@@ -82,6 +88,12 @@ namespace IO.NI
                 ProducerThreadId = value.ProducerThreadId,
                 ProducerReentryCount = value.ProducerReentryCount,
                 SampleLeadMs = value.SampleLeadMs,
+                EffectiveSampleRateHz = value.EffectiveSampleRateHz,
+                EstimatedSkewPpm = value.EstimatedSkewPpm,
+                ClockResidualMs = value.ClockResidualMs,
+                ClockWindowSeconds = value.ClockWindowSeconds,
+                ClockCorrectionPpm = value.ClockCorrectionPpm,
+                ClockState = value.ClockState,
                 QualityFlags = value.QualityFlags,
                 Detail = value.Detail
             };

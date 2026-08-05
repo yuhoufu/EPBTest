@@ -30,7 +30,6 @@ namespace Controller.Adaptive
             FastSignalQualityFlags.NonFinite |
             FastSignalQualityFlags.ProducerReentry |
             FastSignalQualityFlags.SequenceDiscontinuity |
-            FastSignalQualityFlags.TimelineFuture |
             FastSignalQualityFlags.GenerationMismatch |
             FastSignalQualityFlags.DuplicateBatch |
             FastSignalQualityFlags.OutOfOrderBatch |

@@ -32,6 +32,8 @@ namespace Controller
         public long Sequence { get; set; }
         public DateTime TimestampUtc { get; set; }
         public Guid CorrelationId { get; set; }
+        public long SuppressedBatchCount { get; set; }
+        public long DiscardedGenerationBatchCount { get; set; }
     }
 
     internal sealed class DaqPersistenceCoordinator : IDisposable
@@ -50,6 +52,8 @@ namespace Controller
             public int UnresolvedWriteFailure;
             public DateTime? SuppressAfterUtc;
             public Guid CorrelationId;
+            public long SuppressedBatchCount;
+            public long DiscardedGenerationBatchCount;
         }
 
         private readonly Func<IEpbCycleRecorder> _recorder;
@@ -114,6 +118,7 @@ namespace Controller
             var acceptedGeneration = Interlocked.Read(ref q.AcceptedGeneration);
             if (batch.Generation < acceptedGeneration)
             {
+                Interlocked.Increment(ref q.DiscardedGenerationBatchCount);
                 batch.Dispose();
                 return true;
             }
@@ -124,6 +129,7 @@ namespace Controller
             if (suppressAfter.HasValue && batch.SampleCount > 0 &&
                 batch.TimestampsUtc[0].ToUniversalTime() > suppressAfter.Value)
             {
+                Interlocked.Increment(ref q.SuppressedBatchCount);
                 MarkPersisted(q, batch.Sequence);
                 EvaluateRecovery(batch.Device, q, batch);
                 batch.Dispose();
@@ -151,6 +157,8 @@ namespace Controller
         {
             var q = GetQueue(device);
             q.SuppressAfterUtc = cutoffUtc.ToUniversalTime();
+            Interlocked.Exchange(ref q.SuppressedBatchCount, 0);
+            Interlocked.Exchange(ref q.DiscardedGenerationBatchCount, 0);
             if (correlationId != Guid.Empty) q.CorrelationId = correlationId;
         }
 
@@ -171,6 +179,7 @@ namespace Controller
             {
                 if (!q.Queue.TryDequeue(out batch)) break;
                 Interlocked.Decrement(ref q.Count);
+                Interlocked.Increment(ref q.DiscardedGenerationBatchCount);
                 MarkPersisted(q, batch.Sequence);
                 batch.Dispose();
             }
@@ -191,7 +200,9 @@ namespace Controller
                 Generation = Interlocked.Read(ref q.AcceptedGeneration),
                 Sequence = Interlocked.Read(ref q.LastPersistedSequence),
                 TimestampUtc = DateTime.UtcNow,
-                CorrelationId = q.CorrelationId
+                CorrelationId = q.CorrelationId,
+                SuppressedBatchCount = Interlocked.Read(ref q.SuppressedBatchCount),
+                DiscardedGenerationBatchCount = Interlocked.Read(ref q.DiscardedGenerationBatchCount)
             };
         }
 

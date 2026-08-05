@@ -63,6 +63,13 @@ namespace IO.NI
     public sealed class DaqFreshnessSnapshot
     {
         public string Device { get; set; } = string.Empty;
+        public long Generation { get; set; }
+        public long LastProducedSequence { get; set; }
+        public long LastProcessedSequence { get; set; }
+        public ClockState ClockState { get; set; }
+        public double EffectiveSampleRateHz { get; set; }
+        public double EstimatedSkewPpm { get; set; }
+        public double ClockResidualMs { get; set; }
         /// <summary>兼容字段；V2.10 起等同于 LastControlProcessedMonotonicTicks。</summary>
         public long LastArrivalMonotonicTicks { get; set; }
         public double AgeMs { get; set; }
@@ -127,6 +134,10 @@ namespace IO.NI
     {
         public string Device { get; set; } = string.Empty;
         public bool Recovered { get; set; }
+        public long PreviousGeneration { get; set; }
+        public long RecoveredGeneration { get; set; }
+        public long FirstVerifiedSequence { get; set; }
+        public long LastVerifiedSequence { get; set; }
         public int FreshCallbacks { get; set; }
         public int RequiredFreshCallbacks { get; set; }
         public int ElapsedMs { get; set; }
@@ -184,6 +195,12 @@ namespace IO.NI
         public int ProducerThreadId { get; set; }
         public long ProducerReentryCount { get; set; }
         public double SampleLeadMs { get; set; }
+        public double EffectiveSampleRateHz { get; set; }
+        public double EstimatedSkewPpm { get; set; }
+        public double ClockResidualMs { get; set; }
+        public double ClockWindowSeconds { get; set; }
+        public double ClockCorrectionPpm { get; set; }
+        public string ClockState { get; set; } = string.Empty;
         public string QualityFlags { get; set; } = string.Empty;
         public string Detail { get; set; } = string.Empty;
     }
@@ -238,6 +255,11 @@ namespace IO.NI
                 pressureGroup1,
                 pressureGroup2,
                 enqueuedMonotonicTicks,
+                0,
+                ClockState.WarmingUp,
+                0,
+                0,
+                0,
                 channelsArrayPooled: false,
                 returnObjectToPool: false);
         }
@@ -254,6 +276,41 @@ namespace IO.NI
             double[] pressureGroup2,
             long enqueuedMonotonicTicks)
         {
+            return Rent(
+                device,
+                generation,
+                sequence,
+                sampleCount,
+                timestampsUtc,
+                channels,
+                channelCount,
+                pressureGroup1,
+                pressureGroup2,
+                enqueuedMonotonicTicks,
+                0,
+                ClockState.WarmingUp,
+                0,
+                0,
+                0);
+        }
+
+        internal static DaqDiskBatch Rent(
+            string device,
+            long generation,
+            long sequence,
+            int sampleCount,
+            DateTime[] timestampsUtc,
+            DaqDiskChannelBatch[] channels,
+            int channelCount,
+            double[] pressureGroup1,
+            double[] pressureGroup2,
+            long enqueuedMonotonicTicks,
+            double effectiveSampleRateHz,
+            ClockState clockState,
+            double estimatedSkewPpm,
+            double clockResidualMs,
+            double clockWindowSeconds)
+        {
             if (!ObjectPool.TryTake(out var batch))
                 batch = new DaqDiskBatch();
             else
@@ -269,6 +326,11 @@ namespace IO.NI
                 pressureGroup1,
                 pressureGroup2,
                 enqueuedMonotonicTicks,
+                effectiveSampleRateHz,
+                clockState,
+                estimatedSkewPpm,
+                clockResidualMs,
+                clockWindowSeconds,
                 channelsArrayPooled: true,
                 returnObjectToPool: true);
             return batch;
@@ -285,6 +347,11 @@ namespace IO.NI
             double[] pressureGroup1,
             double[] pressureGroup2,
             long enqueuedMonotonicTicks,
+            double effectiveSampleRateHz,
+            ClockState clockState,
+            double estimatedSkewPpm,
+            double clockResidualMs,
+            double clockWindowSeconds,
             bool channelsArrayPooled,
             bool returnObjectToPool)
         {
@@ -300,6 +367,11 @@ namespace IO.NI
             PressureGroup2 = pressureGroup2;
             EnqueuedMonotonicTicks = enqueuedMonotonicTicks;
             EnqueuedUtc = DateTime.UtcNow;
+            EffectiveSampleRateHz = effectiveSampleRateHz;
+            ClockState = clockState;
+            EstimatedSkewPpm = estimatedSkewPpm;
+            ClockResidualMs = clockResidualMs;
+            ClockWindowSeconds = clockWindowSeconds;
             _channelsArrayPooled = channelsArrayPooled;
             _returnObjectToPool = returnObjectToPool;
         }
@@ -315,6 +387,11 @@ namespace IO.NI
         public double[] PressureGroup2 { get; private set; }
         public long EnqueuedMonotonicTicks { get; private set; }
         public DateTime EnqueuedUtc { get; private set; }
+        public double EffectiveSampleRateHz { get; private set; }
+        public ClockState ClockState { get; private set; }
+        public double EstimatedSkewPpm { get; private set; }
+        public double ClockResidualMs { get; private set; }
+        public double ClockWindowSeconds { get; private set; }
 
         public double AgeMs => EnqueuedMonotonicTicks <= 0
             ? 0
@@ -341,6 +418,11 @@ namespace IO.NI
             ChannelCount = 0;
             PressureGroup1 = null;
             PressureGroup2 = null;
+            EffectiveSampleRateHz = 0;
+            ClockState = ClockState.WarmingUp;
+            EstimatedSkewPpm = 0;
+            ClockResidualMs = 0;
+            ClockWindowSeconds = 0;
             var returnObjectToPool = _returnObjectToPool;
             _channelsArrayPooled = false;
             _returnObjectToPool = false;
@@ -421,6 +503,8 @@ namespace IO.NI
         private long _controlLatencyFaultGenerationDev2 = -1;
         private long _controlInvariantFaultGenerationDev1 = -1;
         private long _controlInvariantFaultGenerationDev2 = -1;
+        private long _clockFaultGenerationDev1 = -1;
+        private long _clockFaultGenerationDev2 = -1;
         private long _controlFilterResetEpochDev1;
         private long _controlFilterResetEpochDev2;
         private long _lastProcessingLagLogTicksDev1;
@@ -436,7 +520,7 @@ namespace IO.NI
         private readonly int _controlQueueCapacity;
         private readonly double _controlWarningAgeMs;
         private readonly double _controlHardFaultAgeMs;
-        private readonly double _sampleFutureToleranceMs;
+        private readonly ClockDisciplineOptions _clockDisciplineOptions;
         private readonly PeriodicDispatchGate _uiDispatchGateDev1;
         private readonly PeriodicDispatchGate _uiDispatchGateDev2;
         private Func<string, bool> _controlActivityProvider;
@@ -478,12 +562,18 @@ namespace IO.NI
 
         private sealed class DeviceReadState
         {
+            public DeviceReadState(ClockDisciplineOptions clockOptions)
+            {
+                Timeline = new ClockDisciplinedSampleTimeline(clockOptions);
+            }
+
             public string Device { get; set; }
             public long Generation { get; set; }
             public NIDaqTask Task { get; set; }
             public AnalogMultiChannelReader Reader { get; set; }
             public ManualResetEventSlim Quiesced { get; } = new(false);
-            public DeviceSampleTimeline Timeline { get; } = new DeviceSampleTimeline();
+            public ClockDisciplinedSampleTimeline Timeline { get; }
+            public double NominalSampleRateHz { get; set; }
             public DaqCallbackProducerGate ProducerGate { get; } = new DaqCallbackProducerGate();
         }
 
@@ -551,8 +641,16 @@ namespace IO.NI
             /// <summary>最近一次采样率（Hz，四舍五入）。</summary>
             public int LastFs;
             public long LastBatchSequence;
+            public long LastProcessedSequence;
+            public long LastGeneration;
             public long ProducerReentryCount;
             public long LastSampleLeadMsBits;
+            public long EffectiveSampleRateHzBits;
+            public long EstimatedSkewPpmBits;
+            public long ClockResidualMsBits;
+            public long ClockWindowSecondsBits;
+            public long ClockCorrectionPpmBits;
+            public int ClockState;
         }
 
         /// <summary>
@@ -675,10 +773,17 @@ namespace IO.NI
             Interlocked.Exchange(ref diag.LastControlEnqueuedSwTick, enqueuedSwTick);
         }
 
-        private void MarkControlProcessed(string device, long processedSwTick, DateTime sampleUtc)
+        private void MarkControlProcessed(
+            string device,
+            long processedSwTick,
+            DateTime sampleUtc,
+            long generation,
+            long sequence)
         {
             var diag = _callbackTimingDiag.GetOrAdd(device, _ => new CallbackTimingDiag());
             Interlocked.Exchange(ref diag.LastProcessedSampleUtcTicks, sampleUtc.ToUniversalTime().Ticks);
+            Interlocked.Exchange(ref diag.LastGeneration, generation);
+            Interlocked.Exchange(ref diag.LastProcessedSequence, sequence);
             Interlocked.Exchange(ref diag.LastSampleCommitSwTick, processedSwTick);
         }
 
@@ -729,10 +834,18 @@ namespace IO.NI
                 ProducerReentryCount = Interlocked.Read(ref diag.ProducerReentryCount),
                 SampleLeadMs = BitConverter.Int64BitsToDouble(
                     Interlocked.Read(ref diag.LastSampleLeadMsBits)),
-                QualityFlags = BitConverter.Int64BitsToDouble(
-                                   Interlocked.Read(ref diag.LastSampleLeadMsBits)) > _sampleFutureToleranceMs
-                    ? FastSignalQualityFlags.TimelineFuture.ToString()
-                    : FastSignalQualityFlags.None.ToString()
+                EffectiveSampleRateHz = BitConverter.Int64BitsToDouble(
+                    Interlocked.Read(ref diag.EffectiveSampleRateHzBits)),
+                EstimatedSkewPpm = BitConverter.Int64BitsToDouble(
+                    Interlocked.Read(ref diag.EstimatedSkewPpmBits)),
+                ClockResidualMs = BitConverter.Int64BitsToDouble(
+                    Interlocked.Read(ref diag.ClockResidualMsBits)),
+                ClockWindowSeconds = BitConverter.Int64BitsToDouble(
+                    Interlocked.Read(ref diag.ClockWindowSecondsBits)),
+                ClockCorrectionPpm = BitConverter.Int64BitsToDouble(
+                    Interlocked.Read(ref diag.ClockCorrectionPpmBits)),
+                ClockState = ((ClockState)Volatile.Read(ref diag.ClockState)).ToString(),
+                QualityFlags = FastSignalQualityFlags.None.ToString()
             });
 
             // 默认不输出节拍日志（测试期避免刷屏）；但仍保留最近一次快照
@@ -842,7 +955,7 @@ namespace IO.NI
             var timingPath = Path.Combine(directory, "daq_timing.csv");
             using (var writer = new StreamWriter(timingPath, false, new UTF8Encoding(true)))
             {
-                writer.WriteLine("TimestampUtc,Device,Kind,Generation,BatchSize,QueueDepth,CallbackIntervalMs,EndReadMs,RearmMs,QueueAgeMs,ProcessingMs,ConvertMs,FilterMs,PeakMs,DiskBatchBuildMs,DiskDispatchMs,UiNotifyMs,PersistenceWaitMs,RingWriteMs,SqliteMs,Detail,ControlQueueCapacity,SubscriberMaxMs,ProcessedSampleUtc,DriftMs,BatchSequence,ProducerThreadId,ProducerReentryCount,SampleLeadMs,QualityFlags");
+                writer.WriteLine("TimestampUtc,Device,Kind,Generation,BatchSize,QueueDepth,CallbackIntervalMs,EndReadMs,RearmMs,QueueAgeMs,ProcessingMs,ConvertMs,FilterMs,PeakMs,DiskBatchBuildMs,DiskDispatchMs,UiNotifyMs,PersistenceWaitMs,RingWriteMs,SqliteMs,Detail,ControlQueueCapacity,SubscriberMaxMs,ProcessedSampleUtc,DriftMs,BatchSequence,ProducerThreadId,ProducerReentryCount,SampleLeadMs,EffectiveSampleRateHz,EstimatedSkewPpm,ClockResidualMs,ClockWindowSeconds,ClockCorrectionPpm,ClockState,QualityFlags");
                 foreach (var x in records.Where(x => !string.Equals(x.Kind, "Runtime", StringComparison.OrdinalIgnoreCase)))
                     writer.WriteLine(
                         $"{x.TimestampUtc:O},{Csv(x.Device)},{Csv(x.Kind)},{x.Generation},{x.BatchSize},{x.QueueDepth}," +
@@ -850,7 +963,9 @@ namespace IO.NI
                         $"{x.ConvertMs:F3},{x.FilterMs:F3},{x.PeakMs:F3},{x.DiskBatchBuildMs:F3},{x.DiskDispatchMs:F3}," +
                         $"{x.UiNotifyMs:F3},{x.PersistenceWaitMs:F3},{x.RingWriteMs:F3},{x.SqliteMs:F3},{Csv(x.Detail)}," +
                         $"{x.ControlQueueCapacity},{x.SubscriberMaxMs:F3},{(x.ProcessedSampleUtc == default ? string.Empty : x.ProcessedSampleUtc.ToString("O"))},{x.DriftMs:F3}," +
-                        $"{x.BatchSequence},{x.ProducerThreadId},{x.ProducerReentryCount},{x.SampleLeadMs:F3},{Csv(x.QualityFlags)}");
+                        $"{x.BatchSequence},{x.ProducerThreadId},{x.ProducerReentryCount},{x.SampleLeadMs:F3}," +
+                        $"{x.EffectiveSampleRateHz:F6},{x.EstimatedSkewPpm:F3},{x.ClockResidualMs:F3}," +
+                        $"{x.ClockWindowSeconds:F3},{x.ClockCorrectionPpm:F3},{Csv(x.ClockState)},{Csv(x.QualityFlags)}");
             }
             var runtimePath = Path.Combine(directory, "daq_runtime.csv");
             using (var writer = new StreamWriter(runtimePath, false, new UTF8Encoding(true)))
@@ -867,7 +982,10 @@ namespace IO.NI
         public string ExportFastCurrentEvidence(string directory, int epbChannel, TimeSpan window)
         {
             Directory.CreateDirectory(directory);
-            var cutoff = DateTime.UtcNow - (window <= TimeSpan.Zero ? TimeSpan.FromSeconds(5) : window);
+            var effectiveWindow = window <= TimeSpan.Zero ? TimeSpan.FromSeconds(5) : window;
+            var cutoff = Stopwatch.GetTimestamp() - (long)Math.Round(
+                effectiveWindow.TotalSeconds * Stopwatch.Frequency,
+                MidpointRounding.AwayFromZero);
             var records = _fastEvidence.Snapshot(epbChannel, cutoff);
             var path = Path.Combine(directory, "fast-current-evidence.csv");
             using (var writer = new StreamWriter(path, false, new UTF8Encoding(true)))
@@ -875,6 +993,7 @@ namespace IO.NI
                 writer.Write(
                     "SampleUtc,CallbackArrivalUtc,Device,Channel,Generation,BatchSequence," +
                     "ProducerThreadId,CaptureMonotonicTicks,EnqueuedMonotonicTicks,SampleLeadMs," +
+                    "EffectiveSampleRateHz,ClockState,EstimatedSkewPpm,ClockResidualMs,ClockWindowSeconds," +
                     "RepresentativeA,FilteredA,QualityFlags");
                 for (var i = 0; i < ControlBatchRing.RawTailCapacity; i++)
                     writer.Write(",RawTailV" + i);
@@ -886,6 +1005,11 @@ namespace IO.NI
                         $"{record.Generation},{record.BatchSequence},{record.ProducerThreadId}," +
                         $"{record.CaptureMonotonicTicks},{record.EnqueuedMonotonicTicks}," +
                         $"{record.SampleLeadMs.ToString("F3", System.Globalization.CultureInfo.InvariantCulture)}," +
+                        $"{record.EffectiveSampleRateHz.ToString("F6", System.Globalization.CultureInfo.InvariantCulture)}," +
+                        $"{Csv(record.ClockState.ToString())}," +
+                        $"{record.EstimatedSkewPpm.ToString("F3", System.Globalization.CultureInfo.InvariantCulture)}," +
+                        $"{record.ClockResidualMs.ToString("F3", System.Globalization.CultureInfo.InvariantCulture)}," +
+                        $"{record.ClockWindowSeconds.ToString("F3", System.Globalization.CultureInfo.InvariantCulture)}," +
                         $"{record.RepresentativeA.ToString("R", System.Globalization.CultureInfo.InvariantCulture)}," +
                         $"{record.FilteredA.ToString("R", System.Globalization.CultureInfo.InvariantCulture)}," +
                         Csv(record.QualityFlags.ToString()));
@@ -1033,11 +1157,19 @@ namespace IO.NI
                                    configuredWarningAge < _controlHardFaultAgeMs
                 ? configuredWarningAge
                 : Math.Min(50, _controlHardFaultAgeMs - 1);
-            var configuredFutureTolerance =
-                ParseDoubleOrDefault(SafeGetAppSetting("DaqSampleFutureToleranceMs"), 20);
-            _sampleFutureToleranceMs = configuredFutureTolerance >= 1 && configuredFutureTolerance <= 100
-                ? configuredFutureTolerance
-                : 20;
+            _clockDisciplineOptions = new ClockDisciplineOptions(
+                estimatorWindowSeconds: (int)ParseDoubleOrDefault(
+                    SafeGetAppSetting("DaqClockEstimatorWindowSec"), 60),
+                warmupSeconds: (int)ParseDoubleOrDefault(
+                    SafeGetAppSetting("DaqClockWarmupSec"), 30),
+                maxAbsSkewPpm: ParseDoubleOrDefault(
+                    SafeGetAppSetting("DaqClockMaxAbsSkewPpm"), 250),
+                maxCorrectionPpmPerUpdate: ParseDoubleOrDefault(
+                    SafeGetAppSetting("DaqClockMaxCorrectionPpmPerUpdate"), 5),
+                residualHardLimitMs: ParseDoubleOrDefault(
+                    SafeGetAppSetting("DaqClockResidualHardLimitMs"), 100),
+                invalidConfirmations: (int)ParseDoubleOrDefault(
+                    SafeGetAppSetting("DaqClockInvalidConfirmations"), 10));
             var configuredUiRateHz =
                 ParseDoubleOrDefault(SafeGetAppSetting("DaqUiDispatchRateHz"), 25);
             var uiRateHz = configuredUiRateHz >= 5 && configuredUiRateHz <= 50
@@ -1552,6 +1684,16 @@ namespace IO.NI
             return new DaqFreshnessSnapshot
             {
                 Device = device,
+                Generation = Interlocked.Read(ref diag.LastGeneration),
+                LastProducedSequence = Interlocked.Read(ref diag.LastBatchSequence),
+                LastProcessedSequence = Interlocked.Read(ref diag.LastProcessedSequence),
+                ClockState = (ClockState)Volatile.Read(ref diag.ClockState),
+                EffectiveSampleRateHz = BitConverter.Int64BitsToDouble(
+                    Interlocked.Read(ref diag.EffectiveSampleRateHzBits)),
+                EstimatedSkewPpm = BitConverter.Int64BitsToDouble(
+                    Interlocked.Read(ref diag.EstimatedSkewPpmBits)),
+                ClockResidualMs = BitConverter.Int64BitsToDouble(
+                    Interlocked.Read(ref diag.ClockResidualMsBits)),
                 LastArrivalMonotonicTicks = processedTick,
                 AgeMs = ageMs,
                 IsFresh = processedTick > 0 && ageMs <= Math.Max(1, maxAgeMs),
@@ -1609,6 +1751,7 @@ namespace IO.NI
             await gate.WaitAsync(token).ConfigureAwait(false);
             try
             {
+                var previousGeneration = GetCurrentGeneration(device);
                 AppendDiagnostic(new DaqTimingValue
                 {
                     TimestampUtc = DateTime.UtcNow,
@@ -1627,23 +1770,45 @@ namespace IO.NI
                 {
                     var stableCount = 0;
                     var stableTick = current.LastArrivalMonotonicTicks;
+                    var stableGeneration = current.Generation;
+                    var lastSequence = current.LastProcessedSequence;
+                    var firstSequence = 0L;
                     while (clock.ElapsedMilliseconds <= Math.Min(500, Math.Max(50, timeoutMs)))
                     {
                         token.ThrowIfCancellationRequested();
                         var next = GetDaqFreshnessSnapshot(device, maxAgeMs);
-                        if (next.IsFresh && next.LastArrivalMonotonicTicks > stableTick)
+                        if (next.IsFresh &&
+                            next.Generation == stableGeneration &&
+                            next.LastArrivalMonotonicTicks > stableTick &&
+                            next.LastProcessedSequence == lastSequence + 1)
                         {
                             stableTick = next.LastArrivalMonotonicTicks;
+                            lastSequence = next.LastProcessedSequence;
+                            if (firstSequence == 0) firstSequence = lastSequence;
                             stableCount++;
                             if (stableCount >= Math.Max(1, requiredFreshCallbacks))
                                 return new DaqRecoveryResult
                                 {
                                     Device = device,
                                     Recovered = true,
+                                    PreviousGeneration = previousGeneration,
+                                    RecoveredGeneration = stableGeneration,
+                                    FirstVerifiedSequence = firstSequence,
+                                    LastVerifiedSequence = lastSequence,
                                     FreshCallbacks = stableCount,
                                     RequiredFreshCallbacks = requiredFreshCallbacks,
                                     ElapsedMs = (int)clock.ElapsedMilliseconds
                                 };
+                        }
+                        else if (next.Generation != stableGeneration ||
+                                 (next.LastArrivalMonotonicTicks > stableTick &&
+                                  next.LastProcessedSequence != lastSequence + 1))
+                        {
+                            stableGeneration = next.Generation;
+                            stableTick = next.LastArrivalMonotonicTicks;
+                            lastSequence = next.LastProcessedSequence;
+                            firstSequence = 0;
+                            stableCount = 0;
                         }
                         await Task.Delay(5, token).ConfigureAwait(false);
                     }
@@ -1676,6 +1841,8 @@ namespace IO.NI
                     {
                         Device = device,
                         Recovered = false,
+                        PreviousGeneration = previousGeneration,
+                        RecoveredGeneration = GetCurrentGeneration(device),
                         RequiredFreshCallbacks = requiredFreshCallbacks,
                         ElapsedMs = (int)clock.ElapsedMilliseconds,
                         FailureReason = $"DaqTaskRecreateFailed: {ex.Message}"
@@ -1684,19 +1851,33 @@ namespace IO.NI
 
                 var freshCount = 0;
                 long lastTick = 0;
+                var recoveredGeneration = GetCurrentGeneration(device);
+                long lastSequenceAfterRecovery = 0;
+                long firstVerifiedSequence = 0;
                 while (clock.ElapsedMilliseconds <= Math.Max(1, timeoutMs))
                 {
                     token.ThrowIfCancellationRequested();
                     var snapshot = GetDaqFreshnessSnapshot(device, maxAgeMs);
-                    if (snapshot.IsFresh && snapshot.LastArrivalMonotonicTicks > lastTick)
+                    if (snapshot.IsFresh &&
+                        snapshot.Generation == recoveredGeneration &&
+                        snapshot.LastArrivalMonotonicTicks > lastTick &&
+                        (lastSequenceAfterRecovery == 0 ||
+                         snapshot.LastProcessedSequence == lastSequenceAfterRecovery + 1))
                     {
                         lastTick = snapshot.LastArrivalMonotonicTicks;
+                        lastSequenceAfterRecovery = snapshot.LastProcessedSequence;
+                        if (firstVerifiedSequence == 0)
+                            firstVerifiedSequence = lastSequenceAfterRecovery;
                         freshCount++;
                         if (freshCount >= Math.Max(1, requiredFreshCallbacks))
                             return new DaqRecoveryResult
                             {
                                 Device = device,
                                 Recovered = true,
+                                PreviousGeneration = previousGeneration,
+                                RecoveredGeneration = recoveredGeneration,
+                                FirstVerifiedSequence = firstVerifiedSequence,
+                                LastVerifiedSequence = lastSequenceAfterRecovery,
                                 FreshCallbacks = freshCount,
                                 RequiredFreshCallbacks = requiredFreshCallbacks,
                                 ElapsedMs = (int)clock.ElapsedMilliseconds
@@ -1705,6 +1886,18 @@ namespace IO.NI
                     else if (!snapshot.IsFresh)
                     {
                         freshCount = 0;
+                        lastTick = 0;
+                        lastSequenceAfterRecovery = 0;
+                        firstVerifiedSequence = 0;
+                    }
+                    else if (snapshot.Generation != recoveredGeneration ||
+                             (lastTick != 0 && snapshot.LastArrivalMonotonicTicks > lastTick &&
+                              snapshot.LastProcessedSequence != lastSequenceAfterRecovery + 1))
+                    {
+                        freshCount = 0;
+                        lastTick = snapshot.LastArrivalMonotonicTicks;
+                        lastSequenceAfterRecovery = snapshot.LastProcessedSequence;
+                        firstVerifiedSequence = 0;
                     }
                     await Task.Delay(5, token).ConfigureAwait(false);
                 }
@@ -1712,6 +1905,10 @@ namespace IO.NI
                 {
                     Device = device,
                     Recovered = false,
+                    PreviousGeneration = previousGeneration,
+                    RecoveredGeneration = recoveredGeneration,
+                    FirstVerifiedSequence = firstVerifiedSequence,
+                    LastVerifiedSequence = lastSequenceAfterRecovery,
                     FreshCallbacks = freshCount,
                     RequiredFreshCallbacks = requiredFreshCallbacks,
                     ElapsedMs = (int)clock.ElapsedMilliseconds,
@@ -1758,15 +1955,33 @@ namespace IO.NI
                     var verifyClock = Stopwatch.StartNew();
                     var freshCount = 0;
                     var lastTick = snapshot.LastArrivalMonotonicTicks;
+                    var generation = snapshot.Generation;
+                    var lastSequence = snapshot.LastProcessedSequence;
+                    var firstSequence = 0L;
                     while (verifyClock.ElapsedMilliseconds <= Math.Min(500, Math.Max(50, timeoutMs)))
                     {
                         token.ThrowIfCancellationRequested();
                         var next = GetDaqFreshnessSnapshot(device, maxAgeMs);
-                        if (next.IsFresh && next.LastArrivalMonotonicTicks > lastTick)
+                        if (next.IsFresh &&
+                            next.Generation == generation &&
+                            next.LastArrivalMonotonicTicks > lastTick &&
+                            next.LastProcessedSequence == lastSequence + 1)
                         {
                             lastTick = next.LastArrivalMonotonicTicks;
+                            lastSequence = next.LastProcessedSequence;
+                            if (firstSequence == 0) firstSequence = lastSequence;
                             freshCount++;
                             if (freshCount >= Math.Max(1, requiredFreshCallbacks)) break;
+                        }
+                        else if (next.Generation != generation ||
+                                 (next.LastArrivalMonotonicTicks > lastTick &&
+                                  next.LastProcessedSequence != lastSequence + 1))
+                        {
+                            generation = next.Generation;
+                            lastTick = next.LastArrivalMonotonicTicks;
+                            lastSequence = next.LastProcessedSequence;
+                            firstSequence = 0;
+                            freshCount = 0;
                         }
                         await Task.Delay(5, token).ConfigureAwait(false);
                     }
@@ -1776,6 +1991,10 @@ namespace IO.NI
                         {
                             Device = device,
                             Recovered = true,
+                            PreviousGeneration = generation,
+                            RecoveredGeneration = generation,
+                            FirstVerifiedSequence = firstSequence,
+                            LastVerifiedSequence = lastSequence,
                             FreshCallbacks = freshCount,
                             RequiredFreshCallbacks = requiredFreshCallbacks,
                             ElapsedMs = (int)verifyClock.ElapsedMilliseconds
@@ -1890,10 +2109,8 @@ namespace IO.NI
                 {
                     var timeline = state.Timeline.Advance(
                         n,
-                        _sampleRate,
                         arrivalUtc,
-                        callbackEntrySwTick,
-                        _sampleFutureToleranceMs);
+                        callbackEntrySwTick);
                     current = timeline.BatchEndUtc;
                     last = timeline.PreviousBatchEndUtc;
                     driftMs = timeline.ArrivalDelayMs;
@@ -1906,39 +2123,70 @@ namespace IO.NI
                         Interlocked.Exchange(
                             ref sequenceDiag.LastSampleLeadMsBits,
                             BitConverter.DoubleToInt64Bits(timeline.SampleLeadMs));
+                        Interlocked.Exchange(ref sequenceDiag.LastGeneration, generation);
+                        Interlocked.Exchange(
+                            ref sequenceDiag.EffectiveSampleRateHzBits,
+                            BitConverter.DoubleToInt64Bits(timeline.EffectiveSampleRateHz));
+                        Interlocked.Exchange(
+                            ref sequenceDiag.EstimatedSkewPpmBits,
+                            BitConverter.DoubleToInt64Bits(timeline.EstimatedSkewPpm));
+                        Interlocked.Exchange(
+                            ref sequenceDiag.ClockResidualMsBits,
+                            BitConverter.DoubleToInt64Bits(timeline.ResidualMs));
+                        Interlocked.Exchange(
+                            ref sequenceDiag.ClockWindowSecondsBits,
+                            BitConverter.DoubleToInt64Bits(timeline.EstimatorWindowSeconds));
+                        Interlocked.Exchange(
+                            ref sequenceDiag.ClockCorrectionPpmBits,
+                            BitConverter.DoubleToInt64Bits(timeline.CorrectionPpm));
+                        Volatile.Write(ref sequenceDiag.ClockState, (int)timeline.ClockState);
                     }
 
-                    if (timeline.IsFuture)
+                    if (timeline.StateChanged || timeline.RequiresRecovery)
                     {
-                        qualityFlags |= FastSignalQualityFlags.TimelineFuture;
                         AppendDiagnostic(new DaqTimingValue
                         {
                             TimestampUtc = arrivalUtc,
                             Device = device,
-                            Kind = "HardFault",
+                            Kind = timeline.RequiresRecovery ? "ClockInvalid" : "ClockState",
                             Generation = generation,
                             BatchSize = n,
                             DriftMs = driftMs,
-                            Detail = $"DaqSampleTimelineFuture Sequence={sequence} LeadMs={timeline.SampleLeadMs:F3}"
+                            BatchSequence = sequence,
+                            SampleLeadMs = timeline.SampleLeadMs,
+                            EffectiveSampleRateHz = timeline.EffectiveSampleRateHz,
+                            EstimatedSkewPpm = timeline.EstimatedSkewPpm,
+                            ClockResidualMs = timeline.ResidualMs,
+                            ClockWindowSeconds = timeline.EstimatorWindowSeconds,
+                            ClockCorrectionPpm = timeline.CorrectionPpm,
+                            ClockState = timeline.ClockState.ToString(),
+                            Detail = $"Sequence={sequence}; State={timeline.ClockState}; " +
+                                     $"RateHz={timeline.EffectiveSampleRateHz:F6}; " +
+                                     $"SkewPpm={timeline.EstimatedSkewPpm:F3}; " +
+                                     $"ResidualMs={timeline.ResidualMs:F3}"
                         });
+                    }
+                    if (timeline.RequiresRecovery)
+                    {
                         PublishQueueFullFault(
                             device,
                             generation,
-                            "DaqSampleTimelineFuture",
+                            "DaqClockModelInvalid",
                             "Control",
                             0,
                             string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase)
                                 ? _controlRingDev1.Capacity
                                 : _controlRingDev2.Capacity,
                             0,
-                            $"FastPathSignalInvalid Cause=DaqSampleTimelineFuture Device={device} " +
-                            $"Generation={generation} 样本时间领先回调" +
-                            $"{timeline.SampleLeadMs:F3}ms，超过{_sampleFutureToleranceMs:F0}ms，已拒绝控制和周期数据。"
+                            $"Device={device} Generation={generation} DAQ时钟模型连续不可用，" +
+                            $"将安全暂停并自动重建。State={timeline.ClockState} " +
+                            $"RateHz={timeline.EffectiveSampleRateHz:F6} " +
+                            $"SkewPpm={timeline.EstimatedSkewPpm:F3} " +
+                            $"ResidualMs={timeline.ResidualMs:F3}。"
                         );
                     }
-                    else
-                    {
-                        if (_fastSource == FastSource.DaqCallback)
+
+                    if (_fastSource == FastSource.DaqCallback)
                         {
                             var devRecs = GetDeviceRecords(device);
                             var chCount = Math.Min(raw.GetLength(0), devRecs.Length);
@@ -1985,6 +2233,11 @@ namespace IO.NI
                                 callbackEntrySwTick,
                                 controlEnqueuedTick,
                                 timeline.SampleLeadMs,
+                                timeline.EffectiveSampleRateHz,
+                                timeline.ClockState,
+                                timeline.EstimatedSkewPpm,
+                                timeline.ResidualMs,
+                                timeline.EstimatorWindowSeconds,
                                 Thread.CurrentThread.ManagedThreadId,
                                 qualityFlags);
                             if (EnqueueForControl(
@@ -2006,8 +2259,12 @@ namespace IO.NI
                             raw,
                             current,
                             last,
-                            callbackEntrySwTick));
-                    }
+                            callbackEntrySwTick,
+                            timeline.EffectiveSampleRateHz,
+                            timeline.ClockState,
+                            timeline.EstimatedSkewPpm,
+                            timeline.ResidualMs,
+                            timeline.EstimatorWindowSeconds));
 
                     // 所有生产者工作到此结束；清门后才允许下一批回调进入。
                     state.ProducerGate.Exit();
@@ -2270,7 +2527,6 @@ namespace IO.NI
                             }
                         }
                         if ((quality & (FastSignalQualityFlags.SequenceDiscontinuity |
-                                        FastSignalQualityFlags.TimelineFuture |
                                         FastSignalQualityFlags.ProducerReentry |
                                         FastSignalQualityFlags.GenerationMismatch |
                                         FastSignalQualityFlags.DuplicateBatch |
@@ -2368,7 +2624,12 @@ namespace IO.NI
                         }
 
                         var processedTicks = Stopwatch.GetTimestamp();
-                        MarkControlProcessed(workerDevice, processedTicks, metadata.SampleUtc);
+                        MarkControlProcessed(
+                            workerDevice,
+                            processedTicks,
+                            metadata.SampleUtc,
+                            metadata.Generation,
+                            metadata.SourceSequence);
                         var processMs = AgeMs(batchStarted, processedTicks);
                         Interlocked.Exchange(
                             ref isDev1Worker ? ref _lastControlBatchProcessMsBitsDev1 : ref _lastControlBatchProcessMsBitsDev2,
@@ -2597,8 +2858,13 @@ namespace IO.NI
                         // 1) 计算时间戳数组（以本批最后一个样本对齐 item.Current，向前按 Fs 均匀回推）
                         var n = engFiltered.GetLength(1);
                         var tsUtc = pooledTimestamps = ArrayPool<DateTime>.Shared.Rent(n);
+                        var archiveSampleRate = item.EffectiveSampleRateHz > 0 &&
+                                                !double.IsNaN(item.EffectiveSampleRateHz) &&
+                                                !double.IsInfinity(item.EffectiveSampleRateHz)
+                            ? item.EffectiveSampleRateHz
+                            : _sampleRate;
                         HighResolutionSampleClock.FillBatchTimestamps(
-                            item.Current.ToUniversalTime(), tsUtc, n, _sampleRate);
+                            item.Current.ToUniversalTime(), tsUtc, n, archiveSampleRate);
 
                         // 2) 构建“每 EPB 通道”的电流数组（从当前 device 的工程值矩阵提取）
                         var devRecs = GetDeviceRecords(item.Device);
@@ -2695,7 +2961,12 @@ namespace IO.NI
                             pooledCurrentCount,
                             pressure1,
                             pressure2,
-                            Stopwatch.GetTimestamp());
+                            Stopwatch.GetTimestamp(),
+                            archiveSampleRate,
+                            item.ClockState,
+                            item.EstimatedSkewPpm,
+                            item.ClockResidualMs,
+                            item.ClockWindowSeconds);
                         var transferred = false;
                         try
                         {
@@ -3212,6 +3483,10 @@ namespace IO.NI
                 latchedGeneration = ref isDev1
                     ? ref _controlInvariantFaultGenerationDev1
                     : ref _controlInvariantFaultGenerationDev2;
+            else if (string.Equals(code, "DaqClockModelInvalid", StringComparison.OrdinalIgnoreCase))
+                latchedGeneration = ref isDev1
+                    ? ref _clockFaultGenerationDev1
+                    : ref _clockFaultGenerationDev2;
             if (Interlocked.Exchange(ref latchedGeneration, generation) == generation) return;
             if (queueCapacity <= 0) queueCapacity = _processingQueueCapacity;
             if (queueDepth <= 0)
@@ -3275,6 +3550,19 @@ namespace IO.NI
                 ProducerThreadId = Thread.CurrentThread.ManagedThreadId,
                 ProducerReentryCount = diagnosticProducerReentryCount,
                 SampleLeadMs = diagnosticSampleLeadMs,
+                EffectiveSampleRateHz = diag == null ? 0 : BitConverter.Int64BitsToDouble(
+                    Interlocked.Read(ref diag.EffectiveSampleRateHzBits)),
+                EstimatedSkewPpm = diag == null ? 0 : BitConverter.Int64BitsToDouble(
+                    Interlocked.Read(ref diag.EstimatedSkewPpmBits)),
+                ClockResidualMs = diag == null ? 0 : BitConverter.Int64BitsToDouble(
+                    Interlocked.Read(ref diag.ClockResidualMsBits)),
+                ClockWindowSeconds = diag == null ? 0 : BitConverter.Int64BitsToDouble(
+                    Interlocked.Read(ref diag.ClockWindowSecondsBits)),
+                ClockCorrectionPpm = diag == null ? 0 : BitConverter.Int64BitsToDouble(
+                    Interlocked.Read(ref diag.ClockCorrectionPpmBits)),
+                ClockState = diag == null
+                    ? string.Empty
+                    : ((ClockState)Volatile.Read(ref diag.ClockState)).ToString(),
                 QualityFlags = GetInvariantQualityFlag(code).ToString(),
                 Detail = fault.Reason
             });
@@ -3289,7 +3577,6 @@ namespace IO.NI
         private static bool IsControlInvariantFault(string code)
         {
             return string.Equals(code, "ControlProducerReentry", StringComparison.OrdinalIgnoreCase) ||
-                   string.Equals(code, "DaqSampleTimelineFuture", StringComparison.OrdinalIgnoreCase) ||
                    string.Equals(code, "ControlSequenceDiscontinuity", StringComparison.OrdinalIgnoreCase) ||
                    string.Equals(code, "ControlBatchDuplicate", StringComparison.OrdinalIgnoreCase) ||
                    string.Equals(code, "ControlBatchOutOfOrder", StringComparison.OrdinalIgnoreCase) ||
@@ -3301,8 +3588,6 @@ namespace IO.NI
         {
             if (string.Equals(code, "ControlProducerReentry", StringComparison.OrdinalIgnoreCase))
                 return FastSignalQualityFlags.ProducerReentry;
-            if (string.Equals(code, "DaqSampleTimelineFuture", StringComparison.OrdinalIgnoreCase))
-                return FastSignalQualityFlags.TimelineFuture;
             if (string.Equals(code, "ControlBatchDuplicate", StringComparison.OrdinalIgnoreCase))
                 return FastSignalQualityFlags.DuplicateBatch;
             if (string.Equals(code, "ControlBatchOutOfOrder", StringComparison.OrdinalIgnoreCase))
@@ -3326,8 +3611,16 @@ namespace IO.NI
             Interlocked.Exchange(ref diag.LastCbIntervalMsBits, 0);
             Interlocked.Exchange(ref diag.LastArrivalDelayMsBits, 0);
             Interlocked.Exchange(ref diag.LastBatchSequence, 0);
+            Interlocked.Exchange(ref diag.LastProcessedSequence, 0);
+            Interlocked.Exchange(ref diag.LastGeneration, 0);
             Interlocked.Exchange(ref diag.ProducerReentryCount, 0);
             Interlocked.Exchange(ref diag.LastSampleLeadMsBits, 0);
+            Interlocked.Exchange(ref diag.EffectiveSampleRateHzBits, 0);
+            Interlocked.Exchange(ref diag.EstimatedSkewPpmBits, 0);
+            Interlocked.Exchange(ref diag.ClockResidualMsBits, 0);
+            Interlocked.Exchange(ref diag.ClockWindowSecondsBits, 0);
+            Interlocked.Exchange(ref diag.ClockCorrectionPpmBits, 0);
+            Volatile.Write(ref diag.ClockState, (int)ClockState.WarmingUp);
         }
 
         private void StartDevice(string device)
@@ -3353,21 +3646,43 @@ namespace IO.NI
                         taskName, channels, _aiMin, _aiMax, _terminalConfiguration);
                     // 每台设备在真正启动硬件前建立独立时间原点。累计样本时间只从该原点推进，
                     // 回调追赶不得再把样本时间贴到主机当前时间后继续向未来累加。
-                    var acquisitionStartUtc = DateTime.UtcNow;
                     var acquisitionStartTick = Stopwatch.GetTimestamp();
+                    var acquisitionStartUtc = DateTime.UtcNow;
                     task.Start();
+                    var nominalSampleRate = _sampleRate;
+                    try
+                    {
+                        var coercedRate = task.Timing.SampleClockRate;
+                        if (coercedRate > 0 && !double.IsNaN(coercedRate) && !double.IsInfinity(coercedRate))
+                            nominalSampleRate = coercedRate;
+                    }
+                    catch (Exception ex)
+                    {
+                        _log.Warn($"{device} 无法读取DAQ强制采样率，使用配置值 {_sampleRate:F6}Hz：{ex.Message}", "AI");
+                    }
                     var reader = new AnalogMultiChannelReader(task.Stream)
                     {
                         SynchronizeCallbacks = false
                     };
-                    var state = new DeviceReadState
+                    var state = new DeviceReadState(_clockDisciplineOptions)
                     {
                         Device = device,
                         Generation = generation,
                         Task = task,
-                        Reader = reader
+                        Reader = reader,
+                        NominalSampleRateHz = nominalSampleRate
                     };
-                    state.Timeline.Reset(acquisitionStartUtc, acquisitionStartTick);
+                    state.Timeline.Reset(acquisitionStartUtc, acquisitionStartTick, nominalSampleRate);
+                    AppendDiagnostic(new DaqTimingValue
+                    {
+                        TimestampUtc = acquisitionStartUtc,
+                        Device = device,
+                        Kind = "ClockStart",
+                        Generation = generation,
+                        EffectiveSampleRateHz = nominalSampleRate,
+                        ClockState = ClockState.WarmingUp.ToString(),
+                        Detail = $"ConfiguredRateHz={_sampleRate:F6}; CoercedRateHz={nominalSampleRate:F6}"
+                    });
                     if (isDev1)
                     {
                         _task1 = task;
@@ -3477,7 +3792,12 @@ namespace IO.NI
                 double[,] raw,
                 DateTime current,
                 DateTime last,
-                long enqueuedMonotonicTicks)
+                long enqueuedMonotonicTicks,
+                double effectiveSampleRateHz,
+                ClockState clockState,
+                double estimatedSkewPpm,
+                double clockResidualMs,
+                double clockWindowSeconds)
             {
                 Device = device;
                 Generation = generation;
@@ -3486,6 +3806,11 @@ namespace IO.NI
                 Current = current;
                 Last = last;
                 EnqueuedMonotonicTicks = enqueuedMonotonicTicks;
+                EffectiveSampleRateHz = effectiveSampleRateHz;
+                ClockState = clockState;
+                EstimatedSkewPpm = estimatedSkewPpm;
+                ClockResidualMs = clockResidualMs;
+                ClockWindowSeconds = clockWindowSeconds;
             }
 
             public string Device { get; }
@@ -3495,6 +3820,11 @@ namespace IO.NI
             public DateTime Current { get; }
             public DateTime Last { get; }
             public long EnqueuedMonotonicTicks { get; }
+            public double EffectiveSampleRateHz { get; }
+            public ClockState ClockState { get; }
+            public double EstimatedSkewPpm { get; }
+            public double ClockResidualMs { get; }
+            public double ClockWindowSeconds { get; }
         }
 
         #region 获取最大值相关的类和字段

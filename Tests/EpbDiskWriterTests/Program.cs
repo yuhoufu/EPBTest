@@ -31,6 +31,7 @@ namespace EpbDiskWriterTests
                 Run("所有 CSV 出口包含相对时间", AllCsvExportsContainRelativeTime);
                 Run("2000Hz CSV保留0.5ms时间分辨率", TwoKilohertzCsvKeepsSubMillisecondTime);
                 Run("报警圈原子封存与数据库边界一致", AlarmSealMatchesDatabaseBoundary);
+                Run("DAQ时钟恢复圈状态独立封存", DaqClockRecoveryAbortStatusIsDurable);
                 Run("报警CSV和BIN不一致时校验失败", AlarmPairValidatorRejectsMismatch);
                 Run("学习圈四种终态均落盘且不改变正式计数", LearningOutcomesDoNotAffectFormalCounters);
                 Run("学习负圈号跨重启连续且唯一", LearningCycleNumbersSurviveRestart);
@@ -474,6 +475,42 @@ namespace EpbDiskWriterTests
                     63);
                 Assert(!invalid.IsValid && invalid.ValidationError.Contains("样本数不一致"),
                     "CSV/BIN 数量不一致未被拒绝。");
+            });
+        }
+
+        private static void DaqClockRecoveryAbortStatusIsDurable()
+        {
+            WithRoot(root =>
+            {
+                var policy = NewPolicy(root);
+                var start = DateTime.UtcNow;
+                using (var writer = new EpbDiskWriter(policy))
+                {
+                    writer.BeginCycle(4, 150, start);
+                    WriteSamples(writer, 4, 5, start);
+                    writer.AbortCycle(
+                        4,
+                        150,
+                        5,
+                        start.AddSeconds(1),
+                        "AbortedByDaqClockRecovery");
+                    Assert(writer.GetClosedCycleCount(4) == 0,
+                        "DAQ时钟恢复中止圈被错误计入合格寿命圈");
+                }
+
+                using (var connection = new SQLiteConnection(
+                           $"Data Source={Path.Combine(policy.IndexAndExportPath, policy.IndexDbFile)}"))
+                {
+                    connection.Open();
+                    using var command = connection.CreateCommand();
+                    command.CommandText =
+                        "SELECT sample_count,status FROM epb_cycles WHERE epb_id=4 AND cycle_number=150";
+                    using var reader = command.ExecuteReader();
+                    Assert(reader.Read(), "DAQ时钟恢复中止圈数据库记录不存在");
+                    Assert(reader.GetInt32(0) == 5, "DAQ时钟恢复中止圈样本边界错误");
+                    Assert(reader.GetString(1) == "AbortedByDaqClockRecovery",
+                        "DAQ时钟恢复中止圈状态被降级为普通failed");
+                }
             });
         }
 

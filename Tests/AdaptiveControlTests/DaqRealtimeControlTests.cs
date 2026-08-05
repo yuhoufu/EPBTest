@@ -36,6 +36,14 @@ namespace AdaptiveControlTests
             Run("最后项目跨版本恢复且不可用时保留选择", LastProjectSelectionSurvivesUpgradeAndUnavailableStorage, ref passed);
             Run("DAQ生产区拒绝重叠回调", ProducerGateRejectsOverlap, ref passed);
             Run("采样时间按设备起点和累计样本推进", AcquisitionTimelineNeverSnapsCatchUpToFuture, ref passed);
+            Run("Dev1与Dev2相反ppm连续72小时独立锁定", ClockTimelinesTrackOppositePpmFor72Hours, ref passed);
+            Run("现场追赶回调不再触发时间轴故障", ClockTimelineReplaysFieldCatchUpWithoutFault, ref passed);
+            Run("UTC前后跳变不改变单调采样时间轴", ClockTimelineIgnoresUtcJumps, ref passed);
+            Run("时钟越界必须连续确认才失效", ClockTimelineRequiresConsecutiveInvalidEvidence, ref passed);
+            Run("锁定后低延迟包络连续超前才触发恢复", ClockTimelineRequiresSustainedResidualLead, ref passed);
+            Run("DAQ时钟恢复十分钟前三次允许第四次锁存", ClockRecoveryAttemptWindowIsBounded, ref passed);
+            Run("自适应时钟十万批稳态无持续分配", ClockTimelineHotLoopDoesNotAllocate, ref passed);
+            Run("旧TimelineFuture标志不再使有效电流失效", LegacyTimelineFlagIsDiagnosticOnly, ref passed);
             Run("控制批携带序号单调时钟和原始尾部", ControlBatchCarriesIdentityClockAndRawTail, ref passed);
             Run("快速控制复制完成后才移交后台原始批次", RawBatchOwnershipTransfersAfterControlCopy, ref passed);
             Run("Dev1和Dev2各十万批所有权移交不污染快速证据", RawBatchOwnershipStressForBothDevices, ref passed);
@@ -411,13 +419,18 @@ namespace AdaptiveControlTests
                 channels[0] = new DaqDiskChannelBatch(4, currents);
                 return DaqDiskBatch.Rent(
                     "Dev1", 1, sequence, 1, timestamps, channels, 1,
-                    null, null, Stopwatch.GetTimestamp());
+                    null, null, Stopwatch.GetTimestamp(),
+                    2000.0302, ClockState.Locked, 15.1, -25.4, 60);
             }
 
             var first = Rent(1);
             first.Dispose();
             var second = Rent(2);
             Assert(ReferenceEquals(first, second), "持久化批次对象池未复用对象");
+            Assert(Math.Abs(second.EffectiveSampleRateHz - 2000.0302) < 1e-9 &&
+                   second.ClockState == ClockState.Locked &&
+                   Math.Abs(second.EstimatedSkewPpm - 15.1) < 1e-9,
+                "持久化批次没有携带归档时钟元数据");
             second.Dispose();
         }
 
@@ -485,27 +498,307 @@ namespace AdaptiveControlTests
         {
             var origin = new DateTime(2026, 8, 5, 1, 0, 0, DateTimeKind.Utc);
             var originTick = Stopwatch.Frequency;
-            var timeline = new DeviceSampleTimeline();
-            timeline.Reset(origin, originTick);
+            var timeline = new ClockDisciplinedSampleTimeline();
+            timeline.Reset(origin, originTick, 2000);
             var first = timeline.Advance(
-                20, 2000, origin.AddMilliseconds(500),
-                originTick + Stopwatch.Frequency / 2, 20);
+                20, origin.AddMilliseconds(500),
+                originTick + Stopwatch.Frequency / 2);
             var second = timeline.Advance(
-                20, 2000, origin.AddMilliseconds(501),
-                originTick + (long)(0.501 * Stopwatch.Frequency), 20);
+                20, origin.AddMilliseconds(501),
+                originTick + (long)(0.501 * Stopwatch.Frequency));
             Assert(first.BatchEndUtc == origin.AddMilliseconds(10) &&
                    second.BatchEndUtc == origin.AddMilliseconds(20),
                 "追赶回调错误贴到主机时间后继续推进");
-            Assert(!first.IsFuture && !second.IsFuture && first.ArrivalDelayMs > 400,
+            Assert(!first.RequiresRecovery && !second.RequiresRecovery && first.ArrivalDelayMs > 400,
                 "历史积压批被误判为未来样本");
+        }
 
-            var invalid = new DeviceSampleTimeline();
-            invalid.Reset(origin, originTick);
-            var future = invalid.Advance(
-                1040, 2000, origin.AddMilliseconds(20),
-                originTick + Stopwatch.Frequency / 50, 20);
-            Assert(future.IsFuture && future.SampleLeadMs >= 499,
-                "未来约500ms的样本时间没有触发不变量");
+        private static void ClockTimelinesTrackOppositePpmFor72Hours()
+        {
+            const double nominalRate = 2000;
+            const double dev1Ppm = 15.1;
+            const double dev2Ppm = -29.5;
+            const int hours = 72;
+            var origin = new DateTime(2026, 8, 5, 2, 0, 0, DateTimeKind.Utc);
+            var originTick = Stopwatch.Frequency * 10L;
+            var dev1 = new ClockDisciplinedSampleTimeline();
+            var dev2 = new ClockDisciplinedSampleTimeline();
+            dev1.Reset(origin, originTick, nominalRate);
+            dev2.Reset(origin, originTick, nominalRate);
+            long dev1Samples = 0;
+            long dev2Samples = 0;
+            var dev1Previous = origin;
+            var dev2Previous = origin;
+            ClockDisciplinedTimelineResult dev1Result = default;
+            ClockDisciplinedTimelineResult dev2Result = default;
+            var dev1Rate = nominalRate * (1 + dev1Ppm / 1_000_000.0);
+            var dev2Rate = nominalRate * (1 + dev2Ppm / 1_000_000.0);
+
+            for (var second = 0; second < hours * 3600; second++)
+            {
+                dev1Samples += 2000;
+                dev2Samples += 2000;
+                dev1Result = AdvanceClock(
+                    dev1, origin, originTick, dev1Samples, 2000, dev1Rate, 26, second % 3 == 0 ? 0.3 : 0);
+                dev2Result = AdvanceClock(
+                    dev2, origin, originTick, dev2Samples, 2000, dev2Rate, 29, second % 5 == 0 ? 0.4 : 0);
+                Assert(dev1Result.BatchEndUtc > dev1Previous && dev2Result.BatchEndUtc > dev2Previous,
+                    "72小时模拟中批次时间没有严格递增");
+                Assert(!dev1Result.RequiresRecovery && !dev2Result.RequiresRecovery,
+                    "合理ppm漂移被误判为时钟模型失效");
+                dev1Previous = dev1Result.BatchEndUtc;
+                dev2Previous = dev2Result.BatchEndUtc;
+            }
+
+            Assert(dev1Result.ClockState == ClockState.Locked &&
+                   dev2Result.ClockState == ClockState.Locked,
+                "72小时后设备时钟没有锁定");
+            Assert(Math.Abs(dev1Result.EstimatedSkewPpm - dev1Ppm) < 1.0,
+                $"Dev1 ppm估计不准确：{dev1Result.EstimatedSkewPpm:F3}");
+            Assert(Math.Abs(dev2Result.EstimatedSkewPpm - dev2Ppm) < 1.0,
+                $"Dev2 ppm估计不准确：{dev2Result.EstimatedSkewPpm:F3}");
+            Assert(dev1Result.TotalSamples == (long)hours * 3600 * 2000 &&
+                   dev2Result.TotalSamples == (long)hours * 3600 * 2000,
+                "72小时模拟存在样本丢失");
+        }
+
+        private static void ClockTimelineReplaysFieldCatchUpWithoutFault()
+        {
+            const double nominalRate = 2000;
+            var actualRate = nominalRate * (1 + 15.1 / 1_000_000.0);
+            var origin = new DateTime(2026, 8, 5, 6, 0, 0, DateTimeKind.Utc);
+            var originTick = Stopwatch.Frequency * 20L;
+            var timeline = new ClockDisciplinedSampleTimeline();
+            timeline.Reset(origin, originTick, nominalRate);
+            long totalSamples = 0;
+            ClockDisciplinedTimelineResult result = default;
+            for (var second = 0; second < 29 * 60; second++)
+            {
+                totalSamples += 2000;
+                result = AdvanceClock(timeline, origin, originTick, totalSamples, 2000, actualRate, 26, 0);
+            }
+
+            var callbackTick = originTick + (long)Math.Round(
+                (totalSamples / actualRate + 0.026) * Stopwatch.Frequency,
+                MidpointRounding.AwayFromZero);
+            var intervalsMs = new[] { 15.047, 1.334, 0.142 };
+            var sequenceCount = 0;
+            foreach (var intervalMs in intervalsMs)
+            {
+                totalSamples += 20;
+                callbackTick += (long)Math.Round(
+                    intervalMs / 1000.0 * Stopwatch.Frequency,
+                    MidpointRounding.AwayFromZero);
+                result = timeline.Advance(20, origin, callbackTick);
+                Assert(!result.RequiresRecovery, "现场追赶回调被误判为时钟模型硬故障");
+                sequenceCount++;
+            }
+            Assert(sequenceCount == 3 && result.TotalSamples == totalSamples,
+                "现场175218~175220追赶批次没有全部保留");
+        }
+
+        private static void ClockTimelineIgnoresUtcJumps()
+        {
+            var origin = new DateTime(2026, 8, 5, 7, 0, 0, DateTimeKind.Utc);
+            var originTick = Stopwatch.Frequency * 30L;
+            var baseline = new ClockDisciplinedSampleTimeline();
+            var jumped = new ClockDisciplinedSampleTimeline();
+            baseline.Reset(origin, originTick, 2000);
+            jumped.Reset(origin, originTick, 2000);
+            long samples = 0;
+            for (var second = 1; second <= 120; second++)
+            {
+                samples += 2000;
+                var callbackTick = originTick + (long)Math.Round(
+                    (second + 0.025) * Stopwatch.Frequency,
+                    MidpointRounding.AwayFromZero);
+                var normalUtc = origin.AddSeconds(second).AddMilliseconds(25);
+                var jumpedUtc = second < 40
+                    ? normalUtc
+                    : second < 80
+                        ? normalUtc.AddHours(6)
+                        : normalUtc.AddHours(-6);
+                var normal = baseline.Advance(2000, normalUtc, callbackTick);
+                var shifted = jumped.Advance(2000, jumpedUtc, callbackTick);
+                Assert(normal.BatchEndUtc == shifted.BatchEndUtc &&
+                       normal.BatchEndMonotonicTicks == shifted.BatchEndMonotonicTicks &&
+                       normal.ClockState == shifted.ClockState,
+                    "UTC跳变污染了采样时间轴或时钟状态");
+            }
+        }
+
+        private static void ClockTimelineRequiresConsecutiveInvalidEvidence()
+        {
+            var options = new ClockDisciplineOptions(
+                estimatorWindowSeconds: 30,
+                warmupSeconds: 10,
+                maxAbsSkewPpm: 250,
+                maxCorrectionPpmPerUpdate: 5,
+                residualHardLimitMs: 100,
+                invalidConfirmations: 10);
+            var origin = new DateTime(2026, 8, 5, 8, 0, 0, DateTimeKind.Utc);
+            var originTick = Stopwatch.Frequency * 40L;
+            var timeline = new ClockDisciplinedSampleTimeline(options);
+            timeline.Reset(origin, originTick, 2000);
+            var outOfSpecRate = 2000 * (1 + 1000.0 / 1_000_000.0);
+            long samples = 0;
+            ClockDisciplinedTimelineResult result = default;
+            var firstInvalidSecond = -1;
+            for (var second = 0; second < 40; second++)
+            {
+                samples += 2000;
+                result = AdvanceClock(timeline, origin, originTick, samples, 2000, outOfSpecRate, 25, 0);
+                if (result.RequiresRecovery)
+                {
+                    firstInvalidSecond = second;
+                    break;
+                }
+            }
+            Assert(firstInvalidSecond >= 19,
+                $"时钟异常未经过10次连续确认即失效：second={firstInvalidSecond}");
+
+            var transient = new ClockDisciplinedSampleTimeline(options);
+            transient.Reset(origin, originTick, 2000);
+            samples = 0;
+            for (var second = 0; second < 45; second++)
+            {
+                samples += 2000;
+                var rate = second == 20 ? outOfSpecRate : 2000;
+                result = AdvanceClock(transient, origin, originTick, samples, 2000, rate, 25, 0);
+                Assert(!result.RequiresRecovery, "单次采样时钟离群错误触发恢复");
+            }
+        }
+
+        private static void ClockTimelineRequiresSustainedResidualLead()
+        {
+            var options = new ClockDisciplineOptions(
+                estimatorWindowSeconds: 60,
+                warmupSeconds: 30,
+                maxAbsSkewPpm: 250,
+                maxCorrectionPpmPerUpdate: 5,
+                residualHardLimitMs: 100,
+                invalidConfirmations: 10);
+            var origin = new DateTime(2026, 8, 5, 8, 30, 0, DateTimeKind.Utc);
+            var originTick = Stopwatch.Frequency * 45L;
+            var timeline = new ClockDisciplinedSampleTimeline(options);
+            timeline.Reset(origin, originTick, 2000);
+            long samples = 0;
+            var lockedSeen = false;
+            var lockedFitsBeforeInvalid = 0;
+            ClockDisciplinedTimelineResult result = default;
+
+            // 保持名义采样率不变，只让低延迟包络持续领先100ms以上。
+            // 暖机阶段不得失效；锁定后仍须连续10次确认才进入恢复。
+            for (var second = 1; second <= 90; second++)
+            {
+                samples += 2000;
+                var callbackSeconds = samples / 2000.0 - 0.150;
+                var callbackTick = originTick + (long)Math.Round(
+                    callbackSeconds * Stopwatch.Frequency,
+                    MidpointRounding.AwayFromZero);
+                result = timeline.Advance(2000, origin.AddSeconds(callbackSeconds), callbackTick);
+                if (result.ClockState == ClockState.Locked)
+                {
+                    lockedSeen = true;
+                    lockedFitsBeforeInvalid++;
+                }
+                if (result.RequiresRecovery) break;
+            }
+
+            Assert(lockedSeen, "持续residual超前在模型锁定前错误进入恢复");
+            Assert(result.RequiresRecovery && result.ResidualMs > 100,
+                "锁定后的持续residual超前没有触发DAQ时钟恢复");
+            Assert(lockedFitsBeforeInvalid >= 9,
+                $"residual超前未经过连续确认即失效：lockedFits={lockedFitsBeforeInvalid}");
+        }
+
+        private static void ClockRecoveryAttemptWindowIsBounded()
+        {
+            var window = new DaqRecoveryAttemptWindow(3, TimeSpan.FromMinutes(10));
+            var start = Stopwatch.Frequency * 100L;
+            Assert(window.TryRegister("Dev1", start, out var first) && first == 1,
+                "第一次时钟恢复被拒绝");
+            Assert(window.TryRegister("Dev1", start + Stopwatch.Frequency, out var second) && second == 2,
+                "第二次时钟恢复被拒绝");
+            Assert(window.TryRegister("Dev1", start + 2 * Stopwatch.Frequency, out var third) && third == 3,
+                "第三次时钟恢复被拒绝");
+            Assert(!window.TryRegister("Dev1", start + 3 * Stopwatch.Frequency, out var fourth) && fourth == 3,
+                "10分钟内第四次时钟恢复没有锁存");
+            Assert(window.TryRegister("Dev2", start + 3 * Stopwatch.Frequency, out var isolated) && isolated == 1,
+                "Dev1恢复计数污染Dev2");
+            Assert(window.TryRegister(
+                       "Dev1",
+                       start + (long)(TimeSpan.FromMinutes(12).TotalSeconds * Stopwatch.Frequency) + 1,
+                       out var expired) && expired == 1,
+                "10分钟窗口过期后恢复次数没有释放");
+        }
+
+        private static void ClockTimelineHotLoopDoesNotAllocate()
+        {
+            var origin = new DateTime(2026, 8, 5, 9, 0, 0, DateTimeKind.Utc);
+            var originTick = Stopwatch.Frequency * 50L;
+            var timeline = new ClockDisciplinedSampleTimeline();
+            timeline.Reset(origin, originTick, 2000);
+            long samples = 0;
+            for (var i = 0; i < 10000; i++)
+            {
+                samples += 20;
+                AdvanceClock(timeline, origin, originTick, samples, 20, 2000.03, 25, 0);
+            }
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            var before = GC.GetAllocatedBytesForCurrentThread();
+            ClockDisciplinedTimelineResult result = default;
+            for (var i = 0; i < 100000; i++)
+            {
+                samples += 20;
+                result = AdvanceClock(timeline, origin, originTick, samples, 20, 2000.03, 25, 0);
+            }
+            var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+            Assert(allocated <= 256,
+                $"自适应时钟热路径发生持续分配：{allocated} bytes");
+            Assert(result.ClockState == ClockState.Locked && !result.RequiresRecovery,
+                "稳态无分配测试中的时钟状态异常");
+        }
+
+        private static ClockDisciplinedTimelineResult AdvanceClock(
+            ClockDisciplinedSampleTimeline timeline,
+            DateTime origin,
+            long originTick,
+            long totalSamples,
+            int sampleCount,
+            double actualSampleRateHz,
+            double baseLatencyMs,
+            double jitterMs)
+        {
+            var callbackSeconds = totalSamples / actualSampleRateHz +
+                                  (baseLatencyMs + jitterMs) / 1000.0;
+            var callbackTick = originTick + (long)Math.Round(
+                callbackSeconds * Stopwatch.Frequency,
+                MidpointRounding.AwayFromZero);
+            var callbackUtc = origin.AddTicks((long)Math.Round(
+                callbackSeconds * TimeSpan.TicksPerSecond,
+                MidpointRounding.AwayFromZero));
+            return timeline.Advance(sampleCount, callbackUtc, callbackTick);
+        }
+
+        private static void LegacyTimelineFlagIsDiagnosticOnly()
+        {
+            var sample = new FastEpbCurrentSample(
+                4,
+                12.5,
+                12.5,
+                DateTime.UtcNow,
+                Stopwatch.GetTimestamp(),
+                3,
+                100,
+                FastSignalQualityFlags.TimelineFuture);
+            Assert(sample.IsControlUsable,
+                "兼容保留的TimelineFuture数值仍错误阻断控制数据");
+            Assert(!FastPathTripClassifier.HasInvalidControlQuality(
+                    FastSignalQualityFlags.TimelineFuture),
+                "过流归因仍把归档时间偏差当作电流信号无效");
         }
 
         private static void ControlBatchCarriesIdentityClockAndRawTail()
