@@ -55,6 +55,8 @@ namespace Controller
         private readonly Func<IEpbCycleRecorder> _recorder;
         private readonly IAppLogger _log;
         private readonly Action<DaqTimingRecord> _diagnostic;
+        private readonly Action<string, long, int, int, double, double> _persistenceTiming;
+        private static readonly int[] RetryDelaysMs = { 25, 50, 100, 250 };
         private readonly int _capacity;
         private readonly int _pauseDepth;
         private readonly int _resumeDepth;
@@ -80,11 +82,13 @@ namespace Controller
             double resumeAgeMs,
             int recoveryTimeoutMs,
             int requiredFreshBatches,
-            Action<DaqTimingRecord> diagnostic = null)
+            Action<DaqTimingRecord> diagnostic = null,
+            Action<string, long, int, int, double, double> persistenceTiming = null)
         {
             _recorder = recorder ?? throw new ArgumentNullException(nameof(recorder));
             _log = log;
             _diagnostic = diagnostic;
+            _persistenceTiming = persistenceTiming;
             _capacity = Math.Max(2, capacity);
             _pauseDepth = Math.Max(1, Math.Min(_capacity - 1, pauseDepth));
             _resumeDepth = Math.Max(0, Math.Min(_pauseDepth - 1, resumeDepth));
@@ -283,7 +287,6 @@ namespace Controller
         private async Task WriteWithRetryAsync(DaqDiskBatch batch, DeviceQueue q)
         {
             var start = Stopwatch.GetTimestamp();
-            var delays = new[] { 25, 50, 100, 250 };
             var attempt = 0;
             while (true)
             {
@@ -292,18 +295,13 @@ namespace Controller
                     var writeStarted = Stopwatch.GetTimestamp();
                     WriteBatch(batch);
                     Interlocked.Exchange(ref q.UnresolvedWriteFailure, 0);
-                    _diagnostic?.Invoke(new DaqTimingRecord
-                    {
-                        TimestampUtc = DateTime.UtcNow,
-                        Device = batch.Device,
-                        Kind = "Persistence",
-                        Generation = batch.Generation,
-                        BatchSize = batch.SampleCount,
-                        QueueDepth = Volatile.Read(ref q.Count),
-                        PersistenceWaitMs = batch.AgeMs,
-                        ProcessingMs = (Stopwatch.GetTimestamp() - writeStarted) * 1000.0 / Stopwatch.Frequency,
-                        Detail = $"Sequence={batch.Sequence}; Attempt={attempt}"
-                    });
+                    _persistenceTiming?.Invoke(
+                        batch.Device,
+                        batch.Generation,
+                        batch.SampleCount,
+                        Volatile.Read(ref q.Count),
+                        batch.AgeMs,
+                        (Stopwatch.GetTimestamp() - writeStarted) * 1000.0 / Stopwatch.Frequency);
                     return;
                 }
                 catch (ActiveCycleDataLimitExceededException)
@@ -328,7 +326,7 @@ namespace Controller
                             $"写盘连续 {_recoveryTimeoutMs}ms 未恢复：{ex.Message}", correlation);
                         return;
                     }
-                    var delay = delays[Math.Min(attempt++, delays.Length - 1)];
+                    var delay = RetryDelaysMs[Math.Min(attempt++, RetryDelaysMs.Length - 1)];
                     await Task.Delay(delay, _cts.Token).ConfigureAwait(false);
                 }
             }

@@ -12,6 +12,7 @@ using System.Threading.Tasks;
 using Config;
 using Controller.Alarm;
 using DataOperation;
+using IO.NI;
 
 namespace Controller
 {
@@ -223,6 +224,134 @@ namespace Controller
                     _log.Error($"DAQ IncidentSnapshot 导出失败：{ex.Message}", "落盘", ex);
                 }
             }).ConfigureAwait(false);
+        }
+
+        private async Task ExportDaqHardFaultIncidentSnapshotAsync(
+            DaqIncidentContext initialContext,
+            DaqDeviceFault evidence)
+        {
+            if (initialContext == null) return;
+            // 等待断电电流确认/电源组派生动作落入同一事故，再生成唯一主快照。
+            await Task.Delay(1200).ConfigureAwait(false);
+            await Task.Run(() =>
+            {
+                string intendedDirectory = null;
+                try
+                {
+                    var context = initialContext;
+                    if (_daqIncidentLatch.TryGet(
+                            initialContext.RunId,
+                            initialContext.Device,
+                            out var latestContext))
+                        context = latestContext;
+                    var root = Path.Combine(
+                        _cfg.Test.StoreDir,
+                        _cfg.Test.TestName,
+                        "IncidentSnapshots");
+                    Directory.CreateDirectory(root);
+                    intendedDirectory = _daqIncidentDirectories.GetOrAdd(
+                        context.CorrelationId,
+                        _ => Path.Combine(
+                            root,
+                            $"{context.FirstSeenUtc.ToLocalTime():yyyyMMdd_HHmmss_fff}-" +
+                            $"{context.Device}-{context.CorrelationId:N}"));
+                    Directory.CreateDirectory(intendedDirectory);
+
+                    var control = _acq.GetControlSnapshot(context.Device);
+                    var derivedCodes = context.DerivedCodes
+                        .OrderBy(code => code, StringComparer.OrdinalIgnoreCase)
+                        .Select(code => $"\"{JsonEscape(code)}\"");
+                    File.WriteAllText(
+                        Path.Combine(intendedDirectory, "incident.json"),
+                        "{\n" +
+                        $"  \"runId\": \"{context.RunId:N}\",\n" +
+                        $"  \"device\": \"{JsonEscape(context.Device)}\",\n" +
+                        $"  \"generation\": {context.Generation},\n" +
+                        $"  \"correlationId\": \"{context.CorrelationId:N}\",\n" +
+                        $"  \"primaryFault\": \"{JsonEscape(context.PrimaryCode)}\",\n" +
+                        $"  \"primaryReason\": \"{JsonEscape(context.PrimaryReason)}\",\n" +
+                        $"  \"primaryChannel\": {context.PrimaryChannel},\n" +
+                        $"  \"affectedChannels\": [{string.Join(",", context.AffectedChannels ?? Array.Empty<int>())}],\n" +
+                        $"  \"derivedActions\": [{string.Join(",", derivedCodes)}],\n" +
+                        $"  \"firstSeenUtc\": \"{context.FirstSeenUtc:O}\",\n" +
+                        $"  \"lastSeenUtc\": \"{context.LastSeenUtc:O}\",\n" +
+                        $"  \"controlQueueType\": \"{JsonEscape(control?.QueueType ?? evidence?.QueueType ?? "PreallocatedSpscRing")}\",\n" +
+                        $"  \"controlQueueCapacity\": {control?.QueueCapacity ?? evidence?.QueueCapacity ?? 0},\n" +
+                        $"  \"controlQueueDepth\": {control?.QueueDepth ?? evidence?.QueueDepth ?? 0},\n" +
+                        $"  \"oldestControlBatchAgeMs\": {(control?.OldestBatchAgeMs ?? evidence?.OldestBatchAgeMs ?? 0).ToString("F3", CultureInfo.InvariantCulture)},\n" +
+                        $"  \"lastControlProcessingMs\": {(control?.LastBatchProcessMs ?? 0).ToString("F3", CultureInfo.InvariantCulture)},\n" +
+                        $"  \"subscriberMaxMs\": {(control?.SubscriberMaxMs ?? 0).ToString("F3", CultureInfo.InvariantCulture)},\n" +
+                        $"  \"lastProcessedSampleUtc\": \"{(control?.ProcessedSampleUtc ?? evidence?.LastProcessedSampleUtc ?? default):O}\",\n" +
+                        $"  \"capturedUtc\": \"{DateTime.UtcNow:O}\"\n" +
+                        "}\n",
+                        new UTF8Encoding(false));
+                    _acq.ExportDiagnostics(
+                        intendedDirectory,
+                        new[] { context.Device },
+                        TimeSpan.FromSeconds(60));
+                    RuntimeBuildIdentity.Capture().WriteJson(
+                        Path.Combine(intendedDirectory, "build-identity.json"));
+                    _log.Info(
+                        $"DAQ硬故障事故快照已保存：{intendedDirectory} " +
+                        $"CorrelationId={context.CorrelationId:N}",
+                        "落盘");
+                }
+                catch (Exception ex)
+                {
+                    var fallbackDirectory = TryWriteDaqSnapshotFailure(
+                        initialContext,
+                        intendedDirectory,
+                        ex);
+                    _log.Error(
+                        $"DAQ硬故障事故快照导出失败。Target={intendedDirectory ?? "unknown"} " +
+                        $"Fallback={fallbackDirectory} Error={ex.Message}",
+                        "落盘",
+                        ex);
+                }
+            }).ConfigureAwait(false);
+        }
+
+        private string TryWriteDaqSnapshotFailure(
+            DaqIncidentContext context,
+            string intendedDirectory,
+            Exception error)
+        {
+            var candidates = new[]
+            {
+                intendedDirectory,
+                Path.Combine(
+                    Path.GetTempPath(),
+                    "EPBTest",
+                    "IncidentSnapshots",
+                    $"{DateTime.Now:yyyyMMdd_HHmmss_fff}-{context.Device}-{context.CorrelationId:N}"),
+                Path.Combine(
+                    AppDomain.CurrentDomain.BaseDirectory,
+                    "IncidentSnapshots-Fallback",
+                    $"{DateTime.Now:yyyyMMdd_HHmmss_fff}-{context.Device}-{context.CorrelationId:N}")
+            };
+            foreach (var directory in candidates.Where(path => !string.IsNullOrWhiteSpace(path)))
+            {
+                try
+                {
+                    Directory.CreateDirectory(directory);
+                    File.WriteAllText(
+                        Path.Combine(directory, "snapshot-failure.json"),
+                        "{\n" +
+                        $"  \"device\": \"{JsonEscape(context.Device)}\",\n" +
+                        $"  \"runId\": \"{context.RunId:N}\",\n" +
+                        $"  \"generation\": {context.Generation},\n" +
+                        $"  \"correlationId\": \"{context.CorrelationId:N}\",\n" +
+                        $"  \"intendedDirectory\": \"{JsonEscape(intendedDirectory)}\",\n" +
+                        $"  \"fallbackDirectory\": \"{JsonEscape(directory)}\",\n" +
+                        $"  \"error\": \"{JsonEscape(error?.ToString())}\",\n" +
+                        $"  \"timestampUtc\": \"{DateTime.UtcNow:O}\"\n" +
+                        "}\n",
+                        new UTF8Encoding(false));
+                    return directory;
+                }
+                catch { }
+            }
+            return "unavailable";
         }
 
         private void QueueWarningSnapshot(WarningSnapshotRequest request)

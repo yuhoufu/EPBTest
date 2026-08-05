@@ -102,6 +102,9 @@ namespace Controller
         private readonly bool _requirePowerSupply;
         private PowerSupplyTelemetryCsvRecorder _powerTelemetryRecorder;
         private readonly ConcurrentDictionary<string, long> _observedSafetyFaults = new();
+        private long _energizedChannelsMask;
+        private readonly long _dev1ChannelMask;
+        private readonly long _dev2ChannelMask;
         private readonly ChannelRuntimeStateStore _channelRuntimeStateStore = new();
 
         private readonly SafetyMarginControlMode _safetyMarginControlMode;
@@ -128,6 +131,7 @@ namespace Controller
 
         // 报警触发“立即停机”去重：同一次运行只处理首个报警；新运行必须显式复位
         private readonly ChannelAlarmStopLatch _alarmStopLatch = new();
+        private readonly DaqIncidentLatch _daqIncidentLatch = new();
 
         private void FlushPersistentLog(bool durable = true)
         {
@@ -522,6 +526,9 @@ namespace Controller
             _readCurrent = acq.ReadCurrentFast;
             _log = log ?? NullLogger.Instance;
             _acq = acq;
+            _dev1ChannelMask = BuildDaqChannelMask("Dev1");
+            _dev2ChannelMask = BuildDaqChannelMask("Dev2");
+            _acq.SetControlActivityProvider(IsDaqDeviceControlActive);
             _requirePowerSupply = requirePowerSupply || ReadBooleanAppSetting("PowerSupplyIntegrationRequired", false);
             if (powerSupply == null && _requirePowerSupply)
             {
@@ -604,9 +611,11 @@ namespace Controller
                 _daqPersistenceResumeAgeMs,
                 _daqPersistenceRecoveryTimeoutMs,
                 _daqPersistenceRequiredFreshBatches,
-                _acq.RecordExternalDiagnostic);
+                _acq.RecordExternalDiagnostic,
+                _acq.RecordPersistenceTiming);
             _persistence.StateChanged += OnDaqPersistenceStateChanged;
-            _acq.DeviceFaultDetected += OnDaqDeviceFaultDetected;
+            _acq.DeviceFaultDetected += OnDaqDeviceFaultSafetyDetected;
+            _acq.DeviceFaultPublicationRequested += OnDaqDeviceFaultDetected;
             _acq.OnFastEpbCurrent += (ch, amps, ts) =>
             {
                 if (_runners.TryGetValue(ch, out var r))
@@ -831,6 +840,7 @@ namespace Controller
 
             var singleRunId = Guid.NewGuid();
             _activeBatchId = singleRunId;
+            BeginDaqIncidentRun(singleRunId, new[] { channel });
             InvalidateStopSafetyCache();
             try
             {
@@ -1272,25 +1282,44 @@ namespace Controller
                 return;
             }
 
+            var affectedChannels = GetDaqGroupChannels(device);
+            if (affectedChannels.Length == 0)
+                affectedChannels = GetAllDaqDeviceChannels(device);
+            if (affectedChannels.Length == 0)
+                affectedChannels = new[] { channel };
+            var observation = ObserveDaqIncident(
+                device,
+                ExtractFaultCode(reason),
+                reason,
+                DateTime.UtcNow,
+                affectedChannels);
+
             Task<DaqRecoveryResult> recoveryTask;
             lock (_daqRecoveryGate)
             {
                 if (_daqRecoveryTasks.TryGetValue(device, out recoveryTask) && !recoveryTask.IsCompleted)
                     return; // 同一设备同一次断流只生成一个关联故障和一个恢复任务。
 
-                var affectedChannels = GetDaqGroupChannels(device);
-                if (affectedChannels.Length == 0)
-                    affectedChannels = new[] { channel };
-
                 _daqRecoveryAttemptsByDevice.AddOrUpdate(device, 1, (_, old) => old + 1);
-                LatchDaqGroupHardFault(
-                    channel,
-                    device,
-                    affectedChannels,
-                    ExtractFaultCode(reason),
-                    reason);
+                if (observation.IsFirst)
+                    LatchDaqGroupHardFault(
+                        observation.Context.PrimaryChannel > 0
+                            ? observation.Context.PrimaryChannel
+                            : channel,
+                        device,
+                        affectedChannels,
+                        observation.Context.PrimaryCode,
+                        observation.Context.PrimaryReason,
+                        observation.Context.CorrelationId,
+                        observation.Context);
+                else if (observation.PrimaryChanged)
+                    _ = Task.Run(() => _log.Warn(
+                        $"DAQ事故补充了更高优先级证据，但不重复报警。Device={device} " +
+                        $"Code={observation.Context.PrimaryCode} CorrelationId={observation.Context.CorrelationId:N}",
+                        "AI"));
 
-                recoveryTask = RecoverDaqDeviceAsync(channel, device, affectedChannels, reason);
+                recoveryTask = Task.Run(
+                    () => RecoverDaqDeviceAsync(channel, device, affectedChannels, reason));
                 _daqRecoveryTasks[device] = recoveryTask;
             }
         }
@@ -1300,31 +1329,51 @@ namespace Controller
             if (deviceFault == null) return;
             var affected = GetDaqGroupChannels(deviceFault.Device);
             if (affected.Length == 0)
-            {
-                PublishDaqGroupFault(
-                    deviceFault.Device,
-                    deviceFault.Code,
-                    deviceFault.Reason,
-                    Array.Empty<int>());
-                return;
-            }
+                affected = GetAllDaqDeviceChannels(deviceFault.Device);
             if (string.Equals(deviceFault.Code, "BackgroundQueueFull", StringComparison.OrdinalIgnoreCase))
             {
-                _ = BeginDaqAutoRecoveryAsync(
+                _ = Task.Run(() => BeginDaqAutoRecoveryAsync(
                     deviceFault.Device,
                     deviceFault.Code,
                     deviceFault.Reason,
                     Guid.NewGuid(),
                     restartDaq: true,
-                    deviceFault.TimestampUtc);
+                    deviceFault.TimestampUtc));
                 return;
             }
-            LatchDaqGroupHardFault(
-                affected[0],
+            var observation = ObserveDaqIncident(
                 deviceFault.Device,
-                affected,
                 deviceFault.Code,
-                deviceFault.Reason);
+                deviceFault.Reason,
+                deviceFault.TimestampUtc,
+                affected,
+                deviceFault.Generation);
+            if (observation.IsFirst)
+                LatchDaqGroupHardFault(
+                    observation.Context.PrimaryChannel,
+                    deviceFault.Device,
+                    affected,
+                    observation.Context.PrimaryCode,
+                    observation.Context.PrimaryReason,
+                    observation.Context.CorrelationId,
+                    observation.Context,
+                    deviceFault,
+                    safetyAlreadyApplied: true);
+            else if (observation.PrimaryChanged)
+                _ = Task.Run(() => _log.Warn(
+                    $"DAQ事故补充了更高优先级证据，但不重复报警。Device={deviceFault.Device} " +
+                    $"Code={observation.Context.PrimaryCode} CorrelationId={observation.Context.CorrelationId:N}",
+                    "AI"));
+        }
+
+        private void OnDaqDeviceFaultSafetyDetected(DaqDeviceFault deviceFault)
+        {
+            if (deviceFault == null) return;
+            var backgroundQueue = string.Equals(
+                deviceFault.Code,
+                "BackgroundQueueFull",
+                StringComparison.OrdinalIgnoreCase);
+            ExecuteDaqDeviceFaultSafetyFirst(deviceFault.Device, backgroundQueue);
         }
 
         private void OnDaqPersistenceStateChanged(DaqPersistenceStateChanged update)
@@ -1557,61 +1606,153 @@ namespace Controller
             int[] affectedChannels,
             string code,
             string reason,
-            Guid correlationId = default)
+            Guid correlationId = default,
+            DaqIncidentContext incidentContext = null,
+            DaqDeviceFault deviceFault = null,
+            bool safetyAlreadyApplied = false)
         {
             var alarmUtc = DateTime.UtcNow;
-            var fault = new ControlFault(
-                string.IsNullOrWhiteSpace(code) ? "DaqSampleStale" : code,
-                $"Device={device} {reason}",
-                FaultScope.DaqGroup,
-                affectedChannels ?? Array.Empty<int>(),
-                null,
-                alarmUtc,
-                correlationId == Guid.Empty ? Guid.NewGuid() : correlationId);
+            var orderedChannels = (affectedChannels ?? Array.Empty<int>())
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
+            if (orderedChannels.Length > 0)
+                triggeringChannel = orderedChannels[0];
 
-            _log.Error(
-                $"DAQ设备级硬故障锁存。Code={fault.Code} " +
-                $"Device={device} TriggerEPB={triggeringChannel} " +
-                $"Affected=[{string.Join(",", fault.AffectedChannels)}] " +
-                $"CorrelationId={fault.CorrelationId:N} Reason={reason}",
-                "AI");
-            FlushPersistentLog();
-            try { ControlFaultRaised?.Invoke(fault); } catch { }
-            PublishFaultRuntimeStates(fault, triggeringChannel);
+            // 失效安全顺序：先在当前线程锁存、取消运行并逐通道高优先级断电；
+            // 任何日志、UI、数据库封圈、蜂鸣或快照都必须发生在这之后。
+            if (!safetyAlreadyApplied)
+                ExecuteDaqFaultSafetyFirst(
+                    orderedChannels,
+                    affectedChannel =>
+                    {
+                        _alarmStopLatch.TryRequestStop(affectedChannel);
+                        try { CancelStopCts(affectedChannel); } catch { }
+                    },
+                    affectedChannel =>
+                    {
+                        try { CommandEpbOffSafetyImmediate(affectedChannel); } catch { }
+                    });
 
-            foreach (var affectedChannel in fault.AffectedChannels.Distinct().OrderBy(x => x))
-            {
-                _alarmStopLatch.TryRequestStop(affectedChannel);
-                try { CancelStopCts(affectedChannel); } catch { }
-                try { StopChannelOnAlarm(affectedChannel); } catch { }
-                if (affectedChannel != triggeringChannel)
-                    TryFinalizeCurrentCycleAfterSnapshot(affectedChannel, false);
-            }
-
-            try { ChannelAlarmRaised?.Invoke(triggeringChannel, fault.Reason); } catch { }
+            var primaryChannel = triggeringChannel;
+            var faultCorrelationId = correlationId == Guid.Empty ? Guid.NewGuid() : correlationId;
             _ = Task.Run(async () =>
             {
+                var fault = new ControlFault(
+                    string.IsNullOrWhiteSpace(code) ? "DaqSampleStale" : code,
+                    $"Device={device} {reason}",
+                    FaultScope.DaqGroup,
+                    orderedChannels,
+                    null,
+                    alarmUtc,
+                    faultCorrelationId);
+
+                _log.Error(
+                    $"DAQ设备级硬故障锁存。Code={fault.Code} " +
+                    $"Device={device} TriggerEPB={primaryChannel} " +
+                    $"Affected=[{string.Join(",", fault.AffectedChannels)}] " +
+                    $"CorrelationId={fault.CorrelationId:N} Reason={reason}",
+                    "AI");
+                FlushPersistentLog();
+                try { ControlFaultRaised?.Invoke(fault); } catch { }
+                PublishFaultRuntimeStates(fault, primaryChannel);
+
+                foreach (var affectedChannel in orderedChannels)
+                {
+                    try { StopChannelOnAlarm(affectedChannel); } catch { }
+                    if (affectedChannel != primaryChannel)
+                        TryFinalizeCurrentCycleAfterSnapshot(affectedChannel, false);
+                }
+
+                if (primaryChannel > 0)
+                {
+                    try { ChannelAlarmRaised?.Invoke(primaryChannel, fault.Reason); } catch { }
+                }
+
+                if (incidentContext != null &&
+                    _daqIncidentLatch.TryStartSnapshot(
+                        incidentContext.RunId,
+                        device,
+                        out var snapshotContext))
+                    _ = ExportDaqHardFaultIncidentSnapshotAsync(snapshotContext, deviceFault);
+
                 try
                 {
-                    if (Alarm != null)
-                        await Alarm.SetAlarmAsync(triggeringChannel, true, fault.Reason).ConfigureAwait(false);
+                    if (Alarm != null && primaryChannel > 0)
+                        await Alarm.SetAlarmAsync(primaryChannel, true, fault.Reason).ConfigureAwait(false);
                 }
                 catch { }
 
                 try
                 {
-                    var snapshot = await ExportAlarmSnapshotAsync(triggeringChannel, fault.Reason, alarmUtc)
-                        .ConfigureAwait(false);
-                    if (snapshot == null)
-                        TryFinalizeCurrentCycleAfterSnapshot(triggeringChannel, false);
-                    else
-                        _currentCycleNumberByChannel.TryRemove(triggeringChannel, out _);
+                    var snapshot = primaryChannel > 0
+                        ? await ExportAlarmSnapshotAsync(primaryChannel, fault.Reason, alarmUtc)
+                            .ConfigureAwait(false)
+                        : null;
+                    if (snapshot == null && primaryChannel > 0)
+                        TryFinalizeCurrentCycleAfterSnapshot(primaryChannel, false);
+                    else if (primaryChannel > 0)
+                        _currentCycleNumberByChannel.TryRemove(primaryChannel, out _);
                 }
                 catch
                 {
-                    TryFinalizeCurrentCycleAfterSnapshot(triggeringChannel, false);
+                    if (primaryChannel > 0)
+                        TryFinalizeCurrentCycleAfterSnapshot(primaryChannel, false);
                 }
             });
+        }
+
+        internal static void ExecuteDaqFaultSafetyFirst(
+            IReadOnlyList<int> affectedChannels,
+            Action<int> latchAndCancel,
+            Action<int> immediateOff)
+        {
+            if (affectedChannels == null) return;
+            for (var i = 0; i < affectedChannels.Count; i++)
+            {
+                latchAndCancel?.Invoke(affectedChannels[i]);
+                immediateOff?.Invoke(affectedChannels[i]);
+            }
+        }
+
+        private void ExecuteDaqDeviceFaultSafetyFirst(string device, bool backgroundQueue)
+        {
+            var deviceMask = string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase)
+                ? _dev1ChannelMask
+                : _dev2ChannelMask;
+            var activeCount = 0;
+            for (var channel = 1; channel <= 12; channel++)
+            {
+                var bit = 1L << channel;
+                if ((deviceMask & bit) == 0) continue;
+                if (IsHydraulicParticipant(channel) ||
+                    _timers.ContainsKey(channel) ||
+                    _runners.ContainsKey(channel))
+                    activeCount++;
+            }
+
+            for (var channel = 1; channel <= 12; channel++)
+            {
+                var bit = 1L << channel;
+                if ((deviceMask & bit) == 0) continue;
+                if (activeCount > 0 &&
+                    !IsHydraulicParticipant(channel) &&
+                    !_timers.ContainsKey(channel) &&
+                    !_runners.ContainsKey(channel))
+                    continue;
+
+                if (backgroundQueue)
+                {
+                    if (_timers.TryGetValue(channel, out var timer)) timer.Pause();
+                    CancelCyclePauseCts(channel);
+                }
+                else
+                {
+                    _alarmStopLatch.TryRequestStop(channel);
+                    try { CancelStopCts(channel); } catch { }
+                }
+                try { CommandEpbOffSafetyImmediate(channel); } catch { }
+            }
         }
 
         private async Task<DaqRecoveryResult> RecoverDaqDeviceAsync(
@@ -1681,6 +1822,82 @@ namespace Controller
                     StringComparison.OrdinalIgnoreCase))
                 .Where(ch => IsHydraulicParticipant(ch) || _timers.ContainsKey(ch) || _runners.ContainsKey(ch))
                 .ToArray();
+        }
+
+        private int[] GetAllDaqDeviceChannels(string device)
+        {
+            return Enumerable.Range(1, 12)
+                .Where(ch => string.Equals(
+                    _acq.GetDeviceForEpbChannel(ch),
+                    device,
+                    StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+        }
+
+        private void BeginDaqIncidentRun(Guid runId, IEnumerable<int> channels)
+        {
+            var devices = (channels ?? Array.Empty<int>())
+                .Select(_acq.GetDeviceForEpbChannel)
+                .Where(device => !string.IsNullOrWhiteSpace(device))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            _daqIncidentLatch.BeginRun(runId, devices);
+            foreach (var device in devices)
+                _acq.ResetControlSafetyLatch(device);
+        }
+
+        private DaqIncidentObservation ObserveDaqIncident(
+            string device,
+            string code,
+            string reason,
+            DateTime timestampUtc,
+            int[] affectedChannels,
+            long generation = 0)
+        {
+            var runId = _activeBatchId;
+            if (generation <= 0)
+                generation = _acq.GetCurrentGeneration(device);
+            return _daqIncidentLatch.Observe(
+                runId,
+                device,
+                generation,
+                code,
+                reason,
+                timestampUtc,
+                affectedChannels);
+        }
+
+        private long BuildDaqChannelMask(string device)
+        {
+            long mask = 0;
+            for (var channel = 1; channel <= 12; channel++)
+                if (string.Equals(
+                        _acq.GetDeviceForEpbChannel(channel),
+                        device,
+                        StringComparison.OrdinalIgnoreCase))
+                    mask |= 1L << channel;
+            return mask;
+        }
+
+        private bool IsDaqDeviceControlActive(string device)
+        {
+            var deviceMask = string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase)
+                ? _dev1ChannelMask
+                : _dev2ChannelMask;
+            return (Interlocked.Read(ref _energizedChannelsMask) & deviceMask) != 0;
+        }
+
+        private void SetChannelEnergized(int channel, bool energized)
+        {
+            if (channel < 1 || channel > 12) return;
+            var bit = 1L << channel;
+            while (true)
+            {
+                var current = Interlocked.Read(ref _energizedChannelsMask);
+                var next = energized ? current | bit : current & ~bit;
+                if (Interlocked.CompareExchange(ref _energizedChannelsMask, next, current) == current)
+                    return;
+            }
         }
 
         private async Task WaitForDaqRecoveryAsync(int channel, CancellationToken token)
@@ -2450,9 +2667,9 @@ namespace Controller
             var groupId = GetElectricalGroupId(sourceChannel);
             if (groupId <= 0)
             {
-                _log.Error(
+                _ = Task.Run(() => _log.Error(
                     $"EPB[{sourceChannel}] 请求电源组紧急关闭，但未找到电气组映射。Reason={reason}",
-                    "程控电源");
+                    "程控电源"));
                 return;
             }
             if (!_emergencyPowerGroupLatch.TryAdd(groupId, 0)) return;
@@ -2464,44 +2681,70 @@ namespace Controller
                 .OrderBy(x => x)
                 .ToArray() ?? new[] { sourceChannel };
 
-            _log.Error(
-                $"电源组{groupId}触发失效安全联锁：Source=EPB{sourceChannel} " +
-                $"Affected=[{string.Join(",", members)}] Reason={reason}",
-                "程控电源");
-
-            var interlockFault = new ControlFault(
-                ExtractFaultCode(reason),
-                reason,
-                FaultScope.ElectricalGroup,
-                members,
-                groupId,
-                DateTime.UtcNow,
-                Guid.NewGuid());
-            try { ControlFaultRaised?.Invoke(interlockFault); } catch { }
-            PublishFaultRuntimeStates(interlockFault, sourceChannel);
+            var sourceDevice = _acq.GetDeviceForEpbChannel(sourceChannel);
+            DaqIncidentContext daqIncident = null;
+            var daqDerived = !string.IsNullOrWhiteSpace(reason) &&
+                reason.IndexOf(
+                    "OffCurrentUnverifiableDaqStale",
+                    StringComparison.OrdinalIgnoreCase) >= 0 &&
+                _daqIncidentLatch.TryGet(_activeBatchId, sourceDevice, out daqIncident);
+            if (daqDerived)
+                ObserveDaqIncident(
+                    sourceDevice,
+                    "OffCurrentUnverifiableDaqStale",
+                    reason,
+                    DateTime.UtcNow,
+                    GetAllDaqDeviceChannels(sourceDevice));
 
             // 先在当前线程阻止同组任何通道继续执行，并逐路发出高优先级DO关闭；
             // 网络电源关闭及回读随后独立执行，不能阻塞采样回调。
             foreach (var member in members)
             {
-                try { UnmarkHydraulicParticipant(member); } catch { }
                 try { CancelStopCts(member); } catch { }
-                RemoveTimerRuntime(member, nameof(RequestElectricalGroupEmergencyShutdown));
-                RemoveRunnerRuntime(member, nameof(RequestElectricalGroupEmergencyShutdown));
-                try { CommandEpbOffHighPriority(member, nameof(RequestElectricalGroupEmergencyShutdown)); }
-                catch { }
-                try
-                {
-                    ObserveSafetyTask(
-                        HydraulicMarkReleaseAsync(member),
-                        "ElectricalGroupEmergencyRelease",
-                        member);
-                }
-                catch { }
+                try { CommandEpbOffSafetyImmediate(member); } catch { }
             }
+
+            var correlationId = daqDerived
+                ? daqIncident.CorrelationId
+                : Guid.NewGuid();
 
             _ = Task.Run(async () =>
             {
+                foreach (var member in members)
+                {
+                    try { UnmarkHydraulicParticipant(member); } catch { }
+                    RemoveTimerRuntime(member, nameof(RequestElectricalGroupEmergencyShutdown));
+                    RemoveRunnerRuntime(member, nameof(RequestElectricalGroupEmergencyShutdown));
+                    try
+                    {
+                        ObserveSafetyTask(
+                            HydraulicMarkReleaseAsync(member),
+                            "ElectricalGroupEmergencyRelease",
+                            member);
+                    }
+                    catch { }
+                }
+
+                _log.Error(
+                    $"电源组{groupId}触发失效安全联锁：Source=EPB{sourceChannel} " +
+                    $"Affected=[{string.Join(",", members)}] CorrelationId={correlationId:N} " +
+                    $"DaqDerived={daqDerived} Reason={reason}",
+                    "程控电源");
+
+                if (!daqDerived)
+                {
+                    var interlockFault = new ControlFault(
+                        ExtractFaultCode(reason),
+                        reason,
+                        FaultScope.ElectricalGroup,
+                        members,
+                        groupId,
+                        DateTime.UtcNow,
+                        correlationId);
+                    try { ControlFaultRaised?.Invoke(interlockFault); } catch { }
+                    PublishFaultRuntimeStates(interlockFault, sourceChannel);
+                }
+
                 try
                 {
                     if (_powerSupply != null)

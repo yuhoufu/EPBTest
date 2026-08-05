@@ -113,6 +113,7 @@ namespace Controller
             try
             {
                 _activeBatchId = Guid.NewGuid();
+                BeginDaqIncidentRun(_activeBatchId, selected);
                 InvalidateStopSafetyCache();
                 var warningConfig = AlarmConfig?.WarningSnapshots ?? new WarningSnapshotConfig();
                 if (warningConfig.Enabled && !(Recorder is ICycleEvidenceExporter))
