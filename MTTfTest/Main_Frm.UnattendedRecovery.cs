@@ -17,10 +17,40 @@ namespace MtEmbTest
         protected override void OnShown(EventArgs e)
         {
             base.OnShown(e);
-            if (_recoveryStartupIntent == null) return;
+            if (_recoveryStartupIntent == null)
+            {
+                BeginInvoke((Action)(async () => await PrepareGracefulPauseResumeAsync()));
+                return;
+            }
             var intent = _recoveryStartupIntent;
             _recoveryStartupIntent = null;
             BeginInvoke((Action)(async () => await ResumeUnattendedRunAsync(intent)));
+        }
+
+        private async Task PrepareGracefulPauseResumeAsync()
+        {
+            try
+            {
+                if (!UnattendedRunCheckpointStore.TryLoadGracefulPause(
+                        Cfg,
+                        out var checkpoint,
+                        out _))
+                    return;
+
+                var monitor = new FrmEpbMainMonitor { Name = "实时监视" };
+                OpenChildForm(monitor);
+                await monitor.PrepareGracefulPauseCheckpointAsync(checkpoint);
+            }
+            catch (Exception ex)
+            {
+                UnattendedRunCheckpointStore.ClearGracefulPause("GracefulPauseLoadFailed");
+                MessageBox.Show(
+                    "正常暂停检查点加载失败：" + ex.Message +
+                    "\r\n检查点已撤销，下次开始将执行完整学习。",
+                    "暂停恢复",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            }
         }
 
         private async Task ResumeUnattendedRunAsync(RecoveryStartupIntent intent)

@@ -28,6 +28,14 @@ namespace MTEmbTest
         public int SchemaVersion { get; set; } = 1;
         public bool Armed { get; set; }
         public bool RestartPending { get; set; }
+        public bool GracefulPaused { get; set; }
+        public string PausedUtc { get; set; }
+        public string AdaptiveProfilesSha256 { get; set; }
+        public string ProgramSafetySha256 { get; set; }
+        public bool MotorOffConfirmed { get; set; }
+        public bool PressureSafeConfirmed { get; set; }
+        public bool PersistenceDrained { get; set; }
+        public int RecentSnapshotCycles { get; set; }
         public string StoreDir { get; set; }
         public string TestName { get; set; }
         public int[] SelectedChannels { get; set; } = Array.Empty<int>();
@@ -66,8 +74,10 @@ namespace MTEmbTest
             lock (Sync)
             {
                 var checkpoint = LoadUnsafe() ?? new UnattendedRunCheckpoint();
+                checkpoint.SchemaVersion = 2;
                 checkpoint.Armed = true;
                 checkpoint.RestartPending = false;
+                checkpoint.GracefulPaused = false;
                 checkpoint.StoreDir = config.Test.StoreDir ?? string.Empty;
                 checkpoint.TestName = config.Test.TestName ?? string.Empty;
                 checkpoint.SelectedChannels = selected;
@@ -97,6 +107,7 @@ namespace MTEmbTest
                 var checkpoint = LoadUnsafe() ?? new UnattendedRunCheckpoint();
                 checkpoint.Armed = false;
                 checkpoint.RestartPending = false;
+                checkpoint.GracefulPaused = false;
                 checkpoint.RecoveryNonce = string.Empty;
                 checkpoint.LastReason = string.IsNullOrWhiteSpace(reason) ? "AuthorizationRevoked" : reason;
                 checkpoint.UpdatedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
@@ -283,6 +294,162 @@ namespace MTEmbTest
             lock (Sync) return LoadUnsafe();
         }
 
+        internal static void SaveGracefulPause(
+            GlobalConfig config,
+            IEnumerable<int> channels,
+            DateTime pausedUtc)
+        {
+            if (config?.Test == null)
+                throw new ArgumentNullException(nameof(config));
+            var selected = (channels ?? Enumerable.Empty<int>())
+                .Where(channel => channel >= 1 && channel <= 12)
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
+            if (selected.Length == 0)
+                throw new InvalidOperationException("正常暂停检查点没有有效通道。");
+
+            lock (Sync)
+            {
+                var checkpoint = LoadUnsafe() ?? new UnattendedRunCheckpoint();
+                checkpoint.SchemaVersion = 2;
+                checkpoint.Armed = true;
+                checkpoint.RestartPending = false;
+                checkpoint.GracefulPaused = true;
+                checkpoint.StoreDir = config.Test.StoreDir ?? string.Empty;
+                checkpoint.TestName = config.Test.TestName ?? string.Empty;
+                checkpoint.SelectedChannels = selected;
+                checkpoint.LearnCycles = Math.Max(5, config.Test.LearnCycles);
+                checkpoint.ConfigurationSha256 = ComputeConfigurationHash(config);
+                checkpoint.ExecutableSha256 = ComputeFileHash(GetExecutablePath());
+                checkpoint.BuildVersion = Assembly.GetEntryAssembly()?.GetName().Version?.ToString() ?? "unknown";
+                checkpoint.AdaptiveProfilesSha256 = ComputeFileHash(Path.Combine(
+                    ConfigLoader.GetProjectConfigDir(config.Test.StoreDir, config.Test.TestName),
+                    "EpbAdaptiveProfiles.xml"));
+                checkpoint.ProgramSafetySha256 = ComputeFileHash(
+                    AppDomain.CurrentDomain.SetupInformation.ConfigurationFile);
+                checkpoint.PausedUtc = pausedUtc.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture);
+                checkpoint.UpdatedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+                checkpoint.LastReason = "GracefulPaused";
+                checkpoint.MotorOffConfirmed = true;
+                checkpoint.PressureSafeConfirmed = true;
+                checkpoint.PersistenceDrained = true;
+                checkpoint.RecentSnapshotCycles = 10;
+                checkpoint.RemainingFormalCycles = selected.ToDictionary(
+                    channel => channel.ToString(CultureInfo.InvariantCulture),
+                    channel =>
+                    {
+                        var record = config.Test.GetEpbRecord(channel);
+                        return Math.Max(0, record.TotalCount - record.RunCount);
+                    });
+                SaveUnsafe(checkpoint);
+            }
+        }
+
+        internal static bool TryLoadGracefulPause(
+            GlobalConfig config,
+            out UnattendedRunCheckpoint checkpoint,
+            out string error)
+        {
+            checkpoint = null;
+            error = string.Empty;
+            lock (Sync)
+            {
+                var current = LoadUnsafe();
+                if (current == null || current.SchemaVersion < 2 ||
+                    !current.Armed || !current.GracefulPaused)
+                {
+                    error = "没有正常暂停检查点。";
+                    return false;
+                }
+                if (!current.MotorOffConfirmed || !current.PressureSafeConfirmed ||
+                    !current.PersistenceDrained || current.RecentSnapshotCycles < 10)
+                {
+                    error = "正常暂停检查点缺少安全停机或最近10圈落盘确认。";
+                    return false;
+                }
+                var pauseAge = TryParseUtc(current.PausedUtc, out var pausedUtc)
+                    ? DateTime.UtcNow - pausedUtc
+                    : TimeSpan.MinValue;
+                if (pauseAge < TimeSpan.Zero || pauseAge > TimeSpan.FromDays(7))
+                {
+                    error = "正常暂停检查点已超过7天，必须完整学习。";
+                    return false;
+                }
+                if (config?.Test == null ||
+                    !string.Equals(current.StoreDir, config.Test.StoreDir, StringComparison.OrdinalIgnoreCase) ||
+                    !string.Equals(current.TestName, config.Test.TestName, StringComparison.OrdinalIgnoreCase))
+                {
+                    error = "当前项目与正常暂停检查点不一致。";
+                    return false;
+                }
+                if (!string.Equals(
+                        current.ConfigurationSha256,
+                        ComputeConfigurationHash(config),
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    error = "项目或设备配置已变更，必须完整学习。";
+                    return false;
+                }
+                if (!string.Equals(
+                        current.ExecutableSha256,
+                        ComputeFileHash(GetExecutablePath()),
+                        StringComparison.OrdinalIgnoreCase) ||
+                    !string.Equals(
+                        current.BuildVersion,
+                        Assembly.GetEntryAssembly()?.GetName().Version?.ToString() ?? "unknown",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    error = "程序构建已变更，必须完整学习。";
+                    return false;
+                }
+                var safetyHash = ComputeFileHash(
+                    AppDomain.CurrentDomain.SetupInformation.ConfigurationFile);
+                if (string.Equals(safetyHash, "unavailable", StringComparison.OrdinalIgnoreCase) ||
+                    !string.Equals(current.ProgramSafetySha256, safetyHash, StringComparison.OrdinalIgnoreCase))
+                {
+                    error = "程序安全配置已变更，必须完整学习。";
+                    return false;
+                }
+                var adaptiveHash = ComputeFileHash(Path.Combine(
+                    ConfigLoader.GetProjectConfigDir(config.Test.StoreDir, config.Test.TestName),
+                    "EpbAdaptiveProfiles.xml"));
+                if (string.Equals(adaptiveHash, "unavailable", StringComparison.OrdinalIgnoreCase) ||
+                    !string.Equals(current.AdaptiveProfilesSha256, adaptiveHash, StringComparison.OrdinalIgnoreCase))
+                {
+                    error = "自适应模型缺失或已变更，必须完整学习。";
+                    return false;
+                }
+
+                checkpoint = current;
+                return true;
+            }
+        }
+
+        internal static bool IsGracefulPauseArmed()
+        {
+            lock (Sync)
+            {
+                var checkpoint = LoadUnsafe();
+                return checkpoint?.Armed == true && checkpoint.GracefulPaused;
+            }
+        }
+
+        internal static void ClearGracefulPause(string reason)
+        {
+            lock (Sync)
+            {
+                var checkpoint = LoadUnsafe();
+                if (checkpoint == null) return;
+                checkpoint.Armed = false;
+                checkpoint.GracefulPaused = false;
+                checkpoint.RestartPending = false;
+                checkpoint.LastReason = reason ?? "GracefulPauseConsumed";
+                checkpoint.UpdatedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+                SaveUnsafe(checkpoint);
+            }
+        }
+
         internal static string ComputeConfigurationHash(GlobalConfig config)
         {
             try
@@ -343,6 +510,7 @@ namespace MTEmbTest
         {
             checkpoint.Armed = false;
             checkpoint.RestartPending = false;
+            checkpoint.GracefulPaused = false;
             checkpoint.RecoveryNonce = string.Empty;
             checkpoint.LastReason = reason;
             checkpoint.UpdatedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
@@ -489,6 +657,15 @@ namespace MTEmbTest
 
         private static void OnRunAuthorizationRevoking(StopContext context)
         {
+            // 正常暂停后关闭监视窗口仍需执行统一硬件关闭确认，但不能撤销用户明确保存的
+            // 暂停恢复检查点；人工“停止试验”和所有报警路径仍会撤销。
+            if (context?.Source == StopSource.ApplicationClosing)
+            {
+                var graceful = UnattendedRunCheckpointStore.Load();
+                if (graceful?.Armed == true && graceful.GracefulPaused)
+                    return;
+            }
+
             // A system-fault restart registers a one-time recovery nonce before it asks
             // EpbManager to perform the common StopAll safety sequence.  That internal
             // StopAll must not revoke the nonce it is protecting.  Manual stop/close and

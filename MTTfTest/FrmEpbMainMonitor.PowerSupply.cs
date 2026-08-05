@@ -31,6 +31,7 @@ namespace MTEmbTest
         {
             base.OnShown(e);
             AttachSafetyUiEvents();
+            AttachPauseResumeUi();
             if (Interlocked.Exchange(ref _powerSupplyUiInitialized, 1) != 0) return;
             InitializeBoundedSafetyInfoDisplay();
             InitializeChannelRuntimeStatusUi();
@@ -232,7 +233,7 @@ namespace MTEmbTest
                                     state.State == ChannelRuntimeState.Learning ||
                                     state.State == ChannelRuntimeState.Running ||
                                     state.State == ChannelRuntimeState.WarningRunning ||
-                                    state.State == ChannelRuntimeState.Paused;
+                                    state.State == ChannelRuntimeState.PausePending;
                 if (EpbGroup[state.Channel - 1].CtrlRunning.Checked != shouldShowRun)
                     EpbGroup[state.Channel - 1].CtrlRunning.Checked = shouldShowRun;
             }
@@ -247,6 +248,7 @@ namespace MTEmbTest
             else if (state.State == ChannelRuntimeState.Starting)
                 ClearPowerGroupInterlockLatchAfterPreflight(state.Channel);
             UpdateChannelRuntimeSummary();
+            UpdatePauseResumeChannelUi(state);
         }
 
         private void UpdateChannelRuntimeSummary()
@@ -289,7 +291,10 @@ namespace MTEmbTest
                 case ChannelRuntimeState.Learning: return "学习中";
                 case ChannelRuntimeState.Running: return "运行";
                 case ChannelRuntimeState.WarningRunning: return "软预警";
+                case ChannelRuntimeState.PausePending: return "等待暂停";
                 case ChannelRuntimeState.Paused: return "暂停";
+                case ChannelRuntimeState.ResumeChecking: return "恢复预检";
+                case ChannelRuntimeState.Qualification: return "资格复核";
                 case ChannelRuntimeState.Recovering: return "系统自恢复";
                 case ChannelRuntimeState.SystemFault: return "系统故障";
                 case ChannelRuntimeState.AlarmStopped: return "报警停机";
@@ -320,6 +325,9 @@ namespace MTEmbTest
                 case ChannelRuntimeState.Running: return Color.FromArgb(32, 166, 82);
                 case ChannelRuntimeState.Starting:
                 case ChannelRuntimeState.Learning: return Color.FromArgb(41, 128, 185);
+                case ChannelRuntimeState.ResumeChecking:
+                case ChannelRuntimeState.Qualification: return Color.FromArgb(52, 152, 219);
+                case ChannelRuntimeState.PausePending: return Color.FromArgb(96, 125, 139);
                 case ChannelRuntimeState.WarningRunning: return Color.FromArgb(230, 126, 34);
                 case ChannelRuntimeState.Recovering: return Color.FromArgb(52, 152, 219);
                 case ChannelRuntimeState.SystemFault: return Color.FromArgb(245, 166, 35);
@@ -340,7 +348,10 @@ namespace MTEmbTest
                 case ChannelRuntimeState.Running:
                 case ChannelRuntimeState.WarningRunning: return EpbTestStatus.Running;
                 case ChannelRuntimeState.Learning: return EpbTestStatus.Learning;
+                case ChannelRuntimeState.PausePending:
                 case ChannelRuntimeState.Paused: return EpbTestStatus.Paused;
+                case ChannelRuntimeState.ResumeChecking:
+                case ChannelRuntimeState.Qualification: return EpbTestStatus.Paused;
                 case ChannelRuntimeState.Recovering: return EpbTestStatus.Paused;
                 case ChannelRuntimeState.SystemFault: return EpbTestStatus.Paused;
                 case ChannelRuntimeState.AlarmStopped: return EpbTestStatus.Alarm;

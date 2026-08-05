@@ -146,6 +146,10 @@
       <DependentUpon>FrmEpbMainMonitor.cs</DependentUpon>
       <SubType>Form</SubType>
     </Compile>
+    <Compile Include="FrmEpbMainMonitor.PauseResume.cs">
+      <DependentUpon>FrmEpbMainMonitor.cs</DependentUpon>
+      <SubType>Form</SubType>
+    </Compile>
     <Compile Include="FrmEpbMainMonitor.UnattendedRecovery.cs">
       <DependentUpon>FrmEpbMainMonitor.cs</DependentUpon>
       <SubType>Form</SubType>

@@ -90,7 +90,8 @@ namespace MTEmbTest
 
         protected override void OnFormClosing(System.Windows.Forms.FormClosingEventArgs e)
         {
-            UnattendedRecoveryCoordinator.Disarm("MonitorClosing");
+            if (!UnattendedRunCheckpointStore.IsGracefulPauseArmed())
+                UnattendedRecoveryCoordinator.Disarm("MonitorClosing");
             base.OnFormClosing(e);
         }
     }
