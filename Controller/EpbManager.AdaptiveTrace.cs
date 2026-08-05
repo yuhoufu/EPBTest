@@ -7,10 +7,8 @@ namespace Controller
         private readonly AdaptiveDecisionTraceBuffer _adaptiveDecisionTrace =
             new AdaptiveDecisionTraceBuffer();
 
-        private void OnRunnerAdaptiveDecisionObserved(AdaptiveDecisionTraceEvent item)
+        private void OnRunnerAdaptiveDecisionObserved(AdaptiveDecisionTraceSample item)
         {
-            if (item == null) return;
-
             _runIdByChannel.TryGetValue(item.Channel, out var runId);
             _currentCycleNumberByChannel.TryGetValue(item.Channel, out var cycleNumber);
             item.RunId = runId;

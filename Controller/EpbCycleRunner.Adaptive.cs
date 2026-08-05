@@ -1,4 +1,5 @@
 using System;
+using System.Configuration;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
@@ -18,6 +19,11 @@ namespace Controller
         private readonly EpbProgramSafetySettings _programSafetySettings;
         private readonly Action<EpbAdaptiveProfile> _saveAdaptiveProfile;
         private readonly object _adaptiveGate = new object();
+        private readonly EpbAdaptiveDecision _adaptiveSampleDecisionScratch = new EpbAdaptiveDecision();
+        private readonly EpbAdaptiveDecision _adaptiveWatchdogDecisionScratch = new EpbAdaptiveDecision();
+        private long _lastAdaptiveNormalTraceTick;
+        private static readonly long AdaptiveNormalTraceIntervalTicks =
+            Math.Max(1, Stopwatch.Frequency / ReadAdaptiveTraceNormalRateHz());
 
         private TaskCompletionSource<EpbAdaptiveDecision> _adaptiveForwardCompletion;
         private TaskCompletionSource<EpbAdaptiveDecision> _adaptiveReverseCompletion;
@@ -53,7 +59,38 @@ namespace Controller
             return streak >= Math.Max(1, confirmCycles);
         }
 
-        internal event Action<AdaptiveDecisionTraceEvent> AdaptiveDecisionObserved;
+        internal event Action<AdaptiveDecisionTraceSample> AdaptiveDecisionObserved;
+
+        private static int ReadAdaptiveTraceNormalRateHz()
+        {
+            try
+            {
+                return int.TryParse(
+                           ConfigurationManager.AppSettings["AdaptiveTraceNormalRateHz"],
+                           out var value) &&
+                       value >= 10 && value <= 50
+                    ? value
+                    : 25;
+            }
+            catch
+            {
+                return 25;
+            }
+        }
+
+        internal static bool ShouldRecordAdaptiveTrace(
+            long tick,
+            bool important,
+            long intervalTicks,
+            ref long lastNormalTick)
+        {
+            if (important) return true;
+            var previous = Interlocked.Read(ref lastNormalTick);
+            if (previous > 0 && tick > previous && tick - previous < intervalTicks)
+                return false;
+            Interlocked.Exchange(ref lastNormalTick, tick);
+            return true;
+        }
 
         public EpbCycleOutcome LastCycleOutcome { get; private set; } =
             EpbCycleOutcome.Canceled(EpbCurrentStage.Idle, "NotStarted");
@@ -266,13 +303,11 @@ namespace Controller
                 {
                     try
                     {
-                        var evidence = _adaptivePeakCaptureToken == null
-                            ? null
-                            : _acq.PeekEpbCurrentPeak(_adaptivePeakCaptureToken);
-                        if (evidence?.IsMatched == true && evidence.Peak.SampleCount > 0)
+                        if (_adaptivePeakCaptureToken != null &&
+                            _acq.TryPeekEpbCurrentPeak(_adaptivePeakCaptureToken, out var peak))
                         {
-                            fullRatePeakA = evidence.Peak.MaxAmp;
-                            evidenceThroughUtc = evidence.Peak.EndAt.ToUniversalTime();
+                            fullRatePeakA = peak.MaxAmp;
+                            evidenceThroughUtc = peak.EndAt.ToUniversalTime();
                         }
                     }
                     catch
@@ -281,7 +316,11 @@ namespace Controller
                     }
                 }
 
-                decision = _adaptiveStateMachine.OnSample(tick, currentAmp, fullRatePeakA);
+                decision = _adaptiveStateMachine.OnSampleReusable(
+                    tick,
+                    currentAmp,
+                    fullRatePeakA,
+                    _adaptiveSampleDecisionScratch);
                 if (decision.ClampReached && evidenceThroughUtc != DateTime.MinValue)
                 {
                     var normalizedSampleUtc = sampleUtc.Kind == DateTimeKind.Utc
@@ -333,7 +372,14 @@ namespace Controller
             else if (decision.StateChanged) action = "StateChanged";
             else action = string.Empty;
 
-            var item = new AdaptiveDecisionTraceEvent
+            if (!ShouldRecordAdaptiveTrace(
+                    tick,
+                    action.Length != 0,
+                    AdaptiveNormalTraceIntervalTicks,
+                    ref _lastAdaptiveNormalTraceTick))
+                return;
+
+            var item = new AdaptiveDecisionTraceSample
             {
                 SampleUtc = sampleUtc.Kind == DateTimeKind.Utc
                     ? sampleUtc
@@ -398,7 +444,7 @@ namespace Controller
                     _adaptiveForwardPeakA = Math.Max(_adaptiveForwardPeakA, decision.CurrentA);
                 TaskCompletionSource<EpbAdaptiveDecision> completion;
                 lock (_adaptiveGate) completion = _adaptiveForwardCompletion;
-                completion?.TrySetResult(decision);
+                completion?.TrySetResult(decision.Copy());
             }
 
             if (decision.ReleaseCompleted)
@@ -407,7 +453,7 @@ namespace Controller
                 _adaptiveReverseEmptyA = _adaptiveStateMachine.ObservedReverseEmptyA;
                 TaskCompletionSource<EpbAdaptiveDecision> completion;
                 lock (_adaptiveGate) completion = _adaptiveReverseCompletion;
-                completion?.TrySetResult(decision);
+                completion?.TrySetResult(decision.Copy());
             }
 
             if (!decision.HardFault) return;
@@ -429,8 +475,9 @@ namespace Controller
                 reverse = _adaptiveReverseCompletion;
             }
 
-            forward?.TrySetResult(decision);
-            reverse?.TrySetResult(decision);
+            var terminalDecision = decision.Copy();
+            forward?.TrySetResult(terminalDecision);
+            reverse?.TrySetResult(terminalDecision);
 
             if (decision.Reason?.IndexOf("DaqSampleStale", StringComparison.OrdinalIgnoreCase) >= 0)
             {
@@ -439,8 +486,12 @@ namespace Controller
                 return;
             }
 
-            try { AlarmRaised?.Invoke(_channel, "AdaptiveHardFault " + decision.Reason); }
-            catch { /* 上层报警订阅者异常不允许回流采集线程 */ }
+            var alarmReason = "AdaptiveHardFault " + decision.Reason;
+            _ = Task.Run(() =>
+            {
+                try { AlarmRaised?.Invoke(_channel, alarmReason); }
+                catch { }
+            });
         }
 
         private void EnsureAdaptiveTerminalPowerOff(EpbAdaptiveDecision decision)
@@ -478,25 +529,30 @@ namespace Controller
 
             if (!commandSucceeded)
             {
-                _log?.Error(
-                    $"EPB[{_channel}] 终态高优先级断电失败，立即触发电源组联锁。" +
-                    $"Reason={reason} CommandElapsed={commandElapsedMs:F3}ms",
-                    "EPB");
-                try
+                var elapsed = commandElapsedMs;
+                _ = Task.Run(() =>
                 {
-                    AlarmRaised?.Invoke(
-                        _channel,
-                        $"AdaptiveHardFault TerminalOffCommandFailed {reason}");
-                }
-                catch { }
+                    _log?.Error(
+                        $"EPB[{_channel}] 终态高优先级断电失败，立即触发电源组联锁。" +
+                        $"Reason={reason} CommandElapsed={elapsed:F3}ms",
+                        "EPB");
+                    try
+                    {
+                        AlarmRaised?.Invoke(
+                            _channel,
+                            $"AdaptiveHardFault TerminalOffCommandFailed {reason}");
+                    }
+                    catch { }
+                });
                 return;
             }
 
-            _log?.Info(
+            var successfulElapsed = commandElapsedMs;
+            _ = Task.Run(() => _log?.Info(
                 $"EPB[{_channel}] 终态断电命令已优先执行。" +
-                $"Reason={reason} CommandElapsed={commandElapsedMs:F3}ms " +
+                $"Reason={reason} CommandElapsed={successfulElapsed:F3}ms " +
                 "PhysicalOffStatus=NotMeasured",
-                "EPB");
+                "EPB"));
             BeginTerminalOffCurrentVerification(reason);
         }
 
@@ -779,8 +835,12 @@ namespace Controller
 
         private void RaiseAdaptiveWarning(string reason)
         {
-            try { WarningRaised?.Invoke(_channel, reason ?? "AdaptiveWarning"); }
-            catch { /* UI 订阅者异常不得影响控制 */ }
+            var warningReason = reason ?? "AdaptiveWarning";
+            _ = Task.Run(() =>
+            {
+                try { WarningRaised?.Invoke(_channel, warningReason); }
+                catch { }
+            });
         }
 
         private void RaiseAdaptiveWarning(AdaptiveWarningEvent warning)
@@ -811,7 +871,9 @@ namespace Controller
                     return await completion.Task.ConfigureAwait(false);
 
                 var watchdogTick = AdaptiveNowTicks();
-                var watchdog = _adaptiveStateMachine.CheckWatchdog(watchdogTick);
+                var watchdog = _adaptiveStateMachine.CheckWatchdogReusable(
+                    watchdogTick,
+                    _adaptiveWatchdogDecisionScratch);
                 if (watchdog.HardFault)
                 {
                     DispatchAdaptiveDecisionInSafetyOrder(

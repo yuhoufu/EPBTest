@@ -205,6 +205,17 @@ namespace Controller
                 () => _do.SetEpbOffHighPriority(channel));
         }
 
+        /// <summary>
+        /// DAQ/设备事故同步安全处理专用。只执行DO与带电位图更新，不读取电流、
+        /// 不创建追踪对象，也不写日志；调用方必须在全部受影响通道断电后再做诊断。
+        /// </summary>
+        internal bool CommandEpbOffSafetyImmediate(int channel)
+        {
+            var result = _do.SetEpbOffHighPriority(channel);
+            if (result) SetChannelEnergized(channel, false);
+            return result;
+        }
+
         private bool ExecuteDoCommand(
             int channel,
             string stage,
@@ -221,6 +232,10 @@ namespace Controller
             try
             {
                 result = execute();
+                if (result)
+                    SetChannelEnergized(
+                        channel,
+                        command == EpbDoCommand.Forward || command == EpbDoCommand.Reverse);
                 return result;
             }
             finally
@@ -253,21 +268,24 @@ namespace Controller
                         BranchCurrentA = current
                     };
                     _doControlTrace.Add(traceEvent);
-
-                    var currentText = double.IsNaN(current)
-                        ? "NaN"
-                        : current.ToString("F6", CultureInfo.InvariantCulture);
-                    var message =
-                        $"DO命令 UTC={utc:O} MonoTicks={ticks} Run={runId:N} Cycle={cycleNumber} " +
-                        $"Group={traceEvent.ElectricalGroupId} EPB={channel} Phase={traceEvent.PlannedPhaseMs}ms " +
-                        $"PhaseDueUtc={(hasPhaseDue ? phaseDueUtc.ToString("O") : "Unknown")} " +
-                        $"PhaseDeviationMs={(traceEvent.ElectricalPhaseStartDeviationMs?.ToString("F3", CultureInfo.InvariantCulture) ?? "Unknown")} " +
-                        $"Stage={traceEvent.Stage} Command={command} DoCommandResult={result} " +
-                        $"CurrentA={currentText} PhysicalOffStatus=NotMeasured";
-                    if (result)
-                        _log.Info(message, "EPB-DO");
-                    else
-                        _log.Warn(message, "EPB-DO");
+                    var loggedResult = result;
+                    _ = System.Threading.Tasks.Task.Run(() =>
+                    {
+                        var currentText = double.IsNaN(current)
+                            ? "NaN"
+                            : current.ToString("F6", CultureInfo.InvariantCulture);
+                        var message =
+                            $"DO命令 UTC={utc:O} MonoTicks={ticks} Run={runId:N} Cycle={cycleNumber} " +
+                            $"Group={traceEvent.ElectricalGroupId} EPB={channel} Phase={traceEvent.PlannedPhaseMs}ms " +
+                            $"PhaseDueUtc={(hasPhaseDue ? phaseDueUtc.ToString("O") : "Unknown")} " +
+                            $"PhaseDeviationMs={(traceEvent.ElectricalPhaseStartDeviationMs?.ToString("F3", CultureInfo.InvariantCulture) ?? "Unknown")} " +
+                            $"Stage={traceEvent.Stage} Command={command} DoCommandResult={loggedResult} " +
+                            $"CurrentA={currentText} PhysicalOffStatus=NotMeasured";
+                        if (loggedResult)
+                            _log.Info(message, "EPB-DO");
+                        else
+                            _log.Warn(message, "EPB-DO");
+                    });
                 }
                 catch
                 {

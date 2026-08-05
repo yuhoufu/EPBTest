@@ -21,6 +21,7 @@ namespace Controller.Alarm
                 ["DaqSampleStale"] = "采集数据过期",
                 ["BackgroundQueueFull"] = "采集后台队列已满",
                 ["ControlQueueFull"] = "控制数据队列已满",
+                ["ControlLatencyExceeded"] = "实时控制处理延迟超过安全上限",
                 ["DaqCallbackStale"] = "采集回调中断",
                 ["DaqPersistenceLag"] = "采集持久化积压",
                 ["DaqPersistenceRecoveryTimeout"] = "采集持久化恢复超时",

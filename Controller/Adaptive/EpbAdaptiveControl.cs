@@ -1,7 +1,5 @@
 using System;
-using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq;
 using Config;
 
 namespace Controller.Adaptive
@@ -127,6 +125,40 @@ namespace Controller.Adaptive
 
         public bool HasAction =>
             ClampReached || ReleaseCompleted || SoftWarning || HardFault || StateChanged;
+
+        internal void Reset(EpbCurrentStage stage, double currentA)
+        {
+            ClampReached = false;
+            ReleaseCompleted = false;
+            SoftWarning = false;
+            HardFault = false;
+            StateChanged = false;
+            Stage = stage;
+            Reason = null;
+            CurrentA = Math.Abs(currentA);
+            ElapsedMs = 0;
+            WindowSampleCount = 0;
+            WindowSpanMs = 0;
+            WindowMedianA = double.NaN;
+            WindowMadA = double.NaN;
+            WindowP10A = double.NaN;
+            WindowP90A = double.NaN;
+            ReleaseThresholdA = double.NaN;
+            AllowedSpreadA = double.NaN;
+            CutoffCurrentA = double.NaN;
+            EstimatedSlopeAperMs = double.NaN;
+            PredictedPeakA = double.NaN;
+            ObservedFullRatePeakA = double.NaN;
+            PredictionLeadMs = double.NaN;
+            CutoffReason = null;
+            ReleaseCandidateElapsedMs = 0;
+            WindowQualified = false;
+        }
+
+        internal EpbAdaptiveDecision Copy()
+        {
+            return (EpbAdaptiveDecision)MemberwiseClone();
+        }
     }
 
     /// <summary>
@@ -187,10 +219,13 @@ namespace Controller.Adaptive
         private const double MaximumPredictionSlopeAperMs = 1.0;
         private const double MaximumPredictionLeadMs = 100.0;
         private const double MaximumPlateauSpreadA = 0.75;
+        private const int WindowCapacity = 1024;
 
         private readonly object _gate = new object();
-        private readonly Queue<Sample> _window = new Queue<Sample>();
-        private readonly Queue<Sample> _forwardEmptyWindow = new Queue<Sample>();
+        private readonly SampleRing _window = new SampleRing(WindowCapacity);
+        private readonly SampleRing _forwardEmptyWindow = new SampleRing(WindowCapacity);
+        private readonly double[] _windowValues = new double[WindowCapacity];
+        private readonly double[] _windowDeviations = new double[WindowCapacity];
 
         private EpbAdaptiveProfile _profile;
         private EpbCurrentStage _stage = EpbCurrentStage.Idle;
@@ -344,9 +379,23 @@ namespace Controller.Adaptive
             double currentAmp,
             double observedFullRatePeakA = double.NaN)
         {
+            return OnSampleReusable(
+                tick,
+                currentAmp,
+                observedFullRatePeakA,
+                new EpbAdaptiveDecision());
+        }
+
+        internal EpbAdaptiveDecision OnSampleReusable(
+            long tick,
+            double currentAmp,
+            double observedFullRatePeakA,
+            EpbAdaptiveDecision reusableDecision)
+        {
             lock (_gate)
             {
-                var decision = NewDecision(currentAmp);
+                var decision = reusableDecision ?? throw new ArgumentNullException(nameof(reusableDecision));
+                decision.Reset(_stage, currentAmp);
                 if (_stage == EpbCurrentStage.Idle ||
                     _stage == EpbCurrentStage.Hold ||
                     _stage == EpbCurrentStage.Released ||
@@ -424,9 +473,17 @@ namespace Controller.Adaptive
 
         public EpbAdaptiveDecision CheckWatchdog(long nowTick)
         {
+            return CheckWatchdogReusable(nowTick, new EpbAdaptiveDecision());
+        }
+
+        internal EpbAdaptiveDecision CheckWatchdogReusable(
+            long nowTick,
+            EpbAdaptiveDecision reusableDecision)
+        {
             lock (_gate)
             {
-                var decision = NewDecision(_lastCurrentA);
+                var decision = reusableDecision ?? throw new ArgumentNullException(nameof(reusableDecision));
+                decision.Reset(_stage, _lastCurrentA);
                 if (_stage == EpbCurrentStage.Idle ||
                     _stage == EpbCurrentStage.Hold ||
                     _stage == EpbCurrentStage.ClampReached ||
@@ -875,15 +932,6 @@ namespace Controller.Adaptive
             return decision;
         }
 
-        private EpbAdaptiveDecision NewDecision(double currentA)
-        {
-            return new EpbAdaptiveDecision
-            {
-                Stage = _stage,
-                CurrentA = Math.Abs(currentA)
-            };
-        }
-
         private void ResetDirection(long startTick, int inrushIgnoreMs, int absoluteMaxMs)
         {
             _window.Clear();
@@ -920,14 +968,13 @@ namespace Controller.Adaptive
 
         private void AddWindow(long tick, double current)
         {
-            _window.Enqueue(new Sample(tick, current));
+            _window.Add(new Sample(tick, current));
             var retentionMs = Math.Max(
                 WindowRetentionMs,
                 Math.Max(
                     _safetyLimits.ForwardProgressConfirmMs,
                     _safetyLimits.ReverseProgressConfirmMs) + 50);
-            while (_window.Count > 0 && ElapsedMs(_window.Peek().Tick, tick) > retentionMs)
-                _window.Dequeue();
+            _window.RemoveOlderThan(tick, retentionMs);
         }
 
         private bool WindowIsStable(out double median, out double mad)
@@ -949,10 +996,8 @@ namespace Controller.Adaptive
 
         private void AddForwardEmptyWindow(long tick, double current)
         {
-            _forwardEmptyWindow.Enqueue(new Sample(tick, current));
-            while (_forwardEmptyWindow.Count > 0 &&
-                   ElapsedMs(_forwardEmptyWindow.Peek().Tick, tick) > WindowRetentionMs)
-                _forwardEmptyWindow.Dequeue();
+            _forwardEmptyWindow.Add(new Sample(tick, current));
+            _forwardEmptyWindow.RemoveOlderThan(tick, WindowRetentionMs);
         }
 
         private bool ForwardEmptyWindowIsStable(out double median, out double mad)
@@ -960,7 +1005,7 @@ namespace Controller.Adaptive
             median = 0;
             mad = 0;
             if (_forwardEmptyWindow.Count == 0) return false;
-            var nowTick = _forwardEmptyWindow.Last().Tick;
+            var nowTick = _forwardEmptyWindow.Last.Tick;
             if (!TryGetWindowStats(
                     _forwardEmptyWindow,
                     nowTick,
@@ -991,8 +1036,8 @@ namespace Controller.Adaptive
                 out stats);
         }
 
-        private static bool TryGetWindowStats(
-            IEnumerable<Sample> source,
+        private bool TryGetWindowStats(
+            SampleRing source,
             long nowTick,
             int windowMs,
             int minimumCoverageMs,
@@ -1002,30 +1047,37 @@ namespace Controller.Adaptive
             stats = default;
             if (source == null || nowTick <= 0) return false;
 
-            var samples = source
-                .Where(x => ElapsedMs(x.Tick, nowTick) <= windowMs)
-                .ToArray();
-            if (samples.Length < minimumSamples) return false;
+            var count = 0;
+            var firstTick = 0L;
+            var lastTick = 0L;
+            for (var i = 0; i < source.Count; i++)
+            {
+                var sample = source[i];
+                if (ElapsedMs(sample.Tick, nowTick) > windowMs) continue;
+                if (count == 0) firstTick = sample.Tick;
+                lastTick = sample.Tick;
+                _windowValues[count++] = sample.CurrentA;
+            }
+            if (count < minimumSamples) return false;
 
-            var spanMs = ElapsedMs(samples[0].Tick, samples[samples.Length - 1].Tick);
+            var spanMs = ElapsedMs(firstTick, lastTick);
             if (spanMs < minimumCoverageMs) return false;
 
-            var values = samples.Select(x => x.CurrentA).OrderBy(x => x).ToArray();
-            var median = Median(values);
-            var medianValue = median;
-            var mad = Median(values
-                .Select(x => Math.Abs(x - medianValue))
-                .OrderBy(x => x)
-                .ToArray());
+            Array.Sort(_windowValues, 0, count);
+            var median = Median(_windowValues, count);
+            for (var i = 0; i < count; i++)
+                _windowDeviations[i] = Math.Abs(_windowValues[i] - median);
+            Array.Sort(_windowDeviations, 0, count);
+            var mad = Median(_windowDeviations, count);
 
             stats = new WindowStats(
-                samples.Length,
+                count,
                 spanMs,
                 median,
                 mad,
-                Quantile(values, 0.10),
-                Quantile(values, 0.90),
-                values[values.Length - 1] - values[0]);
+                Quantile(_windowValues, count, 0.10),
+                Quantile(_windowValues, count, 0.90),
+                _windowValues[count - 1] - _windowValues[0]);
             return true;
         }
 
@@ -1043,12 +1095,17 @@ namespace Controller.Adaptive
 
         private double WindowSlopeAperMs()
         {
-            var samples = _window
-                .Where(x => ElapsedMs(x.Tick, _lastSampleTick) <= StableWindowMs)
-                .ToArray();
-            if (samples.Length < 2) return 0;
-            var first = samples[0];
-            var last = samples[samples.Length - 1];
+            var found = 0;
+            var first = default(Sample);
+            var last = default(Sample);
+            for (var i = 0; i < _window.Count; i++)
+            {
+                var sample = _window[i];
+                if (ElapsedMs(sample.Tick, _lastSampleTick) > StableWindowMs) continue;
+                if (found++ == 0) first = sample;
+                last = sample;
+            }
+            if (found < 2) return 0;
             var elapsed = ElapsedMs(first.Tick, last.Tick);
             return elapsed <= 0 ? 0 : (last.CurrentA - first.CurrentA) / elapsed;
         }
@@ -1069,29 +1126,12 @@ namespace Controller.Adaptive
                     out stats))
                 return false;
 
-            var samples = _window
-                .Where(x => ElapsedMs(x.Tick, tick) <= windowMs)
-                .ToArray();
-            if (samples.Length < WindowMinimumSamples) return false;
-
-            var firstTick = samples[0].Tick;
-            var times = samples
-                .Select(x => (x.Tick - firstTick) * 1000.0 / Stopwatch.Frequency)
-                .ToArray();
-            var meanTime = times.Average();
-            var meanCurrent = samples.Average(x => x.CurrentA);
-            double covariance = 0;
-            double variance = 0;
-            for (var i = 0; i < samples.Length; i++)
-            {
-                var dt = times[i] - meanTime;
-                covariance += dt * (samples[i].CurrentA - meanCurrent);
-                variance += dt * dt;
-            }
-
-            if (variance <= 1e-9) return false;
-            slopeAperMs = covariance / variance;
-            return !double.IsNaN(slopeAperMs) && !double.IsInfinity(slopeAperMs);
+            return TryComputeLinearSlope(
+                _window,
+                tick,
+                windowMs,
+                WindowMinimumSamples,
+                out slopeAperMs);
         }
 
         private int GetForwardProgressDeadlineMs()
@@ -1157,32 +1197,59 @@ namespace Controller.Adaptive
 
         private double PredictionSlopeAperMs()
         {
-            var samples = _window
-                .Where(x => ElapsedMs(x.Tick, _lastSampleTick) <= PredictionSlopeWindowMs)
-                .ToArray();
-            if (samples.Length < 3) return 0;
-
-            var firstTick = samples[0].Tick;
-            var times = samples
-                .Select(x => (x.Tick - firstTick) * 1000.0 / Stopwatch.Frequency)
-                .ToArray();
-            var meanTime = times.Average();
-            var meanCurrent = samples.Average(x => x.CurrentA);
-            double covariance = 0;
-            double variance = 0;
-            for (var i = 0; i < samples.Length; i++)
-            {
-                var dt = times[i] - meanTime;
-                covariance += dt * (samples[i].CurrentA - meanCurrent);
-                variance += dt * dt;
-            }
-
-            if (variance <= 1e-9) return 0;
-            var slope = covariance / variance;
+            if (!TryComputeLinearSlope(
+                    _window,
+                    _lastSampleTick,
+                    PredictionSlopeWindowMs,
+                    3,
+                    out var slope))
+                return 0;
             if (double.IsNaN(slope) || double.IsInfinity(slope) ||
                 slope < MinimumPredictionSlopeAperMs)
                 return 0;
             return Math.Min(MaximumPredictionSlopeAperMs, slope);
+        }
+
+        private static bool TryComputeLinearSlope(
+            SampleRing source,
+            long nowTick,
+            int windowMs,
+            int minimumSamples,
+            out double slopeAperMs)
+        {
+            slopeAperMs = 0;
+            var count = 0;
+            var firstTick = 0L;
+            double sumTime = 0;
+            double sumCurrent = 0;
+            for (var i = 0; i < source.Count; i++)
+            {
+                var sample = source[i];
+                if (ElapsedMs(sample.Tick, nowTick) > windowMs) continue;
+                if (count == 0) firstTick = sample.Tick;
+                var timeMs = (sample.Tick - firstTick) * 1000.0 / Stopwatch.Frequency;
+                sumTime += timeMs;
+                sumCurrent += sample.CurrentA;
+                count++;
+            }
+            if (count < minimumSamples) return false;
+
+            var meanTime = sumTime / count;
+            var meanCurrent = sumCurrent / count;
+            double covariance = 0;
+            double variance = 0;
+            for (var i = 0; i < source.Count; i++)
+            {
+                var sample = source[i];
+                if (ElapsedMs(sample.Tick, nowTick) > windowMs) continue;
+                var timeMs = (sample.Tick - firstTick) * 1000.0 / Stopwatch.Frequency;
+                var dt = timeMs - meanTime;
+                covariance += dt * (sample.CurrentA - meanCurrent);
+                variance += dt * dt;
+            }
+            if (variance <= 1e-9) return false;
+            slopeAperMs = covariance / variance;
+            return !double.IsNaN(slopeAperMs) && !double.IsInfinity(slopeAperMs);
         }
 
         private double GetPredictionLeadMs(double slopeAperMs)
@@ -1209,21 +1276,21 @@ namespace Controller.Adaptive
                 (endTick - startTick) * 1000.0 / Stopwatch.Frequency);
         }
 
-        private static double Median(double[] values)
+        private static double Median(double[] values, int count)
         {
-            if (values == null || values.Length == 0) return 0;
-            var mid = values.Length / 2;
-            return values.Length % 2 == 0
+            if (values == null || count <= 0) return 0;
+            var mid = count / 2;
+            return count % 2 == 0
                 ? (values[mid - 1] + values[mid]) / 2.0
                 : values[mid];
         }
 
-        private static double Quantile(double[] sortedValues, double probability)
+        private static double Quantile(double[] sortedValues, int count, double probability)
         {
-            if (sortedValues == null || sortedValues.Length == 0) return 0;
+            if (sortedValues == null || count <= 0) return 0;
             var p = Math.Max(0, Math.Min(1, probability));
             var index = (int)Math.Round(
-                p * (sortedValues.Length - 1),
+                p * (count - 1),
                 MidpointRounding.AwayFromZero);
             return sortedValues[index];
         }
@@ -1255,6 +1322,59 @@ namespace Controller.Adaptive
             public double P10 { get; }
             public double P90 { get; }
             public double Range { get; }
+        }
+
+        private sealed class SampleRing
+        {
+            private readonly Sample[] _items;
+            private int _head;
+
+            public SampleRing(int capacity)
+            {
+                _items = new Sample[capacity];
+            }
+
+            public int Count { get; private set; }
+
+            public Sample this[int index]
+            {
+                get
+                {
+                    if ((uint)index >= (uint)Count)
+                        throw new ArgumentOutOfRangeException(nameof(index));
+                    return _items[(_head + index) % _items.Length];
+                }
+            }
+
+            public Sample Last => Count == 0 ? default : this[Count - 1];
+
+            public void Add(Sample sample)
+            {
+                if (Count < _items.Length)
+                {
+                    _items[(_head + Count) % _items.Length] = sample;
+                    Count++;
+                    return;
+                }
+
+                _items[_head] = sample;
+                _head = (_head + 1) % _items.Length;
+            }
+
+            public void RemoveOlderThan(long nowTick, int retentionMs)
+            {
+                while (Count > 0 && ElapsedMs(this[0].Tick, nowTick) > retentionMs)
+                {
+                    _head = (_head + 1) % _items.Length;
+                    Count--;
+                }
+            }
+
+            public void Clear()
+            {
+                _head = 0;
+                Count = 0;
+            }
         }
 
         private readonly struct Sample

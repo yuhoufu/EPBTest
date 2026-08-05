@@ -43,28 +43,135 @@ namespace Controller.Adaptive
         }
     }
 
+    internal struct AdaptiveDecisionTraceSample
+    {
+        public DateTime SampleUtc;
+        public long MonotonicTicks;
+        public Guid RunId;
+        public int CycleNumber;
+        public int Channel;
+        public string Direction;
+        public EpbCurrentStage Stage;
+        public int ElapsedMs;
+        public double CurrentA;
+        public int WindowSampleCount;
+        public int WindowSpanMs;
+        public double WindowMedianA;
+        public double WindowMadA;
+        public double WindowP10A;
+        public double WindowP90A;
+        public double ReleaseThresholdA;
+        public double AllowedSpreadA;
+        public double CutoffCurrentA;
+        public double EstimatedSlopeAperMs;
+        public double PredictedPeakA;
+        public double ObservedFullRatePeakA;
+        public double PredictionLeadMs;
+        public string CutoffReason;
+        public int ReleaseCandidateElapsedMs;
+        public bool WindowQualified;
+        public string Action;
+        public string Reason;
+
+        public AdaptiveDecisionTraceEvent ToEvent()
+        {
+            return new AdaptiveDecisionTraceEvent
+            {
+                SampleUtc = SampleUtc,
+                MonotonicTicks = MonotonicTicks,
+                RunId = RunId,
+                CycleNumber = CycleNumber,
+                Channel = Channel,
+                Direction = Direction,
+                Stage = Stage,
+                ElapsedMs = ElapsedMs,
+                CurrentA = CurrentA,
+                WindowSampleCount = WindowSampleCount,
+                WindowSpanMs = WindowSpanMs,
+                WindowMedianA = WindowMedianA,
+                WindowMadA = WindowMadA,
+                WindowP10A = WindowP10A,
+                WindowP90A = WindowP90A,
+                ReleaseThresholdA = ReleaseThresholdA,
+                AllowedSpreadA = AllowedSpreadA,
+                CutoffCurrentA = CutoffCurrentA,
+                EstimatedSlopeAperMs = EstimatedSlopeAperMs,
+                PredictedPeakA = PredictedPeakA,
+                ObservedFullRatePeakA = ObservedFullRatePeakA,
+                PredictionLeadMs = PredictionLeadMs,
+                CutoffReason = CutoffReason,
+                ReleaseCandidateElapsedMs = ReleaseCandidateElapsedMs,
+                WindowQualified = WindowQualified,
+                Action = Action,
+                Reason = Reason
+            };
+        }
+
+        public static AdaptiveDecisionTraceSample FromEvent(AdaptiveDecisionTraceEvent item)
+        {
+            return new AdaptiveDecisionTraceSample
+            {
+                SampleUtc = item.SampleUtc,
+                MonotonicTicks = item.MonotonicTicks,
+                RunId = item.RunId,
+                CycleNumber = item.CycleNumber,
+                Channel = item.Channel,
+                Direction = item.Direction,
+                Stage = item.Stage,
+                ElapsedMs = item.ElapsedMs,
+                CurrentA = item.CurrentA,
+                WindowSampleCount = item.WindowSampleCount,
+                WindowSpanMs = item.WindowSpanMs,
+                WindowMedianA = item.WindowMedianA,
+                WindowMadA = item.WindowMadA,
+                WindowP10A = item.WindowP10A,
+                WindowP90A = item.WindowP90A,
+                ReleaseThresholdA = item.ReleaseThresholdA,
+                AllowedSpreadA = item.AllowedSpreadA,
+                CutoffCurrentA = item.CutoffCurrentA,
+                EstimatedSlopeAperMs = item.EstimatedSlopeAperMs,
+                PredictedPeakA = item.PredictedPeakA,
+                ObservedFullRatePeakA = item.ObservedFullRatePeakA,
+                PredictionLeadMs = item.PredictionLeadMs,
+                CutoffReason = item.CutoffReason,
+                ReleaseCandidateElapsedMs = item.ReleaseCandidateElapsedMs,
+                WindowQualified = item.WindowQualified,
+                Action = item.Action,
+                Reason = item.Reason
+            };
+        }
+    }
+
     internal sealed class AdaptiveDecisionTraceBuffer
     {
-        private const int MaximumEvents = 72_000;
+        private const int Channels = 13;
+        private const int EventsPerChannel = 2048;
         private static readonly TimeSpan Retention = TimeSpan.FromSeconds(60);
-        private readonly object _gate = new object();
-        private readonly Queue<AdaptiveDecisionTraceEvent> _events =
-            new Queue<AdaptiveDecisionTraceEvent>();
+        private readonly ChannelRing[] _rings = new ChannelRing[Channels];
+
+        public AdaptiveDecisionTraceBuffer()
+        {
+            for (var i = 0; i < _rings.Length; i++)
+                _rings[i] = new ChannelRing();
+        }
 
         public void Append(AdaptiveDecisionTraceEvent item)
         {
             if (item == null) return;
-            var copy = item.Clone();
-            if (copy.SampleUtc.Kind != DateTimeKind.Utc)
-                copy.SampleUtc = copy.SampleUtc.ToUniversalTime();
+            Append(AdaptiveDecisionTraceSample.FromEvent(item));
+        }
 
-            lock (_gate)
+        public void Append(AdaptiveDecisionTraceSample item)
+        {
+            if (item.Channel < 1 || item.Channel >= Channels) return;
+            if (item.SampleUtc.Kind != DateTimeKind.Utc)
+                item.SampleUtc = item.SampleUtc.ToUniversalTime();
+            var ring = _rings[item.Channel];
+            lock (ring.Gate)
             {
-                _events.Enqueue(copy);
-                var cutoff = copy.SampleUtc - Retention;
-                while (_events.Count > MaximumEvents ||
-                       (_events.Count > 0 && _events.Peek().SampleUtc < cutoff))
-                    _events.Dequeue();
+                ring.Items[ring.Next] = item;
+                ring.Next = (ring.Next + 1) % ring.Items.Length;
+                if (ring.Count < ring.Items.Length) ring.Count++;
             }
         }
 
@@ -77,18 +184,33 @@ namespace Controller.Adaptive
                 ? alarmUtc
                 : alarmUtc.ToUniversalTime();
             var cutoff = normalizedAlarmUtc - Retention;
-            lock (_gate)
+            if (channel < 1 || channel >= Channels)
+                return Array.Empty<AdaptiveDecisionTraceEvent>();
+            var ring = _rings[channel];
+            var result = new List<AdaptiveDecisionTraceEvent>(ring.Count);
+            lock (ring.Gate)
             {
-                return _events
-                    .Where(x => x.Channel == channel &&
-                                (runId == Guid.Empty || x.RunId == runId) &&
-                                x.SampleUtc >= cutoff &&
-                                x.SampleUtc <= normalizedAlarmUtc.AddSeconds(1))
-                    .OrderBy(x => x.SampleUtc)
-                    .ThenBy(x => x.MonotonicTicks)
-                    .Select(x => x.Clone())
-                    .ToArray();
+                var start = (ring.Next - ring.Count + ring.Items.Length) % ring.Items.Length;
+                for (var i = 0; i < ring.Count; i++)
+                {
+                    var item = ring.Items[(start + i) % ring.Items.Length];
+                    if (runId != Guid.Empty && item.RunId != runId) continue;
+                    if (item.SampleUtc < cutoff || item.SampleUtc > normalizedAlarmUtc.AddSeconds(1))
+                        continue;
+                    result.Add(item.ToEvent());
+                }
             }
+            return result
+                .OrderBy(x => x.SampleUtc)
+                .ThenBy(x => x.MonotonicTicks)
+                .ToArray();
+        }
+
+        internal int CountForChannel(int channel)
+        {
+            if (channel < 1 || channel >= Channels) return 0;
+            var ring = _rings[channel];
+            lock (ring.Gate) return ring.Count;
         }
 
         public static void ExportCsv(
@@ -155,6 +277,15 @@ namespace Controller.Adaptive
         {
             var text = value ?? string.Empty;
             return "\"" + text.Replace("\"", "\"\"") + "\"";
+        }
+
+        private sealed class ChannelRing
+        {
+            public readonly object Gate = new object();
+            public readonly AdaptiveDecisionTraceSample[] Items =
+                new AdaptiveDecisionTraceSample[EventsPerChannel];
+            public int Next;
+            public int Count;
         }
     }
 }
