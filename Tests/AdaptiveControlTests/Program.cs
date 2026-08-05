@@ -137,7 +137,7 @@ namespace AdaptiveControlTests
                 Run("DHMS运行时间格式", DhmsFormatting);
                 Run("固定随机种子10万圈耐久仿真", HundredThousandCycleDurabilitySimulation);
                 Run("持久化积压低水位后自动恢复", DaqPersistenceCoordinatorTests.PauseAndRecoverAfterLowWater);
-                Run("持久化硬容量保留真实故障码", DaqPersistenceCoordinatorTests.HardCapacityKeepsRealFaultCode);
+                Run("持久化硬容量使用独立故障码", DaqPersistenceCoordinatorTests.HardCapacityKeepsRealFaultCode);
                 _passed += DaqRealtimeControlTests.RunAll();
                 _passed += HydraulicGroupCoordinatorTests.RunAll();
                 _passed += PowerSupplyCoordinatorTests.RunAll();

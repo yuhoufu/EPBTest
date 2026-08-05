@@ -19,6 +19,7 @@ namespace AdaptiveControlTests
             Run("液压同代次重复进入不重新登记已释放成员", SameGenerationReentryDoesNotReAddReleasedMember, ref passed);
             Run("液压代次屏障缺员在一个周期内超时", GenerationBarrierTimeoutIsBounded, ref passed);
             Run("全员到齐后释压时间不计入屏障超时", SafePressureWaitDoesNotConsumeBarrierTimeout, ref passed);
+            Run("正式阶段在两相位之间启动时整组滚到同一槽", FormalStartBetweenPhasesUsesOneFutureSlot, ref passed);
             Run("液压样本无效或陈旧时资格判定失败", InvalidPressureSamplesAreRejected, ref passed);
             Run("保压持续下降触发液压组故障", SustainedPressureLossFaultsGeneration, ref passed);
             Run("报警电源组仅在无兄弟通道活动时关闭", PowerGroupIdlePredicateIsScoped, ref passed);
@@ -149,6 +150,8 @@ namespace AdaptiveControlTests
                 stableMs: 10,
                 timeoutMs: 200,
                 barrierTimeoutMs: 80);
+            ControlFault publishedFault = null;
+            coordinator.FaultRaised += fault => publishedFault = fault;
             var key = new HydraulicGenerationKey(Guid.NewGuid(), 2, HydraulicPhaseKind.Formal, 7);
             var lease = coordinator.EnterGenerationAsync(key, new[] { 8, 11 }, CancellationToken.None)
                 .GetAwaiter().GetResult();
@@ -160,6 +163,9 @@ namespace AdaptiveControlTests
             catch (HydraulicBarrierTimeoutException ex)
             {
                 Assert(ex.Message.Contains("Pending=[11]"), "屏障超时未记录缺失成员。");
+                Assert(publishedFault != null, "屏障超时未发布液压组故障。");
+                Assert(publishedFault.Classification == FaultClassification.SystemFault,
+                    "仅有同步缺员证据时错误确认成硬件故障。");
             }
         }
 
@@ -186,6 +192,25 @@ namespace AdaptiveControlTests
             Thread.Sleep(20);
             var second = coordinator.MarkVoltageReleaseAsync(lease, 9);
             Task.WaitAll(first, second);
+        }
+
+        private static void FormalStartBetweenPhasesUsesOneFutureSlot()
+        {
+            // 现场：t0=19:57:00，正式阶段于 19:58:45.502 启动，正好处于
+            // slot7 的 0ms 与 800ms 电气相位之间。旧逻辑让两类通道分属 slot8/slot7。
+            var t0 = new DateTime(2026, 8, 5, 19, 57, 0, DateTimeKind.Utc);
+            var started = new DateTime(2026, 8, 5, 19, 58, 45, 502, DateTimeKind.Utc);
+            var firstSlot = EpbManager.CalculateFirstFutureFormalSlot(t0, started, 15000);
+
+            Assert(firstSlot == 8, "正式阶段未滚到下一完整零相位槽。");
+            var callbackUtc = t0.AddMilliseconds(firstSlot * 15000.0);
+            Assert(callbackUtc == new DateTime(2026, 8, 5, 19, 59, 0, DateTimeKind.Utc),
+                "正式阶段整组回调锚点计算错误。");
+
+            // 电气相位只改变资格后的上电时刻，不得再改变液压代次键。
+            var zeroPhaseKey = new HydraulicGenerationKey(Guid.Empty, 2, HydraulicPhaseKind.Formal, firstSlot);
+            var latePhaseKey = new HydraulicGenerationKey(Guid.Empty, 2, HydraulicPhaseKind.Formal, firstSlot);
+            Assert(zeroPhaseKey.Equals(latePhaseKey), "同组电气相位被错误拆分到不同液压槽。");
         }
 
         private static void InvalidPressureSamplesAreRejected()

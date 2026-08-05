@@ -48,9 +48,9 @@ namespace AdaptiveControlTests
             for (var sequence = 1; sequence <= 8; sequence++)
                 coordinator.Enqueue(NewBatch("Dev1", sequence));
             WaitUntil(
-                () => states.Any(x => x.State == DaqPersistenceState.Failed && x.Code == "BackgroundQueueFull"),
+                () => states.Any(x => x.State == DaqPersistenceState.Failed && x.Code == "DaqPersistenceQueueFull"),
                 2000,
-                "硬容量故障未保留 BackgroundQueueFull 分类");
+                "持久化硬容量故障未使用独立 DaqPersistenceQueueFull 分类");
         }
 
         private static DaqDiskBatch NewBatch(string device, long sequence)

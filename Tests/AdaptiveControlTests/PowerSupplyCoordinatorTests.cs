@@ -20,6 +20,10 @@ namespace AdaptiveControlTests
             Run("OUTP ON后等待空载电流稳定回零", StartupWaitsForCurrentToReturnToZero, ref passed);
             Run("启动电流不回零则关电并禁止启动", StartupZeroTimeoutRollsBackOutput, ref passed);
             Run("完整预检写入回读并确认关闭", ValidPreflightAndShutdown, ref passed);
+            Run("恢复复核不循环健康电源输出", RevalidationDoesNotCycleHealthyOutput, ref passed);
+            Run("计划关闭不产生意外掉电故障", PlannedShutdownIsNotUnexpectedOutputOff, ref passed);
+            Run("电源保护新鲜回读才确认为硬件故障", ProtectionTripIsHardwareConfirmed, ref passed);
+            Run("陈旧PSU限流回读不能确认双源过流", StaleTelemetryIsNotFreshFaultEvidence, ref passed);
             Run("停机等待在途遥测完成后再关闭输出", ShutdownWaitsForInFlightTelemetry, ref passed);
             Run("电源硬故障只联动对应电气组", FaultIsScopedAndManuallyReset, ref passed);
             return passed;
@@ -92,6 +96,85 @@ namespace AdaptiveControlTests
             }
         }
 
+        private static void RevalidationDoesNotCycleHealthyOutput()
+        {
+            var config = NewConfig();
+            var clients = NewClients(config);
+            using (var coordinator = NewCoordinator(config, clients))
+            {
+                coordinator.PrepareAndEnableAsync(new[] { 1 }, CancellationToken.None)
+                    .GetAwaiter().GetResult();
+                var onCount = clients[1].OutputOnCount;
+                var offCount = clients[1].OutputOffCount;
+
+                coordinator.RevalidateEnabledAsync(new[] { 1 }, CancellationToken.None)
+                    .GetAwaiter().GetResult();
+
+                Assert(clients[1].OutputEnabled, "恢复复核后健康电源未保持开启。");
+                Assert(clients[1].OutputOnCount == onCount && clients[1].OutputOffCount == offCount,
+                    "恢复复核对健康电源执行了无意义的 OFF/ON 循环。");
+            }
+        }
+
+        private static void PlannedShutdownIsNotUnexpectedOutputOff()
+        {
+            var config = NewConfig();
+            config.PollIntervalMs = 50;
+            var clients = NewClients(config);
+            using (var coordinator = NewCoordinator(config, clients))
+            {
+                var faults = new List<PowerSupplyFault>();
+                coordinator.FaultRaised += faults.Add;
+                coordinator.PrepareAndEnableAsync(new[] { 1 }, CancellationToken.None)
+                    .GetAwaiter().GetResult();
+                coordinator.DisableGroupAsync(1, "planned-test", CancellationToken.None)
+                    .GetAwaiter().GetResult();
+                Thread.Sleep(100);
+                Assert(!faults.Any(x => x.Code == "UnexpectedOutputOff"),
+                    "本程序计划关闭被监控误判为意外掉电。");
+            }
+        }
+
+        private static void ProtectionTripIsHardwareConfirmed()
+        {
+            var config = NewConfig();
+            config.PollIntervalMs = 50;
+            var clients = NewClients(config);
+            using (var signal = new ManualResetEventSlim(false))
+            using (var coordinator = NewCoordinator(config, clients))
+            {
+                PowerSupplyFault raised = null;
+                coordinator.FaultRaised += fault =>
+                {
+                    raised = fault;
+                    signal.Set();
+                };
+                coordinator.PrepareAndEnableAsync(new[] { 1 }, CancellationToken.None)
+                    .GetAwaiter().GetResult();
+                clients[1].ProtectionTripped = true;
+                Assert(signal.Wait(TimeSpan.FromSeconds(2)), "新鲜保护状态未产生故障事件。");
+                Assert(raised != null && raised.Code == "ProtectionTrip" &&
+                       raised.Classification == FaultClassification.HardwareConfirmed,
+                    "明确的电源保护动作未归类为 HardwareConfirmed。");
+            }
+        }
+
+        private static void StaleTelemetryIsNotFreshFaultEvidence()
+        {
+            var config = NewConfig();
+            config.TelemetryStaleMs = 200;
+            var clients = NewClients(config);
+            clients[1].SnapshotTimestampUtc = DateTime.UtcNow.AddSeconds(-5);
+            clients[1].ConstantCurrent = true;
+            using (var coordinator = NewCoordinator(config, clients))
+            {
+                coordinator.PrepareAndEnableAsync(new[] { 1 }, CancellationToken.None)
+                    .GetAwaiter().GetResult();
+                Assert(!coordinator.HasFreshPowerFaultEvidence(1),
+                    "陈旧PSU限流回读被错误当作双源过流的独立新鲜证据。");
+            }
+        }
+
         private static void StartupZeroTimeoutRollsBackOutput()
         {
             var config = NewConfig();
@@ -131,6 +214,8 @@ namespace AdaptiveControlTests
                 clients[1].ConstantCurrent = true;
                 Assert(signal.Wait(TimeSpan.FromSeconds(2)), "未在规定时间内锁存 CC 故障。");
                 Assert(raised != null && raised.ElectricalGroupId == 1, "故障组识别错误。");
+                Assert(raised.Classification == FaultClassification.SystemFault,
+                    "单独的电源限流证据被错误提升为硬件确认报警。");
                 Assert(raised.AffectedChannels.SequenceEqual(new[] { 1, 2 }),
                     "组级故障联动范围越过了本次所选通道。");
 
@@ -275,12 +360,15 @@ namespace AdaptiveControlTests
             };
             public bool OutputEnabled { get; set; }
             public bool ConstantCurrent { get; set; }
+            public bool ProtectionTripped { get; set; }
+            public DateTime? SnapshotTimestampUtc { get; set; }
             public double Voltage { get; private set; }
             public double Current { get; private set; }
             public double? Ovp { get; private set; }
             public double? Ocp { get; private set; }
             public int SetpointWriteCount { get; private set; }
             public int OutputOffCount { get; private set; }
+            public int OutputOnCount { get; private set; }
             public bool SetpointWrittenWhileOutputOn { get; private set; }
             public Queue<double> OutputCurrentSequence { get; } = new Queue<double>();
             public double DefaultOutputCurrent { get; set; }
@@ -346,7 +434,8 @@ namespace AdaptiveControlTests
 
             public Task<bool> SetOutputAsync(bool enabled, CancellationToken token)
             {
-                if (!enabled) OutputOffCount++;
+                if (enabled) OutputOnCount++;
+                else OutputOffCount++;
                 OutputEnabled = enabled;
                 return Task.FromResult(enabled);
             }
@@ -371,7 +460,7 @@ namespace AdaptiveControlTests
                 }
                 return new PswSnapshot
                 {
-                    TimestampUtc = DateTime.UtcNow,
+                    TimestampUtc = SnapshotTimestampUtc ?? DateTime.UtcNow,
                     SupplyId = Endpoint.Id,
                     IsConnected = IsConnected,
                     Identity = Identity,
@@ -385,7 +474,8 @@ namespace AdaptiveControlTests
                     MeasuredVoltage = OutputEnabled ? Voltage : 0,
                     MeasuredCurrent = measuredCurrent,
                     MeasuredPower = OutputEnabled ? Voltage * measuredCurrent : 0,
-                    OperationStatus = ConstantCurrent ? 1024 : 256
+                    OperationStatus = ConstantCurrent ? 1024 : 256,
+                    ProtectionTripped = ProtectionTripped
                 };
             }
 

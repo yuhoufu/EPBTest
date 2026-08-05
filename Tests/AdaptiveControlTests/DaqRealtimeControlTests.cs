@@ -6,11 +6,13 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Threading;
+using System.Threading.Tasks;
 using Config;
 using Controller;
 using Controller.Adaptive;
 using DataOperation;
 using IO.NI;
+using Timing;
 
 namespace AdaptiveControlTests
 {
@@ -26,6 +28,11 @@ namespace AdaptiveControlTests
             Run("DAQ陈旧根因区分回调与控制消费", DaqStaleRootClassification, ref passed);
             Run("DAQ批次和兼容队列包装不再持续分配", DaqBatchObjectsAreReusableValueBacked, ref passed);
             Run("旧原始二进制写入池化后格式保持不变", LegacyRawWriterKeepsBinaryFormat, ref passed);
+            Run("标定前原始数据复制后不被原地标定污染", OwnedRawBatchPreservesPreCalibrationValues, ref passed);
+            Run("Stat流式中值保留跨批次尾部", StreamingStatMedianCarriesTailAcrossBatches, ref passed);
+            Run("恢复后定时器只在未来完整周期锚点执行", TimerResumesAtFutureCompleteBoundary, ref passed);
+            Run("恢复成功超时停止硬件确认并发只提交一个终态", RecoveryTerminalGateCommitsExactlyOnce, ref passed);
+            Run("DAQ探测能力缺失不能误确认为硬件拔除", ProbeCapabilityMissingIsNotHardwareEvidence, ref passed);
             Run("DAQ事故关联去重优先级与新运行复位", IncidentCorrelationAndPriority, ref passed);
             Run("DAQ事故先断电后发布诊断", DaqSafetyActionsPrecedePublication, ref passed);
             Run("十万稳态样本控制计算无持续分配", AdaptiveHotLoopDoesNotAllocate, ref passed);
@@ -369,6 +376,155 @@ namespace AdaptiveControlTests
             {
                 if (Directory.Exists(testRoot)) Directory.Delete(testRoot, true);
             }
+        }
+
+        private static void OwnedRawBatchPreservesPreCalibrationValues()
+        {
+            var source = new[,]
+            {
+                { 1.25, 2.5, 3.75 },
+                { -4.0, 5.125, 6.25 }
+            };
+            using (var owned = OwnedDaqRawBatch.CopyFrom(
+                       "Dev1", source, DateTime.UtcNow, DateTime.UtcNow.AddMilliseconds(-10)))
+            {
+                for (var channel = 0; channel < source.GetLength(0); channel++)
+                for (var sample = 0; sample < source.GetLength(1); sample++)
+                {
+                    var expected = source[channel, sample];
+                    source[channel, sample] = expected * 1000 + 7;
+                    Assert(Math.Abs(owned[channel, sample] - expected) < 1e-12,
+                        "池化原始缓冲被后续原地标定修改。");
+                }
+
+                Assert(owned.ChannelCount == 2 && owned.SampleCount == 3 && owned.Device == "Dev1",
+                    "池化原始批次身份或维度错误。");
+            }
+        }
+
+        private static void StreamingStatMedianCarriesTailAcrossBatches()
+        {
+            var directory = Path.Combine(
+                Path.GetTempPath(),
+                "epb-stat-stream-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            try
+            {
+                var context = new DaqAIContext("Dev1", 256, 60, 1, 1, 2, directory)
+                {
+                    medianLens = 3,
+                    eMBToDaqCurrentChannel = new SortedDictionary<string, int>
+                    {
+                        ["EPB1_current"] = 0
+                    }
+                };
+                context.paraNameToScale["EPB1_current"] = 1;
+                context.paraNameToOffset["EPB1_current"] = 0;
+                context.paraNameToZeroValue["EPB1_current"] = 0;
+
+                context.EnqueueStatData(new[,] { { 100.0, 1.0 } }, DateTime.UtcNow);
+                context.EnqueueStatData(new[,] { { 2.0 } }, DateTime.UtcNow.AddMilliseconds(2));
+                context.FlushStatToDiskAsync().GetAwaiter().GetResult();
+
+                var file = Directory.GetFiles(directory, "DAQ_Dev1_Stat.bin").Single();
+                using (var reader = new BinaryReader(File.OpenRead(file)))
+                {
+                    Assert(reader.ReadInt32() == 1, "Stat记录计数格式发生变化。");
+                    reader.ReadInt64();
+                    var maximum = reader.ReadDouble();
+                    var minimum = reader.ReadDouble();
+                    Assert(Math.Abs(maximum - 2.0) < 1e-12 && Math.Abs(minimum - 2.0) < 1e-12,
+                        $"跨批次中值尾部丢失：Min={minimum}, Max={maximum}。");
+                }
+            }
+            finally
+            {
+                try { Directory.Delete(directory, true); } catch { }
+            }
+        }
+
+        private static void TimerResumesAtFutureCompleteBoundary()
+        {
+            var timer = new HighPrecisionTimer(500, OverrunPolicy.AlignToWallClock);
+            using (var firstStarted = new ManualResetEventSlim(false))
+            using (var releaseFirst = new ManualResetEventSlim(false))
+            using (var secondStarted = new ManualResetEventSlim(false))
+            {
+                var clock = Stopwatch.StartNew();
+                long secondAt = -1;
+                var running = timer.StartAsync(2, 0, (cycle, token) =>
+                {
+                    if (cycle == 1)
+                    {
+                        firstStarted.Set();
+                        releaseFirst.Wait(token);
+                    }
+                    else
+                    {
+                        secondAt = clock.ElapsedMilliseconds;
+                        secondStarted.Set();
+                    }
+                    return Task.FromResult(true);
+                });
+
+                Assert(firstStarted.Wait(TimeSpan.FromSeconds(2)), "首个周期未进入测试阻塞点。");
+                timer.Pause();
+                releaseFirst.Set();
+                Thread.Sleep(50);
+                var resumedAt = clock.ElapsedMilliseconds;
+                timer.ResumeAtNextBoundary(220);
+
+                Assert(secondStarted.Wait(TimeSpan.FromSeconds(2)), "恢复后的未来完整周期未执行。");
+                running.GetAwaiter().GetResult();
+                var delay = secondAt - resumedAt;
+                Assert(delay >= 180 && delay < 1500,
+                    $"定时器恢复后沿用旧半圈或锚点异常：Delay={delay}ms。");
+            }
+        }
+
+        private static void RecoveryTerminalGateCommitsExactlyOnce()
+        {
+            var gate = new DaqRecoveryTerminalGate();
+            var winners = 0;
+            using (var start = new ManualResetEventSlim(false))
+            {
+                var tasks = Enumerable.Range(0, 64).Select(index => Task.Run(() =>
+                {
+                    start.Wait();
+                    var proposed = (DaqRecoveryTerminal)(index % 4 + 1);
+                    if (gate.TryCommit(proposed)) Interlocked.Increment(ref winners);
+                })).ToArray();
+                start.Set();
+                Task.WaitAll(tasks);
+            }
+            Assert(winners == 1, $"并发恢复终态提交次数错误：{winners}。");
+            Assert(gate.Current != DaqRecoveryTerminal.None,
+                "并发恢复没有留下唯一可审计终态。");
+            Assert(!gate.TryCommit(DaqRecoveryTerminal.SystemFault),
+                "恢复终态提交后仍可被迟到超时覆盖。");
+        }
+
+        private static void ProbeCapabilityMissingIsNotHardwareEvidence()
+        {
+            var unavailable = new DaqHardwareProbeResult
+            {
+                Device = "Dev1",
+                EnumerationSucceeded = true,
+                DevicePresent = true,
+                SelfTestAttempted = false,
+                SelfTestSucceeded = false
+            };
+            var absent = new DaqHardwareProbeResult
+            {
+                Device = "Dev1",
+                EnumerationSucceeded = true,
+                DevicePresent = false
+            };
+            Assert(!unavailable.IndependentFailureConfirmed &&
+                   unavailable.ToEvidence().Code == "DeviceSelfTestUnavailable",
+                "DAQmx版本能力缺失被误当成设备硬件故障。");
+            Assert(absent.IndependentFailureConfirmed,
+                "DAQmx明确枚举缺失未形成独立硬件证据。");
         }
 
         private static void UiDispatchGateUsesMonotonicRateLimit()

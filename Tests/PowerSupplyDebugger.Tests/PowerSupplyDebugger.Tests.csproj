@@ -7,6 +7,7 @@
 
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
+    <PlatformTarget Condition="'$(Configuration)' == 'Release'">x86</PlatformTarget>
   </PropertyGroup>
 
   <ItemGroup>
