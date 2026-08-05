@@ -31,11 +31,18 @@
     <Reference Include="System.Buffers">
       <HintPath>..\..\packages\System.Buffers.4.4.0\lib\netstandard2.0\System.Buffers.dll</HintPath>
     </Reference>
+    <Reference Include="System.Memory">
+      <HintPath>..\..\packages\System.Memory.4.5.3\lib\netstandard2.0\System.Memory.dll</HintPath>
+    </Reference>
+    <Reference Include="System.Runtime.CompilerServices.Unsafe">
+      <HintPath>..\..\packages\System.Runtime.CompilerServices.Unsafe.4.5.2\lib\netstandard2.0\System.Runtime.CompilerServices.Unsafe.dll</HintPath>
+    </Reference>
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Program.cs" />
     <Compile Include="DaqPersistenceCoordinatorTests.cs" />
+    <Compile Include="DaqRealtimeControlTests.cs" />
     <Compile Include="HydraulicGroupCoordinatorTests.cs" />
     <Compile Include="PowerSupplyCoordinatorTests.cs" />
     <Compile Include="ProjectLogStoreTests.cs" />
