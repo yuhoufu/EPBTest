@@ -32,6 +32,10 @@ namespace IO.NI
         public long ManagedMemoryBytes;
         public int WorkerThreadsAvailable;
         public int IoThreadsAvailable;
+        public string GcEtwStatus;
+        public double GcPauseDurationMs;
+        public DateTime GcPauseUtc;
+        public long GcPauseCount;
         public int ControlQueueCapacity;
         public double SubscriberMaxMs;
         public double DriftMs;
@@ -80,6 +84,10 @@ namespace IO.NI
                 ManagedMemoryBytes = value.ManagedMemoryBytes,
                 WorkerThreadsAvailable = value.WorkerThreadsAvailable,
                 IoThreadsAvailable = value.IoThreadsAvailable,
+                GcEtwStatus = value.GcEtwStatus,
+                GcPauseDurationMs = value.GcPauseDurationMs,
+                GcPauseUtc = value.GcPauseUtc,
+                GcPauseCount = value.GcPauseCount,
                 ControlQueueCapacity = value.ControlQueueCapacity,
                 SubscriberMaxMs = value.SubscriberMaxMs,
                 DriftMs = value.DriftMs,

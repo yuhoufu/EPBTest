@@ -44,6 +44,7 @@ namespace Controller
             public int Count;
             public int PauseLatched;
             public int FreshAfterLowWater;
+            public int PendingFreshWhileWrite;
             public long LastPersistedSequence;
             public long AcceptedGeneration;
             public long LastLagLogTicks;
@@ -141,7 +142,7 @@ namespace Controller
             {
                 Interlocked.Decrement(ref q.Count);
                 var correlation = EnsureCorrelation(q);
-                Publish(batch, q, DaqPersistenceState.Failed, "BackgroundQueueFull",
+                Publish(batch, q, DaqPersistenceState.Failed, "DaqPersistenceQueueFull",
                     $"{batch.Device} 持久化队列达到硬上限 {_capacity} 批。", correlation);
                 batch.Dispose();
                 return false;
@@ -168,6 +169,7 @@ namespace Controller
             q.SuppressAfterUtc = null;
             q.CorrelationId = Guid.Empty;
             Interlocked.Exchange(ref q.FreshAfterLowWater, 0);
+            Interlocked.Exchange(ref q.PendingFreshWhileWrite, 0);
             Interlocked.Exchange(ref q.PauseLatched, 0);
         }
 
@@ -455,13 +457,24 @@ namespace Controller
         private void EvaluateRecovery(string device, DeviceQueue q, DaqDiskBatch batch)
         {
             if (Volatile.Read(ref q.PauseLatched) == 0) return;
-            if (Volatile.Read(ref q.WriteInFlight) != 0 ||
-                Volatile.Read(ref q.UnresolvedWriteFailure) != 0) return;
             var depth = Volatile.Read(ref q.Count);
             var age = GetOldestAge(q);
+            if (Volatile.Read(ref q.WriteInFlight) != 0)
+            {
+                if (depth <= _resumeDepth && age <= _resumeAgeMs)
+                    Interlocked.Increment(ref q.PendingFreshWhileWrite);
+                else
+                {
+                    Interlocked.Exchange(ref q.FreshAfterLowWater, 0);
+                    Interlocked.Exchange(ref q.PendingFreshWhileWrite, 0);
+                }
+                return;
+            }
+            if (Volatile.Read(ref q.UnresolvedWriteFailure) != 0) return;
             if (depth <= _resumeDepth && age <= _resumeAgeMs)
             {
-                if (Interlocked.Increment(ref q.FreshAfterLowWater) >= _requiredFreshBatches)
+                var credit = 1 + Interlocked.Exchange(ref q.PendingFreshWhileWrite, 0);
+                if (Interlocked.Add(ref q.FreshAfterLowWater, credit) >= _requiredFreshBatches)
                 {
                     Interlocked.Exchange(ref q.FreshAfterLowWater, 0);
                     Interlocked.Exchange(ref q.PauseLatched, 0);
@@ -472,6 +485,7 @@ namespace Controller
             else
             {
                 Interlocked.Exchange(ref q.FreshAfterLowWater, 0);
+                Interlocked.Exchange(ref q.PendingFreshWhileWrite, 0);
             }
         }
 
@@ -507,7 +521,7 @@ namespace Controller
             {
                 TimestampUtc = update.TimestampUtc,
                 Device = update.Device,
-                Kind = state == DaqPersistenceState.Failed ? "HardFault" : "Lag",
+                Kind = state == DaqPersistenceState.Failed ? "SystemFault" : "Lag",
                 Generation = update.Generation,
                 QueueDepth = update.QueueDepth,
                 QueueAgeMs = update.OldestBatchAgeMs,

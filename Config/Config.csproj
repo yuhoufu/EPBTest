@@ -26,6 +26,7 @@
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
     <DebugType>pdbonly</DebugType>
     <Optimize>true</Optimize>
+    <PlatformTarget>x86</PlatformTarget>
     <OutputPath>bin\Release\</OutputPath>
     <DefineConstants>TRACE</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
@@ -53,6 +54,7 @@
     <Compile Include="EpbAdaptiveProfiles.cs" />
     <Compile Include="EpbProjectPolicies.cs" />
     <Compile Include="EpbTestRecord.cs" />
+    <Compile Include="FaultClassification.cs" />
     <Compile Include="ConfigLoader.cs" />
     <Compile Include="IAppLogger.cs" />
     <Compile Include="LastProjectSelectionStore.cs" />

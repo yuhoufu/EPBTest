@@ -22,6 +22,7 @@
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
     <LangVersion>9</LangVersion>
+    <PlatformTarget>x86</PlatformTarget>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
     <DebugType>pdbonly</DebugType>
@@ -31,6 +32,7 @@
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
     <LangVersion>9</LangVersion>
+    <PlatformTarget>x86</PlatformTarget>
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="NationalInstruments.Common, Version=19.1.40.49152, Culture=neutral, PublicKeyToken=dc6ad606294fc298, processorArchitecture=MSIL">
@@ -56,6 +58,15 @@
     <Reference Include="System.Xml.Linq" />
     <Reference Include="System.Data.DataSetExtensions" />
     <Reference Include="Microsoft.CSharp" />
+    <Reference Include="Microsoft.Diagnostics.FastSerialization">
+      <HintPath>..\packages\Microsoft.Diagnostics.Tracing.TraceEvent.2.0.74\lib\net45\Microsoft.Diagnostics.FastSerialization.dll</HintPath>
+    </Reference>
+    <Reference Include="Microsoft.Diagnostics.Tracing.TraceEvent">
+      <HintPath>..\packages\Microsoft.Diagnostics.Tracing.TraceEvent.2.0.74\lib\net45\Microsoft.Diagnostics.Tracing.TraceEvent.dll</HintPath>
+    </Reference>
+    <Reference Include="OSExtensions">
+      <HintPath>..\packages\Microsoft.Diagnostics.Tracing.TraceEvent.2.0.74\lib\net45\OSExtensions.dll</HintPath>
+    </Reference>
     <Reference Include="System.Data" />
     <Reference Include="System.Net.Http" />
     <Reference Include="System.Xml" />
@@ -63,9 +74,11 @@
   <ItemGroup>
     <Compile Include="AoController.cs" />
     <Compile Include="ControlBatchRing.cs" />
+    <Compile Include="ClrGcPauseMonitor.cs" />
     <Compile Include="FastCurrentEvidenceRing.cs" />
     <Compile Include="DaqDiagnosticRing.cs" />
     <Compile Include="CurrentGuard.cs" />
+    <Compile Include="DaqHardwareProbe.cs" />
     <Compile Include="DoController.cs" />
     <Compile Include="HighResolutionSampleClock.cs" />
     <Compile Include="IAppLogger.cs" />

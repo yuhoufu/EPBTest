@@ -21,6 +21,51 @@ using System.Threading.Tasks;
 
 namespace IO.NI
 {
+    public sealed class DaqDiagnosticsCapture
+    {
+        internal DaqTimingValue[] Records { get; set; } = Array.Empty<DaqTimingValue>();
+
+        public string[] WriteTo(string directory)
+        {
+            Directory.CreateDirectory(directory);
+            var timingPath = Path.Combine(directory, "daq_timing.csv");
+            using (var writer = new StreamWriter(timingPath, false, new UTF8Encoding(true)))
+            {
+                writer.WriteLine("TimestampUtc,Device,Kind,Generation,BatchSize,QueueDepth,CallbackIntervalMs,EndReadMs,RearmMs,QueueAgeMs,ProcessingMs,ConvertMs,FilterMs,PeakMs,DiskBatchBuildMs,DiskDispatchMs,UiNotifyMs,PersistenceWaitMs,RingWriteMs,SqliteMs,Detail,ControlQueueCapacity,SubscriberMaxMs,ProcessedSampleUtc,DriftMs,BatchSequence,ProducerThreadId,ProducerReentryCount,SampleLeadMs,EffectiveSampleRateHz,EstimatedSkewPpm,ClockResidualMs,ClockWindowSeconds,ClockCorrectionPpm,ClockState,QualityFlags");
+                foreach (var x in Records.Where(x => !string.Equals(x.Kind, "Runtime", StringComparison.OrdinalIgnoreCase)))
+                    writer.WriteLine(
+                        $"{x.TimestampUtc:O},{Csv(x.Device)},{Csv(x.Kind)},{x.Generation},{x.BatchSize},{x.QueueDepth}," +
+                        $"{x.CallbackIntervalMs:F3},{x.EndReadMs:F3},{x.RearmMs:F3},{x.QueueAgeMs:F3},{x.ProcessingMs:F3}," +
+                        $"{x.ConvertMs:F3},{x.FilterMs:F3},{x.PeakMs:F3},{x.DiskBatchBuildMs:F3},{x.DiskDispatchMs:F3}," +
+                        $"{x.UiNotifyMs:F3},{x.PersistenceWaitMs:F3},{x.RingWriteMs:F3},{x.SqliteMs:F3},{Csv(x.Detail)}," +
+                        $"{x.ControlQueueCapacity},{x.SubscriberMaxMs:F3},{(x.ProcessedSampleUtc == default ? string.Empty : x.ProcessedSampleUtc.ToString("O"))},{x.DriftMs:F3}," +
+                        $"{x.BatchSequence},{x.ProducerThreadId},{x.ProducerReentryCount},{x.SampleLeadMs:F3}," +
+                        $"{x.EffectiveSampleRateHz:F6},{x.EstimatedSkewPpm:F3},{x.ClockResidualMs:F3}," +
+                        $"{x.ClockWindowSeconds:F3},{x.ClockCorrectionPpm:F3},{Csv(x.ClockState)},{Csv(x.QualityFlags)}");
+            }
+            var runtimePath = Path.Combine(directory, "daq_runtime.csv");
+            using (var writer = new StreamWriter(runtimePath, false, new UTF8Encoding(true)))
+            {
+                writer.WriteLine("TimestampUtc,Device,Kind,GC0,GC1,GC2,ManagedMemoryBytes,WorkerThreadsAvailable,IoThreadsAvailable,GcEtwStatus,GcPauseDurationMs,GcPauseUtc,GcPauseCount");
+                foreach (var x in Records.Where(x => string.Equals(x.Kind, "Runtime", StringComparison.OrdinalIgnoreCase)))
+                    writer.WriteLine(
+                        $"{x.TimestampUtc:O},{Csv(x.Device)},{Csv(x.Kind)},{x.Gc0},{x.Gc1},{x.Gc2}," +
+                        $"{x.ManagedMemoryBytes},{x.WorkerThreadsAvailable},{x.IoThreadsAvailable}," +
+                        $"{Csv(x.GcEtwStatus)},{x.GcPauseDurationMs:F3}," +
+                        $"{(x.GcPauseUtc == default ? string.Empty : x.GcPauseUtc.ToString("O"))},{x.GcPauseCount}");
+            }
+            return new[] { timingPath, runtimePath };
+        }
+
+        private static string Csv(string value)
+        {
+            value ??= string.Empty;
+            return value.IndexOfAny(new[] { ',', '"', '\r', '\n' }) >= 0
+                ? "\"" + value.Replace("\"", "\"\"") + "\""
+                : value;
+        }
+    }
+
     internal static class DaqQueueAdmission
     {
         internal static bool TryEnter(ref int count, int capacity)
@@ -142,6 +187,10 @@ namespace IO.NI
         public int RequiredFreshCallbacks { get; set; }
         public int ElapsedMs { get; set; }
         public string FailureReason { get; set; } = string.Empty;
+        public string FailureKind { get; set; } = string.Empty;
+        public int? NativeErrorCode { get; set; }
+        public FaultClassification Classification { get; set; } = FaultClassification.SoftwareTransient;
+        public HardwareEvidence[] HardwareEvidence { get; set; } = Array.Empty<HardwareEvidence>();
     }
 
     public sealed class DaqDeviceFault
@@ -157,6 +206,8 @@ namespace IO.NI
         public int QueueCapacity { get; set; }
         public double OldestBatchAgeMs { get; set; }
         public DateTime LastProcessedSampleUtc { get; set; }
+        public int? NativeErrorCode { get; set; }
+        public FaultClassification Classification { get; set; } = FaultClassification.SoftwareTransient;
     }
 
     public sealed class DaqTimingRecord
@@ -187,6 +238,10 @@ namespace IO.NI
         public long ManagedMemoryBytes { get; set; }
         public int WorkerThreadsAvailable { get; set; }
         public int IoThreadsAvailable { get; set; }
+        public string GcEtwStatus { get; set; } = string.Empty;
+        public double GcPauseDurationMs { get; set; }
+        public DateTime GcPauseUtc { get; set; }
+        public long GcPauseCount { get; set; }
         public int ControlQueueCapacity { get; set; }
         public double SubscriberMaxMs { get; set; }
         public double DriftMs { get; set; }
@@ -532,6 +587,19 @@ namespace IO.NI
         private readonly HighResolutionSampleClock _sampleClock = new();
         private readonly Task _workerDev1;
         private readonly Task _workerDev2;
+        private readonly Task _rawPublicationWorker;
+        private readonly Task _uiPublicationWorker;
+        private static readonly Lazy<ClrGcPauseMonitor> SharedGcPauseMonitor =
+            new Lazy<ClrGcPauseMonitor>(() => new ClrGcPauseMonitor(NLogger.Instance), true);
+        private readonly ClrGcPauseMonitor _gcPauseMonitor;
+        private readonly ConcurrentQueue<OwnedDaqRawBatch> _rawPublicationQueue = new();
+        private readonly SemaphoreSlim _rawPublicationSignal = new(0);
+        private readonly SemaphoreSlim _uiPublicationSignal = new(0);
+        private const int RawPublicationCapacity = 256;
+        private int _rawPublicationCount;
+        private int _rawPublicationInFlight;
+        private UiPublication _latestUiDev1;
+        private UiPublication _latestUiDev2;
         private readonly Thread _controlThreadDev1;
         private readonly Thread _controlThreadDev2;
         private DateTime _lastTs = DateTime.Now;
@@ -554,6 +622,14 @@ namespace IO.NI
         private double _aiMax = 10;
         private AITerminalConfiguration _terminalConfiguration = AITerminalConfiguration.Rse;
         private int _disposed;
+
+        private sealed class UiPublication
+        {
+            internal string Device;
+            internal double[,] Values;
+            internal DateTime Current;
+            internal DateTime Last;
+        }
 
         // 配置排序只做一次。原实现每个回调/批次都 Where+OrderBy+ToList，
         // 在 200Hz 批处理下会形成持续 GC 压力。
@@ -913,6 +989,7 @@ namespace IO.NI
                 {
                     Interlocked.Exchange(ref lastProbe, nowTicks);
                     ThreadPool.GetAvailableThreads(out var worker, out var io);
+                    var gcPause = _gcPauseMonitor.Snapshot();
                     EnqueueDiagnostic(new DaqTimingValue
                     {
                         TimestampUtc = record.TimestampUtc,
@@ -924,7 +1001,11 @@ namespace IO.NI
                         Gc2 = GC.CollectionCount(2),
                         ManagedMemoryBytes = GC.GetTotalMemory(false),
                         WorkerThreadsAvailable = worker,
-                        IoThreadsAvailable = io
+                        IoThreadsAvailable = io,
+                        GcEtwStatus = gcPause.Status,
+                        GcPauseDurationMs = gcPause.LastPauseDurationMs,
+                        GcPauseUtc = gcPause.LastPauseUtc,
+                        GcPauseCount = gcPause.PauseCount
                     });
                 }
             }
@@ -943,7 +1024,11 @@ namespace IO.NI
 
         public string[] ExportDiagnostics(string directory, IEnumerable<string> devices, TimeSpan window)
         {
-            Directory.CreateDirectory(directory);
+            return CaptureDiagnostics(devices, window).WriteTo(directory);
+        }
+
+        public DaqDiagnosticsCapture CaptureDiagnostics(IEnumerable<string> devices, TimeSpan window)
+        {
             var deviceSet = new HashSet<string>(
                 devices ?? new[] { "Dev1", "Dev2" },
                 StringComparer.OrdinalIgnoreCase);
@@ -952,31 +1037,7 @@ namespace IO.NI
                 .Where(x => x.TimestampUtc >= cutoff && deviceSet.Contains(x.Device))
                 .OrderBy(x => x.TimestampUtc)
                 .ToArray();
-            var timingPath = Path.Combine(directory, "daq_timing.csv");
-            using (var writer = new StreamWriter(timingPath, false, new UTF8Encoding(true)))
-            {
-                writer.WriteLine("TimestampUtc,Device,Kind,Generation,BatchSize,QueueDepth,CallbackIntervalMs,EndReadMs,RearmMs,QueueAgeMs,ProcessingMs,ConvertMs,FilterMs,PeakMs,DiskBatchBuildMs,DiskDispatchMs,UiNotifyMs,PersistenceWaitMs,RingWriteMs,SqliteMs,Detail,ControlQueueCapacity,SubscriberMaxMs,ProcessedSampleUtc,DriftMs,BatchSequence,ProducerThreadId,ProducerReentryCount,SampleLeadMs,EffectiveSampleRateHz,EstimatedSkewPpm,ClockResidualMs,ClockWindowSeconds,ClockCorrectionPpm,ClockState,QualityFlags");
-                foreach (var x in records.Where(x => !string.Equals(x.Kind, "Runtime", StringComparison.OrdinalIgnoreCase)))
-                    writer.WriteLine(
-                        $"{x.TimestampUtc:O},{Csv(x.Device)},{Csv(x.Kind)},{x.Generation},{x.BatchSize},{x.QueueDepth}," +
-                        $"{x.CallbackIntervalMs:F3},{x.EndReadMs:F3},{x.RearmMs:F3},{x.QueueAgeMs:F3},{x.ProcessingMs:F3}," +
-                        $"{x.ConvertMs:F3},{x.FilterMs:F3},{x.PeakMs:F3},{x.DiskBatchBuildMs:F3},{x.DiskDispatchMs:F3}," +
-                        $"{x.UiNotifyMs:F3},{x.PersistenceWaitMs:F3},{x.RingWriteMs:F3},{x.SqliteMs:F3},{Csv(x.Detail)}," +
-                        $"{x.ControlQueueCapacity},{x.SubscriberMaxMs:F3},{(x.ProcessedSampleUtc == default ? string.Empty : x.ProcessedSampleUtc.ToString("O"))},{x.DriftMs:F3}," +
-                        $"{x.BatchSequence},{x.ProducerThreadId},{x.ProducerReentryCount},{x.SampleLeadMs:F3}," +
-                        $"{x.EffectiveSampleRateHz:F6},{x.EstimatedSkewPpm:F3},{x.ClockResidualMs:F3}," +
-                        $"{x.ClockWindowSeconds:F3},{x.ClockCorrectionPpm:F3},{Csv(x.ClockState)},{Csv(x.QualityFlags)}");
-            }
-            var runtimePath = Path.Combine(directory, "daq_runtime.csv");
-            using (var writer = new StreamWriter(runtimePath, false, new UTF8Encoding(true)))
-            {
-                writer.WriteLine("TimestampUtc,Device,Kind,GC0,GC1,GC2,ManagedMemoryBytes,WorkerThreadsAvailable,IoThreadsAvailable");
-                foreach (var x in records.Where(x => string.Equals(x.Kind, "Runtime", StringComparison.OrdinalIgnoreCase)))
-                    writer.WriteLine(
-                        $"{x.TimestampUtc:O},{Csv(x.Device)},{Csv(x.Kind)},{x.Gc0},{x.Gc1},{x.Gc2}," +
-                        $"{x.ManagedMemoryBytes},{x.WorkerThreadsAvailable},{x.IoThreadsAvailable}");
-            }
-            return new[] { timingPath, runtimePath };
+            return new DaqDiagnosticsCapture { Records = records };
         }
 
         public string ExportFastCurrentEvidence(string directory, int epbChannel, TimeSpan window)
@@ -1130,6 +1191,7 @@ namespace IO.NI
             _samplesPerChannel = samplesPerChannel;
             _medianLens = Math.Max(1, medianLens);
             _log = log ?? NLogger.Instance;
+            _gcPauseMonitor = SharedGcPauseMonitor.Value;
             var evidenceCapacity = Math.Max(
                 64,
                 (int)Math.Ceiling(5.0 * Math.Max(1, sampleRate) / Math.Max(1, samplesPerChannel)) + 2);
@@ -1225,6 +1287,8 @@ namespace IO.NI
                 () => ProcessLoop("Dev1", _queueDev1, _queueSignalDev1), _cts.Token);
             _workerDev2 = Task.Run(
                 () => ProcessLoop("Dev2", _queueDev2, _queueSignalDev2), _cts.Token);
+            _rawPublicationWorker = Task.Run(RawPublicationLoop, _cts.Token);
+            _uiPublicationWorker = Task.Run(UiPublicationLoop, _cts.Token);
             _controlThreadDev1 = CreateControlThread("Dev1", _controlRingDev1, _controlSignalDev1);
             _controlThreadDev2 = CreateControlThread("Dev2", _controlRingDev2, _controlSignalDev2);
             _controlThreadDev1.Start();
@@ -1263,6 +1327,8 @@ namespace IO.NI
             _cts.Cancel();
             TrySignal(_queueSignalDev1);
             TrySignal(_queueSignalDev2);
+            TrySignal(_rawPublicationSignal);
+            TrySignal(_uiPublicationSignal);
             TrySignal(_controlSignalDev1);
             TrySignal(_controlSignalDev2);
             try
@@ -1275,7 +1341,7 @@ namespace IO.NI
 
                 if (isWinFormsUiContext)
                 {
-                    var workers = new[] { _workerDev1, _workerDev2 };
+                    var workers = new[] { _workerDev1, _workerDev2, _rawPublicationWorker, _uiPublicationWorker };
                     if (workers.Any(w => w != null))
                     {
                         Task.Run(() =>
@@ -1286,7 +1352,7 @@ namespace IO.NI
                 }
                 else
                 {
-                    Task.WaitAll(new[] { _workerDev1, _workerDev2 }, 1000);
+                    Task.WaitAll(new[] { _workerDev1, _workerDev2, _rawPublicationWorker, _uiPublicationWorker }, 1000);
                 }
             }
             catch
@@ -1298,6 +1364,8 @@ namespace IO.NI
 
             _queueSignalDev1.Dispose();
             _queueSignalDev2.Dispose();
+            _rawPublicationSignal.Dispose();
+            _uiPublicationSignal.Dispose();
             _controlSignalDev1.Dispose();
             _controlSignalDev2.Dispose();
             _cts.Dispose();
@@ -1371,6 +1439,21 @@ namespace IO.NI
         // 原始电压数据（未标定、未滤波）：订阅者仅在同步回调期间获得只读借用，
         // 不得修改或在回调返回后保留数组引用；随后后台会原地换算该数组。
         public event Action<string /*Dev1|Dev2*/, double[,], DateTime /*current*/, DateTime /*last*/> OnRawBatch;
+
+        /// <summary>池化原始批次所有权转移事件；订阅者负责最终 Dispose。</summary>
+        public event Action<OwnedDaqRawBatch> OwnedRawBatchReady;
+
+        public void ReportRawPersistenceQueueFull(string device, int depth, int capacity)
+        {
+            PublishQueueFullFault(
+                device,
+                GetCurrentGeneration(device),
+                "DaqPersistenceQueueFull",
+                "RawPersistence",
+                depth,
+                capacity,
+                reasonOverride: $"Device={device} 原始数据落盘队列达到上限 {capacity} 批。");
+        }
 
         // 工程值（标定 + 滤波 后的全通道矩阵）：给 UI 或调试可选使用
         public event Action<string /*Dev1|Dev2*/, double[,], DateTime /*current*/, DateTime /*last*/> OnEngBatch;
@@ -1837,6 +1920,7 @@ namespace IO.NI
                 catch (Exception ex)
                 {
                     _log.Error($"重建 {device} 失败：{ex.Message}", "AI", ex);
+                    var nativeError = GetNativeErrorCode(ex);
                     return new DaqRecoveryResult
                     {
                         Device = device,
@@ -1845,7 +1929,12 @@ namespace IO.NI
                         RecoveredGeneration = GetCurrentGeneration(device),
                         RequiredFreshCallbacks = requiredFreshCallbacks,
                         ElapsedMs = (int)clock.ElapsedMilliseconds,
-                        FailureReason = $"DaqTaskRecreateFailed: {ex.Message}"
+                        FailureReason = $"DaqTaskRecreateFailed: {ex.Message}",
+                        FailureKind = IsExplicitDeviceMissing(ex)
+                            ? "DaqDeviceMissing"
+                            : "DaqTaskRecreateFailed",
+                        NativeErrorCode = nativeError,
+                        Classification = FaultClassification.SystemFault
                     };
                 }
 
@@ -1912,7 +2001,9 @@ namespace IO.NI
                     FreshCallbacks = freshCount,
                     RequiredFreshCallbacks = requiredFreshCallbacks,
                     ElapsedMs = (int)clock.ElapsedMilliseconds,
-                    FailureReason = "DaqRecoveryFreshnessTimeout"
+                    FailureReason = "DaqRecoveryFreshnessTimeout",
+                    FailureKind = "DaqRecoveryFreshnessTimeout",
+                    Classification = FaultClassification.SystemFault
                 };
             }
             finally
@@ -2037,6 +2128,28 @@ namespace IO.NI
         {
             StopDevice("Dev1");
             StopDevice("Dev2");
+        }
+
+        /// <summary>停止新采样，并等待已接收批次完成工程处理、持久化投递和 Raw 所有权移交。</summary>
+        public async Task<bool> StopAndDrainAsync(int timeoutMs)
+        {
+            Stop();
+            var dev1Boundary = GetLastProducedSequence("Dev1");
+            var dev2Boundary = GetLastProducedSequence("Dev2");
+            var deadline = Stopwatch.GetTimestamp() +
+                           (long)(Math.Max(1, timeoutMs) / 1000.0 * Stopwatch.Frequency);
+            while (Stopwatch.GetTimestamp() < deadline)
+            {
+                if (Volatile.Read(ref _queueCountDev1) == 0 &&
+                    Volatile.Read(ref _queueCountDev2) == 0 &&
+                    GetLastDiskPublishedSequence("Dev1") >= dev1Boundary &&
+                    GetLastDiskPublishedSequence("Dev2") >= dev2Boundary &&
+                    Volatile.Read(ref _rawPublicationCount) == 0 &&
+                    Volatile.Read(ref _rawPublicationInFlight) == 0)
+                    return true;
+                await Task.Delay(10).ConfigureAwait(false);
+            }
+            return false;
         }
 
         // —— DAQ 回调：只负责 EndRead + 入队 + 立刻发起下一次 BeginRead —— //
@@ -2751,6 +2864,124 @@ namespace IO.NI
                 "AI"));
         }
 
+        private void PublishRawSnapshot(Item item)
+        {
+            if (OwnedRawBatchReady == null && OnRawBatch == null) return;
+            var snapshot = OwnedDaqRawBatch.CopyFrom(item.Device, item.Raw, item.Current, item.Last);
+            var count = Interlocked.Increment(ref _rawPublicationCount);
+            if (count > RawPublicationCapacity)
+            {
+                Interlocked.Decrement(ref _rawPublicationCount);
+                snapshot.Dispose();
+                PublishQueueFullFault(
+                    item.Device,
+                    item.Generation,
+                    "RawPersistenceQueueFull",
+                    "RawPersistence",
+                    count,
+                    RawPublicationCapacity,
+                    reasonOverride: $"Device={item.Device} 原始数据异步发布队列达到上限 {RawPublicationCapacity} 批。");
+                return;
+            }
+            _rawPublicationQueue.Enqueue(snapshot);
+            TrySignal(_rawPublicationSignal);
+        }
+
+        private async Task RawPublicationLoop()
+        {
+            try
+            {
+                while (!_cts.IsCancellationRequested)
+                {
+                    await _rawPublicationSignal.WaitAsync(_cts.Token).ConfigureAwait(false);
+                    while (_rawPublicationQueue.TryDequeue(out var batch))
+                    {
+                        Interlocked.Decrement(ref _rawPublicationCount);
+                        Interlocked.Increment(ref _rawPublicationInFlight);
+                        var transferred = false;
+                        try
+                        {
+                            var ownedHandler = OwnedRawBatchReady;
+                            if (ownedHandler != null)
+                            {
+                                ownedHandler(batch);
+                                transferred = true;
+                            }
+                            var legacy = OnRawBatch;
+                            if (legacy != null)
+                            {
+                                var matrix = new double[batch.ChannelCount, batch.SampleCount];
+                                Buffer.BlockCopy(
+                                    batch.Values,
+                                    0,
+                                    matrix,
+                                    0,
+                                    batch.ChannelCount * batch.SampleCount * sizeof(double));
+                                legacy(batch.Device, matrix, batch.Current, batch.Last);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            _log.Warn($"{batch.Device} 原始批次异步订阅者异常：{ex.Message}", "AI");
+                        }
+                        finally
+                        {
+                            if (!transferred) batch.Dispose();
+                            Interlocked.Decrement(ref _rawPublicationInFlight);
+                        }
+                    }
+                }
+            }
+            catch (OperationCanceledException) { }
+            finally
+            {
+                while (_rawPublicationQueue.TryDequeue(out var batch)) batch.Dispose();
+                Interlocked.Exchange(ref _rawPublicationCount, 0);
+                Interlocked.Exchange(ref _rawPublicationInFlight, 0);
+            }
+        }
+
+        private void PublishLatestUi(string device, double[,] values, DateTime current, DateTime last)
+        {
+            var publication = new UiPublication
+            {
+                Device = device,
+                Values = values,
+                Current = current,
+                Last = last
+            };
+            if (string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase))
+                Interlocked.Exchange(ref _latestUiDev1, publication);
+            else
+                Interlocked.Exchange(ref _latestUiDev2, publication);
+            TrySignal(_uiPublicationSignal);
+        }
+
+        private async Task UiPublicationLoop()
+        {
+            try
+            {
+                while (!_cts.IsCancellationRequested)
+                {
+                    await _uiPublicationSignal.WaitAsync(_cts.Token).ConfigureAwait(false);
+                    var dev1 = Interlocked.Exchange(ref _latestUiDev1, null);
+                    var dev2 = Interlocked.Exchange(ref _latestUiDev2, null);
+                    var handler = OnEngBatch;
+                    if (handler == null) continue;
+                    foreach (var item in new[] { dev1, dev2 })
+                    {
+                        if (item == null) continue;
+                        try { handler(item.Device, item.Values, item.Current, item.Last); }
+                        catch (Exception ex)
+                        {
+                            _log.Warn($"{item.Device} UI批次异步订阅者异常：{ex.Message}", "AI");
+                        }
+                    }
+                }
+            }
+            catch (OperationCanceledException) { }
+        }
+
         private async Task ProcessLoop(
             string workerDevice,
             ConcurrentQueue<Item> queue,
@@ -2768,18 +2999,21 @@ namespace IO.NI
                         DaqQueueAdmission.Release(ref _queueCountDev2);
                     // 重启前积压的批次不再参与快照、峰值或落盘，避免旧代次数据
                     // 在新任务恢复后倒灌成“新数据”。
-                    if (!IsCurrentGeneration(item.Device, item.Generation)) continue;
+                    if (!IsCurrentGeneration(item.Device, item.Generation))
+                    {
+                        if (string.Equals(item.Device, "Dev1", StringComparison.OrdinalIgnoreCase))
+                            Interlocked.Exchange(ref _diskPublishedSequenceDev1, item.Sequence);
+                        else
+                            Interlocked.Exchange(ref _diskPublishedSequenceDev2, item.Sequence);
+                        continue;
+                    }
 
                     var processStartTicks = Stopwatch.GetTimestamp();
                     var queueAgeMs =
                         (processStartTicks - item.EnqueuedMonotonicTicks) * 1000.0 /
                         Stopwatch.Frequency;
 
-                    try { OnRawBatch?.Invoke(item.Device, item.Raw, item.Current, item.Last); }
-                    catch (Exception ex)
-                    {
-                        _log.Warn($"{item.Device} 原始批次订阅者异常（已隔离）：{ex.Message}", "AI");
-                    }
+                    PublishRawSnapshot(item);
                     if (queueAgeMs > 100)
                     {
                         var lastLog = workerDevice == "Dev1"
@@ -3043,22 +3277,15 @@ namespace IO.NI
                         (Stopwatch.GetTimestamp() - diskBuildStartedTicks) * 1000.0 / Stopwatch.Frequency;
 
                     var uiStartedTicks = Stopwatch.GetTimestamp();
-                    var uiHandler = OnEngBatch;
                     var uiGate = string.Equals(item.Device, "Dev1", StringComparison.OrdinalIgnoreCase)
                         ? _uiDispatchGateDev1
                         : _uiDispatchGateDev2;
                     // UI 只需要 20~30 Hz 的最新趋势。仅在真正发布时创建绝对值矩阵，
                     // 避免两台设备每 10 ms 各分配一个二维数组并推动全代 GC。
-                    if (uiHandler != null && uiGate.TryAcquire(uiStartedTicks))
+                    if (OnEngBatch != null && uiGate.TryAcquire(uiStartedTicks))
                     {
                         var uiEng = MakeEngineeringAbsoluteCopy(engFiltered);
-                        try { uiHandler(item.Device, uiEng, item.Current, item.Last); }
-                        catch (Exception ex)
-                        {
-                            _log.Warn(
-                                $"{item.Device} 工程值批次订阅者异常（已隔离）：{ex.Message}",
-                                "AI");
-                        }
+                        PublishLatestUi(item.Device, uiEng, item.Current, item.Last);
                     }
                     var uiNotifyMs = (Stopwatch.GetTimestamp() - uiStartedTicks) * 1000.0 / Stopwatch.Frequency;
 
@@ -3531,7 +3758,8 @@ namespace IO.NI
                 QueueDepth = queueDepth,
                 QueueCapacity = queueCapacity,
                 OldestBatchAgeMs = oldestBatchAgeMs,
-                LastProcessedSampleUtc = processedUtc
+                LastProcessedSampleUtc = processedUtc,
+                Classification = FaultClassification.SoftwareTransient
             };
             // 安全处理器必须先于日志、诊断和快照同步收到故障。
             try { DeviceFaultDetected?.Invoke(fault); } catch { }
@@ -3539,7 +3767,7 @@ namespace IO.NI
             {
                 TimestampUtc = fault.TimestampUtc,
                 Device = device,
-                Kind = "HardFault",
+                Kind = "SoftwareFault",
                 Generation = generation,
                 QueueDepth = queueDepth,
                 QueueAgeMs = oldestBatchAgeMs,
@@ -3752,32 +3980,43 @@ namespace IO.NI
         private void ScheduleDeviceRecovery(string device, long generation, Exception cause)
         {
             if (!IsCurrentGeneration(device, generation)) return;
-            _ = Task.Run(async () =>
+            // 采集层只发布事实；Stop/Start 和恢复终态全部交给 EpbManager 的唯一恢复状态机。
+            PublishQueueFullFault(
+                device,
+                generation,
+                "DaqCallbackException",
+                "Callback",
+                reasonOverride: $"Device={device} DAQ回调异常：{cause?.Message}");
+        }
+
+        private static int? GetNativeErrorCode(Exception exception)
+        {
+            for (var current = exception; current != null; current = current.InnerException)
             {
-                try
+                foreach (var propertyName in new[] { "Error", "ErrorCode", "NativeErrorCode" })
                 {
-                    _log.Warn(
-                        $"{device} DAQ回调异常，正在后台执行设备重建：{cause?.Message}",
-                        "AI");
-                    // 只允许仍为当前 generation 的回调发起恢复。管理器若同时请求恢复，
-                    // _recoveryGates 会把两个动作合并为串行执行。
-                    if (!IsCurrentGeneration(device, generation)) return;
-                    var result = await RecoverDeviceAsync(device, 3000, 3, 100, _cts.Token)
-                        .ConfigureAwait(false);
-                    if (result.Recovered)
-                        _log.Warn($"{device} DAQ任务已自动重建并通过新鲜度验证。", "AI");
-                    else
-                        _log.Error(
-                            $"{device} DAQ任务自动重建失败：{result.FailureReason}",
-                            "AI",
-                            cause);
+                    try
+                    {
+                        var value = current.GetType().GetProperty(propertyName)?.GetValue(current, null);
+                        if (value != null)
+                            return Convert.ToInt32(value, System.Globalization.CultureInfo.InvariantCulture);
+                    }
+                    catch { }
                 }
-                catch (OperationCanceledException) { }
-                catch (Exception ex)
-                {
-                    _log.Error($"{device} DAQ自动恢复任务异常：{ex.Message}", "AI", ex);
-                }
-            });
+            }
+            return null;
+        }
+
+        private static bool IsExplicitDeviceMissing(Exception exception)
+        {
+            var code = GetNativeErrorCode(exception);
+            if (code == -200220 || code == -88705) return true;
+            var message = exception?.ToString() ?? string.Empty;
+            return message.IndexOf("device is not present", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   message.IndexOf("device identifier is invalid", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   message.IndexOf("device was removed", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   message.IndexOf("cannot be found", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   message.IndexOf("找不到设备", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         // —— 后台处理队列，避免在 DAQ 回调里阻塞 —— //

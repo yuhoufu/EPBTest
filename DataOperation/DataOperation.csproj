@@ -28,6 +28,7 @@
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
     <DebugType>pdbonly</DebugType>
     <Optimize>true</Optimize>
+    <PlatformTarget>x86</PlatformTarget>
     <OutputPath>bin\Release\</OutputPath>
     <DefineConstants>TRACE</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
@@ -82,6 +83,7 @@
     <Compile Include="ClsTestConfig.cs" />
     <Compile Include="ClsXmlOperation.cs" />
     <Compile Include="EpbDiskWriter.cs" />
+    <Compile Include="OwnedDaqRawBatch.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>

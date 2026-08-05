@@ -122,7 +122,6 @@ namespace Controller
                 _emergencyPowerGroupLatch.Clear();
                 _daqRecoveryAttemptsByDevice.Clear();
                 _daqClockRecoveryAttempts.Clear();
-                _daqRecoveryTasks.Clear();
                 await EnsureDaqReadyBeforeStartAsync(selected, sessionToken).ConfigureAwait(false);
                 BeginPowerSupplyTelemetryRecording(_activeBatchId);
                 EnsureStrictCurveControl(selected);
@@ -376,6 +375,7 @@ namespace Controller
 
             try
             {
+                Interlocked.Increment(ref _runEpoch);
                 var linked = CancellationTokenSource.CreateLinkedTokenSource(externalToken);
                 var previous = Interlocked.Exchange(ref _batchSessionCts, linked);
                 previous?.Dispose();
@@ -458,18 +458,32 @@ namespace Controller
 
                 var t0 = t0OfGroup[pg];
                 var enabled = list.OrderBy(x => x).ToList();
-                
+
+                // 正式阶段可能恰好在一个周期的 0ms 相位之后、800ms 相位之前启动。
+                // 若按每个通道自己的 phase 计算首延迟，0ms 通道会滚到下一槽，而
+                // 800ms 通道仍进入当前槽，同一液压代次便会永久缺员并在 BarrierTimeout
+                // 后误报硬故障。整组必须从同一个未来零相位开始，电气错峰只在液压
+                // 资格完成后的共享 phaseWindow 内执行。
+                var scheduleCreatedUtc = DateTime.UtcNow;
+                var firstFormalSlot = CalculateFirstFutureFormalSlot(
+                    t0,
+                    scheduleCreatedUtc,
+                    PeriodMs);
+                var firstGroupCallbackUtc = t0.AddMilliseconds(firstFormalSlot * (double)PeriodMs);
+                _log?.Info(
+                    $"正式阶段液压槽已统一：Run={_activeBatchId:N} Hydraulic={pg} " +
+                    $"FirstSlot={firstFormalSlot} CallbackUtc={firstGroupCallbackUtc:O} " +
+                    $"Members=[{string.Join(",", enabled)}]",
+                    "液压协调");
+
                 foreach (var ch in enabled)
                 {
                     var phase = staggerPlan.Get(ch).PhaseMs;
-                    var initialDelay = (int)(t0.AddMilliseconds(phase) - DateTime.UtcNow).TotalMilliseconds;
-
-                    // 若 warmup 偏小导致已过相位，滚动到下一（几）圈的相位
-                    if (initialDelay < 0)
-                    {
-                        var rounds = -initialDelay / PeriodMs + 1;
-                        initialDelay += rounds * PeriodMs;
-                    }
+                    // 所有成员在同一零相位回调，避免因启动时刻落在两个电气相位之间
+                    // 而被拆进相邻液压槽。使用固定 UTC 目标抵消逐通道创建计时器的耗时。
+                    var initialDelay = Math.Max(
+                        1,
+                        (int)Math.Ceiling((firstGroupCallbackUtc - DateTime.UtcNow).TotalMilliseconds));
 
                     var runner = GetRunner(ch);
                     PrepareRunnerForNoHeadAndTailCompensation(ch);
@@ -501,12 +515,9 @@ namespace Controller
                                 stopCts.Token,
                                 cyclePauseCts.Token);
                             var token = linked.Token;
-                            var callbackUtc = DateTime.UtcNow;
-                            var phaseBaseUtc = t0.AddMilliseconds(phase);
-                            var elapsedSincePhaseMs = (callbackUtc - phaseBaseUtc).TotalMilliseconds;
-                            var phaseSlot = elapsedSincePhaseMs <= 0
-                                ? 0L
-                                : (long)Math.Floor(elapsedSincePhaseMs / PeriodMs);
+                            // cycleIndex 是本计时器的逻辑圈序号；所有组员使用共同首槽，
+                            // 因而即使实际回调有毫秒级抖动，也不会在周期边界两侧分槽。
+                            var phaseSlot = firstFormalSlot + cycleIndex - 1L;
 
                             await WaitForDaqRecoveryAsync(ch, token).ConfigureAwait(false);
 
@@ -673,6 +684,24 @@ namespace Controller
                         });
                 }
             }
+        }
+
+        internal static long CalculateFirstFutureFormalSlot(
+            DateTime t0Utc,
+            DateTime nowUtc,
+            int periodMs)
+        {
+            var period = Math.Max(1, periodMs);
+            var elapsedMs = (nowUtc - t0Utc).TotalMilliseconds;
+            if (elapsedMs < 0)
+                return 0;
+
+            // 已到或越过零相位时一律选择下一完整槽；不能让较晚电气相位留在
+            // 当前槽，否则组员会跨槽。浮点边界由最终 UTC 复查兜底。
+            var slot = (long)Math.Floor(elapsedMs / period) + 1L;
+            while (t0Utc.AddMilliseconds(slot * (double)period) <= nowUtc)
+                slot++;
+            return slot;
         }
 
         /// <summary>
@@ -1105,24 +1134,16 @@ namespace Controller
                     $"EPB[{channel}] 学习圈落盘失败：Cycle={cycleNumber} Status={status} " +
                     $"Error={evidence.ValidationError}";
 
-                // 数据证据失败不是电机硬故障，数据库仍保持 learning_failed；
-                // 但它会使本次试验不可追溯，必须锁存并点亮对应通道报警灯。
-                _alarmStopLatch.TryRequestStop(channel);
+                // 数据证据失败是系统/存储故障，不得进入 EPB 硬件报警灯和蜂鸣器链路。
                 CancelActiveLearningPhase();
-                _log?.Error(reason, "报警");
+                try { CommandEpbOffSafetyImmediate(channel); } catch { }
+                _log?.Error(reason, "落盘");
                 FlushPersistentLog();
-                try { ChannelAlarmRaised?.Invoke(channel, reason); } catch { }
-                try
-                {
-                    if (Alarm != null)
-                        await Alarm.SetAlarmAsync(channel, true, reason).ConfigureAwait(false);
-                }
-                catch (Exception alarmEx)
-                {
-                    _log?.Warn(
-                        $"EPB[{channel}] 学习圈落盘失败后报警灯输出失败：{alarmEx.Message}",
-                        "报警");
-                }
+                PublishStandaloneSystemFault(
+                    "LearningPersistenceInvalid",
+                    reason,
+                    new[] { channel },
+                    Guid.NewGuid());
 
                 throw new InvalidOperationException(reason);
             }

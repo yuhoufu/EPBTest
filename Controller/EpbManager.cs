@@ -117,6 +117,13 @@ namespace Controller
 
         /// <summary>结构化控制故障；共享资源故障会携带完整受影响成员。</summary>
         public event Action<ControlFault> ControlFaultRaised;
+        /// <summary>软件恢复失败；由主程序执行安全自重启，不得进入物理报警链路。</summary>
+        public event Action<ControlFault> SystemFaultRaised;
+        /// <summary>
+        /// 在人工停止、关闭程序或硬件故障执行任何取消/断电动作前同步发布。
+        /// 订阅者只能执行短小、可靠的持久化操作（例如撤销无人值守续测授权）。
+        /// </summary>
+        public event Action<StopContext> RunAuthorizationRevoking;
         public event Action<DaqRecoveryResult> DaqRecoveryStateChanged;
         public event Action<DaqPersistenceStateChanged> DaqPersistenceStateChanged;
         public event Action<PressureQualification> PressureQualificationChanged;
@@ -283,8 +290,6 @@ namespace Controller
         private readonly ConcurrentDictionary<int, HydraulicCycleLease> _hydraulicLeaseByChannel = new();
         private long _singleHydraulicGeneration;
         private readonly ConcurrentDictionary<string, int> _daqRecoveryAttemptsByDevice = new();
-        private readonly ConcurrentDictionary<string, Task<DaqRecoveryResult>> _daqRecoveryTasks = new();
-        private readonly object _daqRecoveryGate = new();
         private readonly DaqPersistenceCoordinator _persistence;
         private readonly int _daqPersistenceQueueCapacity;
         private readonly int _daqPersistencePauseDepth;
@@ -297,8 +302,13 @@ namespace Controller
         private readonly int _daqClockRecoveryMaxAttempts;
         private readonly int _daqClockRecoveryWindowMinutes;
         private readonly DaqRecoveryAttemptWindow _daqClockRecoveryAttempts;
+        private readonly IDaqHardwareProbe _daqHardwareProbe;
         private readonly ConcurrentDictionary<string, DaqAutoRecoveryContext> _daqAutoRecovery =
             new(StringComparer.OrdinalIgnoreCase);
+        private readonly ConcurrentDictionary<Guid, DateTime> _daqRecoveryTerminalCorrelations = new();
+        private readonly object _daqRecoveryCommitGate = new();
+        private long _runEpoch;
+        private long _recoveryEpoch;
         private readonly ConcurrentDictionary<long, byte> _daqClockAbortedCycles = new();
         private readonly object _stopSafetyGate = new();
         private Task<StopSafetyResult> _stopSafetyTask;
@@ -314,7 +324,15 @@ namespace Controller
             public string TriggerCode;
             public int RestartDaq;
             public int Completing;
+            public readonly DaqRecoveryTerminalGate Terminal = new DaqRecoveryTerminalGate();
+            public int SnapshotSequence;
             public int RecoveryAttempt;
+            public long RunEpoch;
+            public long RecoveryEpoch;
+            public string TriggerReason;
+            public readonly CancellationTokenSource Cancellation = new CancellationTokenSource();
+            public readonly TaskCompletionSource<DaqRecoveryResult> Completion =
+                new TaskCompletionSource<DaqRecoveryResult>(TaskCreationOptions.RunContinuationsAsynchronously);
             public long PreviousGeneration;
             public long RecoveredGeneration;
             public long FirstVerifiedSequence;
@@ -585,7 +603,8 @@ namespace Controller
             EpbControlMode epbControlMode = EpbControlMode.LegacyFixedTiming,
             bool adaptiveShadowMode = true,
             IPowerSupplyCoordinator powerSupply = null,
-            bool requirePowerSupply = false)
+            bool requirePowerSupply = false,
+            IDaqHardwareProbe daqHardwareProbe = null)
         {
             _do = doController ?? throw new ArgumentNullException(nameof(doController));
             _ao = aoController ?? throw new ArgumentNullException(nameof(aoController));
@@ -612,6 +631,7 @@ namespace Controller
                 powerSupply = new PowerSupplyCoordinator(powerConfig, cfg.Test.Groups, _log);
             }
             _powerSupply = powerSupply;
+            _daqHardwareProbe = daqHardwareProbe ?? new NIDaqHardwareProbe();
             if (_powerSupply != null)
             {
                 _powerSupply.TelemetryUpdated += OnPowerSupplyTelemetryUpdated;
@@ -1248,11 +1268,15 @@ namespace Controller
 
         private void OnRunnerAlarmRaised(int channel, string reason)
         {
-            if (_powerSupply != null &&
-                reason?.IndexOf("AbnormalHighCurrentPlateau", StringComparison.OrdinalIgnoreCase) >= 0)
+            var overCurrent = reason?.IndexOf("OverCurrent", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                              reason?.IndexOf(
+                                  "AbnormalHighCurrentPlateau",
+                                  StringComparison.OrdinalIgnoreCase) >= 0;
+            if (overCurrent)
             {
                 var groupId = GetElectricalGroupId(channel);
-                if (groupId > 0 && _powerSupply.HasFreshPowerFaultEvidence(groupId))
+                if (_powerSupply != null && groupId > 0 &&
+                    _powerSupply.HasFreshPowerFaultEvidence(groupId))
                 {
                     var snapshot = _powerSupply.GetLatestSnapshot(groupId);
                     var affected = _cfg.Test.Groups
@@ -1274,7 +1298,22 @@ namespace Controller
                     });
                     return;
                 }
+
+                PublishStandaloneSystemFault(
+                    "UnconfirmedOverCurrent",
+                    $"DAQ电流单源过流未获得新鲜PSU独立证据；已安全断电但不触发硬件报警。EPB={channel}；{reason}",
+                    new[] { channel },
+                    Guid.NewGuid());
+                return;
             }
+
+            var channelFaultCorrelationId = Guid.NewGuid();
+            NotifyRunAuthorizationRevoking(
+                StopSource.AlarmInterlock,
+                reason,
+                "ChannelHardwareFault",
+                channelFaultCorrelationId,
+                FaultScope.Channel);
 
             // ★同步去重 latch：保证计时器回调能尽快识别“本圈应封为 alarm”，但不在此线程做 IO
             if (!_alarmStopLatch.TryRequestStop(channel))
@@ -1291,7 +1330,7 @@ namespace Controller
                 new[] { channel },
                 null,
                 alarmUtc,
-                Guid.NewGuid());
+                channelFaultCorrelationId);
             _log.Error(
                 $"EPB[{channel}] 硬故障，立即停止该通道并导出报警快照。" +
                 $"CorrelationId={channelFault.CorrelationId:N} 原因={reason}",
@@ -1360,7 +1399,11 @@ namespace Controller
             var device = _acq.GetDeviceForEpbChannel(channel);
             if (string.IsNullOrWhiteSpace(device))
             {
-                OnRunnerAlarmRaised(channel, "DaqRecoveryUnavailable " + reason);
+                PublishStandaloneSystemFault(
+                    "DaqRecoveryUnavailable",
+                    reason,
+                    new[] { channel },
+                    Guid.NewGuid());
                 return;
             }
 
@@ -1390,34 +1433,18 @@ namespace Controller
                 affectedChannels,
                 primaryChannel: channel);
 
-            Task<DaqRecoveryResult> recoveryTask;
-            lock (_daqRecoveryGate)
-            {
-                if (_daqRecoveryTasks.TryGetValue(device, out recoveryTask) && !recoveryTask.IsCompleted)
-                    return; // 同一设备同一次断流只生成一个关联故障和一个恢复任务。
-
-                _daqRecoveryAttemptsByDevice.AddOrUpdate(device, 1, (_, old) => old + 1);
-                if (observation.IsFirst)
-                    LatchDaqGroupHardFault(
-                        observation.Context.PrimaryChannel > 0
-                            ? observation.Context.PrimaryChannel
-                            : channel,
-                        device,
-                        affectedChannels,
-                        observation.Context.PrimaryCode,
-                        observation.Context.PrimaryReason,
-                        observation.Context.CorrelationId,
-                        observation.Context);
-                else if (observation.PrimaryChanged)
-                    _ = Task.Run(() => _log.Warn(
-                        $"DAQ事故补充了更高优先级证据，但不重复报警。Device={device} " +
-                        $"Code={observation.Context.PrimaryCode} CorrelationId={observation.Context.CorrelationId:N}",
-                        "AI"));
-
-                recoveryTask = Task.Run(
-                    () => RecoverDaqDeviceAsync(channel, device, affectedChannels, faultReason));
-                _daqRecoveryTasks[device] = recoveryTask;
-            }
+            if (observation.PrimaryChanged)
+                _log.Warn(
+                    $"DAQ事故补充了更高优先级软件证据。Device={device} " +
+                    $"Code={observation.Context.PrimaryCode} CorrelationId={observation.Context.CorrelationId:N}",
+                    "AI");
+            _ = BeginDaqAutoRecoveryAsync(
+                device,
+                faultCode,
+                faultReason,
+                observation.Context.CorrelationId,
+                restartDaq: true,
+                DateTime.UtcNow);
         }
 
         private void OnDaqDeviceFaultDetected(DaqDeviceFault deviceFault)
@@ -1426,42 +1453,17 @@ namespace Controller
             var affected = GetDaqGroupChannels(deviceFault.Device);
             if (affected.Length == 0)
                 affected = GetAllDaqDeviceChannels(deviceFault.Device);
-            var isBackgroundQueue = string.Equals(
-                deviceFault.Code,
-                "BackgroundQueueFull",
-                StringComparison.OrdinalIgnoreCase);
-            var isClockModel = string.Equals(
-                deviceFault.Code,
-                "DaqClockModelInvalid",
-                StringComparison.OrdinalIgnoreCase);
-            if (isBackgroundQueue || isClockModel)
-            {
-                var attempt = 0;
-                if (isClockModel &&
-                    !_daqClockRecoveryAttempts.TryRegister(
-                        deviceFault.Device,
-                        Stopwatch.GetTimestamp(),
-                        out attempt))
-                {
-                    LatchDaqGroupHardFault(
-                        affected.OrderBy(x => x).FirstOrDefault(),
-                        deviceFault.Device,
-                        affected,
-                        "DaqClockRecoveryLimitExceeded",
-                        $"Device={deviceFault.Device} {_daqClockRecoveryWindowMinutes}分钟内已执行" +
-                        $"{attempt}次DAQ时钟恢复，达到上限{_daqClockRecoveryMaxAttempts}次。" +
-                        "该状态属于DAQ软件/子系统恢复失败，不得归因为卡钳过流。",
-                        Guid.NewGuid());
-                    return;
-                }
-                _ = Task.Run(() => BeginDaqAutoRecoveryAsync(
+            if (!_daqClockRecoveryAttempts.TryRegister(
                     deviceFault.Device,
-                    deviceFault.Code,
-                    deviceFault.Reason,
-                    Guid.NewGuid(),
-                    restartDaq: true,
-                    deviceFault.TimestampUtc,
-                    recoveryAttempt: attempt));
+                    Stopwatch.GetTimestamp(),
+                    out var attempt))
+            {
+                PublishStandaloneSystemFault(
+                    "DaqRecoveryLimitExceeded",
+                    $"Device={deviceFault.Device} {_daqClockRecoveryWindowMinutes}分钟内已发生" +
+                    $"{attempt}次DAQ软件恢复，达到上限{_daqClockRecoveryMaxAttempts}次。",
+                    affected,
+                    Guid.NewGuid());
                 return;
             }
             var observation = ObserveDaqIncident(
@@ -1471,36 +1473,21 @@ namespace Controller
                 deviceFault.TimestampUtc,
                 affected,
                 deviceFault.Generation);
-            if (observation.IsFirst)
-                LatchDaqGroupHardFault(
-                    observation.Context.PrimaryChannel,
-                    deviceFault.Device,
-                    affected,
-                    observation.Context.PrimaryCode,
-                    observation.Context.PrimaryReason,
-                    observation.Context.CorrelationId,
-                    observation.Context,
-                    deviceFault,
-                    safetyAlreadyApplied: true);
-            else if (observation.PrimaryChanged)
-                _ = Task.Run(() => _log.Warn(
-                    $"DAQ事故补充了更高优先级证据，但不重复报警。Device={deviceFault.Device} " +
-                    $"Code={observation.Context.PrimaryCode} CorrelationId={observation.Context.CorrelationId:N}",
-                    "AI"));
+            _ = BeginDaqAutoRecoveryAsync(
+                deviceFault.Device,
+                deviceFault.Code,
+                deviceFault.Reason,
+                observation.Context.CorrelationId,
+                restartDaq: true,
+                deviceFault.TimestampUtc,
+                recoveryAttempt: attempt);
         }
 
         private void OnDaqDeviceFaultSafetyDetected(DaqDeviceFault deviceFault)
         {
             if (deviceFault == null) return;
-            var backgroundQueue = string.Equals(
-                deviceFault.Code,
-                "BackgroundQueueFull",
-                StringComparison.OrdinalIgnoreCase);
-            var clockRecoverable = string.Equals(
-                deviceFault.Code,
-                "DaqClockModelInvalid",
-                StringComparison.OrdinalIgnoreCase);
-            ExecuteDaqDeviceFaultSafetyFirst(deviceFault.Device, backgroundQueue || clockRecoverable);
+            // DAQ数据链故障全部先按可恢复软件故障处理；硬件报警必须等待独立探测证据。
+            ExecuteDaqDeviceFaultSafetyFirst(deviceFault.Device, backgroundQueue: true);
         }
 
         private void OnDaqPersistenceStateChanged(DaqPersistenceStateChanged update)
@@ -1523,12 +1510,29 @@ namespace Controller
             }
             else if (update.State == DaqPersistenceState.Failed)
             {
-                _ = EscalateDaqAutoRecoveryAsync(
+                _ = BeginAndEscalateDaqPersistenceFailureAsync(update);
+            }
+        }
+
+        private async Task BeginAndEscalateDaqPersistenceFailureAsync(
+            DaqPersistenceStateChanged update)
+        {
+            // Failed 可能是首个状态（例如硬容量满）。先复用统一 Cutoff 路径，保证
+            // DO、当前整圈和写盘准入均已安全处理，再提交 SystemFault 终态。
+            await BeginDaqAutoRecoveryAsync(
                     update.Device,
                     update.Code,
                     update.Reason,
-                    update.CorrelationId);
-            }
+                    update.CorrelationId,
+                    restartDaq: false,
+                    update.TimestampUtc)
+                .ConfigureAwait(false);
+            await EscalateDaqAutoRecoveryAsync(
+                    update.Device,
+                    update.Code,
+                    update.Reason,
+                    update.CorrelationId)
+                .ConfigureAwait(false);
         }
 
         private async Task BeginDaqAutoRecoveryAsync(
@@ -1553,24 +1557,29 @@ namespace Controller
                 TriggerCode = string.IsNullOrWhiteSpace(code) ? "DaqPersistenceLag" : code,
                 RestartDaq = restartDaq ? 1 : 0,
                 RecoveryAttempt = recoveryAttempt,
+                RunEpoch = Interlocked.Read(ref _runEpoch),
+                RecoveryEpoch = Interlocked.Increment(ref _recoveryEpoch),
+                TriggerReason = reason ?? string.Empty,
                 BeforeClock = _acq.GetDaqFreshnessSnapshot(device, 100),
                 PreviousGeneration = _acq.GetCurrentGeneration(device)
             };
             if (!_daqAutoRecovery.TryAdd(device, context)) return;
-            var isClockRecovery = string.Equals(
-                context.TriggerCode,
-                "DaqClockModelInvalid",
-                StringComparison.OrdinalIgnoreCase);
-
-            _persistence.SuppressAfter(device, context.CutoffUtc, context.CorrelationId);
-            foreach (var channel in affected)
+            try
             {
-                if (Recorder is IBatchedEpbCycleRecorder batched &&
-                    _currentCycleNumberByChannel.TryGetValue(channel, out var currentCycle))
+                _ = ExportDaqIncidentSnapshotAsync(context, reason, "00-trigger");
+                if (!IsCurrentRecovery(context))
                 {
-                    try { batched.SealCycleWindow(channel, currentCycle, context.CutoffUtc); } catch { }
-                    if (isClockRecovery)
+                    CompleteCancelledRecovery(context, "RunEpochChangedBeforeCutoff");
+                    return;
+                }
+
+                _persistence.SuppressAfter(device, context.CutoffUtc, context.CorrelationId);
+                foreach (var channel in affected)
+                {
+                    if (Recorder is IBatchedEpbCycleRecorder batched &&
+                        _currentCycleNumberByChannel.TryGetValue(channel, out var currentCycle))
                     {
+                        try { batched.SealCycleWindow(channel, currentCycle, context.CutoffUtc); } catch { }
                         try
                         {
                             AbortCycleAfterPersistence(
@@ -1578,115 +1587,135 @@ namespace Controller
                                 channel,
                                 currentCycle,
                                 context.CutoffUtc,
-                                "AbortedByDaqClockRecovery");
+                                "SoftwareRecoveryAborted");
                             MarkDaqClockCycleAborted(channel, currentCycle);
                             _currentCycleNumberByChannel.TryRemove(channel, out _);
                         }
                         catch (Exception ex)
                         {
-                            _log.Warn(
-                                $"EPB[{channel}] DAQ时钟恢复圈封存失败：{ex.Message}",
-                                "落盘");
+                            _log.Warn($"EPB[{channel}] 软件恢复圈封存失败：{ex.Message}", "落盘");
                         }
                     }
-                }
-                if (_timers.TryGetValue(channel, out var timer)) timer.Pause();
-                CancelCyclePauseCts(channel);
-                try
-                {
-                    CommandEpbOffHighPriority(
+                    if (_timers.TryGetValue(channel, out var timer)) timer.Pause();
+                    CancelCyclePauseCts(channel);
+                    try { CommandEpbOffHighPriority(channel, "DaqSoftwareRecovery"); } catch { }
+                    UnmarkHydraulicParticipant(channel);
+                    try { ObserveSafetyTask(HydraulicMarkReleaseAsync(channel), "DaqRecoveryRelease", channel); }
+                    catch { }
+                    PublishChannelRuntimeState(
                         channel,
-                        isClockRecovery ? "DaqClockRecovery" : "DaqPersistencePause");
+                        ChannelRuntimeState.Recovering,
+                        context.TriggerCode,
+                        reason,
+                        affectedChannels: affected,
+                        correlationId: context.CorrelationId);
+                    try { ChannelPaused?.Invoke(channel); } catch { }
                 }
-                catch { }
-                UnmarkHydraulicParticipant(channel);
-                try { ObserveSafetyTask(HydraulicMarkReleaseAsync(channel), "DaqPersistencePauseRelease", channel); }
-                catch { }
-                PublishChannelRuntimeState(
-                    channel,
-                    ChannelRuntimeState.Paused,
-                    context.TriggerCode,
-                    reason,
-                    affectedChannels: affected,
-                    correlationId: context.CorrelationId);
-                try { ChannelPaused?.Invoke(channel); } catch { }
-            }
-            _log.Warn(
-                $"DAQ安全暂停 Device={device} Affected=[{string.Join(",", affected)}] " +
-                $"CorrelationId={context.CorrelationId:N} Code={context.TriggerCode}。",
-                "AI");
-            try
-            {
-                DaqPersistenceStateChanged?.Invoke(new DaqPersistenceStateChanged
-                {
-                    Device = device,
-                    State = DaqPersistenceState.Recovering,
-                    Code = context.TriggerCode,
-                    Reason = "安全暂停已完成，正在等待队列和DAQ新鲜度恢复。",
-                    QueueDepth = _persistence.GetSnapshot(device).QueueDepth,
-                    OldestBatchAgeMs = _persistence.GetSnapshot(device).OldestBatchAgeMs,
-                    Generation = _acq.GetCurrentGeneration(device),
-                    TimestampUtc = DateTime.UtcNow,
-                    CorrelationId = context.CorrelationId
-                });
-            }
-            catch { }
-            _ = ExportDaqIncidentSnapshotAsync(context, reason, "Paused");
 
-            if (restartDaq)
-            {
-                var requiredFreshBatches = isClockRecovery
-                    ? _daqClockRecoveryFreshBatches
-                    : _daqPersistenceRequiredFreshBatches;
-                var result = await _acq.RecoverDeviceAsync(
-                        device,
-                        _daqPersistenceRecoveryTimeoutMs,
-                        requiredFreshBatches,
-                        (int)_daqPersistenceResumeAgeMs,
-                        CancellationToken.None,
-                        forceRecreate: true)
-                    .ConfigureAwait(false);
-                try { DaqRecoveryStateChanged?.Invoke(result); } catch { }
-                context.PreviousGeneration = result.PreviousGeneration;
-                context.RecoveredGeneration = result.RecoveredGeneration;
-                context.FirstVerifiedSequence = result.FirstVerifiedSequence;
-                context.LastVerifiedSequence = result.LastVerifiedSequence;
-                context.AfterClock = _acq.GetDaqFreshnessSnapshot(device, _daqPersistenceResumeAgeMs);
-                if (!result.Recovered)
+                _log.Warn(
+                    $"DAQ软件自恢复开始 Device={device} Affected=[{string.Join(",", affected)}] " +
+                    $"CorrelationId={context.CorrelationId:N} Code={context.TriggerCode}。",
+                    "AI");
+                PublishRecoveryProgress(context, "安全断电已完成，正在恢复数据链。");
+                _ = ExportDaqIncidentSnapshotAsync(context, reason, "10-cutoff");
+
+                // Every recovery mode shares one terminal watchdog.  In particular, a
+                // successful DAQ rebuild can still fail or stall during queue draining,
+                // freshness validation or PSU revalidation; it must never remain Paused
+                // indefinitely.  The terminal CAS makes this harmless when recovery,
+                // StopAll or hardware confirmation wins at the same time.
+                _ = Task.Run(async () =>
                 {
-                    await EscalateDaqAutoRecoveryAsync(
-                            device,
-                            isClockRecovery
-                                ? "DaqClockRecoveryFailed"
-                                : "DaqPersistenceRecoveryTimeout",
-                            result.FailureReason,
-                            context.CorrelationId)
-                        .ConfigureAwait(false);
+                    try
+                    {
+                        await Task.Delay(_daqPersistenceRecoveryTimeoutMs, context.Cancellation.Token)
+                            .ConfigureAwait(false);
+                        await EscalateDaqAutoRecoveryAsync(
+                                device,
+                                "DaqRecoveryTimeout",
+                                $"{_daqPersistenceRecoveryTimeoutMs}ms 内未满足自动恢复条件。",
+                                context.CorrelationId)
+                            .ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) { }
+                });
+
+                if (restartDaq)
+                {
+                    DaqRecoveryResult result;
+                    using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(context.Cancellation.Token))
+                    {
+                        timeout.CancelAfter(_daqPersistenceRecoveryTimeoutMs);
+                        try
+                        {
+                            result = await _acq.RecoverDeviceAsync(
+                                    device,
+                                    _daqPersistenceRecoveryTimeoutMs,
+                                    _daqPersistenceRequiredFreshBatches,
+                                    (int)_daqPersistenceResumeAgeMs,
+                                    timeout.Token,
+                                    forceRecreate: true)
+                                .ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException) when (context.Cancellation.IsCancellationRequested)
+                        {
+                            CompleteCancelledRecovery(context, "RecoveryCancelledByStop");
+                            return;
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            result = new DaqRecoveryResult
+                            {
+                                Device = device,
+                                Recovered = false,
+                                FailureReason = "DaqRecoveryTimeout",
+                                FailureKind = "DaqRecoveryTimeout",
+                                Classification = FaultClassification.SystemFault,
+                                RequiredFreshCallbacks = _daqPersistenceRequiredFreshBatches,
+                                ElapsedMs = _daqPersistenceRecoveryTimeoutMs
+                            };
+                        }
+                    }
+                    if (!IsCurrentRecovery(context))
+                    {
+                        CompleteCancelledRecovery(context, "RunEpochChangedAfterRebuild");
+                        return;
+                    }
+                    context.PreviousGeneration = result.PreviousGeneration;
+                    context.RecoveredGeneration = result.RecoveredGeneration;
+                    context.FirstVerifiedSequence = result.FirstVerifiedSequence;
+                    context.LastVerifiedSequence = result.LastVerifiedSequence;
+                    context.AfterClock = _acq.GetDaqFreshnessSnapshot(device, _daqPersistenceResumeAgeMs);
+                    _ = ExportDaqIncidentSnapshotAsync(context, result.FailureReason, "20-rebuild");
+                    if (!result.Recovered)
+                    {
+                        await EscalateDaqAutoRecoveryAsync(
+                                device,
+                                "DaqRecoveryFailed",
+                                result.FailureReason,
+                                context.CorrelationId,
+                                result)
+                            .ConfigureAwait(false);
+                        return;
+                    }
+                    _persistence.AcceptGeneration(device, _acq.GetCurrentGeneration(device));
+                    await TryCompleteDaqAutoRecoveryAsync(device).ConfigureAwait(false);
                     return;
                 }
-                _persistence.AcceptGeneration(device, _acq.GetCurrentGeneration(device));
             }
-
-            _ = Task.Run(async () =>
+            catch (OperationCanceledException)
             {
-                await Task.Delay(_daqPersistenceRecoveryTimeoutMs).ConfigureAwait(false);
-                if (_daqAutoRecovery.TryGetValue(device, out var active) &&
-                    active.CorrelationId == context.CorrelationId)
-                    await EscalateDaqAutoRecoveryAsync(
-                            device,
-                            string.Equals(
-                                context.TriggerCode,
-                                "DaqClockModelInvalid",
-                                StringComparison.OrdinalIgnoreCase)
-                                ? "DaqClockRecoveryFailed"
-                                : "DaqPersistenceRecoveryTimeout",
-                            $"{_daqPersistenceRecoveryTimeoutMs}ms 内未满足自动恢复条件。",
-                            context.CorrelationId)
-                        .ConfigureAwait(false);
-            });
-
-            if (restartDaq)
-                await TryCompleteDaqAutoRecoveryAsync(device).ConfigureAwait(false);
+                CompleteCancelledRecovery(context, "RecoveryCancelled");
+            }
+            catch (Exception ex)
+            {
+                await EscalateDaqAutoRecoveryAsync(
+                        device,
+                        "DaqRecoveryUnhandledException",
+                        ex.Message,
+                        context.CorrelationId)
+                    .ConfigureAwait(false);
+            }
         }
 
         private async Task TryCompleteDaqAutoRecoveryAsync(string device)
@@ -1695,6 +1724,11 @@ namespace Controller
             if (Interlocked.CompareExchange(ref context.Completing, 1, 0) != 0) return;
             try
             {
+                if (!IsCurrentRecovery(context))
+                {
+                    CompleteCancelledRecovery(context, "RunEpochChangedBeforeValidation");
+                    return;
+                }
                 var queue = _persistence.GetSnapshot(device);
                 if (queue.QueueDepth > _daqPersistenceResumeDepth ||
                     queue.OldestBatchAgeMs > _daqPersistenceResumeAgeMs ||
@@ -1710,43 +1744,74 @@ namespace Controller
                             ? _daqClockRecoveryFreshBatches
                             : _daqPersistenceRequiredFreshBatches,
                         (int)_daqPersistenceResumeAgeMs,
-                        CancellationToken.None)
+                        context.Cancellation.Token)
                     .ConfigureAwait(false);
                 if (ready.Any(x => !x.Recovered)) return;
+                if (!IsCurrentRecovery(context)) return;
                 context.AfterClock = _acq.GetDaqFreshnessSnapshot(device, _daqPersistenceResumeAgeMs);
+                _ = ExportDaqIncidentSnapshotAsync(context, "DAQ与持久化新鲜度验证通过", "30-validate");
                 if (_powerSupply != null)
-                    await _powerSupply.PrepareAndEnableAsync(context.AffectedChannels, CancellationToken.None)
+                    await _powerSupply.RevalidateEnabledAsync(
+                            context.AffectedChannels,
+                            context.Cancellation.Token)
                         .ConfigureAwait(false);
+                if (!IsCurrentRecovery(context)) return;
 
-                _persistence.ResumeAdmission(device);
-                foreach (var channel in context.AffectedChannels)
+                var result = new DaqRecoveryResult
                 {
-                    MarkHydraulicParticipant(channel);
-                    if (_timers.TryGetValue(channel, out var timer)) timer.Resume();
-                    PublishChannelRuntimeState(
-                        channel,
-                        ChannelRuntimeState.Running,
-                        string.Equals(
-                            context.TriggerCode,
-                            "DaqClockModelInvalid",
-                            StringComparison.OrdinalIgnoreCase)
-                            ? "DaqClockRecovered"
-                            : "DaqPersistenceRecovered",
-                        string.Equals(
-                            context.TriggerCode,
-                            "DaqClockModelInvalid",
-                            StringComparison.OrdinalIgnoreCase)
-                            ? "DAQ时钟模型恢复，下一完整圈继续"
-                            : "DAQ持久化恢复，下一完整圈继续",
-                        affectedChannels: context.AffectedChannels,
-                        correlationId: context.CorrelationId);
-                    try { ChannelResumed?.Invoke(channel); } catch { }
+                    Device = device,
+                    Recovered = true,
+                    PreviousGeneration = context.PreviousGeneration,
+                    RecoveredGeneration = _acq.GetCurrentGeneration(device),
+                    FirstVerifiedSequence = context.FirstVerifiedSequence,
+                    LastVerifiedSequence = context.LastVerifiedSequence,
+                    FreshCallbacks = _daqPersistenceRequiredFreshBatches,
+                    RequiredFreshCallbacks = _daqPersistenceRequiredFreshBatches,
+                    ElapsedMs = (int)Math.Max(0, (DateTime.UtcNow - context.StartedUtc).TotalMilliseconds),
+                    Classification = FaultClassification.SoftwareTransient
+                };
+                var recoveryAnchorUtc = CeilToBoundary(
+                    DateTime.UtcNow.AddMilliseconds(AnchorWarmupMs),
+                    PeriodMs);
+                lock (_daqRecoveryCommitGate)
+                {
+                    if (!IsCurrentRecovery(context) ||
+                        !context.Terminal.TryCommit(DaqRecoveryTerminal.Recovered))
+                        return;
+                    MarkDaqRecoveryTerminal(context.CorrelationId);
+                    _persistence.ResumeAdmission(device);
+                    foreach (var channel in context.AffectedChannels)
+                    {
+                        MarkHydraulicParticipant(channel);
+                        if (_timers.TryGetValue(channel, out var timer))
+                        {
+                            var phaseMs = 0;
+                            try { phaseMs = _activeStaggerPlan?.Get(channel)?.PhaseMs ?? 0; }
+                            catch { }
+                            var delayMs = (int)Math.Max(
+                                1,
+                                (recoveryAnchorUtc.AddMilliseconds(phaseMs) - DateTime.UtcNow)
+                                .TotalMilliseconds);
+                            timer.ResumeAtNextBoundary(delayMs);
+                        }
+                        PublishChannelRuntimeState(
+                            channel,
+                            ChannelRuntimeState.Running,
+                            "DaqSoftwareRecovered",
+                            "DAQ软件数据链已恢复，下一完整圈继续",
+                            affectedChannels: context.AffectedChannels,
+                            correlationId: context.CorrelationId);
+                        try { ChannelResumed?.Invoke(channel); } catch { }
+                    }
+                    _daqAutoRecovery.TryRemove(device, out _);
+                    context.Completion.TrySetResult(result);
                 }
-                _daqAutoRecovery.TryRemove(device, out _);
                 _log.Info(
-                    $"DAQ持久化自动恢复完成 Device={device} CorrelationId={context.CorrelationId:N}。",
+                    $"DAQ软件自动恢复完成 Device={device} CorrelationId={context.CorrelationId:N}。",
                     "AI");
-                await ExportDaqIncidentSnapshotAsync(context, "自动恢复成功", "Recovered")
+                try { DaqRecoveryStateChanged?.Invoke(result); } catch { }
+                context.Cancellation.Cancel();
+                await ExportDaqIncidentSnapshotAsync(context, "自动恢复成功", "90-recovered")
                     .ConfigureAwait(false);
             }
             catch (Exception ex)
@@ -1759,16 +1824,20 @@ namespace Controller
             }
         }
 
-        private Task EscalateDaqAutoRecoveryAsync(
+        private async Task EscalateDaqAutoRecoveryAsync(
             string device,
             string code,
             string reason,
-            Guid correlationId)
+            Guid correlationId,
+            DaqRecoveryResult recoveryResult = null)
         {
-            if (!_daqAutoRecovery.TryRemove(device, out var context))
+            if (correlationId != Guid.Empty &&
+                _daqRecoveryTerminalCorrelations.ContainsKey(correlationId))
+                return;
+            if (!_daqAutoRecovery.TryGetValue(device, out var context))
             {
                 var affectedNow = GetDaqGroupChannels(device);
-                if (affectedNow.Length == 0) return Task.CompletedTask;
+                if (affectedNow.Length == 0) return;
                 context = new DaqAutoRecoveryContext
                 {
                     Device = device,
@@ -1776,20 +1845,88 @@ namespace Controller
                     StartedUtc = DateTime.UtcNow,
                     CutoffUtc = DateTime.UtcNow,
                     AffectedChannels = affectedNow,
-                    TriggerCode = code
+                    TriggerCode = code,
+                    TriggerReason = reason,
+                    RunEpoch = Interlocked.Read(ref _runEpoch),
+                    RecoveryEpoch = Interlocked.Increment(ref _recoveryEpoch)
                 };
+                if (!_daqAutoRecovery.TryAdd(device, context))
+                    context = _daqAutoRecovery[device];
             }
-            var primary = context.AffectedChannels.OrderBy(x => x).FirstOrDefault();
-            if (primary > 0)
+            if (context.Terminal.Current != DaqRecoveryTerminal.None) return;
+
+            var evidence = await ConfirmDaqHardwareFailureAsync(context, recoveryResult)
+                .ConfigureAwait(false);
+            if (!IsCurrentRecovery(context))
+            {
+                CompleteCancelledRecovery(context, "RunEpochChangedDuringEscalation");
+                return;
+            }
+            var hardwareConfirmed = evidence.Length >= 2 && evidence.All(x => x.Confirmed);
+            if (hardwareConfirmed)
+            {
+                if (!context.Terminal.TryCommit(DaqRecoveryTerminal.HardwareConfirmed)) return;
+                MarkDaqRecoveryTerminal(context.CorrelationId);
+                _daqAutoRecovery.TryRemove(device, out _);
+                var primary = context.AffectedChannels.OrderBy(x => x).FirstOrDefault();
+                var result = recoveryResult ?? new DaqRecoveryResult { Device = device };
+                result.Classification = FaultClassification.HardwareConfirmed;
+                result.HardwareEvidence = evidence;
+                result.FailureKind = "DaqHardwareConfirmed";
+                context.Completion.TrySetResult(result);
+                try { DaqRecoveryStateChanged?.Invoke(result); } catch { }
                 LatchDaqGroupHardFault(
                     primary,
                     device,
                     context.AffectedChannels,
+                    "DaqHardwareConfirmed",
+                    reason,
+                    context.CorrelationId,
+                    classification: FaultClassification.HardwareConfirmed);
+                await ExportDaqIncidentSnapshotAsync(context, reason, "90-hardware-confirmed")
+                    .ConfigureAwait(false);
+                return;
+            }
+
+            if (!context.Terminal.TryCommit(DaqRecoveryTerminal.SystemFault)) return;
+            MarkDaqRecoveryTerminal(context.CorrelationId);
+            _daqAutoRecovery.TryRemove(device, out _);
+            var systemResult = recoveryResult ?? new DaqRecoveryResult
+            {
+                Device = device,
+                FailureReason = reason,
+                FailureKind = code
+            };
+            systemResult.Classification = FaultClassification.SystemFault;
+            systemResult.HardwareEvidence = evidence;
+            context.Completion.TrySetResult(systemResult);
+            try { DaqRecoveryStateChanged?.Invoke(systemResult); } catch { }
+            var fault = new ControlFault(
+                code,
+                $"Device={device} {reason}",
+                FaultScope.DaqGroup,
+                context.AffectedChannels,
+                null,
+                DateTime.UtcNow,
+                context.CorrelationId,
+                FaultClassification.SystemFault);
+            foreach (var channel in context.AffectedChannels)
+                PublishChannelRuntimeState(
+                    channel,
+                    ChannelRuntimeState.SystemFault,
                     code,
                     reason,
-                    context.CorrelationId);
-            _ = ExportDaqIncidentSnapshotAsync(context, reason, "Failed");
-            return Task.CompletedTask;
+                    affectedChannels: context.AffectedChannels,
+                    correlationId: context.CorrelationId);
+            _log.Error(
+                $"DAQ系统故障（不触发硬件报警） Device={device} Code={code} " +
+                $"CorrelationId={context.CorrelationId:N} Reason={reason}",
+                "AI");
+            try { ControlFaultRaised?.Invoke(fault); } catch { }
+            context.Cancellation.Cancel();
+            await ExportDaqIncidentSnapshotAsync(context, reason, "90-system-fault")
+                .ConfigureAwait(false);
+            try { SystemFaultRaised?.Invoke(fault); } catch { }
         }
 
         private void LatchDaqGroupHardFault(
@@ -1801,7 +1938,8 @@ namespace Controller
             Guid correlationId = default,
             DaqIncidentContext incidentContext = null,
             DaqDeviceFault deviceFault = null,
-            bool safetyAlreadyApplied = false)
+            bool safetyAlreadyApplied = false,
+            FaultClassification classification = FaultClassification.HardwareConfirmed)
         {
             var alarmUtc = DateTime.UtcNow;
             var orderedChannels = (affectedChannels ?? Array.Empty<int>())
@@ -1810,6 +1948,14 @@ namespace Controller
                 .ToArray();
             if (!orderedChannels.Contains(triggeringChannel))
                 triggeringChannel = orderedChannels.FirstOrDefault();
+
+            if (classification == FaultClassification.HardwareConfirmed)
+                NotifyRunAuthorizationRevoking(
+                    StopSource.AlarmInterlock,
+                    $"DAQ硬件故障已确认 Device={device}; {reason}",
+                    nameof(LatchDaqGroupHardFault),
+                    correlationId,
+                    FaultScope.DaqGroup);
 
             // 失效安全顺序：先在当前线程锁存、取消运行并逐通道高优先级断电；
             // 任何日志、UI、数据库封圈、蜂鸣或快照都必须发生在这之后。
@@ -1837,7 +1983,8 @@ namespace Controller
                     orderedChannels,
                     null,
                     alarmUtc,
-                    faultCorrelationId);
+                    faultCorrelationId,
+                    classification);
 
                 var softwareRecoveryExhausted = string.Equals(
                     fault.Code,
@@ -2000,20 +2147,11 @@ namespace Controller
             string reason,
             int[] affectedChannels)
         {
-            var fault = new ControlFault(
+            PublishStandaloneSystemFault(
                 code,
                 $"Device={device} {reason}",
-                FaultScope.DaqGroup,
-                affectedChannels ?? Array.Empty<int>(),
-                null,
-                DateTime.UtcNow,
+                affectedChannels,
                 Guid.NewGuid());
-            _log.Error(
-                $"DAQ组故障 [{code}] Device={device} Affected=[{string.Join(",", fault.AffectedChannels)}] " +
-                $"CorrelationId={fault.CorrelationId:N} Reason={reason}",
-                "AI");
-            try { ControlFaultRaised?.Invoke(fault); } catch { }
-            PublishFaultRuntimeStates(fault, null);
         }
 
         private int[] GetDaqGroupChannels(string device)
@@ -2109,11 +2247,14 @@ namespace Controller
         {
             var device = _acq.GetDeviceForEpbChannel(channel);
             if (string.IsNullOrWhiteSpace(device)) return;
-            if (!_daqRecoveryTasks.TryGetValue(device, out var task)) return;
-            var completed = await Task.WhenAny(task, Task.Delay(3000, token)).ConfigureAwait(false);
-            if (completed != task)
+            if (!_daqAutoRecovery.TryGetValue(device, out var context)) return;
+            var completed = await Task.WhenAny(
+                    context.Completion.Task,
+                    Task.Delay(_daqPersistenceRecoveryTimeoutMs + 1000, token))
+                .ConfigureAwait(false);
+            if (completed != context.Completion.Task)
                 throw new TimeoutException($"DaqRecoveryWaitTimeout Device={device}");
-            var result = await task.ConfigureAwait(false);
+            var result = await context.Completion.Task.ConfigureAwait(false);
             if (!result.Recovered)
                 throw new InvalidOperationException(
                     $"DaqRecoveryFailed Device={device} Reason={result.FailureReason}");
@@ -2160,6 +2301,13 @@ namespace Controller
                     "液压");
                 return;
             }
+            if (fault.Classification == FaultClassification.HardwareConfirmed)
+                NotifyRunAuthorizationRevoking(
+                    StopSource.AlarmInterlock,
+                    fault.Reason,
+                    nameof(OnHydraulicFaultRaised),
+                    fault.CorrelationId,
+                    fault.Scope);
             try { ControlFaultRaised?.Invoke(fault); } catch { }
             PublishFaultRuntimeStates(
                 fault,
@@ -2174,6 +2322,19 @@ namespace Controller
                 _hydraulicLeaseByChannel.TryRemove(channel, out _);
             }
             FlushPersistentLog();
+
+            // Physical channel indicators and the buzzer are a HardwareConfirmed-only
+            // sink.  Keep this guard at the last common hydraulic dispatch point so a
+            // future software/system hydraulic diagnosis cannot accidentally enter the
+            // legacy alarm chain merely by publishing a ControlFault.
+            if (fault.Classification != FaultClassification.HardwareConfirmed)
+            {
+                _log.Error(
+                    $"液压系统故障（不触发EPB硬件报警） [{fault.Code}]：{fault.Reason}",
+                    "液压协调");
+                try { SystemFaultRaised?.Invoke(fault); } catch { }
+                return;
+            }
 
             _ = Task.Run(async () =>
             {
@@ -2223,6 +2384,13 @@ namespace Controller
         private void OnPowerSupplyFaultRaised(PowerSupplyFault fault)
         {
             if (fault == null) return;
+            if (fault.Classification == FaultClassification.HardwareConfirmed)
+                NotifyRunAuthorizationRevoking(
+                    StopSource.AlarmInterlock,
+                    fault.Reason,
+                    nameof(OnPowerSupplyFaultRaised),
+                    Guid.NewGuid(),
+                    FaultScope.ElectricalGroup);
             CancelActiveLearningPhase();
             foreach (var channel in fault.AffectedChannels.Distinct())
             {
@@ -2235,8 +2403,42 @@ namespace Controller
                 fault.AffectedChannels?.Distinct().ToArray() ?? Array.Empty<int>(),
                 fault.ElectricalGroupId,
                 fault.TimestampUtc == default ? DateTime.UtcNow : fault.TimestampUtc,
-                Guid.NewGuid());
+                Guid.NewGuid(),
+                fault.Classification);
             try { ControlFaultRaised?.Invoke(controlFault); } catch { }
+
+            if (fault.Classification != FaultClassification.HardwareConfirmed)
+            {
+                foreach (var channel in controlFault.AffectedChannels)
+                {
+                    try { CommandEpbOffSafetyImmediate(channel); } catch { }
+                    PublishChannelRuntimeState(
+                        channel,
+                        ChannelRuntimeState.SystemFault,
+                        controlFault.Code,
+                        controlFault.Reason,
+                        affectedChannels: controlFault.AffectedChannels,
+                        correlationId: controlFault.CorrelationId);
+                }
+                _log.Error(
+                    $"程控电源系统故障（不触发EPB硬件报警） [{fault.Code}]：{fault.Reason}",
+                    "程控电源");
+                try { SystemFaultRaised?.Invoke(controlFault); } catch { }
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await _powerSupply.DisableGroupAsync(
+                                fault.ElectricalGroupId,
+                                $"SystemFault:{fault.Code}",
+                                CancellationToken.None)
+                            .ConfigureAwait(false);
+                    }
+                    catch { }
+                });
+                return;
+            }
+
             PublishFaultRuntimeStates(
                 controlFault,
                 controlFault.AffectedChannels.Distinct().OrderBy(x => x).Cast<int?>().FirstOrDefault());
@@ -2659,15 +2861,38 @@ namespace Controller
             return _persistence.ShutdownAsync(Math.Max(1, Math.Min(10000, timeoutMs)));
         }
 
+        public void ReleaseHardwareForRestart()
+        {
+            try { _powerSupply?.Dispose(); } catch { }
+            try { _acq?.Dispose(); } catch { }
+            try { _ao?.ResetAll(); } catch { }
+            try { _ao?.Dispose(); } catch { }
+            try { _do?.AllOff(); } catch { }
+            try { _do?.Dispose(); } catch { }
+        }
+
         private async Task<StopSafetyResult> RunStopSafetyAsync(StopContext context, CancellationToken token)
         {
             var startedUtc = DateTime.UtcNow;
             var runId = _activeBatchId;
+            if (context.Source != StopSource.SystemFault)
+                NotifyRunAuthorizationRevoking(
+                    context.Source,
+                    context.Reason,
+                    context.Initiator,
+                    Guid.TryParse(context.CorrelationId, out var requestedCorrelation)
+                        ? requestedCorrelation
+                        : Guid.NewGuid(),
+                    context.FaultScope);
             _log.Info(
                 $"收到停止全部 EPB 请求：{context.ToLogText()}; SafetyActionStartedUtc={startedUtc:O}",
                 "EPB");
 
-            // 1. 冻结新启动并取消学习、Timer 和 Runner。
+            // 1. 先使运行代次失效并取消/等待全部恢复，再冻结新启动。
+            // 任何已越过 await 的旧恢复任务都无法再提交恢复、恢复计时或重新接纳写盘。
+            await CancelAllDaqRecoveriesAsync(
+                    $"StopAll:{context.Source}:{context.CorrelationId}")
+                .ConfigureAwait(false);
             EndBatchSession(cancel: true);
             var stopCorrelation = Guid.TryParse(context.CorrelationId, out var parsedStopCorrelation)
                 ? parsedStopCorrelation
@@ -2755,6 +2980,33 @@ namespace Controller
             EndPowerSupplyTelemetryRecording();
             FlushPersistentLog();
             return result;
+        }
+
+        private void NotifyRunAuthorizationRevoking(
+            StopSource source,
+            string reason,
+            string initiator,
+            Guid correlationId,
+            FaultScope? scope)
+        {
+            try
+            {
+                RunAuthorizationRevoking?.Invoke(new StopContext
+                {
+                    Source = source,
+                    Reason = reason,
+                    Initiator = initiator,
+                    CorrelationId = (correlationId == Guid.Empty ? Guid.NewGuid() : correlationId)
+                        .ToString("N"),
+                    FaultScope = scope,
+                    RequestedUtc = DateTime.UtcNow
+                });
+            }
+            catch (Exception ex)
+            {
+                _log.Error("撤销无人值守续测授权的订阅者执行失败。", "EPB", ex);
+                FlushPersistentLog();
+            }
         }
 
         private async Task<(bool ok, string error)> ConfirmPressureSafeForStopAsync(StopContext context)
@@ -2904,6 +3156,14 @@ namespace Controller
                     reason,
                     DateTime.UtcNow,
                     GetAllDaqDeviceChannels(sourceDevice));
+
+            if (!daqDerived)
+                NotifyRunAuthorizationRevoking(
+                    StopSource.AlarmInterlock,
+                    reason,
+                    nameof(RequestElectricalGroupEmergencyShutdown),
+                    Guid.NewGuid(),
+                    FaultScope.ElectricalGroup);
 
             // 先在当前线程阻止同组任何通道继续执行，并逐路发出高优先级DO关闭；
             // 网络电源关闭及回读随后独立执行，不能阻塞采样回调。

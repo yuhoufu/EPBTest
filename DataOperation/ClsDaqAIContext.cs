@@ -16,11 +16,26 @@ public readonly struct DaqAIData
         Data = data;
         RecvTime = recvTime;
         LastRecvTime = lastRecvTime;
+        Owned = null;
+    }
+
+    public DaqAIData(OwnedDaqRawBatch owned)
+    {
+        Owned = owned ?? throw new ArgumentNullException(nameof(owned));
+        Data = null;
+        RecvTime = owned.Current;
+        LastRecvTime = owned.Last;
     }
 
     public double[,] Data { get; }
     public DateTime RecvTime { get; }
     public DateTime LastRecvTime { get; }
+    public OwnedDaqRawBatch Owned { get; }
+    public int ChannelCount => Owned?.ChannelCount ?? Data?.GetLength(0) ?? 0;
+    public int SampleCount => Owned?.SampleCount ?? Data?.GetLength(1) ?? 0;
+    public double GetValue(int channel, int sample) =>
+        Owned != null ? Owned[channel, sample] : Data[channel, sample];
+    public void DisposeOwned() => Owned?.Dispose();
 }
 
 public class DaqAIContext
@@ -35,6 +50,14 @@ public class DaqAIContext
     private readonly SemaphoreSlim rawFileLock = new(1);
     private readonly int SamplesPerChannel;
     private readonly SemaphoreSlim statFileLock = new(1);
+    private readonly object statAggregateLock = new();
+    private double[] statMinimum = Array.Empty<double>();
+    private double[] statMaximum = Array.Empty<double>();
+    private double[][] statMedianBlocks = Array.Empty<double[]>();
+    private int[] statMedianCounts = Array.Empty<int>();
+    private int statMedianWindow;
+    private DateTime statFirstUtc;
+    private bool statHasData;
     private readonly string StorePath;
     private readonly double StoreTimeMinutes;
 
@@ -46,7 +69,7 @@ public class DaqAIContext
 
     public SortedDictionary<string, int> eMBToDaqCurrentChannel = new();
     private int FileCounter;
-    public int medianLens;
+    public int medianLens = 10;
     public ConcurrentDictionary<string, double> paraNameToOffset = new();
     public ConcurrentDictionary<string, double> paraNameToScale = new();
     public ConcurrentDictionary<string, double> paraNameToZeroValue = new();
@@ -59,7 +82,7 @@ public class DaqAIContext
     {
         DaqCardName = cardName;
 
-        MaxLens = maxLens;
+        MaxLens = Math.Max(256, maxLens);
         StoreTimeMinutes = storeTimeMinutes;
         DaqSpanMillSec1 = daqSpanMillSec;
         SamplesPerChannel = samplesPerChannel;
@@ -84,6 +107,8 @@ public class DaqAIContext
         for (var i = 0; i < Lens; i++) DaqStatData.TryDequeue(out var daqStatData);
     }
 
+    public event Action<string, int, int> QueueFull;
+
     private string GenerateRawFileName()
     {
         FileCounter++;
@@ -99,13 +124,24 @@ public class DaqAIContext
 
     public void EnqueueStatData(double[,] data, DateTime recvTime)
     {
-        var daqData = new DaqAIData(data, recvTime);
-
-        DaqStatData.Enqueue(daqData);
-        if (DaqStatData.Count > MaxLens)
+        if (data == null) return;
+        var mappings = eMBToDaqCurrentChannel.ToArray();
+        lock (statAggregateLock)
         {
-            DaqAIData removedData;
-            DaqStatData.TryDequeue(out removedData);
+            EnsureStatCapacity(mappings.Length, recvTime.ToUniversalTime());
+            for (var mappingIndex = 0; mappingIndex < mappings.Length; mappingIndex++)
+            {
+                var name = mappings[mappingIndex].Key;
+                var sourceChannel = mappings[mappingIndex].Value;
+                if (sourceChannel < 0 || sourceChannel >= data.GetLength(0)) continue;
+                paraNameToZeroValue.TryGetValue(name, out var zero);
+                var scale = paraNameToScale.TryGetValue(name, out var configuredScale) ? configuredScale : 1.0;
+                paraNameToOffset.TryGetValue(name, out var offset);
+                for (var sample = 0; sample < data.GetLength(1); sample++)
+                    UpdateStreamingStat(
+                        mappingIndex,
+                        (data[sourceChannel, sample] - zero) * scale + offset);
+            }
         }
     }
 
@@ -117,9 +153,79 @@ public class DaqAIContext
         DaqRawData.Enqueue(daqData);
         if (DaqRawData.Count > MaxLens)
         {
-            DaqAIData removedData;
-            DaqRawData.TryDequeue(out removedData);
+            if (DaqRawData.TryDequeue(out var removedData)) removedData.DisposeOwned();
+            QueueFull?.Invoke(DaqCardName, DaqRawData.Count, MaxLens);
         }
+    }
+
+    public void EnqueueRawData(OwnedDaqRawBatch batch)
+    {
+        if (batch == null) return;
+        AccumulateStat(batch);
+        DaqRawData.Enqueue(new DaqAIData(batch));
+        if (DaqRawData.Count > MaxLens)
+        {
+            if (DaqRawData.TryDequeue(out var removed)) removed.DisposeOwned();
+            QueueFull?.Invoke(DaqCardName, DaqRawData.Count, MaxLens);
+        }
+    }
+
+    private void AccumulateStat(OwnedDaqRawBatch batch)
+    {
+        var mappings = eMBToDaqCurrentChannel.ToArray();
+        if (mappings.Length == 0) return;
+        lock (statAggregateLock)
+        {
+            EnsureStatCapacity(mappings.Length, batch.Current.ToUniversalTime());
+            for (var mappingIndex = 0; mappingIndex < mappings.Length; mappingIndex++)
+            {
+                var name = mappings[mappingIndex].Key;
+                var sourceChannel = mappings[mappingIndex].Value;
+                if (sourceChannel < 0 || sourceChannel >= batch.ChannelCount) continue;
+                paraNameToZeroValue.TryGetValue(name, out var zero);
+                var scale = paraNameToScale.TryGetValue(name, out var configuredScale) ? configuredScale : 1.0;
+                paraNameToOffset.TryGetValue(name, out var offset);
+                for (var sample = 0; sample < batch.SampleCount; sample++)
+                {
+                    var value = (batch[sourceChannel, sample] - zero) * scale + offset;
+                    UpdateStreamingStat(mappingIndex, value);
+                }
+            }
+        }
+    }
+
+    private void EnsureStatCapacity(int count, DateTime firstUtc)
+    {
+        var window = Math.Max(1, medianLens);
+        if (statMinimum.Length == count && statMedianWindow == window) return;
+        statMinimum = Enumerable.Repeat(double.PositiveInfinity, count).ToArray();
+        statMaximum = Enumerable.Repeat(double.NegativeInfinity, count).ToArray();
+        statMedianBlocks = Enumerable.Range(0, count)
+            .Select(_ => new double[window])
+            .ToArray();
+        statMedianCounts = new int[count];
+        statMedianWindow = window;
+        statFirstUtc = firstUtc;
+        statHasData = false;
+    }
+
+    private void UpdateStreamingStat(int index, double value)
+    {
+        var block = statMedianBlocks[index];
+        var count = statMedianCounts[index];
+        block[count++] = value;
+        if (count < statMedianWindow)
+        {
+            statMedianCounts[index] = count;
+            return;
+        }
+
+        Array.Sort(block, 0, statMedianWindow);
+        var median = block[statMedianWindow / 2];
+        statMedianCounts[index] = 0;
+        if (median < statMinimum[index]) statMinimum[index] = median;
+        if (median > statMaximum[index]) statMaximum[index] = median;
+        statHasData = true;
     }
 
     /// <summary>
@@ -227,7 +333,8 @@ public class DaqAIContext
             // 跳过首次写盘（保持你原有策略）
             if (SaveRawCounter <= 1)
             {
-                for (var i = 0; i < Lens; i++) DaqRawData.TryDequeue(out _);
+                for (var i = 0; i < Lens; i++)
+                    if (DaqRawData.TryDequeue(out var skipped)) skipped.DisposeOwned();
                 return;
             }
 
@@ -235,34 +342,34 @@ public class DaqAIContext
             for (var i = 0; i < Lens; i++)
             {
                 if (!DaqRawData.TryDequeue(out var daqData)) continue;
-
-                var recvSamples = daqData.Data.GetLength(1);
-                if (recvSamples <= 0) continue;
-
-                // —— 用 Ticks 做线性插值，更精确 —— //
-                var lastTicks = daqData.LastRecvTime.Ticks;
-                var spanTicks = (daqData.RecvTime - daqData.LastRecvTime).Ticks;
-
-                // 正常：按 last→current 等分；异常（<=0）：按配置的采样周期兜底（避免隐含 1kHz 假设）
-                var stepTicks = spanTicks > 0
-                    ? spanTicks / (double)recvSamples
-                    : TimeSpan.FromMilliseconds(DaqSpanMillSec1).Ticks;
-
-                for (var j = 0; j < recvSamples; j++)
+                try
                 {
-                    // ★ 关键：用 (j + 1) 确保首样本时间 > last（避免跨批重复）
-                    var tsTicks = lastTicks + (long)Math.Round(stepTicks * (j + 1));
-                    var daqTime = new DateTime(tsTicks, DateTimeKind.Local);
+                    var recvSamples = daqData.SampleCount;
+                    if (recvSamples <= 0) continue;
 
-                    // 保持既有 little-endian 文件布局，同时移除每样本两个
-                    // BitConverter.GetBytes 临时数组和行缓冲复制。
-                    WriteInt32LittleEndian(buffer, ref offset, SaveRawCounter - 1);
-                    WriteInt64LittleEndian(buffer, ref offset, daqTime.ToFileTime());
-                    for (var k = 0; k < Channels; k++)
-                        WriteInt64LittleEndian(
-                            buffer,
-                            ref offset,
-                            BitConverter.DoubleToInt64Bits(daqData.Data[k, j]));
+                    // —— 用 Ticks 做线性插值，更精确 —— //
+                    var lastTicks = daqData.LastRecvTime.Ticks;
+                    var spanTicks = (daqData.RecvTime - daqData.LastRecvTime).Ticks;
+                    var stepTicks = spanTicks > 0
+                        ? spanTicks / (double)recvSamples
+                        : TimeSpan.FromMilliseconds(DaqSpanMillSec1).Ticks;
+
+                    for (var j = 0; j < recvSamples; j++)
+                    {
+                        var tsTicks = lastTicks + (long)Math.Round(stepTicks * (j + 1));
+                        var daqTime = new DateTime(tsTicks, DateTimeKind.Local);
+                        WriteInt32LittleEndian(buffer, ref offset, SaveRawCounter - 1);
+                        WriteInt64LittleEndian(buffer, ref offset, daqTime.ToFileTime());
+                        for (var k = 0; k < Channels; k++)
+                            WriteInt64LittleEndian(
+                                buffer,
+                                ref offset,
+                                BitConverter.DoubleToInt64Bits(daqData.GetValue(k, j)));
+                    }
+                }
+                finally
+                {
+                    daqData.DisposeOwned();
                 }
             }
 
@@ -297,89 +404,37 @@ public class DaqAIContext
     public async Task FlushStatToDiskAsync()
     {
         await statFileLock.WaitAsync();
-        var Lens = DaqStatData.Count;
         FileStream fs = null;
-
-
         try
         {
-            if (Lens < 1) return; //finally 还是要先执行，然后才真正的return
-
-
+            double[] minimum;
+            double[] maximum;
+            DateTime firstUtc;
+            lock (statAggregateLock)
+            {
+                if (!statHasData) return;
+                minimum = (double[])statMinimum.Clone();
+                maximum = (double[])statMaximum.Clone();
+                firstUtc = statFirstUtc;
+                statMinimum = Enumerable.Repeat(double.PositiveInfinity, minimum.Length).ToArray();
+                statMaximum = Enumerable.Repeat(double.NegativeInfinity, maximum.Length).ToArray();
+                statFirstUtc = DateTime.UtcNow;
+                statHasData = false;
+            }
             SaveStatCounter++;
-
-            if (SaveStatCounter <= 1)
-            {
-                for (var i = 0; i < Lens; i++) DaqStatData.TryDequeue(out var daqData);
-                return;
-            }
-
-            var StatData = new double[Channels][];
-            var index = new int[Channels];
-            var RecvTime = new DateTime[Lens];
-
-            var totalCount = DaqStatData.Take(Lens).Sum(arr => arr.Data.GetLength(1));
-            for (var i = 0; i < Channels; i++)
-            {
-                StatData[i] = new double[totalCount];
-                index[i] = 0;
-            }
-
-            for (var i = 0; i < Lens; i++)
-                if (DaqStatData.TryDequeue(out var daqData))
-                {
-                    RecvTime[i] = daqData.RecvTime;
-                    var j = -1;
-                    foreach (var channel in eMBToDaqCurrentChannel)
-                    {
-                        j++;
-                        var ChannelNo = channel.Value;
-                        var ChannelData = new double[SamplesPerChannel];
-                        Buffer.BlockCopy(daqData.Data, ChannelNo * 8 * SamplesPerChannel, ChannelData, 0,
-                            8 * SamplesPerChannel);
-                        Array.Copy(ChannelData, 0, StatData[j], index[j], ChannelData.Length);
-                        index[j] += ChannelData.Length;
-                    }
-                }
-
-
-            var buffer = new byte[108];
+            var buffer = new byte[12 + maximum.Length * 16];
             var offset = 0;
-
-            var CounterBytes = BitConverter.GetBytes(SaveStatCounter - 1);
-            Buffer.BlockCopy(CounterBytes, 0, buffer, offset, 4);
+            Buffer.BlockCopy(BitConverter.GetBytes(SaveStatCounter), 0, buffer, offset, 4);
             offset += 4;
-
-            var timeBytes = BitConverter.GetBytes(RecvTime[0].ToFileTime()); //取第一个时间作为最值出现的时间
-            Buffer.BlockCopy(timeBytes, 0, buffer, offset, 8);
+            Buffer.BlockCopy(BitConverter.GetBytes(firstUtc.ToLocalTime().ToFileTime()), 0, buffer, offset, 8);
             offset += 8;
-
-            foreach (var channel in eMBToDaqCurrentChannel)
+            for (var i = 0; i < maximum.Length; i++)
             {
-                var ChannelNo = channel.Value;
-                var EmbName = channel.Key;
-
-
-                var result = new double[totalCount];
-                for (var i = 0; i < totalCount; i++)
-                    result[i] = (StatData[ChannelNo][i] - paraNameToZeroValue[EmbName]) * paraNameToScale[EmbName] +
-                                paraNameToOffset[EmbName];
-
-                var filterCurrent = ClsDataFilter.MakeMedianFilterReducePoint(ref result, medianLens);
-
-                var max = filterCurrent.Max();
-                var min = filterCurrent.Min();
-
-                var maxBytes = BitConverter.GetBytes(max);
-                Buffer.BlockCopy(maxBytes, 0, buffer, offset, 8);
+                Buffer.BlockCopy(BitConverter.GetBytes(maximum[i]), 0, buffer, offset, 8);
                 offset += 8;
-
-                var minBytes = BitConverter.GetBytes(min);
-                Buffer.BlockCopy(minBytes, 0, buffer, offset, 8);
+                Buffer.BlockCopy(BitConverter.GetBytes(minimum[i]), 0, buffer, offset, 8);
                 offset += 8;
             }
-
-            // Step 4: 异步批量写入
             fs = new FileStream(currentStatFileName,
                 FileMode.Append,
                 FileAccess.Write,
