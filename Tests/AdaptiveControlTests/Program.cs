@@ -93,6 +93,10 @@ namespace AdaptiveControlTests
                 Run("版本1模型无损升级到版本3", VersionOneProfileMigrates);
                 Run("损坏模型回退", CorruptProfileFallback);
                 Run("周期超限不追赶且圈号连续", TimerDoesNotCatchUp);
+                Run("优雅暂停等待当前圈结束且阻止下一圈", TimerGracefulPauseWaitsForCurrentCycle);
+                Run("计划等待窗口内暂停不误启动下一圈", TimerPauseDuringPlannedDelayBlocksNextCycle);
+                Run("五分钟内直续且超时转资格复核", PauseResumeFiveMinutePolicy);
+                Run("共享资源报警禁止单通道恢复", ChannelAlarmResumePolicy);
                 Run("新运行复位报警停机锁存", AlarmStopLatchResetsForNewRun);
                 Run("报警状态要求CSV和BIN同时存在", AlarmRequiresCsvAndBinFiles);
                 Run("错峰部分通道重新编号", StaggerPartialSelection);
@@ -1809,6 +1813,98 @@ namespace AdaptiveControlTests
             Assert(starts.Count == 3, "超限后丢失了应完成的圈数");
             Assert(starts[1] - starts[0] >= 280, "超限后发生追赶式连续上电");
             Assert(starts[2] > starts[1], "后续圈没有按未来边界执行");
+        }
+
+        private static void TimerGracefulPauseWaitsForCurrentCycle()
+        {
+            var entered = new ManualResetEventSlim(false);
+            var release = new ManualResetEventSlim(false);
+            var cycles = 0;
+            var timer = new HighPrecisionTimer(50, OverrunPolicy.AlignToWallClock);
+            var run = timer.StartAsync(
+                null,
+                0,
+                async (cycle, token) =>
+                {
+                    Interlocked.Increment(ref cycles);
+                    entered.Set();
+                    if (cycle == 1)
+                    {
+                        while (!release.IsSet)
+                            await Task.Delay(5, token);
+                    }
+                    return true;
+                });
+
+            Assert(entered.Wait(1000), "首圈未进入");
+            var pause = timer.PauseAfterCurrentCycleAsync();
+            Assert(!pause.Wait(30), "当前圈未结束时暂停被提前确认");
+            release.Set();
+            Assert(pause.Wait(1000), "当前圈结束后未进入暂停");
+            var pausedCycles = Volatile.Read(ref cycles);
+            Thread.Sleep(180);
+            Assert(pausedCycles == 1 && Volatile.Read(ref cycles) == 1,
+                "优雅暂停后仍启动了新圈");
+            Assert(timer.PauseAfterCurrentCycleAsync().Wait(100),
+                "重复暂停已经暂停的定时器发生阻塞");
+
+            timer.ResumeAtUtcBoundary(DateTime.UtcNow.AddMilliseconds(50));
+            Assert(SpinWait.SpinUntil(() => Volatile.Read(ref cycles) >= 2, 1000),
+                "恢复后没有从未来锚点进入下一圈");
+            timer.Stop();
+            Assert(run.Wait(1000), "定时器停止超时");
+        }
+
+        private static void TimerPauseDuringPlannedDelayBlocksNextCycle()
+        {
+            var firstCompleted = new ManualResetEventSlim(false);
+            var cycles = 0;
+            var timer = new HighPrecisionTimer(250, OverrunPolicy.AlignToWallClock);
+            var run = timer.StartAsync(
+                null,
+                0,
+                (cycle, token) =>
+                {
+                    Interlocked.Increment(ref cycles);
+                    if (cycle == 1) firstCompleted.Set();
+                    return Task.FromResult(true);
+                });
+
+            Assert(firstCompleted.Wait(1000), "首圈未完成");
+            Thread.Sleep(20);
+            var pause = timer.PauseAfterCurrentCycleAsync();
+            Assert(pause.Wait(500), "等待下一计划时刻期间未立即封住下一圈");
+            Thread.Sleep(320);
+            Assert(Volatile.Read(ref cycles) == 1, "暂停竞态导致下一圈误启动");
+            timer.Stop();
+            Assert(run.Wait(1000), "定时器停止超时");
+        }
+
+        private static void PauseResumeFiveMinutePolicy()
+        {
+            var paused = new DateTime(2026, 8, 5, 1, 2, 3, DateTimeKind.Utc);
+            Assert(EpbManager.CanResumeWithoutQualification(paused, paused.AddMinutes(5)),
+                "恰好5分钟被错误要求资格复核");
+            Assert(!EpbManager.CanResumeWithoutQualification(paused, paused.AddMinutes(5).AddTicks(1)),
+                "超过5分钟仍被允许直接续跑");
+            Assert(!EpbManager.CanResumeWithoutQualification(paused, paused.AddSeconds(-1)),
+                "倒退时钟被错误允许直接续跑");
+        }
+
+        private static void ChannelAlarmResumePolicy()
+        {
+            Assert(EpbManager.IsChannelAlarmCodeRecoverable("OpenCircuit"),
+                "单通道开路修复后未允许资格复核");
+            Assert(EpbManager.IsChannelAlarmCodeRecoverable("ForwardProgressDeadline"),
+                "单通道动作超时修复后未允许资格复核");
+            Assert(!EpbManager.IsChannelAlarmCodeRecoverable("DaqSampleStale"),
+                "DAQ故障被错误允许单通道恢复");
+            Assert(!EpbManager.IsChannelAlarmCodeRecoverable("HydraulicBuildTimeout"),
+                "液压组故障被错误允许单通道恢复");
+            Assert(!EpbManager.IsChannelAlarmCodeRecoverable("OffCurrentNotCleared"),
+                "断电未清零故障被错误允许单通道恢复");
+            Assert(!EpbManager.IsChannelAlarmCodeRecoverable("SharedPowerLimiting"),
+                "共享电源故障被错误允许单通道恢复");
         }
 
         private static void AlarmStopLatchResetsForNewRun()

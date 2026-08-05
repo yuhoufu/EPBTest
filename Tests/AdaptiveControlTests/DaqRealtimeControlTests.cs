@@ -24,6 +24,11 @@ namespace AdaptiveControlTests
             Run("控制环顺序容量代次与设备隔离", RingOrderCapacityResetAndIsolation, ref passed);
             Run("控制环并发发布可见性", RingConcurrentVisibility, ref passed);
             Run("20到500ms控制延迟策略", LatencyPolicyFaultInjection, ref passed);
+            Run("恢复轮询跨多批仍按连续序号累计", RecoveryVerifierAcceptsBurstProgress, ref passed);
+            Run("恢复连续性故障后重新建立干净窗口", RecoveryVerifierResetsOnRealDiscontinuity, ref passed);
+            Run("控制积压先追最新而回调故障才重建", DaqFastResyncRecreatePolicy, ref passed);
+            Run("软件恢复失败持续自维护且仅硬件证据报警", DaqSelfMaintenancePolicy, ref passed);
+            Run("恢复阶段只在终态导出完整重证据", IncidentSnapshotHeavyEvidencePolicy, ref passed);
             Run("UI发布限频不影响首批和周期后批次", UiDispatchGateUsesMonotonicRateLimit, ref passed);
             Run("DAQ陈旧根因区分回调与控制消费", DaqStaleRootClassification, ref passed);
             Run("DAQ批次和兼容队列包装不再持续分配", DaqBatchObjectsAreReusableValueBacked, ref passed);
@@ -155,6 +160,95 @@ namespace AdaptiveControlTests
         private static ControlLatencyAction Policy(double ageMs, bool active)
         {
             return ControlLatencyPolicy.Evaluate(ageMs, active, 50, 100);
+        }
+
+        private static void RecoveryVerifierAcceptsBurstProgress()
+        {
+            var verifier = new DaqRecoveryFreshnessVerifier(6, 10);
+            verifier.Seed(Freshness(6, 100, 1000, 0));
+            Assert(!verifier.Observe(Freshness(6, 103, 1010, 0)),
+                "首个+3突发被过早判定完成");
+            Assert(verifier.FreshCallbacks == 3 && verifier.FirstVerifiedSequence == 101,
+                $"+3突发没有按真实连续批数累计，Count={verifier.FreshCallbacks}");
+            Assert(verifier.Observe(Freshness(6, 110, 1020, 0)),
+                "轮询跨过连续+7批后未满足10批恢复条件");
+            Assert(verifier.FreshCallbacks == 10 && verifier.LastVerifiedSequence == 110,
+                "恢复序号范围记录错误");
+        }
+
+        private static void RecoveryVerifierResetsOnRealDiscontinuity()
+        {
+            var verifier = new DaqRecoveryFreshnessVerifier(6, 3);
+            verifier.Seed(Freshness(6, 200, 2000, 0));
+            Assert(!verifier.Observe(Freshness(6, 202, 2010, 1)),
+                "真实连续性故障被误判为恢复完成");
+            Assert(verifier.FreshCallbacks == 0 && verifier.FirstVerifiedSequence == 0,
+                "连续性故障后恢复窗口未清零");
+            Assert(verifier.Observe(Freshness(6, 205, 2020, 1)),
+                "故障后新的3个连续批次未重新建立恢复窗口");
+
+            var stale = Freshness(6, 206, 2030, 1);
+            stale.IsFresh = false;
+            Assert(!verifier.Observe(stale) && verifier.FreshCallbacks == 0,
+                "陈旧样本没有清除恢复证据");
+        }
+
+        private static DaqFreshnessSnapshot Freshness(
+            long generation,
+            long sequence,
+            long arrivalTicks,
+            long discontinuities)
+        {
+            return new DaqFreshnessSnapshot
+            {
+                Device = "Dev2",
+                Generation = generation,
+                LastProcessedSequence = sequence,
+                LastArrivalMonotonicTicks = arrivalTicks,
+                ControlDiscontinuityCount = discontinuities,
+                LastControlDiscontinuitySequence = discontinuities > 0 ? sequence : 0,
+                IsFresh = true
+            };
+        }
+
+        private static void DaqFastResyncRecreatePolicy()
+        {
+            Assert(!EpbManager.RequiresDaqTaskRecreate("ControlLatencyExceeded"),
+                "控制积压仍被强制Stop/Start，未先丢旧追新");
+            Assert(!EpbManager.RequiresDaqTaskRecreate("ControlQueueFull"),
+                "控制队列积压未走快速重同步");
+            Assert(EpbManager.RequiresDaqTaskRecreate("DaqCallbackStale"),
+                "真实回调中断未要求DAQ任务重建");
+            Assert(EpbManager.RequiresDaqTaskRecreate("DaqClockModelInvalid"),
+                "时钟模型失效未要求DAQ任务重建");
+        }
+
+        private static void DaqSelfMaintenancePolicy()
+        {
+            Assert(DaqRecoveryFailurePolicy.Evaluate(0, false) ==
+                   DaqRecoveryFailureDisposition.ContinueSelfMaintenance,
+                "普通软件恢复失败被升级成报警停机");
+            Assert(DaqRecoveryFailurePolicy.Evaluate(1, true) ==
+                   DaqRecoveryFailureDisposition.ContinueSelfMaintenance,
+                "单份硬件证据被错误锁存报警");
+            Assert(DaqRecoveryFailurePolicy.Evaluate(2, true) ==
+                   DaqRecoveryFailureDisposition.ConfirmedHardwareAlarm,
+                "两份独立硬件失效证据未触发硬件报警");
+            Assert(EpbManager.GetDaqSelfMaintenanceDelayMs(1) == 1000 &&
+                   EpbManager.GetDaqSelfMaintenanceDelayMs(2) == 2000 &&
+                   EpbManager.GetDaqSelfMaintenanceDelayMs(3) == 5000 &&
+                   EpbManager.GetDaqSelfMaintenanceDelayMs(4) == 10000 &&
+                   EpbManager.GetDaqSelfMaintenanceDelayMs(20) == 30000,
+                "自维护退避不是1/2/5/10/30秒有界序列");
+        }
+
+        private static void IncidentSnapshotHeavyEvidencePolicy()
+        {
+            Assert(!EpbManager.ShouldIncludeFullDaqIncidentEvidence("00-trigger") &&
+                   !EpbManager.ShouldIncludeFullDaqIncidentEvidence("40-self-maintenance") &&
+                   EpbManager.ShouldIncludeFullDaqIncidentEvidence("90-recovered") &&
+                   EpbManager.ShouldIncludeFullDaqIncidentEvidence("90-hardware-confirmed"),
+                "恢复关键窗口仍会重复导出完整诊断和最近圈证据");
         }
 
         private static void IncidentCorrelationAndPriority()
