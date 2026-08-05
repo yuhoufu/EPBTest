@@ -176,8 +176,13 @@ namespace DataOperation
             private readonly int _halfWidth;
             private readonly MedianSelectPointsMode _mode;
 
-            // 每通道保存“历史尾巴”最多 halfWidth 个样本，用于与下一批拼接
-            private readonly List<double>[] _tails;
+            // 所有工作区在构造时分配；ProcessInPlace 运行期间不创建托管对象。
+            private readonly double[][] _tails;
+            private readonly int[] _tailCounts;
+            private readonly double[] _window;
+            private readonly double[] _rowScratch;
+            private readonly double[] _nextTail;
+            private readonly int _maximumSamplesPerBatch;
 
             /// <summary>
             /// 构造一个流式中值平滑器（因果）。
@@ -192,20 +197,27 @@ namespace DataOperation
             /// 若使用 <see cref="MedianSelectPointsMode.MaximumNumber"/>，在边界处尽量扩到右侧（等价因果）。
             /// </param>
             public MedianStreamCausal(int channels, int halfWidth,
-                MedianSelectPointsMode mode = MedianSelectPointsMode.OnlyPrevious)
+                MedianSelectPointsMode mode = MedianSelectPointsMode.OnlyPrevious,
+                int maximumSamplesPerBatch = 4096)
             {
                 if (channels <= 0) throw new ArgumentOutOfRangeException(nameof(channels));
                 if (halfWidth < 0) throw new ArgumentOutOfRangeException(nameof(halfWidth));
+                if (maximumSamplesPerBatch <= 0)
+                    throw new ArgumentOutOfRangeException(nameof(maximumSamplesPerBatch));
                 if (mode == MedianSelectPointsMode.SymmetricDistribution)
                     throw new ArgumentException("对称模式需要使用 MedianStreamSymmetric。", nameof(mode));
 
                 _channels = channels;
                 _halfWidth = halfWidth;
                 _mode = mode;
-
-                _tails = new List<double>[channels];
+                _maximumSamplesPerBatch = maximumSamplesPerBatch;
+                _tails = new double[channels][];
+                _tailCounts = new int[channels];
                 for (int c = 0; c < channels; c++)
-                    _tails[c] = new List<double>(halfWidth);
+                    _tails[c] = new double[halfWidth];
+                _window = new double[Math.Max(1, halfWidth + 1)];
+                _rowScratch = new double[maximumSamplesPerBatch];
+                _nextTail = new double[Math.Max(1, halfWidth)];
             }
 
             /// <summary>
@@ -217,20 +229,30 @@ namespace DataOperation
             public double[,] Process(double[,] batch)
             {
                 if (batch == null) throw new ArgumentNullException(nameof(batch));
+                var dst = (double[,])batch.Clone();
+                ProcessInPlace(dst);
+                return dst;
+            }
+
+            /// <summary>
+            /// 原地处理一批数据。构造时已分配全部工作区，稳态调用不产生托管分配。
+            /// </summary>
+            public void ProcessInPlace(double[,] batch)
+            {
+                if (batch == null) throw new ArgumentNullException(nameof(batch));
                 int ch = batch.GetLength(0);
                 int n = batch.GetLength(1);
                 if (ch != _channels)
                     throw new ArgumentException("channels 与构造时不一致。", nameof(batch));
-
-                var dst = new double[ch, n];
-
-                // 临时窗口缓存，长度上限：halfWidth + 当前点（因果）
-                var window = new double[Math.Max(1, _halfWidth + 1)];
+                if (n > _maximumSamplesPerBatch)
+                    throw new ArgumentException("samples 超过构造时声明的单批上限。", nameof(batch));
 
                 for (int c = 0; c < ch; c++)
                 {
                     var tail = _tails[c];
-                    int tailLen = tail.Count;
+                    int tailLen = _tailCounts[c];
+                    for (int i = 0; i < n; i++)
+                        _rowScratch[i] = batch[c, i];
 
                     // —— 将 tail 与 batch 的该通道拼接视作一个连续流 —— //
                     // 我们不创建完整拼接数组，按需拷贝窗口到 window，然后排序取中位数。
@@ -256,41 +278,48 @@ namespace DataOperation
                         {
                             int copyFromTail = Math.Min(tailLen - start, len);
                             for (int k = 0; k < copyFromTail; k++)
-                                window[copied++] = tail[start + k];
+                                _window[copied++] = tail[start + k];
                         }
                         // 2) 再从本批拷贝剩余段
                         int startInBatch = Math.Max(0, start - tailLen);
                         int endInBatch = end - tailLen;
                         for (int t = startInBatch; t <= endInBatch; t++)
-                            window[copied++] = batch[c, t];
+                            _window[copied++] = _rowScratch[t];
 
                         // 求中位
-                        Array.Sort(window, 0, len);
-                        dst[c, i] = window[(len - 1) / 2];
+                        Array.Sort(_window, 0, len);
+                        batch[c, i] = _window[(len - 1) / 2];
                     }
 
                     // —— 更新尾部：保留“连续流”最后 halfWidth 个样本作为下一批的历史 —— //
                     // 即：从 (tailLen + n - halfWidth) 开始的 halfWidth 个样本。
-                    var newTail = new List<double>(_halfWidth);
                     int streamLen = tailLen + n;
                     int tailStart = Math.Max(0, streamLen - _halfWidth);
+                    int nextCount = 0;
 
                     // 先从旧 tail 中取
                     for (int s = tailStart; s < Math.Min(streamLen, tailLen); s++)
-                        newTail.Add(tail[s]);
+                        _nextTail[nextCount++] = tail[s];
 
                     // 再从当前批中取
                     int startFromBatch = Math.Max(0, tailStart - tailLen);
                     for (int s = startFromBatch; s < n; s++)
-                        newTail.Add(batch[c, s]);
+                        _nextTail[nextCount++] = _rowScratch[s];
 
-                    if (newTail.Count > _halfWidth)
-                        newTail.RemoveRange(0, newTail.Count - _halfWidth);
-
-                    _tails[c] = newTail;
+                    if (nextCount > _halfWidth)
+                    {
+                        int skip = nextCount - _halfWidth;
+                        for (int s = 0; s < _halfWidth; s++)
+                            tail[s] = _nextTail[skip + s];
+                        nextCount = _halfWidth;
+                    }
+                    else
+                    {
+                        for (int s = 0; s < nextCount; s++)
+                            tail[s] = _nextTail[s];
+                    }
+                    _tailCounts[c] = nextCount;
                 }
-
-                return dst;
             }
 
             /// <summary>
@@ -299,7 +328,7 @@ namespace DataOperation
             public void Reset()
             {
                 for (int c = 0; c < _channels; c++)
-                    _tails[c].Clear();
+                    _tailCounts[c] = 0;
             }
         }
 
