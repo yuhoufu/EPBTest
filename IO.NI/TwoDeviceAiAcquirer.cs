@@ -111,6 +111,8 @@ namespace IO.NI
         public long Generation { get; set; }
         public long LastProducedSequence { get; set; }
         public long LastProcessedSequence { get; set; }
+        public long ControlDiscontinuityCount { get; set; }
+        public long LastControlDiscontinuitySequence { get; set; }
         public ClockState ClockState { get; set; }
         public double EffectiveSampleRateHz { get; set; }
         public double EstimatedSkewPpm { get; set; }
@@ -718,6 +720,8 @@ namespace IO.NI
             public int LastFs;
             public long LastBatchSequence;
             public long LastProcessedSequence;
+            public long ControlDiscontinuityCount;
+            public long LastControlDiscontinuitySequence;
             public long LastGeneration;
             public long ProducerReentryCount;
             public long LastSampleLeadMsBits;
@@ -1500,6 +1504,53 @@ namespace IO.NI
             Interlocked.Exchange(ref _controlActivityProvider, provider ?? (_ => true));
         }
 
+        /// <summary>
+        /// After the owning DAQ group has been de-energized, discard stale control history and
+        /// retain only the newest batch. This is never permitted while any mapped channel is
+        /// energized because skipped batches may contain safety evidence.
+        /// </summary>
+        public int ResynchronizeInactiveControlToLatest(string device)
+        {
+            if (!string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(device, "Dev2", StringComparison.OrdinalIgnoreCase))
+                throw new ArgumentOutOfRangeException(nameof(device));
+            if (IsDeviceControlActive(device))
+                throw new InvalidOperationException(
+                    $"Device={device} 仍有通道带电，禁止丢弃控制批次。");
+
+            var isDev1 = string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase);
+            var ring = isDev1 ? _controlRingDev1 : _controlRingDev2;
+            var discarded = ring.DiscardAllButLatest();
+            if (isDev1)
+            {
+                Interlocked.Increment(ref _controlFilterResetEpochDev1);
+                Interlocked.Exchange(ref _queueFaultGenerationDev1, -1);
+                Interlocked.Exchange(ref _controlFullFaultGenerationDev1, -1);
+                Interlocked.Exchange(ref _controlLatencyFaultGenerationDev1, -1);
+                Interlocked.Exchange(ref _controlInvariantFaultGenerationDev1, -1);
+            }
+            else
+            {
+                Interlocked.Increment(ref _controlFilterResetEpochDev2);
+                Interlocked.Exchange(ref _queueFaultGenerationDev2, -1);
+                Interlocked.Exchange(ref _controlFullFaultGenerationDev2, -1);
+                Interlocked.Exchange(ref _controlLatencyFaultGenerationDev2, -1);
+                Interlocked.Exchange(ref _controlInvariantFaultGenerationDev2, -1);
+            }
+            TrySignal(isDev1 ? _controlSignalDev1 : _controlSignalDev2);
+            AppendDiagnostic(new DaqTimingValue
+            {
+                TimestampUtc = DateTime.UtcNow,
+                Device = device,
+                Kind = "InactiveFastResync",
+                Generation = GetCurrentGeneration(device),
+                QueueDepth = ring.Depth,
+                ControlQueueCapacity = ring.Capacity,
+                Detail = $"Discarded={discarded}; RetainedLatest={ring.Depth > 0}"
+            });
+            return discarded;
+        }
+
         /// <summary>显式开始新运行时清除控制积压和本代次故障锁存。</summary>
         public void ResetControlSafetyLatch(string device)
         {
@@ -1772,6 +1823,9 @@ namespace IO.NI
                 Generation = Interlocked.Read(ref diag.LastGeneration),
                 LastProducedSequence = Interlocked.Read(ref diag.LastBatchSequence),
                 LastProcessedSequence = Interlocked.Read(ref diag.LastProcessedSequence),
+                ControlDiscontinuityCount = Interlocked.Read(ref diag.ControlDiscontinuityCount),
+                LastControlDiscontinuitySequence = Interlocked.Read(
+                    ref diag.LastControlDiscontinuitySequence),
                 ClockState = (ClockState)Volatile.Read(ref diag.ClockState),
                 EffectiveSampleRateHz = BitConverter.Int64BitsToDouble(
                     Interlocked.Read(ref diag.EffectiveSampleRateHzBits)),
@@ -1851,50 +1905,34 @@ namespace IO.NI
                 // 可能已有另一条恢复请求刚刚完成。进入串行门后若设备已恢复新鲜，
                 // 直接复用其结果，避免紧接着再次 Stop/Start。
                 var current = GetDaqFreshnessSnapshot(device, maxAgeMs);
-                if (!forceRecreate && current.IsFresh)
+                if (!forceRecreate)
                 {
-                    var stableCount = 0;
-                    var stableTick = current.LastArrivalMonotonicTicks;
-                    var stableGeneration = current.Generation;
-                    var lastSequence = current.LastProcessedSequence;
-                    var firstSequence = 0L;
+                    var stableGeneration = GetCurrentGeneration(device);
+                    var verifier = new DaqRecoveryFreshnessVerifier(
+                        stableGeneration,
+                        requiredFreshCallbacks);
+                    if (current.IsFresh && current.Generation == stableGeneration)
+                        verifier.Seed(current);
                     while (clock.ElapsedMilliseconds <= Math.Min(500, Math.Max(50, timeoutMs)))
                     {
                         token.ThrowIfCancellationRequested();
                         var next = GetDaqFreshnessSnapshot(device, maxAgeMs);
-                        if (next.IsFresh &&
-                            next.Generation == stableGeneration &&
-                            next.LastArrivalMonotonicTicks > stableTick &&
-                            next.LastProcessedSequence == lastSequence + 1)
+                        if (verifier.Observe(next))
                         {
-                            stableTick = next.LastArrivalMonotonicTicks;
-                            lastSequence = next.LastProcessedSequence;
-                            if (firstSequence == 0) firstSequence = lastSequence;
-                            stableCount++;
-                            if (stableCount >= Math.Max(1, requiredFreshCallbacks))
-                                return new DaqRecoveryResult
-                                {
-                                    Device = device,
-                                    Recovered = true,
-                                    PreviousGeneration = previousGeneration,
-                                    RecoveredGeneration = stableGeneration,
-                                    FirstVerifiedSequence = firstSequence,
-                                    LastVerifiedSequence = lastSequence,
-                                    FreshCallbacks = stableCount,
-                                    RequiredFreshCallbacks = requiredFreshCallbacks,
-                                    ElapsedMs = (int)clock.ElapsedMilliseconds
-                                };
+                            return new DaqRecoveryResult
+                            {
+                                Device = device,
+                                Recovered = true,
+                                PreviousGeneration = previousGeneration,
+                                RecoveredGeneration = stableGeneration,
+                                FirstVerifiedSequence = verifier.FirstVerifiedSequence,
+                                LastVerifiedSequence = verifier.LastVerifiedSequence,
+                                FreshCallbacks = verifier.FreshCallbacks,
+                                RequiredFreshCallbacks = requiredFreshCallbacks,
+                                ElapsedMs = (int)clock.ElapsedMilliseconds
+                            };
                         }
-                        else if (next.Generation != stableGeneration ||
-                                 (next.LastArrivalMonotonicTicks > stableTick &&
-                                  next.LastProcessedSequence != lastSequence + 1))
-                        {
-                            stableGeneration = next.Generation;
-                            stableTick = next.LastArrivalMonotonicTicks;
-                            lastSequence = next.LastProcessedSequence;
-                            firstSequence = 0;
-                            stableCount = 0;
-                        }
+                        if (next.Generation != stableGeneration) break;
                         await Task.Delay(5, token).ConfigureAwait(false);
                     }
                 }
@@ -1940,55 +1978,28 @@ namespace IO.NI
                     };
                 }
 
-                var freshCount = 0;
-                long lastTick = 0;
                 var recoveredGeneration = GetCurrentGeneration(device);
-                long lastSequenceAfterRecovery = 0;
-                long firstVerifiedSequence = 0;
+                var recoveryVerifier = new DaqRecoveryFreshnessVerifier(
+                    recoveredGeneration,
+                    requiredFreshCallbacks);
                 while (clock.ElapsedMilliseconds <= Math.Max(1, timeoutMs))
                 {
                     token.ThrowIfCancellationRequested();
                     var snapshot = GetDaqFreshnessSnapshot(device, maxAgeMs);
-                    if (snapshot.IsFresh &&
-                        snapshot.Generation == recoveredGeneration &&
-                        snapshot.LastArrivalMonotonicTicks > lastTick &&
-                        (lastSequenceAfterRecovery == 0 ||
-                         snapshot.LastProcessedSequence == lastSequenceAfterRecovery + 1))
+                    if (recoveryVerifier.Observe(snapshot))
                     {
-                        lastTick = snapshot.LastArrivalMonotonicTicks;
-                        lastSequenceAfterRecovery = snapshot.LastProcessedSequence;
-                        if (firstVerifiedSequence == 0)
-                            firstVerifiedSequence = lastSequenceAfterRecovery;
-                        freshCount++;
-                        if (freshCount >= Math.Max(1, requiredFreshCallbacks))
-                            return new DaqRecoveryResult
-                            {
-                                Device = device,
-                                Recovered = true,
-                                PreviousGeneration = previousGeneration,
-                                RecoveredGeneration = recoveredGeneration,
-                                FirstVerifiedSequence = firstVerifiedSequence,
-                                LastVerifiedSequence = lastSequenceAfterRecovery,
-                                FreshCallbacks = freshCount,
-                                RequiredFreshCallbacks = requiredFreshCallbacks,
-                                ElapsedMs = (int)clock.ElapsedMilliseconds
-                            };
-                    }
-                    else if (!snapshot.IsFresh)
-                    {
-                        freshCount = 0;
-                        lastTick = 0;
-                        lastSequenceAfterRecovery = 0;
-                        firstVerifiedSequence = 0;
-                    }
-                    else if (snapshot.Generation != recoveredGeneration ||
-                             (lastTick != 0 && snapshot.LastArrivalMonotonicTicks > lastTick &&
-                              snapshot.LastProcessedSequence != lastSequenceAfterRecovery + 1))
-                    {
-                        freshCount = 0;
-                        lastTick = snapshot.LastArrivalMonotonicTicks;
-                        lastSequenceAfterRecovery = snapshot.LastProcessedSequence;
-                        firstVerifiedSequence = 0;
+                        return new DaqRecoveryResult
+                        {
+                            Device = device,
+                            Recovered = true,
+                            PreviousGeneration = previousGeneration,
+                            RecoveredGeneration = recoveredGeneration,
+                            FirstVerifiedSequence = recoveryVerifier.FirstVerifiedSequence,
+                            LastVerifiedSequence = recoveryVerifier.LastVerifiedSequence,
+                            FreshCallbacks = recoveryVerifier.FreshCallbacks,
+                            RequiredFreshCallbacks = requiredFreshCallbacks,
+                            ElapsedMs = (int)clock.ElapsedMilliseconds
+                        };
                     }
                     await Task.Delay(5, token).ConfigureAwait(false);
                 }
@@ -1998,9 +2009,9 @@ namespace IO.NI
                     Recovered = false,
                     PreviousGeneration = previousGeneration,
                     RecoveredGeneration = recoveredGeneration,
-                    FirstVerifiedSequence = firstVerifiedSequence,
-                    LastVerifiedSequence = lastSequenceAfterRecovery,
-                    FreshCallbacks = freshCount,
+                    FirstVerifiedSequence = recoveryVerifier.FirstVerifiedSequence,
+                    LastVerifiedSequence = recoveryVerifier.LastVerifiedSequence,
+                    FreshCallbacks = recoveryVerifier.FreshCallbacks,
                     RequiredFreshCallbacks = requiredFreshCallbacks,
                     ElapsedMs = (int)clock.ElapsedMilliseconds,
                     FailureReason = "DaqRecoveryFreshnessTimeout",
@@ -2046,39 +2057,20 @@ namespace IO.NI
                 if (snapshot.IsFresh)
                 {
                     var verifyClock = Stopwatch.StartNew();
-                    var freshCount = 0;
-                    var lastTick = snapshot.LastArrivalMonotonicTicks;
                     var generation = snapshot.Generation;
-                    var lastSequence = snapshot.LastProcessedSequence;
-                    var firstSequence = 0L;
+                    var verifier = new DaqRecoveryFreshnessVerifier(
+                        generation,
+                        requiredFreshCallbacks);
+                    verifier.Seed(snapshot);
                     while (verifyClock.ElapsedMilliseconds <= Math.Min(500, Math.Max(50, timeoutMs)))
                     {
                         token.ThrowIfCancellationRequested();
                         var next = GetDaqFreshnessSnapshot(device, maxAgeMs);
-                        if (next.IsFresh &&
-                            next.Generation == generation &&
-                            next.LastArrivalMonotonicTicks > lastTick &&
-                            next.LastProcessedSequence == lastSequence + 1)
-                        {
-                            lastTick = next.LastArrivalMonotonicTicks;
-                            lastSequence = next.LastProcessedSequence;
-                            if (firstSequence == 0) firstSequence = lastSequence;
-                            freshCount++;
-                            if (freshCount >= Math.Max(1, requiredFreshCallbacks)) break;
-                        }
-                        else if (next.Generation != generation ||
-                                 (next.LastArrivalMonotonicTicks > lastTick &&
-                                  next.LastProcessedSequence != lastSequence + 1))
-                        {
-                            generation = next.Generation;
-                            lastTick = next.LastArrivalMonotonicTicks;
-                            lastSequence = next.LastProcessedSequence;
-                            firstSequence = 0;
-                            freshCount = 0;
-                        }
+                        if (verifier.Observe(next)) break;
+                        if (next.Generation != generation) break;
                         await Task.Delay(5, token).ConfigureAwait(false);
                     }
-                    if (freshCount >= Math.Max(1, requiredFreshCallbacks))
+                    if (verifier.IsSatisfied)
                     {
                         results.Add(new DaqRecoveryResult
                         {
@@ -2086,9 +2078,9 @@ namespace IO.NI
                             Recovered = true,
                             PreviousGeneration = generation,
                             RecoveredGeneration = generation,
-                            FirstVerifiedSequence = firstSequence,
-                            LastVerifiedSequence = lastSequence,
-                            FreshCallbacks = freshCount,
+                            FirstVerifiedSequence = verifier.FirstVerifiedSequence,
+                            LastVerifiedSequence = verifier.LastVerifiedSequence,
+                            FreshCallbacks = verifier.FreshCallbacks,
                             RequiredFreshCallbacks = requiredFreshCallbacks,
                             ElapsedMs = (int)verifyClock.ElapsedMilliseconds
                         });
@@ -2583,6 +2575,13 @@ namespace IO.NI
                             fastFilter.Reset();
                         else if (identity != ControlBatchIdentityResult.Accepted)
                         {
+                            if (_callbackTimingDiag.TryGetValue(workerDevice, out var continuityDiag))
+                            {
+                                Interlocked.Exchange(
+                                    ref continuityDiag.LastControlDiscontinuitySequence,
+                                    metadata.SourceSequence);
+                                Interlocked.Increment(ref continuityDiag.ControlDiscontinuityCount);
+                            }
                             var active = IsDeviceControlActive(workerDevice);
                             if (identity == ControlBatchIdentityResult.Gap && !active)
                             {
@@ -3842,6 +3841,8 @@ namespace IO.NI
             Interlocked.Exchange(ref diag.LastArrivalDelayMsBits, 0);
             Interlocked.Exchange(ref diag.LastBatchSequence, 0);
             Interlocked.Exchange(ref diag.LastProcessedSequence, 0);
+            Interlocked.Exchange(ref diag.ControlDiscontinuityCount, 0);
+            Interlocked.Exchange(ref diag.LastControlDiscontinuitySequence, 0);
             Interlocked.Exchange(ref diag.LastGeneration, 0);
             Interlocked.Exchange(ref diag.ProducerReentryCount, 0);
             Interlocked.Exchange(ref diag.LastSampleLeadMsBits, 0);

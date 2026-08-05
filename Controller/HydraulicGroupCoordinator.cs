@@ -58,7 +58,8 @@ namespace Controller
         Learning,
         Formal,
         SingleChannel,
-        Recovery
+        Recovery,
+        Qualification
     }
 
     public sealed class HydraulicGenerationKey : IEquatable<HydraulicGenerationKey>

@@ -122,17 +122,26 @@ namespace Controller
             return evidence.ToArray();
         }
 
-        private void PublishStandaloneSystemFault(
+        /// <summary>
+        /// Isolates a software/configuration fault to the channels whose safe control can no
+        /// longer be guaranteed. Unlike an application-wide system fault, this deliberately
+        /// does not publish SystemFaultRaised, so healthy independent groups keep running and
+        /// the unattended coordinator does not execute StopAll/restart.
+        /// </summary>
+        private void PublishIsolatedSoftwareFault(
             string code,
             string reason,
             int[] affectedChannels,
             Guid correlationId)
         {
-            var channels = (affectedChannels ?? Array.Empty<int>()).Distinct().OrderBy(x => x).ToArray();
+            var channels = (affectedChannels ?? Array.Empty<int>())
+                .Distinct()
+                .OrderBy(x => x)
+                .ToArray();
             var fault = new ControlFault(
                 code,
                 reason,
-                FaultScope.DaqGroup,
+                channels.Length == 1 ? FaultScope.Channel : FaultScope.DaqGroup,
                 channels,
                 null,
                 DateTime.UtcNow,
@@ -149,9 +158,10 @@ namespace Controller
                     affectedChannels: channels,
                     correlationId: fault.CorrelationId);
             }
-            _log.Error($"系统故障（不触发硬件报警） [{code}]：{reason}", "AI");
+            _log.Error(
+                $"隔离软件故障（健康设备继续运行，不触发硬件报警/全局重启） [{code}]：{reason}",
+                "AI");
             try { ControlFaultRaised?.Invoke(fault); } catch { }
-            try { SystemFaultRaised?.Invoke(fault); } catch { }
         }
     }
 }

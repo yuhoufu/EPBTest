@@ -50,7 +50,6 @@ namespace Controller
                     "报警");
                 FlushPersistentLog();
                 try { ControlFaultRaised?.Invoke(fault); } catch { }
-                try { SystemFaultRaised?.Invoke(fault); } catch { }
                 try { ExportStartupPositioningSnapshot(result, fault); }
                 catch (Exception ex)
                 {

@@ -2,6 +2,24 @@ using System.Threading;
 
 namespace Controller
 {
+    internal enum DaqRecoveryFailureDisposition
+    {
+        ContinueSelfMaintenance = 0,
+        ConfirmedHardwareAlarm = 1
+    }
+
+    internal static class DaqRecoveryFailurePolicy
+    {
+        public static DaqRecoveryFailureDisposition Evaluate(
+            int independentEvidenceCount,
+            bool allEvidenceConfirmed)
+        {
+            return independentEvidenceCount >= 2 && allEvidenceConfirmed
+                ? DaqRecoveryFailureDisposition.ConfirmedHardwareAlarm
+                : DaqRecoveryFailureDisposition.ContinueSelfMaintenance;
+        }
+    }
+
     public enum DaqRecoveryTerminal
     {
         None = 0,

@@ -19,7 +19,30 @@ namespace Controller
         Completed = 9,
         StartBlocked = 10,
         Recovering = 11,
-        SystemFault = 12
+        SystemFault = 12,
+        PausePending = 13,
+        ResumeChecking = 14,
+        Qualification = 15
+    }
+
+    public enum BatchPauseState
+    {
+        Idle = 0,
+        Running = 1,
+        PausePending = 2,
+        Paused = 3,
+        ResumeChecking = 4,
+        Qualification = 5,
+        Stopping = 6
+    }
+
+    public sealed class BatchPauseStateChangedEvent
+    {
+        public BatchPauseState State { get; set; }
+        public int[] Channels { get; set; } = Array.Empty<int>();
+        public DateTime TimestampUtc { get; set; }
+        public string Reason { get; set; } = string.Empty;
+        public Guid RunId { get; set; }
     }
 
     public sealed class ChannelRuntimeStateChangedEvent

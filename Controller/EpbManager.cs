@@ -117,7 +117,10 @@ namespace Controller
 
         /// <summary>结构化控制故障；共享资源故障会携带完整受影响成员。</summary>
         public event Action<ControlFault> ControlFaultRaised;
-        /// <summary>软件恢复失败；由主程序执行安全自重启，不得进入物理报警链路。</summary>
+        /// <summary>
+        /// 应用级共享系统故障；由主程序执行安全自重启。独立DAQ软件故障走设备组
+        /// 自维护，不得发布到此事件，也不得进入物理报警链路。
+        /// </summary>
         public event Action<ControlFault> SystemFaultRaised;
         /// <summary>
         /// 在人工停止、关闭程序或硬件故障执行任何取消/断电动作前同步发布。
@@ -327,6 +330,8 @@ namespace Controller
             public readonly DaqRecoveryTerminalGate Terminal = new DaqRecoveryTerminalGate();
             public int SnapshotSequence;
             public int RecoveryAttempt;
+            public int MaintenanceScheduled;
+            public int ConsecutiveFailures;
             public long RunEpoch;
             public long RecoveryEpoch;
             public string TriggerReason;
@@ -1299,7 +1304,7 @@ namespace Controller
                     return;
                 }
 
-                PublishStandaloneSystemFault(
+                PublishIsolatedSoftwareFault(
                     "UnconfirmedOverCurrent",
                     $"DAQ电流单源过流未获得新鲜PSU独立证据；已安全断电但不触发硬件报警。EPB={channel}；{reason}",
                     new[] { channel },
@@ -1399,7 +1404,7 @@ namespace Controller
             var device = _acq.GetDeviceForEpbChannel(channel);
             if (string.IsNullOrWhiteSpace(device))
             {
-                PublishStandaloneSystemFault(
+                PublishIsolatedSoftwareFault(
                     "DaqRecoveryUnavailable",
                     reason,
                     new[] { channel },
@@ -1458,13 +1463,14 @@ namespace Controller
                     Stopwatch.GetTimestamp(),
                     out var attempt))
             {
-                PublishStandaloneSystemFault(
-                    "DaqRecoveryLimitExceeded",
+                // Repeated software jitter must not become a global StopAll. Keep the affected
+                // group de-energized and let the existing/new recovery context self-maintain;
+                // confirmed hardware absence is handled separately by two independent probes.
+                _log.Warn(
                     $"Device={deviceFault.Device} {_daqClockRecoveryWindowMinutes}分钟内已发生" +
-                    $"{attempt}次DAQ软件恢复，达到上限{_daqClockRecoveryMaxAttempts}次。",
-                    affected,
-                    Guid.NewGuid());
-                return;
+                    $"{attempt}次DAQ软件恢复，超过阈值{_daqClockRecoveryMaxAttempts}次；" +
+                    "不升级全局故障，进入持续自维护。",
+                    "AI");
             }
             var observation = ObserveDaqIncident(
                 deviceFault.Device,
@@ -1518,7 +1524,7 @@ namespace Controller
             DaqPersistenceStateChanged update)
         {
             // Failed 可能是首个状态（例如硬容量满）。先复用统一 Cutoff 路径，保证
-            // DO、当前整圈和写盘准入均已安全处理，再提交 SystemFault 终态。
+            // DO、当前整圈和写盘准入均已安全处理，再进入持续自维护；不得升级全局故障。
             await BeginDaqAutoRecoveryAsync(
                     update.Device,
                     update.Code,
@@ -1533,6 +1539,29 @@ namespace Controller
                     update.Reason,
                     update.CorrelationId)
                 .ConfigureAwait(false);
+        }
+
+        internal static bool RequiresDaqTaskRecreate(string triggerCode)
+        {
+            // Consumer/backlog faults can recover by dropping stale history only after the
+            // affected group is safely de-energized. Callback, clock and producer-identity
+            // faults still require a real NI task rebuild.
+            return !string.Equals(triggerCode, "ControlLatencyExceeded", StringComparison.OrdinalIgnoreCase) &&
+                   !string.Equals(triggerCode, "ControlProcessingStale", StringComparison.OrdinalIgnoreCase) &&
+                   !string.Equals(triggerCode, "ControlEnqueueStale", StringComparison.OrdinalIgnoreCase) &&
+                   !string.Equals(triggerCode, "ControlQueueFull", StringComparison.OrdinalIgnoreCase) &&
+                   !string.Equals(triggerCode, "BackgroundQueueFull", StringComparison.OrdinalIgnoreCase) &&
+                   !string.Equals(triggerCode, "DaqPersistenceLag", StringComparison.OrdinalIgnoreCase) &&
+                   !string.Equals(triggerCode, "DaqPersistenceQueueFull", StringComparison.OrdinalIgnoreCase);
+        }
+
+        internal static int GetDaqSelfMaintenanceDelayMs(int consecutiveFailures)
+        {
+            if (consecutiveFailures <= 1) return 1000;
+            if (consecutiveFailures == 2) return 2000;
+            if (consecutiveFailures == 3) return 5000;
+            if (consecutiveFailures == 4) return 10000;
+            return 30000;
         }
 
         private async Task BeginDaqAutoRecoveryAsync(
@@ -1612,9 +1641,42 @@ namespace Controller
                     try { ChannelPaused?.Invoke(channel); } catch { }
                 }
 
+                if (!TryEnsureDaqRecoveryGroupDeenergized(context))
+                {
+                    await EscalateDaqAutoRecoveryAsync(
+                            device,
+                            "DaqOutputCutoffUnconfirmed",
+                            "受影响DAQ组仍有通道处于带电位图，禁止丢弃旧批次或重建DAQ；保持断电重试。",
+                            context.CorrelationId,
+                            new DaqRecoveryResult
+                            {
+                                Device = device,
+                                Recovered = false,
+                                FailureKind = "DaqOutputCutoffUnconfirmed",
+                                FailureReason = "DaqOutputCutoffUnconfirmed",
+                                Classification = FaultClassification.SoftwareTransient
+                            })
+                        .ConfigureAwait(false);
+                    return;
+                }
+
+                // The whole DAQ group is now de-energized. It is safe to abandon stale control
+                // history and validate from the newest batch; while energized this operation is
+                // forbidden because skipped batches could contain an over-current peak.
+                var fastResyncDiscarded = 0;
+                try
+                {
+                    fastResyncDiscarded = _acq.ResynchronizeInactiveControlToLatest(device);
+                }
+                catch (Exception ex)
+                {
+                    _log.Warn($"DAQ快速重同步未执行 Device={device}: {ex.Message}", "AI");
+                }
+
                 _log.Warn(
                     $"DAQ软件自恢复开始 Device={device} Affected=[{string.Join(",", affected)}] " +
-                    $"CorrelationId={context.CorrelationId:N} Code={context.TriggerCode}。",
+                    $"CorrelationId={context.CorrelationId:N} Code={context.TriggerCode} " +
+                    $"FastResyncDiscarded={fastResyncDiscarded}。",
                     "AI");
                 PublishRecoveryProgress(context, "安全断电已完成，正在恢复数据链。");
                 _ = ExportDaqIncidentSnapshotAsync(context, reason, "10-cutoff");
@@ -1654,7 +1716,7 @@ namespace Controller
                                     _daqPersistenceRequiredFreshBatches,
                                     (int)_daqPersistenceResumeAgeMs,
                                     timeout.Token,
-                                    forceRecreate: true)
+                                    forceRecreate: RequiresDaqTaskRecreate(context.TriggerCode))
                                 .ConfigureAwait(false);
                         }
                         catch (OperationCanceledException) when (context.Cancellation.IsCancellationRequested)
@@ -1862,8 +1924,10 @@ namespace Controller
                 CompleteCancelledRecovery(context, "RunEpochChangedDuringEscalation");
                 return;
             }
-            var hardwareConfirmed = evidence.Length >= 2 && evidence.All(x => x.Confirmed);
-            if (hardwareConfirmed)
+            var disposition = DaqRecoveryFailurePolicy.Evaluate(
+                evidence.Length,
+                evidence.Length > 0 && evidence.All(x => x.Confirmed));
+            if (disposition == DaqRecoveryFailureDisposition.ConfirmedHardwareAlarm)
             {
                 if (!context.Terminal.TryCommit(DaqRecoveryTerminal.HardwareConfirmed)) return;
                 MarkDaqRecoveryTerminal(context.CorrelationId);
@@ -1875,6 +1939,7 @@ namespace Controller
                 result.FailureKind = "DaqHardwareConfirmed";
                 context.Completion.TrySetResult(result);
                 try { DaqRecoveryStateChanged?.Invoke(result); } catch { }
+                try { context.Cancellation.Cancel(); } catch { }
                 LatchDaqGroupHardFault(
                     primary,
                     device,
@@ -1888,45 +1953,166 @@ namespace Controller
                 return;
             }
 
-            if (!context.Terminal.TryCommit(DaqRecoveryTerminal.SystemFault)) return;
-            MarkDaqRecoveryTerminal(context.CorrelationId);
-            _daqAutoRecovery.TryRemove(device, out _);
-            var systemResult = recoveryResult ?? new DaqRecoveryResult
+            // Independent DAQ groups are already safely de-energized. A software failure stays
+            // in Recovering and retries forever with bounded backoff; it never enters the
+            // physical alarm chain or application-wide SystemFault/StopAll path.
+            var maintenanceResult = recoveryResult ?? new DaqRecoveryResult
             {
                 Device = device,
+                Recovered = false,
                 FailureReason = reason,
                 FailureKind = code
             };
-            systemResult.Classification = FaultClassification.SystemFault;
-            systemResult.HardwareEvidence = evidence;
-            context.Completion.TrySetResult(systemResult);
-            try { DaqRecoveryStateChanged?.Invoke(systemResult); } catch { }
-            var fault = new ControlFault(
-                code,
-                $"Device={device} {reason}",
-                FaultScope.DaqGroup,
-                context.AffectedChannels,
-                null,
-                DateTime.UtcNow,
-                context.CorrelationId,
-                FaultClassification.SystemFault);
+            maintenanceResult.Classification = FaultClassification.SoftwareTransient;
+            maintenanceResult.HardwareEvidence = evidence;
+            try { DaqRecoveryStateChanged?.Invoke(maintenanceResult); } catch { }
+            ScheduleDaqSelfMaintenance(context, code, reason);
+        }
+
+        private void ScheduleDaqSelfMaintenance(
+            DaqAutoRecoveryContext context,
+            string code,
+            string reason)
+        {
+            if (!IsCurrentRecovery(context)) return;
+            if (Interlocked.CompareExchange(ref context.MaintenanceScheduled, 1, 0) != 0) return;
+
+            var failureCount = Interlocked.Increment(ref context.ConsecutiveFailures);
+            var delayMs = GetDaqSelfMaintenanceDelayMs(failureCount);
             foreach (var channel in context.AffectedChannels)
                 PublishChannelRuntimeState(
                     channel,
-                    ChannelRuntimeState.SystemFault,
-                    code,
-                    reason,
+                    ChannelRuntimeState.Recovering,
+                    "DaqSelfMaintenance",
+                    $"软件数据链自维护中，第{failureCount}次，{delayMs}ms后重试。",
                     affectedChannels: context.AffectedChannels,
                     correlationId: context.CorrelationId);
-            _log.Error(
-                $"DAQ系统故障（不触发硬件报警） Device={device} Code={code} " +
-                $"CorrelationId={context.CorrelationId:N} Reason={reason}",
+            _log.Warn(
+                $"DAQ软件自维护等待重试 Device={context.Device} Failure={failureCount} " +
+                $"DelayMs={delayMs} Code={code} CorrelationId={context.CorrelationId:N} " +
+                $"Affected=[{string.Join(",", context.AffectedChannels)}] Reason={reason}；" +
+                "健康DAQ组继续运行。",
                 "AI");
-            try { ControlFaultRaised?.Invoke(fault); } catch { }
-            context.Cancellation.Cancel();
-            await ExportDaqIncidentSnapshotAsync(context, reason, "90-system-fault")
-                .ConfigureAwait(false);
-            try { SystemFaultRaised?.Invoke(fault); } catch { }
+            PublishRecoveryProgress(context, $"软件自维护等待 {delayMs}ms 后重试。");
+            _ = ExportDaqIncidentSnapshotAsync(context, reason, "40-self-maintenance");
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await Task.Delay(delayMs, context.Cancellation.Token).ConfigureAwait(false);
+                    if (!IsCurrentRecovery(context)) return;
+
+                    // Re-check the hard safety boundary on every unattended retry. If an OFF
+                    // command did not take effect, retry OFF but never skip data or rebuild the
+                    // DAQ while any mapped channel is still considered energized.
+                    if (!TryEnsureDaqRecoveryGroupDeenergized(context))
+                    {
+                        Interlocked.Exchange(ref context.MaintenanceScheduled, 0);
+                        ScheduleDaqSelfMaintenance(
+                            context,
+                            "DaqOutputCutoffUnconfirmed",
+                            "整组断电尚未确认；保持安全断电重试，不执行DAQ重同步。");
+                        return;
+                    }
+
+                    var result = await _acq.RecoverDeviceAsync(
+                            context.Device,
+                            _daqPersistenceRecoveryTimeoutMs,
+                            _daqPersistenceRequiredFreshBatches,
+                            (int)_daqPersistenceResumeAgeMs,
+                            context.Cancellation.Token,
+                            forceRecreate: true)
+                        .ConfigureAwait(false);
+                    if (!IsCurrentRecovery(context)) return;
+
+                    context.RecoveryAttempt = Math.Max(context.RecoveryAttempt + 1, failureCount + 1);
+                    context.PreviousGeneration = result.PreviousGeneration;
+                    context.RecoveredGeneration = result.RecoveredGeneration;
+                    context.FirstVerifiedSequence = result.FirstVerifiedSequence;
+                    context.LastVerifiedSequence = result.LastVerifiedSequence;
+                    context.AfterClock = _acq.GetDaqFreshnessSnapshot(
+                        context.Device,
+                        _daqPersistenceResumeAgeMs);
+                    _ = ExportDaqIncidentSnapshotAsync(
+                        context,
+                        result.FailureReason,
+                        "50-self-maintenance-rebuild");
+
+                    if (!result.Recovered)
+                    {
+                        Interlocked.Exchange(ref context.MaintenanceScheduled, 0);
+                        await EscalateDaqAutoRecoveryAsync(
+                                context.Device,
+                                "DaqSelfMaintenanceRetryFailed",
+                                result.FailureReason,
+                                context.CorrelationId,
+                                result)
+                            .ConfigureAwait(false);
+                        return;
+                    }
+
+                    Interlocked.Exchange(ref context.ConsecutiveFailures, 0);
+                    _persistence.AcceptGeneration(
+                        context.Device,
+                        _acq.GetCurrentGeneration(context.Device));
+
+                    // Persistence and PSU validation can lag the DAQ rebuild briefly. Keep
+                    // checking without rebuilding again; successful validation commits the
+                    // normal Recovered terminal and resumes at the next complete cycle.
+                    for (var validation = 0; validation < 40 && IsCurrentRecovery(context); validation++)
+                    {
+                        await TryCompleteDaqAutoRecoveryAsync(context.Device).ConfigureAwait(false);
+                        if (!IsCurrentRecovery(context)) return;
+                        await Task.Delay(250, context.Cancellation.Token).ConfigureAwait(false);
+                    }
+
+                    if (!IsCurrentRecovery(context)) return;
+                    Interlocked.Exchange(ref context.MaintenanceScheduled, 0);
+                    ScheduleDaqSelfMaintenance(
+                        context,
+                        "DaqPostRecoveryValidationPending",
+                        "DAQ已重建，但持久化或电源复核在10秒内尚未通过。");
+                }
+                catch (OperationCanceledException) { }
+                catch (Exception ex)
+                {
+                    Interlocked.Exchange(ref context.MaintenanceScheduled, 0);
+                    if (IsCurrentRecovery(context))
+                        await EscalateDaqAutoRecoveryAsync(
+                                context.Device,
+                                "DaqSelfMaintenanceUnhandledException",
+                                ex.Message,
+                                context.CorrelationId,
+                                new DaqRecoveryResult
+                                {
+                                    Device = context.Device,
+                                    Recovered = false,
+                                    FailureReason = ex.Message,
+                                    FailureKind = "DaqSelfMaintenanceUnhandledException",
+                                    Classification = FaultClassification.SoftwareTransient
+                                })
+                            .ConfigureAwait(false);
+                }
+            });
+        }
+
+        private bool TryEnsureDaqRecoveryGroupDeenergized(DaqAutoRecoveryContext context)
+        {
+            if (context == null || string.IsNullOrWhiteSpace(context.Device)) return false;
+            foreach (var channel in context.AffectedChannels ?? Array.Empty<int>())
+            {
+                try { CommandEpbOffSafetyImmediate(channel); }
+                catch { }
+            }
+            var deenergized = !IsDaqDeviceControlActive(context.Device);
+            if (!deenergized)
+                _log.Error(
+                    $"DAQ恢复断电确认失败 Device={context.Device} " +
+                    $"Affected=[{string.Join(",", context.AffectedChannels ?? Array.Empty<int>())}]；" +
+                    "禁止丢弃批次和重建DAQ。",
+                    "AI");
+            return deenergized;
         }
 
         private void LatchDaqGroupHardFault(
@@ -1986,18 +2172,8 @@ namespace Controller
                     faultCorrelationId,
                     classification);
 
-                var softwareRecoveryExhausted = string.Equals(
-                    fault.Code,
-                    "DaqClockRecoveryLimitExceeded",
-                    StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(
-                        fault.Code,
-                        "DaqClockRecoveryFailed",
-                        StringComparison.OrdinalIgnoreCase);
                 _log.Error(
-                    (softwareRecoveryExhausted
-                        ? "DAQ软件/子系统恢复失败，已执行安全锁存。"
-                        : "DAQ设备级硬故障锁存。") +
+                    "DAQ设备级硬故障锁存（独立探测证据已确认）。" +
                     $"Code={fault.Code} " +
                     $"Device={device} TriggerEPB={primaryChannel} " +
                     $"Affected=[{string.Join(",", fault.AffectedChannels)}] " +
@@ -2105,55 +2281,6 @@ namespace Controller
             }
         }
 
-        private async Task<DaqRecoveryResult> RecoverDaqDeviceAsync(
-            int triggeringChannel,
-            string device,
-            int[] affectedChannels,
-            string reason)
-        {
-            _log.Warn(
-                $"DAQ安全恢复开始 Device={device} TriggerEPB={triggeringChannel} " +
-                $"Affected=[{string.Join(",", affectedChannels)}] Reason={reason}",
-                "AI");
-            var result = await _acq.RecoverForEpbAsync(
-                    triggeringChannel,
-                    timeoutMs: 3000,
-                    requiredFreshCallbacks: 10,
-                    maxAgeMs: 100,
-                    token: CancellationToken.None)
-                .ConfigureAwait(false);
-            try { DaqRecoveryStateChanged?.Invoke(result); } catch { }
-            if (result.Recovered)
-            {
-                _log.Info(
-                    $"DAQ安全恢复完成 Device={device} FreshCallbacks={result.FreshCallbacks}/" +
-                    $"{result.RequiredFreshCallbacks} ElapsedMs={result.ElapsedMs}；" +
-                    "报警停机状态保持锁存，不自动重新上电。",
-                    "AI");
-                return result;
-            }
-
-            PublishDaqGroupFault(
-                device,
-                "DaqRecoveryFailed",
-                result.FailureReason,
-                affectedChannels);
-            return result;
-        }
-
-        private void PublishDaqGroupFault(
-            string device,
-            string code,
-            string reason,
-            int[] affectedChannels)
-        {
-            PublishStandaloneSystemFault(
-                code,
-                $"Device={device} {reason}",
-                affectedChannels,
-                Guid.NewGuid());
-        }
-
         private int[] GetDaqGroupChannels(string device)
         {
             return Enumerable.Range(1, 12)
@@ -2250,10 +2377,13 @@ namespace Controller
             if (!_daqAutoRecovery.TryGetValue(device, out var context)) return;
             var completed = await Task.WhenAny(
                     context.Completion.Task,
-                    Task.Delay(_daqPersistenceRecoveryTimeoutMs + 1000, token))
+                    Task.Delay(Timeout.Infinite, token))
                 .ConfigureAwait(false);
             if (completed != context.Completion.Task)
-                throw new TimeoutException($"DaqRecoveryWaitTimeout Device={device}");
+            {
+                token.ThrowIfCancellationRequested();
+                return;
+            }
             var result = await context.Completion.Task.ConfigureAwait(false);
             if (!result.Recovered)
                 throw new InvalidOperationException(

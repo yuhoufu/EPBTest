@@ -55,6 +55,8 @@ namespace Controller
         private CancellationTokenSource _batchSessionCts;
         private CancellationTokenSource _learningPhaseFaultCts;
         private ElectricalStaggerPlan _activeStaggerPlan;
+        private readonly ConcurrentDictionary<int, DateTime> _activeFormalT0ByPressureGroup =
+            new ConcurrentDictionary<int, DateTime>();
         private Guid _activeBatchId;
 
         /// <summary>当前是否已有批量学习或正式试验会话。</summary>
@@ -101,12 +103,50 @@ namespace Controller
             int learnCycles,
             CancellationToken token)
         {
+            return await StartBatchCoreAsync(
+                    channels,
+                    learnCycles,
+                    qualificationCycles: 0,
+                    reuseStableProfiles: false,
+                    token)
+                .ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// 从已验证的正常暂停检查点恢复：复用稳定模型，先做资格圈，不把资格圈计入正式目标。
+        /// </summary>
+        public Task<BatchStartResult> StartBatchFromGracefulCheckpointAsync(
+            int[] channels,
+            int qualificationCycles,
+            CancellationToken token)
+        {
+            if (qualificationCycles < 1 || qualificationCycles > 2)
+                throw new ArgumentOutOfRangeException(
+                    nameof(qualificationCycles),
+                    "正常暂停后的资格复核必须为1或2圈。");
+            return StartBatchCoreAsync(
+                channels,
+                learnCycles: 0,
+                qualificationCycles,
+                reuseStableProfiles: true,
+                token);
+        }
+
+        private async Task<BatchStartResult> StartBatchCoreAsync(
+            int[] channels,
+            int learnCycles,
+            int qualificationCycles,
+            bool reuseStableProfiles,
+            CancellationToken token)
+        {
             if (channels == null || channels.Length == 0)
                 throw new ArgumentException("channels 不能为空", nameof(channels));
 
             var selected = channels.Distinct().OrderBy(x => x).ToArray();
-            if (learnCycles < 5)
+            if (!reuseStableProfiles && learnCycles < 5)
                 throw new InvalidOperationException("严格完整曲线控制要求 LearnCycle 至少为5圈。");
+            if (reuseStableProfiles)
+                EnsureAdaptiveProfilesReady(selected);
             var staggerPlan = ElectricalStaggerPlanner.Build(selected, _cfg.Test.Groups, PeriodMs);
             var sessionToken = BeginBatchSession(token);
             var startFaults = new List<ChannelStartFault>();
@@ -168,7 +208,7 @@ namespace Controller
                 }
 
                 // —— 2) （可选）学习前启动定位：按电气组错峰，仅做一次 —— //
-                if (learnCycles > 0)
+                if (learnCycles > 0 || reuseStableProfiles)
                 {
                     var all = groups.Values.SelectMany(v => v).Distinct().OrderBy(x => x).ToArray();
                     _log?.Info(
@@ -248,6 +288,24 @@ namespace Controller
                     }
                 }
 
+                if (reuseStableProfiles)
+                {
+                    activeChannels = groups.Values.SelectMany(x => x).Distinct().OrderBy(x => x).ToArray();
+                    foreach (var channel in activeChannels)
+                        PublishChannelRuntimeState(
+                            channel,
+                            ChannelRuntimeState.Qualification,
+                            "CheckpointQualification",
+                            $"正常暂停检查点恢复：执行{qualificationCycles}圈资格复核（不计正式目标）",
+                            affectedChannels: activeChannels,
+                            correlationId: _activeBatchId);
+                    await RunPausedQualificationAsync(
+                            activeChannels,
+                            qualificationCycles,
+                            sessionToken)
+                        .ConfigureAwait(false);
+                }
+
                 activeChannels = groups.Values.SelectMany(x => x).Distinct().OrderBy(x => x).ToArray();
                 if (activeChannels.Length == 0)
                     throw new InvalidOperationException("全部选中通道均在学习阶段被隔离，未启动正式试验。");
@@ -265,6 +323,7 @@ namespace Controller
 
                 // —— 4) 正式阶段：为每个通道创建对齐到“锚点+相位”的高精计时器 —— //
                 StartFormalPhaseTimers(groups, t0OfGroup, staggerPlan, sessionToken);
+                MarkBatchRunning(activeChannels, "正式试验运行中");
                 return new BatchStartResult(_activeBatchId, activeChannels, startFaults.ToArray());
             }
             catch (Exception ex)
@@ -405,7 +464,9 @@ namespace Controller
 
             Interlocked.Exchange(ref _batchSessionActive, 0);
             _activeStaggerPlan = null;
+            _activeFormalT0ByPressureGroup.Clear();
             _activeBatchId = Guid.Empty;
+            MarkBatchIdle(cancel ? "批次已取消" : "批次已结束");
         }
 
         private void LogStaggerPlan(Guid batchId, ElectricalStaggerPlan plan)
@@ -457,6 +518,7 @@ namespace Controller
                 if (list.Count == 0) continue;
 
                 var t0 = t0OfGroup[pg];
+                _activeFormalT0ByPressureGroup[pg] = t0;
                 var enabled = list.OrderBy(x => x).ToList();
 
                 // 正式阶段可能恰好在一个周期的 0ms 相位之后、800ms 相位之前启动。
@@ -1139,7 +1201,7 @@ namespace Controller
                 try { CommandEpbOffSafetyImmediate(channel); } catch { }
                 _log?.Error(reason, "落盘");
                 FlushPersistentLog();
-                PublishStandaloneSystemFault(
+                PublishIsolatedSoftwareFault(
                     "LearningPersistenceInvalid",
                     reason,
                     new[] { channel },

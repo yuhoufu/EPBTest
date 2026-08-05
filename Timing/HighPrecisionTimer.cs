@@ -14,16 +14,22 @@ public sealed class HighPrecisionTimer
     private readonly CancellationTokenSource _cts = new();
     private readonly IAppLogger _log;
     private readonly ManualResetEventSlim _pauseGate = new(true);
+    private readonly object _pauseSync = new();
     private readonly int _periodMs;
     private readonly OverrunPolicy _policy;
     private volatile bool _running;
     private long _pauseStartedTimestamp;
     private int _resumeAtFutureBoundaryRequested;
     private int _resumeDelayMs;
+    private int _pauseAfterCurrentCycleRequested;
+    // 0=两圈之间，1=圈执行中，2=已暂停。用 CAS 消除“已过暂停门但尚未进圈”的竞态。
+    private int _cycleState;
+    private TaskCompletionSource<bool> _gracefulPauseCompletion;
 
     private long _ticksStart; // 计划起点
 
     public OverrunPolicy Policy => _policy; // 只读
+    public bool IsPaused => Volatile.Read(ref _cycleState) == 2;
 
     public HighPrecisionTimer(int periodMs, OverrunPolicy policy, IAppLogger log = null)
     {
@@ -76,6 +82,14 @@ public sealed class HighPrecisionTimer
                     if (sleepMs > 0)
                         await Task.Delay(sleepMs, _cts.Token);
 
+                    // 暂停请求可能发生在本轮已经越过 _pauseGate、仍等待计划时刻的窗口。
+                    // 只有成功把状态从“两圈之间”切到“圈执行中”才允许调用 work。
+                    if (Interlocked.CompareExchange(ref _cycleState, 1, 0) != 0)
+                    {
+                        _pauseGate.Wait(_cts.Token);
+                        continue;
+                    }
+
                     var t0 = sw.ElapsedMilliseconds;
                     var ok = false;
                     Exception caught = null;
@@ -90,6 +104,8 @@ public sealed class HighPrecisionTimer
                     }
 
                     var t1 = sw.ElapsedMilliseconds;
+                    Interlocked.Exchange(ref _cycleState, 0);
+                    EnterGracefulPauseIfRequested();
                     var elapsed = (int)(t1 - t0);
 
                     if (caught != null) _log.Error($"周期 {i + 1} 执行异常：{caught.Message}", "Timer", caught);
@@ -145,13 +161,48 @@ public sealed class HighPrecisionTimer
     public void Pause()
     {
         Interlocked.CompareExchange(ref _pauseStartedTimestamp, Stopwatch.GetTimestamp(), 0);
+        Interlocked.Exchange(ref _pauseAfterCurrentCycleRequested, 1);
         _pauseGate.Reset();
+        if (Interlocked.CompareExchange(ref _cycleState, 2, 0) == 0 ||
+            Volatile.Read(ref _cycleState) == 2)
+            CompleteGracefulPause();
         _log.Info("定时器已暂停。", "Timer");
+    }
+
+    /// <summary>
+    /// 请求在当前圈自然结束后暂停；若当前尚未进入圈执行，则立即封住下一圈。
+    /// 返回的任务只在定时器确认“不再启动新圈”后完成。
+    /// </summary>
+    public Task PauseAfterCurrentCycleAsync()
+    {
+        Task completion;
+        lock (_pauseSync)
+        {
+            if (!_running)
+                return Task.CompletedTask;
+
+            if (_gracefulPauseCompletion == null || _gracefulPauseCompletion.Task.IsCompleted)
+                _gracefulPauseCompletion = new TaskCompletionSource<bool>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+            completion = _gracefulPauseCompletion.Task;
+        }
+
+        Interlocked.CompareExchange(ref _pauseStartedTimestamp, Stopwatch.GetTimestamp(), 0);
+        Interlocked.Exchange(ref _pauseAfterCurrentCycleRequested, 1);
+        _pauseGate.Reset();
+        if (Interlocked.CompareExchange(ref _cycleState, 2, 0) == 0 ||
+            Volatile.Read(ref _cycleState) == 2)
+            CompleteGracefulPause();
+
+        _log.Info("定时器已请求在当前圈结束后暂停。", "Timer");
+        return completion;
     }
 
     /// <summary>恢复周期执行。</summary>
     public void Resume()
     {
+        Interlocked.Exchange(ref _pauseAfterCurrentCycleRequested, 0);
+        Interlocked.CompareExchange(ref _cycleState, 0, 2);
         var pausedAt = Interlocked.Exchange(ref _pauseStartedTimestamp, 0);
         if (pausedAt != 0)
         {
@@ -167,6 +218,8 @@ public sealed class HighPrecisionTimer
     /// </summary>
     public void ResumeAtNextBoundary(int delayMs)
     {
+        Interlocked.Exchange(ref _pauseAfterCurrentCycleRequested, 0);
+        Interlocked.CompareExchange(ref _cycleState, 0, 2);
         Interlocked.Exchange(ref _pauseStartedTimestamp, 0);
         Interlocked.Exchange(ref _resumeDelayMs, Math.Max(1, delayMs));
         Interlocked.Exchange(ref _resumeAtFutureBoundaryRequested, 1);
@@ -174,11 +227,40 @@ public sealed class HighPrecisionTimer
         _log.Info($"定时器等待未来同步锚点恢复，Delay={Math.Max(1, delayMs)}ms。", "Timer");
     }
 
+    /// <summary>让尚未执行的下一圈在统一 UTC 锚点恢复。</summary>
+    public void ResumeAtUtcBoundary(DateTime boundaryUtc)
+    {
+        var utc = boundaryUtc.Kind == DateTimeKind.Utc
+            ? boundaryUtc
+            : boundaryUtc.ToUniversalTime();
+        var delayMs = Math.Max(1, (int)Math.Ceiling((utc - DateTime.UtcNow).TotalMilliseconds));
+        ResumeAtNextBoundary(delayMs);
+    }
+
     /// <summary>终止定时器。</summary>
     public void Stop()
     {
         _cts.Cancel();
         _pauseGate.Set();
+        CompleteGracefulPause();
         _log.Info("定时器 Stop。", "Timer");
+    }
+
+    private void EnterGracefulPauseIfRequested()
+    {
+        if (Volatile.Read(ref _pauseAfterCurrentCycleRequested) == 0)
+            return;
+
+        _pauseGate.Reset();
+        if (Interlocked.CompareExchange(ref _cycleState, 2, 0) == 0 ||
+            Volatile.Read(ref _cycleState) == 2)
+            CompleteGracefulPause();
+    }
+
+    private void CompleteGracefulPause()
+    {
+        TaskCompletionSource<bool> completion;
+        lock (_pauseSync) completion = _gracefulPauseCompletion;
+        completion?.TrySetResult(true);
     }
 }

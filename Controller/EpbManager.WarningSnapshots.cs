@@ -26,6 +26,7 @@ namespace Controller
         private readonly ConcurrentDictionary<string, byte> _warningSnapshotJobs = new();
         private readonly ConcurrentDictionary<string, ConcurrentQueue<WarningSnapshotLink>> _warningChains = new();
         private readonly ConcurrentDictionary<Guid, string> _daqIncidentDirectories = new();
+        private readonly SemaphoreSlim _daqIncidentSnapshotGate = new(1, 1);
         private int _warningSnapshotFreeSpaceWarningActive;
 
         private void OnRunnerWarningEvidenceRaised(AdaptiveWarningEvent warning)
@@ -164,11 +165,11 @@ namespace Controller
             string result)
         {
             if (context == null) return;
-            // 在调用线程立即冻结；后台线程不得再读取会继续变化的诊断环或恢复上下文。
+            // Only cheap scalar state is frozen on the caller. Full diagnostic/cycle evidence
+            // is captured once at a terminal phase and serialized on a background gate; taking
+            // four full snapshots during recovery caused an allocation storm in the field.
             var capturedUtc = DateTime.UtcNow;
-            var diagnostics = _acq.CaptureDiagnostics(
-                new[] { context.Device },
-                TimeSpan.FromSeconds(60));
+            var includeFullEvidence = ShouldIncludeFullDaqIncidentEvidence(result);
             var queue = _persistence.GetSnapshot(context.Device);
             var runEpoch = context.RunEpoch;
             var recoveryEpoch = context.RecoveryEpoch;
@@ -200,8 +201,14 @@ namespace Controller
             var sequence = Interlocked.Increment(ref context.SnapshotSequence);
             await Task.Run(() =>
             {
+                _daqIncidentSnapshotGate.Wait();
                 try
                 {
+                    var diagnostics = includeFullEvidence
+                        ? _acq.CaptureDiagnostics(
+                            new[] { context.Device },
+                            TimeSpan.FromSeconds(60))
+                        : null;
                     var root = Path.Combine(
                         _cfg.Test.StoreDir,
                         _cfg.Test.TestName,
@@ -265,6 +272,7 @@ namespace Controller
                         $"  \"requiredFreshBatches\": {requiredFresh},\n" +
                         $"  \"suppressedBatches\": {queue.SuppressedBatchCount},\n" +
                         $"  \"discardedGenerationBatches\": {queue.DiscardedGenerationBatchCount},\n" +
+                        $"  \"fullEvidenceIncluded\": {includeFullEvidence.ToString().ToLowerInvariant()},\n" +
                         "  \"validBatchesDroppedByClockModel\": 0,\n" +
                         $"  \"result\": \"{JsonEscape(result)}\",\n" +
                         $"  \"capturedUtc\": \"{capturedUtc:O}\"\n" +
@@ -276,8 +284,8 @@ namespace Controller
                                FileShare.Read))
                     using (var writer = new StreamWriter(stream, new UTF8Encoding(false)))
                         writer.Write(incidentJson);
-                    diagnostics.WriteTo(phaseDirectory);
-                    var recorder = Recorder;
+                    diagnostics?.WriteTo(phaseDirectory);
+                    var recorder = includeFullEvidence ? Recorder : null;
                     if (recorder != null)
                     {
                         foreach (var channel in affectedChannels)
@@ -293,7 +301,16 @@ namespace Controller
                 {
                     _log.Error($"DAQ IncidentSnapshot 导出失败：{ex.Message}", "落盘", ex);
                 }
+                finally
+                {
+                    _daqIncidentSnapshotGate.Release();
+                }
             }).ConfigureAwait(false);
+        }
+
+        internal static bool ShouldIncludeFullDaqIncidentEvidence(string phase)
+        {
+            return (phase ?? string.Empty).StartsWith("90-", StringComparison.OrdinalIgnoreCase);
         }
 
         private async Task ExportDaqHardFaultIncidentSnapshotAsync(

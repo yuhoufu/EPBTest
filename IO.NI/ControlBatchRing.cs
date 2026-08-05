@@ -329,6 +329,120 @@ namespace IO.NI
     }
 
     /// <summary>
+    /// Verifies a fresh control stream from periodically sampled snapshots.
+    /// Snapshot polling is intentionally slower than DAQ callbacks, so one observation may
+    /// legitimately advance by several consecutive source sequences. Continuity is supplied
+    /// by the control consumer's identity validator, not inferred from seeing every callback.
+    /// </summary>
+    internal sealed class DaqRecoveryFreshnessVerifier
+    {
+        private readonly long _expectedGeneration;
+        private readonly int _requiredFreshCallbacks;
+        private bool _hasAnchor;
+        private long _lastArrivalTicks;
+        private long _lastSequence;
+        private long _continuityFaultCount;
+
+        public DaqRecoveryFreshnessVerifier(long expectedGeneration, int requiredFreshCallbacks)
+        {
+            _expectedGeneration = expectedGeneration;
+            _requiredFreshCallbacks = Math.Max(1, requiredFreshCallbacks);
+        }
+
+        public int FreshCallbacks { get; private set; }
+        public long FirstVerifiedSequence { get; private set; }
+        public long LastVerifiedSequence => _lastSequence;
+        public bool IsSatisfied => FreshCallbacks >= _requiredFreshCallbacks;
+
+        public void Seed(DaqFreshnessSnapshot snapshot)
+        {
+            if (snapshot == null ||
+                !snapshot.IsFresh ||
+                snapshot.Generation != _expectedGeneration ||
+                snapshot.LastArrivalMonotonicTicks <= 0 ||
+                snapshot.LastProcessedSequence <= 0)
+            {
+                ResetWindow();
+                return;
+            }
+            Anchor(snapshot, countCurrent: false);
+        }
+
+        public bool Observe(DaqFreshnessSnapshot snapshot)
+        {
+            if (snapshot == null ||
+                !snapshot.IsFresh ||
+                snapshot.Generation != _expectedGeneration ||
+                snapshot.LastArrivalMonotonicTicks <= 0 ||
+                snapshot.LastProcessedSequence <= 0)
+            {
+                ResetWindow();
+                return false;
+            }
+
+            if (!_hasAnchor)
+            {
+                Anchor(snapshot, countCurrent: true);
+                return IsSatisfied;
+            }
+
+            // The control consumer records every real gap/duplicate/out-of-order batch.
+            // Require a new clean window after such evidence, but do not mistake a polling
+            // jump across multiple already-validated batches for a data gap.
+            if (snapshot.ControlDiscontinuityCount != _continuityFaultCount)
+            {
+                Anchor(snapshot, countCurrent: false);
+                if (snapshot.LastControlDiscontinuitySequence > _lastSequence)
+                    _lastSequence = snapshot.LastControlDiscontinuitySequence;
+                return false;
+            }
+
+            // An unchanged or torn snapshot is not new evidence. MarkControlProcessed writes
+            // sequence before the monotonic commit tick, so waiting for the tick also avoids
+            // accepting a partially observed update.
+            if (snapshot.LastArrivalMonotonicTicks <= _lastArrivalTicks)
+                return IsSatisfied;
+
+            if (snapshot.LastProcessedSequence <= _lastSequence)
+            {
+                Anchor(snapshot, countCurrent: false);
+                return false;
+            }
+
+            var previousSequence = _lastSequence;
+            var sequenceDelta = snapshot.LastProcessedSequence - previousSequence;
+            _lastArrivalTicks = snapshot.LastArrivalMonotonicTicks;
+            _lastSequence = snapshot.LastProcessedSequence;
+            if (FreshCallbacks == 0)
+                FirstVerifiedSequence = previousSequence + 1;
+            FreshCallbacks = (int)Math.Min(
+                int.MaxValue,
+                (long)FreshCallbacks + sequenceDelta);
+            return IsSatisfied;
+        }
+
+        private void Anchor(DaqFreshnessSnapshot snapshot, bool countCurrent)
+        {
+            _hasAnchor = true;
+            _lastArrivalTicks = snapshot.LastArrivalMonotonicTicks;
+            _lastSequence = snapshot.LastProcessedSequence;
+            _continuityFaultCount = snapshot.ControlDiscontinuityCount;
+            FreshCallbacks = countCurrent ? 1 : 0;
+            FirstVerifiedSequence = countCurrent ? snapshot.LastProcessedSequence : 0;
+        }
+
+        private void ResetWindow()
+        {
+            _hasAnchor = false;
+            _lastArrivalTicks = 0;
+            _lastSequence = 0;
+            _continuityFaultCount = 0;
+            FreshCallbacks = 0;
+            FirstVerifiedSequence = 0;
+        }
+    }
+
+    /// <summary>
     /// Per-device, preallocated single-producer/single-consumer control ring.
     /// Slots are never overwritten until the consumer advances the read sequence.
     /// </summary>

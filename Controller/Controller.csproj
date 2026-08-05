@@ -85,6 +85,7 @@
     <Compile Include="ChannelRuntimeState.cs" />
     <Compile Include="ElectricalStaggerPlan.cs" />
     <Compile Include="EpbManager.BatchStart.cs" />
+    <Compile Include="EpbManager.PauseResume.cs" />
     <Compile Include="EpbManager.DaqRecoveryState.cs" />
     <Compile Include="EpbManager.WarningSnapshots.cs" />
     <Compile Include="EpbManager.StartupPositioning.cs" />
