@@ -180,6 +180,11 @@ namespace IO.NI
         public double SubscriberMaxMs { get; set; }
         public double DriftMs { get; set; }
         public DateTime ProcessedSampleUtc { get; set; }
+        public long BatchSequence { get; set; }
+        public int ProducerThreadId { get; set; }
+        public long ProducerReentryCount { get; set; }
+        public double SampleLeadMs { get; set; }
+        public string QualityFlags { get; set; } = string.Empty;
         public string Detail { get; set; } = string.Empty;
     }
 
@@ -290,6 +295,7 @@ namespace IO.NI
         // 最近的工程值快照（拆成两份以避免语义冲突）
         // 1) 低时延快照（在 DAQ 回调线程中写入）：未滤波、用于控制逻辑/紧急读数
         private readonly ConcurrentDictionary<string, double> _lastFastValue = new();
+        private readonly ConcurrentDictionary<int, FastEpbCurrentSample> _lastFastEpbSample = new();
 
         // 2) 滤波后快照（在后台线程中写入）：已滤波、用于 UI / 统计 / 报表
         private readonly ConcurrentDictionary<string, double> _lastFilteredValue = new();
@@ -318,6 +324,10 @@ namespace IO.NI
         private long _controlFullFaultGenerationDev2 = -1;
         private long _controlLatencyFaultGenerationDev1 = -1;
         private long _controlLatencyFaultGenerationDev2 = -1;
+        private long _controlInvariantFaultGenerationDev1 = -1;
+        private long _controlInvariantFaultGenerationDev2 = -1;
+        private long _controlFilterResetEpochDev1;
+        private long _controlFilterResetEpochDev2;
         private long _lastProcessingLagLogTicksDev1;
         private long _lastProcessingLagLogTicksDev2;
         private long _lastRuntimeProbeTicksDev1;
@@ -331,6 +341,7 @@ namespace IO.NI
         private readonly int _controlQueueCapacity;
         private readonly double _controlWarningAgeMs;
         private readonly double _controlHardFaultAgeMs;
+        private readonly double _sampleFutureToleranceMs;
         private Func<string, bool> _controlActivityProvider;
         private readonly double _sampleRate;
         private readonly int _samplesPerChannel;
@@ -375,6 +386,8 @@ namespace IO.NI
             public NIDaqTask Task { get; set; }
             public AnalogMultiChannelReader Reader { get; set; }
             public ManualResetEventSlim Quiesced { get; } = new(false);
+            public DeviceSampleTimeline Timeline { get; } = new DeviceSampleTimeline();
+            public DaqCallbackProducerGate ProducerGate { get; } = new DaqCallbackProducerGate();
         }
 
         // 动态置零偏移（参数名 -> offset，工程值单位）
@@ -392,14 +405,16 @@ namespace IO.NI
         private readonly int _channels;
 
         /// <summary>fast 分支的低时延滤波策略。</summary>
-        private readonly FastFilter _fastFilter = new FastFilter(
+        private readonly FastFilter _fastFilterDev1 = new FastFilter(
             medianK: 9,      // 3 或 5，推荐 5
             ewmaAlpha: 0.4,  // 0.3~0.6 之间调
             maxSlewAperSec: 0 // 每秒最大电流变化（A/s），依硬件调
         );
-
-        // 同一设备的“时间戳分配 + 入队”必须原子有序，避免重叠回调把 A/B/C 批写成 A/C/B。
-        private readonly DeviceBatchTimestampCoordinator _batchTimestampCoordinator = new();
+        private readonly FastFilter _fastFilterDev2 = new FastFilter(
+            medianK: 9,
+            ewmaAlpha: 0.4,
+            maxSlewAperSec: 0);
+        private readonly FastCurrentEvidenceHistory _fastEvidence;
 
 
         /// <summary>
@@ -438,6 +453,9 @@ namespace IO.NI
 
             /// <summary>最近一次采样率（Hz，四舍五入）。</summary>
             public int LastFs;
+            public long LastBatchSequence;
+            public long ProducerReentryCount;
+            public long LastSampleLeadMsBits;
         }
 
         /// <summary>
@@ -608,7 +626,16 @@ namespace IO.NI
                 CallbackIntervalMs = cbIntervalMs,
                 EndReadMs = endReadMs,
                 RearmMs = rearmMs,
-                DriftMs = driftMs
+                DriftMs = driftMs,
+                BatchSequence = Interlocked.Read(ref diag.LastBatchSequence),
+                ProducerThreadId = Thread.CurrentThread.ManagedThreadId,
+                ProducerReentryCount = Interlocked.Read(ref diag.ProducerReentryCount),
+                SampleLeadMs = BitConverter.Int64BitsToDouble(
+                    Interlocked.Read(ref diag.LastSampleLeadMsBits)),
+                QualityFlags = BitConverter.Int64BitsToDouble(
+                                   Interlocked.Read(ref diag.LastSampleLeadMsBits)) > _sampleFutureToleranceMs
+                    ? FastSignalQualityFlags.TimelineFuture.ToString()
+                    : FastSignalQualityFlags.None.ToString()
             });
 
             // 默认不输出节拍日志（测试期避免刷屏）；但仍保留最近一次快照
@@ -718,14 +745,15 @@ namespace IO.NI
             var timingPath = Path.Combine(directory, "daq_timing.csv");
             using (var writer = new StreamWriter(timingPath, false, new UTF8Encoding(true)))
             {
-                writer.WriteLine("TimestampUtc,Device,Kind,Generation,BatchSize,QueueDepth,CallbackIntervalMs,EndReadMs,RearmMs,QueueAgeMs,ProcessingMs,ConvertMs,FilterMs,PeakMs,DiskBatchBuildMs,DiskDispatchMs,UiNotifyMs,PersistenceWaitMs,RingWriteMs,SqliteMs,Detail,ControlQueueCapacity,SubscriberMaxMs,ProcessedSampleUtc,DriftMs");
+                writer.WriteLine("TimestampUtc,Device,Kind,Generation,BatchSize,QueueDepth,CallbackIntervalMs,EndReadMs,RearmMs,QueueAgeMs,ProcessingMs,ConvertMs,FilterMs,PeakMs,DiskBatchBuildMs,DiskDispatchMs,UiNotifyMs,PersistenceWaitMs,RingWriteMs,SqliteMs,Detail,ControlQueueCapacity,SubscriberMaxMs,ProcessedSampleUtc,DriftMs,BatchSequence,ProducerThreadId,ProducerReentryCount,SampleLeadMs,QualityFlags");
                 foreach (var x in records.Where(x => !string.Equals(x.Kind, "Runtime", StringComparison.OrdinalIgnoreCase)))
                     writer.WriteLine(
                         $"{x.TimestampUtc:O},{Csv(x.Device)},{Csv(x.Kind)},{x.Generation},{x.BatchSize},{x.QueueDepth}," +
                         $"{x.CallbackIntervalMs:F3},{x.EndReadMs:F3},{x.RearmMs:F3},{x.QueueAgeMs:F3},{x.ProcessingMs:F3}," +
                         $"{x.ConvertMs:F3},{x.FilterMs:F3},{x.PeakMs:F3},{x.DiskBatchBuildMs:F3},{x.DiskDispatchMs:F3}," +
                         $"{x.UiNotifyMs:F3},{x.PersistenceWaitMs:F3},{x.RingWriteMs:F3},{x.SqliteMs:F3},{Csv(x.Detail)}," +
-                        $"{x.ControlQueueCapacity},{x.SubscriberMaxMs:F3},{(x.ProcessedSampleUtc == default ? string.Empty : x.ProcessedSampleUtc.ToString("O"))},{x.DriftMs:F3}");
+                        $"{x.ControlQueueCapacity},{x.SubscriberMaxMs:F3},{(x.ProcessedSampleUtc == default ? string.Empty : x.ProcessedSampleUtc.ToString("O"))},{x.DriftMs:F3}," +
+                        $"{x.BatchSequence},{x.ProducerThreadId},{x.ProducerReentryCount},{x.SampleLeadMs:F3},{Csv(x.QualityFlags)}");
             }
             var runtimePath = Path.Combine(directory, "daq_runtime.csv");
             using (var writer = new StreamWriter(runtimePath, false, new UTF8Encoding(true)))
@@ -737,6 +765,45 @@ namespace IO.NI
                         $"{x.ManagedMemoryBytes},{x.WorkerThreadsAvailable},{x.IoThreadsAvailable}");
             }
             return new[] { timingPath, runtimePath };
+        }
+
+        public string ExportFastCurrentEvidence(string directory, int epbChannel, TimeSpan window)
+        {
+            Directory.CreateDirectory(directory);
+            var cutoff = DateTime.UtcNow - (window <= TimeSpan.Zero ? TimeSpan.FromSeconds(5) : window);
+            var records = _fastEvidence.Snapshot(epbChannel, cutoff);
+            var path = Path.Combine(directory, "fast-current-evidence.csv");
+            using (var writer = new StreamWriter(path, false, new UTF8Encoding(true)))
+            {
+                writer.Write(
+                    "SampleUtc,CallbackArrivalUtc,Device,Channel,Generation,BatchSequence," +
+                    "ProducerThreadId,CaptureMonotonicTicks,EnqueuedMonotonicTicks,SampleLeadMs," +
+                    "RepresentativeA,FilteredA,QualityFlags");
+                for (var i = 0; i < ControlBatchRing.RawTailCapacity; i++)
+                    writer.Write(",RawTailV" + i);
+                writer.WriteLine();
+                foreach (var record in records)
+                {
+                    writer.Write(
+                        $"{record.SampleUtc:O},{record.CallbackArrivalUtc:O},{Csv(record.Device)},{record.Channel}," +
+                        $"{record.Generation},{record.BatchSequence},{record.ProducerThreadId}," +
+                        $"{record.CaptureMonotonicTicks},{record.EnqueuedMonotonicTicks}," +
+                        $"{record.SampleLeadMs.ToString("F3", System.Globalization.CultureInfo.InvariantCulture)}," +
+                        $"{record.RepresentativeA.ToString("R", System.Globalization.CultureInfo.InvariantCulture)}," +
+                        $"{record.FilteredA.ToString("R", System.Globalization.CultureInfo.InvariantCulture)}," +
+                        Csv(record.QualityFlags.ToString()));
+                    for (var i = 0; i < ControlBatchRing.RawTailCapacity; i++)
+                    {
+                        writer.Write(',');
+                        if (i < record.RawTailVolts.Length)
+                            writer.Write(record.RawTailVolts[i].ToString(
+                                "R",
+                                System.Globalization.CultureInfo.InvariantCulture));
+                    }
+                    writer.WriteLine();
+                }
+            }
+            return path;
         }
 
         public void RecordExternalDiagnostic(DaqTimingRecord record)
@@ -842,6 +909,10 @@ namespace IO.NI
             _samplesPerChannel = samplesPerChannel;
             _medianLens = Math.Max(1, medianLens);
             _log = log ?? NLogger.Instance;
+            var evidenceCapacity = Math.Max(
+                64,
+                (int)Math.Ceiling(5.0 * Math.Max(1, sampleRate) / Math.Max(1, samplesPerChannel)) + 2);
+            _fastEvidence = new FastCurrentEvidenceHistory(evidenceCapacity);
 
             // 现场默认只记录异常节拍；需要短时深度排障时可在 App.config 改为 all。
             _daqTimingLogMode = ParseDaqTimingLogMode(SafeGetAppSetting("DaqCallbackTimingLog"));
@@ -865,6 +936,11 @@ namespace IO.NI
                                    configuredWarningAge < _controlHardFaultAgeMs
                 ? configuredWarningAge
                 : Math.Min(50, _controlHardFaultAgeMs - 1);
+            var configuredFutureTolerance =
+                ParseDoubleOrDefault(SafeGetAppSetting("DaqSampleFutureToleranceMs"), 20);
+            _sampleFutureToleranceMs = configuredFutureTolerance >= 1 && configuredFutureTolerance <= 100
+                ? configuredFutureTolerance
+                : 20;
             // 未注册活动状态提供器时按带电处理，保证失效安全。
             _controlActivityProvider = _ => true;
             _callbackTimingDiag.TryAdd("Dev1", new CallbackTimingDiag());
@@ -896,8 +972,12 @@ namespace IO.NI
             BuildColumnIndex(_enabled, "Dev1", _dev1Channels, _colIndexDev1);
             BuildColumnIndex(_enabled, "Dev2", _dev2Channels, _colIndexDev2);
 
-            _controlRingDev1 = new ControlBatchRing(_controlQueueCapacity, 12);
-            _controlRingDev2 = new ControlBatchRing(_controlQueueCapacity, 12);
+            _controlRingDev1 = new ControlBatchRing(
+                _controlQueueCapacity,
+                Math.Max(1, _dev1Records.Length));
+            _controlRingDev2 = new ControlBatchRing(
+                _controlQueueCapacity,
+                Math.Max(1, _dev2Records.Length));
 
             _dev1MedianCausal = new ClsDataFilter.MedianStreamCausal(_dev1Channels.Length, _medianHalfWidth,
                 MedianSelectPointsMode.OnlyPrevious, _samplesPerChannel); // 控制用因果滤波
@@ -1081,6 +1161,11 @@ namespace IO.NI
         /// <param name="amps">电流（A，已做零漂/比例/偏置换算）。</param>
         /// <param name="ts">样本时间戳。</param>
         public event Action<int, double, DateTime> OnFastEpbCurrent;
+        /// <summary>
+        /// 带真实单调时钟、批次身份和质量标志的快速电流事件。新控制逻辑必须订阅此事件；
+        /// 旧事件仅为二进制/源码兼容保留。
+        /// </summary>
+        public event Action<FastEpbCurrentSample> OnFastEpbCurrentSample;
         public event Action<DaqProcessingSnapshot> ProcessingLagDetected;
         public event Action<DaqDeviceFault> DeviceFaultDetected;
         /// <summary>
@@ -1101,18 +1186,22 @@ namespace IO.NI
             ring.Reset();
             if (isDev1)
             {
+                Interlocked.Increment(ref _controlFilterResetEpochDev1);
                 Interlocked.Exchange(ref _queueFaultGenerationDev1, -1);
                 Interlocked.Exchange(ref _controlFullFaultGenerationDev1, -1);
                 Interlocked.Exchange(ref _controlLatencyFaultGenerationDev1, -1);
+                Interlocked.Exchange(ref _controlInvariantFaultGenerationDev1, -1);
                 Interlocked.Exchange(ref _lastControlWarningTicksDev1, 0);
                 Interlocked.Exchange(ref _lastControlBatchProcessMsBitsDev1, 0);
                 Interlocked.Exchange(ref _subscriberMaxMsBitsDev1, 0);
             }
             else
             {
+                Interlocked.Increment(ref _controlFilterResetEpochDev2);
                 Interlocked.Exchange(ref _queueFaultGenerationDev2, -1);
                 Interlocked.Exchange(ref _controlFullFaultGenerationDev2, -1);
                 Interlocked.Exchange(ref _controlLatencyFaultGenerationDev2, -1);
+                Interlocked.Exchange(ref _controlInvariantFaultGenerationDev2, -1);
                 Interlocked.Exchange(ref _lastControlWarningTicksDev2, 0);
                 Interlocked.Exchange(ref _lastControlBatchProcessMsBitsDev2, 0);
                 Interlocked.Exchange(ref _subscriberMaxMsBitsDev2, 0);
@@ -1212,6 +1301,17 @@ namespace IO.NI
         {
             var key = $"EPB{epbChannel}_current";
             return _lastFastValue.TryGetValue(key, out var v) ? v : 0.0;
+        }
+
+        public FastCurrentSnapshot ReadCurrentFastSample(int epbChannel)
+        {
+            if (!_lastFastEpbSample.TryGetValue(epbChannel, out var sample))
+                return new FastCurrentSnapshot(default, double.PositiveInfinity, false);
+            var now = Stopwatch.GetTimestamp();
+            var ageMs = sample.CaptureMonotonicTicks <= 0 || now < sample.CaptureMonotonicTicks
+                ? double.PositiveInfinity
+                : (now - sample.CaptureMonotonicTicks) * 1000.0 / Stopwatch.Frequency;
+            return new FastCurrentSnapshot(sample, ageMs, true);
         }
 
         /// <summary>
@@ -1597,11 +1697,6 @@ namespace IO.NI
             InitTimeBase();
 
 
-            // 两块采集卡共享同一时间原点，但分别推进；提交动作也由协调器串行化。
-            _batchTimestampCoordinator.Reset(_t0, "Dev1", "Dev2");
-
-
-
             if (_dev1Channels.Length > 0) StartDevice("Dev1");
 
             // 暂时注释dev2
@@ -1656,174 +1751,173 @@ namespace IO.NI
                 if (!IsCurrentGeneration(device, generation)) return;
                 int n = raw.GetLength(1);
 
-                // ① 使用统一时间原点、按设备独立推进的采样时钟。
-                // 时间戳分配与入队在同一顺序门内完成，不能移到门外。
-                // 下一次 BeginRead 也必须等本批入队后再挂起，否则后一个回调
-                // 可能在当前线程被抢占时先取得顺序门，造成数据批次交换。
-                DateTime last;
+                // 同设备生产区必须严格串行。下一次读取只在控制批入环后 re-arm，
+                // 从结构上保证 SPSC 控制环只有一个活动生产者。
+                if (!state.ProducerGate.TryEnter())
+                {
+                    var reentry = state.ProducerGate.ReentryCount;
+                    if (_callbackTimingDiag.TryGetValue(device, out var reentryDiag))
+                        Interlocked.Exchange(ref reentryDiag.ProducerReentryCount, reentry);
+                    PublishQueueFullFault(
+                        device,
+                        generation,
+                        "ControlProducerReentry",
+                        "Control",
+                        0,
+                        string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase)
+                            ? _controlRingDev1.Capacity
+                            : _controlRingDev2.Capacity,
+                        0,
+                        $"FastPathSignalInvalid Cause=ControlProducerReentry Device={device} " +
+                        $"Generation={generation} DAQ快速控制生产区发生回调重入，已拒绝该批次。Count={reentry}");
+                    return;
+                }
+
+                var producerHeld = true;
                 DateTime current;
+                DateTime last;
                 double driftMs;
-                var hostNow = _sampleClock.Now();
-                last = default;
-                current = default;
-                driftMs = 0;
-                _batchTimestampCoordinator.AdvanceAndCommit(
-                    device,
-                    hostNow,
-                    n,
-                    _sampleRate,
-                    (previousEnd, currentEnd, drift) =>
+                long sequence;
+                FastSignalQualityFlags qualityFlags = FastSignalQualityFlags.None;
+                try
+                {
+                    var timeline = state.Timeline.Advance(
+                        n,
+                        _sampleRate,
+                        arrivalUtc,
+                        callbackEntrySwTick,
+                        _sampleFutureToleranceMs);
+                    current = timeline.BatchEndUtc;
+                    last = timeline.PreviousBatchEndUtc;
+                    driftMs = timeline.ArrivalDelayMs;
+                    sequence = string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase)
+                        ? Interlocked.Increment(ref _batchSequenceDev1)
+                        : Interlocked.Increment(ref _batchSequenceDev2);
+                    if (_callbackTimingDiag.TryGetValue(device, out var sequenceDiag))
                     {
-                        last = previousEnd;
-                        current = currentEnd;
-                        driftMs = drift;
-                        var sequence = string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase)
-                            ? Interlocked.Increment(ref _batchSequenceDev1)
-                            : Interlocked.Increment(ref _batchSequenceDev2);
+                        Interlocked.Exchange(ref sequenceDiag.LastBatchSequence, sequence);
+                        Interlocked.Exchange(
+                            ref sequenceDiag.LastSampleLeadMsBits,
+                            BitConverter.DoubleToInt64Bits(timeline.SampleLeadMs));
+                    }
+
+                    if (timeline.IsFuture)
+                    {
+                        qualityFlags |= FastSignalQualityFlags.TimelineFuture;
+                        AppendDiagnostic(new DaqTimingValue
+                        {
+                            TimestampUtc = arrivalUtc,
+                            Device = device,
+                            Kind = "HardFault",
+                            Generation = generation,
+                            BatchSize = n,
+                            DriftMs = driftMs,
+                            Detail = $"DaqSampleTimelineFuture Sequence={sequence} LeadMs={timeline.SampleLeadMs:F3}"
+                        });
+                        PublishQueueFullFault(
+                            device,
+                            generation,
+                            "DaqSampleTimelineFuture",
+                            "Control",
+                            0,
+                            string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase)
+                                ? _controlRingDev1.Capacity
+                                : _controlRingDev2.Capacity,
+                            0,
+                            $"FastPathSignalInvalid Cause=DaqSampleTimelineFuture Device={device} " +
+                            $"Generation={generation} 样本时间领先回调" +
+                            $"{timeline.SampleLeadMs:F3}ms，超过{_sampleFutureToleranceMs:F0}ms，已拒绝控制和周期数据。"
+                        );
+                    }
+                    else
+                    {
                         EnqueueForProcessing(new Item(
                             device,
                             generation,
                             sequence,
                             raw,
-                            currentEnd,
-                            previousEnd,
-                            Stopwatch.GetTimestamp()));
-                    });
+                            current,
+                            last,
+                            callbackEntrySwTick));
 
-                // ② 当前批已完成编号并入队，立即 re-arm 下一批。
-                // 滤波、快速值和 UI 回调仍放在 re-arm 之后，不占用采集关键路径。
-                if (!IsCurrentGeneration(device, generation)) return;
-                var rearmStartSwTick = Stopwatch.GetTimestamp();
-                reader.BeginReadMultiSample(_samplesPerChannel, again, state);
-                var rearmMs = (Stopwatch.GetTimestamp() - rearmStartSwTick) * 1000.0 / Stopwatch.Frequency;
-                rearmed = true;
-
-                //var current =  idealNow; // 不用纠偏，直接采用理想时间
-
-                // ④ （可选）诊断丢块：host Δt 远大于 n/Fs
-                /*var hostDt = (hostNow - last).TotalSeconds;
-                var expectDt = n / _sampleRate;
-                if (hostDt > expectDt * 1.5)             // 系数可按经验调
-                {
-                    var lost = (int)Math.Round(hostDt * _sampleRate) - n;
-                    if (lost > 0)
-                        _log.Warn($"[{device}] 疑似丢样：hostΔt={hostDt:F4}s 期望={expectDt:F4}s 约缺 {lost} 点（≈{lost / (double)_samplesPerChannel:F2} 批）。", "AI");
-                }*/
-
-
-                /* 原有的旧代码
-                #region 仅针对本设备的“电流类”通道，取最后一个样本做快速工程值换算并上报
-
-                try
-                {
-                    // —— 修改 fast 分支：所有通道都写入 _lastFastValue —— //
-                    var devRecs = _enabled
-                        .Where(r => r.物理通道.StartsWith(device + "/"))
-                        .OrderBy(r => r.序号)
-                        .ToList();
-
-                    var chCount = raw.GetLength(0);
-                    var lastCol = raw.GetLength(1) - 1;
-                    if (lastCol >= 0)
-                        for (var c = 0; c < chCount; c++)
+                        if (_fastSource == FastSource.DaqCallback)
                         {
-                            var rec = devRecs[c];
-
-                            // 工程值换算（电压→工程值）
-                            var v = raw[c, lastCol];
-                            // var eng = (v - rec.零位漂移) * rec.变换斜率 + rec.变换截距;
-                            //
-                            // // 应用动态置零（工程值域）
-                            // if (_zeroOffsets.TryGetValue(rec.参数名, out var z))
-                            //     eng -= z;
-
-                            // —— 批内聚合：尾部中值/截尾均值/最后样本 —— //
-                            var eng = ComputeFastRepresentative(raw, c, lastCol, rec, current);
-
-
-                            // —— 新增：低时延稳态快照 —— //
-                            eng = _fastFilter.Update(rec.参数名, eng, current);
-
-                            // ① 对所有参数名都更新 fast 快照（包括 Pressure_1 / Pressure_2 / Force）
-                            _lastFastValue[rec.参数名] = eng;
-
-                            // ② 仅对 EPB 电流触发低时延事件（保持原有行为）
-                            var epbCh = TryParseEpbChannel(rec.参数名);
-                            if (epbCh >= 1 && epbCh <= 12)
-                                OnFastEpbCurrent?.Invoke(epbCh, eng, current);
-                        }
-                }
-                catch
-                {
-                    // 快速分支的异常不要影响主流程
-                }
-
-                #endregion
-                */
-
-
-                #region 仅针对本设备的“电流类”通道，取最后一个样本做快速工程值换算并上报
-
-                // 只有当 fast 来源选择为 DaqCallback 时，才在回调里更新 fast；
-                // 如果 fast 来源改为 ProcessLoopFiltered，则这里整段跳过，避免覆盖。
-                if (_fastSource == FastSource.DaqCallback)
-                {
-                    try
-                    {
-                        // —— 修改 fast 分支：所有通道都写入 _lastFastValue —— //
-                        var devRecs = GetDeviceRecords(device);
-
-                        var chCount = raw.GetLength(0);
-                        var lastCol = raw.GetLength(1) - 1;
-                        Span<FastControlSampleValue> controlSamples = stackalloc FastControlSampleValue[12];
-                        var controlSampleCount = 0;
-                        if (lastCol >= 0)
-                            for (var c = 0; c < chCount; c++)
+                            var devRecs = GetDeviceRecords(device);
+                            var chCount = Math.Min(raw.GetLength(0), devRecs.Length);
+                            var lastCol = raw.GetLength(1) - 1;
+                            Span<FastControlSampleValue> controlSamples =
+                                stackalloc FastControlSampleValue[Math.Max(1, chCount)];
+                            var controlSampleCount = 0;
+                            if (lastCol >= 0)
                             {
-                                var rec = devRecs[c];
-
-                                var eng = ComputeFastRepresentative(raw, c, lastCol, rec, current);
-
-                                // —— 低时延稳态快照（未必滤波） —— //
-                                eng = _fastFilter.Update(rec.参数名, eng, current);
-
-                                _lastFastValue[rec.参数名] = eng;
-
-                                // 压力新鲜度属于安全控制输入，必须在 DAQ 回调低时延路径刷新；
-                                // 后台滤波快照仍用于 UI/统计，但不得决定“压力是否过期”。
-                                if (TryParsePressureId(rec.参数名, out var pressureId))
-                                    _lastPressureSample[rec.参数名] = new PressureSample(
-                                        pressureId,
-                                        eng,
-                                        current.ToUniversalTime(),
-                                        Stopwatch.GetTimestamp());
-
-                                var epbCh = TryParseEpbChannel(rec.参数名);
-                                if (epbCh >= 1 && epbCh <= 12 && controlSampleCount < controlSamples.Length)
-                                    controlSamples[controlSampleCount++] = new FastControlSampleValue(epbCh, eng);
+                                for (var c = 0; c < chCount; c++)
+                                {
+                                    var rec = devRecs[c];
+                                    var epbCh = TryParseEpbChannel(rec.参数名);
+                                    var isPressure = TryParsePressureId(rec.参数名, out var pressureId);
+                                    if ((epbCh < 1 || epbCh > 12) && !isPressure) continue;
+                                    var representative = ComputeFastRepresentative(raw, c, lastCol, rec);
+                                    var sampleQuality = FastSignalQualityFlags.None;
+                                    if (double.IsNaN(representative) || double.IsInfinity(representative))
+                                        sampleQuality |= FastSignalQualityFlags.NonFinite;
+                                    var rawTailStart = Math.Max(0, lastCol - ControlBatchRing.RawTailCapacity + 1);
+                                    for (var col = rawTailStart; col <= lastCol; col++)
+                                    {
+                                        if (Math.Abs(raw[c, col]) >= Math.Max(Math.Abs(_aiMin), Math.Abs(_aiMax)) * 0.95)
+                                        {
+                                            sampleQuality |= FastSignalQualityFlags.AdcNearRail;
+                                            break;
+                                        }
+                                    }
+                                    controlSamples[controlSampleCount++] = new FastControlSampleValue(
+                                        c,
+                                        epbCh,
+                                        isPressure ? pressureId : 0,
+                                        representative,
+                                        sampleQuality);
+                                }
                             }
-                        var controlEnqueuedTick = Stopwatch.GetTimestamp();
-                        if (EnqueueForControl(
-                                device,
+
+                            var controlEnqueuedTick = Stopwatch.GetTimestamp();
+                            var metadata = new FastControlBatchMetadata(
                                 generation,
+                                sequence,
                                 current,
+                                arrivalUtc,
+                                callbackEntrySwTick,
                                 controlEnqueuedTick,
-                                controlSamples.Slice(0, controlSampleCount)))
-                            MarkControlEnqueued(device, controlEnqueuedTick);
+                                timeline.SampleLeadMs,
+                                Thread.CurrentThread.ManagedThreadId,
+                                qualityFlags);
+                            if (EnqueueForControl(
+                                    device,
+                                    metadata,
+                                    controlSamples.Slice(0, controlSampleCount),
+                                    raw))
+                                MarkControlEnqueued(device, controlEnqueuedTick);
+                        }
                     }
-                    catch
-                    {
-                        // 快速分支的异常不要影响主流程
-                    }
+
+                    // 所有生产者工作到此结束；清门后才允许下一批回调进入。
+                    state.ProducerGate.Exit();
+                    producerHeld = false;
+
+                    if (!IsCurrentGeneration(device, generation)) return;
+                    var rearmStartSwTick = Stopwatch.GetTimestamp();
+                    reader.BeginReadMultiSample(_samplesPerChannel, again, state);
+                    var rearmMs = (Stopwatch.GetTimestamp() - rearmStartSwTick) * 1000.0 / Stopwatch.Frequency;
+                    rearmed = true;
+
+                    TryLogDaqCallbackTiming(
+                        device, generation, n, current, arrivalUtc,
+                        callbackEntrySwTick, previousCallbackEntrySwTick,
+                        endReadMs, rearmMs, driftMs);
                 }
-
-                #endregion
-
-                // —— 诊断：入口间隔、EndRead、重新挂读、批大小与后台队列深度 ——
-                TryLogDaqCallbackTiming(
-                    device, generation, n, current.ToUniversalTime(), arrivalUtc,
-                    callbackEntrySwTick, previousCallbackEntrySwTick,
-                    endReadMs, rearmMs, driftMs);
+                finally
+                {
+                    if (producerHeld)
+                        state.ProducerGate.Exit();
+                }
 
 
                 // 下一轮
@@ -1845,7 +1939,7 @@ namespace IO.NI
             }
             finally
             {
-                if (state != null && !rearmed)
+                if (state != null && !rearmed && !state.ProducerGate.IsActive)
                     state.Quiesced.Set();
             }
         }
@@ -1889,7 +1983,7 @@ namespace IO.NI
         /// - LastSample：取最后一个样本；
         /// - TailMedian：取批尾 K 点中值；
         /// - TailTrimmedMean：批尾 K 点按比例截尾后的均值；
-        /// 然后再交给外层的 _fastFilter.Update 做因果平滑与限速。
+        /// 然后由单生产者控制线程中的 FastFilter 做因果平滑与限速。
         /// </summary>
         /// <param name="raw">当前批次原始电压数组 [ch, n]。</param>
         /// <param name="ch">通道索引。</param>
@@ -1897,20 +1991,16 @@ namespace IO.NI
         /// <param name="rec">该通道的配置记录（用于电压→工程值）。</param>
         /// <param name="now">当前主机时间戳，用于 fastFilter 的 dt。</param>
         /// <returns>批内聚合后的工程值代表。</returns>
-        private double ComputeFastRepresentative(double[,] raw, int ch, int lastCol, dynamic rec, DateTime now)
+        private double ComputeFastRepresentative(
+            double[,] raw,
+            int ch,
+            int lastCol,
+            AiConfigDetailRecord rec)
         {
-            // 工具：把“电压样本”换算为“工程值样本”（含动态置零）
-            double ToEng(double v)
-            {
-                var eng = (v - rec.零位漂移) * rec.变换斜率 + rec.变换截距;
-                if (_zeroOffsets.TryGetValue(rec.参数名, out double z)) eng -= z;
-                return eng;
-            }
-
             if (_fastSnap.Mode == FastSnapshotOptions.ModeKind.LastSample || lastCol < 0)
             {
                 // 仅最后一个样本（几乎零延迟）
-                return ToEng(raw[ch, lastCol]);
+                return ConvertFastVoltageToEngineering(raw[ch, lastCol], rec);
             }
 
             // 参与聚合的尾部窗口 [startCol..lastCol]
@@ -1921,7 +2011,7 @@ namespace IO.NI
             // 固定小窗口使用栈内存，避免每通道每批创建数组。
             Span<double> buf = stackalloc double[9];
             for (int j = 0, col = startCol; col <= lastCol; col++, j++)
-                buf[j] = ToEng(raw[ch, col]);
+                buf[j] = ConvertFastVoltageToEngineering(raw[ch, col], rec);
 
             for (var i = 1; i < count; i++)
             {
@@ -1952,6 +2042,15 @@ namespace IO.NI
             }
         }
 
+        private double ConvertFastVoltageToEngineering(double voltage, AiConfigDetailRecord rec)
+        {
+            var engineering =
+                (voltage - rec.零位漂移) * rec.变换斜率 + rec.变换截距;
+            if (_zeroOffsets.TryGetValue(rec.参数名, out var zeroOffset))
+                engineering -= zeroOffset;
+            return engineering;
+        }
+
         #endregion
 
 
@@ -1963,31 +2062,189 @@ namespace IO.NI
             AutoResetEvent signal)
         {
             var samples = new FastControlSampleValue[ring.MaximumSamplesPerBatch];
+            var rawTail = new double[ring.MaximumSamplesPerBatch * ControlBatchRing.RawTailCapacity];
+            var fastFilter = string.Equals(workerDevice, "Dev1", StringComparison.OrdinalIgnoreCase)
+                ? _fastFilterDev1
+                : _fastFilterDev2;
+            var deviceRecords = GetDeviceRecords(workerDevice);
+            var isDev1Worker = string.Equals(workerDevice, "Dev1", StringComparison.OrdinalIgnoreCase);
+            var observedResetEpoch = -1L;
+            var identityValidator = new ControlBatchIdentityValidator();
             try
             {
                 while (!_cts.IsCancellationRequested)
                 {
                     signal.WaitOne(20);
+                    var resetEpoch = Interlocked.Read(
+                        ref isDev1Worker
+                            ? ref _controlFilterResetEpochDev1
+                            : ref _controlFilterResetEpochDev2);
+                    if (resetEpoch != observedResetEpoch)
+                    {
+                        fastFilter.Reset();
+                        identityValidator.Reset();
+                        observedResetEpoch = resetEpoch;
+                    }
                     EvaluateControlLatency(workerDevice, ring, GetCurrentGeneration(workerDevice));
                     while (ring.TryDequeue(
                                samples,
+                               rawTail,
                                out var count,
-                               out var generation,
-                               out var timestamp,
-                               out var enqueuedTicks))
+                               out var rawTailCount,
+                               out var metadata))
                     {
-                        if (!IsCurrentGeneration(workerDevice, generation)) continue;
+                        if (!IsCurrentGeneration(workerDevice, metadata.Generation)) continue;
+                        var quality = metadata.QualityFlags;
+                        var identity = identityValidator.Validate(metadata);
+                        if (identity == ControlBatchIdentityResult.GenerationChanged)
+                            fastFilter.Reset();
+                        else if (identity != ControlBatchIdentityResult.Accepted)
+                        {
+                            var active = IsDeviceControlActive(workerDevice);
+                            if (identity == ControlBatchIdentityResult.Gap && !active)
+                            {
+                                fastFilter.Reset();
+                                identityValidator.Accept(metadata);
+                            }
+                            else
+                            {
+                                var faultCode = "ControlSequenceDiscontinuity";
+                                if (identity == ControlBatchIdentityResult.Duplicate)
+                                {
+                                    quality |= FastSignalQualityFlags.DuplicateBatch;
+                                    faultCode = "ControlBatchDuplicate";
+                                }
+                                else if (identity == ControlBatchIdentityResult.OutOfOrder)
+                                {
+                                    quality |= FastSignalQualityFlags.OutOfOrderBatch;
+                                    faultCode = "ControlBatchOutOfOrder";
+                                }
+                                else if (identity == ControlBatchIdentityResult.MonotonicTickInvalid)
+                                {
+                                    quality |= FastSignalQualityFlags.MonotonicTickInvalid;
+                                    faultCode = "ControlMonotonicTickInvalid";
+                                }
+                                else
+                                {
+                                    quality |= FastSignalQualityFlags.SequenceDiscontinuity;
+                                }
+                                AppendDiagnostic(new DaqTimingValue
+                                {
+                                    TimestampUtc = DateTime.UtcNow,
+                                    Device = workerDevice,
+                                    Kind = active ? "HardFault" : "RejectedControlBatch",
+                                    Generation = metadata.Generation,
+                                    BatchSequence = metadata.SourceSequence,
+                                    ProducerThreadId = metadata.ProducerThreadId,
+                                    SampleLeadMs = metadata.SampleLeadMs,
+                                    QualityFlags = quality.ToString(),
+                                    Detail = $"{faultCode} Identity={identity}"
+                                });
+                                if (active)
+                                {
+                                PublishQueueFullFault(
+                                    workerDevice,
+                                    metadata.Generation,
+                                        faultCode,
+                                    "Control",
+                                    ring.Depth,
+                                    ring.Capacity,
+                                    0,
+                                        $"FastPathSignalInvalid Cause={faultCode} Device={workerDevice} " +
+                                        $"Generation={metadata.Generation} Batch={metadata.SourceSequence} " +
+                                        $"Identity={identity}，已拒绝该控制批次。"
+                                );
+                                }
+                                continue;
+                            }
+                        }
+                        if ((quality & (FastSignalQualityFlags.SequenceDiscontinuity |
+                                        FastSignalQualityFlags.TimelineFuture |
+                                        FastSignalQualityFlags.ProducerReentry |
+                                        FastSignalQualityFlags.GenerationMismatch |
+                                        FastSignalQualityFlags.DuplicateBatch |
+                                        FastSignalQualityFlags.OutOfOrderBatch |
+                                        FastSignalQualityFlags.MonotonicTickInvalid |
+                                        FastSignalQualityFlags.FilterStateInvalid)) != 0)
+                            continue;
+
                         var batchStarted = Stopwatch.GetTimestamp();
                         var subscriberMaxMs = 0.0;
                         for (var i = 0; i < count; i++)
                         {
+                            var parameterName = deviceRecords[samples[i].SourceRow].参数名;
+                            double filtered;
+                            var sampleQuality = quality | samples[i].QualityFlags;
+                            try
+                            {
+                                filtered = fastFilter.Update(
+                                    parameterName,
+                                    samples[i].RepresentativeA,
+                                    metadata.CaptureMonotonicTicks);
+                            }
+                            catch (Exception ex)
+                            {
+                                sampleQuality |= FastSignalQualityFlags.FilterStateInvalid;
+                                PublishQueueFullFault(
+                                    workerDevice,
+                                    metadata.Generation,
+                                    "FastPathFilterStateInvalid",
+                                    "Control",
+                                    ring.Depth,
+                                    ring.Capacity,
+                                    0,
+                                    $"FastPathSignalInvalid Cause=FastPathFilterStateInvalid " +
+                                    $"Device={workerDevice} Generation={metadata.Generation} " +
+                                    $"Batch={metadata.SourceSequence} Parameter={parameterName} Error={ex.Message}");
+                                continue;
+                            }
+                            if (double.IsNaN(filtered) || double.IsInfinity(filtered))
+                                sampleQuality |= FastSignalQualityFlags.NonFinite;
+                            _lastFastValue[parameterName] = filtered;
+
+                            if (samples[i].PressureId > 0)
+                                _lastPressureSample[parameterName] = new PressureSample(
+                                    samples[i].PressureId,
+                                    filtered,
+                                    metadata.SampleUtc,
+                                    metadata.CaptureMonotonicTicks);
+
+                            if (samples[i].Channel < 1 || samples[i].Channel > 12) continue;
+                            var fastSample = new FastEpbCurrentSample(
+                                samples[i].Channel,
+                                filtered,
+                                samples[i].RepresentativeA,
+                                metadata.SampleUtc,
+                                metadata.CaptureMonotonicTicks,
+                                metadata.Generation,
+                                metadata.SourceSequence,
+                                sampleQuality);
+                            _lastFastEpbSample[samples[i].Channel] = fastSample;
+                            _fastEvidence.Append(
+                                workerDevice,
+                                new FastControlBatchMetadata(
+                                    metadata.Generation,
+                                    metadata.SourceSequence,
+                                    metadata.SampleUtc,
+                                    metadata.CallbackArrivalUtc,
+                                    metadata.CaptureMonotonicTicks,
+                                    metadata.EnqueuedMonotonicTicks,
+                                    metadata.SampleLeadMs,
+                                    metadata.ProducerThreadId,
+                                    sampleQuality),
+                                samples[i],
+                                filtered,
+                                rawTail,
+                                i * ControlBatchRing.RawTailCapacity,
+                                rawTailCount);
                             var subscriberStarted = Stopwatch.GetTimestamp();
                             try
                             {
+                                OnFastEpbCurrentSample?.Invoke(fastSample);
                                 OnFastEpbCurrent?.Invoke(
-                                    samples[i].Channel,
-                                    samples[i].Amps,
-                                    timestamp);
+                                    fastSample.Channel,
+                                    fastSample.CurrentA,
+                                    fastSample.SampleUtc);
                             }
                             catch (Exception ex)
                             {
@@ -2000,21 +2257,20 @@ namespace IO.NI
                         }
 
                         var processedTicks = Stopwatch.GetTimestamp();
-                        MarkControlProcessed(workerDevice, processedTicks, timestamp.ToUniversalTime());
+                        MarkControlProcessed(workerDevice, processedTicks, metadata.SampleUtc);
                         var processMs = AgeMs(batchStarted, processedTicks);
-                        var isDev1 = string.Equals(workerDevice, "Dev1", StringComparison.OrdinalIgnoreCase);
                         Interlocked.Exchange(
-                            ref isDev1 ? ref _lastControlBatchProcessMsBitsDev1 : ref _lastControlBatchProcessMsBitsDev2,
+                            ref isDev1Worker ? ref _lastControlBatchProcessMsBitsDev1 : ref _lastControlBatchProcessMsBitsDev2,
                             BitConverter.DoubleToInt64Bits(processMs));
                         Interlocked.Exchange(
-                            ref isDev1 ? ref _subscriberMaxMsBitsDev1 : ref _subscriberMaxMsBitsDev2,
+                            ref isDev1Worker ? ref _subscriberMaxMsBitsDev1 : ref _subscriberMaxMsBitsDev2,
                             BitConverter.DoubleToInt64Bits(subscriberMaxMs));
 
-                        var queueAgeMs = AgeMs(enqueuedTicks, batchStarted);
+                        var queueAgeMs = AgeMs(metadata.EnqueuedMonotonicTicks, batchStarted);
                         if (queueAgeMs >= _controlWarningAgeMs || processMs >= _controlWarningAgeMs)
                             TryRecordControlTiming(
                                 workerDevice,
-                                generation,
+                                metadata.Generation,
                                 ring,
                                 queueAgeMs,
                                 processMs,
@@ -2293,7 +2549,7 @@ namespace IO.NI
                                         var amp = data[i];
                                         lock (tracker.Sync)
                                         {
-                                            if (tracker.Active) tracker.Update(amp, tLocal);
+                                            if (tracker.Active) tracker.Update(Math.Abs(amp), tLocal);
                                         }
                                     }
                                 }
@@ -2708,7 +2964,6 @@ namespace IO.NI
             //task.Stream.ConfigureInputBuffer(0);
 
             task.Control(TaskAction.Verify);
-            task.Start();
             return task;
         }
 
@@ -2765,23 +3020,22 @@ namespace IO.NI
 
         private bool EnqueueForControl(
             string device,
-            long generation,
-            DateTime timestamp,
-            long enqueuedMonotonicTicks,
-            ReadOnlySpan<FastControlSampleValue> samples)
+            FastControlBatchMetadata metadata,
+            ReadOnlySpan<FastControlSampleValue> samples,
+            double[,] raw)
         {
             var isDev1 = string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase);
             var ring = isDev1 ? _controlRingDev1 : _controlRingDev2;
-            if (!ring.TryEnqueue(generation, timestamp, enqueuedMonotonicTicks, samples))
+            if (!ring.TryEnqueue(metadata, samples, raw))
             {
                 if (!IsDeviceControlActive(device))
                 {
                     ring.DiscardAllButLatest();
-                    if (!ring.TryEnqueue(generation, timestamp, enqueuedMonotonicTicks, samples))
+                    if (!ring.TryEnqueue(metadata, samples, raw))
                         return false;
                     TryRecordControlTiming(
                         device,
-                        generation,
+                        metadata.Generation,
                         ring,
                         _controlHardFaultAgeMs,
                         0,
@@ -2792,7 +3046,7 @@ namespace IO.NI
                 {
                     PublishQueueFullFault(
                         device,
-                        generation,
+                        metadata.Generation,
                         "ControlQueueFull",
                         "Control",
                         ring.Depth,
@@ -2802,7 +3056,7 @@ namespace IO.NI
                 }
             }
             TrySignal(isDev1 ? _controlSignalDev1 : _controlSignalDev2);
-            EvaluateControlLatency(device, ring, generation);
+            EvaluateControlLatency(device, ring, metadata.Generation);
             return true;
         }
 
@@ -2813,7 +3067,8 @@ namespace IO.NI
             string queueKind = "Background",
             int queueDepth = 0,
             int queueCapacity = 0,
-            double oldestBatchAgeMs = 0)
+            double oldestBatchAgeMs = 0,
+            string reasonOverride = null)
         {
             var isDev1 = string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase);
             ref var latchedGeneration = ref isDev1
@@ -2827,6 +3082,10 @@ namespace IO.NI
                 latchedGeneration = ref isDev1
                     ? ref _controlLatencyFaultGenerationDev1
                     : ref _controlLatencyFaultGenerationDev2;
+            else if (IsControlInvariantFault(code))
+                latchedGeneration = ref isDev1
+                    ? ref _controlInvariantFaultGenerationDev1
+                    : ref _controlInvariantFaultGenerationDev2;
             if (Interlocked.Exchange(ref latchedGeneration, generation) == generation) return;
             if (queueCapacity <= 0) queueCapacity = _processingQueueCapacity;
             if (queueDepth <= 0)
@@ -2838,12 +3097,21 @@ namespace IO.NI
                         ? Volatile.Read(ref _queueCountDev1)
                         : Volatile.Read(ref _queueCountDev2));
             var processedUtc = default(DateTime);
+            var diagnosticBatchSequence = 0L;
+            var diagnosticProducerReentryCount = 0L;
+            var diagnosticSampleLeadMs = 0.0;
             if (_callbackTimingDiag.TryGetValue(device, out var diag))
             {
                 var ticks = Interlocked.Read(ref diag.LastProcessedSampleUtcTicks);
                 if (ticks > 0) processedUtc = new DateTime(ticks, DateTimeKind.Utc);
+                diagnosticBatchSequence = Interlocked.Read(ref diag.LastBatchSequence);
+                diagnosticProducerReentryCount = Interlocked.Read(ref diag.ProducerReentryCount);
+                diagnosticSampleLeadMs = BitConverter.Int64BitsToDouble(
+                    Interlocked.Read(ref diag.LastSampleLeadMsBits));
             }
-            var reason = string.Equals(code, "ControlLatencyExceeded", StringComparison.OrdinalIgnoreCase)
+            var reason = !string.IsNullOrWhiteSpace(reasonOverride)
+                ? reasonOverride
+                : string.Equals(code, "ControlLatencyExceeded", StringComparison.OrdinalIgnoreCase)
                 ? $"Device={device} Generation={generation} 控制消费延迟超过{_controlHardFaultAgeMs:F0}ms。"
                 : string.Equals(queueKind, "Control", StringComparison.OrdinalIgnoreCase)
                     ? $"Device={device} Generation={generation} DAQ实时控制有界队列已满，禁止静默丢弃。"
@@ -2877,6 +3145,11 @@ namespace IO.NI
                 ControlQueueCapacity = string.Equals(queueKind, "Control", StringComparison.OrdinalIgnoreCase)
                     ? queueCapacity
                     : 0,
+                BatchSequence = diagnosticBatchSequence,
+                ProducerThreadId = Thread.CurrentThread.ManagedThreadId,
+                ProducerReentryCount = diagnosticProducerReentryCount,
+                SampleLeadMs = diagnosticSampleLeadMs,
+                QualityFlags = GetInvariantQualityFlag(code).ToString(),
                 Detail = fault.Reason
             });
             // 后续事故归并、日志、UI 与快照均转移到后台，控制线程到此即可返回。
@@ -2885,6 +3158,36 @@ namespace IO.NI
                 try { DeviceFaultPublicationRequested?.Invoke(fault); } catch { }
                 _log.Error(fault.Reason, "AI");
             });
+        }
+
+        private static bool IsControlInvariantFault(string code)
+        {
+            return string.Equals(code, "ControlProducerReentry", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(code, "DaqSampleTimelineFuture", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(code, "ControlSequenceDiscontinuity", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(code, "ControlBatchDuplicate", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(code, "ControlBatchOutOfOrder", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(code, "ControlMonotonicTickInvalid", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(code, "FastPathFilterStateInvalid", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static FastSignalQualityFlags GetInvariantQualityFlag(string code)
+        {
+            if (string.Equals(code, "ControlProducerReentry", StringComparison.OrdinalIgnoreCase))
+                return FastSignalQualityFlags.ProducerReentry;
+            if (string.Equals(code, "DaqSampleTimelineFuture", StringComparison.OrdinalIgnoreCase))
+                return FastSignalQualityFlags.TimelineFuture;
+            if (string.Equals(code, "ControlBatchDuplicate", StringComparison.OrdinalIgnoreCase))
+                return FastSignalQualityFlags.DuplicateBatch;
+            if (string.Equals(code, "ControlBatchOutOfOrder", StringComparison.OrdinalIgnoreCase))
+                return FastSignalQualityFlags.OutOfOrderBatch;
+            if (string.Equals(code, "ControlMonotonicTickInvalid", StringComparison.OrdinalIgnoreCase))
+                return FastSignalQualityFlags.MonotonicTickInvalid;
+            if (string.Equals(code, "FastPathFilterStateInvalid", StringComparison.OrdinalIgnoreCase))
+                return FastSignalQualityFlags.FilterStateInvalid;
+            if (string.Equals(code, "ControlSequenceDiscontinuity", StringComparison.OrdinalIgnoreCase))
+                return FastSignalQualityFlags.SequenceDiscontinuity;
+            return FastSignalQualityFlags.None;
         }
 
         private void ResetFreshness(string device)
@@ -2896,6 +3199,9 @@ namespace IO.NI
             Interlocked.Exchange(ref diag.LastProcessedSampleUtcTicks, 0);
             Interlocked.Exchange(ref diag.LastCbIntervalMsBits, 0);
             Interlocked.Exchange(ref diag.LastArrivalDelayMsBits, 0);
+            Interlocked.Exchange(ref diag.LastBatchSequence, 0);
+            Interlocked.Exchange(ref diag.ProducerReentryCount, 0);
+            Interlocked.Exchange(ref diag.LastSampleLeadMsBits, 0);
         }
 
         private void StartDevice(string device)
@@ -2919,6 +3225,11 @@ namespace IO.NI
                 {
                     task = CreateAiTask(
                         taskName, channels, _aiMin, _aiMax, _terminalConfiguration);
+                    // 每台设备在真正启动硬件前建立独立时间原点。累计样本时间只从该原点推进，
+                    // 回调追赶不得再把样本时间贴到主机当前时间后继续向未来累加。
+                    var acquisitionStartUtc = DateTime.UtcNow;
+                    var acquisitionStartTick = Stopwatch.GetTimestamp();
+                    task.Start();
                     var reader = new AnalogMultiChannelReader(task.Stream)
                     {
                         SynchronizeCallbacks = false
@@ -2930,6 +3241,7 @@ namespace IO.NI
                         Task = task,
                         Reader = reader
                     };
+                    state.Timeline.Reset(acquisitionStartUtc, acquisitionStartTick);
                     if (isDev1)
                     {
                         _task1 = task;
@@ -3079,6 +3391,9 @@ namespace IO.NI
             /// <summary>捕获结束时刻（本地时间）。</summary>
             public DateTime EndAt;
 
+            /// <summary>最近一个实际纳入证据的全速率样本时刻（本地时间）。</summary>
+            public DateTime LastSampleAt;
+
             /// <summary>期间累计样本数（用于判断是否有有效样本）。</summary>
             public long SampleCount;
 
@@ -3093,6 +3408,7 @@ namespace IO.NI
             public bool Active;
             public DateTime StartAt;
             public DateTime EndAt;
+            public DateTime LastSampleAt;
             public DateTime MaxAt;
             public double MaxAmp;
             public long SampleCount;
@@ -3112,6 +3428,7 @@ namespace IO.NI
                 EndAt = t0;
                 MaxAmp = double.NegativeInfinity;
                 MaxAt = t0;
+                LastSampleAt = DateTime.MinValue;
                 SampleCount = 0;
                 CutoffLocal = null; // 清空上次的截止
                 Token = token;
@@ -3120,6 +3437,9 @@ namespace IO.NI
             /// <summary>纳入一个样本（全数据逐点）。</summary>
             public void Update(double amp, DateTime tsLocal)
             {
+                // 捕获开始前已在后台队列中的历史样本不得混入本次输出证据。
+                if (tsLocal < StartAt)
+                    return;
                 // 若设置了逻辑截止时间，则仅接受截止内样本
                 if (CutoffLocal.HasValue && tsLocal > CutoffLocal.Value)
                     return;
@@ -3130,6 +3450,7 @@ namespace IO.NI
                     MaxAmp = amp;
                     MaxAt = tsLocal;
                 }
+                LastSampleAt = tsLocal;
                 EndAt = tsLocal; // 批内最后一个样本的时间
             }
 
@@ -3162,6 +3483,7 @@ namespace IO.NI
                     MaxAt = MaxAt,
                     StartAt = StartAt,
                     EndAt = EndAt,
+                    LastSampleAt = LastSampleAt,
                     SampleCount = SampleCount,
                     IsActive = Active
                 };
@@ -3262,7 +3584,8 @@ namespace IO.NI
                     cancellationToken)
                 .ConfigureAwait(false);
             var timeMatched = peak.StartAt.ToUniversalTime() >= token.StartUtc.AddMilliseconds(-50) &&
-                              peak.EndAt.ToUniversalTime() >= token.StartUtc;
+                              peak.LastSampleAt != DateTime.MinValue &&
+                              peak.LastSampleAt.ToUniversalTime() >= token.StartUtc;
             return new PeakCaptureResult
             {
                 Token = token,

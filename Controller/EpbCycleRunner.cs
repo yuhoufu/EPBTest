@@ -285,6 +285,19 @@ namespace Controller
             FeedCurrentSample(epbChannel, tick, currentAmp, DateTime.UtcNow);
         }
 
+        public void FeedCurrentSample(FastEpbCurrentSample sample)
+        {
+            FeedCurrentSampleCore(
+                sample.Channel,
+                sample.CaptureMonotonicTicks,
+                sample.CurrentA,
+                sample.SampleUtc,
+                sample.RepresentativeA,
+                sample.BatchSequence,
+                sample.QualityFlags,
+                sample.IsControlUsable);
+        }
+
         /// <summary>
         ///     注入带采集时间戳的电流样本。时间戳仅用于诊断证据，控制判定仍使用单调时钟。
         /// </summary>
@@ -294,11 +307,42 @@ namespace Controller
             double currentAmp,
             DateTime sampleUtc)
         {
+            FeedCurrentSampleCore(
+                epbChannel,
+                tick,
+                currentAmp,
+                sampleUtc,
+                currentAmp,
+                0,
+                FastSignalQualityFlags.None,
+                true);
+        }
+
+        private void FeedCurrentSampleCore(
+            int epbChannel,
+            long tick,
+            double currentAmp,
+            DateTime sampleUtc,
+            double representativeA,
+            long batchSequence,
+            FastSignalQualityFlags qualityFlags,
+            bool controlUsable)
+        {
             if (epbChannel < 1 || epbChannel >= _currentBus.Length) return;
-            _currentBus[epbChannel].Add(new CurrentSample(tick, currentAmp));
+            Volatile.Write(ref _lastFastBatchSequence, batchSequence);
+            Volatile.Write(ref _lastFastRepresentativeBits, BitConverter.DoubleToInt64Bits(representativeA));
+            Volatile.Write(ref _lastFastQualityFlags, (int)qualityFlags);
+            if (controlUsable)
+                _currentBus[epbChannel].Add(new CurrentSample(tick, currentAmp));
 
             // 事件驱动判定：仅对本 Runner 所属通道生效
             if (epbChannel != _channel) return;
+
+            if (!controlUsable)
+            {
+                ProcessAdaptiveSample(tick, currentAmp, sampleUtc, qualityFlags);
+                return;
+            }
 
             var waiter = Volatile.Read(ref _currentAboveWaiter);
             if (waiter != null)
@@ -314,7 +358,7 @@ namespace Controller
                 }
             }
 
-            ProcessAdaptiveSample(tick, currentAmp, sampleUtc);
+            ProcessAdaptiveSample(tick, currentAmp, sampleUtc, qualityFlags);
         }
 
         /// <summary>

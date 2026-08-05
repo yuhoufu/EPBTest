@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using Config;
+using IO.NI;
 
 namespace Controller.Adaptive
 {
@@ -122,6 +123,9 @@ namespace Controller.Adaptive
         public string CutoffReason { get; set; }
         public int ReleaseCandidateElapsedMs { get; set; }
         public bool WindowQualified { get; set; }
+        public FastSignalQualityFlags FastSignalQualityFlags { get; set; }
+        public double FastRepresentativeA { get; set; } = double.NaN;
+        public long BatchSequence { get; set; }
 
         public bool HasAction =>
             ClampReached || ReleaseCompleted || SoftWarning || HardFault || StateChanged;
@@ -153,6 +157,9 @@ namespace Controller.Adaptive
             CutoffReason = null;
             ReleaseCandidateElapsedMs = 0;
             WindowQualified = false;
+            FastSignalQualityFlags = FastSignalQualityFlags.None;
+            FastRepresentativeA = double.NaN;
+            BatchSequence = 0;
         }
 
         internal EpbAdaptiveDecision Copy()
@@ -384,6 +391,34 @@ namespace Controller.Adaptive
                 currentAmp,
                 observedFullRatePeakA,
                 new EpbAdaptiveDecision());
+        }
+
+        internal EpbAdaptiveDecision OnInvalidFastSignalReusable(
+            long tick,
+            double currentAmp,
+            FastSignalQualityFlags qualityFlags,
+            EpbAdaptiveDecision reusableDecision)
+        {
+            lock (_gate)
+            {
+                var decision = reusableDecision ?? throw new ArgumentNullException(nameof(reusableDecision));
+                decision.Reset(_stage, currentAmp);
+                decision.FastSignalQualityFlags = qualityFlags;
+                if (_stage == EpbCurrentStage.Idle ||
+                    _stage == EpbCurrentStage.Hold ||
+                    _stage == EpbCurrentStage.Released ||
+                    _stage == EpbCurrentStage.Faulted)
+                    return decision;
+
+                _lastSampleTick = tick;
+                var current = double.IsNaN(currentAmp) || double.IsInfinity(currentAmp)
+                    ? 0
+                    : Math.Abs(currentAmp);
+                _lastCurrentA = current;
+                decision.CurrentA = current;
+                decision.ElapsedMs = ElapsedMs(_powerStartTick, tick);
+                return Fault(decision, $"FastPathSignalInvalid Quality={qualityFlags}");
+            }
         }
 
         internal EpbAdaptiveDecision OnSampleReusable(

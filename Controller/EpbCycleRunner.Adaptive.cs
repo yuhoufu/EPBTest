@@ -39,6 +39,9 @@ namespace Controller
         private double _adaptiveDecisionPeakEvidenceLagMs = double.NaN;
         private int _adaptiveClampPeakCaptureStarted;
         private PeakCaptureToken _adaptivePeakCaptureToken;
+        private long _lastFastBatchSequence;
+        private long _lastFastRepresentativeBits;
+        private int _lastFastQualityFlags;
         private string _adaptiveDirection = string.Empty;
         private readonly EpbAdaptiveSafetyLimits _adaptiveSafetyLimits;
         private int _adaptiveTerminalOffLatched;
@@ -288,13 +291,32 @@ namespace Controller
         private void ProcessAdaptiveSample(
             long tick,
             double currentAmp,
-            DateTime sampleUtc)
+            DateTime sampleUtc,
+            FastSignalQualityFlags qualityFlags)
         {
             if (!AdaptiveMonitoringEnabled || _adaptiveStateMachine == null) return;
 
             EpbAdaptiveDecision decision;
             try
             {
+                if (FastPathTripClassifier.HasInvalidControlQuality(qualityFlags))
+                {
+                    decision = _adaptiveStateMachine.OnInvalidFastSignalReusable(
+                        tick,
+                        currentAmp,
+                        qualityFlags,
+                        _adaptiveSampleDecisionScratch);
+                    decision.FastRepresentativeA = BitConverter.Int64BitsToDouble(
+                        Volatile.Read(ref _lastFastRepresentativeBits));
+                    decision.BatchSequence = Volatile.Read(ref _lastFastBatchSequence);
+                    DispatchAdaptiveDecisionInSafetyOrder(
+                        decision,
+                        () => EnsureAdaptiveTerminalPowerOff(decision),
+                        () => PublishAdaptiveTrace(tick, sampleUtc, decision),
+                        () => HandleAdaptiveDecision(decision));
+                    return;
+                }
+
                 var fullRatePeakA = double.NaN;
                 var evidenceThroughUtc = DateTime.MinValue;
                 if (_acq != null &&
@@ -307,7 +329,7 @@ namespace Controller
                             _acq.TryPeekEpbCurrentPeak(_adaptivePeakCaptureToken, out var peak))
                         {
                             fullRatePeakA = peak.MaxAmp;
-                            evidenceThroughUtc = peak.EndAt.ToUniversalTime();
+                            evidenceThroughUtc = peak.LastSampleAt.ToUniversalTime();
                         }
                     }
                     catch
@@ -321,6 +343,10 @@ namespace Controller
                     currentAmp,
                     fullRatePeakA,
                     _adaptiveSampleDecisionScratch);
+                decision.FastSignalQualityFlags = qualityFlags;
+                decision.FastRepresentativeA = BitConverter.Int64BitsToDouble(
+                    Volatile.Read(ref _lastFastRepresentativeBits));
+                decision.BatchSequence = Volatile.Read(ref _lastFastBatchSequence);
                 if (decision.ClampReached && evidenceThroughUtc != DateTime.MinValue)
                 {
                     var normalizedSampleUtc = sampleUtc.Kind == DateTimeKind.Utc
@@ -485,6 +511,9 @@ namespace Controller
                 catch { }
                 return;
             }
+
+            // 快速信号相关故障已经先完成断电，但要等 2kHz 证据封口后再发布唯一的最终报警。
+            if (FastPathTripClassifier.IsFastSignalDependentFault(decision.Reason)) return;
 
             var alarmReason = "AdaptiveHardFault " + decision.Reason;
             _ = Task.Run(() =>
@@ -833,6 +862,77 @@ namespace Controller
             }
         }
 
+        private async Task<string> FinalizeFastPathFaultAsync(EpbAdaptiveDecision decision)
+        {
+            if (decision == null || !FastPathTripClassifier.IsFastSignalDependentFault(decision.Reason))
+                return decision?.Reason ?? "HardFault";
+
+            FastPathTripResult classification;
+            if (decision.Reason.IndexOf("OverCurrent3Samples", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                double fullRatePeakA = double.NaN;
+                double evidenceAgeMs = double.PositiveInfinity;
+                try
+                {
+                    if (_acq != null && _adaptivePeakCaptureToken != null &&
+                        Interlocked.CompareExchange(ref _adaptiveClampPeakCaptureStarted, 1, 1) == 1)
+                    {
+                        var capture = await _acq.EndEpbCurrentPeakAsync(
+                                _adaptivePeakCaptureToken,
+                                100,
+                                cutoffAfterDelay: true,
+                                cancellationToken: CancellationToken.None)
+                            .ConfigureAwait(false);
+                        if (capture.IsMatched && capture.Peak.SampleCount > 0)
+                        {
+                            fullRatePeakA = capture.Peak.MaxAmp;
+                            evidenceAgeMs =
+                                (DateTime.UtcNow - capture.Peak.LastSampleAt.ToUniversalTime()).TotalMilliseconds;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _log?.Warn($"EPB[{_channel}] 快速过流证据封口失败：{ex.Message}", "EPB");
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref _adaptiveClampPeakCaptureStarted, 0);
+                    _adaptivePeakCaptureToken = null;
+                }
+
+                var fastPeakA = Math.Max(
+                    Math.Max(
+                        Math.Abs(decision.CurrentA),
+                        _adaptiveStateMachine?.PeakCurrentA ?? 0),
+                    double.IsNaN(decision.FastRepresentativeA)
+                        ? 0
+                        : Math.Abs(decision.FastRepresentativeA));
+                classification = FastPathTripClassifier.ClassifyOverCurrent(
+                    fastPeakA,
+                    _posThrA + Math.Max(0, _overshootAlarmDeltaA),
+                    fullRatePeakA,
+                    evidenceAgeMs,
+                    _programSafetySettings.PeakEvidenceMismatchToleranceA,
+                    _programSafetySettings.PeakEvidenceMaximumLagMs,
+                    decision.FastSignalQualityFlags);
+            }
+            else
+            {
+                classification = FastPathTripClassifier.ClassifySignalDependentFault(
+                    decision.Reason,
+                    decision.FastSignalQualityFlags);
+            }
+
+            var finalReason = classification.Classification == FastPathTripClassification.NotApplicable
+                ? decision.Reason
+                : $"{classification.Code} {classification.Reason} Original={decision.Reason}";
+            _log?.Error($"EPB[{_channel}] 快速保护最终归因：{finalReason}", "EPB");
+            try { AlarmRaised?.Invoke(_channel, "AdaptiveHardFault " + finalReason); }
+            catch { }
+            return finalReason;
+        }
+
         private void RaiseAdaptiveWarning(string reason)
         {
             var warningReason = reason ?? "AdaptiveWarning";
@@ -908,6 +1008,8 @@ namespace Controller
 
                 CaptureAdaptivePreEnergizationCurrent();
                 BeginAdaptiveForwardMonitoring(targetPeriodMs);
+                // 从上电前开始捕获 2kHz 证据，确保浪涌和快速过流都能在断电后归因。
+                EnsureAdaptiveClampPeakCaptureStarted();
                 CommandForward();
                 _log?.Info(
                     $"EPB[{_channel}] 自适应正向上电：软时限={_adaptiveProfile.GetForwardSoftLimitMs()}ms，" +
@@ -919,8 +1021,9 @@ namespace Controller
                 var forward = await WaitAdaptiveDecisionAsync(forwardCompletion, token).ConfigureAwait(false);
                 if (forward.HardFault)
                 {
+                    var finalReason = await FinalizeFastPathFaultAsync(forward).ConfigureAwait(false);
                     DisarmAdaptiveMonitoring();
-                    return EpbCycleOutcome.HardFault(forward.Stage, forward.Reason);
+                    return EpbCycleOutcome.HardFault(forward.Stage, finalReason);
                 }
                 if (!forward.ClampReached)
                 {
@@ -1271,6 +1374,7 @@ namespace Controller
                 await holdTask.ConfigureAwait(false);
 
                 BeginAdaptiveReverseMonitoring(targetPeriodMs);
+                EnsureAdaptiveClampPeakCaptureStarted();
                 CommandReverse();
                 _log?.Info(
                     $"EPB[{_channel}] 自适应反向上电：硬时限={GetReverseAbsoluteMaxMs(targetPeriodMs)}ms。",
@@ -1281,8 +1385,9 @@ namespace Controller
                 var reverse = await WaitAdaptiveDecisionAsync(reverseCompletion, token).ConfigureAwait(false);
                 if (reverse.HardFault)
                 {
+                    var finalReason = await FinalizeFastPathFaultAsync(reverse).ConfigureAwait(false);
                     DisarmAdaptiveMonitoring();
-                    return EpbCycleOutcome.HardFault(reverse.Stage, reverse.Reason);
+                    return EpbCycleOutcome.HardFault(reverse.Stage, finalReason);
                 }
                 if (!reverse.ReleaseCompleted)
                 {
@@ -1291,7 +1396,7 @@ namespace Controller
                 }
 
                 _adaptiveReverseEmptyA = _adaptiveStateMachine.ObservedReverseEmptyA;
-                _adaptiveStateMachine.Disarm();
+                DisarmAdaptiveMonitoring();
 
                 outcome = new EpbCycleOutcome
                 {

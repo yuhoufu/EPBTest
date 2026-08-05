@@ -28,6 +28,15 @@ namespace AdaptiveControlTests
             Run("控制诊断记录真实64批容量", ControlDiagnosticsUseRealCapacity, ref passed);
             Run("构建身份包含版本哈希位数与Git状态", BuildIdentityIsAuditable, ref passed);
             Run("最后项目跨版本恢复且不可用时保留选择", LastProjectSelectionSurvivesUpgradeAndUnavailableStorage, ref passed);
+            Run("DAQ生产区拒绝重叠回调", ProducerGateRejectsOverlap, ref passed);
+            Run("采样时间按设备起点和累计样本推进", AcquisitionTimelineNeverSnapsCatchUpToFuture, ref passed);
+            Run("控制批携带序号单调时钟和原始尾部", ControlBatchCarriesIdentityClockAndRawTail, ref passed);
+            Run("控制消费拒绝重复倒序和非递增tick", ControlBatchIdentityRejectsInvalidOrder, ref passed);
+            Run("每设备快速滤波隔离并按代次复位", FastFiltersAreIsolatedAndResettable, ref passed);
+            Run("快速滤波十万次稳态更新无持续分配", FastFilterHotLoopDoesNotAllocate, ref passed);
+            Run("启动定位相同批次不重复计数", StartupClassifierIgnoresDuplicateBatch, ref passed);
+            Run("未来墙钟不改变控制经过时间", FutureWallClockDoesNotChangeControlElapsed, ref passed);
+            Run("快速过流由全速率证据最终归因", FastTripClassificationUsesFullRateEvidence, ref passed);
             return passed;
         }
 
@@ -343,6 +352,199 @@ namespace AdaptiveControlTests
             {
                 if (Directory.Exists(testRoot)) Directory.Delete(testRoot, true);
             }
+        }
+
+        private static void ProducerGateRejectsOverlap()
+        {
+            var gate = new DaqCallbackProducerGate();
+            Assert(gate.TryEnter(), "首个生产者未取得门");
+            var rejected = 0;
+            var workers = Enumerable.Range(0, 8)
+                .Select(_ => new Thread(() =>
+                {
+                    for (var attempt = 0; attempt < 1000; attempt++)
+                    {
+                        if (!gate.TryEnter()) Interlocked.Increment(ref rejected);
+                        else gate.Exit();
+                    }
+                }))
+                .ToArray();
+            foreach (var worker in workers) worker.Start();
+            foreach (var worker in workers) Assert(worker.Join(1000), "重叠生产者测试超时");
+            var expectedRejected = workers.Length * 1000;
+            Assert(rejected == expectedRejected && gate.ReentryCount == expectedRejected,
+                "重叠生产者未全部拒绝或重入计数错误");
+            gate.Exit();
+            Assert(gate.TryEnter(), "生产区退出后无法重新进入");
+            gate.Exit();
+        }
+
+        private static void AcquisitionTimelineNeverSnapsCatchUpToFuture()
+        {
+            var origin = new DateTime(2026, 8, 5, 1, 0, 0, DateTimeKind.Utc);
+            var originTick = Stopwatch.Frequency;
+            var timeline = new DeviceSampleTimeline();
+            timeline.Reset(origin, originTick);
+            var first = timeline.Advance(
+                20, 2000, origin.AddMilliseconds(500),
+                originTick + Stopwatch.Frequency / 2, 20);
+            var second = timeline.Advance(
+                20, 2000, origin.AddMilliseconds(501),
+                originTick + (long)(0.501 * Stopwatch.Frequency), 20);
+            Assert(first.BatchEndUtc == origin.AddMilliseconds(10) &&
+                   second.BatchEndUtc == origin.AddMilliseconds(20),
+                "追赶回调错误贴到主机时间后继续推进");
+            Assert(!first.IsFuture && !second.IsFuture && first.ArrivalDelayMs > 400,
+                "历史积压批被误判为未来样本");
+
+            var invalid = new DeviceSampleTimeline();
+            invalid.Reset(origin, originTick);
+            var future = invalid.Advance(
+                1040, 2000, origin.AddMilliseconds(20),
+                originTick + Stopwatch.Frequency / 50, 20);
+            Assert(future.IsFuture && future.SampleLeadMs >= 499,
+                "未来约500ms的样本时间没有触发不变量");
+        }
+
+        private static void ControlBatchCarriesIdentityClockAndRawTail()
+        {
+            var ring = new ControlBatchRing(4, 1);
+            var raw = new double[1, 20];
+            for (var i = 0; i < 20; i++) raw[0, i] = i / 10.0;
+            var values = new[] { new FastControlSampleValue(0, 4, 0, 12.5) };
+            var metadata = new FastControlBatchMetadata(
+                7, 123, DateTime.UtcNow, DateTime.UtcNow,
+                1000, 1100, 0, 42, FastSignalQualityFlags.None);
+            Assert(ring.TryEnqueue(metadata, values, raw), "结构化控制批入环失败");
+            var destination = new FastControlSampleValue[1];
+            var rawTail = new double[ControlBatchRing.RawTailCapacity];
+            Assert(ring.TryDequeue(destination, rawTail, out var count, out var rawCount, out var actual),
+                "结构化控制批出环失败");
+            Assert(count == 1 && rawCount == 20 && actual.Generation == 7 &&
+                   actual.SourceSequence == 123 && actual.CaptureMonotonicTicks == 1000 &&
+                   Math.Abs(rawTail[19] - 1.9) < 1e-12,
+                "控制批身份、单调时钟或原始尾部损坏");
+        }
+
+        private static void FastFiltersAreIsolatedAndResettable()
+        {
+            var dev1 = new ClsDataFilter.FastFilter(3, 0.5, 0);
+            var dev2 = new ClsDataFilter.FastFilter(3, 0.5, 0);
+            var tick = Stopwatch.Frequency;
+            dev1.Update("EPB4_current", 50, tick);
+            var dev2Value = dev2.Update("EPB8_current", 2, tick);
+            Assert(Math.Abs(dev2Value - 2) < 1e-12, "Dev1快速值污染Dev2滤波状态");
+            dev1.Update("EPB4_current", 60, tick + 1);
+            dev1.Reset();
+            var resetValue = dev1.Update("EPB4_current", 3, tick + 2);
+            Assert(Math.Abs(resetValue - 3) < 1e-12, "代次复位后仍继承旧快速滤波状态");
+        }
+
+        private static void ControlBatchIdentityRejectsInvalidOrder()
+        {
+            var validator = new ControlBatchIdentityValidator();
+            FastControlBatchMetadata Metadata(long generation, long sequence, long tick) =>
+                new FastControlBatchMetadata(
+                    generation, sequence, DateTime.UtcNow, DateTime.UtcNow,
+                    tick, tick + 1, 0, 7, FastSignalQualityFlags.None);
+
+            Assert(validator.Validate(Metadata(1, 10, 100)) == ControlBatchIdentityResult.GenerationChanged,
+                "首批未建立代次身份");
+            Assert(validator.Validate(Metadata(1, 11, 110)) == ControlBatchIdentityResult.Accepted,
+                "连续批次被拒绝");
+            Assert(validator.Validate(Metadata(1, 11, 120)) == ControlBatchIdentityResult.Duplicate,
+                "重复批次未拒绝");
+            Assert(validator.Validate(Metadata(1, 9, 130)) == ControlBatchIdentityResult.OutOfOrder,
+                "倒序批次未拒绝");
+            Assert(validator.Validate(Metadata(1, 12, 110)) == ControlBatchIdentityResult.MonotonicTickInvalid,
+                "非递增回调tick未拒绝");
+            Assert(validator.Validate(Metadata(1, 13, 130)) == ControlBatchIdentityResult.Gap,
+                "序号缺口未识别");
+            validator.Reset();
+            Assert(validator.Validate(Metadata(2, 1, 10)) == ControlBatchIdentityResult.GenerationChanged,
+                "新代次未复位批次身份");
+        }
+
+        private static void FastFilterHotLoopDoesNotAllocate()
+        {
+            var filter = new ClsDataFilter.FastFilter(9, 0.4, 0);
+            var tick = Stopwatch.Frequency;
+            for (var i = 0; i < 100; i++)
+                filter.Update("EPB4_current", i % 20, tick + i);
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            var before = GC.GetAllocatedBytesForCurrentThread();
+            for (var i = 0; i < 100000; i++)
+                filter.Update("EPB4_current", i % 20, tick + 100 + i);
+            var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+            Assert(allocated <= 1024,
+                $"快速滤波稳态热路径产生持续托管分配：{allocated} bytes");
+        }
+
+        private static void StartupClassifierIgnoresDuplicateBatch()
+        {
+            var classifier = new StartupPositioningCurrentClassifier(100, 14.2, 18, 3);
+            Assert(classifier.Evaluate(10, 120, 20) == StartupCurrentClassification.None,
+                "首个过流样本过早触发");
+            Assert(classifier.Evaluate(10, 130, 20) == StartupCurrentClassification.None &&
+                   classifier.Evaluate(10, 140, 20) == StartupCurrentClassification.None,
+                "相同批次被重复累计");
+            Assert(classifier.Evaluate(11, 150, 20) == StartupCurrentClassification.None,
+                "第二个独立批次过早触发");
+            Assert(classifier.Evaluate(12, 160, 20) == StartupCurrentClassification.OverCurrent,
+                "三个独立批次未触发过流");
+        }
+
+        private static void FutureWallClockDoesNotChangeControlElapsed()
+        {
+            var start = Stopwatch.Frequency;
+            var sample = new FastEpbCurrentSample(
+                4, 5, 5, DateTime.UtcNow.AddMilliseconds(500),
+                start + Stopwatch.Frequency / 20, 1, 1, FastSignalQualityFlags.None);
+            var machine = new EpbAdaptiveCurrentStateMachine(new EpbAdaptiveProfile());
+            machine.ArmForward(start, 100, 1000, 15, 0, 3);
+            var decision = machine.OnSample(sample.CaptureMonotonicTicks, sample.CurrentA);
+            Assert(decision.ElapsedMs >= 49 && decision.ElapsedMs <= 51 &&
+                   decision.Stage == EpbCurrentStage.Inrush,
+                "未来墙钟跨过了100ms浪涌窗口");
+        }
+
+        private static void FastTripClassificationUsesFullRateEvidence()
+        {
+            var invalid62 = FastPathTripClassifier.ClassifyOverCurrent(
+                62.333, 18, 14.780, 10, 1, 100, FastSignalQualityFlags.None);
+            var invalid96 = FastPathTripClassifier.ClassifyOverCurrent(
+                95.873, 18, 15.53, 10, 1, 100, FastSignalQualityFlags.AdcNearRail);
+            var confirmed = FastPathTripClassifier.ClassifyOverCurrent(
+                20, 18, 18.5, 10, 1, 100, FastSignalQualityFlags.None);
+            var unavailable = FastPathTripClassifier.ClassifyOverCurrent(
+                20, 18, double.NaN, double.PositiveInfinity, 1, 100, FastSignalQualityFlags.None);
+            var stale = FastPathTripClassifier.ClassifyOverCurrent(
+                20, 18, 20, 101, 1, 100, FastSignalQualityFlags.None);
+            var invalidTick = FastPathTripClassifier.ClassifyOverCurrent(
+                20, 18, 20, 10, 1, 100, FastSignalQualityFlags.MonotonicTickInvalid);
+            Assert(invalid62.Classification == FastPathTripClassification.FastPathSignalInvalid &&
+                   invalid96.Classification == FastPathTripClassification.FastPathSignalInvalid,
+                "09:08事故特征仍被归类为真实过流");
+            Assert(confirmed.Classification == FastPathTripClassification.ConfirmedOverCurrent,
+                "真实全速率过流未确认");
+            Assert(unavailable.Classification == FastPathTripClassification.FastPathEvidenceUnavailable &&
+                   stale.Classification == FastPathTripClassification.FastPathEvidenceUnavailable,
+                "证据缺失或过期未按失效安全归类");
+            Assert(invalidTick.Classification == FastPathTripClassification.FastPathSignalInvalid,
+                "单调时钟异常未归类为快速信号无效");
+
+            var machine = new EpbAdaptiveCurrentStateMachine(new EpbAdaptiveProfile());
+            machine.ArmForward(Stopwatch.Frequency, 100, 1000, 15, 0, 3);
+            var qualityFault = machine.OnInvalidFastSignalReusable(
+                Stopwatch.Frequency + 1,
+                double.NaN,
+                FastSignalQualityFlags.NonFinite,
+                new EpbAdaptiveDecision());
+            Assert(qualityFault.HardFault &&
+                   qualityFault.Reason.Contains("FastPathSignalInvalid"),
+                "带电阶段无效快速样本没有直接触发安全故障");
         }
 
         private static void Run(string name, Action test, ref int passed)

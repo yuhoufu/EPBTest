@@ -123,7 +123,6 @@ namespace Controller
         private ConcurrentDictionary<int, EpbCycleRunner> _runners => _runnerRuntime.Active;
         private ConcurrentDictionary<int, HighPrecisionTimer> _timers => _timerRuntime.Active;
         private readonly long _wallBaseTicks = Stopwatch.GetTimestamp();
-        private readonly DateTime _wallBaseUtc = DateTime.UtcNow;
         private readonly HydraulicGroupCoordinator _hydCoordinator; // ★ 新增：液压组协调器
 
         private readonly SemaphoreSlim _alarmSnapshotGate = new(1, 1);
@@ -616,14 +615,10 @@ namespace Controller
             _persistence.StateChanged += OnDaqPersistenceStateChanged;
             _acq.DeviceFaultDetected += OnDaqDeviceFaultSafetyDetected;
             _acq.DeviceFaultPublicationRequested += OnDaqDeviceFaultDetected;
-            _acq.OnFastEpbCurrent += (ch, amps, ts) =>
+            _acq.OnFastEpbCurrentSample += sample =>
             {
-                if (_runners.TryGetValue(ch, out var r))
-                {
-                    var sampleUtc = ts.ToUniversalTime();
-                    var tick = ToStopwatchTicks(sampleUtc);
-                    r.FeedCurrentSample(ch, tick, amps, sampleUtc);
-                }
+                if (_runners.TryGetValue(sample.Channel, out var r))
+                    r.FeedCurrentSample(sample);
             };
 
             _acq.DiskBatchReady += batch => _persistence.Enqueue(batch);
@@ -722,13 +717,6 @@ namespace Controller
                 _programSafetySettings.ToAuditLogText(),
                 "EPB");
             _programSafetySettings.SaveEffectiveSnapshot(projectConfigDir, _log);
-        }
-
-        // 将 DateTime（采集回调给的 ts）换算为当前进程 Stopwatch Ticks
-        private long ToStopwatchTicks(DateTime tsUtc)
-        {
-            var dtSec = (tsUtc - _wallBaseUtc).TotalSeconds;
-            return _wallBaseTicks + (long)(dtSec * Stopwatch.Frequency);
         }
 
         /// <summary>
@@ -2232,6 +2220,10 @@ namespace Controller
                         .Distinct(StringComparer.OrdinalIgnoreCase)
                         .ToArray();
                     _acq.ExportDiagnostics(snapshotDir, diagnosticDevices, TimeSpan.FromSeconds(60));
+                    _acq.ExportFastCurrentEvidence(
+                        snapshotDir,
+                        alarmChannel,
+                        TimeSpan.FromSeconds(5));
                 }
                 catch (Exception ex)
                 {

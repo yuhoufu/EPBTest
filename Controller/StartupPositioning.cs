@@ -44,6 +44,8 @@ namespace Controller
         private readonly int _requiredSamples;
         private int _highCount;
         private int _overCurrentCount;
+        private long _lastBatchSequence;
+        private double _peakCurrentA;
 
         public StartupPositioningCurrentClassifier(
             int ignoreMs,
@@ -59,6 +61,14 @@ namespace Controller
 
         public StartupCurrentClassification Evaluate(int elapsedMs, double currentA)
         {
+            return Evaluate(0, elapsedMs, currentA);
+        }
+
+        public StartupCurrentClassification Evaluate(long batchSequence, int elapsedMs, double currentA)
+        {
+            if (batchSequence > 0 && batchSequence == _lastBatchSequence)
+                return StartupCurrentClassification.None;
+            if (batchSequence > 0) _lastBatchSequence = batchSequence;
             if (elapsedMs < _ignoreMs || double.IsNaN(currentA) || double.IsInfinity(currentA))
             {
                 _highCount = 0;
@@ -67,6 +77,7 @@ namespace Controller
             }
 
             var magnitude = Math.Abs(currentA);
+            if (magnitude > _peakCurrentA) _peakCurrentA = magnitude;
             _overCurrentCount = magnitude >= _overCurrentLimitA ? _overCurrentCount + 1 : 0;
             _highCount = magnitude >= _highFloorA ? _highCount + 1 : 0;
             if (_overCurrentCount >= _requiredSamples) return StartupCurrentClassification.OverCurrent;
@@ -75,6 +86,7 @@ namespace Controller
         }
 
         public bool HasHighCurrentCandidate => _highCount > 0;
+        public double PeakCurrentA => _peakCurrentA;
     }
 
     internal enum StartupPositioningStage

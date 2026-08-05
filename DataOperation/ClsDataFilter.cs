@@ -466,6 +466,7 @@ namespace DataOperation
             {
                 // 固定小窗环形缓冲（K ≤ 7 时用插入排序求中值）
                 public double[] Win;
+                public double[] Temp;
                 public int Count;
                 public int Head;
 
@@ -475,6 +476,7 @@ namespace DataOperation
 
                 // Slew limiter
                 public DateTime LastTs;
+                public long LastMonotonicTicks;
             }
 
             /// <param name="medianK">因果中值窗长（奇数，建议 3 或 5）。</param>
@@ -512,7 +514,16 @@ namespace DataOperation
             /// <param name="ts">当前样本的时间戳。</param>
             public double Update(string key, double x, DateTime ts)
             {
-                var st = _states.GetOrAdd(key, _ => new State { Win = new double[_k], LastTs = ts });
+                if (!_states.TryGetValue(key, out var st))
+                {
+                    var created = new State
+                    {
+                        Win = new double[_k],
+                        Temp = new double[_k],
+                        LastTs = ts
+                    };
+                    st = _states.GetOrAdd(key, created);
+                }
 
                 // ① 因果中值：把 x 放进环形缓冲，复制已用长度到 temp，插排取中值
                 st.Win[st.Head] = x;
@@ -559,6 +570,73 @@ namespace DataOperation
                 st.HasY = true;
                 st.LastTs = ts;
                 return y;
+            }
+
+            /// <summary>以 Stopwatch 单调时钟更新，控制链不得使用墙钟或合成样本时间计算持续时间。</summary>
+            public double Update(string key, double x, long monotonicTicks)
+            {
+                if (!_states.TryGetValue(key, out var st))
+                {
+                    var created = new State
+                    {
+                        Win = new double[_k],
+                        Temp = new double[_k],
+                        LastMonotonicTicks = monotonicTicks
+                    };
+                    st = _states.GetOrAdd(key, created);
+                }
+
+                st.Win[st.Head] = x;
+                st.Head = (st.Head + 1) % _k;
+                if (st.Count < _k) st.Count++;
+
+                double med;
+                if (st.Count == 1) med = x;
+                else
+                {
+                    var n = st.Count;
+                    var temp = st.Temp;
+                    for (var i = 0; i < n; i++)
+                    {
+                        var idx = (st.Head - i - 1 + _k) % _k;
+                        temp[i] = st.Win[idx];
+                    }
+                    for (var i = 1; i < n; i++)
+                    {
+                        var value = temp[i];
+                        var j = i - 1;
+                        while (j >= 0 && temp[j] > value)
+                        {
+                            temp[j + 1] = temp[j];
+                            j--;
+                        }
+                        temp[j + 1] = value;
+                    }
+                    med = temp[n / 2];
+                }
+
+                var y = st.HasY ? (_alpha * med + (1 - _alpha) * st.Y) : med;
+                if (_maxSlewAperSec > 1e-6 && st.HasY)
+                {
+                    var elapsedTicks = monotonicTicks - st.LastMonotonicTicks;
+                    var dt = Math.Max(
+                        1e-6,
+                        elapsedTicks / (double)System.Diagnostics.Stopwatch.Frequency);
+                    var maxStep = _maxSlewAperSec * dt;
+                    var dy = y - st.Y;
+                    if (dy > maxStep) y = st.Y + maxStep;
+                    else if (dy < -maxStep) y = st.Y - maxStep;
+                }
+
+                st.Y = y;
+                st.HasY = true;
+                st.LastMonotonicTicks = monotonicTicks;
+                return y;
+            }
+
+            public void Reset()
+            {
+                _states.Clear();
             }
         }
 

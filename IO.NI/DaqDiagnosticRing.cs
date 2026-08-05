@@ -36,6 +36,11 @@ namespace IO.NI
         public double SubscriberMaxMs;
         public double DriftMs;
         public DateTime ProcessedSampleUtc;
+        public long BatchSequence;
+        public int ProducerThreadId;
+        public long ProducerReentryCount;
+        public double SampleLeadMs;
+        public string QualityFlags;
         public string Detail;
 
         public static DaqTimingValue FromRecord(DaqTimingRecord value)
@@ -73,6 +78,11 @@ namespace IO.NI
                 SubscriberMaxMs = value.SubscriberMaxMs,
                 DriftMs = value.DriftMs,
                 ProcessedSampleUtc = value.ProcessedSampleUtc,
+                BatchSequence = value.BatchSequence,
+                ProducerThreadId = value.ProducerThreadId,
+                ProducerReentryCount = value.ProducerReentryCount,
+                SampleLeadMs = value.SampleLeadMs,
+                QualityFlags = value.QualityFlags,
                 Detail = value.Detail
             };
         }

@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Config;
 using Controller.Adaptive;
+using IO.NI;
 
 namespace Controller
 {
@@ -106,6 +107,8 @@ namespace Controller
             var reverseAbsoluteOnTimeMs = Math.Max(
                 500,
                 detectTimeoutMs ?? DefaultPreReleaseDetectTimeoutMs);
+            PeakCaptureToken forwardPeakCapture = null;
+            PeakCaptureToken reversePeakCapture = null;
             var configuredForwardLimit =
                 _cfg?.Test?.EpbCycleRunner.GetRunnerChannel(_channel)?.FwdOnLimitMs ?? 0;
             var timing = ResolveStartupForwardTiming(
@@ -210,6 +213,7 @@ namespace Controller
                     _overshootAlarmDeltaA,
                     _adaptiveSafetyLimits,
                     timing.EffectiveProgressDeadlineMs);
+                forwardPeakCapture = BeginStartupPeakCapture();
                 if (!CommandForward(nameof(StartupPositioningAsync)))
                     return Result(false, stage, StartupPositioningCompletionKind.None,
                         "ForwardCommandFailed", "正向输出命令失败。");
@@ -226,20 +230,38 @@ namespace Controller
                     if (!StartupDaqIsFresh(ref lastFreshnessCheckTick, out freshnessReason))
                         return Result(false, stage, StartupPositioningCompletionKind.None,
                             "DaqSampleStale", freshnessReason);
-                    var currentA = _readCurrent(_channel);
-                    if (double.IsNaN(currentA) || double.IsInfinity(currentA))
+                    if (!TryReadStartupFastCurrent(
+                            out var currentA,
+                            out var batchSequence,
+                            out var sampleQuality,
+                            out var sampleReason))
+                    {
+                        if (FastPathTripClassifier.HasInvalidControlQuality(sampleQuality))
+                            CommandOff(nameof(StartupPositioningAsync));
                         return Result(false, stage, StartupPositioningCompletionKind.None,
-                            "InvalidCurrentSample", "正向定位电流采样无效。");
+                            FastPathTripClassifier.HasInvalidControlQuality(sampleQuality)
+                                ? "FastPathSignalInvalid"
+                                : "InvalidCurrentSample",
+                            "正向定位电流采样无效：" + sampleReason);
+                    }
                     var magnitude = Math.Abs(currentA);
                     var elapsed = ElapsedBetween(forwardStart, Stopwatch.GetTimestamp());
                     AddTrace(currentA, null);
 
-                    var classification = forwardClassifier.Evaluate((int)elapsed, currentA);
+                    var classification = forwardClassifier.Evaluate(batchSequence, (int)elapsed, currentA);
                     if (classification == StartupCurrentClassification.OverCurrent)
                     {
+                        CommandOff(nameof(StartupPositioningAsync));
+                        var classified = await ClassifyStartupOverCurrentAsync(
+                                forwardPeakCapture,
+                                forwardClassifier.PeakCurrentA,
+                                overCurrentLimitA,
+                                sampleQuality)
+                            .ConfigureAwait(false);
+                        forwardPeakCapture = null;
                         return Result(false, stage, StartupPositioningCompletionKind.None,
-                            "ForwardOverCurrent3Samples",
-                            $"正向连续过流：I={magnitude:F3}A Limit={overCurrentLimitA:F3}A。");
+                            classified.Code,
+                            $"正向快速保护：{classified.Reason}。");
                     }
                     if (classification == StartupCurrentClassification.HighCurrentConfirmed)
                     {
@@ -269,6 +291,7 @@ namespace Controller
                 }
 
                 CommandOff(nameof(StartupPositioningAsync));
+                CancelStartupPeakCapture(ref forwardPeakCapture);
                 stage = StartupPositioningStage.ForwardOffVerification;
                 var off = await PollOffCurrentUntilClearAsync(
                         ReadOffCurrentSample,
@@ -310,6 +333,7 @@ namespace Controller
                     _adaptiveSafetyLimits,
                     RevDecayRigidMaxMs,
                     reverseTiming.EffectiveProgressDeadlineMs);
+                reversePeakCapture = BeginStartupPeakCapture();
                 if (!CommandReverse(nameof(StartupPositioningAsync)))
                     return Result(false, stage, StartupPositioningCompletionKind.None,
                         "ReverseCommandFailed", "反向输出命令失败。");
@@ -326,23 +350,42 @@ namespace Controller
                     if (!StartupDaqIsFresh(ref lastFreshnessCheckTick, out freshnessReason))
                         return Result(false, stage, StartupPositioningCompletionKind.None,
                             "DaqSampleStale", freshnessReason);
-                    var currentA = _readCurrent(_channel);
-                    if (double.IsNaN(currentA) || double.IsInfinity(currentA))
+                    if (!TryReadStartupFastCurrent(
+                            out var currentA,
+                            out var batchSequence,
+                            out var sampleQuality,
+                            out var sampleReason))
+                    {
+                        if (FastPathTripClassifier.HasInvalidControlQuality(sampleQuality))
+                            CommandOff(nameof(StartupPositioningAsync));
                         return Result(false, stage, StartupPositioningCompletionKind.None,
-                            "InvalidCurrentSample", "反向释放电流采样无效。");
+                            FastPathTripClassifier.HasInvalidControlQuality(sampleQuality)
+                                ? "FastPathSignalInvalid"
+                                : "InvalidCurrentSample",
+                            "反向释放电流采样无效：" + sampleReason);
+                    }
                     var magnitude = Math.Abs(currentA);
                     var elapsed = ElapsedBetween(reverseStart, Stopwatch.GetTimestamp());
                     AddTrace(currentA, null);
 
-                    var classification = reverseClassifier.Evaluate((int)elapsed, currentA);
+                    var classification = reverseClassifier.Evaluate(batchSequence, (int)elapsed, currentA);
                     if (classification == StartupCurrentClassification.OverCurrent)
                     {
+                        CommandOff(nameof(StartupPositioningAsync));
+                        var classified = await ClassifyStartupOverCurrentAsync(
+                                reversePeakCapture,
+                                reverseClassifier.PeakCurrentA,
+                                overCurrentLimitA,
+                                sampleQuality)
+                            .ConfigureAwait(false);
+                        reversePeakCapture = null;
                         return Result(false, stage, StartupPositioningCompletionKind.None,
-                            "ReverseOverCurrent3Samples",
-                            $"反向连续过流：I={magnitude:F3}A Limit={overCurrentLimitA:F3}A。");
+                            classified.Code,
+                            $"反向快速保护：{classified.Reason}。");
                     }
                     if (classification == StartupCurrentClassification.HighCurrentConfirmed)
                     {
+                        CancelStartupPeakCapture(ref reversePeakCapture);
                         AddTrace(currentA, "ReverseMechanicalEndpoint");
                         var warning =
                             $"StartupReverseEndpointReached I={magnitude:F3}A Floor={acceptableHighA:F3}A；" +
@@ -366,18 +409,43 @@ namespace Controller
                         {
                             token.ThrowIfCancellationRequested();
                             await Task.Delay(_sampleMs, token).ConfigureAwait(false);
-                            currentA = _readCurrent(_channel);
+                            if (!TryReadStartupFastCurrent(
+                                    out currentA,
+                                    out batchSequence,
+                                    out sampleQuality,
+                                    out sampleReason))
+                            {
+                                if (FastPathTripClassifier.HasInvalidControlQuality(sampleQuality))
+                                    CommandOff(nameof(StartupPositioningAsync));
+                                return Result(false, stage, StartupPositioningCompletionKind.None,
+                                    FastPathTripClassifier.HasInvalidControlQuality(sampleQuality)
+                                        ? "FastPathSignalInvalid"
+                                        : "InvalidCurrentSample",
+                                    "反向保持电流采样无效：" + sampleReason);
+                            }
                             magnitude = Math.Abs(currentA);
                             AddTrace(currentA, "ReverseReleaseHold");
                             classification = reverseClassifier.Evaluate(
+                                batchSequence,
                                 (int)ElapsedBetween(reverseStart, Stopwatch.GetTimestamp()),
                                 currentA);
                             if (classification == StartupCurrentClassification.OverCurrent)
+                            {
+                                CommandOff(nameof(StartupPositioningAsync));
+                                var classified = await ClassifyStartupOverCurrentAsync(
+                                        reversePeakCapture,
+                                        reverseClassifier.PeakCurrentA,
+                                        overCurrentLimitA,
+                                        sampleQuality)
+                                    .ConfigureAwait(false);
+                                reversePeakCapture = null;
                                 return Result(false, stage, StartupPositioningCompletionKind.None,
-                                    "ReverseOverCurrent3Samples",
-                                    $"反向释放保持期间连续过流：I={magnitude:F3}A Limit={overCurrentLimitA:F3}A。");
+                                    classified.Code,
+                                    $"反向释放保持期间快速保护：{classified.Reason}。");
+                            }
                             if (classification == StartupCurrentClassification.HighCurrentConfirmed)
                             {
+                                CancelStartupPeakCapture(ref reversePeakCapture);
                                 var warning =
                                     $"StartupReverseEndpointReached I={magnitude:F3}A during hold；" +
                                     "已立即断电并按释放完成继续学习。";
@@ -387,6 +455,7 @@ namespace Controller
                                     "ReverseMechanicalEndpoint", warning);
                             }
                         }
+                        CancelStartupPeakCapture(ref reversePeakCapture);
                         return Result(true, StartupPositioningStage.Completed,
                             StartupPositioningCompletionKind.ReverseEmptyTravel,
                             "ReverseEmptyTravel", "已确认反向空行程并完成释放保持。");
@@ -409,6 +478,8 @@ namespace Controller
             finally
             {
                 try { CommandOff(nameof(StartupPositioningAsync)); } catch { }
+                CancelStartupPeakCapture(ref forwardPeakCapture);
+                CancelStartupPeakCapture(ref reversePeakCapture);
             }
         }
 
@@ -440,6 +511,107 @@ namespace Controller
             reason =
                 $"DAQ样本陈旧：Device={device} Age={snapshot.AgeMs:F1}ms，要求≤100ms。";
             return false;
+        }
+
+        private bool TryReadStartupFastCurrent(
+            out double currentA,
+            out long batchSequence,
+            out FastSignalQualityFlags qualityFlags,
+            out string reason)
+        {
+            currentA = double.NaN;
+            batchSequence = 0;
+            qualityFlags = FastSignalQualityFlags.None;
+            reason = string.Empty;
+            if (_acq == null)
+            {
+                currentA = _readCurrent(_channel);
+                if (!double.IsNaN(currentA) && !double.IsInfinity(currentA)) return true;
+                reason = "LegacyCurrentNonFinite";
+                return false;
+            }
+
+            var snapshot = _acq.ReadCurrentFastSample(_channel);
+            if (!snapshot.Available)
+            {
+                reason = "FastSampleUnavailable";
+                return false;
+            }
+            if (!snapshot.IsFreshAndUsable(100))
+            {
+                qualityFlags = snapshot.Sample.QualityFlags;
+                reason = $"FastSampleInvalid Age={snapshot.AgeMs:F1}ms Quality={snapshot.Sample.QualityFlags}";
+                return false;
+            }
+            currentA = snapshot.Sample.CurrentA;
+            batchSequence = snapshot.Sample.BatchSequence;
+            qualityFlags = snapshot.Sample.QualityFlags;
+            return true;
+        }
+
+        private PeakCaptureToken BeginStartupPeakCapture()
+        {
+            if (_acq == null) return null;
+            try
+            {
+                var runId = Guid.Empty;
+                var cycleNumber = 0;
+                _manager?.GetPeakCaptureIdentity(_channel, out runId, out cycleNumber);
+                return _acq.BeginEpbCurrentPeak(_channel, runId, cycleNumber);
+            }
+            catch (Exception ex)
+            {
+                _log?.Warn($"EPB[{_channel}] 启动定位全速率证据启动失败：{ex.Message}", "EPB");
+                return null;
+            }
+        }
+
+        private void CancelStartupPeakCapture(ref PeakCaptureToken token)
+        {
+            if (token == null) return;
+            try { _acq?.CancelEpbCurrentPeak(token); } catch { }
+            token = null;
+        }
+
+        private async Task<FastPathTripResult> ClassifyStartupOverCurrentAsync(
+            PeakCaptureToken token,
+            double fastPeakA,
+            double overCurrentLimitA,
+            FastSignalQualityFlags triggeringQuality)
+        {
+            double fullRatePeakA = double.NaN;
+            double evidenceAgeMs = double.PositiveInfinity;
+            try
+            {
+                if (_acq != null && token != null)
+                {
+                    var capture = await _acq.EndEpbCurrentPeakAsync(
+                            token,
+                            100,
+                            cutoffAfterDelay: true,
+                            cancellationToken: CancellationToken.None)
+                        .ConfigureAwait(false);
+                    if (capture.IsMatched && capture.Peak.SampleCount > 0)
+                    {
+                        fullRatePeakA = capture.Peak.MaxAmp;
+                        evidenceAgeMs =
+                            (DateTime.UtcNow - capture.Peak.LastSampleAt.ToUniversalTime()).TotalMilliseconds;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _log?.Warn($"EPB[{_channel}] 启动定位全速率证据封口失败：{ex.Message}", "EPB");
+            }
+
+            return FastPathTripClassifier.ClassifyOverCurrent(
+                Math.Abs(fastPeakA),
+                overCurrentLimitA,
+                fullRatePeakA,
+                evidenceAgeMs,
+                _programSafetySettings.PeakEvidenceMismatchToleranceA,
+                _programSafetySettings.PeakEvidenceMaximumLagMs,
+                triggeringQuality);
         }
     }
 }

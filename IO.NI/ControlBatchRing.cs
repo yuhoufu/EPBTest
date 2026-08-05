@@ -27,16 +27,230 @@ namespace IO.NI
         }
     }
 
-    internal readonly struct FastControlSampleValue
+    internal sealed class DaqCallbackProducerGate
     {
-        public FastControlSampleValue(int channel, double amps)
+        private int _active;
+        private long _reentryCount;
+
+        public bool TryEnter()
+        {
+            if (Interlocked.CompareExchange(ref _active, 1, 0) == 0) return true;
+            Interlocked.Increment(ref _reentryCount);
+            return false;
+        }
+
+        public void Exit()
+        {
+            Volatile.Write(ref _active, 0);
+        }
+
+        public long ReentryCount => Interlocked.Read(ref _reentryCount);
+        public bool IsActive => Volatile.Read(ref _active) != 0;
+    }
+
+    [Flags]
+    public enum FastSignalQualityFlags
+    {
+        None = 0,
+        NonFinite = 1,
+        ProducerReentry = 2,
+        SequenceDiscontinuity = 4,
+        TimelineFuture = 8,
+        GenerationMismatch = 16,
+        AdcNearRail = 32,
+        DuplicateBatch = 64,
+        OutOfOrderBatch = 128,
+        MonotonicTickInvalid = 256,
+        FilterStateInvalid = 512
+    }
+
+    /// <summary>控制器使用的结构化快速电流样本。</summary>
+    public readonly struct FastEpbCurrentSample
+    {
+        public FastEpbCurrentSample(
+            int channel,
+            double currentA,
+            double representativeA,
+            DateTime sampleUtc,
+            long captureMonotonicTicks,
+            long generation,
+            long batchSequence,
+            FastSignalQualityFlags qualityFlags)
         {
             Channel = channel;
-            Amps = amps;
+            CurrentA = currentA;
+            RepresentativeA = representativeA;
+            SampleUtc = sampleUtc.Kind == DateTimeKind.Utc ? sampleUtc : sampleUtc.ToUniversalTime();
+            CaptureMonotonicTicks = captureMonotonicTicks;
+            Generation = generation;
+            BatchSequence = batchSequence;
+            QualityFlags = qualityFlags;
         }
 
         public int Channel { get; }
-        public double Amps { get; }
+        public double CurrentA { get; }
+        public double RepresentativeA { get; }
+        public DateTime SampleUtc { get; }
+        public long CaptureMonotonicTicks { get; }
+        public long Generation { get; }
+        public long BatchSequence { get; }
+        public FastSignalQualityFlags QualityFlags { get; }
+        public bool IsControlUsable =>
+            CaptureMonotonicTicks > 0 &&
+            !double.IsNaN(CurrentA) &&
+            !double.IsInfinity(CurrentA) &&
+            (QualityFlags & (FastSignalQualityFlags.NonFinite |
+                             FastSignalQualityFlags.ProducerReentry |
+                             FastSignalQualityFlags.SequenceDiscontinuity |
+                             FastSignalQualityFlags.TimelineFuture |
+                             FastSignalQualityFlags.GenerationMismatch |
+                             FastSignalQualityFlags.DuplicateBatch |
+                             FastSignalQualityFlags.OutOfOrderBatch |
+                             FastSignalQualityFlags.MonotonicTickInvalid |
+                             FastSignalQualityFlags.FilterStateInvalid)) == 0;
+    }
+
+    /// <summary>兼容轮询控制所需的最近快速样本及新鲜度。</summary>
+    public readonly struct FastCurrentSnapshot
+    {
+        public FastCurrentSnapshot(FastEpbCurrentSample sample, double ageMs, bool available)
+        {
+            Sample = sample;
+            AgeMs = ageMs;
+            Available = available;
+        }
+
+        public FastEpbCurrentSample Sample { get; }
+        public double AgeMs { get; }
+        public bool Available { get; }
+        public bool IsFreshAndUsable(double maximumAgeMs) =>
+            Available && Sample.IsControlUsable && AgeMs >= 0 && AgeMs <= Math.Max(1, maximumAgeMs);
+    }
+
+    internal readonly struct FastControlSampleValue
+    {
+        public FastControlSampleValue(
+            int sourceRow,
+            int channel,
+            int pressureId,
+            double representativeA,
+            FastSignalQualityFlags qualityFlags = FastSignalQualityFlags.None)
+        {
+            SourceRow = sourceRow;
+            Channel = channel;
+            PressureId = pressureId;
+            RepresentativeA = representativeA;
+            QualityFlags = qualityFlags;
+        }
+
+        // Backward-compatible test helper.
+        public FastControlSampleValue(int channel, double amps)
+            : this(0, channel, 0, amps)
+        {
+        }
+
+        public int SourceRow { get; }
+        public int Channel { get; }
+        public int PressureId { get; }
+        public double RepresentativeA { get; }
+        public FastSignalQualityFlags QualityFlags { get; }
+        public double Amps => RepresentativeA;
+    }
+
+    internal readonly struct FastControlBatchMetadata
+    {
+        public FastControlBatchMetadata(
+            long generation,
+            long sourceSequence,
+            DateTime sampleUtc,
+            DateTime callbackArrivalUtc,
+            long captureMonotonicTicks,
+            long enqueuedMonotonicTicks,
+            double sampleLeadMs,
+            int producerThreadId,
+            FastSignalQualityFlags qualityFlags)
+        {
+            Generation = generation;
+            SourceSequence = sourceSequence;
+            SampleUtc = sampleUtc.Kind == DateTimeKind.Utc ? sampleUtc : sampleUtc.ToUniversalTime();
+            CallbackArrivalUtc = callbackArrivalUtc.Kind == DateTimeKind.Utc
+                ? callbackArrivalUtc
+                : callbackArrivalUtc.ToUniversalTime();
+            CaptureMonotonicTicks = captureMonotonicTicks;
+            EnqueuedMonotonicTicks = enqueuedMonotonicTicks;
+            SampleLeadMs = sampleLeadMs;
+            ProducerThreadId = producerThreadId;
+            QualityFlags = qualityFlags;
+        }
+
+        public long Generation { get; }
+        public long SourceSequence { get; }
+        public DateTime SampleUtc { get; }
+        public DateTime CallbackArrivalUtc { get; }
+        public long CaptureMonotonicTicks { get; }
+        public long EnqueuedMonotonicTicks { get; }
+        public double SampleLeadMs { get; }
+        public int ProducerThreadId { get; }
+        public FastSignalQualityFlags QualityFlags { get; }
+    }
+
+    internal enum ControlBatchIdentityResult
+    {
+        Accepted,
+        GenerationChanged,
+        Gap,
+        Duplicate,
+        OutOfOrder,
+        MonotonicTickInvalid
+    }
+
+    /// <summary>由每设备唯一控制线程持有，验证来源批次身份及回调单调时钟。</summary>
+    internal sealed class ControlBatchIdentityValidator
+    {
+        private long _generation = -1;
+        private long _lastSequence;
+        private long _lastCaptureTick;
+
+        public void Reset()
+        {
+            _generation = -1;
+            _lastSequence = 0;
+            _lastCaptureTick = 0;
+        }
+
+        public ControlBatchIdentityResult Validate(FastControlBatchMetadata metadata)
+        {
+            if (metadata.SourceSequence <= 0)
+                return ControlBatchIdentityResult.OutOfOrder;
+            if (metadata.CaptureMonotonicTicks <= 0)
+                return ControlBatchIdentityResult.MonotonicTickInvalid;
+            if (metadata.Generation != _generation)
+            {
+                _generation = metadata.Generation;
+                _lastSequence = metadata.SourceSequence;
+                _lastCaptureTick = metadata.CaptureMonotonicTicks;
+                return ControlBatchIdentityResult.GenerationChanged;
+            }
+
+            if (metadata.SourceSequence == _lastSequence)
+                return ControlBatchIdentityResult.Duplicate;
+            if (metadata.SourceSequence < _lastSequence)
+                return ControlBatchIdentityResult.OutOfOrder;
+            if (metadata.CaptureMonotonicTicks <= _lastCaptureTick)
+                return ControlBatchIdentityResult.MonotonicTickInvalid;
+            if (metadata.SourceSequence != _lastSequence + 1)
+                return ControlBatchIdentityResult.Gap;
+
+            Accept(metadata);
+            return ControlBatchIdentityResult.Accepted;
+        }
+
+        public void Accept(FastControlBatchMetadata metadata)
+        {
+            _generation = metadata.Generation;
+            _lastSequence = metadata.SourceSequence;
+            _lastCaptureTick = metadata.CaptureMonotonicTicks;
+        }
     }
 
     /// <summary>
@@ -45,19 +259,22 @@ namespace IO.NI
     /// </summary>
     internal sealed class ControlBatchRing
     {
+        internal const int RawTailCapacity = 20;
+
         private sealed class Slot
         {
             public Slot(int maximumSamples)
             {
                 Samples = new FastControlSampleValue[maximumSamples];
+                RawTailVolts = new double[maximumSamples * RawTailCapacity];
             }
 
             public long PublishedSequence;
-            public long Generation;
-            public DateTime Timestamp;
-            public long EnqueuedMonotonicTicks;
+            public FastControlBatchMetadata Metadata;
             public int Count;
+            public int RawTailCount;
             public readonly FastControlSampleValue[] Samples;
+            public readonly double[] RawTailVolts;
         }
 
         private readonly Slot[] _slots;
@@ -99,16 +316,15 @@ namespace IO.NI
                 if (read >= write) return 0;
                 var slot = _slots[(int)(read % Capacity)];
                 return Volatile.Read(ref slot.PublishedSequence) == read + 1
-                    ? slot.EnqueuedMonotonicTicks
+                    ? slot.Metadata.EnqueuedMonotonicTicks
                     : 0;
             }
         }
 
         public bool TryEnqueue(
-            long generation,
-            DateTime timestamp,
-            long enqueuedMonotonicTicks,
-            ReadOnlySpan<FastControlSampleValue> samples)
+            FastControlBatchMetadata metadata,
+            ReadOnlySpan<FastControlSampleValue> samples,
+            double[,] raw)
         {
             if (samples.Length > MaximumSamplesPerBatch)
                 throw new ArgumentOutOfRangeException(nameof(samples));
@@ -118,27 +334,55 @@ namespace IO.NI
             if (write - read >= Capacity) return false;
 
             var slot = _slots[(int)(write % Capacity)];
-            slot.Generation = generation;
-            slot.Timestamp = timestamp;
-            slot.EnqueuedMonotonicTicks = enqueuedMonotonicTicks;
+            slot.Metadata = metadata;
             slot.Count = samples.Length;
+            slot.RawTailCount = raw == null ? 0 : Math.Min(RawTailCapacity, raw.GetLength(1));
+            var rawStart = raw == null ? 0 : raw.GetLength(1) - slot.RawTailCount;
             for (var i = 0; i < samples.Length; i++)
+            {
                 slot.Samples[i] = samples[i];
+                var targetOffset = i * RawTailCapacity;
+                for (var j = 0; j < slot.RawTailCount; j++)
+                    slot.RawTailVolts[targetOffset + j] = raw[samples[i].SourceRow, rawStart + j];
+            }
 
             Volatile.Write(ref slot.PublishedSequence, write + 1);
             Volatile.Write(ref _writeSequence, write + 1);
             return true;
         }
 
+        // Backward-compatible test helper.
+        public bool TryEnqueue(
+            long generation,
+            DateTime timestamp,
+            long enqueuedMonotonicTicks,
+            ReadOnlySpan<FastControlSampleValue> samples)
+        {
+            var metadata = new FastControlBatchMetadata(
+                generation,
+                Volatile.Read(ref _writeSequence) + 1,
+                timestamp,
+                timestamp,
+                enqueuedMonotonicTicks,
+                enqueuedMonotonicTicks,
+                0,
+                Thread.CurrentThread.ManagedThreadId,
+                FastSignalQualityFlags.None);
+            return TryEnqueue(metadata, samples, null);
+        }
+
         public bool TryDequeue(
             FastControlSampleValue[] destination,
+            double[] rawTailDestination,
             out int count,
-            out long generation,
-            out DateTime timestamp,
-            out long enqueuedMonotonicTicks)
+            out int rawTailCount,
+            out FastControlBatchMetadata metadata)
         {
             if (destination == null || destination.Length < MaximumSamplesPerBatch)
                 throw new ArgumentException("Destination is too small.", nameof(destination));
+            if (rawTailDestination == null ||
+                rawTailDestination.Length < MaximumSamplesPerBatch * RawTailCapacity)
+                throw new ArgumentException("Raw-tail destination is too small.", nameof(rawTailDestination));
 
             while (true)
             {
@@ -147,9 +391,8 @@ namespace IO.NI
                 if (read >= write)
                 {
                     count = 0;
-                    generation = 0;
-                    timestamp = default;
-                    enqueuedMonotonicTicks = 0;
+                    rawTailCount = 0;
+                    metadata = default;
                     return false;
                 }
 
@@ -161,21 +404,40 @@ namespace IO.NI
                 }
 
                 var localCount = slot.Count;
-                var localGeneration = slot.Generation;
-                var localTimestamp = slot.Timestamp;
-                var localEnqueuedTicks = slot.EnqueuedMonotonicTicks;
+                var localRawTailCount = slot.RawTailCount;
+                var localMetadata = slot.Metadata;
                 for (var i = 0; i < localCount; i++)
+                {
                     destination[i] = slot.Samples[i];
+                    var offset = i * RawTailCapacity;
+                    for (var j = 0; j < localRawTailCount; j++)
+                        rawTailDestination[offset + j] = slot.RawTailVolts[offset + j];
+                }
 
                 if (Interlocked.CompareExchange(ref _readSequence, read + 1, read) != read)
                     continue;
 
                 count = localCount;
-                generation = localGeneration;
-                timestamp = localTimestamp;
-                enqueuedMonotonicTicks = localEnqueuedTicks;
+                rawTailCount = localRawTailCount;
+                metadata = localMetadata;
                 return true;
             }
+        }
+
+        // Backward-compatible test helper.
+        public bool TryDequeue(
+            FastControlSampleValue[] destination,
+            out int count,
+            out long generation,
+            out DateTime timestamp,
+            out long enqueuedMonotonicTicks)
+        {
+            var raw = new double[MaximumSamplesPerBatch * RawTailCapacity];
+            var result = TryDequeue(destination, raw, out count, out _, out var metadata);
+            generation = metadata.Generation;
+            timestamp = metadata.SampleUtc;
+            enqueuedMonotonicTicks = metadata.EnqueuedMonotonicTicks;
+            return result;
         }
 
         /// <summary>Discard stale history while retaining the newest batch.</summary>

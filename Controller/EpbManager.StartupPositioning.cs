@@ -86,6 +86,18 @@ namespace Controller
                 }
             }
 
+            try
+            {
+                _acq?.ExportFastCurrentEvidence(
+                    snapshotDir,
+                    result.Channel,
+                    TimeSpan.FromSeconds(5));
+            }
+            catch (Exception ex)
+            {
+                _log?.Warn($"EPB[{result.Channel}] 启动定位快速原始证据导出失败：{ex.Message}", "AI");
+            }
+
             _runIdByChannel.TryGetValue(result.Channel, out var runId);
             var doEvents = _doControlTrace.Snapshot(DateTime.UtcNow, runId)
                 .Where(x => x.Channel == result.Channel)

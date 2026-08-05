@@ -180,4 +180,103 @@ namespace IO.NI
             }
         }
     }
+
+    public readonly struct DeviceSampleTimelineResult
+    {
+        public DeviceSampleTimelineResult(
+            DateTime previousBatchEndUtc,
+            DateTime batchEndUtc,
+            long batchEndMonotonicTicks,
+            long totalSamples,
+            double arrivalDelayMs,
+            double sampleLeadMs,
+            bool isFuture)
+        {
+            PreviousBatchEndUtc = previousBatchEndUtc;
+            BatchEndUtc = batchEndUtc;
+            BatchEndMonotonicTicks = batchEndMonotonicTicks;
+            TotalSamples = totalSamples;
+            ArrivalDelayMs = arrivalDelayMs;
+            SampleLeadMs = sampleLeadMs;
+            IsFuture = isFuture;
+        }
+
+        public DateTime PreviousBatchEndUtc { get; }
+        public DateTime BatchEndUtc { get; }
+        public long BatchEndMonotonicTicks { get; }
+        public long TotalSamples { get; }
+        public double ArrivalDelayMs { get; }
+        public double SampleLeadMs { get; }
+        public bool IsFuture { get; }
+    }
+
+    /// <summary>
+    /// 使用每台设备启动原点和累计样本数重建采样时间。回调追赶只会增加到达延迟，
+    /// 不会像“上一批 + 主机纠偏”那样把后续批次推进到主机未来。
+    /// </summary>
+    public sealed class DeviceSampleTimeline
+    {
+        private readonly object _gate = new object();
+        private DateTime _originUtc;
+        private long _originMonotonicTicks;
+        private long _totalSamples;
+        private DateTime _lastBatchEndUtc;
+
+        public void Reset(DateTime originUtc, long originMonotonicTicks)
+        {
+            lock (_gate)
+            {
+                _originUtc = originUtc.Kind == DateTimeKind.Utc ? originUtc : originUtc.ToUniversalTime();
+                _originMonotonicTicks = originMonotonicTicks;
+                _totalSamples = 0;
+                _lastBatchEndUtc = _originUtc;
+            }
+        }
+
+        public DeviceSampleTimelineResult Advance(
+            int sampleCount,
+            double sampleRate,
+            DateTime callbackArrivalUtc,
+            long callbackMonotonicTicks,
+            double futureToleranceMs)
+        {
+            if (sampleCount <= 0) throw new ArgumentOutOfRangeException(nameof(sampleCount));
+            if (sampleRate <= 0 || double.IsNaN(sampleRate) || double.IsInfinity(sampleRate))
+                throw new ArgumentOutOfRangeException(nameof(sampleRate));
+            if (callbackMonotonicTicks <= 0)
+                throw new ArgumentOutOfRangeException(nameof(callbackMonotonicTicks));
+
+            lock (_gate)
+            {
+                var previous = _lastBatchEndUtc;
+                _totalSamples += sampleCount;
+                var elapsedSeconds = _totalSamples / sampleRate;
+                var wallTicks = (long)Math.Round(
+                    elapsedSeconds * TimeSpan.TicksPerSecond,
+                    MidpointRounding.AwayFromZero);
+                var monotonicTicks = (long)Math.Round(
+                    elapsedSeconds * Stopwatch.Frequency,
+                    MidpointRounding.AwayFromZero);
+                var endUtc = _originUtc.AddTicks(wallTicks);
+                var endMonotonicTicks = _originMonotonicTicks + monotonicTicks;
+                var arrivalUtc = callbackArrivalUtc.Kind == DateTimeKind.Utc
+                    ? callbackArrivalUtc
+                    : callbackArrivalUtc.ToUniversalTime();
+                var arrivalDelayMs = (arrivalUtc - endUtc).TotalMilliseconds;
+                var sampleLeadMs = Math.Max(
+                    (endMonotonicTicks - callbackMonotonicTicks) * 1000.0 / Stopwatch.Frequency,
+                    -arrivalDelayMs);
+                var isFuture = sampleLeadMs > Math.Max(0, futureToleranceMs);
+                _lastBatchEndUtc = endUtc;
+                return new DeviceSampleTimelineResult(
+                    previous,
+                    endUtc,
+                    endMonotonicTicks,
+                    _totalSamples,
+                    arrivalDelayMs,
+                    sampleLeadMs,
+                    isFuture);
+            }
+        }
+    }
 }

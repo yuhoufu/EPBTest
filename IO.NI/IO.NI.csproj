@@ -63,6 +63,7 @@
   <ItemGroup>
     <Compile Include="AoController.cs" />
     <Compile Include="ControlBatchRing.cs" />
+    <Compile Include="FastCurrentEvidenceRing.cs" />
     <Compile Include="DaqDiagnosticRing.cs" />
     <Compile Include="CurrentGuard.cs" />
     <Compile Include="DoController.cs" />
