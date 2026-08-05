@@ -25,12 +25,17 @@
     <UpdateRequired>false</UpdateRequired>
     <MapFileExtensions>true</MapFileExtensions>
     <ApplicationRevision>0</ApplicationRevision>
-    <ApplicationVersion>2.10.2.0</ApplicationVersion>
+    <ApplicationVersion>2.10.2.5</ApplicationVersion>
     <IsWebBootstrapper>false</IsWebBootstrapper>
     <UseApplicationTrust>false</UseApplicationTrust>
     <BootstrapperEnabled>true</BootstrapperEnabled>
     <NuGetPackageImportStamp>
     </NuGetPackageImportStamp>
+    <GitCommit Condition=" '$(GitCommit)' == '' ">unknown</GitCommit>
+    <GitBranch Condition=" '$(GitBranch)' == '' ">unknown</GitBranch>
+    <GitDirty Condition=" '$(GitDirty)' == '' ">unknown</GitDirty>
+    <BuildUtc Condition=" '$(BuildUtc)' == '' ">unknown</BuildUtc>
+    <ReleaseConfigSha256 Condition=" '$(ReleaseConfigSha256)' == '' ">unknown</ReleaseConfigSha256>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
     <PlatformTarget>x86</PlatformTarget>
@@ -46,7 +51,8 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
-    <PlatformTarget>AnyCPU</PlatformTarget>
+    <PlatformTarget>x86</PlatformTarget>
+    <Prefer32Bit>true</Prefer32Bit>
     <DebugType>pdbonly</DebugType>
     <Optimize>true</Optimize>
     <OutputPath>bin\Release\</OutputPath>
@@ -112,7 +118,6 @@
     <Reference Include="DevExpress.XtraBars.v24.2" />
     <Reference Include="DevExpress.XtraTreeList.v24.2" />
     <Reference Include="DevExpress.Mvvm.v24.2" />
-    <Reference Include="EntityFramework" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="AxisRangeDialog.cs">
@@ -138,6 +143,10 @@
       <SubType>Form</SubType>
     </Compile>
     <Compile Include="FrmEpbMainMonitor.BatchGuard.cs">
+      <DependentUpon>FrmEpbMainMonitor.cs</DependentUpon>
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="FrmEpbMainMonitor.UnattendedRecovery.cs">
       <DependentUpon>FrmEpbMainMonitor.cs</DependentUpon>
       <SubType>Form</SubType>
     </Compile>
@@ -169,6 +178,10 @@
     <Compile Include="Main_Frm.cs">
       <SubType>Form</SubType>
     </Compile>
+    <Compile Include="Main_Frm.UnattendedRecovery.cs">
+      <DependentUpon>Main_Frm.cs</DependentUpon>
+      <SubType>Form</SubType>
+    </Compile>
     <Compile Include="Main_Frm.Designer.cs">
       <DependentUpon>Main_Frm.cs</DependentUpon>
     </Compile>
@@ -176,6 +189,7 @@
     <Compile Include="Models\PressureSetting.cs" />
     <Compile Include="Models\TestConfig.cs" />
     <Compile Include="Program.cs" />
+    <Compile Include="UnattendedRecovery.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <EmbeddedResource Include="AxisRangeDialog.resx">
       <DependentUpon>AxisRangeDialog.cs</DependentUpon>
@@ -343,6 +357,16 @@
   <ItemGroup />
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <Import Project="..\packages\Stub.System.Data.SQLite.Core.NetFramework.1.0.119.0\build\net46\Stub.System.Data.SQLite.Core.NetFramework.targets" Condition="Exists('..\packages\Stub.System.Data.SQLite.Core.NetFramework.1.0.119.0\build\net46\Stub.System.Data.SQLite.Core.NetFramework.targets')" />
+  <Target Name="GenerateAuditableBuildMetadata" BeforeTargets="CoreCompile">
+    <PropertyGroup>
+      <BuildMetadataSource>$(IntermediateOutputPath)BuildMetadata.g.cs</BuildMetadataSource>
+      <BuildMetadataLines>using System.Reflection%3B%0A[assembly: AssemblyMetadata(&quot;GitCommit&quot;, &quot;$(GitCommit)&quot;)]%0A[assembly: AssemblyMetadata(&quot;GitBranch&quot;, &quot;$(GitBranch)&quot;)]%0A[assembly: AssemblyMetadata(&quot;GitDirty&quot;, &quot;$(GitDirty)&quot;)]%0A[assembly: AssemblyMetadata(&quot;BuildUtc&quot;, &quot;$(BuildUtc)&quot;)]%0A[assembly: AssemblyMetadata(&quot;ConfigSha256&quot;, &quot;$(ReleaseConfigSha256)&quot;)]</BuildMetadataLines>
+    </PropertyGroup>
+    <WriteLinesToFile File="$(BuildMetadataSource)" Lines="$(BuildMetadataLines)" Overwrite="true" Encoding="UTF-8" />
+    <ItemGroup>
+      <Compile Include="$(BuildMetadataSource)" />
+    </ItemGroup>
+  </Target>
   <!-- 防止无重定向建议时沿用历史 obj 配置，导致 Release 发布遗漏最新安全参数。 -->
   <Target Name="RemoveStaleGeneratedAppConfig"
           BeforeTargets="GenerateBindingRedirectsUpdateAppConfig"

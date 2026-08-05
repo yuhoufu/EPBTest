@@ -8,8 +8,10 @@
     <UseWPF>true</UseWPF>
     <AssemblyName>PowerSupplyDebugger</AssemblyName>
     <RootNamespace>PowerSupplyDebugger</RootNamespace>
-    <Platforms>AnyCPU;x64</Platforms>
-    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <Platforms>AnyCPU;x86</Platforms>
+    <PlatformTarget Condition="'$(Configuration)' == 'Release'">x86</PlatformTarget>
+    <RuntimeIdentifier Condition="'$(Configuration)' == 'Release'">win-x86</RuntimeIdentifier>
+    <RuntimeIdentifier Condition="'$(Configuration)' != 'Release'">win-x64</RuntimeIdentifier>
     <SelfContained>true</SelfContained>
     <PublishSingleFile>false</PublishSingleFile>
     <PublishReadyToRun>true</PublishReadyToRun>

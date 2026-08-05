@@ -6,5 +6,6 @@
     <Deterministic>true</Deterministic>
     <RootNamespace>PowerSupply.Core</RootNamespace>
     <AssemblyName>PowerSupply.Core</AssemblyName>
+    <PlatformTarget Condition="'$(Configuration)' == 'Release'">x86</PlatformTarget>
   </PropertyGroup>
 </Project>
