@@ -7,6 +7,7 @@ namespace Controller
         ManualUi,
         ApplicationClosing,
         AlarmInterlock,
+        SystemFault,
         StartupRollback,
         ProgramExit,
         UnknownLegacy

@@ -164,6 +164,40 @@ namespace Controller
             string result)
         {
             if (context == null) return;
+            // 在调用线程立即冻结；后台线程不得再读取会继续变化的诊断环或恢复上下文。
+            var capturedUtc = DateTime.UtcNow;
+            var diagnostics = _acq.CaptureDiagnostics(
+                new[] { context.Device },
+                TimeSpan.FromSeconds(60));
+            var queue = _persistence.GetSnapshot(context.Device);
+            var runEpoch = context.RunEpoch;
+            var recoveryEpoch = context.RecoveryEpoch;
+            var runId = _activeBatchId;
+            var beforeClock = context.BeforeClock ?? new DaqFreshnessSnapshot();
+            var afterClock = context.AfterClock ?? _acq.GetDaqFreshnessSnapshot(context.Device, 100);
+            var generation = _acq.GetCurrentGeneration(context.Device);
+            var previousGeneration = context.PreviousGeneration;
+            var recoveredGeneration = context.RecoveredGeneration;
+            var firstVerifiedSequence = context.FirstVerifiedSequence;
+            var lastVerifiedSequence = context.LastVerifiedSequence;
+            var recoveryAttempt = context.RecoveryAttempt;
+            var affectedChannels = (context.AffectedChannels ?? Array.Empty<int>()).ToArray();
+            var powerStates = _powerSupply == null
+                ? Array.Empty<PowerSupplyRuntimeState>()
+                : _cfg.Test.Groups
+                    .Where(group => group.Members.Any(affectedChannels.Contains))
+                    .Select(group => _powerSupply.GetRuntimeState(group.Id))
+                    .ToArray();
+            var powerStatesJson = string.Join(",", powerStates.Select(state => "{" +
+                $"\"group\":{state.ElectricalGroupId}," +
+                $"\"operationEpoch\":{state.OperationEpoch}," +
+                $"\"expectedOn\":{state.ExpectedOutputEnabled.ToString().ToLowerInvariant()}," +
+                $"\"planned\":{state.PlannedTransition.ToString().ToLowerInvariant()}," +
+                $"\"active\":{state.Active.ToString().ToLowerInvariant()}," +
+                $"\"telemetryOn\":{state.TelemetryOutputEnabled.ToString().ToLowerInvariant()}," +
+                $"\"protection\":{state.ProtectionTripped.ToString().ToLowerInvariant()}," +
+                $"\"telemetryUtc\":\"{state.TelemetryUtc:O}\"" + "}"));
+            var sequence = Interlocked.Increment(ref context.SnapshotSequence);
             await Task.Run(() =>
             {
                 try
@@ -180,29 +214,33 @@ namespace Controller
                             $"{context.StartedUtc.ToLocalTime():yyyyMMdd_HHmmss_fff}-" +
                             $"{context.Device}-{context.CorrelationId:N}"));
                     Directory.CreateDirectory(directory);
-                    var queue = _persistence.GetSnapshot(context.Device);
-                    var beforeClock = context.BeforeClock ?? new DaqFreshnessSnapshot();
-                    var afterClock = context.AfterClock ??
-                                     _acq.GetDaqFreshnessSnapshot(context.Device, 100);
+                    var safePhase = string.Concat((result ?? "phase")
+                        .Select(ch => char.IsLetterOrDigit(ch) || ch == '-' ? ch : '_'));
+                    var phaseDirectory = Path.Combine(
+                        directory,
+                        $"{safePhase}-{sequence:D3}-{capturedUtc:HHmmss_fff}");
+                    Directory.CreateDirectory(phaseDirectory);
                     var requiredFresh = string.Equals(
                         context.TriggerCode,
                         "DaqClockModelInvalid",
                         StringComparison.OrdinalIgnoreCase)
                         ? _daqClockRecoveryFreshBatches
                         : _daqPersistenceRequiredFreshBatches;
-                    File.WriteAllText(
-                        Path.Combine(directory, "incident.json"),
+                    var incidentJson =
                         "{\n" +
                         $"  \"device\": \"{JsonEscape(context.Device)}\",\n" +
                         $"  \"correlationId\": \"{context.CorrelationId:N}\",\n" +
+                        $"  \"runId\": \"{runId:N}\",\n" +
+                        $"  \"runEpoch\": {runEpoch},\n" +
+                        $"  \"recoveryEpoch\": {recoveryEpoch},\n" +
                         $"  \"faultCode\": \"{JsonEscape(context.TriggerCode)}\",\n" +
                         $"  \"reason\": \"{JsonEscape(reason)}\",\n" +
-                        $"  \"generation\": {_acq.GetCurrentGeneration(context.Device)},\n" +
-                        $"  \"previousGeneration\": {context.PreviousGeneration},\n" +
-                        $"  \"recoveredGeneration\": {context.RecoveredGeneration},\n" +
-                        $"  \"firstVerifiedSequence\": {context.FirstVerifiedSequence},\n" +
-                        $"  \"lastVerifiedSequence\": {context.LastVerifiedSequence},\n" +
-                        $"  \"recoveryAttempt\": {context.RecoveryAttempt},\n" +
+                        $"  \"generation\": {generation},\n" +
+                        $"  \"previousGeneration\": {previousGeneration},\n" +
+                        $"  \"recoveredGeneration\": {recoveredGeneration},\n" +
+                        $"  \"firstVerifiedSequence\": {firstVerifiedSequence},\n" +
+                        $"  \"lastVerifiedSequence\": {lastVerifiedSequence},\n" +
+                        $"  \"recoveryAttempt\": {recoveryAttempt},\n" +
                         $"  \"clockRecoveryMaxAttempts\": {_daqClockRecoveryMaxAttempts},\n" +
                         $"  \"clockRecoveryWindowMinutes\": {_daqClockRecoveryWindowMinutes},\n" +
                         $"  \"beforeClockState\": \"{beforeClock.ClockState}\",\n" +
@@ -215,8 +253,10 @@ namespace Controller
                         $"  \"afterResidualMs\": {afterClock.ClockResidualMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
                         $"  \"queueDepth\": {queue.QueueDepth},\n" +
                         $"  \"oldestBatchAgeMs\": {queue.OldestBatchAgeMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
-                        $"  \"affectedChannels\": [{string.Join(",", context.AffectedChannels ?? Array.Empty<int>())}],\n" +
-                        $"  \"queueCapacity\": {_daqPersistenceQueueCapacity},\n" +
+                        $"  \"affectedChannels\": [{string.Join(",", affectedChannels)}],\n" +
+                        $"  \"powerStates\": [{powerStatesJson}],\n" +
+                        "  \"processingQueueCapacity\": 64,\n" +
+                        $"  \"persistenceQueueCapacity\": {_daqPersistenceQueueCapacity},\n" +
                         $"  \"pauseDepth\": {_daqPersistencePauseDepth},\n" +
                         $"  \"resumeDepth\": {_daqPersistenceResumeDepth},\n" +
                         $"  \"pauseAgeMs\": {_daqPersistencePauseAgeMs.ToString("F0", CultureInfo.InvariantCulture)},\n" +
@@ -227,19 +267,22 @@ namespace Controller
                         $"  \"discardedGenerationBatches\": {queue.DiscardedGenerationBatchCount},\n" +
                         "  \"validBatchesDroppedByClockModel\": 0,\n" +
                         $"  \"result\": \"{JsonEscape(result)}\",\n" +
-                        $"  \"updatedUtc\": \"{DateTime.UtcNow:O}\"\n" +
-                        "}\n",
-                        new UTF8Encoding(false));
-                    _acq.ExportDiagnostics(
-                        directory,
-                        new[] { context.Device },
-                        TimeSpan.FromSeconds(60));
+                        $"  \"capturedUtc\": \"{capturedUtc:O}\"\n" +
+                        "}\n";
+                    using (var stream = new FileStream(
+                               Path.Combine(phaseDirectory, "incident.json"),
+                               FileMode.CreateNew,
+                               FileAccess.Write,
+                               FileShare.Read))
+                    using (var writer = new StreamWriter(stream, new UTF8Encoding(false)))
+                        writer.Write(incidentJson);
+                    diagnostics.WriteTo(phaseDirectory);
                     var recorder = Recorder;
                     if (recorder != null)
                     {
-                        foreach (var channel in context.AffectedChannels ?? Array.Empty<int>())
+                        foreach (var channel in affectedChannels)
                         {
-                            var sub = Path.Combine(directory, $"EPB{channel:D2}");
+                            var sub = Path.Combine(phaseDirectory, $"EPB{channel:D2}");
                             Directory.CreateDirectory(sub);
                             try { recorder.FlushRecentTo(channel, 10, sub, includeRunningCycle: true); }
                             catch (Exception ex) { _log.Warn($"Incident EPB[{channel}] 证据导出失败：{ex.Message}", "落盘"); }
@@ -258,19 +301,32 @@ namespace Controller
             DaqDeviceFault evidence)
         {
             if (initialContext == null) return;
-            // 等待断电电流确认/电源组派生动作落入同一事故，再生成唯一主快照。
-            await Task.Delay(1200).ConfigureAwait(false);
+            // 触发线程立即冻结所有可变证据；后台只消费冻结副本。
+            var context = initialContext.Clone();
+            var capturedUtc = DateTime.UtcNow;
+            var control = _acq.GetControlSnapshot(context.Device);
+            var runEpoch = Interlocked.Read(ref _runEpoch);
+            var powerStates = _powerSupply == null
+                ? Array.Empty<PowerSupplyRuntimeState>()
+                : _cfg.Test.Groups
+                    .Where(group => group.Members.Any((context.AffectedChannels ?? Array.Empty<int>()).Contains))
+                    .Select(group => _powerSupply.GetRuntimeState(group.Id))
+                    .ToArray();
+            var powerStatesJson = string.Join(",", powerStates.Select(state => "{" +
+                $"\"group\":{state.ElectricalGroupId}," +
+                $"\"operationEpoch\":{state.OperationEpoch}," +
+                $"\"expectedOn\":{state.ExpectedOutputEnabled.ToString().ToLowerInvariant()}," +
+                $"\"planned\":{state.PlannedTransition.ToString().ToLowerInvariant()}," +
+                $"\"telemetryOn\":{state.TelemetryOutputEnabled.ToString().ToLowerInvariant()}," +
+                $"\"protection\":{state.ProtectionTripped.ToString().ToLowerInvariant()}" + "}"));
+            var diagnostics = _acq.CaptureDiagnostics(
+                new[] { context.Device },
+                TimeSpan.FromSeconds(60));
             await Task.Run(() =>
             {
                 string intendedDirectory = null;
                 try
                 {
-                    var context = initialContext;
-                    if (_daqIncidentLatch.TryGet(
-                            initialContext.RunId,
-                            initialContext.Device,
-                            out var latestContext))
-                        context = latestContext;
                     var root = Path.Combine(
                         _cfg.Test.StoreDir,
                         _cfg.Test.TestName,
@@ -283,22 +339,25 @@ namespace Controller
                             $"{context.FirstSeenUtc.ToLocalTime():yyyyMMdd_HHmmss_fff}-" +
                             $"{context.Device}-{context.CorrelationId:N}"));
                     Directory.CreateDirectory(intendedDirectory);
+                    var phaseDirectory = Path.Combine(
+                        intendedDirectory,
+                        $"90-terminal-{capturedUtc:HHmmss_fff}-{Guid.NewGuid():N}");
+                    Directory.CreateDirectory(phaseDirectory);
 
-                    var control = _acq.GetControlSnapshot(context.Device);
                     var derivedCodes = context.DerivedCodes
                         .OrderBy(code => code, StringComparer.OrdinalIgnoreCase)
                         .Select(code => $"\"{JsonEscape(code)}\"");
-                    File.WriteAllText(
-                        Path.Combine(intendedDirectory, "incident.json"),
-                        "{\n" +
+                    var incidentJson = "{\n" +
                         $"  \"runId\": \"{context.RunId:N}\",\n" +
                         $"  \"device\": \"{JsonEscape(context.Device)}\",\n" +
                         $"  \"generation\": {context.Generation},\n" +
                         $"  \"correlationId\": \"{context.CorrelationId:N}\",\n" +
+                        $"  \"runEpoch\": {runEpoch},\n" +
                         $"  \"primaryFault\": \"{JsonEscape(context.PrimaryCode)}\",\n" +
                         $"  \"primaryReason\": \"{JsonEscape(context.PrimaryReason)}\",\n" +
                         $"  \"primaryChannel\": {context.PrimaryChannel},\n" +
                         $"  \"affectedChannels\": [{string.Join(",", context.AffectedChannels ?? Array.Empty<int>())}],\n" +
+                        $"  \"powerStates\": [{powerStatesJson}],\n" +
                         $"  \"derivedActions\": [{string.Join(",", derivedCodes)}],\n" +
                         $"  \"firstSeenUtc\": \"{context.FirstSeenUtc:O}\",\n" +
                         $"  \"lastSeenUtc\": \"{context.LastSeenUtc:O}\",\n" +
@@ -309,17 +368,20 @@ namespace Controller
                         $"  \"lastControlProcessingMs\": {(control?.LastBatchProcessMs ?? 0).ToString("F3", CultureInfo.InvariantCulture)},\n" +
                         $"  \"subscriberMaxMs\": {(control?.SubscriberMaxMs ?? 0).ToString("F3", CultureInfo.InvariantCulture)},\n" +
                         $"  \"lastProcessedSampleUtc\": \"{(control?.ProcessedSampleUtc ?? evidence?.LastProcessedSampleUtc ?? default):O}\",\n" +
-                        $"  \"capturedUtc\": \"{DateTime.UtcNow:O}\"\n" +
-                        "}\n",
-                        new UTF8Encoding(false));
-                    _acq.ExportDiagnostics(
-                        intendedDirectory,
-                        new[] { context.Device },
-                        TimeSpan.FromSeconds(60));
+                        $"  \"capturedUtc\": \"{capturedUtc:O}\"\n" +
+                        "}\n";
+                    using (var stream = new FileStream(
+                               Path.Combine(phaseDirectory, "incident.json"),
+                               FileMode.CreateNew,
+                               FileAccess.Write,
+                               FileShare.Read))
+                    using (var writer = new StreamWriter(stream, new UTF8Encoding(false)))
+                        writer.Write(incidentJson);
+                    diagnostics.WriteTo(phaseDirectory);
                     RuntimeBuildIdentity.Capture().WriteJson(
-                        Path.Combine(intendedDirectory, "build-identity.json"));
+                        Path.Combine(phaseDirectory, "build-identity.json"));
                     _log.Info(
-                        $"DAQ硬故障事故快照已保存：{intendedDirectory} " +
+                        $"DAQ硬故障事故快照已保存：{phaseDirectory} " +
                         $"CorrelationId={context.CorrelationId:N}",
                         "落盘");
                 }
@@ -361,9 +423,7 @@ namespace Controller
                 try
                 {
                     Directory.CreateDirectory(directory);
-                    File.WriteAllText(
-                        Path.Combine(directory, "snapshot-failure.json"),
-                        "{\n" +
+                    var failureJson = "{\n" +
                         $"  \"device\": \"{JsonEscape(context.Device)}\",\n" +
                         $"  \"runId\": \"{context.RunId:N}\",\n" +
                         $"  \"generation\": {context.Generation},\n" +
@@ -372,8 +432,14 @@ namespace Controller
                         $"  \"fallbackDirectory\": \"{JsonEscape(directory)}\",\n" +
                         $"  \"error\": \"{JsonEscape(error?.ToString())}\",\n" +
                         $"  \"timestampUtc\": \"{DateTime.UtcNow:O}\"\n" +
-                        "}\n",
-                        new UTF8Encoding(false));
+                        "}\n";
+                    using (var stream = new FileStream(
+                               Path.Combine(directory, $"snapshot-failure-{Guid.NewGuid():N}.json"),
+                               FileMode.CreateNew,
+                               FileAccess.Write,
+                               FileShare.Read))
+                    using (var writer = new StreamWriter(stream, new UTF8Encoding(false)))
+                        writer.Write(failureJson);
                     return directory;
                 }
                 catch { }

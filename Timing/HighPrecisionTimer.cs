@@ -18,6 +18,8 @@ public sealed class HighPrecisionTimer
     private readonly OverrunPolicy _policy;
     private volatile bool _running;
     private long _pauseStartedTimestamp;
+    private int _resumeAtFutureBoundaryRequested;
+    private int _resumeDelayMs;
 
     private long _ticksStart; // 计划起点
 
@@ -58,6 +60,13 @@ public sealed class HighPrecisionTimer
                 while (!_cts.IsCancellationRequested && (!repeat.HasValue || i < repeat.Value))
                 {
                     _pauseGate.Wait(_cts.Token);
+
+                    if (Interlocked.Exchange(ref _resumeAtFutureBoundaryRequested, 0) != 0)
+                    {
+                        var resumeDelay = Math.Max(1, Interlocked.Exchange(ref _resumeDelayMs, 0));
+                        _ticksStart = sw.ElapsedMilliseconds + resumeDelay - (long)i * _periodMs;
+                        _log.Info($"定时器按新同步锚点恢复，距下一完整圈 {resumeDelay}ms。", "Timer");
+                    }
 
                     var planned = _ticksStart + (long)i * _periodMs;
                     var now = sw.ElapsedMilliseconds;
@@ -151,6 +160,18 @@ public sealed class HighPrecisionTimer
         }
         _pauseGate.Set();
         _log.Info("定时器已恢复。", "Timer");
+    }
+
+    /// <summary>
+    /// 放弃旧半圈剩余相位，把当前尚未执行的圈重新锚定到指定的未来时刻。
+    /// </summary>
+    public void ResumeAtNextBoundary(int delayMs)
+    {
+        Interlocked.Exchange(ref _pauseStartedTimestamp, 0);
+        Interlocked.Exchange(ref _resumeDelayMs, Math.Max(1, delayMs));
+        Interlocked.Exchange(ref _resumeAtFutureBoundaryRequested, 1);
+        _pauseGate.Set();
+        _log.Info($"定时器等待未来同步锚点恢复，Delay={Math.Max(1, delayMs)}ms。", "Timer");
     }
 
     /// <summary>终止定时器。</summary>

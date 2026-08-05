@@ -17,7 +17,9 @@ namespace Controller
         InterlockStopped = 7,
         ManualStopped = 8,
         Completed = 9,
-        StartBlocked = 10
+        StartBlocked = 10,
+        Recovering = 11,
+        SystemFault = 12
     }
 
     public sealed class ChannelRuntimeStateChangedEvent
@@ -91,6 +93,7 @@ namespace Controller
         {
             return state == ChannelRuntimeState.AlarmStopped ||
                    state == ChannelRuntimeState.InterlockStopped ||
+                   state == ChannelRuntimeState.SystemFault ||
                    state == ChannelRuntimeState.StartBlocked;
         }
     }

@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using Config;
 
 namespace Controller
 {
@@ -15,6 +16,14 @@ namespace Controller
             var reason =
                 $"StartupPositioningFailed Stage={result.Stage} Code={result.Code} " +
                 $"Peak={result.PeakCurrentA:F3}A Elapsed={result.ElapsedMs}ms Detail={result.Reason}";
+            var overCurrent = result.Code?.IndexOf("OverCurrent", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                              result.Reason?.IndexOf("OverCurrent", StringComparison.OrdinalIgnoreCase) >= 0;
+            var groupId = GetElectricalGroupId(result.Channel);
+            var classification = overCurrent &&
+                                 (_powerSupply == null || groupId <= 0 ||
+                                  !_powerSupply.HasFreshPowerFaultEvidence(groupId))
+                ? FaultClassification.SystemFault
+                : FaultClassification.HardwareConfirmed;
             var fault = new ControlFault(
                 string.IsNullOrWhiteSpace(result.Code) ? "StartupPositioningFailed" : result.Code,
                 reason,
@@ -22,7 +31,40 @@ namespace Controller
                 new[] { result.Channel },
                 null,
                 DateTime.UtcNow,
-                Guid.NewGuid());
+                Guid.NewGuid(),
+                classification);
+
+            if (classification == FaultClassification.SystemFault)
+            {
+                try { CommandEpbOffSafetyImmediate(result.Channel); } catch { }
+                PublishChannelRuntimeState(
+                    result.Channel,
+                    ChannelRuntimeState.SystemFault,
+                    fault.Code,
+                    "启动定位过流缺少新鲜PSU独立证据；已安全断电但不触发硬件报警。" + reason,
+                    affectedChannels: fault.AffectedChannels,
+                    correlationId: fault.CorrelationId);
+                _log?.Error(
+                    $"EPB[{result.Channel}] 启动定位单源过流归为系统故障。" +
+                    $"CorrelationId={fault.CorrelationId:N} {reason}",
+                    "报警");
+                FlushPersistentLog();
+                try { ControlFaultRaised?.Invoke(fault); } catch { }
+                try { SystemFaultRaised?.Invoke(fault); } catch { }
+                try { ExportStartupPositioningSnapshot(result, fault); }
+                catch (Exception ex)
+                {
+                    _log?.Warn($"EPB[{result.Channel}] 启动定位快照导出失败：{ex.Message}", "落盘");
+                }
+                return;
+            }
+
+            NotifyRunAuthorizationRevoking(
+                StopSource.AlarmInterlock,
+                reason,
+                nameof(PublishStartupPositioningFailureAsync),
+                fault.CorrelationId,
+                FaultScope.Channel);
 
             _alarmStopLatch.TryRequestStop(result.Channel);
             _log?.Error(

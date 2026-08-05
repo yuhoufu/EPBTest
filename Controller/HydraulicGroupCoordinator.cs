@@ -30,7 +30,8 @@ namespace Controller
     public sealed class ControlFault
     {
         public ControlFault(string code, string reason, FaultScope scope, int[] affectedChannels,
-            int? groupId, DateTime timestampUtc, Guid correlationId)
+            int? groupId, DateTime timestampUtc, Guid correlationId,
+            FaultClassification classification = FaultClassification.HardwareConfirmed)
         {
             Code = code ?? string.Empty;
             Reason = reason ?? string.Empty;
@@ -39,6 +40,7 @@ namespace Controller
             GroupId = groupId;
             TimestampUtc = timestampUtc;
             CorrelationId = correlationId;
+            Classification = classification;
         }
         public string Code { get; }
         public string Reason { get; }
@@ -47,6 +49,7 @@ namespace Controller
         public int? GroupId { get; }
         public DateTime TimestampUtc { get; }
         public Guid CorrelationId { get; }
+        public FaultClassification Classification { get; }
     }
 
     public enum HydraulicPhaseKind
@@ -601,6 +604,12 @@ namespace Controller
             _log.Error(exception.Message, "液压协调", exception);
             try
             {
+                // 屏障缺员只证明软件调度/同步没有收敛，并不能独立证明泵、管路或
+                // 卡钳硬件损坏。仍执行整组安全断电、回零和停止，但不得驱动硬件
+                // 报警灯/蜂鸣器；压力建压、保压、释压失败继续按硬件证据处理。
+                var classification = exception is HydraulicBarrierTimeoutException
+                    ? FaultClassification.SystemFault
+                    : FaultClassification.HardwareConfirmed;
                 FaultRaised?.Invoke(new ControlFault(
                     exception is HydraulicBarrierTimeoutException ? "HydraulicBarrierTimeout" :
                     exception is HydraulicPressureLostException ? "HydraulicPressureLost" :
@@ -611,7 +620,8 @@ namespace Controller
                     state.Members.ToArray(),
                     state.Key.HydraulicId,
                     DateTime.UtcNow,
-                    state.Key.TestRunId));
+                    state.Key.TestRunId,
+                    classification));
             }
             catch { }
         }

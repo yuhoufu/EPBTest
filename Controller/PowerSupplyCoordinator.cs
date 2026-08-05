@@ -22,6 +22,7 @@ namespace Controller
         public string Reason { get; set; } = string.Empty;
         public int[] AffectedChannels { get; set; } = Array.Empty<int>();
         public PswSnapshot Snapshot { get; set; }
+        public FaultClassification Classification { get; set; } = FaultClassification.HardwareConfirmed;
     }
 
     public sealed class PowerSupplyTelemetry
@@ -34,16 +35,30 @@ namespace Controller
         public string Error { get; set; } = string.Empty;
     }
 
+    public sealed class PowerSupplyRuntimeState
+    {
+        public int ElectricalGroupId { get; set; }
+        public long OperationEpoch { get; set; }
+        public bool ExpectedOutputEnabled { get; set; }
+        public bool PlannedTransition { get; set; }
+        public bool Active { get; set; }
+        public DateTime TelemetryUtc { get; set; }
+        public bool TelemetryOutputEnabled { get; set; }
+        public bool ProtectionTripped { get; set; }
+    }
+
     public interface IPowerSupplyCoordinator : IDisposable
     {
         event Action<PowerSupplyTelemetry> TelemetryUpdated;
         event Action<PowerSupplyFault> FaultRaised;
         Task PrepareAndEnableAsync(IEnumerable<int> selectedChannels, CancellationToken token);
+        Task RevalidateEnabledAsync(IEnumerable<int> selectedChannels, CancellationToken token);
         Task DisableGroupAsync(int electricalGroupId, string reason, CancellationToken token);
         Task DisableAllAsync(string reason, CancellationToken token);
         Task ResetFaultAsync(int electricalGroupId, CancellationToken token);
         bool HasFreshPowerFaultEvidence(int electricalGroupId);
         PswSnapshot GetLatestSnapshot(int electricalGroupId);
+        PowerSupplyRuntimeState GetRuntimeState(int electricalGroupId);
         IReadOnlyList<PowerSupplyTelemetry> GetRecentTelemetry(int electricalGroupId, TimeSpan window);
         IReadOnlyCollection<int> ActiveGroups { get; }
     }
@@ -66,7 +81,19 @@ namespace Controller
         private readonly ConcurrentDictionary<int, CancellationTokenSource> _monitorCts =
             new ConcurrentDictionary<int, CancellationTokenSource>();
         private readonly ConcurrentDictionary<int, Task> _monitorTasks = new ConcurrentDictionary<int, Task>();
+        private readonly ConcurrentDictionary<int, GroupOperationState> _operations =
+            new ConcurrentDictionary<int, GroupOperationState>();
         private int _disposed;
+
+        private sealed class GroupOperationState
+        {
+            internal readonly SemaphoreSlim Gate = new SemaphoreSlim(1, 1);
+            internal readonly object Sync = new object();
+            internal CancellationTokenSource ActiveOperation;
+            internal long Epoch;
+            internal bool ExpectedOutputEnabled;
+            internal int PlannedTransition;
+        }
 
         public PowerSupplyCoordinator(
             PowerSupplyFleetConfig config,
@@ -104,60 +131,9 @@ namespace Controller
             var enabledThisAttempt = new ConcurrentBag<int>();
             try
             {
-                await Task.WhenAll(requiredGroups.Select(async group =>
-                {
-                    var supply = RequiredSupply(group.Id);
-                    var client = _clients.GetOrAdd(group.Id, _ => _clientFactory(supply));
-                    var snapshot = client.IsConnected
-                        ? await client.ReadSnapshotAsync(token).ConfigureAwait(false)
-                        : await client.ConnectAsync(token).ConfigureAwait(false);
-
-                    ValidateIdentity(supply, snapshot);
-                    if (snapshot.OutputEnabled)
-                    {
-                        _log.Warn(
-                            $"{supply.DisplayName} 启动前已经 OUTP ON；将先关闭输出并回读确认，再执行安全设定。",
-                            "程控电源");
-                        await client.SetOutputAsync(false, token).ConfigureAwait(false);
-                        snapshot = await client.ReadSnapshotAsync(token).ConfigureAwait(false);
-                        _latest[group.Id] = snapshot;
-                        AppendTelemetry(group.Id, snapshot, null);
-                        if (snapshot.OutputEnabled)
-                            throw new InvalidOperationException(
-                                $"{supply.DisplayName} 启动前 OUTP ON，发送 OUTP OFF 后回读仍为 ON；已阻止带载改参。");
-                        _log.Info($"{supply.DisplayName} 已确认 OUTP OFF，开始写入安全设定。", "程控电源");
-                    }
-                    if (snapshot.ProtectionTripped)
-                        throw new InvalidOperationException($"{supply.DisplayName} 保护已触发，禁止启动。");
-
-                    await ApplyAndVerifySetpointsAsync(client, supply, token).ConfigureAwait(false);
-                    var errors = await client.ReadErrorQueueAsync(token).ConfigureAwait(false);
-                    if (errors.Any(x => !IsNoError(x)))
-                        throw new InvalidOperationException($"{supply.DisplayName} 错误队列非空：{string.Join(" | ", errors)}");
-
-                    // 从发送 OUTP ON 起就纳入回滚范围；后续任何回读或回零失败都必须关断输出。
-                    enabledThisAttempt.Add(group.Id);
-                    var outputOnStarted = Stopwatch.GetTimestamp();
-                    await client.SetOutputAsync(true, token).ConfigureAwait(false);
-                    var enabled = await client.ReadSnapshotAsync(token).ConfigureAwait(false);
-                    if (!enabled.OutputEnabled)
-                        throw new InvalidOperationException($"{supply.DisplayName} OUTP ON 回读失败。");
-                    if (enabled.MeasuredVoltage < supply.MinimumOutputVoltageV)
-                        throw new InvalidOperationException(
-                            $"{supply.DisplayName} 开启后电压过低：{enabled.MeasuredVoltage:F3}V < {supply.MinimumOutputVoltageV:F3}V。");
-
-                    enabled = await WaitForStartupCurrentZeroAsync(
-                            client, supply, enabled, outputOnStarted, token)
-                        .ConfigureAwait(false);
-                    _latest[group.Id] = enabled;
-                    _activeGroups[group.Id] = 0;
-                    AppendTelemetry(group.Id, enabled, null);
-                    await StartMonitorAsync(group.Id).ConfigureAwait(false);
-                    _log.Info(
-                        $"{supply.DisplayName} 已接管：Group={group.Id} {supply.Host}:{supply.Port} " +
-                        $"VSET={enabled.SetVoltage:F3}V ISET={enabled.SetCurrent:F3}A。",
-                        "程控电源");
-                })).ConfigureAwait(false);
+                await Task.WhenAll(requiredGroups.Select(group =>
+                        PrepareGroupAsync(group, enabledThisAttempt, token)))
+                    .ConfigureAwait(false);
             }
             catch
             {
@@ -166,8 +142,114 @@ namespace Controller
             }
         }
 
+        private async Task PrepareGroupAsync(
+            ElectricalGroup group,
+            ConcurrentBag<int> enabledThisAttempt,
+            CancellationToken token)
+        {
+            await RunPlannedGroupOperationAsync(group.Id, expectedOutputAfter: true, token, async operationToken =>
+            {
+                // 计划 OFF 前先停监控，避免监控把本程序自己的切换误判为意外掉电。
+                await StopMonitorAsync(group.Id).ConfigureAwait(false);
+                var supply = RequiredSupply(group.Id);
+                var client = _clients.GetOrAdd(group.Id, _ => _clientFactory(supply));
+                var snapshot = client.IsConnected
+                    ? await client.ReadSnapshotAsync(operationToken).ConfigureAwait(false)
+                    : await client.ConnectAsync(operationToken).ConfigureAwait(false);
+
+                ValidateIdentity(supply, snapshot);
+                if (snapshot.OutputEnabled)
+                {
+                    _log.Warn(
+                        $"{supply.DisplayName} 启动前已经 OUTP ON；将先关闭输出并回读确认，再执行安全设定。",
+                        "程控电源");
+                    await client.SetOutputAsync(false, operationToken).ConfigureAwait(false);
+                    snapshot = await client.ReadSnapshotAsync(operationToken).ConfigureAwait(false);
+                    _latest[group.Id] = snapshot;
+                    AppendTelemetry(group.Id, snapshot, "PlannedOutputOff");
+                    if (snapshot.OutputEnabled)
+                        throw new InvalidOperationException(
+                            $"{supply.DisplayName} 启动前 OUTP ON，发送 OUTP OFF 后回读仍为 ON；已阻止带载改参。");
+                }
+                if (snapshot.ProtectionTripped)
+                    throw new InvalidOperationException($"{supply.DisplayName} 保护已触发，禁止启动。");
+
+                await ApplyAndVerifySetpointsAsync(client, supply, operationToken).ConfigureAwait(false);
+                var errors = await client.ReadErrorQueueAsync(operationToken).ConfigureAwait(false);
+                if (errors.Any(x => !IsNoError(x)))
+                    throw new InvalidOperationException($"{supply.DisplayName} 错误队列非空：{string.Join(" | ", errors)}");
+
+                enabledThisAttempt.Add(group.Id);
+                var outputOnStarted = Stopwatch.GetTimestamp();
+                await client.SetOutputAsync(true, operationToken).ConfigureAwait(false);
+                var enabled = await client.ReadSnapshotAsync(operationToken).ConfigureAwait(false);
+                if (!enabled.OutputEnabled)
+                    throw new InvalidOperationException($"{supply.DisplayName} OUTP ON 回读失败。");
+                if (enabled.MeasuredVoltage < supply.MinimumOutputVoltageV)
+                    throw new InvalidOperationException(
+                        $"{supply.DisplayName} 开启后电压过低：{enabled.MeasuredVoltage:F3}V < {supply.MinimumOutputVoltageV:F3}V。");
+
+                enabled = await WaitForStartupCurrentZeroAsync(
+                        client, supply, enabled, outputOnStarted, operationToken)
+                    .ConfigureAwait(false);
+                _latest[group.Id] = enabled;
+                _activeGroups[group.Id] = 0;
+                AppendTelemetry(group.Id, enabled, null);
+                await StartMonitorAsync(group.Id).ConfigureAwait(false);
+                _log.Info(
+                    $"{supply.DisplayName} 已接管：Group={group.Id} {supply.Host}:{supply.Port} " +
+                    $"VSET={enabled.SetVoltage:F3}V ISET={enabled.SetCurrent:F3}A。",
+                    "程控电源");
+            }).ConfigureAwait(false);
+        }
+
+        public async Task RevalidateEnabledAsync(IEnumerable<int> selectedChannels, CancellationToken token)
+        {
+            ThrowIfDisposed();
+            var channels = (selectedChannels ?? Enumerable.Empty<int>()).Distinct().ToArray();
+            foreach (var group in ResolveGroups(channels))
+            {
+                await RunPlannedGroupOperationAsync(group.Id, expectedOutputAfter: true, token, async operationToken =>
+                {
+                    await StopMonitorAsync(group.Id).ConfigureAwait(false);
+                    var supply = RequiredSupply(group.Id);
+                    var client = _clients.GetOrAdd(group.Id, _ => _clientFactory(supply));
+                    var snapshot = client.IsConnected
+                        ? await client.ReadSnapshotAsync(operationToken).ConfigureAwait(false)
+                        : await client.ConnectAsync(operationToken).ConfigureAwait(false);
+                    ValidateIdentity(supply, snapshot);
+                    _latest[group.Id] = snapshot;
+                    AppendTelemetry(group.Id, snapshot, "RecoveryRevalidation");
+                    if (snapshot.ProtectionTripped)
+                        throw new InvalidOperationException($"{supply.DisplayName} 保护已触发，禁止恢复。");
+                    if (!snapshot.OutputEnabled)
+                        throw new InvalidOperationException($"{supply.DisplayName} 恢复复核时输出为 OFF。");
+                    if (snapshot.MeasuredVoltage < supply.MinimumOutputVoltageV)
+                        throw new InvalidOperationException(
+                            $"{supply.DisplayName} 恢复复核电压过低：{snapshot.MeasuredVoltage:F3}V。");
+                    _activeGroups[group.Id] = 0;
+                    await StartMonitorAsync(group.Id).ConfigureAwait(false);
+                }).ConfigureAwait(false);
+            }
+        }
+
         public async Task DisableGroupAsync(int electricalGroupId, string reason, CancellationToken token)
         {
+            CancelActiveGroupOperation(electricalGroupId);
+            var operation = Operation(electricalGroupId);
+            await operation.Gate.WaitAsync(token).ConfigureAwait(false);
+            CancellationTokenSource linked = null;
+            long epoch;
+            lock (operation.Sync)
+            {
+                epoch = ++operation.Epoch;
+                operation.PlannedTransition = 1;
+                operation.ExpectedOutputEnabled = false;
+                linked = CancellationTokenSource.CreateLinkedTokenSource(token);
+                operation.ActiveOperation = linked;
+            }
+            try
+            {
             // 必须等正在执行的遥测事务完全退出后才能发送 OUTP OFF。仅取消而不等待会让
             // 未完成的 StreamReader.ReadLineAsync 与关电回读并发，造成响应串线和误报。
             await StopMonitorAsync(electricalGroupId).ConfigureAwait(false);
@@ -175,8 +257,8 @@ namespace Controller
             {
                 try
                 {
-                    await client.SetOutputAsync(false, token).ConfigureAwait(false);
-                    var snapshot = await client.ReadSnapshotAsync(token).ConfigureAwait(false);
+                    await client.SetOutputAsync(false, linked.Token).ConfigureAwait(false);
+                    var snapshot = await client.ReadSnapshotAsync(linked.Token).ConfigureAwait(false);
                     _latest[electricalGroupId] = snapshot;
                     AppendTelemetry(electricalGroupId, snapshot, null);
                     if (snapshot.OutputEnabled)
@@ -192,6 +274,21 @@ namespace Controller
             }
             _activeGroups.TryRemove(electricalGroupId, out _);
             _log.Info($"电源组 {electricalGroupId} 已关闭。Reason={reason}", "程控电源");
+            }
+            finally
+            {
+                lock (operation.Sync)
+                {
+                    if (operation.Epoch == epoch)
+                    {
+                        operation.ActiveOperation = null;
+                        operation.PlannedTransition = 0;
+                        operation.ExpectedOutputEnabled = false;
+                    }
+                }
+                linked?.Dispose();
+                operation.Gate.Release();
+            }
         }
 
         public async Task DisableAllAsync(string reason, CancellationToken token)
@@ -227,7 +324,8 @@ namespace Controller
         {
             var snapshot = GetLatestSnapshot(electricalGroupId);
             if (snapshot == null) return false;
-            if ((DateTime.UtcNow - snapshot.TimestampUtc).TotalMilliseconds > _config.TelemetryStaleMs) return true;
+            if ((DateTime.UtcNow - snapshot.TimestampUtc.ToUniversalTime()).TotalMilliseconds >
+                _config.TelemetryStaleMs) return false;
             var supply = RequiredSupply(electricalGroupId);
             return snapshot.ProtectionTripped ||
                    snapshot.IsConstantCurrent ||
@@ -242,6 +340,32 @@ namespace Controller
         {
             _latest.TryGetValue(electricalGroupId, out var snapshot);
             return snapshot;
+        }
+
+        public PowerSupplyRuntimeState GetRuntimeState(int electricalGroupId)
+        {
+            var operation = Operation(electricalGroupId);
+            long epoch;
+            bool expected;
+            bool planned;
+            lock (operation.Sync)
+            {
+                epoch = operation.Epoch;
+                expected = operation.ExpectedOutputEnabled;
+                planned = operation.PlannedTransition != 0;
+            }
+            var telemetry = GetLatestSnapshot(electricalGroupId);
+            return new PowerSupplyRuntimeState
+            {
+                ElectricalGroupId = electricalGroupId,
+                OperationEpoch = epoch,
+                ExpectedOutputEnabled = expected,
+                PlannedTransition = planned,
+                Active = _activeGroups.ContainsKey(electricalGroupId),
+                TelemetryUtc = telemetry?.TimestampUtc ?? default,
+                TelemetryOutputEnabled = telemetry?.OutputEnabled ?? false,
+                ProtectionTripped = telemetry?.ProtectionTripped ?? false
+            };
         }
 
         public IReadOnlyList<PowerSupplyTelemetry> GetRecentTelemetry(int electricalGroupId, TimeSpan window)
@@ -390,7 +514,10 @@ namespace Controller
                 try
                 {
                     var snapshot = await _clients[groupId].ReadSnapshotAsync(token).ConfigureAwait(false);
-                    lastSuccess = DateTime.UtcNow;
+                    var telemetryFresh = snapshot != null &&
+                                         (DateTime.UtcNow - snapshot.TimestampUtc.ToUniversalTime())
+                                         .TotalMilliseconds <= _config.TelemetryStaleMs;
+                    if (telemetryFresh) lastSuccess = DateTime.UtcNow;
                     _latest[groupId] = snapshot;
                     var supply = RequiredSupply(groupId);
                     var nearLimit = supply.CurrentA.HasValue &&
@@ -404,7 +531,21 @@ namespace Controller
                               $"Warn={supply.CurrentA.Value * _config.NearLimitWarnRatio:F3}A"
                             : null);
 
-                    if (!snapshot.OutputEnabled)
+                    var operation = Operation(groupId);
+                    bool expectedOn;
+                    bool planned;
+                    lock (operation.Sync)
+                    {
+                        expectedOn = operation.ExpectedOutputEnabled;
+                        planned = operation.PlannedTransition != 0;
+                    }
+                    if (!telemetryFresh)
+                    {
+                        RaiseFault(groupId, "TelemetryStale",
+                            $"程控电源遥测时间戳超过 {_config.TelemetryStaleMs}ms。", snapshot);
+                        break;
+                    }
+                    if (!snapshot.OutputEnabled && expectedOn && !planned)
                     {
                         RaiseFault(groupId, "UnexpectedOutputOff", "试验运行中电源输出意外关闭。", snapshot);
                         break;
@@ -472,10 +613,80 @@ namespace Controller
                 AffectedChannels = _selectedByGroup.TryGetValue(groupId, out var channels)
                     ? channels
                     : Group(groupId).Members.ToArray(),
-                Snapshot = snapshot
+                Snapshot = snapshot,
+                Classification = IsConfirmedPowerHardwareFault(code, snapshot)
+                    ? FaultClassification.HardwareConfirmed
+                    : FaultClassification.SystemFault
             };
-            _log.Error($"电源组 {groupId} 硬故障 [{code}]：{reason}", "程控电源");
+            _log.Error(
+                $"电源组 {groupId} {(fault.Classification == FaultClassification.HardwareConfirmed ? "硬件已确认" : "系统故障")} " +
+                $"[{code}]：{reason}",
+                "程控电源");
             try { FaultRaised?.Invoke(fault); } catch { }
+        }
+
+        private static bool IsConfirmedPowerHardwareFault(string code, PswSnapshot snapshot)
+        {
+            // 意外 OFF、通信陈旧和低压可能由本进程调度/通信引起，不能直接归为硬件报警。
+            return string.Equals(code, "ProtectionTrip", StringComparison.OrdinalIgnoreCase) &&
+                   snapshot != null && snapshot.ProtectionTripped;
+        }
+
+        private GroupOperationState Operation(int groupId) =>
+            _operations.GetOrAdd(groupId, _ => new GroupOperationState());
+
+        private void CancelActiveGroupOperation(int groupId)
+        {
+            var operation = Operation(groupId);
+            lock (operation.Sync)
+            {
+                try { operation.ActiveOperation?.Cancel(); } catch { }
+                operation.Epoch++;
+                operation.ExpectedOutputEnabled = false;
+            }
+        }
+
+        private async Task RunPlannedGroupOperationAsync(
+            int groupId,
+            bool expectedOutputAfter,
+            CancellationToken token,
+            Func<CancellationToken, Task> action)
+        {
+            var operation = Operation(groupId);
+            await operation.Gate.WaitAsync(token).ConfigureAwait(false);
+            CancellationTokenSource linked = null;
+            long epoch;
+            lock (operation.Sync)
+            {
+                epoch = ++operation.Epoch;
+                operation.PlannedTransition = 1;
+                linked = CancellationTokenSource.CreateLinkedTokenSource(token);
+                operation.ActiveOperation = linked;
+            }
+            try
+            {
+                await action(linked.Token).ConfigureAwait(false);
+                linked.Token.ThrowIfCancellationRequested();
+                lock (operation.Sync)
+                {
+                    if (operation.Epoch != epoch)
+                        throw new OperationCanceledException("电源操作已被更高优先级安全动作撤销。", linked.Token);
+                    operation.ExpectedOutputEnabled = expectedOutputAfter;
+                }
+            }
+            finally
+            {
+                lock (operation.Sync)
+                {
+                    if (operation.Epoch == epoch)
+                    {
+                        operation.ActiveOperation = null;
+                        operation.PlannedTransition = 0;
+                    }
+                }
+                linked?.Dispose();
+                operation.Gate.Release();
+            }
         }
 
         private void AppendTelemetry(int groupId, PswSnapshot snapshot, string error)
@@ -623,6 +834,13 @@ namespace Controller
                 try { client.Dispose(); } catch { }
             }
             _clients.Clear();
+            foreach (var operation in _operations.Values)
+            {
+                try { operation.ActiveOperation?.Cancel(); } catch { }
+                try { operation.ActiveOperation?.Dispose(); } catch { }
+                operation.Gate.Dispose();
+            }
+            _operations.Clear();
         }
 
         private sealed class AppPswLog : IPswLog

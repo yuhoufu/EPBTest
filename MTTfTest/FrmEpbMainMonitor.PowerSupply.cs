@@ -7,6 +7,7 @@ using System.Windows.Forms;
 using Config;
 using Controller;
 using Controller.Alarm;
+using DataOperation;
 
 namespace MTEmbTest
 {
@@ -14,6 +15,7 @@ namespace MTEmbTest
     {
         private int _powerSupplyUiAttached;
         private int _powerSupplyUiInitialized;
+        private int _ownedRawPipelineAttached;
         private int _warningSnapshotStorageWarningShown;
         private bool _trimmingSafetyInfoDisplay;
         private ToolTip _powerSupplyToolTip;
@@ -32,6 +34,8 @@ namespace MTEmbTest
             if (Interlocked.Exchange(ref _powerSupplyUiInitialized, 1) != 0) return;
             InitializeBoundedSafetyInfoDisplay();
             InitializeChannelRuntimeStatusUi();
+            AttachOwnedRawPipeline();
+            AttachUnattendedRecovery();
             _powerSupplyToolTip = new ToolTip();
             var boxes = new[] { uiGroupBox4, uiGroupBox5, uiGroupBox6, uiGroupBox7 };
             for (var index = 0; index < boxes.Length; index++)
@@ -43,6 +47,36 @@ namespace MTEmbTest
                 boxes[index].DoubleClick += async (sender, args) =>
                     await ResetPowerSupplyFaultFromUiAsync(groupId);
             }
+        }
+
+        private void AttachOwnedRawPipeline()
+        {
+            if (twoDeviceAiAcquirer == null ||
+                Interlocked.Exchange(ref _ownedRawPipelineAttached, 1) != 0)
+                return;
+            // Load 期间旧订阅只短暂存在；Shown 后切换到有所有权、池化且异步的 Raw 链。
+            twoDeviceAiAcquirer.OnRawBatch -= Acq_OnRawBatch;
+            twoDeviceAiAcquirer.OwnedRawBatchReady += Acq_OnOwnedRawBatch;
+            if (_daqDev1 != null)
+                _daqDev1.QueueFull += twoDeviceAiAcquirer.ReportRawPersistenceQueueFull;
+            if (_daqDev2 != null)
+                _daqDev2.QueueFull += twoDeviceAiAcquirer.ReportRawPersistenceQueueFull;
+        }
+
+        private void Acq_OnOwnedRawBatch(OwnedDaqRawBatch batch)
+        {
+            if (batch == null) return;
+            if (_isClosing)
+            {
+                batch.Dispose();
+                return;
+            }
+            if (batch.Device.Equals("Dev1", StringComparison.OrdinalIgnoreCase) && _daqDev1 != null)
+                _daqDev1.EnqueueRawData(batch);
+            else if (batch.Device.Equals("Dev2", StringComparison.OrdinalIgnoreCase) && _daqDev2 != null)
+                _daqDev2.EnqueueRawData(batch);
+            else
+                batch.Dispose();
         }
 
         private void AttachSafetyUiEvents()
@@ -84,11 +118,11 @@ namespace MTEmbTest
                             ? "若液压资格与电源回读均正常且该通道近零电流，请检查面板按钮、继电器、接插件和线束。"
                             : string.Empty;
                     PostSafetyStatus(
-                        $"控制故障【{AlarmMessageLocalizer.GetCodeName(fault.Code)}】" +
+                        $"{GetFaultClassificationText(fault.Classification)}【{AlarmMessageLocalizer.GetCodeName(fault.Code)}】" +
                         $"范围={AlarmMessageLocalizer.GetScopeName(fault.Scope)}，卡钳=" +
                         $"{string.Join(",", fault.AffectedChannels ?? Array.Empty<int>())}。" +
                         $"{AlarmMessageLocalizer.ToUserMessage(fault.Reason)}{hint}",
-                        true);
+                        fault.Classification != FaultClassification.SoftwareTransient);
                 };
                 var initialStorage = manager.GetWarningSnapshotStorageStatus();
                 ShowWarningSnapshotStorageWarning(initialStorage);
@@ -152,6 +186,7 @@ namespace MTEmbTest
             if (state == null || state.Channel < 1 || state.Channel > 12) return;
             lock (_channelRuntimeStates)
                 _channelRuntimeStates[state.Channel] = state.Clone();
+            UpdateUnattendedRunAuthorization(state);
             if (IsDisposed || Disposing) return;
             try
             {
@@ -253,6 +288,8 @@ namespace MTEmbTest
                 case ChannelRuntimeState.Running: return "运行";
                 case ChannelRuntimeState.WarningRunning: return "软预警";
                 case ChannelRuntimeState.Paused: return "暂停";
+                case ChannelRuntimeState.Recovering: return "系统自恢复";
+                case ChannelRuntimeState.SystemFault: return "系统故障";
                 case ChannelRuntimeState.AlarmStopped: return "报警停机";
                 case ChannelRuntimeState.InterlockStopped: return "联锁停机";
                 case ChannelRuntimeState.ManualStopped: return "人工停止";
@@ -270,6 +307,8 @@ namespace MTEmbTest
                 case ChannelRuntimeState.Starting:
                 case ChannelRuntimeState.Learning: return Color.FromArgb(41, 128, 185);
                 case ChannelRuntimeState.WarningRunning: return Color.FromArgb(230, 126, 34);
+                case ChannelRuntimeState.Recovering: return Color.FromArgb(52, 152, 219);
+                case ChannelRuntimeState.SystemFault: return Color.FromArgb(245, 166, 35);
                 case ChannelRuntimeState.AlarmStopped:
                 case ChannelRuntimeState.StartBlocked: return Color.FromArgb(198, 40, 40);
                 case ChannelRuntimeState.InterlockStopped: return Color.FromArgb(230, 74, 25);
@@ -288,12 +327,25 @@ namespace MTEmbTest
                 case ChannelRuntimeState.WarningRunning: return EpbTestStatus.Running;
                 case ChannelRuntimeState.Learning: return EpbTestStatus.Learning;
                 case ChannelRuntimeState.Paused: return EpbTestStatus.Paused;
+                case ChannelRuntimeState.Recovering: return EpbTestStatus.Paused;
+                case ChannelRuntimeState.SystemFault: return EpbTestStatus.Paused;
                 case ChannelRuntimeState.AlarmStopped: return EpbTestStatus.Alarm;
                 case ChannelRuntimeState.InterlockStopped: return EpbTestStatus.Interlocked;
                 case ChannelRuntimeState.ManualStopped: return EpbTestStatus.ManualStopped;
                 case ChannelRuntimeState.Completed: return EpbTestStatus.Completed;
                 case ChannelRuntimeState.StartBlocked: return EpbTestStatus.StartBlocked;
                 default: return EpbTestStatus.NotStarted;
+            }
+        }
+
+        private static string GetFaultClassificationText(FaultClassification classification)
+        {
+            switch (classification)
+            {
+                case FaultClassification.SoftwareTransient: return "系统自恢复";
+                case FaultClassification.SystemFault: return "系统故障";
+                case FaultClassification.HardwareConfirmed: return "硬件故障已确认";
+                default: return "控制故障";
             }
         }
 

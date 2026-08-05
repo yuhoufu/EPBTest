@@ -1439,6 +1439,16 @@ namespace Controller
                     "EPB");
                 return outcome;
             }
+            catch (HydraulicBarrierTimeoutException ex)
+            {
+                try { CommandOffHighPriority(); } catch { }
+                DisarmAdaptiveMonitoring();
+                // 协调器已经按液压组发布 SystemFault 并完成安全回零。这里禁止再次
+                // 走通道硬件 AlarmRaised，否则同一个同步故障会被错误升级为硬件报警。
+                return EpbCycleOutcome.HardFault(
+                    _adaptiveStateMachine?.Stage ?? EpbCurrentStage.Faulted,
+                    "HydraulicBarrierTimeout: " + ex.Message);
+            }
             catch (HydraulicReleaseTimeoutException ex)
             {
                 try { CommandOffHighPriority(); } catch { }
