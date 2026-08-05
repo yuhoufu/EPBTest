@@ -1,8 +1,10 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Threading;
 using Config;
 using Controller;
@@ -20,6 +22,10 @@ namespace AdaptiveControlTests
             Run("控制环顺序容量代次与设备隔离", RingOrderCapacityResetAndIsolation, ref passed);
             Run("控制环并发发布可见性", RingConcurrentVisibility, ref passed);
             Run("20到500ms控制延迟策略", LatencyPolicyFaultInjection, ref passed);
+            Run("UI发布限频不影响首批和周期后批次", UiDispatchGateUsesMonotonicRateLimit, ref passed);
+            Run("DAQ陈旧根因区分回调与控制消费", DaqStaleRootClassification, ref passed);
+            Run("DAQ批次和兼容队列包装不再持续分配", DaqBatchObjectsAreReusableValueBacked, ref passed);
+            Run("旧原始二进制写入池化后格式保持不变", LegacyRawWriterKeepsBinaryFormat, ref passed);
             Run("DAQ事故关联去重优先级与新运行复位", IncidentCorrelationAndPriority, ref passed);
             Run("DAQ事故先断电后发布诊断", DaqSafetyActionsPrecedePublication, ref passed);
             Run("十万稳态样本控制计算无持续分配", AdaptiveHotLoopDoesNotAllocate, ref passed);
@@ -31,6 +37,9 @@ namespace AdaptiveControlTests
             Run("DAQ生产区拒绝重叠回调", ProducerGateRejectsOverlap, ref passed);
             Run("采样时间按设备起点和累计样本推进", AcquisitionTimelineNeverSnapsCatchUpToFuture, ref passed);
             Run("控制批携带序号单调时钟和原始尾部", ControlBatchCarriesIdentityClockAndRawTail, ref passed);
+            Run("快速控制复制完成后才移交后台原始批次", RawBatchOwnershipTransfersAfterControlCopy, ref passed);
+            Run("Dev1和Dev2各十万批所有权移交不污染快速证据", RawBatchOwnershipStressForBothDevices, ref passed);
+            Run("V2.10.2.1现场二次换算序列修复后不再过流", FieldIncidentReplayStaysBelowOverCurrent, ref passed);
             Run("控制消费拒绝重复倒序和非递增tick", ControlBatchIdentityRejectsInvalidOrder, ref passed);
             Run("每设备快速滤波隔离并按代次复位", FastFiltersAreIsolatedAndResettable, ref passed);
             Run("快速滤波十万次稳态更新无持续分配", FastFilterHotLoopDoesNotAllocate, ref passed);
@@ -139,8 +148,8 @@ namespace AdaptiveControlTests
             var run1 = Guid.NewGuid();
             latch.BeginRun(run1, new[] { "Dev1", "Dev2" });
             var first = latch.Observe(run1, "Dev1", 5, "ControlLatencyExceeded", "late",
-                DateTime.UtcNow, new[] { 5, 4 });
-            Assert(first.IsFirst && first.Context.PrimaryChannel == 4, "首事故或主通道不正确");
+                DateTime.UtcNow, new[] { 5, 4 }, primaryChannel: 5);
+            Assert(first.IsFirst && first.Context.PrimaryChannel == 5, "首事故或触发通道不正确");
             var derived = latch.Observe(run1, "Dev1", 5, "DaqSampleStale", "stale",
                 DateTime.UtcNow, new[] { 6 });
             Assert(!derived.IsFirst && derived.Context.CorrelationId == first.Context.CorrelationId,
@@ -354,6 +363,99 @@ namespace AdaptiveControlTests
             }
         }
 
+        private static void UiDispatchGateUsesMonotonicRateLimit()
+        {
+            var gate = new PeriodicDispatchGate(25);
+            var interval = Stopwatch.Frequency / 25;
+            var start = Stopwatch.Frequency;
+            Assert(gate.TryAcquire(start), "首个UI批次未发布");
+            Assert(!gate.TryAcquire(start + interval / 2), "限频窗口内重复发布");
+            Assert(gate.TryAcquire(start + interval + 1), "限频窗口后未发布");
+            gate.Reset();
+            Assert(gate.TryAcquire(start + interval + 2), "复位后首批未立即发布");
+        }
+
+        private static void DaqStaleRootClassification()
+        {
+            Assert(EpbManager.ClassifyDaqStaleRoot(new DaqFreshnessSnapshot
+            {
+                CallbackAgeMs = 1167,
+                ControlEnqueueAgeMs = 1167,
+                ControlProcessedAgeMs = 1167
+            }) == "DaqCallbackStale", "回调空窗未识别为根故障");
+            Assert(EpbManager.ClassifyDaqStaleRoot(new DaqFreshnessSnapshot
+            {
+                CallbackAgeMs = 10,
+                ControlEnqueueAgeMs = 120,
+                ControlProcessedAgeMs = 130
+            }) == "ControlEnqueueStale", "回调到控制入队停顿未识别");
+            Assert(EpbManager.ClassifyDaqStaleRoot(new DaqFreshnessSnapshot
+            {
+                CallbackAgeMs = 10,
+                ControlEnqueueAgeMs = 10,
+                ControlProcessedAgeMs = 120
+            }) == "ControlProcessingStale", "控制消费停顿未识别");
+        }
+
+        private static void DaqBatchObjectsAreReusableValueBacked()
+        {
+            Assert(typeof(DaqAIData).IsValueType, "旧原始/统计队列仍为每批创建引用对象");
+
+            DaqDiskBatch Rent(long sequence)
+            {
+                var timestamps = ArrayPool<DateTime>.Shared.Rent(1);
+                var currents = ArrayPool<double>.Shared.Rent(1);
+                var channels = ArrayPool<DaqDiskChannelBatch>.Shared.Rent(1);
+                timestamps[0] = DateTime.UtcNow;
+                currents[0] = sequence;
+                channels[0] = new DaqDiskChannelBatch(4, currents);
+                return DaqDiskBatch.Rent(
+                    "Dev1", 1, sequence, 1, timestamps, channels, 1,
+                    null, null, Stopwatch.GetTimestamp());
+            }
+
+            var first = Rent(1);
+            first.Dispose();
+            var second = Rent(2);
+            Assert(ReferenceEquals(first, second), "持久化批次对象池未复用对象");
+            second.Dispose();
+        }
+
+        private static void LegacyRawWriterKeepsBinaryFormat()
+        {
+            var root = Path.Combine(Path.GetTempPath(), "EPBTest-RawWriter-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            try
+            {
+                var context = new DaqAIContext("Dev1", 10, 60, 0.5, 2, 2, root);
+                var now = DateTime.Now;
+                context.EnqueueRawData(new double[,] { { 0, 0 }, { 0, 0 } }, now, now.AddMilliseconds(-1));
+                context.FlushRawToDiskAsync().GetAwaiter().GetResult();
+                context.EnqueueRawData(new double[,] { { 1.25, 2.5 }, { -3.75, 4.5 } },
+                    now.AddMilliseconds(1), now);
+                context.FlushRawToDiskAsync().GetAwaiter().GetResult();
+
+                var path = Path.Combine(root, "DAQ_Dev1_Raw_1.bin");
+                using var stream = File.OpenRead(path);
+                using var reader = new BinaryReader(stream);
+                Assert(stream.Length == 56, $"原始二进制长度变化：{stream.Length}");
+                Assert(reader.ReadInt32() == 1, "原始二进制计数器布局变化");
+                _ = reader.ReadInt64();
+                Assert(Math.Abs(reader.ReadDouble() - 1.25) < 1e-12 &&
+                       Math.Abs(reader.ReadDouble() + 3.75) < 1e-12,
+                    "原始二进制首样本布局变化");
+                Assert(reader.ReadInt32() == 1, "原始二进制第二样本计数器变化");
+                _ = reader.ReadInt64();
+                Assert(Math.Abs(reader.ReadDouble() - 2.5) < 1e-12 &&
+                       Math.Abs(reader.ReadDouble() - 4.5) < 1e-12,
+                    "原始二进制第二样本布局变化");
+            }
+            finally
+            {
+                try { Directory.Delete(root, true); } catch { }
+            }
+        }
+
         private static void ProducerGateRejectsOverlap()
         {
             var gate = new DaqCallbackProducerGate();
@@ -416,6 +518,9 @@ namespace AdaptiveControlTests
                 7, 123, DateTime.UtcNow, DateTime.UtcNow,
                 1000, 1100, 0, 42, FastSignalQualityFlags.None);
             Assert(ring.TryEnqueue(metadata, values, raw), "结构化控制批入环失败");
+            // 控制环必须持有自己的尾点副本。后台取得 raw 所有权并原地换算后，
+            // 不得反向污染已发布的快速证据。
+            raw[0, 19] = 19.0;
             var destination = new FastControlSampleValue[1];
             var rawTail = new double[ControlBatchRing.RawTailCapacity];
             Assert(ring.TryDequeue(destination, rawTail, out var count, out var rawCount, out var actual),
@@ -424,6 +529,207 @@ namespace AdaptiveControlTests
                    actual.SourceSequence == 123 && actual.CaptureMonotonicTicks == 1000 &&
                    Math.Abs(rawTail[19] - 1.9) < 1e-12,
                 "控制批身份、单调时钟或原始尾部损坏");
+        }
+
+        private static void RawBatchOwnershipTransfersAfterControlCopy()
+        {
+            var type = typeof(TwoDeviceAiAcquirer);
+            var callback = type.GetMethod("OnAiBatch", BindingFlags.Instance | BindingFlags.NonPublic);
+            var enqueueControl = type.GetMethod("EnqueueForControl", BindingFlags.Instance | BindingFlags.NonPublic);
+            var enqueueProcessing = type.GetMethod(
+                "EnqueueForProcessing",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert(callback != null && enqueueControl != null && enqueueProcessing != null,
+                "无法读取DAQ原始批次所有权方法");
+
+            var il = callback.GetMethodBody()?.GetILAsByteArray();
+            Assert(il != null && il.Length > 0, "OnAiBatch没有可审计的IL");
+            var controlOffset = FindMetadataTokenOffset(il, enqueueControl.MetadataToken);
+            var processingOffset = FindMetadataTokenOffset(il, enqueueProcessing.MetadataToken);
+            Assert(controlOffset >= 0 && processingOffset >= 0,
+                "OnAiBatch未同时调用控制环复制和后台发布");
+            Assert(controlOffset < processingOffset,
+                "后台在控制环复制完成前取得raw引用，可能触发电压到安培二次换算");
+
+            // 回放 EPB5 的典型批次：-0.7515V 只允许按 10A/V 换算一次。
+            const double voltage = -0.7515;
+            const double scale = 10.0;
+            const double intercept = -0.02411;
+            var once = voltage * scale + intercept;
+            var twice = once * scale + intercept;
+            Assert(Math.Abs(once + 7.53911) < 1e-9 && Math.Abs(twice + 75.41521) < 1e-9,
+                "现场二次换算回放基准错误");
+        }
+
+        private static int FindMetadataTokenOffset(byte[] il, int metadataToken)
+        {
+            var token = BitConverter.GetBytes(metadataToken);
+            for (var offset = 1; offset <= il.Length - token.Length; offset++)
+            {
+                var matches = true;
+                for (var index = 0; index < token.Length; index++)
+                {
+                    if (il[offset + index] == token[index]) continue;
+                    matches = false;
+                    break;
+                }
+                if (!matches) continue;
+                // call(0x28) 和 callvirt(0x6f) 的四字节操作数均为方法元数据令牌。
+                if (il[offset - 1] == 0x28 || il[offset - 1] == 0x6f) return offset;
+            }
+            return -1;
+        }
+
+        private static void RawBatchOwnershipStressForBothDevices()
+        {
+            ExerciseRawOwnershipTransfer("Dev1", 5, -0.7515, -0.02411);
+            ExerciseRawOwnershipTransfer("Dev2", 11, -0.485, -0.02123);
+        }
+
+        private static void ExerciseRawOwnershipTransfer(
+            string device,
+            int channel,
+            double baseVoltage,
+            double intercept)
+        {
+            const int batchCount = 100000;
+            const double scale = 10.0;
+            var raw = new double[1, ControlBatchRing.RawTailCapacity];
+            var ring = new ControlBatchRing(2, 1);
+            var samples = new FastControlSampleValue[1];
+            var destination = new FastControlSampleValue[1];
+            var rawTail = new double[ControlBatchRing.RawTailCapacity];
+            var barrier = new Barrier(2);
+            var copyFailure = string.Empty;
+
+            // 后台只能在第一个栅栏之后取得 raw 所有权，并在第二个栅栏前完成原地换算。
+            // 主线程在转移前完成代表值计算和 RawTail 深复制，形成确定性竞态回归。
+            var processingThread = new Thread(() =>
+            {
+                for (var batch = 0; batch < batchCount; batch++)
+                {
+                    barrier.SignalAndWait();
+                    for (var column = 0; column < raw.GetLength(1); column++)
+                        raw[0, column] = raw[0, column] * scale + intercept;
+                    barrier.SignalAndWait();
+                }
+            }) { IsBackground = true, Name = device + "-RawOwnershipTest" };
+            processingThread.Start();
+
+            for (var batch = 0; batch < batchCount; batch++)
+            {
+                var voltage = baseVoltage + ((batch % 7) - 3) * 0.0001;
+                for (var column = 0; column < raw.GetLength(1); column++)
+                    raw[0, column] = voltage;
+                var representative = voltage * scale + intercept;
+                samples[0] = new FastControlSampleValue(0, channel, 0, representative);
+                var tick = batch + 1L;
+                var metadata = new FastControlBatchMetadata(
+                    2,
+                    batch + 1L,
+                    DateTime.UtcNow,
+                    DateTime.UtcNow,
+                    tick,
+                    tick,
+                    0,
+                    Thread.CurrentThread.ManagedThreadId,
+                    FastSignalQualityFlags.None);
+
+                if (!ring.TryEnqueue(metadata, samples, raw) && copyFailure.Length == 0)
+                    copyFailure = device + " 控制批在所有权转移前入环失败";
+
+                barrier.SignalAndWait();
+                barrier.SignalAndWait();
+
+                if (!ring.TryDequeue(
+                        destination,
+                        rawTail,
+                        out var count,
+                        out var rawCount,
+                        out var actual))
+                {
+                    if (copyFailure.Length == 0) copyFailure = device + " 控制批出环失败";
+                    continue;
+                }
+
+                if (copyFailure.Length == 0 &&
+                    (count != 1 || rawCount != ControlBatchRing.RawTailCapacity ||
+                     actual.SourceSequence != batch + 1L ||
+                     Math.Abs(destination[0].RepresentativeA - representative) > 1e-12 ||
+                     Math.Abs(rawTail[ControlBatchRing.RawTailCapacity - 1] - voltage) > 1e-12))
+                    copyFailure = device + " 后台原地换算污染了快速代表值或原始尾点";
+            }
+
+            processingThread.Join();
+            barrier.Dispose();
+            Assert(copyFailure.Length == 0, copyFailure);
+        }
+
+        private static void FieldIncidentReplayStaysBelowOverCurrent()
+        {
+            ReplayCorrectedIncidentSequence(
+                "EPB5_current",
+                -0.02411,
+                new[]
+                {
+                    -7.515635319637731, -7.596068084299695, -75.1804631963773,
+                    -7.4094640702839385, -72.12401813922267, -72.22053745681703,
+                    -68.52063028236668, -69.45365035244546, -6.84643471765019,
+                    -6.688786498912741, -6.547224833107684, -6.653396082461477
+                });
+            ReplayCorrectedIncidentSequence(
+                "EPB11_current",
+                -0.02123,
+                new[]
+                {
+                    -48.5411549511214, -4.977261573819928, -4.810236135542877,
+                    -4.678543001516741, -4.858416550430488, -0.04679911698775366,
+                    0.8598304469755665, 0.08489401703838259
+                });
+        }
+
+        private static void ReplayCorrectedIncidentSequence(
+            string channelKey,
+            double intercept,
+            double[] observedRepresentatives)
+        {
+            const double scale = 10.0;
+            const double overCurrentLimitA = 18.0;
+            var filter = new ClsDataFilter.FastFilter(9, 0.4, 0);
+            var machine = new EpbAdaptiveCurrentStateMachine(new EpbAdaptiveProfile());
+            var start = Stopwatch.Frequency;
+            machine.ArmForward(start, 1000, 10000, 15, 0, 3);
+            var maxRepresentative = 0.0;
+            var maxFiltered = 0.0;
+            var overCurrentFault = false;
+
+            for (var index = 0; index < observedRepresentatives.Length; index++)
+            {
+                var observed = observedRepresentatives[index];
+                // 现场绝对值超过 18A 的代表值具有二次换算指纹；逆推一次得到真实工程值，
+                // 再还原成回调应独占的原始电压，走修复后的单次换算路径。
+                var expectedOnce = Math.Abs(observed) >= overCurrentLimitA
+                    ? (observed - intercept) / scale
+                    : observed;
+                var rawVoltage = (expectedOnce - intercept) / scale;
+                var representative = rawVoltage * scale + intercept;
+                var tick = start + (index + 1L) * Stopwatch.Frequency / 100;
+                var filtered = filter.Update(channelKey, representative, tick);
+                var decision = machine.OnSample(tick, filtered, Math.Abs(representative));
+                maxRepresentative = Math.Max(maxRepresentative, Math.Abs(representative));
+                maxFiltered = Math.Max(maxFiltered, Math.Abs(filtered));
+                if (decision.Reason?.IndexOf(
+                        "OverCurrent3Samples",
+                        StringComparison.OrdinalIgnoreCase) >= 0)
+                    overCurrentFault = true;
+
+                Assert(Math.Abs(representative - expectedOnce) < 1e-10,
+                    channelKey + " 现场批次未严格执行一次换算");
+            }
+
+            Assert(maxRepresentative < overCurrentLimitA && maxFiltered < overCurrentLimitA,
+                channelKey + " 修复后仍产生39A、55A或75A二次换算峰值");
+            Assert(!overCurrentFault, channelKey + " 修复后的现场序列仍触发OverCurrent3Samples");
         }
 
         private static void FastFiltersAreIsolatedAndResettable()

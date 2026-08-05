@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
@@ -8,11 +9,18 @@ using System.Threading.Tasks;
 
 namespace DataOperation;
 
-public class DaqAIData
+public readonly struct DaqAIData
 {
-    public double[,] Data { get; set; }
-    public DateTime RecvTime { get; set; }
-    public DateTime LastRecvTime { get; set; }
+    public DaqAIData(double[,] data, DateTime recvTime, DateTime lastRecvTime = default)
+    {
+        Data = data;
+        RecvTime = recvTime;
+        LastRecvTime = lastRecvTime;
+    }
+
+    public double[,] Data { get; }
+    public DateTime RecvTime { get; }
+    public DateTime LastRecvTime { get; }
 }
 
 public class DaqAIContext
@@ -91,11 +99,7 @@ public class DaqAIContext
 
     public void EnqueueStatData(double[,] data, DateTime recvTime)
     {
-        var daqData = new DaqAIData
-        {
-            Data = data,
-            RecvTime = recvTime
-        };
+        var daqData = new DaqAIData(data, recvTime);
 
         DaqStatData.Enqueue(daqData);
         if (DaqStatData.Count > MaxLens)
@@ -108,12 +112,7 @@ public class DaqAIContext
 
     public void EnqueueRawData(double[,] data, DateTime recvTime, DateTime lastTime)
     {
-        var daqData = new DaqAIData
-        {
-            Data = data,
-            RecvTime = recvTime,
-            LastRecvTime = lastTime
-        };
+        var daqData = new DaqAIData(data, recvTime, lastTime);
 
         DaqRawData.Enqueue(daqData);
         if (DaqRawData.Count > MaxLens)
@@ -159,6 +158,33 @@ public class DaqAIContext
         }
     }
 
+    private static void WriteInt32LittleEndian(byte[] buffer, ref int offset, int value)
+    {
+        unchecked
+        {
+            buffer[offset++] = (byte)value;
+            buffer[offset++] = (byte)(value >> 8);
+            buffer[offset++] = (byte)(value >> 16);
+            buffer[offset++] = (byte)(value >> 24);
+        }
+    }
+
+    private static void WriteInt64LittleEndian(byte[] buffer, ref int offset, long value)
+    {
+        unchecked
+        {
+            var bits = (ulong)value;
+            buffer[offset++] = (byte)bits;
+            buffer[offset++] = (byte)(bits >> 8);
+            buffer[offset++] = (byte)(bits >> 16);
+            buffer[offset++] = (byte)(bits >> 24);
+            buffer[offset++] = (byte)(bits >> 32);
+            buffer[offset++] = (byte)(bits >> 40);
+            buffer[offset++] = (byte)(bits >> 48);
+            buffer[offset++] = (byte)(bits >> 56);
+        }
+    }
+
 
     /// <summary>
     ///     将队列中的原始采样批量写入磁盘（二进制）。
@@ -177,13 +203,16 @@ public class DaqAIContext
         await rawFileLock.WaitAsync();
         var Lens = DaqRawData.Count;
 
-        // 预估缓冲大小：每样本 (4 + 8 + 8*Channels) 字节
-        var buffer = new byte[Lens * SamplesPerChannel * (4 + 8 + 8 * Channels)];
+        byte[] buffer = null;
         FileStream fs = null;
 
         try
         {
             if (Lens < 1) return; // finally 仍会执行
+
+            // 共享缓冲池避免每次定时刷新都创建一个大对象并进入 LOH。
+            var estimatedBytes = checked(Lens * SamplesPerChannel * (4 + 8 + 8 * Channels));
+            buffer = ArrayPool<byte>.Shared.Rent(Math.Max(1, estimatedBytes));
 
             // Step 1: 检查是否需要切换文件
             if ((DateTime.Now - _lastFlushTime).TotalMinutes >= StoreTimeMinutes)
@@ -201,9 +230,6 @@ public class DaqAIContext
                 for (var i = 0; i < Lens; i++) DaqRawData.TryDequeue(out _);
                 return;
             }
-
-            // 复用一块行缓冲，避免在内层循环频繁分配
-            var rowData = new double[Channels];
 
             // Step 2: 逐批取出并展开为“逐样本”记录
             for (var i = 0; i < Lens; i++)
@@ -228,22 +254,15 @@ public class DaqAIContext
                     var tsTicks = lastTicks + (long)Math.Round(stepTicks * (j + 1));
                     var daqTime = new DateTime(tsTicks, DateTimeKind.Local);
 
-                    // 写 Counter（保持原有 SaveRawCounter-1 语义）
-                    var counterBytes = BitConverter.GetBytes(SaveRawCounter - 1);
-                    Buffer.BlockCopy(counterBytes, 0, buffer, offset, 4);
-                    offset += 4;
-
-                    // 写时间戳（long: ToFileTime）
-                    var timeBytes = BitConverter.GetBytes(daqTime.ToFileTime());
-                    Buffer.BlockCopy(timeBytes, 0, buffer, offset, 8);
-                    offset += 8;
-
-                    // 拷贝本样本的各通道
+                    // 保持既有 little-endian 文件布局，同时移除每样本两个
+                    // BitConverter.GetBytes 临时数组和行缓冲复制。
+                    WriteInt32LittleEndian(buffer, ref offset, SaveRawCounter - 1);
+                    WriteInt64LittleEndian(buffer, ref offset, daqTime.ToFileTime());
                     for (var k = 0; k < Channels; k++)
-                        rowData[k] = daqData.Data[k, j];
-
-                    Buffer.BlockCopy(rowData, 0, buffer, offset, 8 * Channels);
-                    offset += 8 * Channels;
+                        WriteInt64LittleEndian(
+                            buffer,
+                            ref offset,
+                            BitConverter.DoubleToInt64Bits(daqData.Data[k, j]));
                 }
             }
 
@@ -269,7 +288,7 @@ public class DaqAIContext
         finally
         {
             rawFileLock.Release();
-            buffer = null;
+            if (buffer != null) ArrayPool<byte>.Shared.Return(buffer, clearArray: false);
             fs?.Dispose();
         }
     }

@@ -82,7 +82,8 @@ namespace Controller
             string code,
             string reason,
             DateTime seenUtc,
-            int[] affectedChannels)
+            int[] affectedChannels,
+            int primaryChannel = 0)
         {
             if (string.IsNullOrWhiteSpace(device))
                 throw new ArgumentException("Device is required.", nameof(device));
@@ -110,7 +111,9 @@ namespace Controller
                         PrimaryReason = reason ?? string.Empty,
                         FirstSeenUtc = normalizedSeen,
                         LastSeenUtc = normalizedSeen,
-                        PrimaryChannel = affected.FirstOrDefault(),
+                        PrimaryChannel = affected.Contains(primaryChannel)
+                            ? primaryChannel
+                            : affected.FirstOrDefault(),
                         AffectedChannels = affected
                     };
                     _active[device] = context;
@@ -131,7 +134,9 @@ namespace Controller
                         .Distinct()
                         .OrderBy(x => x)
                         .ToArray();
-                    context.PrimaryChannel = context.AffectedChannels.FirstOrDefault();
+                    if (context.PrimaryChannel <= 0 ||
+                        !context.AffectedChannels.Contains(context.PrimaryChannel))
+                        context.PrimaryChannel = context.AffectedChannels.FirstOrDefault();
                 }
 
                 var primaryChanged = Priority(normalizedCode) > Priority(context.PrimaryCode);
@@ -183,7 +188,9 @@ namespace Controller
         {
             if (string.Equals(code, "ControlQueueFull", StringComparison.OrdinalIgnoreCase)) return 400;
             if (string.Equals(code, "ControlLatencyExceeded", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(code, "DaqCallbackStale", StringComparison.OrdinalIgnoreCase)) return 300;
+                string.Equals(code, "DaqCallbackStale", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(code, "ControlEnqueueStale", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(code, "ControlProcessingStale", StringComparison.OrdinalIgnoreCase)) return 300;
             if (code?.IndexOf("DaqSampleStale", StringComparison.OrdinalIgnoreCase) >= 0) return 200;
             if (code?.IndexOf("OffCurrentUnverifiable", StringComparison.OrdinalIgnoreCase) >= 0) return 100;
             return 50;

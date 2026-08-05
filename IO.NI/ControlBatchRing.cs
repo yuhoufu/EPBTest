@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Threading;
 
 namespace IO.NI
@@ -25,6 +26,37 @@ namespace IO.NI
                 ? ControlLatencyAction.HardFault
                 : ControlLatencyAction.Warning;
         }
+    }
+
+    /// <summary>
+    /// Allocation-free monotonic rate gate used by non-critical consumers such as UI rendering.
+    /// A skipped publication never affects control, persistence, or diagnostic data.
+    /// </summary>
+    internal sealed class PeriodicDispatchGate
+    {
+        private readonly long _intervalTicks;
+        private long _lastDispatchTick;
+
+        public PeriodicDispatchGate(double maximumRateHz)
+        {
+            var rateHz = Math.Max(1.0, maximumRateHz);
+            _intervalTicks = Math.Max(1L, (long)Math.Ceiling(Stopwatch.Frequency / rateHz));
+        }
+
+        public bool TryAcquire(long nowTick)
+        {
+            if (nowTick <= 0) return false;
+            while (true)
+            {
+                var previous = Interlocked.Read(ref _lastDispatchTick);
+                if (previous > 0 && nowTick >= previous && nowTick - previous < _intervalTicks)
+                    return false;
+                if (Interlocked.CompareExchange(ref _lastDispatchTick, nowTick, previous) == previous)
+                    return true;
+            }
+        }
+
+        public void Reset() => Interlocked.Exchange(ref _lastDispatchTick, 0);
     }
 
     internal sealed class DaqCallbackProducerGate

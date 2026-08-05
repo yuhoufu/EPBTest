@@ -188,7 +188,7 @@ namespace IO.NI
         public string Detail { get; set; } = string.Empty;
     }
 
-    public sealed class DaqDiskChannelBatch
+    public readonly struct DaqDiskChannelBatch
     {
         internal DaqDiskChannelBatch(int epbId, double[] currents)
         {
@@ -205,7 +205,16 @@ namespace IO.NI
     /// </summary>
     public sealed class DaqDiskBatch : IDisposable
     {
+        private const int MaximumPooledBatchObjects = 1024;
+        private static readonly ConcurrentBag<DaqDiskBatch> ObjectPool = new();
+        private static int _pooledBatchObjectCount;
         private int _disposed;
+        private bool _channelsArrayPooled;
+        private bool _returnObjectToPool;
+
+        private DaqDiskBatch()
+        {
+        }
 
         internal DaqDiskBatch(
             string device,
@@ -218,28 +227,94 @@ namespace IO.NI
             double[] pressureGroup2,
             long enqueuedMonotonicTicks)
         {
+            Initialize(
+                device,
+                generation,
+                sequence,
+                sampleCount,
+                timestampsUtc,
+                channels,
+                channels?.Length ?? 0,
+                pressureGroup1,
+                pressureGroup2,
+                enqueuedMonotonicTicks,
+                channelsArrayPooled: false,
+                returnObjectToPool: false);
+        }
+
+        internal static DaqDiskBatch Rent(
+            string device,
+            long generation,
+            long sequence,
+            int sampleCount,
+            DateTime[] timestampsUtc,
+            DaqDiskChannelBatch[] channels,
+            int channelCount,
+            double[] pressureGroup1,
+            double[] pressureGroup2,
+            long enqueuedMonotonicTicks)
+        {
+            if (!ObjectPool.TryTake(out var batch))
+                batch = new DaqDiskBatch();
+            else
+                Interlocked.Decrement(ref _pooledBatchObjectCount);
+            batch.Initialize(
+                device,
+                generation,
+                sequence,
+                sampleCount,
+                timestampsUtc,
+                channels,
+                channelCount,
+                pressureGroup1,
+                pressureGroup2,
+                enqueuedMonotonicTicks,
+                channelsArrayPooled: true,
+                returnObjectToPool: true);
+            return batch;
+        }
+
+        private void Initialize(
+            string device,
+            long generation,
+            long sequence,
+            int sampleCount,
+            DateTime[] timestampsUtc,
+            DaqDiskChannelBatch[] channels,
+            int channelCount,
+            double[] pressureGroup1,
+            double[] pressureGroup2,
+            long enqueuedMonotonicTicks,
+            bool channelsArrayPooled,
+            bool returnObjectToPool)
+        {
+            Volatile.Write(ref _disposed, 0);
             Device = device;
             Generation = generation;
             Sequence = sequence;
             SampleCount = sampleCount;
             TimestampsUtc = timestampsUtc;
             Channels = channels ?? Array.Empty<DaqDiskChannelBatch>();
+            ChannelCount = Math.Max(0, Math.Min(channelCount, Channels.Length));
             PressureGroup1 = pressureGroup1;
             PressureGroup2 = pressureGroup2;
             EnqueuedMonotonicTicks = enqueuedMonotonicTicks;
             EnqueuedUtc = DateTime.UtcNow;
+            _channelsArrayPooled = channelsArrayPooled;
+            _returnObjectToPool = returnObjectToPool;
         }
 
-        public string Device { get; }
-        public long Generation { get; }
-        public long Sequence { get; }
-        public int SampleCount { get; }
-        public DateTime[] TimestampsUtc { get; }
-        public IReadOnlyList<DaqDiskChannelBatch> Channels { get; }
-        public double[] PressureGroup1 { get; }
-        public double[] PressureGroup2 { get; }
-        public long EnqueuedMonotonicTicks { get; }
-        public DateTime EnqueuedUtc { get; }
+        public string Device { get; private set; }
+        public long Generation { get; private set; }
+        public long Sequence { get; private set; }
+        public int SampleCount { get; private set; }
+        public DateTime[] TimestampsUtc { get; private set; }
+        public DaqDiskChannelBatch[] Channels { get; private set; }
+        public int ChannelCount { get; private set; }
+        public double[] PressureGroup1 { get; private set; }
+        public double[] PressureGroup2 { get; private set; }
+        public long EnqueuedMonotonicTicks { get; private set; }
+        public DateTime EnqueuedUtc { get; private set; }
 
         public double AgeMs => EnqueuedMonotonicTicks <= 0
             ? 0
@@ -249,11 +324,31 @@ namespace IO.NI
         {
             if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
             if (TimestampsUtc != null) ArrayPool<DateTime>.Shared.Return(TimestampsUtc, clearArray: false);
-            foreach (var channel in Channels)
-                if (channel?.Currents != null)
-                    ArrayPool<double>.Shared.Return(channel.Currents, clearArray: false);
+            for (var i = 0; i < ChannelCount; i++)
+            {
+                if (Channels[i].Currents != null)
+                    ArrayPool<double>.Shared.Return(Channels[i].Currents, clearArray: false);
+                Channels[i] = default;
+            }
             if (PressureGroup1 != null) ArrayPool<double>.Shared.Return(PressureGroup1, clearArray: false);
             if (PressureGroup2 != null) ArrayPool<double>.Shared.Return(PressureGroup2, clearArray: false);
+            if (_channelsArrayPooled && Channels.Length > 0)
+                ArrayPool<DaqDiskChannelBatch>.Shared.Return(Channels, clearArray: false);
+
+            Device = null;
+            TimestampsUtc = null;
+            Channels = Array.Empty<DaqDiskChannelBatch>();
+            ChannelCount = 0;
+            PressureGroup1 = null;
+            PressureGroup2 = null;
+            var returnObjectToPool = _returnObjectToPool;
+            _channelsArrayPooled = false;
+            _returnObjectToPool = false;
+            if (!returnObjectToPool) return;
+            if (Interlocked.Increment(ref _pooledBatchObjectCount) <= MaximumPooledBatchObjects)
+                ObjectPool.Add(this);
+            else
+                Interlocked.Decrement(ref _pooledBatchObjectCount);
         }
     }
 
@@ -342,6 +437,8 @@ namespace IO.NI
         private readonly double _controlWarningAgeMs;
         private readonly double _controlHardFaultAgeMs;
         private readonly double _sampleFutureToleranceMs;
+        private readonly PeriodicDispatchGate _uiDispatchGateDev1;
+        private readonly PeriodicDispatchGate _uiDispatchGateDev2;
         private Func<string, bool> _controlActivityProvider;
         private readonly double _sampleRate;
         private readonly int _samplesPerChannel;
@@ -941,6 +1038,13 @@ namespace IO.NI
             _sampleFutureToleranceMs = configuredFutureTolerance >= 1 && configuredFutureTolerance <= 100
                 ? configuredFutureTolerance
                 : 20;
+            var configuredUiRateHz =
+                ParseDoubleOrDefault(SafeGetAppSetting("DaqUiDispatchRateHz"), 25);
+            var uiRateHz = configuredUiRateHz >= 5 && configuredUiRateHz <= 50
+                ? configuredUiRateHz
+                : 25;
+            _uiDispatchGateDev1 = new PeriodicDispatchGate(uiRateHz);
+            _uiDispatchGateDev2 = new PeriodicDispatchGate(uiRateHz);
             // 未注册活动状态提供器时按带电处理，保证失效安全。
             _controlActivityProvider = _ => true;
             _callbackTimingDiag.TryAdd("Dev1", new CallbackTimingDiag());
@@ -1132,7 +1236,8 @@ namespace IO.NI
 
 
         // —— 供窗体订阅的两个回调 —— //
-        // 原始电压数据（未标定、未滤波）：UI/落盘在窗体里直接调用 DaqAIContext.EnqueueRawData/StatData
+        // 原始电压数据（未标定、未滤波）：订阅者仅在同步回调期间获得只读借用，
+        // 不得修改或在回调返回后保留数组引用；随后后台会原地换算该数组。
         public event Action<string /*Dev1|Dev2*/, double[,], DateTime /*current*/, DateTime /*last*/> OnRawBatch;
 
         // 工程值（标定 + 滤波 后的全通道矩阵）：给 UI 或调试可选使用
@@ -1186,6 +1291,7 @@ namespace IO.NI
             ring.Reset();
             if (isDev1)
             {
+                _uiDispatchGateDev1.Reset();
                 Interlocked.Increment(ref _controlFilterResetEpochDev1);
                 Interlocked.Exchange(ref _queueFaultGenerationDev1, -1);
                 Interlocked.Exchange(ref _controlFullFaultGenerationDev1, -1);
@@ -1197,6 +1303,7 @@ namespace IO.NI
             }
             else
             {
+                _uiDispatchGateDev2.Reset();
                 Interlocked.Increment(ref _controlFilterResetEpochDev2);
                 Interlocked.Exchange(ref _queueFaultGenerationDev2, -1);
                 Interlocked.Exchange(ref _controlFullFaultGenerationDev2, -1);
@@ -1831,15 +1938,6 @@ namespace IO.NI
                     }
                     else
                     {
-                        EnqueueForProcessing(new Item(
-                            device,
-                            generation,
-                            sequence,
-                            raw,
-                            current,
-                            last,
-                            callbackEntrySwTick));
-
                         if (_fastSource == FastSource.DaqCallback)
                         {
                             var devRecs = GetDeviceRecords(device);
@@ -1896,6 +1994,19 @@ namespace IO.NI
                                     raw))
                                 MarkControlEnqueued(device, controlEnqueuedTick);
                         }
+
+                        // raw 在此之前仍由 DAQ 回调独占。后台 ProcessLoop 会对 Item.Raw
+                        // 执行 ConvertToEngineeringInPlace，因此必须等快速代表值计算、
+                        // 质量检查和控制环 RawTail 深复制全部完成后，才发布同一数组引用。
+                        // 此调用是所有权转移点；调用后本回调不得再读写 raw。
+                        EnqueueForProcessing(new Item(
+                            device,
+                            generation,
+                            sequence,
+                            raw,
+                            current,
+                            last,
+                            callbackEntrySwTick));
                     }
 
                     // 所有生产者工作到此结束；清门后才允许下一批回调进入。
@@ -2476,7 +2587,8 @@ namespace IO.NI
 
                     // ====== 生成“落盘批次”并触发 OnDiskBatch（使用 engFiltered，不取绝对值） ======
                     DateTime[] pooledTimestamps = null;
-                    List<DaqDiskChannelBatch> pooledCurrents = null;
+                    DaqDiskChannelBatch[] pooledCurrents = null;
+                    var pooledCurrentCount = 0;
                     double[] pooledPressure1 = null;
                     double[] pooledPressure2 = null;
                     DaqDiskBatch ownedDiskBatch = null;
@@ -2489,8 +2601,9 @@ namespace IO.NI
                             item.Current.ToUniversalTime(), tsUtc, n, _sampleRate);
 
                         // 2) 构建“每 EPB 通道”的电流数组（从当前 device 的工程值矩阵提取）
-                        var currentsByEpb = pooledCurrents = new List<DaqDiskChannelBatch>();
                         var devRecs = GetDeviceRecords(item.Device);
+                        var currentsByEpb = pooledCurrents =
+                            ArrayPool<DaqDiskChannelBatch>.Shared.Rent(Math.Max(1, devRecs.Length));
                         var chCount = engFiltered.GetLength(0);
                         for (int c = 0; c < chCount; c++)
                         {
@@ -2500,7 +2613,7 @@ namespace IO.NI
                             {
                                 var arr = ArrayPool<double>.Shared.Rent(n);
                                 for (int i = 0; i < n; i++) arr[i] = engFiltered[c, i]; // 不取绝对值
-                                currentsByEpb.Add(new DaqDiskChannelBatch(epb, arr));
+                                currentsByEpb[pooledCurrentCount++] = new DaqDiskChannelBatch(epb, arr);
                             }
                         }
 
@@ -2529,8 +2642,9 @@ namespace IO.NI
                         {
                             if (AnyPeakArmed && tsUtc != null && tsUtc.Length > 0)
                             {
-                                foreach (var kv in currentsByEpb)
+                                for (var currentIndex = 0; currentIndex < pooledCurrentCount; currentIndex++)
                                 {
+                                    var kv = currentsByEpb[currentIndex];
                                     int epb = kv.EpbId;              // 1..12
                                     var data = kv.Currents;           // double[n]
                                     PeakTracker tracker;
@@ -2566,18 +2680,19 @@ namespace IO.NI
 
 
                         // 4) 所有权转移给独立持久化队列；当前线程只做 O(1) 投递。
-                        for (var c = 0; c < currentsByEpb.Count; c++)
+                        for (var c = 0; c < pooledCurrentCount; c++)
                         {
                             var data = currentsByEpb[c].Currents;
                             for (var i = 0; i < n; i++) data[i] = Math.Abs(data[i]);
                         }
-                        var diskBatch = ownedDiskBatch = new DaqDiskBatch(
+                        var diskBatch = ownedDiskBatch = DaqDiskBatch.Rent(
                             item.Device,
                             item.Generation,
                             item.Sequence,
                             n,
                             tsUtc,
-                            currentsByEpb.ToArray(),
+                            currentsByEpb,
+                            pooledCurrentCount,
                             pressure1,
                             pressure2,
                             Stopwatch.GetTimestamp());
@@ -2585,21 +2700,17 @@ namespace IO.NI
                         try
                         {
                             var dispatchStartedTicks = Stopwatch.GetTimestamp();
-                            var handler = DiskBatchReady;
-                            if (handler != null)
-                            {
-                                handler(diskBatch);
-                                transferred = true;
-                            }
-
+                            // 兼容订阅者必须在独占所有权转移前复制；持久化消费者可能在
+                            // DiskBatchReady 返回后立即 Dispose 并归还池化数组。
                             var legacy = OnDiskBatch;
                             if (legacy != null)
                             {
                                 var legacyTs = new DateTime[n];
                                 Array.Copy(tsUtc, legacyTs, n);
                                 var legacyCurrents = new Dictionary<int, double[]>();
-                                foreach (var channel in currentsByEpb)
+                                for (var channelIndex = 0; channelIndex < pooledCurrentCount; channelIndex++)
                                 {
+                                    var channel = currentsByEpb[channelIndex];
                                     var copy = new double[n];
                                     Array.Copy(channel.Currents, copy, n);
                                     legacyCurrents[channel.EpbId] = copy;
@@ -2608,6 +2719,13 @@ namespace IO.NI
                                 if (pressure1 != null) { p1 = new double[n]; Array.Copy(pressure1, p1, n); }
                                 if (pressure2 != null) { p2 = new double[n]; Array.Copy(pressure2, p2, n); }
                                 legacy(item.Device, legacyTs, legacyCurrents, p1, p2);
+                            }
+
+                            var handler = DiskBatchReady;
+                            if (handler != null)
+                            {
+                                handler(diskBatch);
+                                transferred = true;
                             }
                             diskDispatchMs = (Stopwatch.GetTimestamp() - dispatchStartedTicks) * 1000.0 / Stopwatch.Frequency;
                         }
@@ -2627,9 +2745,12 @@ namespace IO.NI
                             if (pooledTimestamps != null)
                                 ArrayPool<DateTime>.Shared.Return(pooledTimestamps, clearArray: false);
                             if (pooledCurrents != null)
-                                foreach (var channel in pooledCurrents)
-                                    if (channel?.Currents != null)
-                                        ArrayPool<double>.Shared.Return(channel.Currents, clearArray: false);
+                            {
+                                for (var i = 0; i < pooledCurrentCount; i++)
+                                    if (pooledCurrents[i].Currents != null)
+                                        ArrayPool<double>.Shared.Return(pooledCurrents[i].Currents, clearArray: false);
+                                ArrayPool<DaqDiskChannelBatch>.Shared.Return(pooledCurrents, clearArray: true);
+                            }
                             if (pooledPressure1 != null)
                                 ArrayPool<double>.Shared.Return(pooledPressure1, clearArray: false);
                             if (pooledPressure2 != null)
@@ -2650,18 +2771,23 @@ namespace IO.NI
                     var diskBatchBuildMs =
                         (Stopwatch.GetTimestamp() - diskBuildStartedTicks) * 1000.0 / Stopwatch.Frequency;
 
-                    // 4) 生成发给 UI 的绝对值副本（不修改 engFiltered）
-                    //    这样 UI 看到的是绝对值，但内部仍保留带符号的数据用于控制/记录等。
-                    var uiEng = MakeEngineeringAbsoluteCopy(engFiltered);
-
-                    // 5) 通知 UI（全通道、已滤波、已取绝对值的工程值）
                     var uiStartedTicks = Stopwatch.GetTimestamp();
-                    try { OnEngBatch?.Invoke(item.Device, uiEng, item.Current, item.Last); }
-                    catch (Exception ex)
+                    var uiHandler = OnEngBatch;
+                    var uiGate = string.Equals(item.Device, "Dev1", StringComparison.OrdinalIgnoreCase)
+                        ? _uiDispatchGateDev1
+                        : _uiDispatchGateDev2;
+                    // UI 只需要 20~30 Hz 的最新趋势。仅在真正发布时创建绝对值矩阵，
+                    // 避免两台设备每 10 ms 各分配一个二维数组并推动全代 GC。
+                    if (uiHandler != null && uiGate.TryAcquire(uiStartedTicks))
                     {
-                        _log.Warn(
-                            $"{item.Device} 工程值批次订阅者异常（已隔离）：{ex.Message}",
-                            "AI");
+                        var uiEng = MakeEngineeringAbsoluteCopy(engFiltered);
+                        try { uiHandler(item.Device, uiEng, item.Current, item.Last); }
+                        catch (Exception ex)
+                        {
+                            _log.Warn(
+                                $"{item.Device} 工程值批次订阅者异常（已隔离）：{ex.Message}",
+                                "AI");
+                        }
                     }
                     var uiNotifyMs = (Stopwatch.GetTimestamp() - uiStartedTicks) * 1000.0 / Stopwatch.Frequency;
 
@@ -3340,6 +3466,8 @@ namespace IO.NI
         }
 
         // —— 后台处理队列，避免在 DAQ 回调里阻塞 —— //
+        // Raw 在 EnqueueForProcessing 成功发布后归后台独占。后台会原地进行电压到
+        // 工程值换算；发布者不得再访问，OnRawBatch 订阅者也只能在同步调用期间只读借用。
         private readonly struct Item
         {
             public Item(

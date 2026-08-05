@@ -1,8 +1,8 @@
 using System;
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using DataOperation;
@@ -340,30 +340,55 @@ namespace Controller
             if (batched != null)
             {
                 double[] zeroPressure = null;
+                EpbChannelDiskBatch[] pooledChannels = null;
                 try
                 {
                     if (batch.PressureGroup1 == null || batch.PressureGroup2 == null)
                         zeroPressure = ArrayPoolZeroCache.Get(batch.SampleCount);
-                    var channels = batch.Channels
-                        .Select(channel => new EpbChannelDiskBatch
-                        {
-                            EpbId = channel.EpbId,
-                            Currents = channel.Currents,
-                            Pressures = (channel.EpbId <= 6
+                    var channels = pooledChannels =
+                        ArrayPool<EpbChannelDiskBatch>.Shared.Rent(Math.Max(1, batch.ChannelCount));
+                    for (var i = 0; i < batch.ChannelCount; i++)
+                    {
+                        var source = batch.Channels[i];
+                        channels[i] = new EpbChannelDiskBatch(
+                            source.EpbId,
+                            source.Currents,
+                            (source.EpbId <= 6
                                 ? batch.PressureGroup1
-                                : batch.PressureGroup2) ?? zeroPressure
-                        })
-                        .ToArray();
-                    batched.WriteDeviceBatch(batch.TimestampsUtc, channels, batch.SampleCount);
+                                : batch.PressureGroup2) ?? zeroPressure);
+                    }
+
+                    if (batched is ICountedBatchedEpbCycleRecorder counted)
+                    {
+                        counted.WriteDeviceBatch(
+                            batch.TimestampsUtc,
+                            channels,
+                            batch.ChannelCount,
+                            batch.SampleCount);
+                    }
+                    else
+                    {
+                        // Compatibility path for third-party recorders that only implement the
+                        // original interface. The built-in writer uses the counted pooled path.
+                        var exact = new EpbChannelDiskBatch[batch.ChannelCount];
+                        Array.Copy(channels, exact, batch.ChannelCount);
+                        batched.WriteDeviceBatch(batch.TimestampsUtc, exact, batch.SampleCount);
+                    }
                     return;
                 }
                 finally
                 {
+                    if (pooledChannels != null)
+                    {
+                        Array.Clear(pooledChannels, 0, batch.ChannelCount);
+                        ArrayPool<EpbChannelDiskBatch>.Shared.Return(pooledChannels, clearArray: false);
+                    }
                     if (zeroPressure != null) ArrayPoolZeroCache.Return(zeroPressure);
                 }
             }
-            foreach (var channel in batch.Channels)
+            for (var i = 0; i < batch.ChannelCount; i++)
             {
+                var channel = batch.Channels[i];
                 var pressure = channel.EpbId <= 6 ? batch.PressureGroup1 : batch.PressureGroup2;
                 if (pressure == null)
                 {

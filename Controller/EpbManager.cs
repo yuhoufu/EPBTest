@@ -1261,6 +1261,18 @@ namespace Controller
             return end > 0 ? reason.Substring(0, end) : reason;
         }
 
+        internal static string ClassifyDaqStaleRoot(
+            DaqFreshnessSnapshot freshness,
+            double staleThresholdMs = 100)
+        {
+            if (freshness == null) return "DaqSampleStale";
+            var threshold = Math.Max(1, staleThresholdMs);
+            if (freshness.CallbackAgeMs > threshold) return "DaqCallbackStale";
+            if (freshness.ControlEnqueueAgeMs > threshold) return "ControlEnqueueStale";
+            if (freshness.ControlProcessedAgeMs > threshold) return "ControlProcessingStale";
+            return "DaqSampleStale";
+        }
+
         private void OnRunnerRecoverableFaultRaised(int channel, string reason)
         {
             var device = _acq.GetDeviceForEpbChannel(channel);
@@ -1275,12 +1287,26 @@ namespace Controller
                 affectedChannels = GetAllDaqDeviceChannels(device);
             if (affectedChannels.Length == 0)
                 affectedChannels = new[] { channel };
+            var faultCode = ExtractFaultCode(reason);
+            var faultReason = reason;
+            if (faultCode.IndexOf("DaqSampleStale", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                var freshness = _acq.GetDaqFreshnessSnapshot(device, 100);
+                faultCode = ClassifyDaqStaleRoot(freshness, 100);
+                faultReason =
+                    $"{faultCode}>100ms CallbackAge={freshness.CallbackAgeMs:F1}ms " +
+                    $"ControlEnqueueAge={freshness.ControlEnqueueAgeMs:F1}ms " +
+                    $"ControlProcessedAge={freshness.ControlProcessedAgeMs:F1}ms " +
+                    $"ProcessedSampleUtc={(freshness.ProcessedSampleUtc == default ? "none" : freshness.ProcessedSampleUtc.ToString("O"))} " +
+                    $"Original={reason}";
+            }
             var observation = ObserveDaqIncident(
                 device,
-                ExtractFaultCode(reason),
-                reason,
+                faultCode,
+                faultReason,
                 DateTime.UtcNow,
-                affectedChannels);
+                affectedChannels,
+                primaryChannel: channel);
 
             Task<DaqRecoveryResult> recoveryTask;
             lock (_daqRecoveryGate)
@@ -1307,7 +1333,7 @@ namespace Controller
                         "AI"));
 
                 recoveryTask = Task.Run(
-                    () => RecoverDaqDeviceAsync(channel, device, affectedChannels, reason));
+                    () => RecoverDaqDeviceAsync(channel, device, affectedChannels, faultReason));
                 _daqRecoveryTasks[device] = recoveryTask;
             }
         }
@@ -1604,8 +1630,8 @@ namespace Controller
                 .Distinct()
                 .OrderBy(channel => channel)
                 .ToArray();
-            if (orderedChannels.Length > 0)
-                triggeringChannel = orderedChannels[0];
+            if (!orderedChannels.Contains(triggeringChannel))
+                triggeringChannel = orderedChannels.FirstOrDefault();
 
             // 失效安全顺序：先在当前线程锁存、取消运行并逐通道高优先级断电；
             // 任何日志、UI、数据库封圈、蜂鸣或快照都必须发生在这之后。
@@ -1840,7 +1866,8 @@ namespace Controller
             string reason,
             DateTime timestampUtc,
             int[] affectedChannels,
-            long generation = 0)
+            long generation = 0,
+            int primaryChannel = 0)
         {
             var runId = _activeBatchId;
             if (generation <= 0)
@@ -1852,7 +1879,8 @@ namespace Controller
                 code,
                 reason,
                 timestampUtc,
-                affectedChannels);
+                affectedChannels,
+                primaryChannel);
         }
 
         private long BuildDaqChannelMask(string device)

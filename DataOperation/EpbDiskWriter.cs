@@ -902,25 +902,73 @@ public sealed class EpbDiskWriter : IDisposable
         int count)
     {
         if (channels == null) throw new ArgumentNullException(nameof(channels));
-        var ordered = channels
-            .Where(x => x != null)
-            .OrderBy(x => x.EpbId)
-            .ToArray();
-        WithChannelStateLocks(ordered, 0, () =>
+        if (channels.Count == 0) return;
+        var rented = ArrayPool<EpbChannelDiskBatch>.Shared.Rent(channels.Count);
+        try
         {
+            for (var i = 0; i < channels.Count; i++) rented[i] = channels[i];
+            WriteDeviceBatch(timestampsUtc, rented, channels.Count, count);
+        }
+        finally
+        {
+            Array.Clear(rented, 0, channels.Count);
+            ArrayPool<EpbChannelDiskBatch>.Shared.Return(rented, clearArray: false);
+        }
+    }
+
+    public void WriteDeviceBatch(
+        DateTime[] timestampsUtc,
+        EpbChannelDiskBatch[] channels,
+        int channelCount,
+        int sampleCount)
+    {
+        if (timestampsUtc == null) throw new ArgumentNullException(nameof(timestampsUtc));
+        if (channels == null) throw new ArgumentNullException(nameof(channels));
+        if (channelCount < 0 || channelCount > channels.Length)
+            throw new ArgumentOutOfRangeException(nameof(channelCount));
+        if (channelCount == 0) return;
+
+        // 设备通道通常已按 EPB 编号排列；插入排序只处理 2~4 个描述符，
+        // 不再为每个 10 ms 批次创建 Where/OrderBy/ToArray 对象图。
+        for (var i = 1; i < channelCount; i++)
+        {
+            var value = channels[i];
+            var j = i - 1;
+            while (j >= 0 && channels[j].EpbId > value.EpbId)
+            {
+                channels[j + 1] = channels[j];
+                j--;
+            }
+            channels[j + 1] = value;
+        }
+
+        var lockedStates = ArrayPool<EpbState>.Shared.Rent(channelCount);
+        var acquired = 0;
+        try
+        {
+            for (var i = 0; i < channelCount; i++)
+            {
+                var state = GetState(channels[i].EpbId);
+                Monitor.Enter(state.Gate);
+                lockedStates[acquired++] = state;
+            }
+
             lock (_dbGate)
             {
                 using var transaction = _conn.BeginTransaction();
                 _activeBatchTransaction = transaction;
                 try
                 {
-                    foreach (var channel in ordered)
+                    for (var i = 0; i < channelCount; i++)
+                    {
+                        var channel = channels[i];
                         WriteBatch(
                             channel.EpbId,
                             timestampsUtc,
                             channel.Currents,
                             channel.Pressures,
-                            count);
+                            sampleCount);
+                    }
                     transaction.Commit();
                 }
                 finally
@@ -928,22 +976,16 @@ public sealed class EpbDiskWriter : IDisposable
                     _activeBatchTransaction = null;
                 }
             }
-        });
-    }
-
-    private void WithChannelStateLocks(
-        IReadOnlyList<EpbChannelDiskBatch> channels,
-        int index,
-        Action action)
-    {
-        if (index >= channels.Count)
-        {
-            action();
-            return;
         }
-        var state = GetState(channels[index].EpbId);
-        lock (state.Gate)
-            WithChannelStateLocks(channels, index + 1, action);
+        finally
+        {
+            for (var i = acquired - 1; i >= 0; i--)
+            {
+                Monitor.Exit(lockedStates[i].Gate);
+                lockedStates[i] = null;
+            }
+            ArrayPool<EpbState>.Shared.Return(lockedStates, clearArray: false);
+        }
     }
 
     public void SealCycleWindow(int epbId, int cycleNumber, DateTime endUtc)
@@ -2355,8 +2397,28 @@ public interface IBatchedEpbCycleRecorder
     void SealCycleWindow(int epbId, int cycleNumber, DateTime endUtc);
 }
 
-public sealed class EpbChannelDiskBatch
+/// <summary>
+/// Optional zero-allocation extension used by the DAQ persistence worker. The array may be
+/// rented and can be longer than <c>channelCount</c>; consumers must honor the count.
+/// </summary>
+public interface ICountedBatchedEpbCycleRecorder : IBatchedEpbCycleRecorder
 {
+    void WriteDeviceBatch(
+        DateTime[] timestampsUtc,
+        EpbChannelDiskBatch[] channels,
+        int channelCount,
+        int sampleCount);
+}
+
+public struct EpbChannelDiskBatch
+{
+    public EpbChannelDiskBatch(int epbId, double[] currents, double[] pressures)
+    {
+        EpbId = epbId;
+        Currents = currents;
+        Pressures = pressures;
+    }
+
     public int EpbId { get; set; }
     public double[] Currents { get; set; }
     public double[] Pressures { get; set; }
@@ -2392,7 +2454,7 @@ public interface IActiveCycleLimitConfigurator
 /// <summary>
 ///     将 EpbDiskWriter 适配为 IEpbCycleRecorder，避免 EpbManager 直接依赖具体类。
 /// </summary>
-public sealed class DiskWriterRecorderAdapter : IEpbCycleRecorder, IBatchedEpbCycleRecorder, ICycleEvidenceExporter, IActiveCycleLimitConfigurator
+public sealed class DiskWriterRecorderAdapter : IEpbCycleRecorder, ICountedBatchedEpbCycleRecorder, ICycleEvidenceExporter, IActiveCycleLimitConfigurator
 {
     private readonly EpbDiskWriter _writer;
 
@@ -2432,6 +2494,13 @@ public sealed class DiskWriterRecorderAdapter : IEpbCycleRecorder, IBatchedEpbCy
         IReadOnlyList<EpbChannelDiskBatch> channels,
         int count)
         => _writer.WriteDeviceBatch(timestampsUtc, channels, count);
+
+    public void WriteDeviceBatch(
+        DateTime[] timestampsUtc,
+        EpbChannelDiskBatch[] channels,
+        int channelCount,
+        int sampleCount)
+        => _writer.WriteDeviceBatch(timestampsUtc, channels, channelCount, sampleCount);
 
     public int GetCurrentCycleSampleCount(int epbId)
     {
