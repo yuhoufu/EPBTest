@@ -53,6 +53,7 @@ namespace AdaptiveControlTests
                 Run("预释放6.5A平台按15A目标不误报", PreReleaseNormalPlatformUsesForwardReference);
                 Run("预释放持续超过9A触发高平台保护", PreReleaseHighPlatformStillFaults);
                 Run("预释放失败阻止学习阶段", PreReleaseFailureBlocksLearning);
+                Run("启动定位仅双源过流确认为硬件故障", StartupPositioningRequiresIndependentHardwareEvidence);
                 Run("启动定位涌流后连续三点高电流确认", StartupPositioningConfirmsHighCurrentAfterInrush);
                 Run("启动定位真正过流优先于终点确认", StartupPositioningOverCurrentTakesPriority);
                 Run("启动定位拆分进展期限与绝对上电上限", StartupPositioningSeparatesForwardTimingBudgets);
@@ -85,18 +86,34 @@ namespace AdaptiveControlTests
                 Run("液压容差缺省10bar且显式配置不迁移", HydraulicPressureToleranceDefaults);
                 Run("液压目标压力正负10bar判定", HydraulicPressureToleranceWindow);
                 Run("液压建压超时提示按失败方向区分", HydraulicBuildTimeoutGuidance);
+                Run("液压启动仅软件代次异常进入自愈", HydraulicStartupRecoveryClassification);
                 Run("模型原子保存与重载", ProfilePersistence);
                 Run("控流模型五圈收敛到目标带", CutoffModelConvergesWithinFiveCycles);
                 Run("峰值系统偏差用于提前断电补偿", PeakBiasCorrectionIsLearned);
                 Run("普通过冲连续5圈才达到确认值", OvershootStreakRequiresConsecutiveCycles);
+                Run("重新开始清除瞬态连续计数但保留学习模型", RestartClearsOnlyTransientStreaks);
+                Run("软件自愈循环持续重试直到成功", SoftwareSelfHealingRetriesUntilSuccess);
+                Run("软件自愈持续失败可由停止令牌取消", SoftwareSelfHealingPersistentFailureIsCancelable);
+                Run("控制异常区分软件自愈与真实安全故障", CycleExceptionRecoveryClassification);
+                Run("软件恢复圈明确作废且不算成功", SoftwareRecoveryOutcomeIsNotSuccess);
+                Run("非关键观察者异常不影响后续订阅者", NonCriticalObserverFailureDoesNotPropagate);
+                Run("报警显示自愈不跨运行代次或新报警", AlarmIndicatorRecoveryIsRunBounded);
+                Run("学习资格局部故障不穿透整批等待", FaultIsolatedPhaseKeepsHealthySiblingRunning);
+                Run("人工停止仍可取消整个学习资格阶段", PhaseOwnerCancellationStillEscapesIsolation);
+                Run("作废学习尝试完整回滚自适应模型", DiscardedLearningAttemptRestoresAdaptiveProfile);
+                Run("正式圈异常不得复用上一圈成功结果", FormalCycleRejectsStaleSuccessOutcome);
+                Run("正式圈必须控制与落盘均成功才计数", FormalCycleRequiresPersistenceCommitToCount);
                 Run("正向低平台连续5圈确认且正常圈清零", ForwardStallStreakRequiresFiveCycles);
                 Run("版本1模型无损升级到版本3", VersionOneProfileMigrates);
                 Run("损坏模型回退", CorruptProfileFallback);
                 Run("周期超限不追赶且圈号连续", TimerDoesNotCatchUp);
                 Run("优雅暂停等待当前圈结束且阻止下一圈", TimerGracefulPauseWaitsForCurrentCycle);
                 Run("计划等待窗口内暂停不误启动下一圈", TimerPauseDuringPlannedDelayBlocksNextCycle);
-                Run("五分钟内直续且超时转资格复核", PauseResumeFiveMinutePolicy);
-                Run("共享资源报警禁止单通道恢复", ChannelAlarmResumePolicy);
+                Run("同进程暂停不因时长增加资格门禁", PauseResumeFiveMinutePolicy);
+                Run("单通道恢复按当前公共正式槽重入", PausedChannelRejoinsCurrentSharedFormalSlot);
+                Run("批次暂停和恢复预检期间DAQ自愈不得越权恢复定时器", DaqRecoveryRespectsBatchPausePolicy);
+                Run("旧报警码不再阻止单通道重启", ChannelAlarmResumePolicy);
+                Run("全部停机态均允许单通道重新开始", ChannelStoppedStatesAreRestartable);
                 Run("新运行复位报警停机锁存", AlarmStopLatchResetsForNewRun);
                 Run("报警状态要求CSV和BIN同时存在", AlarmRequiresCsvAndBinFiles);
                 Run("错峰部分通道重新编号", StaggerPartialSelection);
@@ -126,6 +143,7 @@ namespace AdaptiveControlTests
                 Run("同通道并发只创建一个运行对象", SameChannelCreatesExactlyOneRuntime);
                 Run("12通道启动停止抢占不损坏运行表", ConcurrentStartStopDoesNotCorruptRuntimeStore);
                 Run("12通道连续启动停止不残留运行对象", TwelveChannelsRestartWithoutRuntimeLeaks);
+                Run("重新开始等待旧启动尾声后才允许新启动", FreshRestartJoinsOldStartupCleanup);
                 Run("DO追踪缓冲按运行过滤并限时", DoTraceBufferFiltersRunAndAge);
                 Run("报警辅助证据包含计划和DO时序", AlarmControlEvidenceIsReconstructable);
                 Run("同组硬故障仅停止故障通道", HardFaultDoesNotStopSiblingChannel);
@@ -142,6 +160,7 @@ namespace AdaptiveControlTests
                 Run("固定随机种子10万圈耐久仿真", HundredThousandCycleDurabilitySimulation);
                 Run("持久化积压低水位后自动恢复", DaqPersistenceCoordinatorTests.PauseAndRecoverAfterLowWater);
                 Run("持久化硬容量使用独立故障码", DaqPersistenceCoordinatorTests.HardCapacityKeepsRealFaultCode);
+                Run("持久化诊断观察者异常不重复写盘", DaqPersistenceCoordinatorTests.DiagnosticObserverFailureDoesNotRetryWrite);
                 _passed += DaqRealtimeControlTests.RunAll();
                 _passed += HydraulicGroupCoordinatorTests.RunAll();
                 _passed += PowerSupplyCoordinatorTests.RunAll();
@@ -584,6 +603,30 @@ namespace AdaptiveControlTests
             }
 
             Assert(!learningStarted, "预释放失败后仍进入学习阶段");
+        }
+
+        private static void StartupPositioningRequiresIndependentHardwareEvidence()
+        {
+            Assert(
+                EpbManager.ClassifyStartupPositioningFailure(false, false) ==
+                FaultClassification.SoftwareTransient,
+                "普通启动定位失败被误判为硬件故障");
+            Assert(
+                EpbManager.ClassifyStartupPositioningFailure(true, false) ==
+                FaultClassification.SoftwareTransient,
+                "仅DAQ过流证据时不应确认硬件故障");
+            Assert(
+                EpbManager.ClassifyStartupPositioningFailure(false, true) ==
+                FaultClassification.SoftwareTransient,
+                "仅PSU证据且无启动过流时不应确认硬件故障");
+            Assert(
+                EpbManager.ClassifyStartupPositioningFailure(true, true) ==
+                FaultClassification.HardwareConfirmed,
+                "DAQ过流与新鲜PSU证据并存时未确认硬件故障");
+            Assert(
+                EpbManager.ClassifyStartupPositioningFailure(false, false, true) ==
+                FaultClassification.HardwareConfirmed,
+                "启动定位输出关闭失败仍被误当成软件瞬态");
         }
 
         private static void StartupPositioningConfirmsHighCurrentAfterInrush()
@@ -1598,6 +1641,346 @@ namespace AdaptiveControlTests
                 "连续超调第5圈未达到确认值");
         }
 
+        private static void RestartClearsOnlyTransientStreaks()
+        {
+            var profile = StableProfile();
+            profile.ConsecutiveDeviationCount = 3;
+            profile.ConsecutiveForwardOvershootCount = 5;
+            profile.ConsecutivePeakEvidenceMismatchCount = 3;
+            profile.ConsecutiveForwardStallCount = 5;
+            var samples = profile.ValidSampleCount;
+            var forwardMedian = profile.ForwardClampMedianMs;
+            var history = profile.ForwardClampHistoryMs.ToArray();
+
+            Assert(profile.ResetTransientFaultStreaks(), "存在旧连续计数时未报告清理动作");
+            Assert(profile.ConsecutiveDeviationCount == 0 &&
+                   profile.ConsecutiveForwardOvershootCount == 0 &&
+                   profile.ConsecutivePeakEvidenceMismatchCount == 0 &&
+                   profile.ConsecutiveForwardStallCount == 0,
+                "重新开始后仍继承上一运行的瞬态连续计数");
+            Assert(profile.ValidSampleCount == samples &&
+                   Math.Abs(profile.ForwardClampMedianMs - forwardMedian) < 0.001 &&
+                   profile.ForwardClampHistoryMs.SequenceEqual(history),
+                "清理瞬态计数时破坏了已学习的稳定模型");
+            Assert(!profile.ResetTransientFaultStreaks(), "空计数重复清理不应制造模型变更");
+        }
+
+        private static void SoftwareSelfHealingRetriesUntilSuccess()
+        {
+            var attempts = 0;
+            var retryCallbacks = 0;
+            var result = SoftwareSelfHealingLoop.RunAsync(
+                    (attempt, token) =>
+                    {
+                        attempts++;
+                        if (attempt < 4)
+                            throw new SoftwareSelfHealingRetryException("transient-" + attempt);
+                        return Task.CompletedTask;
+                    },
+                    (attempt, ex, token) =>
+                    {
+                        retryCallbacks++;
+                        Assert(ex.Message == "transient-" + attempt, "自愈回调未收到对应尝试证据");
+                        return Task.CompletedTask;
+                    },
+                    _ => 0,
+                    CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+
+            Assert(result == 4 && attempts == 4 && retryCallbacks == 3,
+                "软件自愈没有保持持续重试或成功后仍继续尝试");
+        }
+
+        private static void SoftwareSelfHealingPersistentFailureIsCancelable()
+        {
+            using var cts = new CancellationTokenSource();
+            var attempts = 0;
+            var canceled = false;
+            try
+            {
+                SoftwareSelfHealingLoop.RunAsync(
+                        (attempt, token) =>
+                        {
+                            attempts++;
+                            throw new SoftwareSelfHealingRetryException("persistent");
+                        },
+                        (attempt, ex, token) =>
+                        {
+                            if (attempt == 3) cts.Cancel();
+                            return Task.CompletedTask;
+                        },
+                        _ => 0,
+                        cts.Token)
+                    .GetAwaiter()
+                    .GetResult();
+            }
+            catch (OperationCanceledException)
+            {
+                canceled = true;
+            }
+
+            Assert(canceled && attempts == 3,
+                "持续软件故障未能由停止令牌及时终止，或取消后仍继续尝试");
+        }
+
+        private static void FaultIsolatedPhaseKeepsHealthySiblingRunning()
+        {
+            var isolated = 0;
+            var channelCanceled = 0;
+            var healthyCompleted = 0;
+            using var memberStop = new CancellationTokenSource();
+            memberStop.Cancel();
+
+            Task.WhenAll(
+                    FaultIsolatedPhaseWork.RunAsync(
+                        () => Task.FromException(new InvalidOperationException("hydraulic-group-fault")),
+                        CancellationToken.None,
+                        (ex, canceled) =>
+                        {
+                            Assert(!canceled && ex.Message == "hydraulic-group-fault",
+                                "资源组异常的隔离分类错误");
+                            Interlocked.Increment(ref isolated);
+                        }),
+                    FaultIsolatedPhaseWork.RunAsync(
+                        () => Task.FromCanceled(memberStop.Token),
+                        CancellationToken.None,
+                        (ex, canceled) =>
+                        {
+                            Assert(canceled, "通道停止令牌被错误当成整批取消");
+                            Interlocked.Increment(ref channelCanceled);
+                        }),
+                    FaultIsolatedPhaseWork.RunAsync(
+                        async () =>
+                        {
+                            await Task.Delay(10).ConfigureAwait(false);
+                            Interlocked.Increment(ref healthyCompleted);
+                        },
+                        CancellationToken.None,
+                        (ex, canceled) => throw new InvalidOperationException(
+                            "健康通道不应进入隔离回调", ex)))
+                .GetAwaiter()
+                .GetResult();
+
+            Assert(isolated == 1 && channelCanceled == 1 && healthyCompleted == 1,
+                "局部故障穿透Task.WhenAll或阻止了健康学习/资格任务完成");
+        }
+
+        private static void PhaseOwnerCancellationStillEscapesIsolation()
+        {
+            using var phase = new CancellationTokenSource();
+            phase.Cancel();
+            var isolated = 0;
+            var canceled = false;
+            try
+            {
+                FaultIsolatedPhaseWork.RunAsync(
+                        () => Task.FromCanceled(phase.Token),
+                        phase.Token,
+                        (ex, memberCanceled) => Interlocked.Increment(ref isolated))
+                    .GetAwaiter()
+                    .GetResult();
+            }
+            catch (OperationCanceledException)
+            {
+                canceled = true;
+            }
+
+            Assert(canceled && isolated == 0,
+                "人工停止/重新开始令牌被局部故障隔离吞掉，整批无法及时退出");
+        }
+
+        private static void DiscardedLearningAttemptRestoresAdaptiveProfile()
+        {
+            var baseline = StableProfile();
+            baseline.ConsecutiveDeviationCount = 2;
+            baseline.ConsecutiveForwardOvershootCount = 3;
+            baseline.ConsecutivePeakEvidenceMismatchCount = 1;
+            baseline.ConsecutiveForwardStallCount = 4;
+            baseline.TryAddCutoffObservation(15, 13.5, 0.05, 15.5, out _);
+            var working = baseline.Clone();
+
+            working.AddSuccessfulCycle(2.4, 2.3, 3100, 2800);
+            working.UpdateForwardOvershootStreak(2.0, 0.5);
+            working.UpdatePeakEvidenceMismatchStreak(true);
+            working.UpdateForwardStallStreak(true);
+            working.TryAddCutoffObservation(15, 12.5, 0.04, 16.0, out _);
+            Assert(working.ValidSampleCount != baseline.ValidSampleCount,
+                "测试前置条件无效：模拟学习尝试没有改变模型");
+
+            working.RestoreFrom(baseline);
+            Assert(working.ValidSampleCount == baseline.ValidSampleCount &&
+                   working.ValidCutoffSampleCount == baseline.ValidCutoffSampleCount &&
+                   working.ConsecutiveDeviationCount == baseline.ConsecutiveDeviationCount &&
+                   working.ConsecutiveForwardOvershootCount == baseline.ConsecutiveForwardOvershootCount &&
+                   working.ConsecutivePeakEvidenceMismatchCount == baseline.ConsecutivePeakEvidenceMismatchCount &&
+                   working.ConsecutiveForwardStallCount == baseline.ConsecutiveForwardStallCount &&
+                   working.ForwardEmptyHistoryA.SequenceEqual(baseline.ForwardEmptyHistoryA) &&
+                   working.ReverseEmptyHistoryA.SequenceEqual(baseline.ReverseEmptyHistoryA) &&
+                   working.ForwardClampHistoryMs.SequenceEqual(baseline.ForwardClampHistoryMs) &&
+                   working.ReverseReleaseHistoryMs.SequenceEqual(baseline.ReverseReleaseHistoryMs) &&
+                   working.ForwardCutoffLeadHistoryMs.SequenceEqual(baseline.ForwardCutoffLeadHistoryMs) &&
+                   working.ForwardPeakErrorHistoryA.SequenceEqual(baseline.ForwardPeakErrorHistoryA),
+                "作废学习尝试后模型、历史或瞬态连续计数未完整回滚");
+
+            baseline.ForwardEmptyHistoryA.Add(99);
+            Assert(!working.ForwardEmptyHistoryA.Contains(99), "模型恢复后仍与快照共享可变历史集合");
+        }
+
+        private static void FormalCycleRequiresPersistenceCommitToCount()
+        {
+            Assert(EpbManager.IsFormalCycleCountable(true, true),
+                "控制和落盘均成功的正式圈未允许计数");
+            Assert(!EpbManager.IsFormalCycleCountable(true, false),
+                "落盘未确认的正式圈被错误计为成功");
+            Assert(!EpbManager.IsFormalCycleCountable(false, true),
+                "控制失败但落盘成功的正式圈被错误计数");
+            Assert(!EpbManager.IsFormalCycleCountable(false, false),
+                "控制和落盘均失败的正式圈被错误计数");
+        }
+
+        private static void SoftwareRecoveryOutcomeIsNotSuccess()
+        {
+            var outcome = EpbCycleOutcome.SoftwareRecovery(
+                EpbCurrentStage.Faulted,
+                "transient");
+            Assert(outcome.Kind == EpbCycleOutcomeKind.SoftwareRecovery,
+                "软件恢复圈未使用独立终态");
+            Assert(!outcome.IsSuccess,
+                "软件恢复圈被错误视为成功圈");
+            Assert(!EpbManager.IsFormalCycleCountable(outcome.IsSuccess, true),
+                "软件恢复圈在落盘成功时仍被错误计数");
+        }
+
+        private static void CycleExceptionRecoveryClassification()
+        {
+            var key = new HydraulicGenerationKey(
+                Guid.NewGuid(),
+                1,
+                HydraulicPhaseKind.Formal,
+                1);
+            Assert(EpbCycleRunner.IsSoftwareRecoveryException(new NullReferenceException("state")),
+                "普通软件状态异常未进入自愈");
+            Assert(EpbCycleRunner.IsSoftwareRecoveryException(
+                    new ObjectDisposedException("old run")),
+                "旧运行对象残留异常未进入自愈");
+            Assert(EpbCycleRunner.CanDiscardForSoftwareRecovery(
+                    new ObjectDisposedException("old run"),
+                    true),
+                "软件异常在确认断电后未允许丢圈自愈");
+            Assert(!EpbCycleRunner.CanDiscardForSoftwareRecovery(
+                    new ObjectDisposedException("old run"),
+                    false),
+                "未确认断电时仍允许丢圈继续");
+            Assert(EpbCycleRunner.IsSoftwareRecoveryException(
+                    new HydraulicBarrierTimeoutException(key, 1000, new[] { 4 })),
+                "液压同步屏障异常未进入自愈");
+
+            Assert(!EpbCycleRunner.IsSoftwareRecoveryException(
+                    new EpbOutputCommandException(4, "Forward")),
+                "真实电机输出命令失败被软件自愈吞掉");
+            Assert(!EpbCycleRunner.IsSoftwareRecoveryException(
+                    new HydraulicBuildTimeoutException(1, 70, 10, 55, 5000, "BelowToleranceWindow")),
+                "真实液压建压超时被软件自愈吞掉");
+            Assert(!EpbCycleRunner.IsSoftwareRecoveryException(
+                    new HydraulicPressureLostException(
+                        1,
+                        1,
+                        50,
+                        60,
+                        HydraulicPressureFailureReason.BelowMinimum,
+                        20)),
+                "真实保压丢失被软件自愈吞掉");
+            Assert(!EpbCycleRunner.IsSoftwareRecoveryException(
+                    new HydraulicReleaseTimeoutException(1, 20, 5, 5000)),
+                "真实释压失败被软件自愈吞掉");
+        }
+
+        private static void NonCriticalObserverFailureDoesNotPropagate()
+        {
+            var delivered = 0;
+            var failures = 0;
+            Action<int> observers = _ => throw new InvalidOperationException("UI failed");
+            observers += value => delivered += value;
+
+            var succeeded = NonCriticalObserver.Invoke(
+                observers,
+                1,
+                _ => failures++);
+
+            Assert(succeeded == 1, "观察者成功计数错误");
+            Assert(failures == 1, "失败观察者未被独立报告");
+            Assert(delivered == 1, "前一个观察者异常阻止了后续观察者");
+        }
+
+        private static void AlarmIndicatorRecoveryIsRunBounded()
+        {
+            var runId = Guid.NewGuid();
+            Assert(EpbManager.CanRetryAlarmIndicatorClear(
+                    runId,
+                    runId,
+                    ChannelRuntimeState.Running),
+                "当前运行中的报警显示自愈被错误禁止");
+            Assert(EpbManager.CanRetryAlarmIndicatorClear(
+                    runId,
+                    runId,
+                    ChannelRuntimeState.WarningRunning),
+                "当前预警运行中的报警显示自愈被错误禁止");
+            Assert(!EpbManager.CanRetryAlarmIndicatorClear(
+                    runId,
+                    runId,
+                    ChannelRuntimeState.AlarmStopped),
+                "新报警后旧清除任务仍可继续清灯");
+            Assert(!EpbManager.CanRetryAlarmIndicatorClear(
+                    runId,
+                    Guid.NewGuid(),
+                    ChannelRuntimeState.Running),
+                "旧运行的报警清除任务越过了新运行代次");
+        }
+
+        private static void FormalCycleRejectsStaleSuccessOutcome()
+        {
+            Assert(EpbManager.IsFormalControlSucceeded(true, true),
+                "本次正常返回且结果成功的正式圈未被接受");
+            Assert(!EpbManager.IsFormalControlSucceeded(false, true),
+                "本次抛异常后错误复用了上一圈的成功结果");
+            Assert(!EpbManager.IsFormalControlSucceeded(true, false),
+                "本次结果失败但工作返回值为真时被错误接受");
+        }
+
+        private static void HydraulicStartupRecoveryClassification()
+        {
+            var key = new HydraulicGenerationKey(
+                Guid.NewGuid(),
+                1,
+                HydraulicPhaseKind.PreRelease,
+                1);
+            Assert(EpbManager.IsHydraulicSoftwareRecoveryCandidate(
+                    new HydraulicBarrierTimeoutException(key, 1000, new[] { 4 })),
+                "液压屏障缺员未进入软件代次自愈");
+            Assert(EpbManager.IsHydraulicSoftwareRecoveryCandidate(
+                    new InvalidOperationException("Hydraulic generation members are immutable")),
+                "旧液压成员不可变异常未进入软件代次自愈");
+            Assert(!EpbManager.IsHydraulicSoftwareRecoveryCandidate(
+                    new HydraulicBuildTimeoutException(1, 70, 10, 55, 5000, "BelowToleranceWindow")),
+                "真实建压超时被错误吞入软件自愈");
+            Assert(!EpbManager.IsHydraulicSoftwareRecoveryCandidate(
+                    new HydraulicPressureLostException(
+                        1,
+                        1,
+                        50,
+                        60,
+                        HydraulicPressureFailureReason.BelowMinimum,
+                        20)),
+                "运行中压力丢失被错误吞入软件自愈");
+            Assert(!EpbManager.IsHydraulicSoftwareRecoveryCandidate(
+                    new HydraulicReleaseTimeoutException(1, 20, 5, 5000)),
+                "真实释压超时被错误吞入软件自愈");
+            Assert(!EpbManager.IsHydraulicSoftwareRecoveryCandidate(
+                    new InvalidOperationException("generic startup failure")),
+                "普通异常被错误识别为液压代次异常");
+        }
+
         private static void PeakEvidenceMismatchRequiresThreeCycles()
         {
             var profile = StableProfile();
@@ -1885,10 +2268,49 @@ namespace AdaptiveControlTests
             var paused = new DateTime(2026, 8, 5, 1, 2, 3, DateTimeKind.Utc);
             Assert(EpbManager.CanResumeWithoutQualification(paused, paused.AddMinutes(5)),
                 "恰好5分钟被错误要求资格复核");
-            Assert(!EpbManager.CanResumeWithoutQualification(paused, paused.AddMinutes(5).AddTicks(1)),
-                "超过5分钟仍被允许直接续跑");
-            Assert(!EpbManager.CanResumeWithoutQualification(paused, paused.AddSeconds(-1)),
-                "倒退时钟被错误允许直接续跑");
+            Assert(EpbManager.CanResumeWithoutQualification(paused, paused.AddHours(24)),
+                "同进程长暂停仍被历史时长门禁阻挡");
+            Assert(EpbManager.CanResumeWithoutQualification(paused, paused.AddSeconds(-1)),
+                "墙钟回拨被错误用作同进程继续门禁");
+        }
+
+        private static void PausedChannelRejoinsCurrentSharedFormalSlot()
+        {
+            var t0 = new DateTime(2026, 8, 6, 11, 0, 0, DateTimeKind.Utc);
+            var now = t0.AddMilliseconds(47_500);
+            var slot = EpbManager.SelectSharedFormalRejoinSlot(t0, now, 15_000);
+
+            Assert(slot == 4,
+                $"暂停通道未跳过已经失效的旧圈槽：Expected=4 Actual={slot}");
+            Assert(t0.AddMilliseconds(slot * 15_000d) > now,
+                "重新加入点不是未来的完整公共槽");
+            Assert(EpbManager.SelectSharedFormalRejoinSlot(t0, now, 15_000) == slot,
+                "同一恢复时刻的通道未取得相同公共槽");
+        }
+
+        private static void DaqRecoveryRespectsBatchPausePolicy()
+        {
+            Assert(!EpbManager.ShouldHoldDaqRecoveredChannelsForBatchPause(BatchPauseState.Idle),
+                "空闲态被误判为批次暂停");
+            Assert(!EpbManager.ShouldHoldDaqRecoveredChannelsForBatchPause(BatchPauseState.Running),
+                "运行态DAQ恢复被错误保持暂停");
+            foreach (var state in new[]
+                     {
+                         BatchPauseState.PausePending,
+                         BatchPauseState.Paused,
+                         BatchPauseState.ResumeChecking,
+                         BatchPauseState.Qualification,
+                         BatchPauseState.Stopping
+                     })
+                Assert(EpbManager.ShouldHoldDaqRecoveredChannelsForBatchPause(state),
+                    $"{state} 期间DAQ恢复仍可能越权恢复定时器");
+
+            Assert(EpbManager.GetDaqRecoveredHeldRuntimeState(BatchPauseState.Paused) ==
+                   ChannelRuntimeState.Paused,
+                "安全暂停时DAQ恢复后的通道状态错误");
+            Assert(EpbManager.GetDaqRecoveredHeldRuntimeState(BatchPauseState.ResumeChecking) ==
+                   ChannelRuntimeState.ResumeChecking,
+                "恢复预检时DAQ恢复后的通道状态错误");
         }
 
         private static void ChannelAlarmResumePolicy()
@@ -1897,14 +2319,38 @@ namespace AdaptiveControlTests
                 "单通道开路修复后未允许资格复核");
             Assert(EpbManager.IsChannelAlarmCodeRecoverable("ForwardProgressDeadline"),
                 "单通道动作超时修复后未允许资格复核");
-            Assert(!EpbManager.IsChannelAlarmCodeRecoverable("DaqSampleStale"),
-                "DAQ故障被错误允许单通道恢复");
-            Assert(!EpbManager.IsChannelAlarmCodeRecoverable("HydraulicBuildTimeout"),
-                "液压组故障被错误允许单通道恢复");
-            Assert(!EpbManager.IsChannelAlarmCodeRecoverable("OffCurrentNotCleared"),
-                "断电未清零故障被错误允许单通道恢复");
-            Assert(!EpbManager.IsChannelAlarmCodeRecoverable("SharedPowerLimiting"),
-                "共享电源故障被错误允许单通道恢复");
+            Assert(EpbManager.IsChannelAlarmCodeRecoverable("DaqSampleStale"),
+                "旧DAQ故障码仍在阻止新一次实时预检");
+            Assert(EpbManager.IsChannelAlarmCodeRecoverable("HydraulicBuildTimeout"),
+                "旧液压故障码仍在阻止新一次启动定位");
+            Assert(EpbManager.IsChannelAlarmCodeRecoverable("OffCurrentNotCleared"),
+                "旧断电故障码仍在阻止重启");
+            Assert(EpbManager.IsChannelAlarmCodeRecoverable("SharedPowerLimiting"),
+                "旧共享电源故障码仍在阻止重启");
+            Assert(EpbManager.IsChannelAlarmCodeRecoverable(string.Empty),
+                "缺少旧故障码时不应锁死重启");
+        }
+
+        private static void ChannelStoppedStatesAreRestartable()
+        {
+            var restartable = new[]
+            {
+                ChannelRuntimeState.AlarmStopped,
+                ChannelRuntimeState.InterlockStopped,
+                ChannelRuntimeState.ManualStopped,
+                ChannelRuntimeState.StartBlocked,
+                ChannelRuntimeState.SystemFault
+            };
+            foreach (var state in restartable)
+                Assert(EpbManager.IsChannelStateRestartable(state),
+                    $"{state} 仍被单通道重新开始入口阻挡");
+
+            Assert(!EpbManager.IsChannelStateRestartable(ChannelRuntimeState.Running),
+                "运行中的通道被误识别为可重新开始停机态");
+            Assert(!EpbManager.IsChannelStateRestartable(ChannelRuntimeState.Recovering),
+                "正在自愈的通道允许了并发重新开始");
+            Assert(!EpbManager.IsChannelStateRestartable(ChannelRuntimeState.Completed),
+                "已完成目标的通道被允许重新开始");
         }
 
         private static void AlarmStopLatchResetsForNewRun()
@@ -2452,6 +2898,49 @@ namespace AdaptiveControlTests
                 Task.WaitAll(stops);
                 Assert(store.Active.IsEmpty && store.Cache.IsEmpty,
                     $"第{cycle + 1}轮停止后仍有运行对象残留");
+            }
+        }
+
+        private static void FreshRestartJoinsOldStartupCleanup()
+        {
+            var gate = new BatchStartLifecycleGate();
+            var oldStarted = new ManualResetEventSlim(false);
+            var allowOldCleanup = new ManualResetEventSlim(false);
+            var oldCleanupFinished = 0;
+            try
+            {
+                var oldStartup = gate.RunAsync(
+                    async () =>
+                    {
+                        oldStarted.Set();
+                        await Task.Run(() => allowOldCleanup.Wait()).ConfigureAwait(false);
+                        Interlocked.Exchange(ref oldCleanupFinished, 1);
+                        return 1;
+                    },
+                    CancellationToken.None);
+                Assert(oldStarted.Wait(1000), "旧启动没有进入受保护生命周期");
+
+                var restartJoin = gate.JoinAsync(CancellationToken.None);
+                Assert(!restartJoin.Wait(100), "重新开始未等待旧启动的catch/finally收尾");
+
+                allowOldCleanup.Set();
+                restartJoin.GetAwaiter().GetResult();
+                Assert(Volatile.Read(ref oldCleanupFinished) == 1,
+                    "重新开始屏障在旧启动尾声结束前错误放行");
+
+                var newStartup = gate.RunAsync(
+                        () => Task.FromResult(Volatile.Read(ref oldCleanupFinished) == 1 ? 2 : -1),
+                        CancellationToken.None)
+                    .GetAwaiter()
+                    .GetResult();
+                Assert(newStartup == 2, "新启动可能被上一批次的迟到清理覆盖");
+                Assert(oldStartup.GetAwaiter().GetResult() == 1, "旧启动任务未正常完成测试收尾");
+            }
+            finally
+            {
+                allowOldCleanup.Set();
+                oldStarted.Dispose();
+                allowOldCleanup.Dispose();
             }
         }
 

@@ -32,8 +32,9 @@ namespace EpbDiskWriterTests
                 Run("2000Hz CSV保留0.5ms时间分辨率", TwoKilohertzCsvKeepsSubMillisecondTime);
                 Run("报警圈原子封存与数据库边界一致", AlarmSealMatchesDatabaseBoundary);
                 Run("DAQ时钟恢复圈状态独立封存", DaqClockRecoveryAbortStatusIsDurable);
+                Run("软件自愈作废圈状态独立封存", SoftwareRecoveryAbortStatusIsDurable);
                 Run("报警CSV和BIN不一致时校验失败", AlarmPairValidatorRejectsMismatch);
-                Run("学习圈四种终态均落盘且不改变正式计数", LearningOutcomesDoNotAffectFormalCounters);
+                Run("学习与资格圈终态均落盘且不改变正式计数", LearningOutcomesDoNotAffectFormalCounters);
                 Run("学习负圈号跨重启连续且唯一", LearningCycleNumbersSurviveRestart);
                 Run("报警与学习收尾并发只封存一次", ConcurrentSealClaimsOnce);
                 Run("正式圈保留策略不删除学习索引", FormalRetentionKeepsLearningRows);
@@ -514,6 +515,42 @@ namespace EpbDiskWriterTests
             });
         }
 
+        private static void SoftwareRecoveryAbortStatusIsDurable()
+        {
+            WithRoot(root =>
+            {
+                var policy = NewPolicy(root);
+                var start = DateTime.UtcNow;
+                using (var writer = new EpbDiskWriter(policy))
+                {
+                    writer.BeginCycle(4, 151, start);
+                    WriteSamples(writer, 4, 7, start);
+                    writer.AbortCycle(
+                        4,
+                        151,
+                        7,
+                        start.AddSeconds(1),
+                        "AbortedBySoftwareRecovery");
+                    Assert(writer.GetClosedCycleCount(4) == 0,
+                        "软件自愈作废圈被错误计入合格寿命圈");
+                }
+
+                using (var connection = new SQLiteConnection(
+                           $"Data Source={Path.Combine(policy.IndexAndExportPath, policy.IndexDbFile)}"))
+                {
+                    connection.Open();
+                    using var command = connection.CreateCommand();
+                    command.CommandText =
+                        "SELECT sample_count,status FROM epb_cycles WHERE epb_id=4 AND cycle_number=151";
+                    using var reader = command.ExecuteReader();
+                    Assert(reader.Read(), "软件自愈作废圈数据库记录不存在");
+                    Assert(reader.GetInt32(0) == 7, "软件自愈作废圈样本边界错误");
+                    Assert(reader.GetString(1) == "AbortedBySoftwareRecovery",
+                        "软件自愈作废圈状态被降级为普通failed");
+                }
+            });
+        }
+
         private static void LearningOutcomesDoNotAffectFormalCounters()
         {
             WithRoot(root =>
@@ -524,7 +561,10 @@ namespace EpbDiskWriterTests
                 {
                     "learning_completed",
                     "learning_canceled",
-                    "learning_failed"
+                    "learning_failed",
+                    "qualification_completed",
+                    "qualification_canceled",
+                    "qualification_failed"
                 };
                 var learningCycles = new List<int>();
                 using (var writer = new EpbDiskWriter(policy))
@@ -533,7 +573,7 @@ namespace EpbDiskWriterTests
                     {
                         var cycle = writer.BeginLearningCycle(8, start.AddSeconds(i));
                         learningCycles.Add(cycle);
-                        if (statuses[i] != "learning_canceled")
+                        if (!statuses[i].EndsWith("_canceled", StringComparison.Ordinal))
                             WriteSamples(writer, 8, 3 + i, start.AddSeconds(i));
                         var evidence = writer.SealAndExportCycle(
                             8,
@@ -576,14 +616,17 @@ namespace EpbDiskWriterTests
                 var rows = new List<Tuple<int, string>>();
                 while (reader.Read())
                     rows.Add(Tuple.Create(reader.GetInt32(0), reader.GetString(1)));
-                Assert(rows.Count == 5, "学习与正式圈索引数量错误");
+                Assert(rows.Count == 8, "学习、资格与正式圈索引数量错误");
                 Assert(rows.All(row => row.Item2 != "running"), "学习结束后仍有 running 悬挂行");
-                Assert(rows.Count(row => row.Item1 < 0) == 4, "学习负圈号数量错误");
+                Assert(rows.Count(row => row.Item1 < 0) == 7, "学习/资格负圈号数量错误");
                 Assert(rows.Any(row => row.Item2 == "learning_completed") &&
                        rows.Any(row => row.Item2 == "learning_canceled") &&
                        rows.Any(row => row.Item2 == "learning_failed") &&
+                       rows.Any(row => row.Item2 == "qualification_completed") &&
+                       rows.Any(row => row.Item2 == "qualification_canceled") &&
+                       rows.Any(row => row.Item2 == "qualification_failed") &&
                        rows.Any(row => row.Item2 == "alarm"),
-                    "学习圈终态未完整写入SQLite");
+                    "学习/资格圈终态未完整写入SQLite");
             });
         }
 

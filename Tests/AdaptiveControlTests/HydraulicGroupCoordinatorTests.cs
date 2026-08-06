@@ -17,6 +17,7 @@ namespace AdaptiveControlTests
             Run("液压释放超时产生指定硬故障", ReleaseTimeoutIsExplicit, ref passed);
             Run("陈旧低压不得通过释压确认", StaleLowPressureCannotConfirmRelease, ref passed);
             Run("液压同代次重复进入不重新登记已释放成员", SameGenerationReentryDoesNotReAddReleasedMember, ref passed);
+            Run("已完成液压代次不阻碍不同成员重新开始", CompletedGenerationAllowsFreshMembership, ref passed);
             Run("液压代次屏障缺员在一个周期内超时", GenerationBarrierTimeoutIsBounded, ref passed);
             Run("全员到齐后释压时间不计入屏障超时", SafePressureWaitDoesNotConsumeBarrierTimeout, ref passed);
             Run("正式阶段在两相位之间启动时整组滚到同一槽", FormalStartBetweenPhasesUsesOneFutureSlot, ref passed);
@@ -107,6 +108,36 @@ namespace AdaptiveControlTests
 
             var secondRelease = coordinator.MarkVoltageReleaseAsync(sameLease, 11);
             Task.WaitAll(firstRelease, secondRelease);
+        }
+
+        private static void CompletedGenerationAllowsFreshMembership()
+        {
+            var pressure = 80.0;
+            var coordinator = NewCoordinator(
+                () => Volatile.Read(ref pressure),
+                () =>
+                {
+                    Volatile.Write(ref pressure, 0.0);
+                    return Task.CompletedTask;
+                },
+                stableMs: 0,
+                timeoutMs: 300,
+                barrierTimeoutMs: 300);
+            var key = new HydraulicGenerationKey(Guid.NewGuid(), 2, HydraulicPhaseKind.PreRelease, 1);
+            var original = coordinator.EnterGenerationAsync(key, new[] { 8, 9 }, CancellationToken.None)
+                .GetAwaiter().GetResult();
+            Task.WaitAll(
+                coordinator.MarkVoltageReleaseAsync(original, 8),
+                coordinator.MarkVoltageReleaseAsync(original, 9));
+
+            // 模拟“整批[8,9]停止后只重启EPB8”。完成代次必须已清理，不能再以
+            // Existing=[8,9] Requested=[8] 阻碍操作者重新开始。
+            Volatile.Write(ref pressure, 80.0);
+            var restarted = coordinator.EnterGenerationAsync(key, new[] { 8 }, CancellationToken.None)
+                .GetAwaiter().GetResult();
+            Assert(restarted.Members.Count == 1 && restarted.Members[0] == 8,
+                "完成代次仍保留旧成员快照，阻碍单卡钳重启。 ");
+            coordinator.MarkVoltageReleaseAsync(restarted, 8).GetAwaiter().GetResult();
         }
 
         private static void StaleLowPressureCannotConfirmRelease()

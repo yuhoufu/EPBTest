@@ -36,6 +36,7 @@ namespace AdaptiveControlTests
             Run("标定前原始数据复制后不被原地标定污染", OwnedRawBatchPreservesPreCalibrationValues, ref passed);
             Run("Stat流式中值保留跨批次尾部", StreamingStatMedianCarriesTailAcrossBatches, ref passed);
             Run("恢复后定时器只在未来完整周期锚点执行", TimerResumesAtFutureCompleteBoundary, ref passed);
+            Run("暂停数据链必须越过捕获边界且无在途Raw", PauseDrainRequiresAllPipelineBoundaries, ref passed);
             Run("恢复成功超时停止硬件确认并发只提交一个终态", RecoveryTerminalGateCommitsExactlyOnce, ref passed);
             Run("DAQ探测能力缺失不能误确认为硬件拔除", ProbeCapabilityMissingIsNotHardwareEvidence, ref passed);
             Run("DAQ事故关联去重优先级与新运行复位", IncidentCorrelationAndPriority, ref passed);
@@ -67,6 +68,25 @@ namespace AdaptiveControlTests
             Run("未来墙钟不改变控制经过时间", FutureWallClockDoesNotChangeControlElapsed, ref passed);
             Run("快速过流由全速率证据最终归因", FastTripClassificationUsesFullRateEvidence, ref passed);
             return passed;
+        }
+
+        private static void PauseDrainRequiresAllPipelineBoundaries()
+        {
+            Assert(TwoDeviceAiAcquirer.IsBackgroundPipelineDrained(
+                    100, 100, 200, 200, 100, 200),
+                "全部边界已发布且无Raw在途时未判定排空");
+            Assert(!TwoDeviceAiAcquirer.IsBackgroundPipelineDrained(
+                    99, 100, 200, 200, 100, 200),
+                "Dev1尚未越过捕获边界时错误完成暂停排空");
+            Assert(!TwoDeviceAiAcquirer.IsBackgroundPipelineDrained(
+                    100, 100, 199, 200, 100, 200),
+                "Dev2尚未越过捕获边界时错误完成暂停排空");
+            Assert(!TwoDeviceAiAcquirer.IsBackgroundPipelineDrained(
+                    100, 100, 200, 200, 99, 200),
+                "Dev1 Raw尚未移交到写盘队列时错误完成暂停排空");
+            Assert(!TwoDeviceAiAcquirer.IsBackgroundPipelineDrained(
+                    100, 100, 200, 200, 100, 199),
+                "Dev2 Raw尚未移交到写盘队列时错误完成暂停排空");
         }
 
         private static void RingOrderCapacityResetAndIsolation()

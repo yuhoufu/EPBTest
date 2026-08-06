@@ -18,6 +18,8 @@ namespace AdaptiveControlTests
             Run("电源安全配置缺项禁止启动", InvalidSafetyConfigIsRejected, ref passed);
             Run("启动前输出已开启先关闭再改参", PreExistingOutputOnIsSafelyDisabled, ref passed);
             Run("OUTP ON后等待空载电流稳定回零", StartupWaitsForCurrentToReturnToZero, ref passed);
+            Run("启动电压爬升后连续稳定可通过", StartupVoltageRampIsAllowed, ref passed);
+            Run("启动电压持续过低才超时回滚", StartupLowVoltageTimeoutRollsBackOutput, ref passed);
             Run("启动电流不回零则关电并禁止启动", StartupZeroTimeoutRollsBackOutput, ref passed);
             Run("完整预检写入回读并确认关闭", ValidPreflightAndShutdown, ref passed);
             Run("恢复复核不循环健康电源输出", RevalidationDoesNotCycleHealthyOutput, ref passed);
@@ -25,7 +27,8 @@ namespace AdaptiveControlTests
             Run("电源保护新鲜回读才确认为硬件故障", ProtectionTripIsHardwareConfirmed, ref passed);
             Run("陈旧PSU限流回读不能确认双源过流", StaleTelemetryIsNotFreshFaultEvidence, ref passed);
             Run("停机等待在途遥测完成后再关闭输出", ShutdownWaitsForInFlightTelemetry, ref passed);
-            Run("电源硬故障只联动对应电气组", FaultIsScopedAndManuallyReset, ref passed);
+            Run("三个并发OFF请求共用一个安全任务", ConcurrentShutdownRequestsShareOneOwner, ref passed);
+            Run("电源故障只联动对应组且新预检自动清旧锁存", FaultIsScopedAndFreshPreflightClearsLatch, ref passed);
             return passed;
         }
 
@@ -116,6 +119,51 @@ namespace AdaptiveControlTests
             }
         }
 
+        private static void StartupVoltageRampIsAllowed()
+        {
+            var config = NewConfig();
+            config.PollIntervalMs = 50;
+            config.StartupVoltageStableMs = 100;
+            config.StartupZeroStableMs = 100;
+            config.StartupZeroTimeoutMs = 1000;
+            var clients = NewClients(config);
+            clients[1].OutputVoltageSequence.Enqueue(5.856);
+            clients[1].OutputVoltageSequence.Enqueue(12.0);
+            clients[1].OutputVoltageSequence.Enqueue(21.0);
+            clients[1].OutputVoltageSequence.Enqueue(24.0);
+            clients[1].OutputVoltageSequence.Enqueue(24.0);
+
+            using (var coordinator = NewCoordinator(config, clients))
+            {
+                coordinator.PrepareAndEnableAsync(new[] { 1 }, CancellationToken.None)
+                    .GetAwaiter().GetResult();
+                Assert(clients[1].OutputEnabled,
+                    "启动电压在超时内爬升并稳定后仍被单帧低压拒绝。");
+                Assert(clients[1].OutputSnapshotReadCount >= 5,
+                    "启动电压未覆盖爬升和连续稳定窗口。");
+            }
+        }
+
+        private static void StartupLowVoltageTimeoutRollsBackOutput()
+        {
+            var config = NewConfig();
+            config.PollIntervalMs = 50;
+            config.StartupVoltageStableMs = 100;
+            config.StartupZeroStableMs = 100;
+            config.StartupZeroTimeoutMs = 250;
+            var clients = NewClients(config);
+            clients[1].DefaultOutputVoltage = 5.0;
+
+            using (var coordinator = NewCoordinator(config, clients))
+            {
+                AssertThrows<InvalidOperationException>(() =>
+                    coordinator.PrepareAndEnableAsync(new[] { 1 }, CancellationToken.None)
+                        .GetAwaiter().GetResult());
+                Assert(!clients[1].OutputEnabled && clients[1].OutputOffCount == 1,
+                    "启动电压持续低于下限超时后未回滚关闭输出。");
+            }
+        }
+
         private static void PlannedShutdownIsNotUnexpectedOutputOff()
         {
             var config = NewConfig();
@@ -194,7 +242,7 @@ namespace AdaptiveControlTests
             }
         }
 
-        private static void FaultIsScopedAndManuallyReset()
+        private static void FaultIsScopedAndFreshPreflightClearsLatch()
         {
             var config = NewConfig();
             config.PollIntervalMs = 50;
@@ -221,10 +269,9 @@ namespace AdaptiveControlTests
 
                 coordinator.DisableGroupAsync(1, "fault", CancellationToken.None).GetAwaiter().GetResult();
                 clients[1].ConstantCurrent = false;
-                coordinator.ResetFaultAsync(1, CancellationToken.None).GetAwaiter().GetResult();
                 coordinator.PrepareAndEnableAsync(new[] { 1 }, CancellationToken.None)
                     .GetAwaiter().GetResult();
-                Assert(clients[1].OutputEnabled, "人工复位后未能重新完成预检。");
+                Assert(clients[1].OutputEnabled, "实时预检已恢复正常但旧锁存仍阻碍重新启动。");
             }
         }
 
@@ -251,6 +298,37 @@ namespace AdaptiveControlTests
                 stopTask.GetAwaiter().GetResult();
                 Assert(clients[1].OutputOffCount == 1 && !clients[1].OutputEnabled,
                     "遥测退出后未正常关闭并确认电源输出。");
+            }
+        }
+
+        private static void ConcurrentShutdownRequestsShareOneOwner()
+        {
+            var config = NewConfig();
+            config.PollIntervalMs = 50;
+            var clients = NewClients(config);
+            using (var coordinator = NewCoordinator(config, clients))
+            {
+                var faults = new List<PowerSupplyFault>();
+                coordinator.FaultRaised += fault => faults.Add(fault);
+                coordinator.PrepareAndEnableAsync(new[] { 1 }, CancellationToken.None)
+                    .GetAwaiter().GetResult();
+
+                clients[1].BlockOutputOff = true;
+                var first = coordinator.DisableGroupAsync(1, "first", CancellationToken.None);
+                Assert(clients[1].OutputOffStarted.Wait(TimeSpan.FromSeconds(2)),
+                    "首个OFF请求未进入测试阻塞点。");
+                var second = coordinator.DisableGroupAsync(1, "second", CancellationToken.None);
+                var third = coordinator.DisableGroupAsync(1, "third", CancellationToken.None);
+                Thread.Sleep(50);
+                Assert(!first.IsCompleted && !second.IsCompleted && !third.IsCompleted,
+                    "并发OFF请求未等待同一在途安全任务。");
+
+                clients[1].AllowOutputOff.Set();
+                Task.WaitAll(first, second, third);
+                Assert(clients[1].OutputOffCount == 1 && !clients[1].OutputEnabled,
+                    "三个并发OFF请求未合并为一次硬件操作。");
+                Assert(!faults.Any(fault => fault.Code == "OutputOffUnverified"),
+                    "同方向OFF合并期间仍产生了取消型故障锁存。");
             }
         }
 
@@ -283,6 +361,7 @@ namespace AdaptiveControlTests
                 NearLimitWarnRatio = 0.9,
                 StartupZeroCurrentA = 0.5,
                 StartupZeroStableMs = 100,
+                StartupVoltageStableMs = 100,
                 StartupZeroTimeoutMs = 1000
             };
             for (var id = 1; id <= 4; id++)
@@ -371,11 +450,16 @@ namespace AdaptiveControlTests
             public int OutputOnCount { get; private set; }
             public bool SetpointWrittenWhileOutputOn { get; private set; }
             public Queue<double> OutputCurrentSequence { get; } = new Queue<double>();
+            public Queue<double> OutputVoltageSequence { get; } = new Queue<double>();
             public double DefaultOutputCurrent { get; set; }
+            public double? DefaultOutputVoltage { get; set; }
             public int OutputSnapshotReadCount { get; private set; }
             public bool BlockSnapshotReads { get; set; }
             public ManualResetEventSlim SnapshotReadStarted { get; } = new ManualResetEventSlim(false);
             public ManualResetEventSlim AllowSnapshotRead { get; } = new ManualResetEventSlim(false);
+            public bool BlockOutputOff { get; set; }
+            public ManualResetEventSlim OutputOffStarted { get; } = new ManualResetEventSlim(false);
+            public ManualResetEventSlim AllowOutputOff { get; } = new ManualResetEventSlim(false);
 
             public Task<PswSnapshot> ConnectAsync(CancellationToken token)
             {
@@ -432,12 +516,17 @@ namespace AdaptiveControlTests
                 return Task.FromResult(value);
             }
 
-            public Task<bool> SetOutputAsync(bool enabled, CancellationToken token)
+            public async Task<bool> SetOutputAsync(bool enabled, CancellationToken token)
             {
+                if (!enabled && BlockOutputOff)
+                {
+                    OutputOffStarted.Set();
+                    await Task.Run(() => AllowOutputOff.Wait(token), token).ConfigureAwait(false);
+                }
                 if (enabled) OutputOnCount++;
                 else OutputOffCount++;
                 OutputEnabled = enabled;
-                return Task.FromResult(enabled);
+                return enabled;
             }
 
             public Task<IReadOnlyList<string>> ReadErrorQueueAsync(CancellationToken token) =>
@@ -471,7 +560,11 @@ namespace AdaptiveControlTests
                     SetCurrent = Current,
                     Ovp = Ovp,
                     Ocp = Ocp,
-                    MeasuredVoltage = OutputEnabled ? Voltage : 0,
+                    MeasuredVoltage = OutputEnabled
+                        ? OutputVoltageSequence.Count > 0
+                            ? OutputVoltageSequence.Dequeue()
+                            : DefaultOutputVoltage ?? Voltage
+                        : 0,
                     MeasuredCurrent = measuredCurrent,
                     MeasuredPower = OutputEnabled ? Voltage * measuredCurrent : 0,
                     OperationStatus = ConstantCurrent ? 1024 : 256,
@@ -482,8 +575,11 @@ namespace AdaptiveControlTests
             public void Dispose()
             {
                 AllowSnapshotRead.Set();
+                AllowOutputOff.Set();
                 SnapshotReadStarted.Dispose();
                 AllowSnapshotRead.Dispose();
+                OutputOffStarted.Dispose();
+                AllowOutputOff.Dispose();
                 IsConnected = false;
             }
         }

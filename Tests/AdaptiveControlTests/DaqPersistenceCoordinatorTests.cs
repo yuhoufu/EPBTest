@@ -53,6 +53,35 @@ namespace AdaptiveControlTests
                 "持久化硬容量故障未使用独立 DaqPersistenceQueueFull 分类");
         }
 
+        internal static void DiagnosticObserverFailureDoesNotRetryWrite()
+        {
+            var recorder = new BlockingRecorder(0);
+            using var coordinator = new DaqPersistenceCoordinator(
+                () => recorder,
+                Config.NullLogger.Instance,
+                8,
+                4,
+                1,
+                1000,
+                100,
+                2000,
+                1,
+                persistenceTiming: (_, _, _, _, _, _) =>
+                    throw new InvalidOperationException("diagnostic failed"));
+
+            coordinator.Enqueue(NewBatch("Dev1", 1));
+            WaitUntil(() => Volatile.Read(ref recorder.WriteCount) >= 1, 2000,
+                "诊断观察者异常后数据没有完成写盘");
+            Thread.Sleep(300);
+            Assert(Volatile.Read(ref recorder.WriteCount) == 1,
+                "诊断观察者异常被误判为写盘失败并重复写入");
+        }
+
+        private static void Assert(bool condition, string message)
+        {
+            if (!condition) throw new InvalidOperationException(message);
+        }
+
         private static DaqDiskBatch NewBatch(string device, long sequence)
         {
             var now = DateTime.UtcNow;
