@@ -659,8 +659,6 @@ namespace IO.NI
 
         // 动态置零偏移（参数名 -> offset，工程值单位）
         private readonly ConcurrentDictionary<string, double> _zeroOffsets = new(StringComparer.OrdinalIgnoreCase);
-        private Func<int, bool> _isEpbOutputActive;
-        private Func<int, bool> _isPressureOutputActive;
 
 
         // 以设备处理矩阵 channels × samples 为例
@@ -1463,18 +1461,6 @@ namespace IO.NI
                 depth,
                 capacity,
                 reasonOverride: $"Device={device} 原始数据落盘队列达到上限 {capacity} 批。");
-        }
-
-        /// <summary>
-        /// 配置仅用于 UI 发布副本的输出状态门控。原始数据、控制快照、压力安全证据和
-        /// 落盘数据均保持真实采样值，不会因显示置零而被改写。
-        /// </summary>
-        public void ConfigureUiOutputState(
-            Func<int, bool> isEpbOutputActive,
-            Func<int, bool> isPressureOutputActive)
-        {
-            _isEpbOutputActive = isEpbOutputActive;
-            _isPressureOutputActive = isPressureOutputActive;
         }
 
         // 工程值（标定 + 滤波 后的全通道矩阵）：给 UI 或调试可选使用
@@ -3362,7 +3348,7 @@ namespace IO.NI
                     // 避免两台设备每 10 ms 各分配一个二维数组并推动全代 GC。
                     if (OnEngBatch != null && uiGate.TryAcquire(uiStartedTicks))
                     {
-                        var uiEng = MakeEngineeringAbsoluteCopy(engFiltered, item.Device);
+                        var uiEng = MakeEngineeringAbsoluteCopy(engFiltered);
                         PublishLatestUi(item.Device, uiEng, item.Current, item.Last);
                     }
                     var uiNotifyMs = (Stopwatch.GetTimestamp() - uiStartedTicks) * 1000.0 / Stopwatch.Frequency;
@@ -3551,53 +3537,19 @@ namespace IO.NI
         /// <returns>
         ///     新的二维数组（与源数组维度相同）或 null（当源为 null 时）。
         /// </returns>
-        private double[,] MakeEngineeringAbsoluteCopy(double[,] eng, string device)
+        private static double[,] MakeEngineeringAbsoluteCopy(double[,] eng)
         {
             if (eng == null) return null;
 
             var dim0 = eng.GetLength(0);
             var dim1 = eng.GetLength(1);
             var copy = new double[dim0, dim1];
-            var records = GetDeviceRecords(device);
-
-            // 显示副本按已成功下发的输出状态置零；真实工程值仍留在控制与落盘链路。
+            // 显示工程值保持原始行为：仅取绝对值，不根据输出状态强制置零。
             for (var i = 0; i < dim0; i++)
-            {
-                var showAsZero = false;
-                if (i < records.Length)
-                {
-                    var record = records[i];
-                    showAsZero = ShouldForceUiZero(
-                        record.参数名,
-                        _isEpbOutputActive,
-                        _isPressureOutputActive);
-                }
-
-            for (var j = 0; j < dim1; j++)
-                    copy[i, j] = showAsZero ? 0.0 : Math.Abs(eng[i, j]);
-            }
+                for (var j = 0; j < dim1; j++)
+                    copy[i, j] = Math.Abs(eng[i, j]);
 
             return copy;
-        }
-
-        public static bool ShouldForceUiZero(
-            string parameterName,
-            Func<int, bool> isEpbOutputActive,
-            Func<int, bool> isPressureOutputActive)
-        {
-            var epb = TryParseEpbChannel(parameterName);
-            if (epb > 0 && isEpbOutputActive != null)
-                return !ReadOutputStateSafely(isEpbOutputActive, epb);
-            if (TryParsePressureId(parameterName, out var pressureId) &&
-                isPressureOutputActive != null)
-                return !ReadOutputStateSafely(isPressureOutputActive, pressureId);
-            return false;
-        }
-
-        private static bool ReadOutputStateSafely(Func<int, bool> provider, int id)
-        {
-            try { return provider(id); }
-            catch { return true; } // 状态查询异常时保留真实显示，避免静默掩盖信号。
         }
 
         // —— 工程值转换 & 快照 —— //

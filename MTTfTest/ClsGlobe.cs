@@ -48,23 +48,6 @@ namespace MtEmbTest
         public static double ReleaseAoVol;
 
 
-        public static short ClampPosition;
-        public static short ClampSpeed;
-        public static byte ClampModReq;
-        public static short ClampTorque;
-        public static byte ClampNormalMode;
-        public static short ClampForce;
-        public static byte ClampEnable;
-        public static ushort ClampForceReq;
-        public static short ReleasePosition;
-        public static short ReleaseSpeed;
-        public static byte ReleaseModeReq;
-        public static short ReleaseTorque;
-        public static byte ReleaseNormalMode;
-        public static short ReleaseForce;
-        public static byte ReleaseEnable;
-        public static ushort ReleaseForceReq;
-
         public static int DRate;
         public static int ARate;
         public static int CardNo;
@@ -156,23 +139,6 @@ namespace MtEmbTest
             DataBits = 0;
             StopBit = 0;
 
-
-            ClampPosition = 0;
-            ClampSpeed = 0;
-            ClampModReq = 0;
-            ClampTorque = 0;
-            ClampNormalMode = 0;
-            ClampForce = 0;
-            ClampEnable = 0;
-            ClampForceReq = 0;
-            ReleasePosition = 0;
-            ReleaseSpeed = 0;
-            ReleaseModeReq = 0;
-            ReleaseTorque = 0;
-            ReleaseNormalMode = 0;
-            ReleaseForce = 0;
-            ReleaseEnable = 0;
-            ReleaseForceReq = 0;
 
             DRate = 0;
             ARate = 0;

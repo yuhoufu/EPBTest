@@ -7,14 +7,6 @@ using System.Xml.Linq;
 
 namespace Config
 {
-    public sealed class SensorCalibrationUpdate
-    {
-        public string ParameterName { get; set; }
-        public double Scale { get; set; }
-        public double Offset { get; set; }
-        public double Zero { get; set; }
-    }
-
     public sealed class AoCalibrationPoint
     {
         public double Pressure { get; set; }
@@ -25,51 +17,36 @@ namespace Config
     /// <summary>以备份 + 原子替换方式保存现场标定配置。</summary>
     public static class CalibrationConfigStore
     {
-        public static void SaveSensorCalibrations(
+        public static void SaveAoLinearCalibration(
             string path,
-            IEnumerable<SensorCalibrationUpdate> updates)
-        {
-            if (string.IsNullOrWhiteSpace(path)) throw new ArgumentNullException(nameof(path));
-            var byName = (updates ?? throw new ArgumentNullException(nameof(updates)))
-                .ToDictionary(x => x.ParameterName, StringComparer.OrdinalIgnoreCase);
-            if (byName.Count == 0) throw new InvalidOperationException("没有可保存的传感器标定记录。");
-
-            foreach (var item in byName.Values)
-            {
-                if (string.IsNullOrWhiteSpace(item.ParameterName) ||
-                    !CalibrationMath.IsFinite(item.Scale) || Math.Abs(item.Scale) < 1e-12 ||
-                    !CalibrationMath.IsFinite(item.Offset) ||
-                    !CalibrationMath.IsFinite(item.Zero))
-                    throw new InvalidDataException($"传感器 {item.ParameterName} 的标定参数无效。");
-            }
-
-            var doc = XDocument.Load(path, LoadOptions.PreserveWhitespace);
-            var found = 0;
-            foreach (var record in doc.Root?.Elements("Records") ?? Enumerable.Empty<XElement>())
-            {
-                var name = record.Element("参数名")?.Value?.Trim();
-                if (name == null || !byName.TryGetValue(name, out var item)) continue;
-                SetElementValue(record, "变换斜率", Format(item.Scale));
-                SetElementValue(record, "变换截距", Format(item.Offset));
-                SetElementValue(record, "零位漂移", Format(item.Zero));
-                found++;
-            }
-
-            if (found != byName.Count)
-                throw new InvalidDataException($"AI 配置中仅找到 {found}/{byName.Count} 条待保存记录。");
-
-            SaveAtomicWithBackup(path, doc);
-        }
-
-        public static void SaveAoCalibrations(
-            string path,
-            IReadOnlyDictionary<string, IReadOnlyList<AoCalibrationPoint>> devices,
+            string deviceName,
+            IReadOnlyList<AoCalibrationPoint> calibrationPoints,
             double minVoltage,
             double maxVoltage)
         {
             if (string.IsNullOrWhiteSpace(path)) throw new ArgumentNullException(nameof(path));
-            if (devices == null || devices.Count == 0)
+            if (string.IsNullOrWhiteSpace(deviceName)) throw new ArgumentNullException(nameof(deviceName));
+            if (calibrationPoints == null || calibrationPoints.Count < 2)
                 throw new InvalidOperationException("没有可保存的气缸标定记录。");
+
+            var points = calibrationPoints.OrderBy(x => x.Voltage).ToArray();
+            if (points.Any(x => !CalibrationMath.IsFinite(x.Voltage) ||
+                                !CalibrationMath.IsFinite(x.Pressure) ||
+                                x.Voltage < minVoltage || x.Voltage > maxVoltage))
+                throw new InvalidDataException("校正点包含无效值或超出 AO 电压范围。");
+            for (var i = 1; i < points.Length; i++)
+            {
+                if (points[i].Voltage <= points[i - 1].Voltage ||
+                    points[i].Pressure <= points[i - 1].Pressure)
+                    throw new InvalidDataException("实测压力与 AO 电压必须同时严格递增。");
+            }
+            if (!CalibrationMath.TryFitPressureLine(
+                    points.Select(x => (x.Voltage, x.Pressure)),
+                    out var scaleK,
+                    out var offset,
+                    out _,
+                    out var fitError))
+                throw new InvalidDataException(fitError);
 
             var doc = XDocument.Load(path, LoadOptions.PreserveWhitespace);
             var deviceNodes = doc.Root?
@@ -80,43 +57,27 @@ namespace Config
                     StringComparer.OrdinalIgnoreCase) ??
                 new Dictionary<string, XElement>(StringComparer.OrdinalIgnoreCase);
 
-            foreach (var pair in devices)
+            if (!deviceNodes.TryGetValue(deviceName, out var deviceNode))
+                throw new InvalidDataException($"AO 配置中不存在设备 {deviceName}。");
+
+            SetElementValue(deviceNode, "ScaleK", Format(scaleK));
+            SetElementValue(deviceNode, "Offset", Format(offset));
+            var table = deviceNode.Element("VoltageToPressureTable");
+            if (table == null)
             {
-                if (!deviceNodes.TryGetValue(pair.Key, out var deviceNode))
-                    throw new InvalidDataException($"AO 配置中不存在设备 {pair.Key}。");
+                table = new XElement("VoltageToPressureTable");
+                deviceNode.Add(table);
+            }
 
-                var points = pair.Value?.OrderBy(x => x.Pressure).ToArray() ??
-                             Array.Empty<AoCalibrationPoint>();
-                if (points.Length > 0)
-                {
-                    var tuples = points.Select(x => (x.Voltage, x.Pressure)).ToArray();
-                    if (!CalibrationMath.TryMapPressureToVoltage(
-                            tuples,
-                            points[0].Pressure,
-                            minVoltage,
-                            maxVoltage,
-                            out _))
-                        throw new InvalidDataException(
-                            $"{pair.Key} 至少需要两个压力、电压均严格递增的有效标定点。");
-                }
-
-                var table = deviceNode.Element("VoltageToPressureTable");
-                if (table == null)
-                {
-                    table = new XElement("VoltageToPressureTable");
-                    deviceNode.Add(table);
-                }
-
-                table.RemoveNodes();
-                foreach (var point in points)
-                {
-                    var node = new XElement("Point",
-                        new XElement("Voltage", Format(point.Voltage)),
-                        new XElement("Pressure", Format(point.Pressure)));
-                    if (point.CommandPressure.HasValue)
-                        node.Add(new XElement("CommandPressure", Format(point.CommandPressure.Value)));
-                    table.Add(node);
-                }
+            table.RemoveNodes();
+            foreach (var point in points)
+            {
+                var node = new XElement("Point",
+                    new XElement("Voltage", Format(point.Voltage)),
+                    new XElement("Pressure", Format(point.Pressure)));
+                if (point.CommandPressure.HasValue)
+                    node.Add(new XElement("CommandPressure", Format(point.CommandPressure.Value)));
+                table.Add(node);
             }
 
             SaveAtomicWithBackup(path, doc);

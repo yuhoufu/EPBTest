@@ -173,23 +173,6 @@ namespace MtEmbTest
                 ClsGlobal.RecvMsgInterval = double.Parse(ConfigOperation.SetOneItem("RecvMsgInterval"));
 
 
-                ClsGlobal.ClampPosition = short.Parse(ConfigOperation.SetOneItem("ClampPosition"));
-                ClsGlobal.ClampSpeed = short.Parse(ConfigOperation.SetOneItem("ClampSpeed"));
-                ClsGlobal.ClampModReq = byte.Parse(ConfigOperation.SetOneItem("ClampModReq"));
-                ClsGlobal.ClampTorque = short.Parse(ConfigOperation.SetOneItem("ClampTorque"));
-                ClsGlobal.ClampNormalMode = byte.Parse(ConfigOperation.SetOneItem("ClampNormalMode"));
-                ClsGlobal.ClampForce = short.Parse(ConfigOperation.SetOneItem("ClampForce"));
-                ClsGlobal.ClampEnable = byte.Parse(ConfigOperation.SetOneItem("ClampEnable"));
-                ClsGlobal.ClampForceReq = ushort.Parse(ConfigOperation.SetOneItem("ClampForceReq"));
-                ClsGlobal.ReleasePosition = short.Parse(ConfigOperation.SetOneItem("ReleasePosition"));
-                ClsGlobal.ReleaseSpeed = short.Parse(ConfigOperation.SetOneItem("ReleaseSpeed"));
-                ClsGlobal.ReleaseModeReq = byte.Parse(ConfigOperation.SetOneItem("ReleaseModeReq"));
-                ClsGlobal.ReleaseTorque = short.Parse(ConfigOperation.SetOneItem("ReleaseTorque"));
-                ClsGlobal.ReleaseNormalMode = byte.Parse(ConfigOperation.SetOneItem("ReleaseNormalMode"));
-                ClsGlobal.ReleaseForce = short.Parse(ConfigOperation.SetOneItem("ReleaseForce"));
-                ClsGlobal.ReleaseEnable = byte.Parse(ConfigOperation.SetOneItem("ReleaseEnable"));
-                ClsGlobal.ReleaseForceReq = ushort.Parse(ConfigOperation.SetOneItem("ReleaseForceReq"));
-
                 ClsGlobal.SerialPort = ConfigOperation.SetOneItem("SerialPort");
                 ClsGlobal.Baud = int.Parse(ConfigOperation.SetOneItem("Baud"));
                 ClsGlobal.Parity = int.Parse(ConfigOperation.SetOneItem("Parity"));

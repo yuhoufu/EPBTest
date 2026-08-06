@@ -46,9 +46,6 @@ namespace MtEmbTest
                     ClsGlobal.SamplesPerChannel,
                     10,
                     logger);
-                acquirer.ConfigureUiOutputState(
-                    doController.IsEpbOutputActive,
-                    doController.IsPressureOutputActive);
                 acquirer.Start();
 
                 _do = doController;

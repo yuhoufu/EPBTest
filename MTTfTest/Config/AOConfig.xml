@@ -10,10 +10,11 @@
 		<Device>
 			<Name>Cylinder1</Name>
 			<PhysicalChannel>Dev1/ao0</PhysicalChannel>
-			<!-- 可选：校准与偏置（电压 = 线性映射 * ScaleK + Offset） -->
+			<!-- 运行时线性换算：压力 = AO 电压 * ScaleK + Offset -->
 			<ScaleK>39.101</ScaleK>
 			<Offset>-7.886</Offset>
 			<!-- 新增：可选校准表，用于“电压→压力(Bar)”估算（若 DAQ 有闭环则可不配）-->
+			<!-- 历史校正点，仅用于多点线性拟合和审计，不直接参与运行时插值 -->
 			<VoltageToPressureTable>
 				<Point>
 					<Voltage>0</Voltage>
@@ -31,6 +32,7 @@
 			<ScaleK>38.292</ScaleK>
 			<Offset>-10.817</Offset>
 			<!-- 新增：可选校准表，用于“电压→压力(Bar)”估算（若 DAQ 有闭环则可不配）-->
+			<!-- 历史校正点，仅用于多点线性拟合和审计，不直接参与运行时插值 -->
 			<VoltageToPressureTable>
 				<Point>
 					<Voltage>0</Voltage>

@@ -64,7 +64,7 @@ namespace MtEmbTest
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 38F));
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 37F));
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 18F));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42F));
 
             var group = new UIGroupBox
             {
@@ -83,15 +83,17 @@ namespace MtEmbTest
                 BackColor = Color.Transparent,
                 ColumnCount = 1,
                 RowCount = 4,
-                Padding = new Padding(28, 12, 28, 8)
+                Padding = new Padding(24, 12, 24, 10)
             };
-            content.RowStyles.Add(new RowStyle(SizeType.Absolute, 62F));
-            content.RowStyles.Add(new RowStyle(SizeType.Absolute, 54F));
+            content.RowStyles.Add(new RowStyle(SizeType.Absolute, 68F));
+            content.RowStyles.Add(new RowStyle(SizeType.Absolute, 68F));
             content.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-            content.RowStyles.Add(new RowStyle(SizeType.Absolute, 72F));
+            content.RowStyles.Add(new RowStyle(SizeType.Absolute, 118F));
             group.Controls.Add(content);
 
-            var commandBar = NewCalibrationFlowPanel();
+            var commandBar = NewCalibrationTable(
+                8,
+                96F, 180F, 150F, 135F, -1F, 135F, 135F, 135F);
             CmbPressureCalibrationCylinder = NewCalibrationComboBox(170);
             CmbPressureCalibrationCylinder.Items.AddRange(new object[] { "Cylinder1", "Cylinder2" });
             CmbPressureCalibrationCylinder.SelectedIndexChanged += PressureCalibrationCylinderChanged;
@@ -104,16 +106,18 @@ namespace MtEmbTest
             BtnPressureCalibrationStart.Click += PressureCalibrationStartClick;
             BtnPressureCalibrationOutput.Click += PressureCalibrationOutputClick;
             BtnPressureCalibrationStop.Click += PressureCalibrationStopClick;
-            commandBar.Controls.Add(NewCalibrationLabel("气缸"));
-            commandBar.Controls.Add(CmbPressureCalibrationCylinder);
-            commandBar.Controls.Add(NewCalibrationLabel("命令压力(bar)"));
-            commandBar.Controls.Add(TxtPressureCalibrationCommand);
-            commandBar.Controls.Add(BtnPressureCalibrationStart);
-            commandBar.Controls.Add(BtnPressureCalibrationOutput);
-            commandBar.Controls.Add(BtnPressureCalibrationStop);
+            AddCalibrationCell(commandBar, NewCalibrationLabel("气缸"), 0);
+            AddCalibrationCell(commandBar, CmbPressureCalibrationCylinder, 1);
+            AddCalibrationCell(commandBar, NewCalibrationLabel("命令压力 (bar)"), 2);
+            AddCalibrationCell(commandBar, TxtPressureCalibrationCommand, 3);
+            AddCalibrationCell(commandBar, BtnPressureCalibrationStart, 5);
+            AddCalibrationCell(commandBar, BtnPressureCalibrationOutput, 6);
+            AddCalibrationCell(commandBar, BtnPressureCalibrationStop, 7);
             content.Controls.Add(commandBar, 0, 0);
 
-            var liveBar = NewCalibrationFlowPanel();
+            var liveBar = NewCalibrationTable(
+                7,
+                165F, 200F, 165F, 150F, 165F, 135F, -1F);
             LblPressureCalibrationVoltage = NewCalibrationValueLabel("AO：-- V", 150);
             LblPressureCalibrationLive = NewCalibrationValueLabel("实时压力：-- bar", 190);
             LblPressureCalibrationSample = NewCalibrationValueLabel("采样：未启动", 180);
@@ -122,12 +126,12 @@ namespace MtEmbTest
             TxtPressureCalibrationMeasured.TextChanged += PressureCalibrationMeasuredTextChanged;
             BtnPressureCalibrationUseLive = NewCalibrationButton("使用实时值", 112);
             BtnPressureCalibrationUseLive.Click += PressureCalibrationUseLiveClick;
-            liveBar.Controls.Add(LblPressureCalibrationVoltage);
-            liveBar.Controls.Add(LblPressureCalibrationLive);
-            liveBar.Controls.Add(LblPressureCalibrationSample);
-            liveBar.Controls.Add(NewCalibrationLabel("实测压力(bar)"));
-            liveBar.Controls.Add(TxtPressureCalibrationMeasured);
-            liveBar.Controls.Add(BtnPressureCalibrationUseLive);
+            AddCalibrationCell(liveBar, LblPressureCalibrationVoltage, 0);
+            AddCalibrationCell(liveBar, LblPressureCalibrationLive, 1);
+            AddCalibrationCell(liveBar, LblPressureCalibrationSample, 2);
+            AddCalibrationCell(liveBar, NewCalibrationLabel("实测压力 (bar)"), 3);
+            AddCalibrationCell(liveBar, TxtPressureCalibrationMeasured, 4);
+            AddCalibrationCell(liveBar, BtnPressureCalibrationUseLive, 5);
             content.Controls.Add(liveBar, 0, 1);
 
             DgvPressureCalibration = NewPressureCalibrationGrid();
@@ -136,19 +140,15 @@ namespace MtEmbTest
             var footer = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
-                ColumnCount = 2,
-                RowCount = 2,
+                ColumnCount = 1,
+                RowCount = 3,
                 BackColor = Color.Transparent
             };
             footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-            footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 550F));
-            footer.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-            footer.RowStyles.Add(new RowStyle(SizeType.Absolute, 25F));
-            var actionBar = NewCalibrationFlowPanel();
-            actionBar.FlowDirection = FlowDirection.RightToLeft;
-            actionBar.AutoScroll = false;
-            actionBar.AutoSize = false;
-            actionBar.Width = 550;
+            footer.RowStyles.Add(new RowStyle(SizeType.Absolute, 34F));
+            footer.RowStyles.Add(new RowStyle(SizeType.Absolute, 54F));
+            footer.RowStyles.Add(new RowStyle(SizeType.Absolute, 30F));
+            var actionBar = NewCalibrationTable(5, -1F, 140F, 140F, 100F, 140F);
             BtnPressureCalibrationSave = NewCalibrationButton("保存校正", 118);
             BtnPressureCalibrationClear = NewCalibrationButton("清空", 90);
             BtnPressureCalibrationDelete = NewCalibrationButton("删除选中点", 128);
@@ -157,23 +157,22 @@ namespace MtEmbTest
             BtnPressureCalibrationDelete.Click += PressureCalibrationDeleteClick;
             BtnPressureCalibrationClear.Click += PressureCalibrationClearClick;
             BtnPressureCalibrationSave.Click += PressureCalibrationSaveClick;
-            actionBar.Controls.Add(BtnPressureCalibrationSave);
-            actionBar.Controls.Add(BtnPressureCalibrationClear);
-            actionBar.Controls.Add(BtnPressureCalibrationDelete);
-            actionBar.Controls.Add(BtnPressureCalibrationRecord);
-            footer.Controls.Add(actionBar, 1, 0);
+            AddCalibrationCell(actionBar, BtnPressureCalibrationRecord, 1);
+            AddCalibrationCell(actionBar, BtnPressureCalibrationDelete, 2);
+            AddCalibrationCell(actionBar, BtnPressureCalibrationClear, 3);
+            AddCalibrationCell(actionBar, BtnPressureCalibrationSave, 4);
             LblPressureCalibrationFormula = NewCalibrationValueLabel(string.Empty, 650);
             LblPressureCalibrationFormula.Dock = DockStyle.Fill;
             LblPressureCalibrationFormula.TextAlign = ContentAlignment.MiddleLeft;
             footer.Controls.Add(LblPressureCalibrationFormula, 0, 0);
+            footer.Controls.Add(actionBar, 0, 1);
             LblPressureCalibrationStatus = NewCalibrationValueLabel(
                 "请先开始校正；输出前请确认管路安全。",
                 1000);
             LblPressureCalibrationStatus.ForeColor = Color.FromArgb(48, 48, 48);
             LblPressureCalibrationStatus.Dock = DockStyle.Fill;
             LblPressureCalibrationStatus.TextAlign = ContentAlignment.MiddleLeft;
-            footer.SetColumnSpan(LblPressureCalibrationStatus, 2);
-            footer.Controls.Add(LblPressureCalibrationStatus, 0, 1);
+            footer.Controls.Add(LblPressureCalibrationStatus, 0, 2);
             content.Controls.Add(footer, 0, 3);
 
             tabPagePressureCalibration.Controls.Add(root);
@@ -237,7 +236,7 @@ namespace MtEmbTest
                 BindPressureCalibrationGrid();
                 SetPressureCalibrationStatus(
                     invalidPoints > 0
-                        ? $"已忽略 {invalidPoints} 个超出 AO 电压范围的历史点；未建立有效表前使用线性公式。"
+                        ? $"已忽略 {invalidPoints} 个超出 AO 电压范围的历史记录；当前输出继续使用 ScaleK/Offset 线性公式。"
                         : "校正配置已加载。",
                     invalidPoints > 0);
             }
@@ -405,6 +404,7 @@ namespace MtEmbTest
                 return;
             rows.Remove(row);
             RenumberPressureCalibrationRows(rows);
+            BindPressureCalibrationGrid();
         }
 
         private void PressureCalibrationClearClick(object sender, EventArgs e)
@@ -417,7 +417,10 @@ namespace MtEmbTest
                     "确认清空",
                     MessageBoxButtons.YesNo,
                     MessageBoxIcon.Warning) == DialogResult.Yes)
+            {
                 rows.Clear();
+                BindPressureCalibrationGrid();
+            }
         }
 
         private void PressureCalibrationSaveClick(object sender, EventArgs e)
@@ -430,7 +433,7 @@ namespace MtEmbTest
                 return;
             }
 
-            var ordered = rows.OrderBy(x => x.MeasuredPressure).ToArray();
+            var ordered = rows.OrderBy(x => x.Voltage).ToArray();
             var validationError = ValidatePressureCalibrationRows(ordered);
             if (!string.IsNullOrEmpty(validationError))
             {
@@ -438,20 +441,29 @@ namespace MtEmbTest
                 return;
             }
 
+            if (!TryFitPressureCalibrationRows(
+                    ordered,
+                    out var scaleK,
+                    out var offset,
+                    out var rSquared,
+                    out var fitError))
+            {
+                ShowPressureCalibrationWarning(fitError);
+                return;
+            }
+
             try
             {
                 var path = Path.Combine(Application.StartupPath, "Config", "AOConfig.xml");
-                CalibrationConfigStore.SaveAoCalibrations(
+                CalibrationConfigStore.SaveAoLinearCalibration(
                     path,
-                    new Dictionary<string, IReadOnlyList<AoCalibrationPoint>>(StringComparer.OrdinalIgnoreCase)
+                    device,
+                    ordered.Select(x => new AoCalibrationPoint
                     {
-                        [device] = ordered.Select(x => new AoCalibrationPoint
-                        {
-                            CommandPressure = x.CommandPressure,
-                            Pressure = x.MeasuredPressure,
-                            Voltage = x.Voltage
-                        }).ToArray()
-                    },
+                        CommandPressure = x.CommandPressure,
+                        Pressure = x.MeasuredPressure,
+                        Voltage = x.Voltage
+                    }).ToArray(),
                     _cfg.AO.MinVoltage,
                     _cfg.AO.MaxVoltage);
 
@@ -459,11 +471,13 @@ namespace MtEmbTest
                 _cfg.AO = ConfigLoader.LoadAO(path, logger);
                 LoadPressureCalibrationConfiguration();
                 SetPressureCalibrationStatus(
-                    $"{device} 校正已保存，原配置已备份为 AOConfig.xml.bak；再次开始校正后使用新映射。",
+                    $"{device} 线性校正已保存：P = V × {scaleK:G8} + {offset:G8}，R²={rSquared:F5}。",
                     false);
                 MessageBox.Show(
                     this,
-                    $"{device} 气缸压力输出校正保存成功。",
+                    $"{device} 气缸压力线性公式保存成功。\r\n\r\n" +
+                    $"P = V × {scaleK:G8} + {offset:G8}\r\nR² = {rSquared:F5}\r\n\r\n" +
+                    "原配置已备份为 AOConfig.xml.bak。",
                     "保存成功",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Information);
@@ -614,11 +628,21 @@ namespace MtEmbTest
             }
 
             DgvPressureCalibration.DataSource = rows;
+            DgvPressureCalibration.CurrentCell = null;
+            DgvPressureCalibration.ClearSelection();
             if (_cfg.AO.Devices.TryGetValue(device, out var config))
             {
-                LblPressureCalibrationFormula.Text = rows.Count >= 2
-                    ? $"当前有效多点表：{rows.Count} 点"
-                    : $"线性回退：pressure = voltage × {config.ScaleK:G6} + {config.Offset:G6}";
+                var current = $"当前公式：P = V × {config.ScaleK:G7} + {config.Offset:G7}";
+                if (TryFitPressureCalibrationRows(
+                        rows.ToArray(),
+                        out var scaleK,
+                        out var offset,
+                        out var rSquared,
+                        out _))
+                    LblPressureCalibrationFormula.Text =
+                        $"{current}    拟合预览：P = V × {scaleK:G7} + {offset:G7}（R²={rSquared:F5}）";
+                else
+                    LblPressureCalibrationFormula.Text = current + "    至少记录两个点后显示拟合预览。";
             }
         }
 
@@ -669,6 +693,19 @@ namespace MtEmbTest
             return string.Empty;
         }
 
+        private static bool TryFitPressureCalibrationRows(
+            IEnumerable<PressureCalibrationRow> rows,
+            out double scaleK,
+            out double offset,
+            out double rSquared,
+            out string error) =>
+            CalibrationMath.TryFitPressureLine(
+                rows?.Select(x => (x.Voltage, x.MeasuredPressure)),
+                out scaleK,
+                out offset,
+                out rSquared,
+                out error);
+
         private void SetMeasuredPressureText(double value)
         {
             _updatingMeasuredPressure = true;
@@ -715,26 +752,44 @@ namespace MtEmbTest
                    double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
         }
 
-        private static FlowLayoutPanel NewCalibrationFlowPanel() => new FlowLayoutPanel
+        private static TableLayoutPanel NewCalibrationTable(int columnCount, params float[] widths)
         {
-            Dock = DockStyle.Fill,
-            BackColor = Color.Transparent,
-            FlowDirection = FlowDirection.LeftToRight,
-            WrapContents = false,
-            AutoScroll = true,
-            Padding = new Padding(4, 6, 4, 2)
-        };
+            var panel = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = Color.Transparent,
+                ColumnCount = columnCount,
+                RowCount = 1,
+                Margin = Padding.Empty,
+                Padding = new Padding(2, 4, 2, 4)
+            };
+            panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            for (var i = 0; i < columnCount; i++)
+            {
+                var width = i < widths.Length ? widths[i] : -1F;
+                panel.ColumnStyles.Add(width > 0
+                    ? new ColumnStyle(SizeType.Absolute, width)
+                    : new ColumnStyle(SizeType.Percent, 100F));
+            }
+            return panel;
+        }
+
+        private static void AddCalibrationCell(TableLayoutPanel panel, Control control, int column)
+        {
+            control.Dock = DockStyle.Fill;
+            control.Margin = new Padding(6, 7, 6, 7);
+            panel.Controls.Add(control, column, 0);
+        }
 
         private static UILabel NewCalibrationLabel(string text) => new UILabel
         {
             Text = text,
             AutoSize = false,
-            Width = Math.Max(62, text.Length * 17),
-            Height = 42,
+            MinimumSize = new Size(78, 40),
             Font = new Font("Arial", 10.5782F),
             ForeColor = Color.FromArgb(48, 48, 48),
             TextAlign = ContentAlignment.MiddleCenter,
-            Margin = new Padding(4, 0, 4, 0)
+            Margin = Padding.Empty
         };
 
         private static UILabel NewCalibrationValueLabel(string text, int width) => new UILabel
@@ -742,11 +797,11 @@ namespace MtEmbTest
             Text = text,
             AutoSize = false,
             Width = width,
-            Height = 42,
+            MinimumSize = new Size(110, 40),
             Font = new Font("Arial", 10.5782F),
             ForeColor = Color.FromArgb(48, 48, 48),
             TextAlign = ContentAlignment.MiddleCenter,
-            Margin = new Padding(4, 0, 4, 0)
+            Margin = Padding.Empty
         };
 
         private static UIComboBox NewCalibrationComboBox(int width) => new UIComboBox
@@ -756,12 +811,12 @@ namespace MtEmbTest
             Font = new Font("宋体", 12F),
             Width = width,
             Height = 42,
-            MinimumSize = new Size(63, 0),
+            MinimumSize = new Size(140, 40),
             Padding = new Padding(0, 0, 30, 2),
             SymbolSize = 24,
             TextAlignment = ContentAlignment.MiddleCenter,
             DropDownStyle = UIDropDownStyle.DropDownList,
-            Margin = new Padding(4, 0, 14, 0)
+            Margin = Padding.Empty
         };
 
         private static UITextBox NewCalibrationTextBox(string text, int width) => new UITextBox
@@ -769,12 +824,12 @@ namespace MtEmbTest
             Text = text,
             Width = width,
             Height = 42,
-            MinimumSize = new Size(1, 16),
+            MinimumSize = new Size(105, 40),
             Padding = new Padding(5),
             Font = new Font("Arial", 10.5782F),
             TextAlignment = ContentAlignment.MiddleCenter,
             ShowText = false,
-            Margin = new Padding(4, 0, 14, 0)
+            Margin = Padding.Empty
         };
 
         private static UIButton NewCalibrationButton(string text, int width, bool danger = false)
@@ -785,13 +840,13 @@ namespace MtEmbTest
                 Text = text,
                 Width = width,
                 Height = 42,
-                MinimumSize = new Size(1, 1),
+                MinimumSize = new Size(92, 40),
                 Font = new Font("Arial", 10.5782F),
                 Cursor = Cursors.Hand,
                 FillColor = color,
                 RectColor = color,
                 ForeColor = Color.White,
-                Margin = new Padding(6, 0, 6, 0)
+                Margin = Padding.Empty
             };
         }
 

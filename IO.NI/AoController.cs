@@ -125,32 +125,13 @@ namespace IO.NI
             // 限幅
             pressure = Math.Min(Math.Max(pressure, _cfg.MinPressure), _cfg.MaxPressure);
 
-            // 优先使用现场“实际压力—AO 电压”多点标定；旧配置或无效标定表继续使用
-            // 原线性公式，保证历史项目可直接运行。
-            var calibrated = CalibrationMath.TryMapPressureToVoltage(
-                dev.VoltageToPressure,
-                pressure,
-                _cfg.MinVoltage,
-                _cfg.MaxVoltage,
-                out var v);
-            if (!calibrated)
-            {
-                if (Math.Abs(dev.ScaleK) < 1e-12)
-                {
-                    _log.Error($"AO[{deviceName}] 线性标定斜率为零，拒绝输出。", "AO");
-                    return new AoWriteResult(false, deviceName, pressure, double.NaN);
-                }
-                v = (pressure - dev.Offset) / dev.ScaleK;
-                v = Math.Max(_cfg.MinVoltage, Math.Min(_cfg.MaxVoltage, v));
-            }
+            // 恢复原线性换算；校正页通过多点拟合更新 ScaleK/Offset。
+            var v = (pressure - dev.Offset) / dev.ScaleK;
 
             try
             {
                 writer.WriteSingleSample(true, v);
-                _log.Info(
-                    $"AO[{deviceName}] CommandPressure={pressure:F1}bar AoVoltage={v:F3}V " +
-                    $"Mapping={(calibrated ? "CalibrationTable" : "LinearFallback")}",
-                    "AO");
+                _log.Info($"AO[{deviceName}] CommandPressure={pressure:F1}bar AoVoltage={v:F3}V", "AO");
                 return new AoWriteResult(true, deviceName, pressure, v);
             }
             catch (Exception ex)

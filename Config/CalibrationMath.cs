@@ -4,112 +4,81 @@ using System.Linq;
 
 namespace Config
 {
-    /// <summary>传感器与液压 AO 标定的纯计算逻辑。</summary>
+    /// <summary>液压 AO 线性校正的纯计算逻辑。</summary>
     public static class CalibrationMath
     {
         private const double Epsilon = 1e-9;
 
         /// <summary>
-        /// 根据两个“原始电压—参考工程值”点计算 AI 配置。
-        /// 工程值公式为：(raw - zero) * scale + offset。
+        /// 使用多个“AO 电压—实测压力”点，以最小二乘法拟合：
+        /// pressure = voltage × scaleK + offset。
         /// </summary>
-        public static bool TryCalculateSensorTwoPoint(
-            double raw1,
-            double reference1,
-            double raw2,
-            double reference2,
-            out double scale,
+        public static bool TryFitPressureLine(
+            IEnumerable<(double Voltage, double Pressure)> points,
+            out double scaleK,
             out double offset,
-            out double zero,
+            out double rSquared,
             out string error)
         {
-            scale = 0;
-            offset = 0;
-            zero = 0;
+            scaleK = double.NaN;
+            offset = double.NaN;
+            rSquared = double.NaN;
             error = string.Empty;
-
-            if (!AreFinite(raw1, reference1, raw2, reference2))
+            if (points == null)
             {
-                error = "标定点必须是有限数值。";
+                error = "校正点不能为空。";
                 return false;
             }
 
-            var rawSpan = raw2 - raw1;
-            if (Math.Abs(rawSpan) <= Epsilon)
+            var values = points.ToArray();
+            if (values.Length < 2)
             {
-                error = "两个原始电压不能相同。";
+                error = "至少需要两个有效校正点。";
+                return false;
+            }
+            if (values.Any(p => !AreFinite(p.Voltage, p.Pressure)))
+            {
+                error = "校正点必须是有限数值。";
                 return false;
             }
 
-            scale = (reference2 - reference1) / rawSpan;
-            if (!IsFinite(scale) || Math.Abs(scale) <= Epsilon)
+            var meanVoltage = values.Average(p => p.Voltage);
+            var meanPressure = values.Average(p => p.Pressure);
+            var voltageVariance = values.Sum(p =>
+                (p.Voltage - meanVoltage) * (p.Voltage - meanVoltage));
+            if (voltageVariance <= Epsilon)
             {
-                error = "两个参考值不能相同，且计算斜率必须有效。";
+                error = "AO 电压必须包含至少两个不同值。";
                 return false;
             }
 
-            zero = raw1;
-            offset = reference1;
-            return true;
-        }
-
-        /// <summary>
-        /// 使用“实际压力—AO 电压”标定点，按压力反算电压。
-        /// 标定范围外沿最近两点线性外推，最终仍受 AO 电压上下限保护。
-        /// </summary>
-        public static bool TryMapPressureToVoltage(
-            IEnumerable<(double Voltage, double Pressure)> points,
-            double targetPressure,
-            double minVoltage,
-            double maxVoltage,
-            out double voltage)
-        {
-            voltage = double.NaN;
-            if (points == null || !AreFinite(targetPressure, minVoltage, maxVoltage) ||
-                maxVoltage <= minVoltage)
+            var covariance = values.Sum(p =>
+                (p.Voltage - meanVoltage) * (p.Pressure - meanPressure));
+            scaleK = covariance / voltageVariance;
+            offset = meanPressure - scaleK * meanVoltage;
+            if (!AreFinite(scaleK, offset) || scaleK <= Epsilon)
+            {
+                error = "拟合得到的压力斜率必须大于零。";
                 return false;
-
-            var ordered = points
-                .Where(p => AreFinite(p.Voltage, p.Pressure) &&
-                            p.Voltage >= minVoltage - Epsilon &&
-                            p.Voltage <= maxVoltage + Epsilon)
-                .OrderBy(p => p.Pressure)
-                .ToArray();
-
-            if (ordered.Length < 2) return false;
-
-            for (var i = 1; i < ordered.Length; i++)
-            {
-                if (ordered[i].Pressure - ordered[i - 1].Pressure <= Epsilon ||
-                    ordered[i].Voltage - ordered[i - 1].Voltage <= Epsilon)
-                    return false;
             }
 
-            var lower = ordered[0];
-            var upper = ordered[1];
-            if (targetPressure >= ordered[ordered.Length - 1].Pressure)
+            var total = values.Sum(p =>
+                (p.Pressure - meanPressure) * (p.Pressure - meanPressure));
+            if (total <= Epsilon)
             {
-                lower = ordered[ordered.Length - 2];
-                upper = ordered[ordered.Length - 1];
-            }
-            else if (targetPressure > ordered[0].Pressure)
-            {
-                for (var i = 1; i < ordered.Length; i++)
-                {
-                    if (targetPressure <= ordered[i].Pressure)
-                    {
-                        lower = ordered[i - 1];
-                        upper = ordered[i];
-                        break;
-                    }
-                }
+                error = "实测压力必须包含至少两个不同值。";
+                return false;
             }
 
-            var ratio = (targetPressure - lower.Pressure) /
-                        (upper.Pressure - lower.Pressure);
-            var mapped = lower.Voltage + ratio * (upper.Voltage - lower.Voltage);
-            voltage = Math.Max(minVoltage, Math.Min(maxVoltage, mapped));
-            return IsFinite(voltage);
+            var fittedScaleK = scaleK;
+            var fittedOffset = offset;
+            var residual = values.Sum(p =>
+            {
+                var delta = p.Pressure - (p.Voltage * fittedScaleK + fittedOffset);
+                return delta * delta;
+            });
+            rSquared = Math.Max(0.0, Math.Min(1.0, 1.0 - residual / total));
+            return IsFinite(rSquared);
         }
 
         public static bool IsFinite(double value) =>
