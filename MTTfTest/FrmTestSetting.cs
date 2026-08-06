@@ -89,6 +89,7 @@ namespace MtEmbTest
             
             _pressureSettings = new List<PressureSettingControl>(); // 初始化
             InitializeComponent();
+            InitializePressureCalibrationPage();
             // // 在Load事件中设置
             // this.Load += (s, e) => {
             //     this.Size = new Size(1415, 780);
@@ -610,6 +611,9 @@ namespace MtEmbTest
 
                 // DAQ AI
                 LoadDaqAiToGridView(Environment.CurrentDirectory + @"\Config\AIConfig.xml");
+
+                // 气缸压力输出校正
+                LoadPressureCalibrationConfiguration();
 
 
                 #region 和试验配置导入刷新有关

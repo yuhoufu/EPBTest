@@ -100,6 +100,7 @@
     <Compile Include="HydraulicGroupCoordinator.cs" />
     <Compile Include="PowerSupplyCoordinator.cs" />
     <Compile Include="PowerSupplyTelemetryCsvRecorder.cs" />
+    <Compile Include="PressureCalibrationCoordinator.cs" />
     <Compile Include="StopContext.cs" />
     <Compile Include="StartupPositioning.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />

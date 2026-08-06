@@ -366,22 +366,6 @@ namespace MtEmbTest
         {
         }
 
-        private void TsmDAQCalibrate_Click(object sender, EventArgs e)
-        {
-            foreach (var childForm in MdiChildren)
-                if (childForm.Text == "实时监视")
-                {
-                    MessageBox.Show("请关闭实时监视界面!");
-                    return;
-                }
-
-
-            var frmDAQCalibrate = new FrmCalibrationWorkbench();
-            frmDAQCalibrate.Name = "数采卡校准";
-            OpenChildForm(frmDAQCalibrate);
-        }
-
-
         private void ConfigureMenuStrip()
         {
             // 创建自定义颜色表
@@ -425,12 +409,6 @@ namespace MtEmbTest
         {
             foreach (var childForm in MdiChildren)
             {
-                if (childForm.Text == "数采卡校准")
-                {
-                    MessageBox.Show("请关闭数采卡校准界面!");
-                    return;
-                }
-
                 if (childForm.Text == "扭矩调节")
                 {
                     MessageBox.Show("请关闭扭矩调节界面!");
@@ -450,11 +428,6 @@ namespace MtEmbTest
         {
             foreach (Form childForm in this.MdiChildren)
             {
-                if (childForm.Text == "数采卡校准")
-                {
-                    MessageBox.Show("请关闭数采卡校准界面!");
-                    return;
-                }
                 if (childForm.Text == "实时监视")
                 {
                     MessageBox.Show("请关闭实时监视界面!");

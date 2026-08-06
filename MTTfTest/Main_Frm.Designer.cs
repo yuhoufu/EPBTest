@@ -36,7 +36,6 @@
             this.TsmCharacterPlayBack = new System.Windows.Forms.ToolStripMenuItem();
             this.TsmRawPlayBack = new System.Windows.Forms.ToolStripMenuItem();
             this.TsmSetting = new System.Windows.Forms.ToolStripMenuItem();
-            this.TsmDAQCalibrate = new System.Windows.Forms.ToolStripMenuItem();
             this.TsmWindows = new System.Windows.Forms.ToolStripMenuItem();
             this.TsmHorizon = new System.Windows.Forms.ToolStripMenuItem();
             this.TsmVertical = new System.Windows.Forms.ToolStripMenuItem();
@@ -68,8 +67,7 @@
             // TsmDAQ
             // 
             this.TsmDAQ.DropDownItems.AddRange(new System.Windows.Forms.ToolStripItem[] {
-            this.TsmRealMinitor,
-            this.TsmDAQCalibrate});
+            this.TsmRealMinitor});
             this.TsmDAQ.Name = "TsmDAQ";
             this.TsmDAQ.Size = new System.Drawing.Size(82, 35);
             this.TsmDAQ.Text = "试验";
@@ -113,14 +111,6 @@
             this.TsmSetting.Size = new System.Drawing.Size(82, 35);
             this.TsmSetting.Text = "设置";
             this.TsmSetting.Click += new System.EventHandler(this.TsmSetting_Click);
-            // 
-            // TsmDAQCalibrate
-            // 
-            this.TsmDAQCalibrate.Name = "TsmDAQCalibrate";
-            this.TsmDAQCalibrate.Size = new System.Drawing.Size(154, 35);
-            this.TsmDAQCalibrate.Text = "数采卡校准";
-            this.TsmDAQCalibrate.Visible = true;
-            this.TsmDAQCalibrate.Click += new System.EventHandler(this.TsmDAQCalibrate_Click);
             // 
             // TsmWindows
             // 
@@ -194,7 +184,6 @@
         private System.Windows.Forms.ToolStripMenuItem TsmLayout;
         private System.Windows.Forms.ToolStripMenuItem 关于ToolStripMenuItem1;
         private System.Windows.Forms.ToolStripMenuItem TsmSetting;
-        private System.Windows.Forms.ToolStripMenuItem TsmDAQCalibrate;
         private System.Windows.Forms.ToolStripMenuItem TsmCharacterPlayBack;
         private System.Windows.Forms.ToolStripMenuItem TsmRawPlayBack;
         private System.Windows.Forms.ToolStripMenuItem TsmRealMinitor;

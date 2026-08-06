@@ -25,7 +25,7 @@
     <UpdateRequired>false</UpdateRequired>
     <MapFileExtensions>true</MapFileExtensions>
     <ApplicationRevision>0</ApplicationRevision>
-    <ApplicationVersion>2.11.0.5</ApplicationVersion>
+    <ApplicationVersion>2.11.0.6</ApplicationVersion>
     <IsWebBootstrapper>false</IsWebBootstrapper>
     <UseApplicationTrust>false</UseApplicationTrust>
     <BootstrapperEnabled>true</BootstrapperEnabled>
@@ -139,9 +139,6 @@
     <Compile Include="FrmDAQCalibrate.Designer.cs">
       <DependentUpon>FrmDAQCalibrate.cs</DependentUpon>
     </Compile>
-    <Compile Include="FrmCalibrationWorkbench.cs">
-      <SubType>Form</SubType>
-    </Compile>
     <Compile Include="FrmEpbMainMonitor.cs">
       <SubType>Form</SubType>
     </Compile>
@@ -179,6 +176,10 @@
     <Compile Include="FrmTestSetting.cs">
       <SubType>Form</SubType>
     </Compile>
+    <Compile Include="FrmTestSetting.PressureCalibration.cs">
+      <DependentUpon>FrmTestSetting.cs</DependentUpon>
+      <SubType>Form</SubType>
+    </Compile>
     <Compile Include="FrmTestSetting.Designer.cs">
       <DependentUpon>FrmTestSetting.cs</DependentUpon>
     </Compile>
@@ -192,6 +193,7 @@
     <Compile Include="Main_Frm.Designer.cs">
       <DependentUpon>Main_Frm.cs</DependentUpon>
     </Compile>
+    <Compile Include="PressureCalibrationHardware.cs" />
     <Compile Include="Models\EpbRow.cs" />
     <Compile Include="Models\PressureSetting.cs" />
     <Compile Include="Models\TestConfig.cs" />
