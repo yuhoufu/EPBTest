@@ -62,7 +62,7 @@ $manifestFiles = foreach ($file in $files) {
     }
 }
 $identity = [ordered]@{
-    productVersion = 'V2.11.0.3'
+    productVersion = 'V2.11.0.4'
     gitCommit = $commit
     gitBranch = $branch
     gitDirty = $false

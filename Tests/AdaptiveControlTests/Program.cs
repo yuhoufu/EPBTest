@@ -166,6 +166,7 @@ namespace AdaptiveControlTests
                 Run("持久化硬容量使用独立故障码", DaqPersistenceCoordinatorTests.HardCapacityKeepsRealFaultCode);
                 Run("持久化诊断观察者异常不重复写盘", DaqPersistenceCoordinatorTests.DiagnosticObserverFailureDoesNotRetryWrite);
                 _passed += DaqRealtimeControlTests.RunAll();
+                _passed += CalibrationMathTests.RunAll();
                 _passed += HydraulicGroupCoordinatorTests.RunAll();
                 _passed += PowerSupplyCoordinatorTests.RunAll();
                 _passed += ProjectLogStoreTests.RunAll();

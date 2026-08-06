@@ -181,6 +181,13 @@ namespace IO.NI
         private readonly Dictionary<int, (string dev, int idx)> _pressureIndex
             = new Dictionary<int, (string, int)>();
 
+        // UI 状态查询必须无锁，不能让 NI 同步写入阻塞 DAQ 后台发布线程。
+        // 仅在硬件写成功后更新；写失败时保留上一已确认状态，避免错误掩盖真实信号。
+        private readonly ConcurrentDictionary<int, byte> _epbOutputActive =
+            new ConcurrentDictionary<int, byte>();
+        private readonly ConcurrentDictionary<int, byte> _pressureOutputActive =
+            new ConcurrentDictionary<int, byte>();
+
         // 兼容旧接口：不再使用，但保留以免外部调用报错
         private string _configPath;
 
@@ -316,6 +323,8 @@ namespace IO.NI
                         totalLines += dev.Lines.Count;
                     }
 
+                    PublishConfirmedOutputStates();
+
                     LogInfo($"DO 初始化完成：设备数={_devices.Count}，总线数={totalLines}，EPB组={_epbIndex.Count}，压力点={_pressureIndex.Count}", "DO初始化");
                     return true;
                 }
@@ -375,6 +384,7 @@ namespace IO.NI
 
                         dev.Writer.WriteSingleSampleSingleLine(true, toWrite);
                         dev.States = toWrite;
+                        _epbOutputActive[channelNo] = 1;
 
                         LogInfo($"EPB[{channelNo}]@{map.dev} => {(directionIsForward ? "正" : "反")}", "DO操作");
                         return true;
@@ -426,6 +436,7 @@ namespace IO.NI
                     toWrite[map.negIdx] = false;
                     dev.Writer.WriteSingleSampleSingleLine(true, toWrite);
                     dev.States = toWrite;
+                    _epbOutputActive[channelNo] = 0;
 
                     LogInfo($"EPB[{channelNo}]@{map.dev} => 全关", "DO操作");
                     return true;
@@ -497,6 +508,7 @@ namespace IO.NI
 
                         dev.Writer.WriteSingleSampleSingleLine(true, toWrite);
                         dev.States = toWrite;
+                        _pressureOutputActive[id] = start ? (byte)1 : (byte)0;
 
                         LogInfo($"压力[{id}]@{map.dev} => {(start ? "启动" : "停止")}", "DO操作");
                         return true;
@@ -539,6 +551,9 @@ namespace IO.NI
                         dev.States = zeros;
                     }
 
+                    foreach (var channel in _epbIndex.Keys) _epbOutputActive[channel] = 0;
+                    foreach (var id in _pressureIndex.Keys) _pressureOutputActive[id] = 0;
+
                     LogInfo("DO 全部关闭（所有设备）", "DO操作");
                     return true;
                 }
@@ -562,6 +577,14 @@ namespace IO.NI
         /// <summary>压力友好名称封装：停止。</summary>
         public bool PressureOff(int id) => SetPressure(id, false);
 
+        /// <summary>返回最近一次成功下发后，指定 EPB 正/反输出是否有一路处于激活状态。</summary>
+        public bool IsEpbOutputActive(int channelNo)
+            => _epbOutputActive.TryGetValue(channelNo, out var active) && active != 0;
+
+        /// <summary>返回最近一次成功下发后，指定气缸压力 DO 是否处于激活状态。</summary>
+        public bool IsPressureOutputActive(int id)
+            => _pressureOutputActive.TryGetValue(id, out var active) && active != 0;
+
         #endregion
 
         #region 内部工具与清理
@@ -579,6 +602,28 @@ namespace IO.NI
                 _devices[deviceName] = dev;
             }
             return dev;
+        }
+
+        private void PublishConfirmedOutputStates()
+        {
+            foreach (var pair in _epbIndex)
+            {
+                var active = _devices.TryGetValue(pair.Value.dev, out var dev) &&
+                             dev.States != null &&
+                             pair.Value.posIdx >= 0 && pair.Value.posIdx < dev.States.Length &&
+                             pair.Value.negIdx >= 0 && pair.Value.negIdx < dev.States.Length &&
+                             (dev.States[pair.Value.posIdx] || dev.States[pair.Value.negIdx]);
+                _epbOutputActive[pair.Key] = active ? (byte)1 : (byte)0;
+            }
+
+            foreach (var pair in _pressureIndex)
+            {
+                var active = _devices.TryGetValue(pair.Value.dev, out var dev) &&
+                             dev.States != null &&
+                             pair.Value.idx >= 0 && pair.Value.idx < dev.States.Length &&
+                             dev.States[pair.Value.idx];
+                _pressureOutputActive[pair.Key] = active ? (byte)1 : (byte)0;
+            }
         }
 
         /// <summary>从物理线名取设备名，如 "Dev1/port0/line0" -> "Dev1"。</summary>

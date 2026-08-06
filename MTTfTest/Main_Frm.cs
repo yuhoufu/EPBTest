@@ -376,7 +376,7 @@ namespace MtEmbTest
                 }
 
 
-            var frmDAQCalibrate = new FrmDAQCalibrate();
+            var frmDAQCalibrate = new FrmCalibrationWorkbench();
             frmDAQCalibrate.Name = "数采卡校准";
             OpenChildForm(frmDAQCalibrate);
         }

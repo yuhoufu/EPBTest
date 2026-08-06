@@ -829,6 +829,11 @@ namespace Controller
 
             _acq.DiskBatchReady += batch => _persistence.Enqueue(batch);
 
+            // UI 只在对应输出未激活时显示 0；断电确认、压力释放判据及原始落盘仍读取真实采样。
+            _acq.ConfigureUiOutputState(
+                _do.IsEpbOutputActive,
+                _do.IsPressureOutputActive);
+
 
             _hydraulic = new HydraulicController(
                 _do,
