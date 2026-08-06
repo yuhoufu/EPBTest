@@ -508,6 +508,13 @@ namespace Controller
                     actuationAnchorUtc,
                     state.Completion.Task);
             }
+            catch (OperationCanceledException ex) when (token.IsCancellationRequested)
+            {
+                // 暂停、停止、DAQ 自愈等正常控制流会取消正在建压的代次。
+                // 取消不代表液压硬件失效，也不能进入三代次压力故障计数。
+                await FailGenerationAsync(state, ex, publishFault: false).ConfigureAwait(false);
+                throw;
+            }
             catch (Exception ex)
             {
                 var classified = PrepareGenerationFailure(state.Key.HydraulicId, ex);
@@ -670,6 +677,8 @@ namespace Controller
                 var classification = ClassifyFault(exception);
                 var fault = new ControlFault(
                     exception is HydraulicBarrierTimeoutException ? "HydraulicBarrierTimeout" :
+                    exception is OperationCanceledException ? "HydraulicOperationCanceled" :
+                    exception is HydraulicReleaseTimeoutException ? "HydraulicReleaseTimeout" :
                     exception is HydraulicPressureLostException pressureLost &&
                         pressureLost.FailureReason != HydraulicPressureFailureReason.BelowMinimum
                         ? "PressureSampleUnavailable" :
@@ -695,8 +704,12 @@ namespace Controller
 
         internal static FaultClassification ClassifyFault(Exception exception)
         {
+            if (exception is OperationCanceledException)
+                return FaultClassification.SoftwareTransient;
             if (exception is HydraulicBarrierTimeoutException)
                 return FaultClassification.SystemFault;
+            if (exception is HydraulicReleaseTimeoutException)
+                return FaultClassification.HardwareConfirmed;
             if (exception is HydraulicBuildTimeoutException buildTimeout)
             {
                 if (buildTimeout.IsPressureEvidenceUnavailable ||
@@ -714,7 +727,9 @@ namespace Controller
                     ? FaultClassification.HardwareConfirmed
                     : FaultClassification.SystemFault;
             }
-            return FaultClassification.HardwareConfirmed;
+            // 未知异常没有独立、可复核的硬件证据。保持系统故障/自愈语义，
+            // 禁止兜底分支绕过连续三代次压力确认而误报硬件。
+            return FaultClassification.SystemFault;
         }
 
         private void ReleaseGenerationGate(GenerationState state)

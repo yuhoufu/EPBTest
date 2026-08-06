@@ -25,6 +25,8 @@ namespace AdaptiveControlTests
             Run("首次保压下降仅触发软件自愈", FirstPressureLossIsRecoverable, ref passed);
             Run("保压连续三代次下降才确认硬件报警", ThirdPressureLossConfirmsHardwareFault, ref passed);
             Run("压力样本陈旧只触发软件自愈", StalePressureLossIsRecoverable, ref passed);
+            Run("液压任务取消不得确认硬件报警", CanceledHydraulicWorkIsNotHardware, ref passed);
+            Run("未知液压异常不得绕过连续确认", UnknownHydraulicFaultIsNotHardware, ref passed);
             Run("报警电源组仅在无兄弟通道活动时关闭", PowerGroupIdlePredicateIsScoped, ref passed);
             return passed;
         }
@@ -416,6 +418,22 @@ namespace AdaptiveControlTests
                    publishedFault.Code == "PressureSampleUnavailable" &&
                    publishedFault.Classification == FaultClassification.SystemFault,
                 "陈旧压力样本仍被错误发布成硬件保压丢失。");
+        }
+
+        private static void CanceledHydraulicWorkIsNotHardware()
+        {
+            Assert(
+                HydraulicGroupCoordinator.ClassifyFault(new TaskCanceledException("pause")) ==
+                FaultClassification.SoftwareTransient,
+                "控制流取消被错误确认成液压硬件报警。");
+        }
+
+        private static void UnknownHydraulicFaultIsNotHardware()
+        {
+            Assert(
+                HydraulicGroupCoordinator.ClassifyFault(new InvalidOperationException("software")) ==
+                FaultClassification.SystemFault,
+                "无压力证据的未知异常绕过连续三代次确认成为硬件报警。");
         }
 
         private static HydraulicGroupCoordinator NewCoordinator(

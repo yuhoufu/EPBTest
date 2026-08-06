@@ -25,6 +25,9 @@ namespace MTEmbTest
         private readonly Dictionary<int, ChannelRuntimeStateChangedEvent> _channelRuntimeStates =
             new Dictionary<int, ChannelRuntimeStateChangedEvent>();
         private readonly HashSet<int> _powerGroupInterlockLatches = new HashSet<int>();
+        private readonly object _powerSupplyTelemetryGate = new object();
+        private readonly Dictionary<int, PowerSupplyTelemetry> _latestPowerSupplyTelemetry =
+            new Dictionary<int, PowerSupplyTelemetry>();
         private const int SafetyInfoMaxDisplayLines = 2000;
         private const int SafetyInfoTrimmedDisplayLines = 1500;
 
@@ -241,6 +244,9 @@ namespace MTEmbTest
             label.Text = GetRuntimeStateText(state.State);
             label.BackColor = GetRuntimeStateColor(state.State);
             label.ForeColor = Color.White;
+            label.Cursor = IsChannelRunTransitionState(state.State)
+                ? Cursors.WaitCursor
+                : Cursors.Help;
             _channelRuntimeToolTip?.SetToolTip(
                 label,
                 $"EPB{state.Channel:D2} {GetRuntimeStateText(state.State)}\r\n" +
@@ -251,11 +257,10 @@ namespace MTEmbTest
 
             if (EpbGroup[state.Channel - 1]?.CtrlRunning != null)
             {
-                var shouldShowRun = state.State == ChannelRuntimeState.Starting ||
-                                    state.State == ChannelRuntimeState.Learning ||
-                                    state.State == ChannelRuntimeState.Running ||
-                                    state.State == ChannelRuntimeState.WarningRunning ||
-                                    state.State == ChannelRuntimeState.PausePending;
+                var shouldShowRun = IsChannelRunToggleActiveState(state.State);
+                EpbGroup[state.Channel - 1].CtrlRunning.CheckedText =
+                    GetChannelRunToggleCheckedText(state.State);
+                EpbGroup[state.Channel - 1].CtrlRunning.UncheckedText = "STOP";
                 if (EpbGroup[state.Channel - 1].CtrlRunning.Checked != shouldShowRun)
                     EpbGroup[state.Channel - 1].CtrlRunning.Checked = shouldShowRun;
             }
@@ -267,7 +272,10 @@ namespace MTEmbTest
 
             if (state.State == ChannelRuntimeState.InterlockStopped)
                 ShowPowerGroupInterlockLatch(state.Channel);
-            else if (state.State == ChannelRuntimeState.Starting)
+            else if (state.State == ChannelRuntimeState.Starting ||
+                     state.State == ChannelRuntimeState.Qualification ||
+                     state.State == ChannelRuntimeState.Running ||
+                     state.State == ChannelRuntimeState.WarningRunning)
                 ClearPowerGroupInterlockLatchAfterPreflight(state.Channel);
             UpdateChannelRuntimeSummary();
             UpdatePauseResumeChannelUi(state);
@@ -302,7 +310,16 @@ namespace MTEmbTest
         private void ClearPowerGroupInterlockLatchAfterPreflight(int channel)
         {
             var group = _cfg?.Test?.Groups?.FirstOrDefault(x => x.Members.Contains(channel));
-            if (group != null) _powerGroupInterlockLatches.Remove(group.Id);
+            if (group == null) return;
+            _powerGroupInterlockLatches.Remove(group.Id);
+
+            // 预检期间的实时遥测曾被“联锁锁存”标题遮挡。锁存解除后主动回放
+            // 最新一帧，避免电源实际已 ON 而界面一直停留在旧状态。
+            PowerSupplyTelemetry latest;
+            lock (_powerSupplyTelemetryGate)
+                _latestPowerSupplyTelemetry.TryGetValue(group.Id, out latest);
+            if (latest != null)
+                ApplyPowerSupplyStatus(latest);
         }
 
         private static string GetRuntimeStateText(ChannelRuntimeState state)
@@ -494,43 +511,47 @@ namespace MTEmbTest
         private void UpdatePowerSupplyStatus(PowerSupplyTelemetry telemetry)
         {
             if (telemetry == null || IsDisposed || Disposing) return;
+            lock (_powerSupplyTelemetryGate)
+                _latestPowerSupplyTelemetry[telemetry.ElectricalGroupId] = telemetry;
             try
             {
-                BeginInvoke((Action)(() =>
-                {
-                    var boxes = new[] { uiGroupBox4, uiGroupBox5, uiGroupBox6, uiGroupBox7 };
-                    if (telemetry.SupplyId < 1 || telemetry.SupplyId > boxes.Length) return;
-                    var box = boxes[telemetry.SupplyId - 1];
-                    if (_powerGroupInterlockLatches.Contains(telemetry.ElectricalGroupId))
-                    {
-                        box.Text = $"电源{telemetry.SupplyId} 联锁锁存";
-                        box.ForeColor = Color.OrangeRed;
-                        return;
-                    }
-                    var snapshot = telemetry.Snapshot;
-                    if (snapshot == null)
-                    {
-                        box.Text = $"电源{telemetry.SupplyId} 通信异常";
-                        box.ForeColor = Color.Red;
-                        return;
-                    }
-                    var mode = snapshot.IsConstantCurrent ? "CC" :
-                        snapshot.IsConstantVoltage ? "CV" : "--";
-                    box.Text = $"电源{telemetry.SupplyId} {(snapshot.OutputEnabled ? "ON" : "OFF")} " +
-                               $"{mode} {snapshot.MeasuredVoltage:F1}V/{snapshot.MeasuredCurrent:F1}A";
-                    box.ForeColor = snapshot.ProtectionTripped ||
-                                    snapshot.IsCurrentLimited ||
-                                    snapshot.IsPowerLimited
-                        ? Color.Red
-                        : !string.IsNullOrWhiteSpace(telemetry.Error)
-                            ? Color.DarkOrange
-                            : snapshot.OutputEnabled ? Color.DarkGreen : Color.DimGray;
-                }));
+                BeginInvoke((Action)(() => ApplyPowerSupplyStatus(telemetry)));
             }
             catch
             {
                 // 窗口退出期间忽略晚到的遥测。
             }
+        }
+
+        private void ApplyPowerSupplyStatus(PowerSupplyTelemetry telemetry)
+        {
+            var boxes = new[] { uiGroupBox4, uiGroupBox5, uiGroupBox6, uiGroupBox7 };
+            if (telemetry.SupplyId < 1 || telemetry.SupplyId > boxes.Length) return;
+            var box = boxes[telemetry.SupplyId - 1];
+            if (_powerGroupInterlockLatches.Contains(telemetry.ElectricalGroupId))
+            {
+                box.Text = $"电源{telemetry.SupplyId} 联锁锁存";
+                box.ForeColor = Color.OrangeRed;
+                return;
+            }
+            var snapshot = telemetry.Snapshot;
+            if (snapshot == null)
+            {
+                box.Text = $"电源{telemetry.SupplyId} 通信异常";
+                box.ForeColor = Color.Red;
+                return;
+            }
+            var mode = snapshot.IsConstantCurrent ? "CC" :
+                snapshot.IsConstantVoltage ? "CV" : "--";
+            box.Text = $"电源{telemetry.SupplyId} {(snapshot.OutputEnabled ? "ON" : "OFF")} " +
+                       $"{mode} {snapshot.MeasuredVoltage:F1}V/{snapshot.MeasuredCurrent:F1}A";
+            box.ForeColor = snapshot.ProtectionTripped ||
+                            snapshot.IsCurrentLimited ||
+                            snapshot.IsPowerLimited
+                ? Color.Red
+                : !string.IsNullOrWhiteSpace(telemetry.Error)
+                    ? Color.DarkOrange
+                    : snapshot.OutputEnabled ? Color.DarkGreen : Color.DimGray;
         }
 
         private void ShowPowerSupplyFault(PowerSupplyFault fault)

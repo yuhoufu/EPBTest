@@ -137,6 +137,7 @@ namespace MTEmbTest
                 }
                 if (_epb.CanAcknowledgeChannelAlarm(channel, out _))
                 {
+                    ApplyChannelStartTransitionUi(channel);
                     LogInfo($"EPB{channel} 重新开始：已抛弃上次故障锁存，进入实时预检与自愈。");
                     await _epb.ResumeAlarmStoppedChannelAsync(channel, true).ConfigureAwait(true);
                     return;
@@ -188,11 +189,9 @@ namespace MTEmbTest
             var toggle = group?.CtrlRunning;
             if (toggle == null) return;
 
-            var isRunning = state.State == ChannelRuntimeState.Starting ||
-                            state.State == ChannelRuntimeState.Learning ||
-                            state.State == ChannelRuntimeState.Running ||
-                            state.State == ChannelRuntimeState.WarningRunning ||
-                            state.State == ChannelRuntimeState.PausePending;
+            var isRunning = IsChannelRunToggleActiveState(state.State);
+            toggle.CheckedText = GetChannelRunToggleCheckedText(state.State);
+            toggle.UncheckedText = "STOP";
             if (toggle.Checked != isRunning) toggle.Checked = isRunning;
 
             var configuredEnabled = _cfg?.Test?.GetEpbRecord(state.Channel)?.Enabled == true;
@@ -202,9 +201,74 @@ namespace MTEmbTest
                                   _epb.CanAcknowledgeChannelAlarm(state.Channel, out _);
             toggle.Enabled = configuredEnabled && locallyOperable &&
                              !_channelPauseResumeUiGuard.ContainsKey(state.Channel);
+            toggle.Cursor = toggle.Enabled
+                ? Cursors.Hand
+                : IsChannelRunTransitionState(state.State)
+                    ? Cursors.WaitCursor
+                    : Cursors.Default;
 
             if (group.CtrlJoinTest != null)
                 group.CtrlJoinTest.Enabled = !(_epb?.IsBatchSessionActive ?? false);
+        }
+
+        private void ApplyChannelStartTransitionUi(int channel)
+        {
+            if (channel < 1 || channel > EpbGroup.Length) return;
+            var toggle = EpbGroup[channel - 1]?.CtrlRunning;
+            if (toggle != null)
+            {
+                toggle.CheckedText = "启动中";
+                toggle.Checked = true;
+                toggle.Enabled = false;
+                toggle.Cursor = Cursors.WaitCursor;
+            }
+
+            if (_channelRuntimeLabels.TryGetValue(channel, out var label))
+            {
+                label.Text = "启动中";
+                label.BackColor = System.Drawing.Color.FromArgb(41, 128, 185);
+                label.ForeColor = System.Drawing.Color.White;
+                label.Cursor = Cursors.WaitCursor;
+                _channelRuntimeToolTip?.SetToolTip(
+                    label,
+                    $"EPB{channel:D2} 启动中\r\n正在执行实时安全预检与自愈，请勿重复点击。");
+            }
+        }
+
+        private static bool IsChannelRunToggleActiveState(ChannelRuntimeState state)
+        {
+            return state == ChannelRuntimeState.Starting ||
+                   state == ChannelRuntimeState.Learning ||
+                   state == ChannelRuntimeState.Running ||
+                   state == ChannelRuntimeState.WarningRunning ||
+                   state == ChannelRuntimeState.PausePending ||
+                   state == ChannelRuntimeState.ResumeChecking ||
+                   state == ChannelRuntimeState.Qualification;
+        }
+
+        private static bool IsChannelRunTransitionState(ChannelRuntimeState state)
+        {
+            return state == ChannelRuntimeState.Starting ||
+                   state == ChannelRuntimeState.Learning ||
+                   state == ChannelRuntimeState.PausePending ||
+                   state == ChannelRuntimeState.ResumeChecking ||
+                   state == ChannelRuntimeState.Qualification;
+        }
+
+        private static string GetChannelRunToggleCheckedText(ChannelRuntimeState state)
+        {
+            switch (state)
+            {
+                case ChannelRuntimeState.Starting:
+                    return "启动中";
+                case ChannelRuntimeState.Learning: return "学习中";
+                case ChannelRuntimeState.ResumeChecking: return "恢复预检";
+                case ChannelRuntimeState.Qualification: return "资格复核";
+                case ChannelRuntimeState.PausePending: return "等待暂停";
+                case ChannelRuntimeState.WarningRunning: return "软预警";
+                case ChannelRuntimeState.Running: return "运行";
+                default: return "RUN";
+            }
         }
 
         private void SaveGracefulPauseCheckpoint()
