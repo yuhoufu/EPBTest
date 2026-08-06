@@ -308,13 +308,22 @@ namespace Controller
                     var writeStarted = Stopwatch.GetTimestamp();
                     WriteBatch(batch);
                     Interlocked.Exchange(ref q.UnresolvedWriteFailure, 0);
-                    _persistenceTiming?.Invoke(
-                        batch.Device,
-                        batch.Generation,
-                        batch.SampleCount,
-                        Volatile.Read(ref q.Count),
-                        batch.AgeMs,
-                        (Stopwatch.GetTimestamp() - writeStarted) * 1000.0 / Stopwatch.Frequency);
+                    try
+                    {
+                        _persistenceTiming?.Invoke(
+                            batch.Device,
+                            batch.Generation,
+                            batch.SampleCount,
+                            Volatile.Read(ref q.Count),
+                            batch.AgeMs,
+                            (Stopwatch.GetTimestamp() - writeStarted) * 1000.0 / Stopwatch.Frequency);
+                    }
+                    catch (Exception ex)
+                    {
+                        _log?.Warn(
+                            $"DAQ持久化时序观察者异常已隔离：{ex.Message}",
+                            "落盘");
+                    }
                     return;
                 }
                 catch (ActiveCycleDataLimitExceededException)
@@ -516,17 +525,29 @@ namespace Controller
                 _log?.Error(reason, "落盘");
             else
                 _log?.Warn(reason, "落盘");
-            try { StateChanged?.Invoke(update); } catch { }
-            _diagnostic?.Invoke(new DaqTimingRecord
+            NonCriticalObserver.Invoke(
+                StateChanged,
+                update,
+                ex => _log?.Warn(
+                    $"DAQ持久化状态观察者异常已隔离：{ex.Message}",
+                    "落盘"));
+            try
             {
-                TimestampUtc = update.TimestampUtc,
-                Device = update.Device,
-                Kind = state == DaqPersistenceState.Failed ? "SystemFault" : "Lag",
-                Generation = update.Generation,
-                QueueDepth = update.QueueDepth,
-                QueueAgeMs = update.OldestBatchAgeMs,
-                Detail = $"Code={code}; CorrelationId={correlationId:N}; {reason}"
-            });
+                _diagnostic?.Invoke(new DaqTimingRecord
+                {
+                    TimestampUtc = update.TimestampUtc,
+                    Device = update.Device,
+                    Kind = state == DaqPersistenceState.Failed ? "SystemFault" : "Lag",
+                    Generation = update.Generation,
+                    QueueDepth = update.QueueDepth,
+                    QueueAgeMs = update.OldestBatchAgeMs,
+                    Detail = $"Code={code}; CorrelationId={correlationId:N}; {reason}"
+                });
+            }
+            catch (Exception ex)
+            {
+                _log?.Warn($"DAQ诊断观察者异常已隔离：{ex.Message}", "落盘");
+            }
         }
 
         private static void MarkPersisted(DeviceQueue q, long sequence)

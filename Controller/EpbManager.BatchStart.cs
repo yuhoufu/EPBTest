@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using Config;
 using Config.Models;
 using DataOperation;
+using IO.NI;
 using Timing;
 
 namespace Controller
@@ -53,7 +54,9 @@ namespace Controller
         private ConcurrentDictionary<int, HighPrecisionTimer> _timerCache => _timerRuntime.Cache;
         private int _batchSessionActive;
         private CancellationTokenSource _batchSessionCts;
-        private CancellationTokenSource _learningPhaseFaultCts;
+        private readonly BatchStartLifecycleGate _batchLifecycleGate = new BatchStartLifecycleGate();
+        private long _learningRetryGeneration;
+        private long _softwareHydraulicRetryGeneration;
         private ElectricalStaggerPlan _activeStaggerPlan;
         private readonly ConcurrentDictionary<int, DateTime> _activeFormalT0ByPressureGroup =
             new ConcurrentDictionary<int, DateTime>();
@@ -124,15 +127,86 @@ namespace Controller
                 throw new ArgumentOutOfRangeException(
                     nameof(qualificationCycles),
                     "正常暂停后的资格复核必须为1或2圈。");
+
+            var selected = (channels ?? Array.Empty<int>()).Distinct().OrderBy(x => x).ToArray();
+            var unstable = selected
+                .Where(channel => !GetAdaptiveProfile(channel).IsStable)
+                .ToArray();
+            if (unstable.Length > 0)
+            {
+                var learnCycles = Math.Max(5, _cfg.Test?.LearnCycles ?? 5);
+                _log?.Warn(
+                    $"暂停检查点的稳定模型不可用：EPB[{string.Join(",", unstable)}]；" +
+                    $"本次点击自动转为完整{learnCycles}圈学习，不要求用户再次点击。",
+                    "EPB");
+                return StartBatchCoreAsync(
+                    selected,
+                    learnCycles,
+                    qualificationCycles: 0,
+                    reuseStableProfiles: false,
+                    token);
+            }
             return StartBatchCoreAsync(
-                channels,
+                selected,
                 learnCycles: 0,
                 qualificationCycles,
                 reuseStableProfiles: true,
                 token);
         }
 
+        /// <summary>
+        /// “重新开始”清场屏障：先合并/完成旧批次的安全停止，再等待旧启动调用彻底退出。
+        /// 返回前不会遗留仍可能提交 StopChannel/StopAll 的旧启动尾声，调用方可以在同一次请求中直接启动新批次。
+        /// </summary>
+        public async Task<StopSafetyResult> PrepareForFreshRestartAsync(
+            StopContext context,
+            CancellationToken token = default)
+        {
+            context ??= new StopContext
+            {
+                Source = StopSource.ManualUi,
+                Reason = "重新开始前抛弃旧批次状态并安全清场",
+                Initiator = nameof(PrepareForFreshRestartAsync),
+                CorrelationId = Guid.NewGuid().ToString("N"),
+                RequestedUtc = DateTime.UtcNow
+            };
+
+            // 安全停止不能因开始按钮调用方取消而半途退出；token 只控制调用方等待旧启动尾声。
+            var safety = await StopAllAsync(context, CancellationToken.None).ConfigureAwait(false);
+            await _batchLifecycleGate.JoinAsync(token).ConfigureAwait(false);
+
+            if (!safety.CanReleaseAcquisition)
+            {
+                throw new InvalidOperationException(
+                    "重新开始清场未确认电机DO及程控电源均已关闭。" +
+                    $" Motor={safety.MotorError}; Power={safety.PowerError}");
+            }
+
+            _log?.Info(
+                "重新开始清场完成：旧批次软件状态、在途启动与瞬态故障已抛弃；开始执行新批次实时预检。",
+                "EPB");
+            return safety;
+        }
+
         private async Task<BatchStartResult> StartBatchCoreAsync(
+            int[] channels,
+            int learnCycles,
+            int qualificationCycles,
+            bool reuseStableProfiles,
+            CancellationToken token)
+        {
+            return await _batchLifecycleGate.RunAsync(
+                    () => StartBatchCoreUnderLifecycleGateAsync(
+                        channels,
+                        learnCycles,
+                        qualificationCycles,
+                        reuseStableProfiles,
+                        token),
+                    token)
+                .ConfigureAwait(false);
+        }
+
+        private async Task<BatchStartResult> StartBatchCoreUnderLifecycleGateAsync(
             int[] channels,
             int learnCycles,
             int qualificationCycles,
@@ -155,10 +229,18 @@ namespace Controller
                 _activeBatchId = Guid.NewGuid();
                 BeginDaqIncidentRun(_activeBatchId, selected);
                 InvalidateStopSafetyCache();
+                ResetTransientFaultStateForRestart(
+                    selected,
+                    reuseStableProfiles ? "GracefulCheckpointResume" : "FreshBatchStart");
                 var warningConfig = AlarmConfig?.WarningSnapshots ?? new WarningSnapshotConfig();
                 if (warningConfig.Enabled && !(Recorder is ICycleEvidenceExporter))
-                    throw new InvalidOperationException(
-                        "WarningSnapshots 已启用，但圈记录器不支持 ICycleEvidenceExporter；为避免静默丢失预警证据，拒绝启动。");
+                {
+                    // 预警截图是诊断证据，不是电机、液压或电源的安全许可条件。
+                    // 记录器能力不匹配时继续运行；后续请求仍会明确报告导出失败，不能反向阻断试验。
+                    ReportSnapshotFailure(
+                        "WarningSnapshots 已启用，但圈记录器不支持 ICycleEvidenceExporter；" +
+                        "本次运行跳过预警证据导出，不阻碍重新开始。");
+                }
                 _emergencyPowerGroupLatch.Clear();
                 _daqRecoveryAttemptsByDevice.Clear();
                 _daqClockRecoveryAttempts.Clear();
@@ -166,8 +248,8 @@ namespace Controller
                 BeginPowerSupplyTelemetryRecording(_activeBatchId);
                 EnsureStrictCurveControl(selected);
                 SaveProgramSafetySnapshot();
-                if (_powerSupply != null)
-                    await _powerSupply.PrepareAndEnableAsync(selected, sessionToken).ConfigureAwait(false);
+                await EnsurePowerSupplyReadyBeforeStartAsync(selected, sessionToken)
+                    .ConfigureAwait(false);
 
                 // DAQ、电源及程序安全预检全部通过后，才允许旧停机锁存转为“启动中”。
                 foreach (var channel in selected)
@@ -299,11 +381,29 @@ namespace Controller
                             $"正常暂停检查点恢复：执行{qualificationCycles}圈资格复核（不计正式目标）",
                             affectedChannels: activeChannels,
                             correlationId: _activeBatchId);
-                    await RunPausedQualificationAsync(
-                            activeChannels,
-                            qualificationCycles,
-                            sessionToken)
-                        .ConfigureAwait(false);
+                    var qualificationFailed = await RunPausedQualificationAsync(
+                                activeChannels,
+                                qualificationCycles,
+                                sessionToken)
+                            .ConfigureAwait(false);
+                    foreach (var failedChannel in qualificationFailed)
+                    {
+                        startFaults.Add(new ChannelStartFault(
+                            failedChannel,
+                            "Qualification",
+                            "资格复核失败，已隔离通道。",
+                            FaultScope.Channel));
+                        PublishChannelRuntimeState(
+                            failedChannel,
+                            ChannelRuntimeState.StartBlocked,
+                            "QualificationFailed",
+                            "资格复核失败，已隔离通道",
+                            failedChannel,
+                            new[] { failedChannel },
+                            _activeBatchId);
+                        UnmarkHydraulicParticipant(failedChannel);
+                        foreach (var list in groups.Values) list.Remove(failedChannel);
+                    }
                 }
 
                 activeChannels = groups.Values.SelectMany(x => x).Distinct().OrderBy(x => x).ToArray();
@@ -394,24 +494,157 @@ namespace Controller
                          .Distinct(StringComparer.OrdinalIgnoreCase))
                 _persistence.ResumeAdmission(device);
 
-            var results = await _acq.EnsureChannelsReadyAsync(
-                    selected,
-                    timeoutMs: 3000,
-                    requiredFreshCallbacks: 3,
-                    maxAgeMs: 100,
-                    token: token)
-                .ConfigureAwait(false);
-            var failed = results.Where(r => !r.Recovered).ToArray();
-            if (failed.Length > 0)
+            var attempt = 0;
+            while (true)
             {
+                token.ThrowIfCancellationRequested();
+                attempt++;
+                var results = await _acq.EnsureChannelsReadyAsync(
+                        selected,
+                        timeoutMs: 3000,
+                        requiredFreshCallbacks: 3,
+                        maxAgeMs: 100,
+                        token: token)
+                    .ConfigureAwait(false);
+                var failed = results.Where(r => !r.Recovered).ToArray();
+                if (failed.Length == 0)
+                {
+                    var devices = string.Join(",", results.Select(r => r.Device).Distinct());
+                    _log?.Info(
+                        $"DAQ启动健康检查通过：Devices=[{devices}] Attempt={attempt}。",
+                        "AI");
+                    return;
+                }
+
+                var unmapped = failed.FirstOrDefault(r => string.IsNullOrWhiteSpace(r.Device));
+                if (unmapped != null)
+                    throw new InvalidOperationException(
+                        $"DAQ通道映射无效，无法自愈。Code=DaqChannelUnmapped；{unmapped.FailureReason}");
+
+                foreach (var failure in failed)
+                {
+                    if (await ConfirmStartupDaqHardwareMissingAsync(failure, token)
+                            .ConfigureAwait(false))
+                        throw new InvalidOperationException(
+                            $"DAQ设备物理缺失已由两次独立探测确认。Code=DaqHardwareConfirmed；" +
+                            $"Device={failure.Device}；{failure.FailureReason}");
+                }
+
                 var details = string.Join("；", failed.Select(r =>
                     $"{r.Device}: {r.FailureReason}, Fresh={r.FreshCallbacks}/{r.RequiredFreshCallbacks}"));
-                throw new InvalidOperationException(
-                    $"DAQ启动健康检查失败，未使能电源与液压。Code=DaqStartPreflightFailed；{details}");
+                var delayMs = GetDaqSelfMaintenanceDelayMs(attempt);
+                foreach (var channel in selected ?? Array.Empty<int>())
+                    PublishChannelRuntimeState(
+                        channel,
+                        ChannelRuntimeState.Recovering,
+                        "DaqStartSelfHealing",
+                        $"DAQ软件自愈第{attempt}次未通过，{delayMs}ms后继续重试；未使能电源与液压。",
+                        affectedChannels: selected,
+                        correlationId: _activeBatchId,
+                        allowTerminalReset: true);
+                _log?.Warn(
+                    $"DAQ启动预检未通过，按软件瞬态持续自愈，不标记启动受阻。" +
+                    $"Attempt={attempt} DelayMs={delayMs}；{details}",
+                    "AI");
+                await Task.Delay(delayMs, token).ConfigureAwait(false);
             }
+        }
 
-            var devices = string.Join(",", results.Select(r => r.Device).Distinct());
-            _log?.Info($"DAQ启动健康检查通过：Devices=[{devices}]。", "AI");
+        private async Task<bool> ConfirmStartupDaqHardwareMissingAsync(
+            DaqRecoveryResult failure,
+            CancellationToken token)
+        {
+            if (failure == null ||
+                !string.Equals(failure.FailureKind, "DaqDeviceMissing", StringComparison.OrdinalIgnoreCase) ||
+                string.IsNullOrWhiteSpace(failure.Device))
+                return false;
+
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+            timeout.CancelAfter(3000);
+            for (var attempt = 0; attempt < 2; attempt++)
+            {
+                DaqHardwareProbeResult probe;
+                try
+                {
+                    probe = await _daqHardwareProbe.ProbeAsync(failure.Device, timeout.Token)
+                        .ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (!token.IsCancellationRequested)
+                {
+                    return false;
+                }
+                if (probe == null || !probe.IndependentFailureConfirmed) return false;
+                if (attempt == 0)
+                    await Task.Delay(500, timeout.Token).ConfigureAwait(false);
+            }
+            return true;
+        }
+
+        private async Task EnsurePowerSupplyReadyBeforeStartAsync(
+            int[] selected,
+            CancellationToken token)
+        {
+            if (_powerSupply == null) return;
+
+            var channels = (selected ?? Array.Empty<int>()).Distinct().OrderBy(x => x).ToArray();
+            var groupIds = channels
+                .Select(GetElectricalGroupId)
+                .Where(groupId => groupId > 0)
+                .Distinct()
+                .OrderBy(groupId => groupId)
+                .ToArray();
+            var attempt = 0;
+            while (true)
+            {
+                token.ThrowIfCancellationRequested();
+                attempt++;
+                try
+                {
+                    await _powerSupply.PrepareAndEnableAsync(channels, token).ConfigureAwait(false);
+                    _log?.Info(
+                        $"程控电源启动实时预检通过：Groups=[{string.Join(",", groupIds)}] " +
+                        $"Attempt={attempt}。",
+                        "程控电源");
+                    return;
+                }
+                catch (OperationCanceledException) when (token.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    var protectionGroups = groupIds
+                        .Where(groupId =>
+                        {
+                            var snapshot = _powerSupply.GetLatestSnapshot(groupId);
+                            return snapshot?.ProtectionTripped == true &&
+                                   (DateTime.UtcNow - snapshot.TimestampUtc.ToUniversalTime()) <=
+                                   TimeSpan.FromSeconds(5);
+                        })
+                        .ToArray();
+                    if (protectionGroups.Length > 0)
+                        throw new InvalidOperationException(
+                            $"程控电源实时回读确认保护已触发，停止本次启动。" +
+                            $"Code=PowerProtectionHardwareConfirmed; Groups=[{string.Join(",", protectionGroups)}]",
+                            ex);
+
+                    var delayMs = GetDaqSelfMaintenanceDelayMs(attempt);
+                    foreach (var channel in channels)
+                        PublishChannelRuntimeState(
+                            channel,
+                            ChannelRuntimeState.Recovering,
+                            "PowerStartSelfHealing",
+                            $"程控电源软件自愈第{attempt}次未通过，{delayMs}ms后继续完整重连预检。",
+                            affectedChannels: channels,
+                            correlationId: _activeBatchId,
+                            allowTerminalReset: true);
+                    _log?.Warn(
+                        $"程控电源启动预检未通过，无新鲜保护触发证据，按软件瞬态持续自愈。" +
+                        $"Attempt={attempt} DelayMs={delayMs} Error={ex.Message}",
+                        "程控电源");
+                    await Task.Delay(delayMs, token).ConfigureAwait(false);
+                }
+            }
         }
 
         internal static bool IsExpectedBatchCancellation(
@@ -635,8 +868,12 @@ namespace Controller
 
                             // 2.5) ★ 圈开始：通知 Recorder
                             var cycleNumber = cycleIndex + baseCycle;
-                            Recorder?.BeginCycle(ch, cycleNumber, DateTime.UtcNow);
-                            MarkCurrentCycleNumber(ch, cycleNumber);
+                            var recorder = Recorder;
+                            if (!TryBeginFormalCycle(recorder, ch, cycleNumber, DateTime.UtcNow))
+                            {
+                                ReleaseCyclePauseCts(ch, cyclePauseCts);
+                                return false;
+                            }
 
                             // 3) 跑一圈（对齐外壳版）
                             var ok = false;
@@ -659,6 +896,17 @@ namespace Controller
                             {
                                 ok = false;
                             }
+                            var controlSucceeded = IsFormalControlSucceeded(
+                                ok,
+                                runner.LastCycleOutcome.IsSuccess);
+                            var controlNeedsSoftwareRecovery =
+                                runner.LastCycleOutcome.Kind ==
+                                Adaptive.EpbCycleOutcomeKind.SoftwareRecovery;
+                            if (controlNeedsSoftwareRecovery)
+                                ReportFormalControlSoftwareRecovery(
+                                    ch,
+                                    cycleNumber,
+                                    runner.LastCycleOutcome.Reason);
 
                             if (!ok)
                             {
@@ -672,7 +920,7 @@ namespace Controller
                             }
 
                             // 4) ★ 圈结束：根据是否报警停机决定封圈状态
-                            var recorder = Recorder;
+                            var persistenceCommitted = recorder == null;
                             if (recorder != null)
                             {
                                 try
@@ -691,6 +939,15 @@ namespace Controller
                                         // 报警后台流程会在确认当前圈 CSV/BIN 快照存在后封为 alarm；
                                         // 若快照失败则封为 failed。这里保持 running，避免先写无文件的 alarm。
                                     }
+                                    else if (controlNeedsSoftwareRecovery)
+                                    {
+                                        AbortCycleAfterPersistence(
+                                            recorder,
+                                            ch,
+                                            cycleNumber,
+                                            DateTime.UtcNow,
+                                            "AbortedBySoftwareRecovery");
+                                    }
                                     else if (runner.LastCycleOutcome.Kind == Adaptive.EpbCycleOutcomeKind.HardFault)
                                     {
                                         AbortCycleAfterPersistence(
@@ -700,9 +957,9 @@ namespace Controller
                                             DateTime.UtcNow,
                                             "failed");
                                     }
-                                    else if (runner.LastCycleOutcome.IsSuccess)
+                                    else if (controlSucceeded)
                                     {
-                                        CompleteCycleAndScheduleEvidence(
+                                        persistenceCommitted = CompleteCycleAndScheduleEvidence(
                                             recorder,
                                             ch,
                                             cycleNumber,
@@ -721,9 +978,20 @@ namespace Controller
                                                 : "failed");
                                     }
                                 }
-                                catch
+                                catch (Exception ex)
                                 {
-                                    // ignore
+                                    if (controlSucceeded)
+                                        AbortFormalCycleWithoutPersistenceBarrier(
+                                            recorder,
+                                            ch,
+                                            cycleNumber,
+                                            DateTime.UtcNow,
+                                            0,
+                                            ex);
+                                    else
+                                        _log?.Warn(
+                                            $"EPB[{ch}] 失败圈封存异常 Cycle={cycleNumber}: {ex.Message}",
+                                            "落盘");
                                 }
                             }
 
@@ -733,15 +1001,21 @@ namespace Controller
 
                             // 若该通道自然完成最后一圈：统一收尾（含“停止即存最近10圈”），
                             // 并从运行集合中移除，避免影响其它仍在运行通道的逻辑。
-                            if (runner.LastCycleOutcome.IsSuccess &&
-                                Interlocked.Increment(ref successfulCycles) >= runs)
+                            if (IsFormalCycleCountable(
+                                    controlSucceeded,
+                                    persistenceCommitted))
                             {
-                                FinalizeChannelAfterNaturalCompletion(ch);
-                                timer.Stop();
+                                var committedCycles = Interlocked.Increment(ref successfulCycles);
+                                OnFormalCycleCommitted(ch, committedCycles);
+                                if (committedCycles >= runs)
+                                {
+                                    FinalizeChannelAfterNaturalCompletion(ch);
+                                    timer.Stop();
+                                }
                             }
 
                             ReleaseCyclePauseCts(ch, cyclePauseCts);
-                            return ok;
+                            return controlSucceeded && persistenceCommitted;
 
                         });
                 }
@@ -849,12 +1123,9 @@ namespace Controller
             if (groups == null || groups.Count == 0 || learnCycles <= 0)
                 return Array.Empty<int>();
 
-            using var learningFaultCts = new CancellationTokenSource();
-            using var learningScope = new LearningPhaseCancellationScope(this, learningFaultCts);
-            using var phaseLinkedCts = CancellationTokenSource.CreateLinkedTokenSource(
-                token,
-                learningFaultCts.Token);
-            var phaseToken = phaseLinkedCts.Token;
+            // 组级/通道级故障只取消其各自 stop token。学习阶段不得再有一个共享
+            // “任一故障取消整批”的令牌，否则健康电源组也会被启动回滚停止。
+            var phaseToken = token;
             var stopCtsByChannel = new Dictionary<int, CancellationTokenSource>();
             var learningRunId = _activeBatchId;
             var quarantined = new ConcurrentDictionary<int, string>();
@@ -918,8 +1189,10 @@ namespace Controller
                         pg,
                         HydraulicPhaseKind.Learning,
                         k + 1L);
-                    var anchorTask = HydraulicEnterAtGroupAnchorAsync(hydraulicKey, enabled, phaseToken);
-                    tasksAllGroups.Add(anchorTask); // 并入等待，便于异常汇总
+                    var anchorTask = EnterHydraulicStartupPhaseWithSelfHealingAsync(
+                        hydraulicKey,
+                        enabled,
+                        phaseToken);
                     var maxPhaseMs = enabled.Max(member => staggerPlan.Get(member).PhaseMs);
 
                     for (var i = 0; i < enabled.Count; i++)
@@ -936,160 +1209,65 @@ namespace Controller
                                     stopCts.Token);
                             var channelToken = channelLinkedCts.Token;
 
-                            // ① 等待液压锚点到位（屏障：确保本组已经建压 + 所有通道已登记 InFlight）
-                            var lease = await anchorTask.ConfigureAwait(false);
-
-                            // ② 液压资格完成后整组共享同一执行窗口。
-                            // 禁止各通道按自己的原始相位独立滚动，否则资格时刻恰好落在
-                            // 0ms 与 800ms 相位之间时，会把同代次成员拆到相邻两个周期。
-                            var phaseWindow = ElectricalStaggerExecutor.CreateQualifiedPhaseWindow(
-                                lease?.ActuationAnchorUtc ?? DateTime.UtcNow.AddMilliseconds(2),
-                                tk,
-                                PeriodMs,
-                                maxPhaseMs);
-                            var atFuture = phaseWindow.GetDueUtc(phase);
-                            var now = DateTime.UtcNow;
-
-                            var delay = atFuture - now;
-                            _log?.Info(
-                                $"通道{ch}: tk={tk:HH:mm:ss.fff}, phase={phase}ms, qualified-at={atFuture:HH:mm:ss.fff}, delay={delay.TotalMilliseconds}ms");
-
-                            var ms = (int)Math.Floor(delay.TotalMilliseconds);
-                            if (ms > 0)
-                                await Task.Delay(ms, channelToken).ConfigureAwait(false);
-                            else
-                                await Task.Yield();
-
-                            var actualStartUtc = DateTime.UtcNow;
-                            MarkElectricalPhaseDue(ch, atFuture);
-                            _log?.Info(
-                                $"学习阶段启动 Run={learningRunId:N} EPB={ch} Group={staggerPlan.Get(ch).ElectricalGroupId} " +
-                                $"LearnCycle={k + 1} Phase={phase}ms PlannedUtc={atFuture:O} " +
-                                $"ActualUtc={actualStartUtc:O} DeviationMs={(actualStartUtc - atFuture).TotalMilliseconds:F3}",
-                                "EPB");
-
-                            // ③ 学习核心启动前建立负圈号边界；后续 DAQ 批次自动写入该圈。
-                            channelToken.ThrowIfCancellationRequested();
-                            var learningOrdinal = k + 1;
-                            var learningCycleNumber =
-                                Recorder?.BeginLearningCycle(ch, DateTime.UtcNow) ?? 0;
-                            if (learningCycleNumber != 0)
-                                MarkCurrentCycleNumber(ch, learningCycleNumber);
-
-                            try
-                            {
-                                var runner = GetRunner(ch);
-                                if (GetEpbControlMode(ch) == Adaptive.EpbControlMode.AdaptiveCurrent)
+                            await FaultIsolatedPhaseWork.RunAsync(
+                                async () =>
                                 {
-                                    var outcome = await runner.RunOneAdaptiveLearningAsync(PeriodMs, channelToken)
-                                        .ConfigureAwait(false);
+                                    // ① 等待液压锚点到位（屏障：确保本组已经建压 + 所有通道已登记 InFlight）。
+                                    // 锚点异常也必须在本组/本通道内收口，不能越过 WhenAll 触发整批启动回滚。
+                                    var lease = await anchorTask.ConfigureAwait(false);
+                                    channelToken.ThrowIfCancellationRequested();
 
-                                    if (!outcome.IsSuccess &&
-                                        outcome.Reason?.IndexOf(
-                                            "DaqSampleStale",
-                                            StringComparison.OrdinalIgnoreCase) >= 0)
-                                    {
-                                        // 第一次陈旧尝试不计入逻辑学习圈：先封存失败证据，
-                                        // 完成设备级安全恢复后用新的负圈号重试同一 learningOrdinal。
-                                        await SealLearningCycleAsync(
+                                    // ② 液压资格完成后整组共享同一执行窗口。
+                                    // 禁止各通道按自己的原始相位独立滚动，否则资格时刻恰好落在
+                                    // 0ms 与 800ms 相位之间时，会把同代次成员拆到相邻两个周期。
+                                    var phaseWindow = ElectricalStaggerExecutor.CreateQualifiedPhaseWindow(
+                                        lease?.ActuationAnchorUtc ?? DateTime.UtcNow.AddMilliseconds(2),
+                                        tk,
+                                        PeriodMs,
+                                        maxPhaseMs);
+                                    var atFuture = phaseWindow.GetDueUtc(phase);
+                                    var now = DateTime.UtcNow;
+
+                                    var delay = atFuture - now;
+                                    _log?.Info(
+                                        $"通道{ch}: tk={tk:HH:mm:ss.fff}, phase={phase}ms, qualified-at={atFuture:HH:mm:ss.fff}, delay={delay.TotalMilliseconds}ms");
+
+                                    var ms = (int)Math.Floor(delay.TotalMilliseconds);
+                                    if (ms > 0)
+                                        await Task.Delay(ms, channelToken).ConfigureAwait(false);
+                                    else
+                                        await Task.Yield();
+
+                                    var actualStartUtc = DateTime.UtcNow;
+                                    MarkElectricalPhaseDue(ch, atFuture);
+                                    _log?.Info(
+                                        $"学习阶段启动 Run={learningRunId:N} EPB={ch} Group={staggerPlan.Get(ch).ElectricalGroupId} " +
+                                        $"LearnCycle={k + 1} Phase={phase}ms PlannedUtc={atFuture:O} " +
+                                        $"ActualUtc={actualStartUtc:O} DeviationMs={(actualStartUtc - atFuture).TotalMilliseconds:F3}",
+                                        "EPB");
+
+                                    await RunLearningLogicalCycleWithSelfHealingAsync(
+                                            GetRunner(ch),
                                             ch,
-                                            learningCycleNumber,
-                                            learningRunId,
-                                            learningOrdinal,
-                                            "learning_failed").ConfigureAwait(false);
-                                        learningCycleNumber = 0;
-                                        await WaitForDaqRecoveryAsync(ch, channelToken).ConfigureAwait(false);
-
-                                        var recoveryKey = new HydraulicGenerationKey(
-                                            learningRunId,
                                             pg,
-                                            HydraulicPhaseKind.Recovery,
-                                            (k + 1L) * 100L + ch);
-                                        await HydraulicEnterAtGroupAnchorAsync(
-                                                recoveryKey,
-                                                new[] { ch },
-                                                channelToken)
-                                            .ConfigureAwait(false);
-                                        learningCycleNumber =
-                                            Recorder?.BeginLearningCycle(ch, DateTime.UtcNow) ?? 0;
-                                        if (learningCycleNumber != 0)
-                                            MarkCurrentCycleNumber(ch, learningCycleNumber);
-                                        outcome = await runner.RunOneAdaptiveLearningAsync(
-                                                PeriodMs,
-                                                channelToken)
-                                            .ConfigureAwait(false);
-                                    }
-
-                                    if (outcome.Kind == Adaptive.EpbCycleOutcomeKind.Canceled)
-                                        throw new OperationCanceledException(channelToken);
-
-                                    if (!outcome.IsSuccess)
-                                        throw new InvalidOperationException(
-                                            $"EPB[{ch}] 自适应学习圈失败：阶段={outcome.Stage}，原因={outcome.Reason}");
-                                }
-                                else
+                                            phase,
+                                            k + 1,
+                                            learningRunId,
+                                            channelToken)
+                                        .ConfigureAwait(false);
+                                },
+                                phaseToken,
+                                (ex, channelCanceled) =>
                                 {
-                                    var sample = await runner.LearnOneAlignedCoreAsync(
-                                        PeriodMs, T8BaseMs, phase, T8MinMs, channelToken
-                                    ).ConfigureAwait(false);
-
-                                    if (sample != null)
-                                        runner.ApplyLearnSample(sample);
-                                }
-
-                                await SealLearningCycleAsync(
-                                    ch,
-                                    learningCycleNumber,
-                                    learningRunId,
-                                    learningOrdinal,
-                                    "learning_completed").ConfigureAwait(false);
-                            }
-                            catch (OperationCanceledException) when (!phaseToken.IsCancellationRequested)
-                            {
-                                quarantined[ch] = "ChannelCanceled";
-                                if (!IsAlarmStopRequested(ch))
-                                {
-                                    await SealLearningCycleAsync(
-                                        ch,
-                                        learningCycleNumber,
-                                        learningRunId,
-                                        learningOrdinal,
-                                        "learning_canceled").ConfigureAwait(false);
-                                }
-                            }
-                            catch (OperationCanceledException)
-                            {
-                                if (!IsAlarmStopRequested(ch))
-                                {
-                                    await SealLearningCycleAsync(
-                                        ch,
-                                        learningCycleNumber,
-                                        learningRunId,
-                                        learningOrdinal,
-                                        "learning_canceled").ConfigureAwait(false);
-                                }
-                                throw;
-                            }
-                            catch (Exception ex)
-                            {
-                                quarantined[ch] = ex.Message;
-                                UnmarkHydraulicParticipant(ch);
-                                try { CommandEpbOff(ch, "LearningChannelIsolation"); } catch { }
-                                // 硬故障由报警后台在断电尾部后封为 alarm；其它失败在学习目录封存。
-                                if (!IsAlarmStopRequested(ch))
-                                {
-                                    await SealLearningCycleAsync(
-                                        ch,
-                                        learningCycleNumber,
-                                        learningRunId,
-                                        learningOrdinal,
-                                        "learning_failed").ConfigureAwait(false);
-                                }
-                                _log?.Error(
-                                    $"EPB[{ch}] 学习失败已按通道隔离，其他健康通道继续。原因={ex.Message}",
-                                    "EPB",
-                                    ex);
-                            }
+                                    quarantined[ch] = channelCanceled ? "ChannelCanceled" : ex.Message;
+                                    if (channelCanceled) return;
+                                    UnmarkHydraulicParticipant(ch);
+                                    try { CommandEpbOff(ch, "LearningChannelIsolation"); } catch { }
+                                    _log?.Error(
+                                        $"EPB[{ch}] 学习失败已按通道隔离，其他健康通道继续。原因={ex.Message}",
+                                        "EPB",
+                                        ex);
+                                }).ConfigureAwait(false);
                         }, phaseToken));
                     }
                 }
@@ -1125,47 +1303,241 @@ namespace Controller
             return quarantined.Keys.OrderBy(x => x).ToArray();
         }
 
-        private sealed class LearningPhaseCancellationScope : IDisposable
+        private async Task RunLearningLogicalCycleWithSelfHealingAsync(
+            IEpbCycleRunner runner,
+            int channel,
+            int pressureGroup,
+            int phaseMs,
+            int learningOrdinal,
+            Guid runId,
+            CancellationToken token)
         {
-            private readonly EpbManager _owner;
-            private CancellationTokenSource _cts;
+            if (runner == null) throw new ArgumentNullException(nameof(runner));
+            var modelBeforeLogicalCycle = runner.CaptureAdaptiveProfile();
+            var learningCycleNumber = 0;
 
-            public LearningPhaseCancellationScope(
-                EpbManager owner,
-                CancellationTokenSource cts)
-            {
-                _owner = owner;
-                _cts = cts;
-                var previous = Interlocked.Exchange(ref owner._learningPhaseFaultCts, cts);
-                if (previous == null || ReferenceEquals(previous, cts)) return;
-                try { previous.Cancel(); } catch { }
-                try { previous.Dispose(); } catch { }
-            }
+            var attempts = await SoftwareSelfHealingLoop.RunAsync(
+                    async (attempt, attemptToken) =>
+                    {
+                        if (attempt > 1)
+                        {
+                            await EnterHydraulicStartupPhaseWithSelfHealingAsync(
+                                    new HydraulicGenerationKey(
+                                        runId,
+                                        pressureGroup,
+                                        HydraulicPhaseKind.Recovery,
+                                        Interlocked.Increment(ref _learningRetryGeneration)),
+                                    new[] { channel },
+                                    attemptToken)
+                                .ConfigureAwait(false);
+                        }
 
-            public void Dispose()
-            {
-                var cts = Interlocked.Exchange(ref _cts, null);
-                if (cts == null) return;
-                Interlocked.CompareExchange(ref _owner._learningPhaseFaultCts, null, cts);
-            }
+                        EpbCycleRunner.LearnSample pendingLegacySample = null;
+                        try
+                        {
+                            try
+                            {
+                                learningCycleNumber =
+                                    Recorder?.BeginLearningCycle(channel, DateTime.UtcNow) ?? 0;
+                            }
+                            catch (Exception ex)
+                            {
+                                throw new SoftwareSelfHealingRetryException(
+                                    $"EPB[{channel}] 无法建立学习圈落盘边界。",
+                                    ex);
+                            }
+                            if (learningCycleNumber != 0)
+                                MarkCurrentCycleNumber(channel, learningCycleNumber);
+
+                            if (GetEpbControlMode(channel) == Adaptive.EpbControlMode.AdaptiveCurrent)
+                            {
+                                var outcome = await runner.RunOneAdaptiveLearningAsync(
+                                        PeriodMs,
+                                        attemptToken)
+                                    .ConfigureAwait(false);
+
+                                if (!outcome.IsSuccess &&
+                                    outcome.Reason?.IndexOf(
+                                        "DaqSampleStale",
+                                        StringComparison.OrdinalIgnoreCase) >= 0)
+                                {
+                                    // DAQ软件恢复前的失败尝试只留证，不得污染模型或占用逻辑学习圈。
+                                    await SealLearningCycleAsync(
+                                            channel,
+                                            learningCycleNumber,
+                                            runId,
+                                            learningOrdinal,
+                                            "learning_failed",
+                                            requireValidEvidence: true,
+                                            softwareAttempt: attempt)
+                                        .ConfigureAwait(false);
+                                    learningCycleNumber = 0;
+                                    runner.RestoreAdaptiveProfile(modelBeforeLogicalCycle);
+                                    await WaitForDaqRecoveryAsync(channel, attemptToken).ConfigureAwait(false);
+                                    await EnterHydraulicStartupPhaseWithSelfHealingAsync(
+                                            new HydraulicGenerationKey(
+                                                runId,
+                                                pressureGroup,
+                                                HydraulicPhaseKind.Recovery,
+                                                Interlocked.Increment(ref _learningRetryGeneration)),
+                                            new[] { channel },
+                                            attemptToken)
+                                        .ConfigureAwait(false);
+
+                                    try
+                                    {
+                                        learningCycleNumber =
+                                            Recorder?.BeginLearningCycle(channel, DateTime.UtcNow) ?? 0;
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        throw new SoftwareSelfHealingRetryException(
+                                            $"EPB[{channel}] DAQ恢复后无法重建学习圈落盘边界。",
+                                            ex);
+                                    }
+                                    if (learningCycleNumber != 0)
+                                        MarkCurrentCycleNumber(channel, learningCycleNumber);
+                                    outcome = await runner.RunOneAdaptiveLearningAsync(
+                                            PeriodMs,
+                                            attemptToken)
+                                        .ConfigureAwait(false);
+                                }
+
+                                if (outcome.Kind == Adaptive.EpbCycleOutcomeKind.Canceled)
+                                    throw new OperationCanceledException(attemptToken);
+                                if (outcome.Kind == Adaptive.EpbCycleOutcomeKind.SoftwareRecovery)
+                                    throw new SoftwareSelfHealingRetryException(
+                                        $"EPB[{channel}] 自适应学习圈遇到软件瞬态；" +
+                                        $"本次尝试作废后重做。Reason={outcome.Reason}");
+                                if (!outcome.IsSuccess)
+                                    throw new InvalidOperationException(
+                                        $"EPB[{channel}] 自适应学习圈失败：" +
+                                        $"阶段={outcome.Stage}，原因={outcome.Reason}");
+                            }
+                            else
+                            {
+                                pendingLegacySample = await runner.LearnOneAlignedCoreAsync(
+                                        PeriodMs,
+                                        T8BaseMs,
+                                        phaseMs,
+                                        T8MinMs,
+                                        attemptToken)
+                                    .ConfigureAwait(false);
+                            }
+
+                            await SealLearningCycleAsync(
+                                    channel,
+                                    learningCycleNumber,
+                                    runId,
+                                    learningOrdinal,
+                                    "learning_completed",
+                                    requireValidEvidence: true,
+                                    softwareAttempt: attempt)
+                                .ConfigureAwait(false);
+                            learningCycleNumber = 0;
+
+                            // 旧时序模型也只在证据可靠封存后提交，避免作废圈进入聚合。
+                            if (pendingLegacySample != null)
+                                runner.ApplyLearnSample(pendingLegacySample);
+                        }
+                        catch (SoftwareSelfHealingRetryException)
+                        {
+                            learningCycleNumber = 0;
+                            throw;
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            if (!IsAlarmStopRequested(channel))
+                                await SealLearningCycleAsync(
+                                        channel,
+                                        learningCycleNumber,
+                                        runId,
+                                        learningOrdinal,
+                                        "learning_canceled",
+                                        softwareAttempt: attempt)
+                                    .ConfigureAwait(false);
+                            learningCycleNumber = 0;
+                            throw;
+                        }
+                        catch (Exception ex) when (EpbCycleRunner.IsSoftwareRecoveryException(ex))
+                        {
+                            if (!IsAlarmStopRequested(channel))
+                                await SealLearningCycleAsync(
+                                        channel,
+                                        learningCycleNumber,
+                                        runId,
+                                        learningOrdinal,
+                                        "learning_failed",
+                                        softwareAttempt: attempt)
+                                    .ConfigureAwait(false);
+                            learningCycleNumber = 0;
+                            throw new SoftwareSelfHealingRetryException(
+                                $"EPB[{channel}] 学习圈软件异常；本次尝试作废后重做。" +
+                                $"{ex.GetType().Name}: {ex.Message}",
+                                ex);
+                        }
+                        catch
+                        {
+                            if (!IsAlarmStopRequested(channel))
+                                await SealLearningCycleAsync(
+                                        channel,
+                                        learningCycleNumber,
+                                        runId,
+                                        learningOrdinal,
+                                        "learning_failed",
+                                        softwareAttempt: attempt)
+                                    .ConfigureAwait(false);
+                            learningCycleNumber = 0;
+                            throw;
+                        }
+                    },
+                    (attempt, ex, attemptToken) =>
+                    {
+                        runner.RestoreAdaptiveProfile(modelBeforeLogicalCycle);
+                        RequireSoftwareRecoveryOutputOff(
+                            channel,
+                            "LearningPersistenceSelfHealing");
+                        PublishChannelRuntimeState(
+                            channel,
+                            ChannelRuntimeState.Recovering,
+                            "LearningPersistenceSelfHealing",
+                            $"学习圈证据软件自愈第{attempt}次：本次尝试已作废，随后重做同一逻辑学习圈。",
+                            affectedChannels: new[] { channel },
+                            correlationId: runId,
+                            allowTerminalReset: true);
+                        _log?.Warn(
+                            $"EPB[{channel}] 学习圈证据失败已作废，不取消其它通道或整批启动。" +
+                            $"Attempt={attempt} DelayMs={GetDaqSelfMaintenanceDelayMs(attempt)} " +
+                            $"Reason={ex.Message}",
+                            "落盘");
+                        return Task.CompletedTask;
+                    },
+                    GetDaqSelfMaintenanceDelayMs,
+                    token)
+                .ConfigureAwait(false);
+
+            if (attempts > 1)
+                PublishChannelRuntimeState(
+                    channel,
+                    ChannelRuntimeState.Learning,
+                    "LearningPersistenceSelfHealed",
+                    $"学习圈证据自愈完成，共尝试{attempts}次；只保留最后一次有效学习结果。",
+                    affectedChannels: new[] { channel },
+                    correlationId: runId,
+                    allowTerminalReset: true);
         }
 
-        private void CancelActiveLearningPhase()
-        {
-            var cts = Volatile.Read(ref _learningPhaseFaultCts);
-            if (cts == null) return;
-            try { cts.Cancel(); } catch { }
-        }
-
-        private async Task SealLearningCycleAsync(
+        private Task SealLearningCycleAsync(
             int channel,
             int cycleNumber,
             Guid runId,
             int learningOrdinal,
-            string status)
+            string status,
+            bool requireValidEvidence = false,
+            int softwareAttempt = 1)
         {
             var recorder = Recorder;
-            if (cycleNumber == 0 || recorder == null) return;
+            if (cycleNumber == 0 || recorder == null) return Task.CompletedTask;
 
             var exportDir = System.IO.Path.Combine(
                 _cfg.Test.StoreDir,
@@ -1174,12 +1546,53 @@ namespace Controller
                 runId.ToString("N"),
                 $"EPB{channel:D2}",
                 $"Learning_{learningOrdinal:D4}");
-            var evidence = recorder.SealAndExportCycle(
-                channel,
-                cycleNumber,
-                exportDir,
-                DateTime.UtcNow,
-                status);
+            if (softwareAttempt > 1)
+                exportDir = System.IO.Path.Combine(exportDir, $"Attempt_{softwareAttempt:D4}");
+
+            AlarmCycleSnapshotEvidence evidence;
+            try
+            {
+                evidence = recorder.SealAndExportCycle(
+                    channel,
+                    cycleNumber,
+                    exportDir,
+                    DateTime.UtcNow,
+                    status);
+            }
+            catch (Exception ex)
+            {
+                // 自定义/代理 Recorder 可能在取得圈边界后直接抛异常。显式封为软件作废，
+                // 避免下一次重试继续撞到仍为 running 的旧负圈号。
+                try
+                {
+                    recorder.AbortCycle(
+                        channel,
+                        cycleNumber,
+                        Math.Max(0, recorder.GetCurrentCycleSampleCount(channel)),
+                        DateTime.UtcNow,
+                        "AbortedBySoftwareRecovery");
+                }
+                catch (Exception abortEx)
+                {
+                    _log?.Warn(
+                        $"EPB[{channel}] 学习圈封存异常后的软件作废也未确认：{abortEx.Message}",
+                        "落盘");
+                }
+                if (_currentCycleNumberByChannel.TryGetValue(channel, out var abortCurrent) &&
+                    abortCurrent == cycleNumber)
+                    _currentCycleNumberByChannel.TryRemove(channel, out _);
+
+                if (requireValidEvidence)
+                    throw new SoftwareSelfHealingRetryException(
+                        $"EPB[{channel}] 学习圈封存/导出抛出软件异常：" +
+                        $"Cycle={cycleNumber} Status={status} Error={ex.Message}",
+                        ex);
+                _log?.Warn(
+                    $"EPB[{channel}] 失败/取消学习圈的辅助证据导出异常：{ex.Message}；" +
+                    "不扩大停机范围。",
+                    "落盘");
+                return Task.CompletedTask;
+            }
 
             if (_currentCycleNumberByChannel.TryGetValue(channel, out var current) &&
                 current == cycleNumber)
@@ -1189,25 +1602,20 @@ namespace Controller
 
             // 报警后台已取得封存权时，学习收尾只退出，不重复生成文件或改写状态。
             if (!evidence.WasClaimed)
-                return;
+                return Task.CompletedTask;
             if (!evidence.IsValid)
             {
                 var reason =
                     $"EPB[{channel}] 学习圈落盘失败：Cycle={cycleNumber} Status={status} " +
                     $"Error={evidence.ValidationError}";
 
-                // 数据证据失败是系统/存储故障，不得进入 EPB 硬件报警灯和蜂鸣器链路。
-                CancelActiveLearningPhase();
-                try { CommandEpbOffSafetyImmediate(channel); } catch { }
-                _log?.Error(reason, "落盘");
+                // 数据证据失败是软件/存储瞬态：作废尝试并重做同一逻辑学习圈，
+                // 不取消其它通道、不发布全局故障，也不驱动硬件报警灯和蜂鸣器。
+                _log?.Warn(reason, "落盘");
                 FlushPersistentLog();
-                PublishIsolatedSoftwareFault(
-                    "LearningPersistenceInvalid",
-                    reason,
-                    new[] { channel },
-                    Guid.NewGuid());
-
-                throw new InvalidOperationException(reason);
+                if (requireValidEvidence)
+                    throw new SoftwareSelfHealingRetryException(reason);
+                return Task.CompletedTask;
             }
 
             _log?.Info(
@@ -1215,6 +1623,7 @@ namespace Controller
                 $"InternalCycle={cycleNumber} Status={status} Samples={evidence.SampleCount} " +
                 $"Dir={exportDir}",
                 "落盘");
+            return Task.CompletedTask;
         }
 
         #endregion
@@ -1382,10 +1791,6 @@ namespace Controller
         {
             if (runner == null) return;
 
-            // 先解绑一次，避免重复订阅造成事件被触发多次
-            runner.ChannelCycleCompleted -= OnRunnerChannelCycleCompleted;
-            runner.ChannelCycleCompleted += OnRunnerChannelCycleCompleted;
-
             runner.AlarmRaised -= OnRunnerAlarmRaised;
             runner.AlarmRaised += OnRunnerAlarmRaised;
 
@@ -1405,7 +1810,6 @@ namespace Controller
         private void DetachRunnerEvents(EpbCycleRunner runner)
         {
             if (runner == null) return;
-            runner.ChannelCycleCompleted -= OnRunnerChannelCycleCompleted;
             runner.AlarmRaised -= OnRunnerAlarmRaised;
             runner.WarningRaised -= OnRunnerWarningRaised;
             runner.WarningEvidenceRaised -= OnRunnerWarningEvidenceRaised;
@@ -1507,20 +1911,116 @@ namespace Controller
                 .ConfigureAwait(false);
             foreach (var ch in channelList)
                 _hydraulicLeaseByChannel[ch] = lease;
-            try { PressureQualificationChanged?.Invoke(lease.Qualification); } catch { }
+            NonCriticalObserver.Invoke(
+                PressureQualificationChanged,
+                lease.Qualification,
+                ex => _log?.Warn($"压力资格观察者异常已隔离：{ex.Message}", "液压协调"));
             return lease;
+        }
+
+        /// <summary>
+        /// 启动、学习和资格阶段的液压软件同步自愈。屏障缺员和旧成员不可变均属于
+        /// 软件代次问题，安全释压后持续创建 Recovery 代次；建压、保压、释压等
+        /// 实时硬件证据仍原样抛出，由故障组隔离逻辑处理。
+        /// </summary>
+        private async Task<HydraulicCycleLease> EnterHydraulicStartupPhaseWithSelfHealingAsync(
+            HydraulicGenerationKey initialKey,
+            IReadOnlyList<int> channelsInGroup,
+            CancellationToken token)
+        {
+            if (initialKey == null) throw new ArgumentNullException(nameof(initialKey));
+            var attempt = 0;
+            var key = initialKey;
+            while (true)
+            {
+                token.ThrowIfCancellationRequested();
+                try
+                {
+                    return await HydraulicEnterAtGroupAnchorAsync(key, channelsInGroup, token)
+                        .ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (token.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex) when (IsHydraulicSoftwareRecoveryCandidate(ex))
+                {
+                    attempt++;
+                    var offFailedChannels = new List<int>();
+                    foreach (var channel in channelsInGroup ?? Array.Empty<int>())
+                    {
+                        var offSucceeded = false;
+                        try { offSucceeded = CommandEpbOffSafetyImmediate(channel); } catch { }
+                        if (!offSucceeded)
+                        {
+                            offFailedChannels.Add(channel);
+                            RequestElectricalGroupEmergencyShutdown(
+                                channel,
+                                "HydraulicGenerationSelfHealing OutputOffCommandFailed");
+                        }
+                        PublishChannelRuntimeState(
+                            channel,
+                            ChannelRuntimeState.Recovering,
+                            "HydraulicGenerationSelfHealing",
+                            $"液压软件代次自愈第{attempt}次；已抛弃旧代次并重新建压。",
+                            affectedChannels: channelsInGroup?.ToArray() ?? Array.Empty<int>(),
+                            correlationId: initialKey.TestRunId,
+                            allowTerminalReset: true);
+                    }
+                    try
+                    {
+                        await _hydCoordinator.ForceReleaseAsync(
+                                initialKey.HydraulicId,
+                                $"StartupGenerationSelfHealing:{ex.GetType().Name}")
+                            .ConfigureAwait(false);
+                    }
+                    catch (Exception releaseEx)
+                    {
+                        throw new InvalidOperationException(
+                            $"液压组{initialKey.HydraulicId}软件代次清理后无法确认安全释压。",
+                            releaseEx);
+                    }
+
+                    if (offFailedChannels.Count > 0)
+                        throw new EpbOutputCommandException(
+                            offFailedChannels[0],
+                            "HydraulicGenerationSelfHealingOff");
+
+                    var delayMs = GetDaqSelfMaintenanceDelayMs(attempt);
+                    _log.Warn(
+                        $"液压组{initialKey.HydraulicId}启动/学习代次软件异常，" +
+                        $"{delayMs}ms后创建全新Recovery代次。Attempt={attempt} Error={ex.Message}",
+                        "液压协调");
+                    await Task.Delay(delayMs, token).ConfigureAwait(false);
+                    key = new HydraulicGenerationKey(
+                        initialKey.TestRunId,
+                        initialKey.HydraulicId,
+                        HydraulicPhaseKind.Recovery,
+                        Interlocked.Increment(ref _softwareHydraulicRetryGeneration));
+                }
+            }
+        }
+
+        internal static bool IsHydraulicSoftwareRecoveryCandidate(Exception exception)
+        {
+            if (exception is HydraulicBarrierTimeoutException) return true;
+            var message = exception?.Message ?? string.Empty;
+            return message.IndexOf("members are immutable", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   message.IndexOf("成员不可变", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         #endregion
 
 
         /// <summary>
-        /// Runner 内部单圈完成时回调到此方法，再转发给外部订阅者（例如 FrmEpbMainMonitor）。
+        /// 正式圈控制与落盘均提交后，再向 UI/检查点转发一次完成事件。
+        /// Runner 的物理动作成功不能提前计数，因为随后落盘失败的圈必须作废。
         /// </summary>
         /// <param name="channel">EPB 通道号（1..12）。</param>
         /// <param name="sessionRunCount">本次试验 Session 内的运行次数（从 1 开始）。</param>
-        private void OnRunnerChannelCycleCompleted(int channel, int sessionRunCount)
+        private void OnFormalCycleCommitted(int channel, int sessionRunCount)
         {
+            CompleteFormalSoftwareRecoveryAfterCommit(channel);
             var current = _channelRuntimeStateStore.Get(channel);
             if (current?.State == ChannelRuntimeState.WarningRunning)
                 PublishChannelRuntimeState(
@@ -1528,8 +2028,13 @@ namespace Controller
                     ChannelRuntimeState.Running,
                     "WarningCleared",
                     "后续完整圈正常，软预警已解除");
-            // 直接转发给 Manager 自己的事件
-            ChannelCycleCompleted?.Invoke(channel, sessionRunCount);
+            NonCriticalObserver.Invoke(
+                ChannelCycleCompleted,
+                channel,
+                sessionRunCount,
+                ex => _log?.Warn(
+                    $"EPB[{channel}] 正式圈完成观察者异常已隔离，不影响后续试验：{ex.Message}",
+                    "EPB"));
         }
     }
 
@@ -1591,6 +2096,12 @@ namespace Controller
         Task<Adaptive.EpbCycleOutcome> RunOneAdaptiveLearningAsync(
             int targetPeriodMs,
             CancellationToken token);
+
+        /// <summary>捕获本圈开始前的自适应模型，用于软件作废圈回滚。</summary>
+        EpbAdaptiveProfile CaptureAdaptiveProfile();
+
+        /// <summary>恢复模型快照，撤销软件作废圈对模型和瞬态计数的全部影响。</summary>
+        void RestoreAdaptiveProfile(EpbAdaptiveProfile snapshot);
 
         /// <summary>是否移除①头部等待（由外部“相位对齐”承担）。</summary>
         bool UseNoHeadPhase { get; set; }

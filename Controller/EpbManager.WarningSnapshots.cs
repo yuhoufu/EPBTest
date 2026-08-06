@@ -26,13 +26,44 @@ namespace Controller
         private readonly ConcurrentDictionary<string, byte> _warningSnapshotJobs = new();
         private readonly ConcurrentDictionary<string, ConcurrentQueue<WarningSnapshotLink>> _warningChains = new();
         private readonly ConcurrentDictionary<Guid, string> _daqIncidentDirectories = new();
+        private readonly ConcurrentDictionary<int, int> _formalPersistenceRecoveryAttempts = new();
+        private readonly ConcurrentDictionary<int, int> _formalControlRecoveryAttempts = new();
         private readonly SemaphoreSlim _daqIncidentSnapshotGate = new(1, 1);
         private int _warningSnapshotFreeSpaceWarningActive;
+
+        /// <summary>
+        /// 软件自愈只能在本通道输出已可靠关闭后继续。若高优先级关闭命令失败，
+        /// 立即升级为同电源组失效安全联锁，禁止把真实输出控制故障当成可丢圈的软件瞬态。
+        /// </summary>
+        private bool TryEnsureSoftwareRecoveryOutputOff(int channel, string context)
+        {
+            var offSucceeded = false;
+            try { offSucceeded = CommandEpbOffSafetyImmediate(channel); } catch { }
+            if (offSucceeded) return true;
+
+            RequestElectricalGroupEmergencyShutdown(
+                channel,
+                $"{context} OutputOffCommandFailed");
+            _log?.Error(
+                $"EPB[{channel}] 软件自愈前无法确认电机断电，已升级为电源组失效安全联锁。" +
+                $"Context={context}",
+                "EPB");
+            return false;
+        }
+
+        private void RequireSoftwareRecoveryOutputOff(int channel, string context)
+        {
+            if (!TryEnsureSoftwareRecoveryOutputOff(channel, context))
+                throw new EpbOutputCommandException(channel, context + "Off");
+        }
 
         private void OnRunnerWarningEvidenceRaised(AdaptiveWarningEvent warning)
         {
             if (warning == null) return;
-            try { ChannelWarningEvidenceRaised?.Invoke(warning); } catch { }
+            NonCriticalObserver.Invoke(
+                ChannelWarningEvidenceRaised,
+                warning,
+                ex => _log?.Warn($"预警证据观察者异常，已隔离：{ex.Message}", "EPB"));
             var cfg = AlarmConfig?.WarningSnapshots ?? new WarningSnapshotConfig();
             if (!cfg.Enabled) return;
             // 正式圈为正数，学习圈为负数；只有 0/不存在才表示尚未进入任何圈。
@@ -72,31 +103,61 @@ namespace Controller
             }
         }
 
-        private void CompleteCycleAndScheduleEvidence(
+        private bool CompleteCycleAndScheduleEvidence(
             IEpbCycleRecorder recorder,
             int channel,
             int cycleNumber,
             int finalSampleCount,
             DateTime endUtc)
         {
-            finalSampleCount = FinalizeCyclePersistence(
-                recorder,
-                channel,
-                cycleNumber,
-                endUtc,
-                finalSampleCount);
-            recorder?.CompleteCycle(channel, cycleNumber, finalSampleCount, endUtc);
-            if (recorder == null) return;
-
-            foreach (var item in _pendingWarningSnapshots.ToArray())
+            if (recorder == null) return true;
+            try
             {
-                var request = item.Value;
-                if (request.Channel != channel || request.CycleNumber != cycleNumber) continue;
-                if (!_pendingWarningSnapshots.TryRemove(item.Key, out request)) continue;
-                QueueWarningSnapshot(request);
+                finalSampleCount = FinalizeCyclePersistence(
+                    recorder,
+                    channel,
+                    cycleNumber,
+                    endUtc,
+                    finalSampleCount);
+                recorder.CompleteCycle(channel, cycleNumber, finalSampleCount, endUtc);
+            }
+            catch (Exception ex)
+            {
+                AbortFormalCycleWithoutPersistenceBarrier(
+                    recorder,
+                    channel,
+                    cycleNumber,
+                    endUtc,
+                    finalSampleCount,
+                    ex);
+                return false;
             }
 
-            QueueRollingHistoricalSnapshot(channel, cycleNumber);
+            try
+            {
+                foreach (var item in _pendingWarningSnapshots.ToArray())
+                {
+                    var request = item.Value;
+                    if (request.Channel != channel || request.CycleNumber != cycleNumber) continue;
+                    if (!_pendingWarningSnapshots.TryRemove(item.Key, out request)) continue;
+                    QueueWarningSnapshot(request);
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.Warn(
+                    $"EPB[{channel}] 正式圈已可靠封存，但软预警证据调度失败：{ex.Message}",
+                    "落盘");
+            }
+
+            try { QueueRollingHistoricalSnapshot(channel, cycleNumber); }
+            catch (Exception ex)
+            {
+                _log.Warn(
+                    $"EPB[{channel}] 正式圈已可靠封存，但滚动历史快照调度失败：{ex.Message}",
+                    "落盘");
+            }
+            return true;
         }
 
         private int FinalizeCyclePersistence(
@@ -107,39 +168,40 @@ namespace Controller
             int fallbackCount)
         {
             if (recorder == null) return fallbackCount;
-            try
+            if (recorder is IBatchedEpbCycleRecorder batched)
+                batched.SealCycleWindow(channel, cycleNumber, endUtc);
+            var device = _acq.GetDeviceForEpbChannel(channel);
+            if (!string.IsNullOrWhiteSpace(device))
             {
-                if (recorder is IBatchedEpbCycleRecorder batched)
-                    batched.SealCycleWindow(channel, cycleNumber, endUtc);
-                var device = _acq.GetDeviceForEpbChannel(channel);
-                if (!string.IsNullOrWhiteSpace(device))
+                var boundary = _acq.GetLastProducedSequence(device);
+                var deadline = Stopwatch.GetTimestamp() +
+                               (long)(_daqPersistenceRecoveryTimeoutMs / 1000.0 * Stopwatch.Frequency);
+                while (_acq.GetLastDiskPublishedSequence(device) < boundary &&
+                       Stopwatch.GetTimestamp() < deadline)
+                    Thread.Sleep(2);
+                if (_acq.GetLastDiskPublishedSequence(device) < boundary)
+                    throw new TimeoutException(
+                        $"Raw发布未越过圈边界。Device={device} Boundary={boundary} " +
+                        $"Published={_acq.GetLastDiskPublishedSequence(device)}");
+                var remainingMs = (int)Math.Max(
+                    1,
+                    (deadline - Stopwatch.GetTimestamp()) * 1000.0 / Stopwatch.Frequency);
+                var persisted = _persistence.WaitForPersistedAsync(
+                        device,
+                        boundary,
+                        remainingMs,
+                        CancellationToken.None)
+                    .GetAwaiter()
+                    .GetResult();
+                if (!persisted)
                 {
-                    var boundary = _acq.GetLastProducedSequence(device);
-                    var deadline = Stopwatch.GetTimestamp() +
-                                   (long)(_daqPersistenceRecoveryTimeoutMs / 1000.0 * Stopwatch.Frequency);
-                    while (_acq.GetLastDiskPublishedSequence(device) < boundary &&
-                           Stopwatch.GetTimestamp() < deadline)
-                        Thread.Sleep(2);
-                    var remainingMs = (int)Math.Max(
-                        1,
-                        (deadline - Stopwatch.GetTimestamp()) * 1000.0 / Stopwatch.Frequency);
-                    _persistence.WaitForPersistedAsync(
-                            device,
-                            boundary,
-                            remainingMs,
-                            CancellationToken.None)
-                        .GetAwaiter()
-                        .GetResult();
+                    var snapshot = _persistence.GetSnapshot(device);
+                    throw new TimeoutException(
+                        $"Raw持久化未越过圈边界。Device={device} Boundary={boundary} " +
+                        $"Persisted={snapshot.Sequence} QueueDepth={snapshot.QueueDepth}");
                 }
-                return recorder.GetCurrentCycleSampleCount(channel);
             }
-            catch (Exception ex)
-            {
-                _log.Warn(
-                    $"EPB[{channel}] 圈封存屏障等待失败 Cycle={cycleNumber}: {ex.Message}",
-                    "落盘");
-                return recorder.GetCurrentCycleSampleCount(channel);
-            }
+            return recorder.GetCurrentCycleSampleCount(channel);
         }
 
         private void AbortCycleAfterPersistence(
@@ -150,13 +212,192 @@ namespace Controller
             string status)
         {
             if (recorder == null) return;
-            var finalN = FinalizeCyclePersistence(
-                recorder,
-                channel,
-                cycleNumber,
-                endUtc,
-                recorder.GetCurrentCycleSampleCount(channel));
+            var finalN = recorder.GetCurrentCycleSampleCount(channel);
+            try
+            {
+                finalN = FinalizeCyclePersistence(
+                    recorder,
+                    channel,
+                    cycleNumber,
+                    endUtc,
+                    finalN);
+            }
+            catch (Exception ex)
+            {
+                _log.Warn(
+                    $"EPB[{channel}] 作废圈封存屏障未确认，仍优先提交作废终态。" +
+                    $"Cycle={cycleNumber} Status={status} Error={ex.Message}",
+                    "落盘");
+            }
             recorder.AbortCycle(channel, cycleNumber, finalN, endUtc, status);
+        }
+
+        private bool TryBeginFormalCycle(
+            IEpbCycleRecorder recorder,
+            int channel,
+            int cycleNumber,
+            DateTime beginUtc)
+        {
+            if (recorder == null)
+            {
+                MarkCurrentCycleNumber(channel, cycleNumber);
+                return true;
+            }
+            try
+            {
+                recorder.BeginCycle(channel, cycleNumber, beginUtc);
+                MarkCurrentCycleNumber(channel, cycleNumber);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                try
+                {
+                    recorder.AbortCycle(
+                        channel,
+                        cycleNumber,
+                        Math.Max(0, recorder.GetCurrentCycleSampleCount(channel)),
+                        DateTime.UtcNow,
+                        "AbortedBySoftwareRecovery");
+                }
+                catch { }
+                ReportFormalPersistenceRecovery(channel, cycleNumber, "BeginCycle", ex);
+                return false;
+            }
+        }
+
+        private void AbortFormalCycleWithoutPersistenceBarrier(
+            IEpbCycleRecorder recorder,
+            int channel,
+            int cycleNumber,
+            DateTime endUtc,
+            int fallbackSampleCount,
+            Exception cause)
+        {
+            try
+            {
+                recorder.AbortCycle(
+                    channel,
+                    cycleNumber,
+                    Math.Max(0, fallbackSampleCount),
+                    endUtc,
+                    "AbortedBySoftwareRecovery");
+            }
+            catch (Exception abortEx)
+            {
+                _log.Warn(
+                    $"EPB[{channel}] 正式圈落盘失败后的作废终态也未确认。" +
+                    $"Cycle={cycleNumber} Error={abortEx.Message}",
+                    "落盘");
+            }
+            ReportFormalPersistenceRecovery(channel, cycleNumber, "CompleteCycle", cause);
+        }
+
+        private void ReportFormalPersistenceRecovery(
+            int channel,
+            int cycleNumber,
+            string stage,
+            Exception cause)
+        {
+            var attempt = _formalPersistenceRecoveryAttempts.AddOrUpdate(channel, 1, (_, old) => old + 1);
+            foreach (var item in _pendingWarningSnapshots.ToArray())
+            {
+                var request = item.Value;
+                if (request.Channel == channel && request.CycleNumber == cycleNumber)
+                    _pendingWarningSnapshots.TryRemove(item.Key, out _);
+            }
+            _currentCycleNumberByChannel.TryRemove(channel, out _);
+            if (!TryEnsureSoftwareRecoveryOutputOff(channel, "FormalPersistenceSelfHealing"))
+            {
+                return;
+            }
+            try { ObserveSafetyTask(HydraulicMarkReleaseAsync(channel), "FormalPersistenceRecovery", channel); }
+            catch { }
+            PublishChannelRuntimeState(
+                channel,
+                ChannelRuntimeState.Recovering,
+                "FormalPersistenceSelfHealing",
+                $"正式圈落盘软件自愈第{attempt}次；当前尝试已作废且不计数，未来完整圈自动重试。",
+                affectedChannels: new[] { channel },
+                correlationId: _activeBatchId,
+                allowTerminalReset: true);
+            _log.Warn(
+                $"EPB[{channel}] 正式圈落盘软件异常已作废，不停止健康通道。" +
+                $"Cycle={cycleNumber} Stage={stage} Attempt={attempt} Error={cause?.Message}",
+                "落盘");
+        }
+
+        private void ReportFormalControlSoftwareRecovery(
+            int channel,
+            int cycleNumber,
+            string reason)
+        {
+            var attempt = _formalControlRecoveryAttempts.AddOrUpdate(channel, 1, (_, old) => old + 1);
+            foreach (var item in _pendingWarningSnapshots.ToArray())
+            {
+                var request = item.Value;
+                if (request.Channel == channel && request.CycleNumber == cycleNumber)
+                    _pendingWarningSnapshots.TryRemove(item.Key, out _);
+            }
+            if (!TryEnsureSoftwareRecoveryOutputOff(channel, "FormalControlSelfHealing"))
+            {
+                return;
+            }
+            try { ObserveSafetyTask(HydraulicMarkReleaseAsync(channel), "FormalControlRecovery", channel); }
+            catch { }
+            PublishChannelRuntimeState(
+                channel,
+                ChannelRuntimeState.Recovering,
+                "FormalControlSelfHealing",
+                $"正式圈控制软件自愈第{attempt}次；当前圈已作废且不计数，未来完整圈自动重试。",
+                affectedChannels: new[] { channel },
+                correlationId: _activeBatchId,
+                allowTerminalReset: true);
+            _log.Warn(
+                $"EPB[{channel}] 正式圈控制软件异常已安全断电并作废。" +
+                $"Cycle={cycleNumber} Attempt={attempt} Reason={reason}",
+                "EPB");
+        }
+
+        private void CompleteFormalSoftwareRecoveryAfterCommit(int channel)
+        {
+            var hadPersistence = _formalPersistenceRecoveryAttempts.TryRemove(
+                channel,
+                out var persistenceAttempts);
+            var hadControl = _formalControlRecoveryAttempts.TryRemove(
+                channel,
+                out var controlAttempts);
+            if (!hadPersistence && !hadControl) return;
+
+            PublishChannelRuntimeState(
+                channel,
+                ChannelRuntimeState.Running,
+                "FormalSoftwareSelfHealed",
+                $"正式圈软件自愈完成；此前控制作废{controlAttempts}次、落盘作废{persistenceAttempts}次，" +
+                "本圈已可靠完成。",
+                affectedChannels: new[] { channel },
+                correlationId: _activeBatchId,
+                allowTerminalReset: true);
+            _log.Info(
+                $"EPB[{channel}] 正式圈软件自愈完成。" +
+                $"ControlDiscarded={controlAttempts} PersistenceDiscarded={persistenceAttempts}。",
+                "EPB");
+        }
+
+        internal static bool IsFormalCycleCountable(
+            bool controlSucceeded,
+            bool persistenceCommitted)
+        {
+            return controlSucceeded && persistenceCommitted;
+        }
+
+        internal static bool IsFormalControlSucceeded(
+            bool workReturnedSuccess,
+            bool currentOutcomeSucceeded)
+        {
+            // LastCycleOutcome 是 Runner 上的可观察快照。若本次调用在更新它之前抛异常，
+            // 该快照可能仍是上一圈的 Success，因此必须同时要求本次调用正常返回 true。
+            return workReturnedSuccess && currentOutcomeSucceeded;
         }
 
         private async Task ExportDaqIncidentSnapshotAsync(
@@ -758,7 +999,10 @@ namespace Controller
                     new UTF8Encoding(false));
             }
             catch { }
-            try { SnapshotExportFailed?.Invoke(message); } catch { }
+            NonCriticalObserver.Invoke(
+                SnapshotExportFailed,
+                message,
+                ex => _log?.Warn($"快照失败观察者异常，已隔离：{ex.Message}", "落盘"));
         }
 
         public WarningSnapshotStorageStatus GetWarningSnapshotStorageStatus()
@@ -796,7 +1040,10 @@ namespace Controller
             try
             {
                 var status = GetWarningSnapshotStorageStatus();
-                WarningSnapshotStorageChanged?.Invoke(status);
+                NonCriticalObserver.Invoke(
+                    WarningSnapshotStorageChanged,
+                    status,
+                    ex => _log?.Warn($"预警快照存储观察者异常，已隔离：{ex.Message}", "落盘"));
                 if (status.IsBelowFreeSpaceWarning)
                 {
                     if (System.Threading.Interlocked.Exchange(

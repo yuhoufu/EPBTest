@@ -17,8 +17,11 @@ $branch = (git branch --show-current).Trim()
 if ([string]::IsNullOrWhiteSpace($branch)) { $branch = 'detached' }
 $buildUtc = [DateTime]::UtcNow.ToString('O')
 
-$configFiles = @(Get-ChildItem -LiteralPath (Join-Path $repo 'Config') -Filter '*.xml' -File |
+$configFiles = @(Get-ChildItem -LiteralPath (Join-Path $repo 'MTTfTest\Config') -Filter '*.xml' -File |
     Sort-Object Name)
+if ($configFiles.Count -eq 0) {
+    throw '现场配置目录 MTTfTest\Config 中没有可纳入版本身份的 XML。'
+}
 $sha = [Security.Cryptography.SHA256]::Create()
 $configStream = New-Object IO.MemoryStream
 try {
@@ -41,8 +44,10 @@ if (-not (Test-Path -LiteralPath $MsBuild -PathType Leaf)) {
     throw "MSBuild 不存在：$MsBuild"
 }
 
-& $MsBuild (Join-Path $repo 'TfTest.sln') /t:Rebuild /m `
-    /p:Configuration=Release /p:Platform='Mixed Platforms' `
+# 现场包只由主程序及其项目依赖组成。解决方案还包含独立的
+# PowerSupplyDebugger 工具，其 RuntimeIdentifier 不属于现场 x86 主程序包。
+& $MsBuild (Join-Path $repo 'MTTfTest\MTTfTest.csproj') /t:Rebuild /m `
+    /p:Configuration=Release /p:Platform=AnyCPU `
     "/p:GitCommit=$commit" "/p:GitBranch=$branch" /p:GitDirty=false `
     "/p:BuildUtc=$buildUtc" "/p:ReleaseConfigSha256=$configHash"
 if ($LASTEXITCODE -ne 0) { throw "Release 构建失败：$LASTEXITCODE" }

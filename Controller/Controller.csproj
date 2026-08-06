@@ -76,13 +76,17 @@
     <Compile Include="Alarm\M7055dSerialClient.cs" />
     <Compile Include="EpbCycleRunner.Advance.Sync.cs" />
     <Compile Include="EpbCycleRunner.cs" />
+    <Compile Include="FaultIsolatedPhaseWork.cs" />
     <Compile Include="DoControlTrace.cs" />
     <Compile Include="DaqIncidentLatch.cs" />
     <Compile Include="DaqPersistenceCoordinator.cs" />
     <Compile Include="DaqRecoveryTerminalGate.cs" />
     <Compile Include="RuntimeBuildIdentity.cs" />
+    <Compile Include="SoftwareSelfHealingLoop.cs" />
     <Compile Include="ChannelRuntimeStore.cs" />
     <Compile Include="ChannelRuntimeState.cs" />
+    <Compile Include="NonCriticalObserver.cs" />
+    <Compile Include="BatchStartLifecycleGate.cs" />
     <Compile Include="ElectricalStaggerPlan.cs" />
     <Compile Include="EpbManager.BatchStart.cs" />
     <Compile Include="EpbManager.PauseResume.cs" />

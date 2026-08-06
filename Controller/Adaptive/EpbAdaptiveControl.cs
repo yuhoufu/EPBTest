@@ -47,7 +47,12 @@ namespace Controller.Adaptive
         Success = 0,
         SuccessWithWarning = 1,
         HardFault = 2,
-        Canceled = 3
+        Canceled = 3,
+        /// <summary>
+        /// 本圈因软件/状态瞬态未完成。硬件已安全断电，本圈必须作废且不计数，
+        /// 调度器应在未来完整周期自动重试。
+        /// </summary>
+        SoftwareRecovery = 4
     }
 
     public sealed class EpbCycleOutcome
@@ -92,6 +97,16 @@ namespace Controller.Adaptive
                 Kind = EpbCycleOutcomeKind.HardFault,
                 Stage = stage,
                 Reason = reason ?? "HardFault"
+            };
+        }
+
+        public static EpbCycleOutcome SoftwareRecovery(EpbCurrentStage stage, string reason)
+        {
+            return new EpbCycleOutcome
+            {
+                Kind = EpbCycleOutcomeKind.SoftwareRecovery,
+                Stage = stage,
+                Reason = reason ?? "SoftwareRecovery"
             };
         }
     }

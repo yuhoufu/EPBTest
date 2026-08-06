@@ -17,6 +17,7 @@ namespace Config
         public double NearLimitWarnRatio { get; set; } = 0.90;
         public double StartupZeroCurrentA { get; set; } = 0.50;
         public int StartupZeroStableMs { get; set; } = 300;
+        public int StartupVoltageStableMs { get; set; } = 300;
         public int StartupZeroTimeoutMs { get; set; } = 5000;
         public List<PowerSupplyDeviceConfig> Supplies { get; } = new List<PowerSupplyDeviceConfig>();
 
@@ -61,6 +62,7 @@ namespace Config
                 NearLimitWarnRatio = DoubleAttr(root, "NearLimitWarnRatio", 0.90),
                 StartupZeroCurrentA = DoubleAttr(root, "StartupZeroCurrentA", 0.50),
                 StartupZeroStableMs = IntAttr(root, "StartupZeroStableMs", 300),
+                StartupVoltageStableMs = IntAttr(root, "StartupVoltageStableMs", 300),
                 StartupZeroTimeoutMs = IntAttr(root, "StartupZeroTimeoutMs", 5000)
             };
 
@@ -105,8 +107,12 @@ namespace Config
                 errors.Add("StartupZeroCurrentA 必须大于0。");
             if (config.StartupZeroStableMs < config.PollIntervalMs)
                 errors.Add("StartupZeroStableMs 不能小于轮询周期。");
-            if (config.StartupZeroTimeoutMs <= config.StartupZeroStableMs)
-                errors.Add("StartupZeroTimeoutMs 必须大于 StartupZeroStableMs。");
+            if (config.StartupVoltageStableMs < config.PollIntervalMs)
+                errors.Add("StartupVoltageStableMs 不能小于轮询周期。");
+            if (config.StartupZeroTimeoutMs <=
+                Math.Max(config.StartupZeroStableMs, config.StartupVoltageStableMs))
+                errors.Add(
+                    "StartupZeroTimeoutMs 必须大于 StartupZeroStableMs 和 StartupVoltageStableMs。");
             if (config.Supplies.Count != 4) errors.Add("必须配置四台程控电源。");
 
             foreach (var duplicate in config.Supplies.GroupBy(x => x.Id).Where(x => x.Count() > 1))

@@ -16,14 +16,18 @@ namespace Controller
             var reason =
                 $"StartupPositioningFailed Stage={result.Stage} Code={result.Code} " +
                 $"Peak={result.PeakCurrentA:F3}A Elapsed={result.ElapsedMs}ms Detail={result.Reason}";
-            var overCurrent = result.Code?.IndexOf("OverCurrent", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                              result.Reason?.IndexOf("OverCurrent", StringComparison.OrdinalIgnoreCase) >= 0;
-            var groupId = GetElectricalGroupId(result.Channel);
-            var classification = overCurrent &&
-                                 (_powerSupply == null || groupId <= 0 ||
-                                  !_powerSupply.HasFreshPowerFaultEvidence(groupId))
-                ? FaultClassification.SystemFault
-                : FaultClassification.HardwareConfirmed;
+            var classification = ClassifyStartupPositioningFailure(
+                IsStartupPositioningOverCurrent(result),
+                HasFreshStartupPowerEvidence(result?.Channel ?? 0),
+                IsStartupPositioningOutputControlFailure(result));
+            if (classification != FaultClassification.HardwareConfirmed &&
+                !TryEnsureSoftwareRecoveryOutputOff(
+                    result.Channel,
+                    "StartupPositioningSelfHealing"))
+            {
+                classification = FaultClassification.HardwareConfirmed;
+                reason += " OutputOffCommandFailed：启动定位失败后无法确认安全断电。";
+            }
             var fault = new ControlFault(
                 string.IsNullOrWhiteSpace(result.Code) ? "StartupPositioningFailed" : result.Code,
                 reason,
@@ -34,22 +38,24 @@ namespace Controller
                 Guid.NewGuid(),
                 classification);
 
-            if (classification == FaultClassification.SystemFault)
+            if (classification != FaultClassification.HardwareConfirmed)
             {
-                try { CommandEpbOffSafetyImmediate(result.Channel); } catch { }
                 PublishChannelRuntimeState(
                     result.Channel,
-                    ChannelRuntimeState.SystemFault,
-                    fault.Code,
-                    "启动定位过流缺少新鲜PSU独立证据；已安全断电但不触发硬件报警。" + reason,
+                    ChannelRuntimeState.Recovering,
+                    "StartupPositioningSelfHealing",
+                    "启动定位未获得硬件故障双证据；已安全断电，按软件瞬态继续自愈。" + reason,
                     affectedChannels: fault.AffectedChannels,
                     correlationId: fault.CorrelationId);
-                _log?.Error(
-                    $"EPB[{result.Channel}] 启动定位单源过流归为系统故障。" +
+                _log?.Warn(
+                    $"EPB[{result.Channel}] 启动定位未获得硬件故障双证据，保持自愈。" +
                     $"CorrelationId={fault.CorrelationId:N} {reason}",
-                    "报警");
+                    "EPB");
                 FlushPersistentLog();
-                try { ControlFaultRaised?.Invoke(fault); } catch { }
+                NonCriticalObserver.Invoke(
+                    ControlFaultRaised,
+                    fault,
+                    ex => _log?.Warn($"启动定位自愈观察者异常，已隔离：{ex.Message}", "EPB"));
                 try { ExportStartupPositioningSnapshot(result, fault); }
                 catch (Exception ex)
                 {
@@ -70,8 +76,15 @@ namespace Controller
                 $"EPB[{result.Channel}] 启动定位失败并隔离。CorrelationId={fault.CorrelationId:N} {reason}",
                 "报警");
             FlushPersistentLog();
-            try { ControlFaultRaised?.Invoke(fault); } catch { }
-            try { ChannelAlarmRaised?.Invoke(result.Channel, reason); } catch { }
+            NonCriticalObserver.Invoke(
+                ControlFaultRaised,
+                fault,
+                ex => _log?.Warn($"启动定位故障观察者异常，已隔离：{ex.Message}", "EPB"));
+            NonCriticalObserver.Invoke(
+                ChannelAlarmRaised,
+                result.Channel,
+                reason,
+                ex => _log?.Warn($"启动定位报警观察者异常，已隔离：{ex.Message}", "EPB"));
             try
             {
                 if (Alarm != null)
@@ -90,8 +103,58 @@ namespace Controller
             {
                 var message = $"EPB[{result.Channel}] 启动定位快照导出失败：{ex.Message}";
                 _log?.Warn(message, "落盘");
-                try { SnapshotExportFailed?.Invoke(message); } catch { }
+                NonCriticalObserver.Invoke(
+                    SnapshotExportFailed,
+                    message,
+                    observerEx => _log?.Warn(
+                        $"启动定位快照失败观察者异常，已隔离：{observerEx.Message}",
+                        "落盘"));
             }
+        }
+
+        internal bool IsStartupPositioningHardwareConfirmed(StartupPositioningResult result)
+        {
+            if (result == null || result.Succeeded) return false;
+            return ClassifyStartupPositioningFailure(
+                       IsStartupPositioningOverCurrent(result),
+                       HasFreshStartupPowerEvidence(result.Channel),
+                       IsStartupPositioningOutputControlFailure(result)) ==
+                   FaultClassification.HardwareConfirmed;
+        }
+
+        internal static FaultClassification ClassifyStartupPositioningFailure(
+            bool overCurrent,
+            bool freshIndependentPowerEvidence,
+            bool outputControlFailure = false)
+        {
+            return outputControlFailure || (overCurrent && freshIndependentPowerEvidence)
+                ? FaultClassification.HardwareConfirmed
+                : FaultClassification.SoftwareTransient;
+        }
+
+        private static bool IsStartupPositioningOutputControlFailure(
+            StartupPositioningResult result)
+        {
+            return result?.Code?.IndexOf(
+                       "OutputOffCommandFailed",
+                       StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   result?.Reason?.IndexOf(
+                       "OutputOffCommandFailed",
+                       StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static bool IsStartupPositioningOverCurrent(StartupPositioningResult result)
+        {
+            return result != null &&
+                   (result.Code?.IndexOf("OverCurrent", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    result.Reason?.IndexOf("OverCurrent", StringComparison.OrdinalIgnoreCase) >= 0);
+        }
+
+        private bool HasFreshStartupPowerEvidence(int channel)
+        {
+            if (_powerSupply == null || channel <= 0) return false;
+            var groupId = GetElectricalGroupId(channel);
+            return groupId > 0 && _powerSupply.HasFreshPowerFaultEvidence(groupId);
         }
 
         private void ExportStartupPositioningSnapshot(

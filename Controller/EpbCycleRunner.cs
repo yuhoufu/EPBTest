@@ -467,16 +467,31 @@ namespace Controller
                 "EPB");
 
             // 所有学习入口共用同一启动定位，禁止旧逻辑直接反向顶住机械端。
-            var startup = await StartupPositioningAsync(
-                    DefaultPreReleaseKeepMs,
-                    DefaultPreReleaseDetectTimeoutMs,
-                    token)
-                .ConfigureAwait(false);
-            if (!startup.Succeeded)
+            StartupPositioningResult startup;
+            var startupAttempt = 0;
+            while (true)
             {
-                if (_manager != null)
+                startupAttempt++;
+                startup = await StartupPositioningAsync(
+                        DefaultPreReleaseKeepMs,
+                        DefaultPreReleaseDetectTimeoutMs,
+                        token)
+                    .ConfigureAwait(false);
+                if (startup.Succeeded) break;
+                if (_manager == null)
+                    return false;
+                if (_manager.IsStartupPositioningHardwareConfirmed(startup))
+                {
                     await _manager.PublishStartupPositioningFailureAsync(startup).ConfigureAwait(false);
-                return false;
+                    return false;
+                }
+
+                var delayMs = EpbManager.GetDaqSelfMaintenanceDelayMs(startupAttempt);
+                _log.Warn(
+                    $"EPB[{_channel}] 启动定位软件瞬态未通过，保持断电并自愈重试。" +
+                    $"Attempt={startupAttempt} DelayMs={delayMs} Code={startup.Code} Reason={startup.Reason}",
+                    "EPB");
+                await Task.Delay(delayMs, token).ConfigureAwait(false);
             }
 
             // 采样统计容器
@@ -519,7 +534,7 @@ namespace Controller
                 var tElecStart = NowTicks();
 
                 // ② 正向
-                CommandForward();
+                RequireMotorCommandSucceeded(CommandForward(), "Forward");
                 _log.Info($"EPB[{_channel}] 学习{k + 1}：②正向上电，忽略涌流 {_peakIgnoreMs}ms…", "EPB");
                 await Task.Delay(_peakIgnoreMs, token).ConfigureAwait(false);
 
@@ -527,7 +542,7 @@ namespace Controller
                     await WaitStableAroundAsync(+0.5, +1, _emptyBandA, _stableWinMs, token).ConfigureAwait(false);
                 if (!okEmptyFwd)
                 {
-                    CommandOff();
+                    RequireMotorCommandSucceeded(CommandOff(), "ForwardAbortOff");
                     _log.Warn($"EPB[{_channel}] 学习{k + 1}：②未判定到正向空行程，放弃本轮。", "EPB");
                     continue;
                 }
@@ -541,13 +556,17 @@ namespace Controller
 
                 if (!okClamp)
                 {
-                    CommandOffHighPriority();
+                    RequireMotorCommandSucceeded(
+                        CommandOffHighPriority(),
+                        "ForwardAbortOff");
                     _log.Warn($"EPB[{_channel}] 学习{k + 1}：④未达到阈值/平台（阈 {_posThrA:F2}A），放弃本轮。", "EPB");
                     continue;
                 }
 
                 // 达到判据 → 立即断电
-                CommandOffHighPriority();
+                RequireMotorCommandSucceeded(
+                    CommandOffHighPriority(),
+                    "ForwardTerminalOff");
                 _log.Info($"EPB[{_channel}] 学习{k + 1}：已达到夹紧条件（{clampCause}），立即正向断电。", "EPB");
 
                 // ③ 回溯“离开空带上边界”的起点
@@ -571,7 +590,7 @@ namespace Controller
                 }
 
                 // ⑥ + ⑦ 反向
-                CommandReverse();
+                RequireMotorCommandSucceeded(CommandReverse(), "Reverse");
                 _log.Info($"EPB[{_channel}] 学习{k + 1}：⑥反向上电，忽略涌流 {_peakIgnoreMs}ms…", "EPB");
                 await Task.Delay(_peakIgnoreMs, token).ConfigureAwait(false);
 
@@ -579,7 +598,7 @@ namespace Controller
                     await WaitStableAroundAsync(-0.5, -1, _emptyBandA, _stableWinMs, token).ConfigureAwait(false);
                 if (!okEmptyRev)
                 {
-                    CommandOff();
+                    RequireMotorCommandSucceeded(CommandOff(), "ReverseAbortOff");
                     _log.Warn($"EPB[{_channel}] 学习{k + 1}：⑥未判定到反向空行程，放弃本轮。", "EPB");
                     continue;
                 }
@@ -610,7 +629,7 @@ namespace Controller
                 await Task.Delay(run7, token).ConfigureAwait(false);
                 var tRevEmpty = run7;
 
-                CommandOff();
+                RequireMotorCommandSucceeded(CommandOff(), "ReverseTerminalOff");
 
                 var elecElapsed = MsBetween(tElecStart, NowTicks());
                 var tailRemain = Math.Max(0, elecBudgetMs - elecElapsed);
@@ -744,7 +763,7 @@ namespace Controller
 
                 // ===================== ② + ③ + ④：正向（合并为直接夹紧判据） =====================
                 BeginAdaptiveForwardMonitoring(targetPeriodMs);
-                CommandForward();
+                RequireMotorCommandSucceeded(CommandForward(), "Forward");
                 _log?.Info($"EPB[{_channel}] ②正向上电，忽略涌流 {_peakIgnoreMs}ms…", "EPB");
                 await Task.Delay(_peakIgnoreMs, token).ConfigureAwait(false);
 
@@ -767,16 +786,11 @@ namespace Controller
                 if (!okClamp)
                 {
                     _log?.Warn($"EPB[{_channel}] 正向未达到阈值/平台（Thr={_posThrA:F2}A），本轮终止。", "EPB");
-                    CommandOffHighPriority();
+                    RequireMotorCommandSucceeded(
+                        CommandOffHighPriority(),
+                        "ForwardAbortOff");
 
-                    try
-                    {
-                        AlarmRaised?.Invoke(_channel, $"ClampTimeout Thr={_posThrA:F2}A");
-                    }
-                    catch
-                    {
-                        // ignore
-                    }
+                    NotifyAlarmSafely($"ClampTimeout Thr={_posThrA:F2}A");
 
                     // ——（新增）断电后，先结束峰值捕获并以【警告】输出 —— //
                     if (_acq != null)
@@ -797,7 +811,9 @@ namespace Controller
 
 
                 // 达到夹紧判据 → 立即断电并标记释放（与 Learn… 一致）
-                CommandOffHighPriority();
+                RequireMotorCommandSucceeded(
+                    CommandOffHighPriority(),
+                    "ForwardTerminalOff");
                 CompleteAdaptiveForwardMonitoring(fwdJudgeElapsedMs);
 
                 // —— 达到夹紧判据 → 断电前，安排异步封口（延时 1000ms），完成后回调日志 —— //
@@ -948,8 +964,7 @@ namespace Controller
                                     var overshoot = peak.MaxAmp - _posThrA;
                                     if (overshoot >= _overshootAlarmDeltaA)
                                     {
-                                        AlarmRaised?.Invoke(
-                                            _channel,
+                                        NotifyAlarmSafely(
                                             $"OverCurrent Imax={peak.MaxAmp:F3}A Thr={_posThrA:F2}A Δ={overshoot:F3}A (LimitΔ={_overshootAlarmDeltaA:F3}A)");
                                     }
                                 }
@@ -973,7 +988,7 @@ namespace Controller
 
                 // ===================== ⑥ + ⑦：反向（刚性衰减 + 固定空行程） =====================
                 BeginAdaptiveReverseMonitoring(targetPeriodMs);
-                CommandReverse();
+                RequireMotorCommandSucceeded(CommandReverse(), "Reverse");
                 _log?.Info($"EPB[{_channel}] ⑥反向上电，忽略涌流 {_peakIgnoreMs}ms…", "EPB");
                 await Task.Delay(_peakIgnoreMs, token).ConfigureAwait(false);
 
@@ -1045,7 +1060,7 @@ namespace Controller
                 }
 
                 // 反向断电
-                CommandOff();
+                RequireMotorCommandSucceeded(CommandOff(), "ReverseTerminalOff");
                 CompleteAdaptiveShadowCycle();
 
                 // ===================== ⑧ 尾段收口（可交由外壳） =====================
@@ -1090,16 +1105,51 @@ namespace Controller
             catch (OperationCanceledException)
             {
                 _log?.Warn($"EPB[{_channel}] 本轮被取消。", "EPB");
-                CommandOff();
+                var offSucceeded = false;
+                try { offSucceeded = CommandOffHighPriority(); } catch { }
                 DisarmAdaptiveMonitoring();
+                if (!offSucceeded)
+                {
+                    const string offReason = "CancellationOffFailed";
+                    NotifyAlarmSafely("AdaptiveHardFault " + offReason);
+                    LastCycleOutcome = EpbCycleOutcome.HardFault(
+                        _adaptiveStateMachine?.Stage ?? EpbCurrentStage.Faulted,
+                        offReason);
+                    return false;
+                }
                 LastCycleOutcome = EpbCycleOutcome.Canceled(_adaptiveStateMachine?.Stage ?? EpbCurrentStage.Idle, "Canceled");
+                return false;
+            }
+            catch (Exception ex) when (IsSoftwareRecoveryException(ex))
+            {
+                var offSucceeded = false;
+                try { offSucceeded = CommandOffHighPriority(); } catch { }
+                DisarmAdaptiveMonitoring();
+                if (!CanDiscardForSoftwareRecovery(ex, offSucceeded))
+                {
+                    var offReason =
+                        $"SoftwareRecoveryOffFailed {ex.GetType().Name}: {ex.Message}";
+                    NotifyAlarmSafely("AdaptiveHardFault " + offReason);
+                    LastCycleOutcome = EpbCycleOutcome.HardFault(
+                        _adaptiveStateMachine?.Stage ?? EpbCurrentStage.Faulted,
+                        offReason);
+                    return false;
+                }
+                _log?.Warn(
+                    $"EPB[{_channel}] 运行软件异常：{ex.GetType().Name}: {ex.Message}；" +
+                    "已安全断电，本圈作废并等待未来完整圈重试。",
+                    "EPB");
+                LastCycleOutcome = EpbCycleOutcome.SoftwareRecovery(
+                    _adaptiveStateMachine?.Stage ?? EpbCurrentStage.Faulted,
+                    $"UnhandledSoftwareException: {ex.GetType().Name}: {ex.Message}");
                 return false;
             }
             catch (Exception ex)
             {
                 _log?.Error($"EPB[{_channel}] 运行异常：{ex.Message}", "EPB", ex);
-                CommandOff();
+                try { CommandOffHighPriority(); } catch { }
                 DisarmAdaptiveMonitoring();
+                NotifyAlarmSafely("AdaptiveHardFault UnhandledException " + ex.Message);
                 LastCycleOutcome = EpbCycleOutcome.HardFault(
                     _adaptiveStateMachine?.Stage ?? EpbCurrentStage.Faulted,
                     "UnhandledException: " + ex.Message);

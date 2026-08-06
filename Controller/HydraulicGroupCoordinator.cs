@@ -98,12 +98,14 @@ namespace Controller
             HydraulicGenerationKey key,
             IReadOnlyList<int> members,
             PressureQualification qualification,
-            DateTime actuationAnchorUtc)
+            DateTime actuationAnchorUtc,
+            Task completion)
         {
             Key = key;
             Members = members;
             Qualification = qualification;
             ActuationAnchorUtc = actuationAnchorUtc;
+            Completion = completion ?? Task.CompletedTask;
         }
 
         public HydraulicGenerationKey Key { get; }
@@ -114,6 +116,7 @@ namespace Controller
         /// 防止多个等待者分别以自己的恢复时刻计算相位而重新聚拢。
         /// </summary>
         public DateTime ActuationAnchorUtc { get; }
+        internal Task Completion { get; }
     }
 
     internal sealed class HydraulicReleaseTimeoutException : TimeoutException
@@ -348,7 +351,9 @@ namespace Controller
             if (lease == null) return;
             if (!_generations.TryGetValue(lease.Key, out var state))
             {
-                _log.Warn($"忽略过期液压释放：EPB={epbChannel} Key={lease.Key}", "液压协调");
+                // 代次从活动表清理后，旧租约仍必须观察到它所属代次的
+                // 终态。成功则幂等返回，失败则重新抛出原异常，不能因清理而吞掉故障。
+                await lease.Completion.ConfigureAwait(false);
                 return;
             }
 
@@ -486,7 +491,8 @@ namespace Controller
                     state.Key,
                     state.Members,
                     qualification,
-                    actuationAnchorUtc);
+                    actuationAnchorUtc,
+                    state.Completion.Task);
             }
             catch (Exception ex)
             {
@@ -559,6 +565,7 @@ namespace Controller
             finally
             {
                 ReleaseGenerationGate(state);
+                RemoveCompletedGeneration(state);
             }
         }
 
@@ -581,7 +588,15 @@ namespace Controller
                 if (publishFault)
                     PublishFault(state, exception);
                 ReleaseGenerationGate(state);
+                RemoveCompletedGeneration(state);
             }
+        }
+
+        private void RemoveCompletedGeneration(GenerationState state)
+        {
+            if (state == null) return;
+            if (_generations.TryGetValue(state.Key, out var current) && ReferenceEquals(current, state))
+                _generations.TryRemove(state.Key, out _);
         }
 
         private async Task ExecuteReleaseOutputAsync(int hydraulicId)
@@ -611,7 +626,7 @@ namespace Controller
                 var classification = exception is HydraulicBarrierTimeoutException
                     ? FaultClassification.SystemFault
                     : FaultClassification.HardwareConfirmed;
-                FaultRaised?.Invoke(new ControlFault(
+                var fault = new ControlFault(
                     exception is HydraulicBarrierTimeoutException ? "HydraulicBarrierTimeout" :
                     exception is HydraulicPressureLostException ? "HydraulicPressureLost" :
                     exception is HydraulicBuildTimeoutException ? "HydraulicBuildTimeout" :
@@ -622,7 +637,13 @@ namespace Controller
                     state.Key.HydraulicId,
                     DateTime.UtcNow,
                     state.Key.TestRunId,
-                    classification));
+                    classification);
+                NonCriticalObserver.Invoke(
+                    FaultRaised,
+                    fault,
+                    ex => _log?.Warn(
+                        $"液压故障观察者异常已隔离：{ex.Message}",
+                        "液压协调"));
             }
             catch { }
         }
@@ -1037,6 +1058,21 @@ namespace Controller
                 Key = key;
                 Members = members;
                 Remaining = new HashSet<int>(members);
+                ObserveInternalFault(Completion.Task);
+                ObserveInternalFault(BarrierReached.Task);
+            }
+
+            // 代次故障会同时广播给多个内部等待点；某些竞态路径只等待其中一个。
+            // 主动读取无人等待任务的 Exception，避免 GC 线程再次抛出
+            // TaskScheduler.UnobservedTaskException 噪声，同时不改变正常 await 的故障语义。
+            private static void ObserveInternalFault(Task task)
+            {
+                _ = task.ContinueWith(
+                    faulted => { _ = faulted.Exception; },
+                    CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted |
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
             }
 
             public readonly object Gate = new();

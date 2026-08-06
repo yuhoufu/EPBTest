@@ -109,7 +109,14 @@ namespace Controller.Alarm
                     changed = _active.Remove(epbId);
             }
 
-            AlarmStateChanged?.Invoke(epbId, active, reason);
+            NonCriticalObserver.Invoke(
+                AlarmStateChanged,
+                epbId,
+                active,
+                reason,
+                ex => _log?.Warn(
+                    $"EPB[{epbId}] 报警状态观察者异常已隔离：{ex.Message}",
+                    "报警"));
 
             // 指示灯：尽量实时
             if (changed)

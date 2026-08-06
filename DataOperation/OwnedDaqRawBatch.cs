@@ -16,6 +16,7 @@ namespace DataOperation
         public int SampleCount { get; private set; }
         public DateTime Current { get; private set; }
         public DateTime Last { get; private set; }
+        public long Sequence { get; private set; }
         public double[] Values => _values ?? throw new ObjectDisposedException(nameof(OwnedDaqRawBatch));
 
         public double this[int channel, int sample] => Values[channel * SampleCount + sample];
@@ -24,7 +25,8 @@ namespace DataOperation
             string device,
             double[,] source,
             DateTime current,
-            DateTime last)
+            DateTime last,
+            long sequence = 0)
         {
             if (source == null) throw new ArgumentNullException(nameof(source));
             var channels = source.GetLength(0);
@@ -39,6 +41,7 @@ namespace DataOperation
                 SampleCount = samples,
                 Current = current,
                 Last = last,
+                Sequence = sequence,
                 _values = values
             };
         }

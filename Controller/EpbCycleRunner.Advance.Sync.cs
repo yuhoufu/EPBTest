@@ -38,7 +38,6 @@ namespace Controller
         ///     单通道完成一个循环时触发的事件。
         ///     参数依次为：EPB 通道号（1..12）、已完成总圈数。
         /// </summary>
-        public event Action<int, int> ChannelCycleCompleted;
 
         /// <summary>
         /// 试验前已有的累计运行次数（从 <see cref="EpbTestRecord.RunCount"/> 传入）。
@@ -49,7 +48,6 @@ namespace Controller
         /// <summary>
         /// 本次试验过程中新增的运行次数（从 0 开始，每完成一圈加 1）。
         /// </summary>
-        private int _sessionRunCount = 0;
 
 
         /// <summary>学习期使用的“临时裕量”（仅在学习圈内滚动更新，避免直接写回 _safetyMarginA）。</summary>
@@ -244,7 +242,7 @@ namespace Controller
 
             // ===================== 正向阶段（②~④ 合并为“直接夹紧判据”） =====================
             // ② 正向上电并忽略涌流去抖
-            CommandForward();
+            RequireMotorCommandSucceeded(CommandForward(), "Forward");
             await Task.Delay(_peakIgnoreMs, token).ConfigureAwait(false);
 
             // 这里的“正向峰值衰减时长”按你的新方案，取为“忽略涌流时长”的等效值。
@@ -258,13 +256,17 @@ namespace Controller
             if (!okClamp)
             {
                 // 未达到阈值/平台，直接断电并放弃本圈样本
-                CommandOffHighPriority();
+                RequireMotorCommandSucceeded(
+                    CommandOffHighPriority(),
+                    "ForwardAbortOff");
                 _log?.Warn($"EPB[{_channel}] 正向阶段未满足夹紧判据，放弃本圈样本。", "EPB");
                 return null;
             }
 
             // —— 达到夹紧判据 → 立即断电，并通知协调器（用于统一释压）——
-            CommandOffHighPriority();
+            RequireMotorCommandSucceeded(
+                CommandOffHighPriority(),
+                "ForwardTerminalOff");
             if (_manager != null)
                 await _manager.HydraulicMarkReleaseAsync(_channel).ConfigureAwait(false);
 
@@ -277,7 +279,7 @@ namespace Controller
 
             // ===================== 反向阶段（⑥ 刚性衰减 + ⑦ 固定空行程） =====================
             // ⑥ 反向上电并忽略涌流去抖
-            CommandReverse();
+            RequireMotorCommandSucceeded(CommandReverse(), "Reverse");
             await Task.Delay(_peakIgnoreMs, token).ConfigureAwait(false);
 
             // —— 在“刚性衰减上限”内等待电流 ≤ RevDecayLimitA —— //
@@ -336,7 +338,7 @@ namespace Controller
             await Task.Delay(Math.Max(0, RevEmptyFixedMs), token).ConfigureAwait(false);
 
             // —— 反向断电 —— //
-            CommandOff();
+            RequireMotorCommandSucceeded(CommandOff(), "ReverseTerminalOff");
 
             // ===================== 返回单圈样本（兼容 LearnSample 结构） =====================
             // 说明：
@@ -406,7 +408,7 @@ namespace Controller
 
             // ===================== 正向阶段（②~④ 合并为“直接夹紧判据”） =====================
             // ② 正向上电并忽略涌流去抖
-            CommandForward();
+            RequireMotorCommandSucceeded(CommandForward(), "Forward");
             await Task.Delay(_peakIgnoreMs, token).ConfigureAwait(false);
 
             // 这里的“正向峰值衰减时长”按你的新方案，取为“忽略涌流时长”的等效值。
@@ -431,7 +433,7 @@ namespace Controller
             var fwdJudgeElapsedMs = (int)((Stopwatch.GetTimestamp() - tFwdJudgeStart) * 1000.0 / Stopwatch.Frequency);
 
             // —— 达成与否都立刻断电 —— 
-            CommandOff();
+            RequireMotorCommandSucceeded(CommandOff(), "ForwardTerminalOff");
 
             if (!okClamp)
             {
@@ -475,7 +477,7 @@ namespace Controller
 
             // ===================== 反向阶段（⑥ 刚性衰减 + ⑦ 固定空行程） =====================
             // ⑥ 反向上电并忽略涌流去抖
-            CommandReverse();
+            RequireMotorCommandSucceeded(CommandReverse(), "Reverse");
             await Task.Delay(_peakIgnoreMs, token).ConfigureAwait(false);
 
             // —— 在“刚性衰减上限”内等待电流 ≤ RevDecayLimitA —— //
@@ -534,7 +536,7 @@ namespace Controller
             await Task.Delay(Math.Max(0, RevEmptyFixedMs), token).ConfigureAwait(false);
 
             // —— 反向断电 —— //
-            CommandOff();
+            RequireMotorCommandSucceeded(CommandOff(), "ReverseTerminalOff");
 
             // ===================== 返回单圈样本（兼容 LearnSample 结构） =====================
             var sample = new LearnSample
@@ -776,12 +778,8 @@ namespace Controller
             // 关键点：旧方法里若还有①/⑧的等待，不影响我们“外壳”收尾，后面的 deadline 仍会统一结束点。
             var ok = await RunOneAsync(periodMs, token).ConfigureAwait(false);
 
-            if (ok) // 成功完成一圈
-            {
-                // 该通道完成了第 n 圈：
-                _sessionRunCount++;
-                ChannelCycleCompleted?.Invoke(_channel, _sessionRunCount); // 通知外部，完成一圈
-            }
+            // 正式完成事件由 EpbManager 在控制成功且圈数据可靠提交后发布。
+            // 此处只能证明物理动作完成，不能提前增加 UI/检查点正式次数。
 
             // —— 2) 计算“迟到量”（lateness）：实际耗时 - (periodMs - tailBaseMs) —— //
             // 理解：假设旧流程内部已经用掉了 (periodMs - 旧T8) 的时间（粗略近似），我们在⑧中要扣回 phase，

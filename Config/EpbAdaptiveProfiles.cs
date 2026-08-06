@@ -213,6 +213,28 @@ namespace Config
             return ConsecutiveForwardStallCount;
         }
 
+        /// <summary>
+        /// 显式重新开始/恢复时清除上一运行留下的瞬态连续故障计数，保留已经学习到的
+        /// 电流、时间和控流历史。连续故障只允许由本次运行的新完整圈重新建立。
+        /// </summary>
+        public bool ResetTransientFaultStreaks()
+        {
+            var changed = ConsecutiveDeviationCount != 0 ||
+                          ConsecutiveForwardOvershootCount != 0 ||
+                          ConsecutivePeakEvidenceMismatchCount != 0 ||
+                          ConsecutiveForwardStallCount != 0;
+            ConsecutiveDeviationCount = 0;
+            ConsecutiveForwardOvershootCount = 0;
+            ConsecutivePeakEvidenceMismatchCount = 0;
+            ConsecutiveForwardStallCount = 0;
+            if (changed)
+            {
+                ModelVersion = CurrentModelVersion;
+                UpdatedUtc = DateTime.UtcNow;
+            }
+            return changed;
+        }
+
         public EpbAdaptiveProfile Clone()
         {
             return new EpbAdaptiveProfile
@@ -247,6 +269,43 @@ namespace Config
                 ForwardPeakErrorHistoryA =
                     new List<double>(ForwardPeakErrorHistoryA ?? new List<double>())
             };
+        }
+
+        /// <summary>
+        /// 原位恢复到指定快照。用于软件自愈作废一次已经执行、但证据未能可靠落盘的尝试，
+        /// 确保作废圈既不计正式次数，也不污染后续控制模型和连续故障计数。
+        /// </summary>
+        public void RestoreFrom(EpbAdaptiveProfile snapshot)
+        {
+            if (snapshot == null) throw new ArgumentNullException(nameof(snapshot));
+            var copy = snapshot.Clone();
+            Channel = copy.Channel;
+            ModelVersion = copy.ModelVersion;
+            ForwardEmptyCurrentA = copy.ForwardEmptyCurrentA;
+            ForwardEmptyMadA = copy.ForwardEmptyMadA;
+            ReverseEmptyCurrentA = copy.ReverseEmptyCurrentA;
+            ReverseEmptyMadA = copy.ReverseEmptyMadA;
+            ForwardClampMedianMs = copy.ForwardClampMedianMs;
+            ForwardClampMadMs = copy.ForwardClampMadMs;
+            ReverseReleaseMedianMs = copy.ReverseReleaseMedianMs;
+            ReverseReleaseMadMs = copy.ReverseReleaseMadMs;
+            ValidSampleCount = copy.ValidSampleCount;
+            ConsecutiveDeviationCount = copy.ConsecutiveDeviationCount;
+            ForwardCutoffLeadMedianMs = copy.ForwardCutoffLeadMedianMs;
+            ForwardCutoffLeadMadMs = copy.ForwardCutoffLeadMadMs;
+            ForwardPeakErrorMedianA = copy.ForwardPeakErrorMedianA;
+            ForwardPeakErrorMadA = copy.ForwardPeakErrorMadA;
+            ValidCutoffSampleCount = copy.ValidCutoffSampleCount;
+            ConsecutiveForwardOvershootCount = copy.ConsecutiveForwardOvershootCount;
+            ConsecutivePeakEvidenceMismatchCount = copy.ConsecutivePeakEvidenceMismatchCount;
+            ConsecutiveForwardStallCount = copy.ConsecutiveForwardStallCount;
+            UpdatedUtc = copy.UpdatedUtc;
+            ForwardEmptyHistoryA = copy.ForwardEmptyHistoryA;
+            ReverseEmptyHistoryA = copy.ReverseEmptyHistoryA;
+            ForwardClampHistoryMs = copy.ForwardClampHistoryMs;
+            ReverseReleaseHistoryMs = copy.ReverseReleaseHistoryMs;
+            ForwardCutoffLeadHistoryMs = copy.ForwardCutoffLeadHistoryMs;
+            ForwardPeakErrorHistoryA = copy.ForwardPeakErrorHistoryA;
         }
 
         private static void AddBounded(List<double> values, double value)

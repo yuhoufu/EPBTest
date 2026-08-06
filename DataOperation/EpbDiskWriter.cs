@@ -538,7 +538,9 @@ public sealed class EpbDiskWriter : IDisposable
                 var cycle = GetCycleInfo(epbId, cycleNumber);
                 cycle.SampleCount = finalSampleCount;
                 var allowEmpty = normalizedStatus == "learning_canceled" ||
-                                 normalizedStatus == "learning_failed";
+                                 normalizedStatus == "learning_failed" ||
+                                 normalizedStatus == "qualification_canceled" ||
+                                 normalizedStatus == "qualification_failed";
                 if (cycle.SampleCount <= 0 && !allowEmpty)
                     throw new InvalidDataException($"EPB[{epbId}] Cycle={cycleNumber} 没有可封存样本。");
 
@@ -599,6 +601,8 @@ public sealed class EpbDiskWriter : IDisposable
                         evidence.LastSampleUtc ?? endUtc,
                         normalizedStatus.StartsWith("learning_", StringComparison.Ordinal)
                             ? "learning_failed"
+                            : normalizedStatus.StartsWith("qualification_", StringComparison.Ordinal)
+                                ? "qualification_failed"
                             : "failed");
                 }
                 catch (Exception dbEx)
@@ -626,12 +630,15 @@ public sealed class EpbDiskWriter : IDisposable
             case "learning_completed":
             case "learning_canceled":
             case "learning_failed":
+            case "qualification_completed":
+            case "qualification_canceled":
+            case "qualification_failed":
                 return normalized;
             default:
                 throw new ArgumentOutOfRangeException(
                     nameof(status),
                     status,
-                    "仅支持 alarm、learning_completed、learning_canceled、learning_failed。");
+                    "仅支持 alarm、learning_*、qualification_* 的明确终态。");
         }
     }
 
@@ -741,7 +748,8 @@ public sealed class EpbDiskWriter : IDisposable
     }
 
     /// <summary>
-    /// 将未完整完成的圈封为 canceled/failed/AbortedByDaqClockRecovery。
+    /// 将未完整完成的圈封为 canceled/failed/AbortedByDaqClockRecovery/
+    /// AbortedBySoftwareRecovery。
     /// 此类圈不参与成功计数和正常圈导出。
     /// </summary>
     public void AbortCycle(
@@ -755,7 +763,10 @@ public sealed class EpbDiskWriter : IDisposable
             ? "canceled"
             : string.Equals(status, "AbortedByDaqClockRecovery", StringComparison.OrdinalIgnoreCase)
                 ? "AbortedByDaqClockRecovery"
-                : "failed";
+                : string.Equals(status, "AbortedBySoftwareRecovery", StringComparison.OrdinalIgnoreCase) ||
+                  string.Equals(status, "SoftwareRecoveryAborted", StringComparison.OrdinalIgnoreCase)
+                    ? "AbortedBySoftwareRecovery"
+                    : "failed";
         var s = GetState(epbId);
         lock (s.Gate)
         {

@@ -37,7 +37,10 @@ namespace Controller
                 Classification = FaultClassification.SoftwareTransient
             };
             context.Completion.TrySetResult(result);
-            try { DaqRecoveryStateChanged?.Invoke(result); } catch { }
+            NonCriticalObserver.Invoke(
+                DaqRecoveryStateChanged,
+                result,
+                ex => _log?.Warn($"DAQ取消恢复观察者异常，已隔离：{ex.Message}", "AI"));
         }
 
         private void MarkDaqRecoveryTerminal(Guid correlationId)
@@ -70,9 +73,9 @@ namespace Controller
         private void PublishRecoveryProgress(DaqAutoRecoveryContext context, string reason)
         {
             var queue = _persistence.GetSnapshot(context.Device);
-            try
-            {
-                DaqPersistenceStateChanged?.Invoke(new DaqPersistenceStateChanged
+            NonCriticalObserver.Invoke(
+                DaqPersistenceStateChanged,
+                new DaqPersistenceStateChanged
                 {
                     Device = context.Device,
                     State = DaqPersistenceState.Recovering,
@@ -83,9 +86,8 @@ namespace Controller
                     Generation = _acq.GetCurrentGeneration(context.Device),
                     TimestampUtc = DateTime.UtcNow,
                     CorrelationId = context.CorrelationId
-                });
-            }
-            catch { }
+                },
+                ex => _log?.Warn($"DAQ恢复进度观察者异常，已隔离：{ex.Message}", "AI"));
         }
 
         private async Task<HardwareEvidence[]> ConfirmDaqHardwareFailureAsync(
@@ -161,7 +163,10 @@ namespace Controller
             _log.Error(
                 $"隔离软件故障（健康设备继续运行，不触发硬件报警/全局重启） [{code}]：{reason}",
                 "AI");
-            try { ControlFaultRaised?.Invoke(fault); } catch { }
+            NonCriticalObserver.Invoke(
+                ControlFaultRaised,
+                fault,
+                ex => _log?.Warn($"DAQ隔离故障观察者异常，已隔离：{ex.Message}", "AI"));
         }
     }
 }

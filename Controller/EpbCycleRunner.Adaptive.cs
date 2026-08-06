@@ -62,6 +62,47 @@ namespace Controller
             return streak >= Math.Max(1, confirmCycles);
         }
 
+        internal bool ResetTransientRunState()
+        {
+            lock (_adaptiveGate)
+            {
+                var changed = _adaptiveProfile?.ResetTransientFaultStreaks() == true;
+                if (_adaptiveProfile != null)
+                    _adaptiveStateMachine?.UpdateProfile(_adaptiveProfile);
+                Interlocked.Exchange(ref _adaptiveFaultLatched, 0);
+                Interlocked.Exchange(ref _adaptiveWarningLatched, 0);
+                _adaptiveSoftWarningSeen = false;
+                if (changed)
+                    _saveAdaptiveProfile?.Invoke(_adaptiveProfile.Clone());
+                return changed;
+            }
+        }
+
+        public EpbAdaptiveProfile CaptureAdaptiveProfile()
+        {
+            lock (_adaptiveGate)
+                return _adaptiveProfile?.Clone() ?? new EpbAdaptiveProfile { Channel = _channel };
+        }
+
+        public void RestoreAdaptiveProfile(EpbAdaptiveProfile snapshot)
+        {
+            if (snapshot == null) throw new ArgumentNullException(nameof(snapshot));
+            if (snapshot.Channel != 0 && snapshot.Channel != _channel)
+                throw new InvalidOperationException(
+                    $"不能用 EPB[{snapshot.Channel}] 模型恢复 EPB[{_channel}]。");
+
+            lock (_adaptiveGate)
+            {
+                _adaptiveProfile.RestoreFrom(snapshot);
+                _adaptiveProfile.Channel = _channel;
+                _adaptiveStateMachine?.UpdateProfile(_adaptiveProfile);
+                Interlocked.Exchange(ref _adaptiveFaultLatched, 0);
+                Interlocked.Exchange(ref _adaptiveWarningLatched, 0);
+                _adaptiveSoftWarningSeen = false;
+                _saveAdaptiveProfile?.Invoke(_adaptiveProfile.Clone());
+            }
+        }
+
         internal event Action<AdaptiveDecisionTraceSample> AdaptiveDecisionObserved;
 
         private static int ReadAdaptiveTraceNormalRateHz()
@@ -507,8 +548,7 @@ namespace Controller
 
             if (decision.Reason?.IndexOf("DaqSampleStale", StringComparison.OrdinalIgnoreCase) >= 0)
             {
-                try { RecoverableFaultRaised?.Invoke(_channel, decision.Reason); }
-                catch { }
+                NotifyRecoverableFaultSafely(decision.Reason);
                 return;
             }
 
@@ -518,8 +558,7 @@ namespace Controller
             var alarmReason = "AdaptiveHardFault " + decision.Reason;
             _ = Task.Run(() =>
             {
-                try { AlarmRaised?.Invoke(_channel, alarmReason); }
-                catch { }
+                NotifyAlarmSafely(alarmReason);
             });
         }
 
@@ -565,13 +604,8 @@ namespace Controller
                         $"EPB[{_channel}] 终态高优先级断电失败，立即触发电源组联锁。" +
                         $"Reason={reason} CommandElapsed={elapsed:F3}ms",
                         "EPB");
-                    try
-                    {
-                        AlarmRaised?.Invoke(
-                            _channel,
-                            $"AdaptiveHardFault TerminalOffCommandFailed {reason}");
-                    }
-                    catch { }
+                    NotifyAlarmSafely(
+                        $"AdaptiveHardFault TerminalOffCommandFailed {reason}");
                 });
                 return;
             }
@@ -632,8 +666,7 @@ namespace Controller
                             $"LastCurrent={currentA:F3}A SampleAge={verification.SampleAgeMs:F1}ms " +
                             $"Reason={reason} PhysicalOffStatus=NotMeasured",
                             "EPB");
-                        try { AlarmRaised?.Invoke(_channel, "AdaptiveHardFault " + staleReason); }
-                        catch { }
+                        NotifyAlarmSafely("AdaptiveHardFault " + staleReason);
                         return;
                     }
                     var cleared = VerifyOffCurrentOrEscalate(
@@ -669,17 +702,12 @@ namespace Controller
                         $"EffectiveThreshold={thresholdA:F3}A Wait={verification.ElapsedMs}ms " +
                         $"Reason={reason} PhysicalOffStatus=NotMeasured",
                         "EPB");
-                    try
-                    {
-                        AlarmRaised?.Invoke(
-                            _channel,
-                            $"AdaptiveHardFault OffCurrentNotCleared " +
-                            $"Current={currentA:F3}A " +
-                            $"ConfiguredThreshold={configuredThresholdA:F3}A " +
-                            $"PreEnergizationBaseline={baselineA:F3}A " +
-                            $"EffectiveThreshold={thresholdA:F3}A");
-                    }
-                    catch { }
+                    NotifyAlarmSafely(
+                        $"AdaptiveHardFault OffCurrentNotCleared " +
+                        $"Current={currentA:F3}A " +
+                        $"ConfiguredThreshold={configuredThresholdA:F3}A " +
+                        $"PreEnergizationBaseline={baselineA:F3}A " +
+                        $"EffectiveThreshold={thresholdA:F3}A");
                 }
                 catch (Exception ex)
                 {
@@ -696,13 +724,8 @@ namespace Controller
                     _manager?.RequestElectricalGroupEmergencyShutdown(
                         _channel,
                         "OffCurrentVerificationFailed " + ex.Message);
-                    try
-                    {
-                        AlarmRaised?.Invoke(
-                            _channel,
-                            "AdaptiveHardFault OffCurrentVerificationFailed " + ex.Message);
-                    }
-                    catch { }
+                    NotifyAlarmSafely(
+                        "AdaptiveHardFault OffCurrentVerificationFailed " + ex.Message);
                 }
             });
         }
@@ -928,8 +951,7 @@ namespace Controller
                 ? decision.Reason
                 : $"{classification.Code} {classification.Reason} Original={decision.Reason}";
             _log?.Error($"EPB[{_channel}] 快速保护最终归因：{finalReason}", "EPB");
-            try { AlarmRaised?.Invoke(_channel, "AdaptiveHardFault " + finalReason); }
-            catch { }
+            NotifyAlarmSafely("AdaptiveHardFault " + finalReason);
             return finalReason;
         }
 
@@ -938,8 +960,7 @@ namespace Controller
             var warningReason = reason ?? "AdaptiveWarning";
             _ = Task.Run(() =>
             {
-                try { WarningRaised?.Invoke(_channel, warningReason); }
-                catch { }
+                NotifyWarningSafely(warningReason);
             });
         }
 
@@ -948,8 +969,7 @@ namespace Controller
             if (warning == null) return;
             warning.Channel = _channel;
             if (warning.OccurredUtc == default) warning.OccurredUtc = DateTime.UtcNow;
-            try { WarningEvidenceRaised?.Invoke(warning); }
-            catch { }
+            NotifyWarningEvidenceSafely(warning);
             RaiseAdaptiveWarning(warning.Reason);
         }
 
@@ -1010,7 +1030,7 @@ namespace Controller
                 BeginAdaptiveForwardMonitoring(targetPeriodMs);
                 // 从上电前开始捕获 2kHz 证据，确保浪涌和快速过流都能在断电后归因。
                 EnsureAdaptiveClampPeakCaptureStarted();
-                CommandForward();
+                RequireMotorCommandSucceeded(CommandForward(), "Forward");
                 _log?.Info(
                     $"EPB[{_channel}] 自适应正向上电：软时限={_adaptiveProfile.GetForwardSoftLimitMs()}ms，" +
                     $"硬时限={GetForwardAbsoluteMaxMs(targetPeriodMs)}ms。",
@@ -1112,7 +1132,7 @@ namespace Controller
                     await hydraulicReleaseTask.ConfigureAwait(false);
                     DisarmAdaptiveMonitoring();
                     var reason = "PeakCaptureInvalid " + peakCaptureFailure;
-                    try { AlarmRaised?.Invoke(_channel, "AdaptiveHardFault " + reason); } catch { }
+                    NotifyAlarmSafely("AdaptiveHardFault " + reason);
                     return EpbCycleOutcome.HardFault(EpbCurrentStage.ClampReached, reason);
                 }
 
@@ -1157,8 +1177,7 @@ namespace Controller
                         var reason =
                             $"PeakEvidenceMismatch {peakEvidenceMismatch} " +
                             $"Streak={mismatchStreak}/{_peakEvidenceMismatchConfirmCycles}";
-                        try { AlarmRaised?.Invoke(_channel, "AdaptiveHardFault " + reason); }
-                        catch { }
+                        NotifyAlarmSafely("AdaptiveHardFault " + reason);
                         return EpbCycleOutcome.HardFault(EpbCurrentStage.ClampReached, reason);
                     }
 
@@ -1254,8 +1273,7 @@ namespace Controller
                         $"slope={forward.EstimatedSlopeAperMs:F6}A/ms " +
                         $"window={forward.WindowSpanMs}ms median={forward.WindowMedianA:F3}A " +
                         $"Streak={stallStreak}/{_adaptiveForwardStallConfirmCycles}";
-                    try { AlarmRaised?.Invoke(_channel, "AdaptiveHardFault " + reason); }
-                    catch { }
+                    NotifyAlarmSafely("AdaptiveHardFault " + reason);
                     return new EpbCycleOutcome
                     {
                         Kind = EpbCycleOutcomeKind.HardFault,
@@ -1295,8 +1313,7 @@ namespace Controller
                         $"ForwardPeakOvershoot Peak={_adaptiveForwardPeakA:F3}A " +
                         $"Target={_posThrA:F3}A Error={peakErrorA:+0.000;-0.000;0.000}A " +
                         $"Policy={policy}";
-                    try { AlarmRaised?.Invoke(_channel, "AdaptiveHardFault " + reason); }
-                    catch { }
+                    NotifyAlarmSafely("AdaptiveHardFault " + reason);
                     return new EpbCycleOutcome
                     {
                         Kind = EpbCycleOutcomeKind.HardFault,
@@ -1375,7 +1392,7 @@ namespace Controller
 
                 BeginAdaptiveReverseMonitoring(targetPeriodMs);
                 EnsureAdaptiveClampPeakCaptureStarted();
-                CommandReverse();
+                RequireMotorCommandSucceeded(CommandReverse(), "Reverse");
                 _log?.Info(
                     $"EPB[{_channel}] 自适应反向上电：硬时限={GetReverseAbsoluteMaxMs(targetPeriodMs)}ms。",
                     "EPB");
@@ -1441,11 +1458,20 @@ namespace Controller
             }
             catch (HydraulicBarrierTimeoutException ex)
             {
-                try { CommandOffHighPriority(); } catch { }
+                var offSucceeded = false;
+                try { offSucceeded = CommandOffHighPriority(); } catch { }
                 DisarmAdaptiveMonitoring();
-                // 协调器已经按液压组发布 SystemFault 并完成安全回零。这里禁止再次
-                // 走通道硬件 AlarmRaised，否则同一个同步故障会被错误升级为硬件报警。
-                return EpbCycleOutcome.HardFault(
+                if (!CanDiscardForSoftwareRecovery(ex, offSucceeded))
+                {
+                    var offReason = "SoftwareRecoveryOffFailed HydraulicBarrierTimeout " + ex.Message;
+                    NotifyAlarmSafely("AdaptiveHardFault " + offReason);
+                    return EpbCycleOutcome.HardFault(
+                        _adaptiveStateMachine?.Stage ?? EpbCurrentStage.Faulted,
+                        offReason);
+                }
+                // 协调器已经按液压组发布软件同步故障并完成安全回零。当前圈作废，
+                // 由组级恢复任务从未来完整圈继续，不能升级为通道硬件报警。
+                return EpbCycleOutcome.SoftwareRecovery(
                     _adaptiveStateMachine?.Stage ?? EpbCurrentStage.Faulted,
                     "HydraulicBarrierTimeout: " + ex.Message);
             }
@@ -1454,26 +1480,83 @@ namespace Controller
                 try { CommandOffHighPriority(); } catch { }
                 DisarmAdaptiveMonitoring();
                 const string code = "HydraulicReleaseTimeout";
-                try { AlarmRaised?.Invoke(_channel, "AdaptiveHardFault " + code + " " + ex.Message); } catch { }
+                NotifyAlarmSafely("AdaptiveHardFault " + code + " " + ex.Message);
                 return EpbCycleOutcome.HardFault(
                     _adaptiveStateMachine?.Stage ?? EpbCurrentStage.Faulted,
                     code + ": " + ex.Message);
             }
             catch (OperationCanceledException)
             {
-                try { CommandOffHighPriority(); } catch { }
+                var offSucceeded = false;
+                try { offSucceeded = CommandOffHighPriority(); } catch { }
                 DisarmAdaptiveMonitoring();
+                if (!offSucceeded)
+                {
+                    const string offReason = "CancellationOffFailed";
+                    NotifyAlarmSafely("AdaptiveHardFault " + offReason);
+                    return EpbCycleOutcome.HardFault(
+                        _adaptiveStateMachine?.Stage ?? EpbCurrentStage.Faulted,
+                        offReason);
+                }
                 return EpbCycleOutcome.Canceled(_adaptiveStateMachine?.Stage ?? EpbCurrentStage.Idle, "Canceled");
+            }
+            catch (Exception ex) when (IsSoftwareRecoveryException(ex))
+            {
+                var offSucceeded = false;
+                try { offSucceeded = CommandOffHighPriority(); } catch { }
+                DisarmAdaptiveMonitoring();
+                if (!CanDiscardForSoftwareRecovery(ex, offSucceeded))
+                {
+                    var offReason =
+                        $"SoftwareRecoveryOffFailed {ex.GetType().Name}: {ex.Message}";
+                    NotifyAlarmSafely("AdaptiveHardFault " + offReason);
+                    return EpbCycleOutcome.HardFault(
+                        _adaptiveStateMachine?.Stage ?? EpbCurrentStage.Faulted,
+                        offReason);
+                }
+                _log?.Warn(
+                    $"EPB[{_channel}] 单圈软件异常已安全断电，本圈作废并在未来完整圈重试：" +
+                    $"{ex.GetType().Name}: {ex.Message}",
+                    "EPB");
+                return EpbCycleOutcome.SoftwareRecovery(
+                    _adaptiveStateMachine?.Stage ?? EpbCurrentStage.Faulted,
+                    $"UnhandledSoftwareException: {ex.GetType().Name}: {ex.Message}");
             }
             catch (Exception ex)
             {
                 try { CommandOffHighPriority(); } catch { }
                 DisarmAdaptiveMonitoring();
-                try { AlarmRaised?.Invoke(_channel, "AdaptiveUnhandledException " + ex.Message); } catch { }
+                NotifyAlarmSafely("AdaptiveUnhandledException " + ex.Message);
                 return EpbCycleOutcome.HardFault(
                     _adaptiveStateMachine?.Stage ?? EpbCurrentStage.Faulted,
                     "UnhandledException: " + ex.Message);
             }
+        }
+
+        internal static bool IsSoftwareRecoveryException(Exception exception)
+        {
+            if (exception == null) return true;
+            var root = exception is AggregateException aggregate
+                ? aggregate.GetBaseException()
+                : exception;
+            if (root is HydraulicBarrierTimeoutException) return true;
+            if (root is OperationCanceledException ||
+                root is EpbOutputCommandException ||
+                root is HydraulicBuildException ||
+                root is HydraulicBuildTimeoutException ||
+                root is HydraulicPressureLostException ||
+                root is HydraulicReleaseTimeoutException ||
+                root is OutOfMemoryException)
+                return false;
+
+            return true;
+        }
+
+        internal static bool CanDiscardForSoftwareRecovery(
+            Exception exception,
+            bool outputOffSucceeded)
+        {
+            return outputOffSucceeded && IsSoftwareRecoveryException(exception);
         }
 
         /// <summary>

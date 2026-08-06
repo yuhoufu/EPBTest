@@ -90,6 +90,7 @@ namespace Controller
             internal readonly SemaphoreSlim Gate = new SemaphoreSlim(1, 1);
             internal readonly object Sync = new object();
             internal CancellationTokenSource ActiveOperation;
+            internal Task ActiveDisableTask;
             internal long Epoch;
             internal bool ExpectedOutputEnabled;
             internal int PlannedTransition;
@@ -124,7 +125,10 @@ namespace Controller
             foreach (var group in requiredGroups)
             {
                 if (_faultedGroups.ContainsKey(group.Id))
-                    throw new InvalidOperationException($"电源组 {group.Id} 故障已锁存，必须人工复位并重新预检。");
+                    _log.Warn(
+                        $"电源组 {group.Id} 存在上一运行故障锁存；本次重新开始将执行完整实时预检，" +
+                        "旧锁存本身不再阻碍启动。",
+                        "程控电源");
                 _selectedByGroup[group.Id] = channels.Where(group.Members.Contains).ToArray();
             }
 
@@ -174,6 +178,11 @@ namespace Controller
                 if (snapshot.ProtectionTripped)
                     throw new InvalidOperationException($"{supply.DisplayName} 保护已触发，禁止启动。");
 
+                if (_faultedGroups.TryRemove(group.Id, out _))
+                    _log.Info(
+                        $"{supply.DisplayName} 已通过本次实时身份/输出/保护预检，上一运行故障锁存已自动清除。",
+                        "程控电源");
+
                 await ApplyAndVerifySetpointsAsync(client, supply, operationToken).ConfigureAwait(false);
                 var errors = await client.ReadErrorQueueAsync(operationToken).ConfigureAwait(false);
                 if (errors.Any(x => !IsNoError(x)))
@@ -185,9 +194,6 @@ namespace Controller
                 var enabled = await client.ReadSnapshotAsync(operationToken).ConfigureAwait(false);
                 if (!enabled.OutputEnabled)
                     throw new InvalidOperationException($"{supply.DisplayName} OUTP ON 回读失败。");
-                if (enabled.MeasuredVoltage < supply.MinimumOutputVoltageV)
-                    throw new InvalidOperationException(
-                        $"{supply.DisplayName} 开启后电压过低：{enabled.MeasuredVoltage:F3}V < {supply.MinimumOutputVoltageV:F3}V。");
 
                 enabled = await WaitForStartupCurrentZeroAsync(
                         client, supply, enabled, outputOnStarted, operationToken)
@@ -233,11 +239,71 @@ namespace Controller
             }
         }
 
-        public async Task DisableGroupAsync(int electricalGroupId, string reason, CancellationToken token)
+        public Task DisableGroupAsync(int electricalGroupId, string reason, CancellationToken token)
         {
-            CancelActiveGroupOperation(electricalGroupId);
+            ThrowIfDisposed();
             var operation = Operation(electricalGroupId);
-            await operation.Gate.WaitAsync(token).ConfigureAwait(false);
+            TaskCompletionSource<bool> owner = null;
+            Task shared;
+            lock (operation.Sync)
+            {
+                shared = operation.ActiveDisableTask;
+                if (shared == null || shared.IsCompleted)
+                {
+                    owner = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    shared = owner.Task;
+                    operation.ActiveDisableTask = shared;
+                }
+            }
+
+            if (owner != null)
+                _ = RunDisableOwnerAsync(electricalGroupId, reason, operation, owner);
+            else
+                _log.Info(
+                    $"电源组 {electricalGroupId} 已有同方向 OFF 在执行，本次请求加入同一安全任务。" +
+                    $"Reason={reason}",
+                    "程控电源");
+
+            return AwaitSharedOperationAsync(shared, token);
+        }
+
+        private async Task RunDisableOwnerAsync(
+            int electricalGroupId,
+            string reason,
+            GroupOperationState operation,
+            TaskCompletionSource<bool> completion)
+        {
+            Exception failure = null;
+            try
+            {
+                await DisableGroupCoreAsync(electricalGroupId, reason, operation).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                failure = ex;
+            }
+            finally
+            {
+                lock (operation.Sync)
+                {
+                    if (ReferenceEquals(operation.ActiveDisableTask, completion.Task))
+                        operation.ActiveDisableTask = null;
+                }
+            }
+
+            if (failure == null) completion.TrySetResult(true);
+            else completion.TrySetException(failure);
+        }
+
+        private async Task DisableGroupCoreAsync(
+            int electricalGroupId,
+            string reason,
+            GroupOperationState operation)
+        {
+            // OFF 是安全方向的 owner 操作：它撤销正在执行的 ON/复核，
+            // 但不绑定任一调用方的取消令牌。调用方可以停止等待，OFF 本身仍继续到回读终态。
+            CancelActiveGroupOperation(electricalGroupId);
+            await operation.Gate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
             CancellationTokenSource linked = null;
             long epoch;
             lock (operation.Sync)
@@ -245,7 +311,7 @@ namespace Controller
                 epoch = ++operation.Epoch;
                 operation.PlannedTransition = 1;
                 operation.ExpectedOutputEnabled = false;
-                linked = CancellationTokenSource.CreateLinkedTokenSource(token);
+                linked = new CancellationTokenSource();
                 operation.ActiveOperation = linked;
             }
             try
@@ -289,6 +355,23 @@ namespace Controller
                 linked?.Dispose();
                 operation.Gate.Release();
             }
+        }
+
+        private static async Task AwaitSharedOperationAsync(Task shared, CancellationToken token)
+        {
+            if (!token.CanBeCanceled || shared.IsCompleted)
+            {
+                await shared.ConfigureAwait(false);
+                return;
+            }
+
+            var cancelled = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using (token.Register(() => cancelled.TrySetResult(true)))
+            {
+                if (await Task.WhenAny(shared, cancelled.Task).ConfigureAwait(false) != shared)
+                    throw new OperationCanceledException(token);
+            }
+            await shared.ConfigureAwait(false);
         }
 
         public async Task DisableAllAsync(string reason, CancellationToken token)
@@ -441,10 +524,12 @@ namespace Controller
             CancellationToken token)
         {
             long zeroSince = 0;
+            long voltageSince = 0;
             var snapshot = initialSnapshot;
             _log.Info(
-                $"{supply.DisplayName} OUTP ON 已确认，等待空载电流回零：" +
-                $"|Iout|≤{_config.StartupZeroCurrentA:F3}A，连续 {_config.StartupZeroStableMs}ms。",
+                $"{supply.DisplayName} OUTP ON 已确认，等待启动输出稳定：" +
+                $"Vout≥{supply.MinimumOutputVoltageV:F3}V 连续 {_config.StartupVoltageStableMs}ms，" +
+                $"|Iout|≤{_config.StartupZeroCurrentA:F3}A 连续 {_config.StartupZeroStableMs}ms。",
                 "程控电源");
 
             while (true)
@@ -457,19 +542,29 @@ namespace Controller
                     throw new InvalidOperationException($"{supply.DisplayName} 等待空载电流回零时 OUTP 意外关闭。");
                 if (snapshot.ProtectionTripped)
                     throw new InvalidOperationException($"{supply.DisplayName} 等待空载电流回零时保护触发。");
-                if (snapshot.MeasuredVoltage < supply.MinimumOutputVoltageV)
-                    throw new InvalidOperationException(
-                        $"{supply.DisplayName} 等待空载电流回零时电压过低：" +
-                        $"{snapshot.MeasuredVoltage:F3}V < {supply.MinimumOutputVoltageV:F3}V。");
+
+                if (snapshot.MeasuredVoltage >= supply.MinimumOutputVoltageV)
+                {
+                    if (voltageSince == 0) voltageSince = now;
+                }
+                else
+                {
+                    // 刚 OUTP ON 后的电压爬升不是故障；只重置稳定窗口，
+                    // 持续低压由总启动超时给出唯一终态。
+                    voltageSince = 0;
+                }
 
                 if (Math.Abs(snapshot.MeasuredCurrent) <= _config.StartupZeroCurrentA)
                 {
                     if (zeroSince == 0) zeroSince = now;
-                    if (ElapsedMilliseconds(zeroSince, now) >= _config.StartupZeroStableMs)
+                    if (ElapsedMilliseconds(zeroSince, now) >= _config.StartupZeroStableMs &&
+                        voltageSince != 0 &&
+                        ElapsedMilliseconds(voltageSince, now) >= _config.StartupVoltageStableMs)
                     {
                         _log.Info(
-                            $"{supply.DisplayName} 空载电流已稳定回零：" +
-                            $"Iout={snapshot.MeasuredCurrent:F3}A，允许启动所属卡钳继电器。",
+                            $"{supply.DisplayName} 启动输出已稳定：" +
+                            $"Vout={snapshot.MeasuredVoltage:F3}V Iout={snapshot.MeasuredCurrent:F3}A，" +
+                            "允许启动所属卡钳继电器。",
                             "程控电源");
                         return snapshot;
                     }
@@ -481,9 +576,11 @@ namespace Controller
 
                 if (elapsedMs >= _config.StartupZeroTimeoutMs)
                     throw new InvalidOperationException(
-                        $"{supply.DisplayName} OUTP ON 后空载电流未在 {_config.StartupZeroTimeoutMs}ms 内稳定回零：" +
-                        $"Iout={snapshot.MeasuredCurrent:F3}A，要求 |Iout|≤{_config.StartupZeroCurrentA:F3}A " +
-                        $"连续 {_config.StartupZeroStableMs}ms；已禁止启动卡钳。");
+                        $"{supply.DisplayName} OUTP ON 后未在 {_config.StartupZeroTimeoutMs}ms 内稳定：" +
+                        $"Vout={snapshot.MeasuredVoltage:F3}V（要求≥{supply.MinimumOutputVoltageV:F3}V " +
+                        $"连续 {_config.StartupVoltageStableMs}ms），" +
+                        $"Iout={snapshot.MeasuredCurrent:F3}A（要求 |Iout|≤{_config.StartupZeroCurrentA:F3}A " +
+                        $"连续 {_config.StartupZeroStableMs}ms）；已禁止启动卡钳。");
 
                 await Task.Delay(_config.PollIntervalMs, token).ConfigureAwait(false);
                 snapshot = await client.ReadSnapshotAsync(token).ConfigureAwait(false);
@@ -622,7 +719,12 @@ namespace Controller
                 $"电源组 {groupId} {(fault.Classification == FaultClassification.HardwareConfirmed ? "硬件已确认" : "系统故障")} " +
                 $"[{code}]：{reason}",
                 "程控电源");
-            try { FaultRaised?.Invoke(fault); } catch { }
+            NonCriticalObserver.Invoke(
+                FaultRaised,
+                fault,
+                ex => _log?.Warn(
+                    $"电源故障观察者异常已隔离：{ex.Message}",
+                    "程控电源"));
         }
 
         private static bool IsConfirmedPowerHardwareFault(string code, PswSnapshot snapshot)
@@ -702,7 +804,12 @@ namespace Controller
             };
             _telemetry.Enqueue(item);
             TrimTelemetry();
-            try { TelemetryUpdated?.Invoke(item); } catch { }
+            NonCriticalObserver.Invoke(
+                TelemetryUpdated,
+                item,
+                ex => _log?.Warn(
+                    $"电源遥测观察者异常已隔离：{ex.Message}",
+                    "程控电源"));
         }
 
         private void TrimTelemetry()

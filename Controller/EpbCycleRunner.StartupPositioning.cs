@@ -390,7 +390,7 @@ namespace Controller
                         var warning =
                             $"StartupReverseEndpointReached I={magnitude:F3}A Floor={acceptableHighA:F3}A；" +
                             "正向位置已确认，已立即断电并按释放完成继续学习。";
-                        try { WarningRaised?.Invoke(_channel, warning); } catch { }
+                        NotifyWarningSafely(warning);
                         return Result(true, StartupPositioningStage.Completed,
                             StartupPositioningCompletionKind.ReverseMechanicalEndpoint,
                             "ReverseMechanicalEndpoint", warning);
@@ -449,7 +449,7 @@ namespace Controller
                                 var warning =
                                     $"StartupReverseEndpointReached I={magnitude:F3}A during hold；" +
                                     "已立即断电并按释放完成继续学习。";
-                                try { WarningRaised?.Invoke(_channel, warning); } catch { }
+                                NotifyWarningSafely(warning);
                                 return Result(true, StartupPositioningStage.Completed,
                                     StartupPositioningCompletionKind.ReverseMechanicalEndpoint,
                                     "ReverseMechanicalEndpoint", warning);
@@ -477,9 +477,12 @@ namespace Controller
             }
             finally
             {
-                try { CommandOff(nameof(StartupPositioningAsync)); } catch { }
                 CancelStartupPeakCapture(ref forwardPeakCapture);
                 CancelStartupPeakCapture(ref reversePeakCapture);
+                if (!CommandOff(nameof(StartupPositioningAsync)))
+                    throw new EpbOutputCommandException(
+                        _channel,
+                        "StartupPositioningFinalOff");
             }
         }
 

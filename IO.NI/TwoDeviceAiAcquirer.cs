@@ -620,6 +620,8 @@ namespace IO.NI
         private long _batchSequenceDev2;
         private long _diskPublishedSequenceDev1;
         private long _diskPublishedSequenceDev2;
+        private long _rawTransferredSequenceDev1;
+        private long _rawTransferredSequenceDev2;
         private double _aiMin = -10;
         private double _aiMax = 10;
         private AITerminalConfiguration _terminalConfiguration = AITerminalConfiguration.Rse;
@@ -2130,20 +2132,63 @@ namespace IO.NI
             Stop();
             var dev1Boundary = GetLastProducedSequence("Dev1");
             var dev2Boundary = GetLastProducedSequence("Dev2");
+            return await WaitForBackgroundPipelinesAsync(
+                    dev1Boundary,
+                    dev2Boundary,
+                    timeoutMs,
+                    CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// 不停止DAQ，仅捕获当前生产边界并等待该边界之前的工程处理、Raw发布和所有权移交完成。
+        /// 用于优雅暂停：电机已关闭后把暂停点以前的数据完整交给上层写盘队列，同时保持采集健康。
+        /// </summary>
+        public Task<bool> DrainBackgroundPipelinesAsync(
+            int timeoutMs,
+            CancellationToken token = default)
+        {
+            var dev1Boundary = GetLastProducedSequence("Dev1");
+            var dev2Boundary = GetLastProducedSequence("Dev2");
+            return WaitForBackgroundPipelinesAsync(dev1Boundary, dev2Boundary, timeoutMs, token);
+        }
+
+        private async Task<bool> WaitForBackgroundPipelinesAsync(
+            long dev1Boundary,
+            long dev2Boundary,
+            int timeoutMs,
+            CancellationToken token)
+        {
             var deadline = Stopwatch.GetTimestamp() +
                            (long)(Math.Max(1, timeoutMs) / 1000.0 * Stopwatch.Frequency);
             while (Stopwatch.GetTimestamp() < deadline)
             {
-                if (Volatile.Read(ref _queueCountDev1) == 0 &&
-                    Volatile.Read(ref _queueCountDev2) == 0 &&
-                    GetLastDiskPublishedSequence("Dev1") >= dev1Boundary &&
-                    GetLastDiskPublishedSequence("Dev2") >= dev2Boundary &&
-                    Volatile.Read(ref _rawPublicationCount) == 0 &&
-                    Volatile.Read(ref _rawPublicationInFlight) == 0)
+                token.ThrowIfCancellationRequested();
+                if (IsBackgroundPipelineDrained(
+                        GetLastDiskPublishedSequence("Dev1"),
+                        dev1Boundary,
+                        GetLastDiskPublishedSequence("Dev2"),
+                        dev2Boundary,
+                        Interlocked.Read(ref _rawTransferredSequenceDev1),
+                        Interlocked.Read(ref _rawTransferredSequenceDev2)))
                     return true;
-                await Task.Delay(10).ConfigureAwait(false);
+                await Task.Delay(10, token).ConfigureAwait(false);
             }
             return false;
+        }
+
+        internal static bool IsBackgroundPipelineDrained(
+            long publishedSequenceDev1,
+            long boundarySequenceDev1,
+            long publishedSequenceDev2,
+            long boundarySequenceDev2,
+            long rawTransferredSequenceDev1,
+            long rawTransferredSequenceDev2)
+        {
+            return publishedSequenceDev1 >= boundarySequenceDev1 &&
+                   publishedSequenceDev2 >= boundarySequenceDev2 &&
+                   rawTransferredSequenceDev1 >= boundarySequenceDev1 &&
+                   rawTransferredSequenceDev2 >= boundarySequenceDev2;
         }
 
         // —— DAQ 回调：只负责 EndRead + 入队 + 立刻发起下一次 BeginRead —— //
@@ -2867,8 +2912,17 @@ namespace IO.NI
 
         private void PublishRawSnapshot(Item item)
         {
-            if (OwnedRawBatchReady == null && OnRawBatch == null) return;
-            var snapshot = OwnedDaqRawBatch.CopyFrom(item.Device, item.Raw, item.Current, item.Last);
+            if (OwnedRawBatchReady == null && OnRawBatch == null)
+            {
+                MarkRawTransferred(item.Device, item.Sequence);
+                return;
+            }
+            var snapshot = OwnedDaqRawBatch.CopyFrom(
+                item.Device,
+                item.Raw,
+                item.Current,
+                item.Last,
+                item.Sequence);
             var count = Interlocked.Increment(ref _rawPublicationCount);
             if (count > RawPublicationCapacity)
             {
@@ -2927,6 +2981,7 @@ namespace IO.NI
                         }
                         finally
                         {
+                            MarkRawTransferred(batch.Device, batch.Sequence);
                             if (!transferred) batch.Dispose();
                             Interlocked.Decrement(ref _rawPublicationInFlight);
                         }
@@ -2981,6 +3036,14 @@ namespace IO.NI
                 }
             }
             catch (OperationCanceledException) { }
+        }
+
+        private void MarkRawTransferred(string device, long sequence)
+        {
+            if (string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase))
+                Interlocked.Exchange(ref _rawTransferredSequenceDev1, sequence);
+            else if (string.Equals(device, "Dev2", StringComparison.OrdinalIgnoreCase))
+                Interlocked.Exchange(ref _rawTransferredSequenceDev2, sequence);
         }
 
         private async Task ProcessLoop(
