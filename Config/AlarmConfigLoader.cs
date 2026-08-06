@@ -56,6 +56,12 @@ namespace Config
                         behaviorNode,
                         "AdaptiveForwardStallConfirmCycles",
                         cfg.Behavior.AdaptiveForwardStallConfirmCycles));
+                cfg.Behavior.GenericFaultConfirmCycles = Math.Max(
+                    3,
+                    GetIntAttr(
+                        behaviorNode,
+                        "GenericFaultConfirmCycles",
+                        cfg.Behavior.GenericFaultConfirmCycles));
                 cfg.Behavior.SnapshotLastNCycles = GetIntAttr(behaviorNode, "SnapshotLastNCycles", cfg.Behavior.SnapshotLastNCycles);
                 cfg.Behavior.SnapshotCooldownMs = GetIntAttr(behaviorNode, "SnapshotCooldownMs", cfg.Behavior.SnapshotCooldownMs);
                 cfg.Behavior.SnapshotPostOffTailMs = Math.Max(

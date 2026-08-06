@@ -116,6 +116,12 @@ namespace Config
         public int AdaptiveForwardStallConfirmCycles { get; set; } = 5;
 
         /// <summary>
+        /// 除电流硬故障和已有专用连续圈策略外，其它控制故障连续复现多少次后升级报警。
+        /// 单次尝试圈最多计数一次，成功完成一圈后清零。
+        /// </summary>
+        public int GenericFaultConfirmCycles { get; set; } = 3;
+
+        /// <summary>
         /// 报警触发时导出最近 N 圈（含当前 running 圈）。
         /// </summary>
         public int SnapshotLastNCycles { get; set; } = 10;

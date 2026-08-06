@@ -232,6 +232,8 @@ namespace Controller
                 ResetTransientFaultStateForRestart(
                     selected,
                     reuseStableProfiles ? "GracefulCheckpointResume" : "FreshBatchStart");
+                foreach (var channel in selected)
+                    _faultConfirmationTracker.ResetScope($"Channel:{channel}");
                 var warningConfig = AlarmConfig?.WarningSnapshots ?? new WarningSnapshotConfig();
                 if (warningConfig.Enabled && !(Recorder is ICycleEvidenceExporter))
                 {
@@ -2020,6 +2022,10 @@ namespace Controller
         /// <param name="sessionRunCount">本次试验 Session 内的运行次数（从 1 开始）。</param>
         private void OnFormalCycleCommitted(int channel, int sessionRunCount)
         {
+            _faultConfirmationTracker.ResetScope($"Channel:{channel}");
+            var device = _acq.GetDeviceForEpbChannel(channel);
+            if (!string.IsNullOrWhiteSpace(device))
+                _faultConfirmationTracker.ResetScope($"Daq:{device}");
             CompleteFormalSoftwareRecoveryAfterCommit(channel);
             var current = _channelRuntimeStateStore.Get(channel);
             if (current?.State == ChannelRuntimeState.WarningRunning)

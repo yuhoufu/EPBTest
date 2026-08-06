@@ -22,6 +22,7 @@ namespace Controller
         private readonly EpbAdaptiveDecision _adaptiveSampleDecisionScratch = new EpbAdaptiveDecision();
         private readonly EpbAdaptiveDecision _adaptiveWatchdogDecisionScratch = new EpbAdaptiveDecision();
         private long _lastAdaptiveNormalTraceTick;
+        private long _lastInvalidCutoffObservationLogTick;
         private static readonly long AdaptiveNormalTraceIntervalTicks =
             Math.Max(1, Stopwatch.Frequency / ReadAdaptiveTraceNormalRateHz());
 
@@ -1631,11 +1632,19 @@ namespace Controller
                     actualPeakA,
                     out var equivalentLeadMs))
             {
-                _log?.Warn(
-                    $"EPB[{_channel}] 控流观测无效，未更新预测模型：" +
-                    $"Cutoff={cutoffCurrentA:F3}A Slope={cutoffSlopeAperMs:F4}A/ms " +
-                    $"Peak={actualPeakA:F3}A Target={_posThrA:F3}A。",
-                    "EPB");
+                var now = Stopwatch.GetTimestamp();
+                var last = Interlocked.Read(ref _lastInvalidCutoffObservationLogTick);
+                if (last == 0 || now - last >= Stopwatch.Frequency * 30L)
+                {
+                    Interlocked.Exchange(ref _lastInvalidCutoffObservationLogTick, now);
+                    _log?.Info(
+                        $"EPB[{_channel}] 控流观测未进入学习模型：" +
+                        "Rejected=InvalidOrUnlearnableSlope " +
+                        $"Cutoff={cutoffCurrentA:F3}A Slope={cutoffSlopeAperMs:F4}A/ms " +
+                        $"Peak={actualPeakA:F3}A Target={_posThrA:F3}A；" +
+                        "保持现有模型，不作为停机故障。",
+                        "EPB");
+                }
                 return;
             }
 

@@ -181,6 +181,10 @@ namespace Controller
 
         private readonly SemaphoreSlim _alarmSnapshotGate = new(1, 1);
         private readonly Dictionary<int, DateTime> _lastAlarmSnapshotUtcByChannel = new();
+        private readonly FaultConfirmationTracker _faultConfirmationTracker = new();
+        private readonly ConcurrentDictionary<int, long> _currentAttemptIdByChannel = new();
+        private readonly ConcurrentDictionary<int, int> _frozenFaultCycleByChannel = new();
+        private long _cycleAttemptSequence;
 
         // 报警触发“立即停机”去重：同一次运行只处理首个报警；新运行必须显式复位
         private readonly ChannelAlarmStopLatch _alarmStopLatch = new();
@@ -334,17 +338,25 @@ namespace Controller
             public DateTime StartedUtc;
             public DateTime CutoffUtc;
             public int[] AffectedChannels;
+            public int[] PreviouslyRunningChannels;
             public string TriggerCode;
             public int RestartDaq;
             public int Completing;
             public readonly DaqRecoveryTerminalGate Terminal = new DaqRecoveryTerminalGate();
             public int SnapshotSequence;
+            public readonly ConcurrentDictionary<string, byte> SnapshotPhases =
+                new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
             public int RecoveryAttempt;
             public int MaintenanceScheduled;
             public int ConsecutiveFailures;
+            public readonly object ValidationFailureLogGate = new object();
+            public long LastValidationFailureLogTicks;
+            public string LastValidationFailureSignature;
             public long RunEpoch;
             public long RecoveryEpoch;
             public string TriggerReason;
+            public int RecoverableAlarmChannel;
+            public int RaiseRecoverableAlarm;
             public readonly CancellationTokenSource Cancellation = new CancellationTokenSource();
             public readonly TaskCompletionSource<DaqRecoveryResult> Completion =
                 new TaskCompletionSource<DaqRecoveryResult>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -379,6 +391,7 @@ namespace Controller
             string reason)
         {
             if (!_currentCycleNumberByChannel.TryRemove(channel, out var cycleNumber)) return;
+            _currentAttemptIdByChannel.TryRemove(channel, out _);
             try
             {
                 if (Recorder is IBatchedEpbCycleRecorder batched)
@@ -464,6 +477,7 @@ namespace Controller
         private void MarkCurrentCycleNumber(int channel, int cycleNumber)
         {
             _currentCycleNumberByChannel[channel] = cycleNumber;
+            _currentAttemptIdByChannel[channel] = Interlocked.Increment(ref _cycleAttemptSequence);
         }
 
 
@@ -474,6 +488,7 @@ namespace Controller
         private void ClearCurrentCycleNumber(int channel)
         {
             _currentCycleNumberByChannel.TryRemove(channel, out _);
+            _currentAttemptIdByChannel.TryRemove(channel, out _);
         }
 
 
@@ -1453,11 +1468,37 @@ namespace Controller
 
         private void OnRunnerAlarmRaised(int channel, string reason)
         {
-            var overCurrent = reason?.IndexOf("OverCurrent", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                              reason?.IndexOf(
-                                  "AbnormalHighCurrentPlateau",
-                                  StringComparison.OrdinalIgnoreCase) >= 0;
-            if (overCurrent)
+            reason ??= string.Empty;
+            var faultCode = ExtractFaultCode(reason);
+            var immediateCurrentHardFault = IsImmediateCurrentHardFault(reason);
+            var alreadyCycleConfirmed = IsAlreadyCycleConfirmedFault(reason);
+            var hardwareLatched = IsHardwareLatchedControlFault(reason);
+
+            if (!immediateCurrentHardFault && !alreadyCycleConfirmed && !hardwareLatched)
+            {
+                var attemptId = _currentAttemptIdByChannel.TryGetValue(channel, out var currentAttempt)
+                    ? currentAttempt
+                    : Interlocked.Increment(ref _cycleAttemptSequence);
+                var confirmation = _faultConfirmationTracker.Observe(
+                    $"Channel:{channel}",
+                    faultCode,
+                    attemptId,
+                    AlarmConfig?.Behavior?.GenericFaultConfirmCycles ?? 3);
+                if (confirmation.DuplicateAttempt) return;
+                if (confirmation.Disposition == FaultConfirmationDisposition.RecoverableWarningFault)
+                {
+                    PublishRecoverableControlFaultWarning(
+                        channel,
+                        reason,
+                        faultCode,
+                        attemptId,
+                        confirmation);
+                    return;
+                }
+                reason += $" Streak={confirmation.Streak}/{confirmation.ConfirmThreshold}";
+            }
+
+            if (immediateCurrentHardFault)
             {
                 var groupId = GetElectricalGroupId(channel);
                 if (_powerSupply != null && groupId > 0 &&
@@ -1483,22 +1524,19 @@ namespace Controller
                     });
                     return;
                 }
-
-                PublishIsolatedSoftwareFault(
-                    "UnconfirmedOverCurrent",
-                    $"DAQ电流单源过流未获得新鲜PSU独立证据；已安全断电但不触发硬件报警。EPB={channel}；{reason}",
-                    new[] { channel },
-                    Guid.NewGuid());
-                return;
             }
 
             var channelFaultCorrelationId = Guid.NewGuid();
-            NotifyRunAuthorizationRevoking(
-                StopSource.AlarmInterlock,
-                reason,
-                "ChannelHardwareFault",
-                channelFaultCorrelationId,
-                FaultScope.Channel);
+            if (hardwareLatched)
+                NotifyRunAuthorizationRevoking(
+                    StopSource.AlarmInterlock,
+                    reason,
+                    "ChannelHardwareFault",
+                    channelFaultCorrelationId,
+                    FaultScope.Channel);
+
+            if (_currentCycleNumberByChannel.TryGetValue(channel, out var frozenCycle))
+                _frozenFaultCycleByChannel[channel] = frozenCycle;
 
             // ★同步去重 latch：保证计时器回调能尽快识别“本圈应封为 alarm”，但不在此线程做 IO
             if (!_alarmStopLatch.TryRequestStop(channel))
@@ -1509,7 +1547,7 @@ namespace Controller
 
             var alarmUtc = DateTime.UtcNow;
             var channelFault = new ControlFault(
-                ExtractFaultCode(reason),
+                faultCode,
                 reason,
                 FaultScope.Channel,
                 new[] { channel },
@@ -1517,7 +1555,8 @@ namespace Controller
                 alarmUtc,
                 channelFaultCorrelationId);
             _log.Error(
-                $"EPB[{channel}] 硬故障，立即停止该通道并导出报警快照。" +
+                $"EPB[{channel}] {(hardwareLatched ? "硬件锁存故障" : "确认故障")}，" +
+                "立即停止该通道并导出报警快照。" +
                 $"CorrelationId={channelFault.CorrelationId:N} 原因={reason}",
                 "报警");
             FlushPersistentLog();
@@ -1564,12 +1603,149 @@ namespace Controller
                     TryFinalizeCurrentCycleAfterSnapshot(channel, false);
                 else
                     _currentCycleNumberByChannel.TryRemove(channel, out _);
+
+                if (!hardwareLatched)
+                {
+                    try
+                    {
+                        _log.Info(
+                            $"EPB[{channel}] 报警证据已封存，开始无人值守恢复预检与资格复核。",
+                            "报警");
+                        await ResumeAlarmStoppedChannelAsync(channel, true, CancellationToken.None)
+                            .ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        _log.Error(
+                            $"EPB[{channel}] 报警后自动恢复失败，保持报警停机：{ex.Message}",
+                            "报警",
+                            ex);
+                    }
+                }
             });
+        }
+
+        private void PublishRecoverableControlFaultWarning(
+            int channel,
+            string reason,
+            string faultCode,
+            long attemptId,
+            FaultConfirmationObservation confirmation)
+        {
+            var correlationId = Guid.NewGuid();
+            if (_currentCycleNumberByChannel.TryGetValue(channel, out var cycleNumber))
+                _frozenFaultCycleByChannel[channel] = cycleNumber;
+            OnRunnerWarningEvidenceRaised(new AdaptiveWarningEvent
+            {
+                Channel = channel,
+                Code = AdaptiveWarningCode.RecoverableControlFaultWarning,
+                OccurredUtc = DateTime.UtcNow,
+                FaultCode = faultCode,
+                ScopeKey = $"Channel:{channel}",
+                CorrelationId = correlationId,
+                AttemptId = attemptId,
+                Streak = confirmation.Streak,
+                ConfirmThreshold = confirmation.ConfirmThreshold,
+                Reason = reason
+            });
+            NonCriticalObserver.Invoke(
+                ChannelWarningRaised,
+                channel,
+                $"{faultCode} 连续={confirmation.Streak}/{confirmation.ConfirmThreshold}；" +
+                "已安全断电，本圈作废并自动重试。",
+                ex => _log?.Warn($"EPB[{channel}] 预警观察者异常已隔离：{ex.Message}", "EPB"));
+            PublishChannelRuntimeState(
+                channel,
+                ChannelRuntimeState.WarningRunning,
+                faultCode,
+                reason,
+                affectedChannels: new[] { channel },
+                correlationId: correlationId,
+                allowTerminalReset: true);
+            if (!TryEnsureSoftwareRecoveryOutputOff(channel, "ConfirmedFaultWarning")) return;
+            var pauseCompletion = _timers.TryGetValue(channel, out var timer)
+                ? timer.PauseAfterCurrentCycleAsync()
+                : Task.CompletedTask;
+            UnmarkHydraulicParticipant(channel);
+            Task releaseTask;
+            try { releaseTask = HydraulicMarkReleaseAsync(channel); }
+            catch (Exception ex) { releaseTask = Task.FromException(ex); }
+            DiscardCurrentCycleForSoftwareRecovery(
+                channel,
+                DateTime.UtcNow,
+                $"{faultCode} Streak={confirmation.Streak}/{confirmation.ConfirmThreshold}");
+            _log.Warn(
+                $"EPB[{channel}] 非电流故障未达到报警门槛，已按警告安全作废当前尝试圈。" +
+                $"Code={faultCode} Streak={confirmation.Streak}/{confirmation.ConfirmThreshold}",
+                "EPB");
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await Task.WhenAll(pauseCompletion, releaseTask).ConfigureAwait(false);
+                    if (!_timers.ContainsKey(channel) ||
+                        IsAlarmStopRequested(channel) ||
+                        _channelPausedUtc.ContainsKey(channel) ||
+                        ShouldHoldDaqRecoveredChannelsForBatchPause(CurrentBatchPauseState))
+                        return;
+                    var plan = _activeStaggerPlan ??
+                               ElectricalStaggerPlanner.Build(
+                                   new[] { channel },
+                                   _cfg.Test.Groups,
+                                   PeriodMs);
+                    RejoinFormalChannelsAtSharedFutureSlot(
+                        new[] { channel },
+                        plan,
+                        "RecoverableWarningSelfHealed",
+                        "警告圈已安全断电并完成机械释放，按未来完整节律槽自动重试",
+                        allowTerminalReset: true);
+                }
+                catch (Exception ex)
+                {
+                    _log.Error(
+                        $"EPB[{channel}] 警告后自动恢复失败，保持暂停：{ex.Message}",
+                        "EPB",
+                        ex);
+                }
+            });
+        }
+
+        internal static bool IsImmediateCurrentHardFault(string reason)
+        {
+            if (string.IsNullOrWhiteSpace(reason)) return false;
+            return reason.IndexOf("OverCurrent", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   reason.IndexOf("AbnormalHighCurrentPlateau", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   (reason.IndexOf("ForwardPeakOvershoot", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                    reason.IndexOf("Policy=Immediate", StringComparison.OrdinalIgnoreCase) >= 0);
+        }
+
+        internal static bool IsAlreadyCycleConfirmedFault(string reason)
+        {
+            if (string.IsNullOrWhiteSpace(reason)) return false;
+            return reason.IndexOf("Streak=", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   (reason.IndexOf("ForwardPeakOvershoot", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                    reason.IndexOf("Policy=Consecutive", StringComparison.OrdinalIgnoreCase) >= 0);
+        }
+
+        internal static bool IsHardwareLatchedControlFault(string reason)
+        {
+            if (string.IsNullOrWhiteSpace(reason)) return false;
+            return reason.IndexOf("OutputCommandFailed", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   reason.IndexOf("TerminalOffCommandFailed", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   reason.IndexOf("SoftwareRecoveryOffFailed", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   reason.IndexOf("OffCurrentNotCleared", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private static string ExtractFaultCode(string reason)
         {
             if (string.IsNullOrWhiteSpace(reason)) return "ChannelFault";
+            reason = reason.Trim();
+            const string adaptivePrefix = "AdaptiveHardFault ";
+            if (reason.StartsWith(adaptivePrefix, StringComparison.OrdinalIgnoreCase))
+                reason = reason.Substring(adaptivePrefix.Length).TrimStart();
+            const string unhandledPrefix = "AdaptiveUnhandledException ";
+            if (reason.StartsWith(unhandledPrefix, StringComparison.OrdinalIgnoreCase))
+                return "UnhandledException";
             var end = reason.IndexOfAny(new[] { ' ', ':', ';' });
             return end > 0 ? reason.Substring(0, end) : reason;
         }
@@ -1617,6 +1793,39 @@ namespace Controller
                     $"ProcessedSampleUtc={(freshness.ProcessedSampleUtc == default ? "none" : freshness.ProcessedSampleUtc.ToString("O"))} " +
                     $"Original={reason}";
             }
+            var attemptId = _currentAttemptIdByChannel.TryGetValue(channel, out var currentAttempt)
+                ? currentAttempt
+                : Interlocked.Increment(ref _cycleAttemptSequence);
+            var confirmation = _faultConfirmationTracker.Observe(
+                $"Daq:{device}",
+                faultCode,
+                attemptId,
+                AlarmConfig?.Behavior?.GenericFaultConfirmCycles ?? 3);
+            if (confirmation.DuplicateAttempt) return;
+            if (_currentCycleNumberByChannel.TryGetValue(channel, out var frozenCycle))
+                _frozenFaultCycleByChannel[channel] = frozenCycle;
+            if (confirmation.Disposition == FaultConfirmationDisposition.RecoverableWarningFault)
+            {
+                OnRunnerWarningEvidenceRaised(new AdaptiveWarningEvent
+                {
+                    Channel = channel,
+                    Code = AdaptiveWarningCode.RecoverableControlFaultWarning,
+                    OccurredUtc = DateTime.UtcNow,
+                    FaultCode = faultCode,
+                    ScopeKey = $"Daq:{device}",
+                    CorrelationId = Guid.NewGuid(),
+                    AttemptId = attemptId,
+                    Streak = confirmation.Streak,
+                    ConfirmThreshold = confirmation.ConfirmThreshold,
+                    Reason = faultReason
+                });
+                NonCriticalObserver.Invoke(
+                    ChannelWarningRaised,
+                    channel,
+                    $"{faultCode} 连续={confirmation.Streak}/{confirmation.ConfirmThreshold}；" +
+                    "DAQ组将安全断电并自动恢复。",
+                    ex => _log?.Warn($"DAQ预警观察者异常已隔离：{ex.Message}", "AI"));
+            }
             var observation = ObserveDaqIncident(
                 device,
                 faultCode,
@@ -1636,7 +1845,10 @@ namespace Controller
                 faultReason,
                 observation.Context.CorrelationId,
                 restartDaq: true,
-                DateTime.UtcNow);
+                DateTime.UtcNow,
+                raiseRecoverableAlarm: confirmation.Disposition ==
+                                         FaultConfirmationDisposition.ConfirmedRecoverableAlarm,
+                recoverableAlarmChannel: channel);
         }
 
         private void OnDaqDeviceFaultDetected(DaqDeviceFault deviceFault)
@@ -1762,7 +1974,9 @@ namespace Controller
             Guid correlationId,
             bool restartDaq,
             DateTime eventUtc,
-            int recoveryAttempt = 0)
+            int recoveryAttempt = 0,
+            bool raiseRecoverableAlarm = false,
+            int recoverableAlarmChannel = 0)
         {
             if (string.IsNullOrWhiteSpace(device)) return;
             var affected = GetDaqGroupChannels(device);
@@ -1774,12 +1988,19 @@ namespace Controller
                 StartedUtc = DateTime.UtcNow,
                 CutoffUtc = eventUtc == default ? DateTime.UtcNow : eventUtc.ToUniversalTime(),
                 AffectedChannels = affected,
+                PreviouslyRunningChannels = affected
+                    .Where(channel => _timers.ContainsKey(channel))
+                    .Distinct()
+                    .OrderBy(channel => channel)
+                    .ToArray(),
                 TriggerCode = string.IsNullOrWhiteSpace(code) ? "DaqPersistenceLag" : code,
                 RestartDaq = restartDaq ? 1 : 0,
                 RecoveryAttempt = recoveryAttempt,
                 RunEpoch = Interlocked.Read(ref _runEpoch),
                 RecoveryEpoch = Interlocked.Increment(ref _recoveryEpoch),
                 TriggerReason = reason ?? string.Empty,
+                RaiseRecoverableAlarm = raiseRecoverableAlarm ? 1 : 0,
+                RecoverableAlarmChannel = recoverableAlarmChannel,
                 BeforeClock = _acq.GetDaqFreshnessSnapshot(device, 100),
                 PreviousGeneration = _acq.GetCurrentGeneration(device)
             };
@@ -1817,6 +2038,28 @@ namespace Controller
                         ChannelPaused,
                         channel,
                         ex => _log?.Warn($"DAQ自愈暂停观察者异常，已隔离：{ex.Message}", "AI"));
+                }
+
+                if (context.RaiseRecoverableAlarm != 0 && context.RecoverableAlarmChannel > 0)
+                {
+                    var alarmChannel = context.RecoverableAlarmChannel;
+                    var alarmReason = $"{context.TriggerCode} 连续复现达到门槛；报警停机后自动恢复。{reason}";
+                    NonCriticalObserver.Invoke(
+                        ChannelAlarmRaised,
+                        alarmChannel,
+                        alarmReason,
+                        ex => _log?.Warn($"DAQ确认报警观察者异常已隔离：{ex.Message}", "AI"));
+                    try
+                    {
+                        if (Alarm != null)
+                            await Alarm.SetAlarmAsync(alarmChannel, true, alarmReason)
+                                .ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        _log.Warn($"DAQ确认报警输出失败：{ex.Message}", "报警");
+                    }
+                    _ = ExportAlarmSnapshotAsync(alarmChannel, alarmReason, DateTime.UtcNow);
                 }
 
                 if (!TryEnsureDaqRecoveryGroupDeenergized(context))
@@ -1990,11 +2233,29 @@ namespace Controller
                 if (!IsCurrentRecovery(context)) return;
                 context.AfterClock = _acq.GetDaqFreshnessSnapshot(device, _daqPersistenceResumeAgeMs);
                 _ = ExportDaqIncidentSnapshotAsync(context, "DAQ与持久化新鲜度验证通过", "30-validate");
-                if (_powerSupply != null)
-                    await _powerSupply.RevalidateEnabledAsync(
-                            context.AffectedChannels,
+                var channelsToRestore = (context.PreviouslyRunningChannels ?? Array.Empty<int>())
+                    .Where(channel => _timers.ContainsKey(channel) && !_channelPausedUtc.ContainsKey(channel))
+                    .Distinct()
+                    .OrderBy(channel => channel)
+                    .ToArray();
+                if (_powerSupply != null && channelsToRestore.Length > 0)
+                {
+                    var safePlan = _activeStaggerPlan ??
+                                   ElectricalStaggerPlanner.Build(
+                                       channelsToRestore,
+                                       _cfg.Test.Groups,
+                                       PeriodMs);
+                    await EnsureMotorReleasedBeforeFormalRejoinAsync(
+                            channelsToRestore,
+                            safePlan,
+                            $"DaqRecoveryPowerEnable:{device}",
                             context.Cancellation.Token)
                         .ConfigureAwait(false);
+                    await _powerSupply.PrepareAndEnableAsync(
+                            channelsToRestore,
+                            context.Cancellation.Token)
+                        .ConfigureAwait(false);
+                }
                 if (!IsCurrentRecovery(context)) return;
 
                 var result = new DaqRecoveryResult
@@ -2012,7 +2273,7 @@ namespace Controller
                 };
                 var batchPauseState = CurrentBatchPauseState;
                 var holdForBatchPause = ShouldHoldDaqRecoveredChannelsForBatchPause(batchPauseState);
-                var rejoinChannels = context.AffectedChannels
+                var rejoinChannels = (context.PreviouslyRunningChannels ?? context.AffectedChannels)
                     .Where(channel =>
                         _timers.ContainsKey(channel) &&
                         !IsAlarmStopRequested(channel) &&
@@ -2067,6 +2328,11 @@ namespace Controller
                         "DAQ数据链与机械释放均已确认，按当前公共节律槽重新加入",
                         allowTerminalReset: false);
                 }
+                foreach (var groupId in context.AffectedChannels
+                             .Select(GetElectricalGroupId)
+                             .Where(id => id > 0)
+                             .Distinct())
+                    _emergencyPowerGroupLatch.TryRemove(groupId, out _);
                 foreach (var channel in context.AffectedChannels
                              .Where(channel => _channelPausedUtc.ContainsKey(channel))
                              .Distinct())
@@ -2083,6 +2349,29 @@ namespace Controller
                           $"保持定时器暂停，等待批次继续流程统一恢复。CorrelationId={context.CorrelationId:N}。"
                         : $"DAQ软件自动恢复完成 Device={device} CorrelationId={context.CorrelationId:N}。",
                     "AI");
+                if (context.RaiseRecoverableAlarm != 0 &&
+                    context.RecoverableAlarmChannel > 0 &&
+                    Alarm != null)
+                {
+                    try
+                    {
+                        await Alarm.SetAlarmAsync(
+                                context.RecoverableAlarmChannel,
+                                false,
+                                "DAQ自动恢复验证通过",
+                                CancellationToken.None)
+                            .ConfigureAwait(false);
+                        await Alarm.SetIndicatorOutputAsync(
+                                context.RecoverableAlarmChannel,
+                                false,
+                                CancellationToken.None)
+                            .ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        _log.Warn($"DAQ恢复后报警显示清除失败：{ex.Message}", "报警");
+                    }
+                }
                 NonCriticalObserver.Invoke(
                     DaqRecoveryStateChanged,
                     result,
@@ -2093,7 +2382,27 @@ namespace Controller
             }
             catch (Exception ex)
             {
-                _log.Warn($"DAQ持久化恢复检查失败 Device={device}: {ex.Message}", "AI");
+                var signature = ex.GetType().Name + ":" + ex.Message;
+                var nowTicks = Stopwatch.GetTimestamp();
+                var shouldLog = false;
+                lock (context.ValidationFailureLogGate)
+                {
+                    if (!string.Equals(
+                            context.LastValidationFailureSignature,
+                            signature,
+                            StringComparison.Ordinal) ||
+                        context.LastValidationFailureLogTicks == 0 ||
+                        nowTicks - context.LastValidationFailureLogTicks >= Stopwatch.Frequency * 30L)
+                    {
+                        context.LastValidationFailureSignature = signature;
+                        context.LastValidationFailureLogTicks = nowTicks;
+                        shouldLog = true;
+                    }
+                }
+                if (shouldLog)
+                    _log.Warn(
+                        $"DAQ恢复检查失败（同原因30秒内去重） Device={device}: {ex.Message}",
+                        "AI");
             }
             finally
             {
@@ -3347,8 +3656,17 @@ namespace Controller
         {
             var recorder = Recorder;
             if (recorder == null) return null;
-            if (!_currentCycleNumberByChannel.TryGetValue(alarmChannel, out var alarmCycleNumber))
+            var hasActiveAlarmCycle = _currentCycleNumberByChannel.TryGetValue(
+                alarmChannel,
+                out var alarmCycleNumber);
+            if (!hasActiveAlarmCycle &&
+                !_frozenFaultCycleByChannel.TryGetValue(alarmChannel, out alarmCycleNumber))
+            {
+                _log.Error(
+                    $"EPB[{alarmChannel}] 报警快照缺少活动圈及冻结圈号。Reason={reason}",
+                    "落盘");
                 return null;
+            }
 
             // 快照去抖：同一通道在 cooldown 内只导出一次
             var cooldownMs = AlarmConfig?.Behavior?.SnapshotCooldownMs ?? 2000;
@@ -3434,19 +3752,43 @@ namespace Controller
                     {
                         if (ch == alarmChannel)
                         {
-                            var sealUtc = DateTime.UtcNow;
-                            FinalizeCyclePersistence(
-                                recorder,
-                                ch,
-                                alarmCycleNumber,
-                                sealUtc,
-                                recorder.GetCurrentCycleSampleCount(ch));
-                            alarmEvidence = recorder.SealAndExportAlarmCycle(
-                                ch,
-                                alarmCycleNumber,
-                                subDir,
-                                sealUtc);
-                            if (alarmEvidence.IsValid)
+                            if (hasActiveAlarmCycle)
+                            {
+                                var sealUtc = DateTime.UtcNow;
+                                FinalizeCyclePersistence(
+                                    recorder,
+                                    ch,
+                                    alarmCycleNumber,
+                                    sealUtc,
+                                    recorder.GetCurrentCycleSampleCount(ch));
+                                alarmEvidence = recorder.SealAndExportAlarmCycle(
+                                    ch,
+                                    alarmCycleNumber,
+                                    subDir,
+                                    sealUtc);
+                            }
+                            else if (recorder is ICycleAttemptEvidenceExporter exporter)
+                            {
+                                var frozen = exporter.ExportCycleAttemptTo(
+                                    ch,
+                                    alarmCycleNumber,
+                                    subDir,
+                                    true,
+                                    true);
+                                alarmEvidence = frozen == null
+                                    ? new AlarmCycleSnapshotEvidence
+                                    {
+                                        ValidationError = "冻结故障圈导出器未返回证据。"
+                                    }
+                                    : EpbDiskWriter.ValidateAlarmCycleSnapshotPair(
+                                        frozen.CsvPath,
+                                        frozen.BinPath,
+                                        ch,
+                                        alarmCycleNumber);
+                                alarmEvidence.WasClaimed = false;
+                                alarmEvidence.FinalStatus = "FrozenAbortedCycle";
+                            }
+                            if (alarmEvidence?.IsValid == true)
                                 recorder.FlushRecentTo(ch, lastN, subDir, includeRunningCycle: false);
                         }
                         else
@@ -3537,6 +3879,7 @@ namespace Controller
             }
             finally
             {
+                _frozenFaultCycleByChannel.TryRemove(alarmChannel, out _);
                 _alarmSnapshotGate.Release();
             }
         }
@@ -3925,7 +4268,15 @@ namespace Controller
             // 网络电源关闭及回读随后独立执行，不能阻塞采样回调。
             foreach (var member in members)
             {
-                try { CancelStopCts(member); } catch { }
+                if (daqDerived)
+                {
+                    if (_timers.TryGetValue(member, out var timer)) timer.Pause();
+                    CancelCyclePauseCts(member);
+                }
+                else
+                {
+                    try { CancelStopCts(member); } catch { }
+                }
                 try { CommandEpbOffSafetyImmediate(member); } catch { }
             }
 
@@ -3938,8 +4289,11 @@ namespace Controller
                 foreach (var member in members)
                 {
                     try { UnmarkHydraulicParticipant(member); } catch { }
-                    RemoveTimerRuntime(member, nameof(RequestElectricalGroupEmergencyShutdown));
-                    RemoveRunnerRuntime(member, nameof(RequestElectricalGroupEmergencyShutdown));
+                    if (!daqDerived)
+                    {
+                        RemoveTimerRuntime(member, nameof(RequestElectricalGroupEmergencyShutdown));
+                        RemoveRunnerRuntime(member, nameof(RequestElectricalGroupEmergencyShutdown));
+                    }
                     try
                     {
                         ObserveSafetyTask(

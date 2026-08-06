@@ -108,7 +108,20 @@ public sealed class HighPrecisionTimer
                     EnterGracefulPauseIfRequested();
                     var elapsed = (int)(t1 - t0);
 
-                    if (caught != null) _log.Error($"周期 {i + 1} 执行异常：{caught.Message}", "Timer", caught);
+                    if (caught is OperationCanceledException && _cts.IsCancellationRequested)
+                    {
+                        _log.Info($"周期 {i + 1} 随定时器停止请求取消。", "Timer");
+                    }
+                    else if (caught is OperationCanceledException &&
+                             (Volatile.Read(ref _pauseAfterCurrentCycleRequested) != 0 ||
+                              Volatile.Read(ref _cycleState) == 2))
+                    {
+                        _log.Info($"周期 {i + 1} 随暂停/恢复切换取消。", "Timer");
+                    }
+                    else if (caught != null)
+                    {
+                        _log.Error($"周期 {i + 1} 执行异常：{caught.Message}", "Timer", caught);
+                    }
                     if (!ok) _log.Warn($"周期 {i + 1} 返回失败", "Timer");
 
                     // 处理超时

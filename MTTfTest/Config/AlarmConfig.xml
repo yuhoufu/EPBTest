@@ -102,6 +102,7 @@
     AdaptiveOvershootConfirmCycles="5"
     PeakEvidenceMismatchConfirmCycles="3"
     AdaptiveForwardStallConfirmCycles="5"
+    GenericFaultConfirmCycles="3"
     SnapshotLastNCycles="10"
     SnapshotCooldownMs="2000"
     SnapshotPostOffTailMs="1000" />

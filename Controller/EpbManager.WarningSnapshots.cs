@@ -60,6 +60,12 @@ namespace Controller
         private void OnRunnerWarningEvidenceRaised(AdaptiveWarningEvent warning)
         {
             if (warning == null) return;
+            if (warning.OccurredUtc == default) warning.OccurredUtc = DateTime.UtcNow;
+            if (warning.AttemptId <= 0 &&
+                _currentAttemptIdByChannel.TryGetValue(warning.Channel, out var attemptId))
+                warning.AttemptId = attemptId;
+            if (string.IsNullOrWhiteSpace(warning.ScopeKey))
+                warning.ScopeKey = $"Channel:{warning.Channel}";
             NonCriticalObserver.Invoke(
                 ChannelWarningEvidenceRaised,
                 warning,
@@ -89,7 +95,7 @@ namespace Controller
             {
                 // 在控制回调只登记不可变请求与确定性路径；实际文件导出仍在封圈后的后台线程。
                 // 这样硬报警紧随其后时 warning-chain 不依赖后台IO完成时序。
-                var chainKey = GetWarningChainKey(request.Channel, warning.Code);
+                var chainKey = GetWarningChainKey(request.Channel, warning.NormalizedCode);
                 var queue = _warningChains.GetOrAdd(chainKey, _ => new ConcurrentQueue<WarningSnapshotLink>());
                 queue.Enqueue(new WarningSnapshotLink
                 {
@@ -135,13 +141,7 @@ namespace Controller
 
             try
             {
-                foreach (var item in _pendingWarningSnapshots.ToArray())
-                {
-                    var request = item.Value;
-                    if (request.Channel != channel || request.CycleNumber != cycleNumber) continue;
-                    if (!_pendingWarningSnapshots.TryRemove(item.Key, out request)) continue;
-                    QueueWarningSnapshot(request);
-                }
+                QueuePendingWarningSnapshotsForCycle(channel, cycleNumber);
             }
             catch (Exception ex)
             {
@@ -158,6 +158,17 @@ namespace Controller
                     "落盘");
             }
             return true;
+        }
+
+        private void QueuePendingWarningSnapshotsForCycle(int channel, int cycleNumber)
+        {
+            foreach (var item in _pendingWarningSnapshots.ToArray())
+            {
+                var request = item.Value;
+                if (request.Channel != channel || request.CycleNumber != cycleNumber) continue;
+                if (!_pendingWarningSnapshots.TryRemove(item.Key, out request)) continue;
+                QueueWarningSnapshot(request);
+            }
         }
 
         private int FinalizeCyclePersistence(
@@ -230,6 +241,7 @@ namespace Controller
                     "落盘");
             }
             recorder.AbortCycle(channel, cycleNumber, finalN, endUtc, status);
+            QueuePendingWarningSnapshotsForCycle(channel, cycleNumber);
         }
 
         private bool TryBeginFormalCycle(
@@ -300,12 +312,6 @@ namespace Controller
             Exception cause)
         {
             var attempt = _formalPersistenceRecoveryAttempts.AddOrUpdate(channel, 1, (_, old) => old + 1);
-            foreach (var item in _pendingWarningSnapshots.ToArray())
-            {
-                var request = item.Value;
-                if (request.Channel == channel && request.CycleNumber == cycleNumber)
-                    _pendingWarningSnapshots.TryRemove(item.Key, out _);
-            }
             _currentCycleNumberByChannel.TryRemove(channel, out _);
             if (!TryEnsureSoftwareRecoveryOutputOff(channel, "FormalPersistenceSelfHealing"))
             {
@@ -333,12 +339,6 @@ namespace Controller
             string reason)
         {
             var attempt = _formalControlRecoveryAttempts.AddOrUpdate(channel, 1, (_, old) => old + 1);
-            foreach (var item in _pendingWarningSnapshots.ToArray())
-            {
-                var request = item.Value;
-                if (request.Channel == channel && request.CycleNumber == cycleNumber)
-                    _pendingWarningSnapshots.TryRemove(item.Key, out _);
-            }
             if (!TryEnsureSoftwareRecoveryOutputOff(channel, "FormalControlSelfHealing"))
             {
                 return;
@@ -406,6 +406,8 @@ namespace Controller
             string result)
         {
             if (context == null) return;
+            var phaseKey = string.IsNullOrWhiteSpace(result) ? "phase" : result.Trim();
+            if (!context.SnapshotPhases.TryAdd(phaseKey, 0)) return;
             // Only cheap scalar state is frozen on the caller. Full diagnostic/cycle evidence
             // is captured once at a terminal phase and serialized on a background gate; taking
             // four full snapshots during recovery caused an allocation storm in the field.
@@ -716,24 +718,40 @@ namespace Controller
             try
             {
                 var cfg = AlarmConfig?.WarningSnapshots ?? new WarningSnapshotConfig();
-                var exporter = Recorder as ICycleEvidenceExporter
-                    ?? throw new InvalidOperationException("Recorder does not implement ICycleEvidenceExporter.");
                 var warning = request.Warning;
                 var directory = GetWarningSnapshotDirectory(request, cfg);
                 Directory.CreateDirectory(directory);
                 PublishWarningSnapshotStorageStatus();
 
-                var evidence = exporter.ExportCompletedCycleTo(
-                    request.Channel,
-                    request.CycleNumber,
-                    directory,
-                    cfg.SaveCsv,
-                    cfg.SaveBin);
+                CycleSnapshotEvidence evidence;
+                if (Recorder is ICycleAttemptEvidenceExporter attemptExporter)
+                {
+                    evidence = attemptExporter.ExportCycleAttemptTo(
+                        request.Channel,
+                        request.CycleNumber,
+                        directory,
+                        cfg.SaveCsv,
+                        cfg.SaveBin);
+                }
+                else if (Recorder is ICycleEvidenceExporter completedExporter)
+                {
+                    evidence = completedExporter.ExportCompletedCycleTo(
+                        request.Channel,
+                        request.CycleNumber,
+                        directory,
+                        cfg.SaveCsv,
+                        cfg.SaveBin);
+                }
+                else
+                {
+                    throw new InvalidOperationException(
+                        "Recorder does not implement a cycle evidence exporter.");
+                }
                 var hashes = new ConcurrentDictionary<string, string>();
                 foreach (var path in new[] { evidence.CsvPath, evidence.BinPath }.Where(File.Exists))
                     hashes[Path.GetFileName(path)] = ComputeSha256(path);
 
-                var chainKey = GetWarningChainKey(request.Channel, warning.Code);
+                var chainKey = GetWarningChainKey(request.Channel, warning.NormalizedCode);
                 var linkedAlarmPath = _warningChains.TryGetValue(chainKey, out var registeredLinks)
                     ? registeredLinks.FirstOrDefault(x =>
                         x.CycleNumber == request.CycleNumber && x.Streak == warning.Streak)
@@ -810,26 +828,35 @@ namespace Controller
                 _cfg.Test.TestName,
                 rootName,
                 $"EPB{request.Channel:D2}",
-                warning.Code.ToString(),
+                SanitizePathSegment(warning.NormalizedCode),
                 folder);
+        }
+
+        private static string SanitizePathSegment(string value)
+        {
+            var safe = string.Concat((value ?? "ControlWarning")
+                .Select(ch => Path.GetInvalidFileNameChars().Contains(ch) ? '_' : ch));
+            return string.IsNullOrWhiteSpace(safe) ? "ControlWarning" : safe;
         }
 
         private void WriteWarningChain(string alarmSnapshotDirectory, int channel, string reason, int terminalCycle)
         {
-            AdaptiveWarningCode? code = null;
+            string code = null;
             if (reason?.IndexOf("ForwardPeakOvershoot", StringComparison.OrdinalIgnoreCase) >= 0)
-                code = AdaptiveWarningCode.ForwardPeakOvershootWarning;
+                code = AdaptiveWarningCode.ForwardPeakOvershootWarning.ToString();
             else if (reason?.IndexOf("PeakEvidenceMismatch", StringComparison.OrdinalIgnoreCase) >= 0)
-                code = AdaptiveWarningCode.PeakEvidenceMismatchWarning;
+                code = AdaptiveWarningCode.PeakEvidenceMismatchWarning.ToString();
             else if (reason?.IndexOf("PeakEvidenceLag", StringComparison.OrdinalIgnoreCase) >= 0)
-                code = AdaptiveWarningCode.PeakEvidenceLagWarning;
+                code = AdaptiveWarningCode.PeakEvidenceLagWarning.ToString();
             else if (reason?.IndexOf("ForwardCurrentRiseStall", StringComparison.OrdinalIgnoreCase) >= 0 ||
                      reason?.IndexOf("ForwardCurrentRiseStalled", StringComparison.OrdinalIgnoreCase) >= 0)
-                code = AdaptiveWarningCode.ForwardCurrentRiseStallWarning;
-            if (!code.HasValue) return;
+                code = AdaptiveWarningCode.ForwardCurrentRiseStallWarning.ToString();
+            else
+                code = ExtractFaultCode(reason);
+            if (string.IsNullOrWhiteSpace(code)) return;
 
             var links = Array.Empty<WarningSnapshotLink>();
-            if (_warningChains.TryGetValue(GetWarningChainKey(channel, code.Value), out var queue))
+            if (_warningChains.TryGetValue(GetWarningChainKey(channel, code), out var queue))
             {
                 var candidates = queue.Where(x => x.CycleNumber < terminalCycle)
                     .OrderByDescending(x => x.CycleNumber)
@@ -855,7 +882,7 @@ namespace Controller
                 TryUpdateWarningMetadataLink(testRoot, link);
             }
             var sb = new StringBuilder();
-            sb.Append("{\n  \"WarningCode\": \"").Append(code.Value).Append("\",")
+            sb.Append("{\n  \"WarningCode\": \"").Append(code).Append("\",")
                 .Append("\n  \"HardAlarmTerminalCycle\": ").Append(terminalCycle).Append(',')
                 .Append("\n  \"Links\": [");
             for (var i = 0; i < links.Length; i++)
@@ -945,6 +972,10 @@ namespace Controller
                    $"  \"Channel\": {request.Channel},\n" +
                    $"  \"CycleNumber\": {request.CycleNumber},\n" +
                    $"  \"WarningCode\": \"{w.Code}\",\n" +
+                   $"  \"FaultCode\": \"{JsonEscape(w.NormalizedCode)}\",\n" +
+                   $"  \"ScopeKey\": \"{JsonEscape(w.ScopeKey)}\",\n" +
+                   $"  \"CorrelationId\": \"{w.CorrelationId:N}\",\n" +
+                   $"  \"AttemptId\": {w.AttemptId},\n" +
                    $"  \"OccurredUtc\": \"{w.OccurredUtc:O}\",\n" +
                    $"  \"PeakCurrentA\": {w.PeakCurrentA.ToString("R", CultureInfo.InvariantCulture)},\n" +
                    $"  \"TargetCurrentA\": {w.TargetCurrentA.ToString("R", CultureInfo.InvariantCulture)},\n" +
@@ -1118,7 +1149,10 @@ namespace Controller
             return BitConverter.ToString(sha.ComputeHash(stream)).Replace("-", string.Empty).ToLowerInvariant();
         }
 
-        private static string GetWarningChainKey(int channel, AdaptiveWarningCode code) => $"{channel}:{code}";
+        private static string GetWarningChainKey(int channel, AdaptiveWarningCode code) =>
+            GetWarningChainKey(channel, code.ToString());
+
+        private static string GetWarningChainKey(int channel, string code) => $"{channel}:{code}";
         private static string JsonEscape(string value) => (value ?? string.Empty)
             .Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "\\r").Replace("\n", "\\n");
         private static string MakeRelativePath(string root, string path)
