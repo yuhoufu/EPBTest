@@ -366,6 +366,7 @@ namespace Controller
             public long LastVerifiedSequence;
             public DaqFreshnessSnapshot BeforeClock;
             public DaqFreshnessSnapshot AfterClock;
+            public string ValidationPhase;
         }
 
         private static long DaqAbortedCycleKey(int channel, int cycleNumber)
@@ -2212,11 +2213,13 @@ namespace Controller
                     CompleteCancelledRecovery(context, "RunEpochChangedBeforeValidation");
                     return;
                 }
+                context.ValidationPhase = "PersistenceQueue";
                 var queue = _persistence.GetSnapshot(device);
                 if (queue.QueueDepth > _daqPersistenceResumeDepth ||
                     queue.OldestBatchAgeMs > _daqPersistenceResumeAgeMs ||
                     queue.Generation != _acq.GetCurrentGeneration(device))
                     return;
+                context.ValidationPhase = "FreshDaqSamples";
                 var ready = await _acq.EnsureChannelsReadyAsync(
                         context.AffectedChannels,
                         _daqPersistenceRecoveryTimeoutMs,
@@ -2233,44 +2236,15 @@ namespace Controller
                 if (!IsCurrentRecovery(context)) return;
                 context.AfterClock = _acq.GetDaqFreshnessSnapshot(device, _daqPersistenceResumeAgeMs);
                 _ = ExportDaqIncidentSnapshotAsync(context, "DAQ与持久化新鲜度验证通过", "30-validate");
-                var channelsToRestore = (context.PreviouslyRunningChannels ?? Array.Empty<int>())
-                    .Where(channel => _timers.ContainsKey(channel) && !_channelPausedUtc.ContainsKey(channel))
-                    .Distinct()
-                    .OrderBy(channel => channel)
+                context.ValidationPhase = "TerminalOffCurrentVerification";
+                var terminalOffTasks = context.AffectedChannels
+                    .Select(channel => _runners.TryGetValue(channel, out var runner)
+                        ? runner.GetTerminalOffCurrentVerificationTask()
+                        : Task.CompletedTask)
                     .ToArray();
-                if (_powerSupply != null && channelsToRestore.Length > 0)
-                {
-                    var safePlan = _activeStaggerPlan ??
-                                   ElectricalStaggerPlanner.Build(
-                                       channelsToRestore,
-                                       _cfg.Test.Groups,
-                                       PeriodMs);
-                    await EnsureMotorReleasedBeforeFormalRejoinAsync(
-                            channelsToRestore,
-                            safePlan,
-                            $"DaqRecoveryPowerEnable:{device}",
-                            context.Cancellation.Token)
-                        .ConfigureAwait(false);
-                    await _powerSupply.PrepareAndEnableAsync(
-                            channelsToRestore,
-                            context.Cancellation.Token)
-                        .ConfigureAwait(false);
-                }
+                await Task.WhenAll(terminalOffTasks).ConfigureAwait(false);
                 if (!IsCurrentRecovery(context)) return;
 
-                var result = new DaqRecoveryResult
-                {
-                    Device = device,
-                    Recovered = true,
-                    PreviousGeneration = context.PreviousGeneration,
-                    RecoveredGeneration = _acq.GetCurrentGeneration(device),
-                    FirstVerifiedSequence = context.FirstVerifiedSequence,
-                    LastVerifiedSequence = context.LastVerifiedSequence,
-                    FreshCallbacks = _daqPersistenceRequiredFreshBatches,
-                    RequiredFreshCallbacks = _daqPersistenceRequiredFreshBatches,
-                    ElapsedMs = (int)Math.Max(0, (DateTime.UtcNow - context.StartedUtc).TotalMilliseconds),
-                    Classification = FaultClassification.SoftwareTransient
-                };
                 var batchPauseState = CurrentBatchPauseState;
                 var holdForBatchPause = ShouldHoldDaqRecoveredChannelsForBatchPause(batchPauseState);
                 var rejoinChannels = (context.PreviouslyRunningChannels ?? context.AffectedChannels)
@@ -2290,14 +2264,55 @@ namespace Controller
                                      PeriodMs);
                 if (!holdForBatchPause && rejoinChannels.Length > 0)
                 {
-                    await EnsureMotorReleasedBeforeFormalRejoinAsync(
+                    context.ValidationPhase = "EmergencyPowerOffBarrier";
+                    if (_powerSupply != null)
+                    {
+                        foreach (var groupId in rejoinChannels
+                                     .Select(GetElectricalGroupId)
+                                     .Where(groupId => groupId > 0 &&
+                                                       _emergencyPowerGroupLatch.ContainsKey(groupId))
+                                     .Distinct()
+                                     .OrderBy(groupId => groupId))
+                        {
+                            await _powerSupply.DisableGroupAsync(
+                                    groupId,
+                                    $"DaqRecoveryPreEnableBarrier:{device}",
+                                    context.Cancellation.Token)
+                                .ConfigureAwait(false);
+                        }
+                    }
+                    if (!IsCurrentRecovery(context)) return;
+
+                    context.ValidationPhase = "PowerEnableThenMechanicalRelease";
+                    await ExecuteDaqRecoveryRejoinPrerequisitesAsync(
                             rejoinChannels,
-                            rejoinPlan,
-                            $"DaqRecovery:{device}",
+                            _powerSupply == null
+                                ? null
+                                : (channels, ct) => _powerSupply.PrepareAndEnableAsync(channels, ct),
+                            (channels, ct) => EnsureMotorReleasedBeforeFormalRejoinAsync(
+                                channels,
+                                rejoinPlan,
+                                $"DaqRecovery:{device}",
+                                ct),
                             context.Cancellation.Token)
                         .ConfigureAwait(false);
+                    if (!IsCurrentRecovery(context)) return;
                     ResetTransientFaultStateForRestart(rejoinChannels, "DaqRecoveryRejoin");
                 }
+                var result = new DaqRecoveryResult
+                {
+                    Device = device,
+                    Recovered = true,
+                    PreviousGeneration = context.PreviousGeneration,
+                    RecoveredGeneration = _acq.GetCurrentGeneration(device),
+                    FirstVerifiedSequence = context.FirstVerifiedSequence,
+                    LastVerifiedSequence = context.LastVerifiedSequence,
+                    FreshCallbacks = _daqPersistenceRequiredFreshBatches,
+                    RequiredFreshCallbacks = _daqPersistenceRequiredFreshBatches,
+                    ElapsedMs = (int)Math.Max(0, (DateTime.UtcNow - context.StartedUtc).TotalMilliseconds),
+                    Classification = FaultClassification.SoftwareTransient
+                };
+                context.ValidationPhase = "Commit";
                 lock (_daqRecoveryCommitGate)
                 {
                     if (!IsCurrentRecovery(context) ||
@@ -2382,7 +2397,10 @@ namespace Controller
             }
             catch (Exception ex)
             {
-                var signature = ex.GetType().Name + ":" + ex.Message;
+                var phase = string.IsNullOrWhiteSpace(context.ValidationPhase)
+                    ? "Unknown"
+                    : context.ValidationPhase;
+                var signature = phase + ":" + ex.GetType().Name + ":" + ex.Message;
                 var nowTicks = Stopwatch.GetTimestamp();
                 var shouldLog = false;
                 lock (context.ValidationFailureLogGate)
@@ -2401,7 +2419,8 @@ namespace Controller
                 }
                 if (shouldLog)
                     _log.Warn(
-                        $"DAQ恢复检查失败（同原因30秒内去重） Device={device}: {ex.Message}",
+                        $"DAQ恢复检查失败（同原因30秒内去重） Device={device} " +
+                        $"Phase={phase}: {ex.Message}",
                         "AI");
             }
             finally
@@ -3030,6 +3049,38 @@ namespace Controller
                     catch { }
                 }
             });
+        }
+
+        private bool IsDaqRecoveryActiveForChannel(int channel)
+        {
+            var device = _acq.GetDeviceForEpbChannel(channel);
+            return !string.IsNullOrWhiteSpace(device) && _daqAutoRecovery.ContainsKey(device);
+        }
+
+        internal static bool ShouldDeferIndependentRejoinForDaq(bool daqRecoveryActive)
+        {
+            return daqRecoveryActive;
+        }
+
+        internal static async Task ExecuteDaqRecoveryRejoinPrerequisitesAsync(
+            int[] channels,
+            Func<int[], CancellationToken, Task> prepareAndEnablePower,
+            Func<int[], CancellationToken, Task> confirmMechanicalRelease,
+            CancellationToken token)
+        {
+            var selected = (channels ?? Array.Empty<int>())
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
+            if (selected.Length == 0) return;
+
+            token.ThrowIfCancellationRequested();
+            if (prepareAndEnablePower != null)
+                await prepareAndEnablePower(selected, token).ConfigureAwait(false);
+
+            token.ThrowIfCancellationRequested();
+            if (confirmMechanicalRelease != null)
+                await confirmMechanicalRelease(selected, token).ConfigureAwait(false);
         }
 
         private void BeginHydraulicSoftwareRecovery(ControlFault fault)

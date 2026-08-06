@@ -58,8 +58,16 @@ namespace Config
         public int BuildTimeoutMs { get; set; } = 5000;
         public int BuildStableMs { get; set; } = 200;
         public int PressureSampleMaxAgeMs { get; set; } = 100;
-        public double HoldDropToleranceBar { get; set; } = 5;
-        public int HoldDropConfirmMs { get; set; } = 100;
+        /// <summary>
+        /// 保压下降容差。保压不得比初始建压窗口更严格；旧项目中的较小值会在运行时
+        /// 自动提升到 PressureToleranceBar，避免“60bar 可建压、65bar 又立即停机”。
+        /// </summary>
+        public double HoldDropToleranceBar { get; set; } = 10;
+        /// <summary>保压低压连续确认时间；运行时下限为 1000ms，过滤负载切换瞬态。</summary>
+        public int HoldDropConfirmMs { get; set; } = 1000;
+        public double EffectiveHoldDropToleranceBar =>
+            Math.Max(Math.Max(0, PressureToleranceBar), Math.Max(0, HoldDropToleranceBar));
+        public int EffectiveHoldDropConfirmMs => Math.Max(1000, HoldDropConfirmMs);
         /// <summary>0 表示使用当前试验周期作为屏障上限。</summary>
         public int BarrierTimeoutMs { get; set; }
         public int PressureDoId { get; set; }
@@ -395,8 +403,8 @@ public static class ConfigLoader
                 BuildTimeoutMs = GetInt(n, "BuildTimeoutMs", 5000),
                 BuildStableMs = GetInt(n, "BuildStableMs", 200),
                 PressureSampleMaxAgeMs = GetInt(n, "PressureSampleMaxAgeMs", 100),
-                HoldDropToleranceBar = GetDouble(n, "HoldDropToleranceBar", 5),
-                HoldDropConfirmMs = GetInt(n, "HoldDropConfirmMs", 100),
+                HoldDropToleranceBar = GetDouble(n, "HoldDropToleranceBar", 10),
+                HoldDropConfirmMs = GetInt(n, "HoldDropConfirmMs", 1000),
                 BarrierTimeoutMs = GetInt(n, "BarrierTimeoutMs", 0),
                 PressureDoId = GetInt(n, "PressureDoId", 1)
             };

@@ -50,6 +50,7 @@ namespace Controller.Alarm
                 ["ReverseEndedWithoutRelease"] = "反向动作未确认释放",
                 ["AbnormalHighCurrentPlateau"] = "电流异常高位停滞",
                 ["HydraulicPressureLost"] = "液压保压资格丢失",
+                ["PressureSampleUnavailable"] = "压力采样暂不可用，正在自动恢复",
                 ["HydraulicBuildTimeout"] = "液压建压超时",
                 ["PressureSampleStale"] = "压力采样数据过期，无法确认释压状态",
                 ["HydraulicReleaseTimeout"] = "液压释压超时",

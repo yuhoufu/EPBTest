@@ -1016,6 +1016,25 @@ namespace Controller
                 .ToArray();
             if (selected.Length == 0) return;
 
+            // A channel-level warning, hydraulic self-heal or power self-heal may complete while
+            // the owning DAQ group is still in its device-level recovery.  Letting that path
+            // replace/restart a timer here can re-pressurize the group before DAQ freshness and
+            // power restoration have committed.  The DAQ recovery owns the eventual group rejoin.
+            var deferredForDaq = selected
+                .Where(channel => ShouldDeferIndependentRejoinForDaq(
+                    IsDaqRecoveryActiveForChannel(channel)))
+                .ToArray();
+            if (deferredForDaq.Length > 0)
+            {
+                _log?.Info(
+                    $"通道级恢复已移交DAQ组统一恢复：Channels=[{string.Join(",", deferredForDaq)}] " +
+                    $"Reason={runtimeCode}",
+                    "AI");
+                var deferred = new HashSet<int>(deferredForDaq);
+                selected = selected.Where(channel => !deferred.Contains(channel)).ToArray();
+                if (selected.Length == 0) return;
+            }
+
             var nowUtc = DateTime.UtcNow;
             foreach (var group in selected.GroupBy(channel => channel <= 6 ? 1 : 2))
             {

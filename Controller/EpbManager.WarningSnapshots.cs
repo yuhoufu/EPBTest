@@ -413,6 +413,7 @@ namespace Controller
             // four full snapshots during recovery caused an allocation storm in the field.
             var capturedUtc = DateTime.UtcNow;
             var includeFullEvidence = ShouldIncludeFullDaqIncidentEvidence(result);
+            var includeTimingEvidence = ShouldIncludeDaqTimingEvidence(result);
             var queue = _persistence.GetSnapshot(context.Device);
             var runEpoch = context.RunEpoch;
             var recoveryEpoch = context.RecoveryEpoch;
@@ -447,10 +448,10 @@ namespace Controller
                 _daqIncidentSnapshotGate.Wait();
                 try
                 {
-                    var diagnostics = includeFullEvidence
+                    var diagnostics = includeTimingEvidence
                         ? _acq.CaptureDiagnostics(
                             new[] { context.Device },
-                            TimeSpan.FromSeconds(60))
+                            includeFullEvidence ? TimeSpan.FromSeconds(60) : TimeSpan.FromSeconds(10))
                         : null;
                     var root = Path.Combine(
                         _cfg.Test.StoreDir,
@@ -497,10 +498,20 @@ namespace Controller
                         $"  \"beforeSampleRateHz\": {beforeClock.EffectiveSampleRateHz.ToString("F6", CultureInfo.InvariantCulture)},\n" +
                         $"  \"beforeSkewPpm\": {beforeClock.EstimatedSkewPpm.ToString("F3", CultureInfo.InvariantCulture)},\n" +
                         $"  \"beforeResidualMs\": {beforeClock.ClockResidualMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
+                        $"  \"beforeCallbackAgeMs\": {beforeClock.CallbackAgeMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
+                        $"  \"beforeControlEnqueueAgeMs\": {beforeClock.ControlEnqueueAgeMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
+                        $"  \"beforeControlProcessedAgeMs\": {beforeClock.ControlProcessedAgeMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
+                        $"  \"beforeSampleAgeMs\": {beforeClock.AgeMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
+                        $"  \"beforeProcessedSampleUtc\": \"{beforeClock.ProcessedSampleUtc:O}\",\n" +
                         $"  \"afterClockState\": \"{afterClock.ClockState}\",\n" +
                         $"  \"afterSampleRateHz\": {afterClock.EffectiveSampleRateHz.ToString("F6", CultureInfo.InvariantCulture)},\n" +
                         $"  \"afterSkewPpm\": {afterClock.EstimatedSkewPpm.ToString("F3", CultureInfo.InvariantCulture)},\n" +
                         $"  \"afterResidualMs\": {afterClock.ClockResidualMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
+                        $"  \"afterCallbackAgeMs\": {afterClock.CallbackAgeMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
+                        $"  \"afterControlEnqueueAgeMs\": {afterClock.ControlEnqueueAgeMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
+                        $"  \"afterControlProcessedAgeMs\": {afterClock.ControlProcessedAgeMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
+                        $"  \"afterSampleAgeMs\": {afterClock.AgeMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
+                        $"  \"afterProcessedSampleUtc\": \"{afterClock.ProcessedSampleUtc:O}\",\n" +
                         $"  \"queueDepth\": {queue.QueueDepth},\n" +
                         $"  \"oldestBatchAgeMs\": {queue.OldestBatchAgeMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
                         $"  \"affectedChannels\": [{string.Join(",", affectedChannels)}],\n" +
@@ -515,6 +526,8 @@ namespace Controller
                         $"  \"requiredFreshBatches\": {requiredFresh},\n" +
                         $"  \"suppressedBatches\": {queue.SuppressedBatchCount},\n" +
                         $"  \"discardedGenerationBatches\": {queue.DiscardedGenerationBatchCount},\n" +
+                        $"  \"validationPhase\": \"{JsonEscape(context.ValidationPhase)}\",\n" +
+                        $"  \"timingEvidenceIncluded\": {includeTimingEvidence.ToString().ToLowerInvariant()},\n" +
                         $"  \"fullEvidenceIncluded\": {includeFullEvidence.ToString().ToLowerInvariant()},\n" +
                         "  \"validBatchesDroppedByClockModel\": 0,\n" +
                         $"  \"result\": \"{JsonEscape(result)}\",\n" +
@@ -554,6 +567,13 @@ namespace Controller
         internal static bool ShouldIncludeFullDaqIncidentEvidence(string phase)
         {
             return (phase ?? string.Empty).StartsWith("90-", StringComparison.OrdinalIgnoreCase);
+        }
+
+        internal static bool ShouldIncludeDaqTimingEvidence(string phase)
+        {
+            var value = phase ?? string.Empty;
+            return value.StartsWith("00-trigger", StringComparison.OrdinalIgnoreCase) ||
+                   value.StartsWith("90-", StringComparison.OrdinalIgnoreCase);
         }
 
         private async Task ExportDaqHardFaultIncidentSnapshotAsync(

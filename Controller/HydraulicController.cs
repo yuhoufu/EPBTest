@@ -52,14 +52,58 @@ namespace Controller
             double toleranceBar,
             double actualBar,
             int timeoutMs,
-            string detail)
+            string detail,
+            int confirmationStreak = 0,
+            int confirmationThreshold = 3)
             : base(BuildMessage(
                 hydraulicId,
                 targetBar,
                 toleranceBar,
                 actualBar,
                 timeoutMs,
-                detail)) { }
+                detail,
+                confirmationStreak,
+                confirmationThreshold))
+        {
+            HydraulicId = hydraulicId;
+            TargetBar = targetBar;
+            ToleranceBar = toleranceBar;
+            ActualBar = actualBar;
+            TimeoutMs = timeoutMs;
+            Detail = detail ?? string.Empty;
+            ConfirmationStreak = Math.Max(0, confirmationStreak);
+            ConfirmationThreshold = Math.Max(3, confirmationThreshold);
+        }
+
+        public int HydraulicId { get; }
+        public double TargetBar { get; }
+        public double ToleranceBar { get; }
+        public double ActualBar { get; }
+        public int TimeoutMs { get; }
+        public string Detail { get; }
+        public int ConfirmationStreak { get; }
+        public int ConfirmationThreshold { get; }
+        public bool IsConfirmed => ConfirmationStreak >= ConfirmationThreshold;
+        public bool IsBelowToleranceWindow =>
+            Detail.IndexOf("BelowToleranceWindow", StringComparison.OrdinalIgnoreCase) >= 0;
+        public bool IsPressureEvidenceUnavailable =>
+            Detail.IndexOf("PressureSample", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            Detail.IndexOf("NoPressureSample", StringComparison.OrdinalIgnoreCase) >= 0;
+        public bool IsWithinToleranceButUnstable =>
+            Detail.IndexOf("StabilizingWithinTolerance", StringComparison.OrdinalIgnoreCase) >= 0;
+
+        public HydraulicBuildTimeoutException WithConfirmation(int streak, int threshold)
+        {
+            return new HydraulicBuildTimeoutException(
+                HydraulicId,
+                TargetBar,
+                ToleranceBar,
+                ActualBar,
+                TimeoutMs,
+                Detail,
+                streak,
+                threshold);
+        }
 
         private static string BuildMessage(
             int hydraulicId,
@@ -67,13 +111,19 @@ namespace Controller
             double toleranceBar,
             double actualBar,
             int timeoutMs,
-            string detail)
+            string detail,
+            int confirmationStreak,
+            int confirmationThreshold)
         {
             var inspection = GetInspectionGuidance(detail);
+            var confirmation = confirmationStreak > 0
+                ? $" Confirmation={confirmationStreak}/{Math.Max(3, confirmationThreshold)}"
+                : string.Empty;
             return $"HydraulicBuildTimeout Hydraulic={hydraulicId} Target={targetBar:F3}bar " +
                    $"Tolerance=±{toleranceBar:F3}bar " +
                    $"Allowed=[{targetBar - toleranceBar:F3},{targetBar + toleranceBar:F3}]bar " +
-                   $"Actual={actualBar:F3}bar Timeout={timeoutMs}ms Detail={detail}; {inspection}";
+                   $"Actual={actualBar:F3}bar Timeout={timeoutMs}ms Detail={detail}" +
+                   $"{confirmation}; {inspection}";
         }
 
         private static string GetInspectionGuidance(string detail)

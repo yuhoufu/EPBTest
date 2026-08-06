@@ -152,17 +152,27 @@ namespace Controller
             double actualBar,
             double minimumBar,
             HydraulicPressureFailureReason failureReason,
-            double sampleAgeMs)
+            double sampleAgeMs,
+            int confirmationStreak = 0,
+            int confirmationThreshold = 3)
             : base($"HydraulicPressureLost Hydraulic={hydraulicId} Generation={generationId} " +
                    $"Reason={failureReason} Actual={actualBar:F3}bar Minimum={minimumBar:F3}bar " +
-                   $"AgeMs={sampleAgeMs:F1}")
+                   $"AgeMs={sampleAgeMs:F1}" +
+                   (confirmationStreak > 0
+                       ? $" Confirmation={confirmationStreak}/{Math.Max(3, confirmationThreshold)}"
+                       : string.Empty))
         {
             FailureReason = failureReason;
             SampleAgeMs = sampleAgeMs;
+            ConfirmationStreak = Math.Max(0, confirmationStreak);
+            ConfirmationThreshold = Math.Max(3, confirmationThreshold);
         }
 
         public HydraulicPressureFailureReason FailureReason { get; }
         public double SampleAgeMs { get; }
+        public int ConfirmationStreak { get; }
+        public int ConfirmationThreshold { get; }
+        public bool IsConfirmed => ConfirmationStreak >= ConfirmationThreshold;
     }
 
     public sealed class HydraulicBarrierTimeoutException : TimeoutException
@@ -178,6 +188,7 @@ namespace Controller
 
     internal sealed class HydraulicGroupCoordinator
     {
+        private const int PressureFaultConfirmGenerations = 3;
         private readonly AoController _ao;
 
         // channel -> hydId（优先 TestConfig.Hydraulics[*].Members；其次 DOConfig.EPB[*].HydraulicId）
@@ -196,6 +207,8 @@ namespace Controller
         private readonly Func<int, Task> _testReleaseAction;
         private readonly TestConfig _test;
         private readonly ConcurrentDictionary<HydraulicGenerationKey, GenerationState> _generations = new();
+        private readonly ConcurrentDictionary<int, int> _buildFailureStreaks = new();
+        private readonly ConcurrentDictionary<int, int> _holdFailureStreaks = new();
         private readonly ConcurrentDictionary<int, SemaphoreSlim> _generationGates = new();
 
         public event Action<ControlFault> FaultRaised;
@@ -482,6 +495,7 @@ namespace Controller
                 }
 
                 state.Qualification = qualification;
+                _buildFailureStreaks.TryRemove(state.Key.HydraulicId, out _);
                 state.MonitorCts = CancellationTokenSource.CreateLinkedTokenSource(token);
                 state.MonitorTask = MonitorQualifiedPressureAsync(state, state.MonitorCts.Token);
                 // 所有等待同一 InitializeTask 的通道拿到完全相同的未来执行锚点。
@@ -496,15 +510,37 @@ namespace Controller
             }
             catch (Exception ex)
             {
-                await FailGenerationAsync(state, ex).ConfigureAwait(false);
-                throw;
+                var classified = PrepareGenerationFailure(state.Key.HydraulicId, ex);
+                await FailGenerationAsync(state, classified).ConfigureAwait(false);
+                if (ReferenceEquals(classified, ex)) throw;
+                throw classified;
             }
+        }
+
+        private Exception PrepareGenerationFailure(int hydraulicId, Exception exception)
+        {
+            if (exception is not HydraulicBuildTimeoutException buildTimeout)
+                return exception;
+
+            // 压力样本缺失/无效/陈旧不能证明液压硬件无法建压，保持软件自愈语义。
+            // 只有新鲜样本连续低于建压窗口才计入“连续三代次无法建压”。
+            if (!buildTimeout.IsBelowToleranceWindow)
+            {
+                _buildFailureStreaks.TryRemove(hydraulicId, out _);
+                return buildTimeout;
+            }
+
+            var streak = _buildFailureStreaks.AddOrUpdate(hydraulicId, 1, (_, value) => value + 1);
+            return buildTimeout.WithConfirmation(streak, PressureFaultConfirmGenerations);
         }
 
         private async Task MonitorQualifiedPressureAsync(GenerationState state, CancellationToken token)
         {
             var item = GetHydraulicItem(state.Key.HydraulicId);
-            var minimumBar = item.PressureThresholdBar - Math.Max(0, item.HoldDropToleranceBar);
+            // 保压下限不得严于本代次刚通过的建压下限。旧配置即使仍是 5bar/100ms，
+            // 运行时也按至少 PressureToleranceBar/1000ms 处理，避免配置升级遗漏复发。
+            var minimumBar = item.PressureThresholdBar - item.EffectiveHoldDropToleranceBar;
+            var confirmMs = item.EffectiveHoldDropConfirmMs;
             long? lowSince = null;
             var clock = Stopwatch.StartNew();
             try
@@ -525,15 +561,25 @@ namespace Controller
                     if (!valid)
                     {
                         if (!lowSince.HasValue) lowSince = clock.ElapsedMilliseconds;
-                        if (clock.ElapsedMilliseconds - lowSince.Value >= Math.Max(0, item.HoldDropConfirmMs))
+                        if (clock.ElapsedMilliseconds - lowSince.Value >= confirmMs)
                         {
+                            if (failureReason != HydraulicPressureFailureReason.BelowMinimum)
+                                _holdFailureStreaks.TryRemove(state.Key.HydraulicId, out _);
+                            var confirmationStreak = failureReason == HydraulicPressureFailureReason.BelowMinimum
+                                ? _holdFailureStreaks.AddOrUpdate(
+                                    state.Key.HydraulicId,
+                                    1,
+                                    (_, value) => value + 1)
+                                : 0;
                             var ex = new HydraulicPressureLostException(
                                 state.Key.HydraulicId,
                                 state.Key.Slot,
                                 sample.ValueBar,
                                 minimumBar,
                                 failureReason ?? HydraulicPressureFailureReason.InvalidValue,
-                                sample.AgeMs);
+                                sample.AgeMs,
+                                confirmationStreak,
+                                PressureFaultConfirmGenerations);
                             await FailGenerationAsync(state, ex).ConfigureAwait(false);
                             return;
                         }
@@ -555,6 +601,7 @@ namespace Controller
                 state.MonitorCts?.Cancel();
                 await ExecuteReleaseOutputAsync(state.Key.HydraulicId).ConfigureAwait(false);
                 await WaitForSafePressureAsync(state.Key.HydraulicId).ConfigureAwait(false);
+                _holdFailureStreaks.TryRemove(state.Key.HydraulicId, out _);
                 state.Completion.TrySetResult(true);
             }
             catch (Exception ex)
@@ -620,14 +667,12 @@ namespace Controller
             _log.Error(exception.Message, "液压协调", exception);
             try
             {
-                // 屏障缺员只证明软件调度/同步没有收敛，并不能独立证明泵、管路或
-                // 卡钳硬件损坏。仍执行整组安全断电、回零和停止，但不得驱动硬件
-                // 报警灯/蜂鸣器；压力建压、保压、释压失败继续按硬件证据处理。
-                var classification = exception is HydraulicBarrierTimeoutException
-                    ? FaultClassification.SystemFault
-                    : FaultClassification.HardwareConfirmed;
+                var classification = ClassifyFault(exception);
                 var fault = new ControlFault(
                     exception is HydraulicBarrierTimeoutException ? "HydraulicBarrierTimeout" :
+                    exception is HydraulicPressureLostException pressureLost &&
+                        pressureLost.FailureReason != HydraulicPressureFailureReason.BelowMinimum
+                        ? "PressureSampleUnavailable" :
                     exception is HydraulicPressureLostException ? "HydraulicPressureLost" :
                     exception is HydraulicBuildTimeoutException ? "HydraulicBuildTimeout" :
                     "HydraulicFault",
@@ -646,6 +691,30 @@ namespace Controller
                         "液压协调"));
             }
             catch { }
+        }
+
+        internal static FaultClassification ClassifyFault(Exception exception)
+        {
+            if (exception is HydraulicBarrierTimeoutException)
+                return FaultClassification.SystemFault;
+            if (exception is HydraulicBuildTimeoutException buildTimeout)
+            {
+                if (buildTimeout.IsPressureEvidenceUnavailable ||
+                    buildTimeout.IsWithinToleranceButUnstable)
+                    return FaultClassification.SystemFault;
+                if (buildTimeout.IsBelowToleranceWindow && !buildTimeout.IsConfirmed)
+                    return FaultClassification.SystemFault;
+                return FaultClassification.HardwareConfirmed;
+            }
+            if (exception is HydraulicPressureLostException pressureLost)
+            {
+                if (pressureLost.FailureReason != HydraulicPressureFailureReason.BelowMinimum)
+                    return FaultClassification.SystemFault;
+                return pressureLost.IsConfirmed
+                    ? FaultClassification.HardwareConfirmed
+                    : FaultClassification.SystemFault;
+            }
+            return FaultClassification.HardwareConfirmed;
         }
 
         private void ReleaseGenerationGate(GenerationState state)

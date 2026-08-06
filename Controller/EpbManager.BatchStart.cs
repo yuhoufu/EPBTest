@@ -2006,6 +2006,12 @@ namespace Controller
         internal static bool IsHydraulicSoftwareRecoveryCandidate(Exception exception)
         {
             if (exception is HydraulicBarrierTimeoutException) return true;
+            if (exception is HydraulicBuildTimeoutException buildTimeout)
+                return HydraulicGroupCoordinator.ClassifyFault(buildTimeout) !=
+                       FaultClassification.HardwareConfirmed;
+            if (exception is HydraulicPressureLostException pressureLost)
+                return HydraulicGroupCoordinator.ClassifyFault(pressureLost) !=
+                       FaultClassification.HardwareConfirmed;
             var message = exception?.Message ?? string.Empty;
             return message.IndexOf("members are immutable", StringComparison.OrdinalIgnoreCase) >= 0 ||
                    message.IndexOf("成员不可变", StringComparison.OrdinalIgnoreCase) >= 0;

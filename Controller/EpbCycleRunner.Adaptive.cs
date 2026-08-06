@@ -46,6 +46,7 @@ namespace Controller
         private string _adaptiveDirection = string.Empty;
         private readonly EpbAdaptiveSafetyLimits _adaptiveSafetyLimits;
         private int _adaptiveTerminalOffLatched;
+        private Task _terminalOffCurrentVerificationTask = Task.CompletedTask;
         private double _adaptivePreEnergizationCurrentA = double.NaN;
 
         private const double OffCurrentBaselineWindowMs = 500.0;
@@ -628,7 +629,7 @@ namespace Controller
                 configuredThresholdA,
                 baselineA);
             var timeoutMs = _adaptiveSafetyLimits.OffCurrentClearTimeoutMs;
-            _ = Task.Run(async () =>
+            var verificationTask = Task.Run(async () =>
             {
                 try
                 {
@@ -729,6 +730,12 @@ namespace Controller
                         "AdaptiveHardFault OffCurrentVerificationFailed " + ex.Message);
                 }
             });
+            Interlocked.Exchange(ref _terminalOffCurrentVerificationTask, verificationTask);
+        }
+
+        internal Task GetTerminalOffCurrentVerificationTask()
+        {
+            return Volatile.Read(ref _terminalOffCurrentVerificationTask) ?? Task.CompletedTask;
         }
 
         internal readonly struct OffCurrentClearResult
@@ -820,10 +827,14 @@ namespace Controller
                     Math.Max(
                         0,
                         (Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency));
-                if (!sample.IsFresh)
-                    return new OffCurrentClearResult(
-                        false, currentA, elapsedMs, false, sample.AgeMs);
-                if (!double.IsNaN(currentA) &&
+                // A stale cache entry is not evidence that the current failed to clear.  The
+                // DAQ callback may already be catching up from its hardware buffer (the field
+                // symptom is a fresh callback carrying an old sample timestamp).  Keep the
+                // motor DO off and wait within the existing bounded clear-current window for a
+                // genuinely fresh replacement sample.  Only the timeout result is allowed to
+                // escalate an unverifiable OFF state to the power-group interlock.
+                if (sample.IsFresh &&
+                    !double.IsNaN(currentA) &&
                     !double.IsInfinity(currentA) &&
                     Math.Abs(currentA) <= thresholdA)
                 {
@@ -831,7 +842,12 @@ namespace Controller
                 }
 
                 if (elapsedMs >= boundedTimeoutMs)
-                    return new OffCurrentClearResult(false, currentA, elapsedMs);
+                    return new OffCurrentClearResult(
+                        false,
+                        currentA,
+                        elapsedMs,
+                        sample.IsFresh,
+                        sample.AgeMs);
 
                 await Task.Delay(
                         Math.Min(boundedPollMs, boundedTimeoutMs - elapsedMs),
@@ -1541,11 +1557,15 @@ namespace Controller
                 ? aggregate.GetBaseException()
                 : exception;
             if (root is HydraulicBarrierTimeoutException) return true;
+            if (root is HydraulicBuildTimeoutException buildTimeout)
+                return HydraulicGroupCoordinator.ClassifyFault(buildTimeout) !=
+                       FaultClassification.HardwareConfirmed;
+            if (root is HydraulicPressureLostException pressureLost)
+                return HydraulicGroupCoordinator.ClassifyFault(pressureLost) !=
+                       FaultClassification.HardwareConfirmed;
             if (root is OperationCanceledException ||
                 root is EpbOutputCommandException ||
                 root is HydraulicBuildException ||
-                root is HydraulicBuildTimeoutException ||
-                root is HydraulicPressureLostException ||
                 root is HydraulicReleaseTimeoutException ||
                 root is OutOfMemoryException)
                 return false;
