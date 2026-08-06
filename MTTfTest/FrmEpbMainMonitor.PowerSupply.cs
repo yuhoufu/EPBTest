@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Linq;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using Config;
 using Controller;
@@ -62,6 +63,27 @@ namespace MTEmbTest
                 _daqDev1.QueueFull += twoDeviceAiAcquirer.ReportRawPersistenceQueueFull;
             if (_daqDev2 != null)
                 _daqDev2.QueueFull += twoDeviceAiAcquirer.ReportRawPersistenceQueueFull;
+            _epb?.RegisterPausePersistenceFlush(FlushPausePersistenceAsync);
+        }
+
+        private async Task FlushPausePersistenceAsync(CancellationToken token)
+        {
+            if (twoDeviceAiAcquirer != null &&
+                !await twoDeviceAiAcquirer.DrainBackgroundPipelinesAsync(10000, token)
+                    .ConfigureAwait(false))
+                throw new TimeoutException("暂停时DAQ工程处理/Raw发布链10秒内未排空。");
+
+            token.ThrowIfCancellationRequested();
+            if (_daqDev1 != null)
+            {
+                await _daqDev1.FlushRawToDiskAsync().ConfigureAwait(false);
+                await _daqDev1.FlushStatToDiskAsync().ConfigureAwait(false);
+            }
+            if (_daqDev2 != null)
+            {
+                await _daqDev2.FlushRawToDiskAsync().ConfigureAwait(false);
+                await _daqDev2.FlushStatToDiskAsync().ConfigureAwait(false);
+            }
         }
 
         private void Acq_OnOwnedRawBatch(OwnedDaqRawBatch batch)

@@ -2317,6 +2317,7 @@ namespace MTEmbTest
             #endregion
 
             var channels = new int[] { };
+            var startedChannels = Array.Empty<int>();
             try
             {
                 // 4) 组装 EpbManager（把回调委托接进去）
@@ -2345,7 +2346,6 @@ namespace MTEmbTest
                     if (EpbGroup[chIndex].CtrlJoinTest.Checked)
                     {
                         selected.Add(ch);
-                        EpbGroup[chIndex].CtrlRunning.Checked = true; // 启动按钮设为允许
                     }
                 }
 
@@ -2404,6 +2404,7 @@ namespace MTEmbTest
                         learnCycles, // 自学习圈数（按你期望）
                         _batchCts.Token // 取消令牌（Stop 按钮用）
                     );
+                    startedChannels = startResult.StartedChannels;
 
                     if (startResult.Faults.Length > 0)
                         LogInfo(
@@ -2424,7 +2425,7 @@ namespace MTEmbTest
                 #endregion
 
                 // 点击“开始试验”按钮时 更新相关通道；
-                foreach (var channel in selected)
+                foreach (var channel in startedChannels)
                 {
                     var record = EnsureEpbRecord(channel);
                     record.MarkTestStarted(DateTime.Now);

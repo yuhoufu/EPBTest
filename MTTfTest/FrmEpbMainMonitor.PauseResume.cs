@@ -53,45 +53,55 @@ namespace MTEmbTest
             switch (state)
             {
                 case BatchPauseState.Running:
-                    BtnStartTest.Text = "暂停试验";
-                    BtnStartTest.Enabled = Volatile.Read(ref _batchStartUiGuard) == 0;
+                    ApplyBatchActionButton("暂停试验", Volatile.Read(ref _batchStartUiGuard) == 0, false);
                     break;
                 case BatchPauseState.PausePending:
-                    BtnStartTest.Text = "正在暂停…";
-                    BtnStartTest.Enabled = false;
+                    ApplyBatchActionButton("正在暂停…", false, true);
                     break;
                 case BatchPauseState.Paused:
-                    BtnStartTest.Text = "继续试验";
-                    BtnStartTest.Enabled = Volatile.Read(ref _batchStartUiGuard) == 0;
+                    ApplyBatchActionButton("继续试验", Volatile.Read(ref _batchStartUiGuard) == 0, false);
                     break;
                 case BatchPauseState.ResumeChecking:
                 case BatchPauseState.Qualification:
-                    BtnStartTest.Text = "正在恢复…";
-                    BtnStartTest.Enabled = false;
+                    ApplyBatchActionButton("正在恢复…", false, true);
                     break;
                 case BatchPauseState.Stopping:
-                    BtnStartTest.Text = "安全停止中…";
-                    BtnStartTest.Enabled = false;
+                    ApplyBatchActionButton("安全停止中…", false, true);
                     break;
                 default:
                     if (_pendingGracefulPauseCheckpoint != null)
                     {
-                        BtnStartTest.Text = "继续试验";
-                        BtnStartTest.Enabled = Volatile.Read(ref _batchStartUiGuard) == 0;
+                        ApplyBatchActionButton(
+                            "继续试验",
+                            Volatile.Read(ref _batchStartUiGuard) == 0,
+                            false);
                     }
                     else if (_epb?.IsBatchSessionActive ?? false)
                     {
-                        BtnStartTest.Text = "启动中…";
-                        BtnStartTest.Enabled = false;
+                        ApplyBatchActionButton(
+                            "重新开始",
+                            Volatile.Read(ref _batchStartUiGuard) == 0,
+                            false);
                     }
                     else
                     {
-                        BtnStartTest.Text = "开始试验";
-                        BtnStartTest.Enabled = Volatile.Read(ref _batchStartUiGuard) == 0;
+                        ApplyBatchActionButton(
+                            "开始试验",
+                            Volatile.Read(ref _batchStartUiGuard) == 0,
+                            false);
                     }
                     break;
             }
             ApplyAllChannelOperationStates();
+        }
+
+        private void ApplyBatchActionButton(string text, bool enabled, bool transition)
+        {
+            BtnStartTest.Text = text;
+            BtnStartTest.Enabled = enabled;
+            BtnStartTest.Cursor = enabled
+                ? Cursors.Hand
+                : transition ? Cursors.WaitCursor : Cursors.Default;
         }
 
         private async Task HandleChannelRunToggleAsync(int channel)
@@ -125,27 +135,10 @@ namespace MTEmbTest
                     await _epb.ResumePausedChannelAsync(channel).ConfigureAwait(true);
                     return;
                 }
-                if (state.State == ChannelRuntimeState.AlarmStopped)
+                if (_epb.CanAcknowledgeChannelAlarm(channel, out _))
                 {
-                    if (!_epb.CanAcknowledgeChannelAlarm(channel, out var rejection))
-                    {
-                        MessageBox.Show(
-                            rejection,
-                            "禁止单通道恢复",
-                            MessageBoxButtons.OK,
-                            MessageBoxIcon.Warning);
-                        return;
-                    }
-                    var confirmed = MessageBox.Show(
-                        $"请确认 EPB{channel} 的故障原因已经排除。\r\n\r\n" +
-                        "继续后软件将重新执行安全预检、启动定位和2圈资格复核；" +
-                        "资格复核失败会保持报警锁存。是否继续？",
-                        "确认报警恢复",
-                        MessageBoxButtons.YesNo,
-                        MessageBoxIcon.Warning,
-                        MessageBoxDefaultButton.Button2) == DialogResult.Yes;
-                    if (confirmed)
-                        await _epb.ResumeAlarmStoppedChannelAsync(channel, true).ConfigureAwait(true);
+                    LogInfo($"EPB{channel} 重新开始：已抛弃上次故障锁存，进入实时预检与自愈。");
+                    await _epb.ResumeAlarmStoppedChannelAsync(channel, true).ConfigureAwait(true);
                     return;
                 }
 
@@ -206,8 +199,7 @@ namespace MTEmbTest
             var locallyOperable = state.State == ChannelRuntimeState.Running ||
                                   state.State == ChannelRuntimeState.WarningRunning ||
                                   (state.State == ChannelRuntimeState.Paused && !(_epb?.IsBatchPaused ?? false)) ||
-                                  (state.State == ChannelRuntimeState.AlarmStopped &&
-                                   _epb.CanAcknowledgeChannelAlarm(state.Channel, out _));
+                                  _epb.CanAcknowledgeChannelAlarm(state.Channel, out _);
             toggle.Enabled = configuredEnabled && locallyOperable &&
                              !_channelPauseResumeUiGuard.ContainsKey(state.Channel);
 
@@ -309,15 +301,77 @@ namespace MTEmbTest
                 }
                 return true;
             }
+            catch (OperationCanceledException) when (_batchCts?.IsCancellationRequested ?? false)
+            {
+                throw;
+            }
             catch (Exception ex)
             {
                 ClearGracefulPauseCheckpoint("QualificationFailedFallbackToFullLearning");
-                LogInfo($"正常暂停资格复核失败，将回退完整学习：{ex.Message}");
-                _cfg.Test.LearnCycles = Math.Max(5, checkpoint.LearnCycles);
-                throw new InvalidOperationException(
-                    "正常暂停资格复核失败，检查点已撤销。请再次点击“开始试验”执行完整学习。" +
-                    Environment.NewLine + ex.Message,
-                    ex);
+                var learnCycles = Math.Max(5, checkpoint.LearnCycles);
+                _cfg.Test.LearnCycles = learnCycles;
+                LogInfo(
+                    $"正常暂停资格复核未通过：{ex.Message}；" +
+                    $"同一次点击将抛弃旧恢复状态并自动转为完整{learnCycles}圈学习。");
+                try
+                {
+                    try { _batchCts?.Cancel(); } catch (ObjectDisposedException) { }
+                    _batchCts?.Dispose();
+                    _batchCts = null;
+
+                    await _epb.PrepareForFreshRestartAsync(
+                            new StopContext
+                            {
+                                Source = StopSource.ManualUi,
+                                Reason = "暂停资格复核未通过；同一次请求自动回退完整学习",
+                                Initiator = nameof(TryResumePendingGracefulPauseAsync),
+                                CorrelationId = Guid.NewGuid().ToString("N"),
+                                RequestedUtc = DateTime.UtcNow
+                            })
+                        .ConfigureAwait(true);
+                    if (_alarmManager != null)
+                    {
+                        try
+                        {
+                            await _alarmManager.ClearAllAsync().ConfigureAwait(true);
+                        }
+                        catch (Exception alarmEx)
+                        {
+                            LogInfo(
+                                $"暂停恢复回退时声光报警复位异常，但不阻碍完整学习重启：" +
+                                alarmEx.Message);
+                        }
+                    }
+
+                    _batchCts = new CancellationTokenSource();
+                    var startResult = await _epb.StartBatchSynchronizedWithResultAsync(
+                            channels,
+                            learnCycles,
+                            _batchCts.Token)
+                        .ConfigureAwait(true);
+                    foreach (var channel in channels)
+                    {
+                        var record = EnsureEpbRecord(channel);
+                        record.MarkTestStarted(DateTime.Now);
+                        RefreshCurrentEpbSummary(channel);
+                    }
+                    LogInfo(
+                        $"暂停恢复已自动完成完整学习并重新开始；" +
+                        $"运行通道=[{string.Join(",", startResult.StartedChannels)}]。" );
+                    return true;
+                }
+                catch (OperationCanceledException) when (_batchCts?.IsCancellationRequested ?? false)
+                {
+                    throw;
+                }
+                catch (Exception fallbackEx)
+                {
+                    throw new InvalidOperationException(
+                        "暂停资格复核和同次完整学习重启均未通过；" +
+                        "若为软件瞬态会继续自愈，此处为本次实时确认的硬件/配置故障。" +
+                        Environment.NewLine + fallbackEx.Message,
+                        new AggregateException(ex, fallbackEx));
+                }
             }
         }
     }
