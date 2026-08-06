@@ -1427,8 +1427,10 @@ namespace AdaptiveControlTests
                         x.BuildTimeoutMs == 5000 && x.BuildStableMs == 200 &&
                         x.PressureSampleMaxAgeMs == 100 &&
                         Math.Abs(x.PressureToleranceBar - 10) < 1e-9 &&
-                        Math.Abs(x.HoldDropToleranceBar - 5) < 1e-9 &&
-                        x.HoldDropConfirmMs == 100 && x.BarrierTimeoutMs == 0),
+                        Math.Abs(x.HoldDropToleranceBar - 10) < 1e-9 &&
+                        x.HoldDropConfirmMs == 1000 &&
+                        Math.Abs(x.EffectiveHoldDropToleranceBar - 10) < 1e-9 &&
+                        x.EffectiveHoldDropConfirmMs == 1000 && x.BarrierTimeoutMs == 0),
                     "旧项目缺少液压安全节点时未使用安全默认值");
                 ConfigLoader.SaveTest(target, loaded);
                 var saved = File.ReadAllText(target);
@@ -1570,16 +1572,30 @@ namespace AdaptiveControlTests
 
         private static void StaleOffCurrentIsUnverifiable()
         {
-            var result = EpbCycleRunner.PollOffCurrentUntilClearAsync(
-                    () => new EpbCycleRunner.OffCurrentSample(0.35, false, 147_000),
+            var reads = 0;
+            var recovered = EpbCycleRunner.PollOffCurrentUntilClearAsync(
+                    () => ++reads < 4
+                        ? new EpbCycleRunner.OffCurrentSample(0.35, false, 147_000)
+                        : new EpbCycleRunner.OffCurrentSample(0.05, true, 5),
                     0.1,
-                    1000,
-                    20,
+                    200,
+                    10,
                     CancellationToken.None)
                 .GetAwaiter()
                 .GetResult();
-            Assert(!result.Cleared && !result.SampleFresh && result.ElapsedMs < 100,
-                "DAQ陈旧样本仍被重复轮询或被误分类为真实电流未清零");
+            Assert(recovered.Cleared && recovered.SampleFresh && reads == 4,
+                "DAQ恢复后的最新断电电流未替换陈旧缓存样本");
+
+            var result = EpbCycleRunner.PollOffCurrentUntilClearAsync(
+                    () => new EpbCycleRunner.OffCurrentSample(0.35, false, 147_000),
+                    0.1,
+                    60,
+                    10,
+                    CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+            Assert(!result.Cleared && !result.SampleFresh && result.ElapsedMs >= 40,
+                "DAQ持续陈旧时未等待到有界超时，或被误分类为真实电流未清零");
         }
 
         private static void OffCurrentThresholdTracksTrustedBaseline()
@@ -1945,18 +1961,38 @@ namespace AdaptiveControlTests
             Assert(!EpbCycleRunner.IsSoftwareRecoveryException(
                     new EpbOutputCommandException(4, "Forward")),
                 "真实电机输出命令失败被软件自愈吞掉");
+            Assert(EpbCycleRunner.IsSoftwareRecoveryException(
+                    new HydraulicBuildTimeoutException(
+                        1, 70, 10, 55, 5000, "BelowToleranceWindow", 2, 3)),
+                "未满3代次的建压不足未进入软件自愈");
+            Assert(EpbCycleRunner.IsSoftwareRecoveryException(
+                    new HydraulicBuildTimeoutException(
+                        1, 70, 10, 70, 5000, "StabilizingWithinTolerance")),
+                "已在建压窗口但稳定计时未完成被错误确认成硬件故障");
             Assert(!EpbCycleRunner.IsSoftwareRecoveryException(
-                    new HydraulicBuildTimeoutException(1, 70, 10, 55, 5000, "BelowToleranceWindow")),
-                "真实液压建压超时被软件自愈吞掉");
-            Assert(!EpbCycleRunner.IsSoftwareRecoveryException(
+                    new HydraulicBuildTimeoutException(
+                        1, 70, 10, 55, 5000, "BelowToleranceWindow", 3, 3)),
+                "连续3代次建压不足仍被软件自愈吞掉");
+            Assert(EpbCycleRunner.IsSoftwareRecoveryException(
                     new HydraulicPressureLostException(
                         1,
                         1,
                         50,
                         60,
-                        HydraulicPressureFailureReason.BelowMinimum,
+                        HydraulicPressureFailureReason.StaleSample,
                         20)),
-                "真实保压丢失被软件自愈吞掉");
+                "陈旧压力样本未进入软件自愈");
+            Assert(!EpbCycleRunner.IsSoftwareRecoveryException(
+                    new HydraulicPressureLostException(
+                        1,
+                        3,
+                        50,
+                        60,
+                        HydraulicPressureFailureReason.BelowMinimum,
+                        20,
+                        3,
+                        3)),
+                "连续3代次新鲜低压仍被软件自愈吞掉");
             Assert(!EpbCycleRunner.IsSoftwareRecoveryException(
                     new HydraulicReleaseTimeoutException(1, 20, 5, 5000)),
                 "真实释压失败被软件自愈吞掉");
@@ -2027,18 +2063,38 @@ namespace AdaptiveControlTests
             Assert(EpbManager.IsHydraulicSoftwareRecoveryCandidate(
                     new InvalidOperationException("Hydraulic generation members are immutable")),
                 "旧液压成员不可变异常未进入软件代次自愈");
+            Assert(EpbManager.IsHydraulicSoftwareRecoveryCandidate(
+                    new HydraulicBuildTimeoutException(
+                        1, 70, 10, 55, 5000, "BelowToleranceWindow", 2, 3)),
+                "未满3代次的建压不足未进入软件代次自愈");
+            Assert(EpbManager.IsHydraulicSoftwareRecoveryCandidate(
+                    new HydraulicBuildTimeoutException(
+                        1, 70, 10, 70, 5000, "StabilizingWithinTolerance")),
+                "已在建压窗口但稳定计时未完成未进入软件代次自愈");
             Assert(!EpbManager.IsHydraulicSoftwareRecoveryCandidate(
-                    new HydraulicBuildTimeoutException(1, 70, 10, 55, 5000, "BelowToleranceWindow")),
-                "真实建压超时被错误吞入软件自愈");
-            Assert(!EpbManager.IsHydraulicSoftwareRecoveryCandidate(
+                    new HydraulicBuildTimeoutException(
+                        1, 70, 10, 55, 5000, "BelowToleranceWindow", 3, 3)),
+                "连续3代次建压不足被错误吞入软件自愈");
+            Assert(EpbManager.IsHydraulicSoftwareRecoveryCandidate(
                     new HydraulicPressureLostException(
                         1,
                         1,
+                        70,
+                        60,
+                        HydraulicPressureFailureReason.StaleSample,
+                        500)),
+                "陈旧压力样本未进入软件代次自愈");
+            Assert(!EpbManager.IsHydraulicSoftwareRecoveryCandidate(
+                    new HydraulicPressureLostException(
+                        1,
+                        3,
                         50,
                         60,
                         HydraulicPressureFailureReason.BelowMinimum,
-                        20)),
-                "运行中压力丢失被错误吞入软件自愈");
+                        20,
+                        3,
+                        3)),
+                "连续3代次新鲜低压被错误吞入软件自愈");
             Assert(!EpbManager.IsHydraulicSoftwareRecoveryCandidate(
                     new HydraulicReleaseTimeoutException(1, 20, 5, 5000)),
                 "真实释压超时被错误吞入软件自愈");

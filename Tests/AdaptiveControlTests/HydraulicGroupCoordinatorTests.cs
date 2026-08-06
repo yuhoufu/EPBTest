@@ -22,7 +22,9 @@ namespace AdaptiveControlTests
             Run("全员到齐后释压时间不计入屏障超时", SafePressureWaitDoesNotConsumeBarrierTimeout, ref passed);
             Run("正式阶段在两相位之间启动时整组滚到同一槽", FormalStartBetweenPhasesUsesOneFutureSlot, ref passed);
             Run("液压样本无效或陈旧时资格判定失败", InvalidPressureSamplesAreRejected, ref passed);
-            Run("保压持续下降触发液压组故障", SustainedPressureLossFaultsGeneration, ref passed);
+            Run("首次保压下降仅触发软件自愈", FirstPressureLossIsRecoverable, ref passed);
+            Run("保压连续三代次下降才确认硬件报警", ThirdPressureLossConfirmsHardwareFault, ref passed);
+            Run("压力样本陈旧只触发软件自愈", StalePressureLossIsRecoverable, ref passed);
             Run("报警电源组仅在无兄弟通道活动时关闭", PowerGroupIdlePredicateIsScoped, ref passed);
             return passed;
         }
@@ -276,7 +278,7 @@ namespace AdaptiveControlTests
                 "新鲜低压样本未被识别为压力不足");
         }
 
-        private static void SustainedPressureLossFaultsGeneration()
+        private static void FirstPressureLossIsRecoverable()
         {
             var pressure = 80.0;
             var coordinator = NewCoordinator(
@@ -291,11 +293,13 @@ namespace AdaptiveControlTests
                 barrierTimeoutMs: 300,
                 targetBar: 70,
                 holdDropConfirmMs: 50);
+            ControlFault publishedFault = null;
+            coordinator.FaultRaised += fault => publishedFault = fault;
             var key = new HydraulicGenerationKey(Guid.NewGuid(), 2, HydraulicPhaseKind.Formal, 99);
             var lease = coordinator.EnterGenerationAsync(key, new[] { 8, 11 }, CancellationToken.None)
                 .GetAwaiter().GetResult();
             Volatile.Write(ref pressure, 50.0);
-            Thread.Sleep(150);
+            Thread.Sleep(1150);
             try
             {
                 coordinator.MarkVoltageReleaseAsync(lease, 8).GetAwaiter().GetResult();
@@ -304,6 +308,114 @@ namespace AdaptiveControlTests
             catch (HydraulicPressureLostException)
             {
             }
+            Assert(publishedFault != null &&
+                   publishedFault.Classification == FaultClassification.SystemFault,
+                "首次保压下降被过早确认成硬件报警。");
+            Assert(publishedFault.Reason.Contains("Confirmation=1/3"),
+                "首次保压下降未记录连续代次证据。");
+        }
+
+        private static void ThirdPressureLossConfirmsHardwareFault()
+        {
+            var pressure = 80.0;
+            var coordinator = NewCoordinator(
+                () => Volatile.Read(ref pressure),
+                () =>
+                {
+                    Volatile.Write(ref pressure, 0.0);
+                    return Task.CompletedTask;
+                },
+                stableMs: 10,
+                timeoutMs: 300,
+                barrierTimeoutMs: 300,
+                targetBar: 70,
+                holdDropConfirmMs: 1000);
+            var published = new System.Collections.Generic.List<ControlFault>();
+            coordinator.FaultRaised += fault => published.Add(fault);
+            var runId = Guid.NewGuid();
+
+            for (var attempt = 1; attempt <= 3; attempt++)
+            {
+                Volatile.Write(ref pressure, 80.0);
+                var key = new HydraulicGenerationKey(
+                    runId,
+                    2,
+                    HydraulicPhaseKind.Formal,
+                    100 + attempt);
+                var lease = coordinator.EnterGenerationAsync(
+                        key,
+                        new[] { 8, 11 },
+                        CancellationToken.None)
+                    .GetAwaiter().GetResult();
+                Volatile.Write(ref pressure, 50.0);
+                Thread.Sleep(1150);
+                try
+                {
+                    coordinator.MarkVoltageReleaseAsync(lease, 8).GetAwaiter().GetResult();
+                }
+                catch (HydraulicPressureLostException)
+                {
+                }
+            }
+
+            Assert(published.Count == 3, "三次保压下降未逐代次发布证据。");
+            Assert(published[0].Classification == FaultClassification.SystemFault &&
+                   published[1].Classification == FaultClassification.SystemFault,
+                "前两次保压下降被过早确认成硬件报警。");
+            Assert(published[2].Classification == FaultClassification.HardwareConfirmed &&
+                   published[2].Reason.Contains("Confirmation=3/3"),
+                "第三次连续保压下降未确认硬件报警。");
+        }
+
+        private static void StalePressureLossIsRecoverable()
+        {
+            var staleTick = Stopwatch.GetTimestamp() - Stopwatch.Frequency * 2;
+            var config = new TestConfig();
+            var hydraulic = new HydraulicItem
+            {
+                Id = 2,
+                Enabled = true,
+                PressureThresholdBar = 70,
+                PressureToleranceBar = 10,
+                HoldDropToleranceBar = 5,
+                HoldDropConfirmMs = 100,
+                PressureSampleMaxAgeMs = 100,
+                ReleaseSafePressureBar = 5,
+                ReleaseStableMs = 10,
+                ReleaseTimeoutMs = 300,
+                BarrierTimeoutMs = 300
+            };
+            hydraulic.Members.Add(8);
+            config.Hydraulics.Add(hydraulic);
+            var coordinator = new HydraulicGroupCoordinator(
+                config,
+                _ => new PressureSample(2, 70, DateTime.UtcNow, staleTick),
+                _ => Task.CompletedTask,
+                NullLogger.Instance);
+            ControlFault publishedFault = null;
+            coordinator.FaultRaised += fault => publishedFault = fault;
+            var lease = coordinator.EnterGenerationAsync(
+                    new HydraulicGenerationKey(Guid.NewGuid(), 2, HydraulicPhaseKind.Formal, 200),
+                    new[] { 8 },
+                    CancellationToken.None)
+                .GetAwaiter().GetResult();
+
+            Thread.Sleep(1150);
+            try
+            {
+                coordinator.MarkVoltageReleaseAsync(lease, 8).GetAwaiter().GetResult();
+            }
+            catch (HydraulicPressureLostException)
+            {
+            }
+
+            Assert(hydraulic.EffectiveHoldDropToleranceBar == 10 &&
+                   hydraulic.EffectiveHoldDropConfirmMs == 1000,
+                "旧保压参数未提升到建压容差与1秒确认下限。");
+            Assert(publishedFault != null &&
+                   publishedFault.Code == "PressureSampleUnavailable" &&
+                   publishedFault.Classification == FaultClassification.SystemFault,
+                "陈旧压力样本仍被错误发布成硬件保压丢失。");
         }
 
         private static HydraulicGroupCoordinator NewCoordinator(

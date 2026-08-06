@@ -29,6 +29,7 @@ namespace AdaptiveControlTests
             Run("控制积压先追最新而回调故障才重建", DaqFastResyncRecreatePolicy, ref passed);
             Run("软件恢复失败持续自维护且仅硬件证据报警", DaqSelfMaintenancePolicy, ref passed);
             Run("恢复阶段只在终态导出完整重证据", IncidentSnapshotHeavyEvidencePolicy, ref passed);
+            Run("DAQ恢复先恢复安全电源再做机械定位", DaqRecoveryPrerequisiteOrder, ref passed);
             Run("UI发布限频不影响首批和周期后批次", UiDispatchGateUsesMonotonicRateLimit, ref passed);
             Run("DAQ陈旧根因区分回调与控制消费", DaqStaleRootClassification, ref passed);
             Run("DAQ批次和兼容队列包装不再持续分配", DaqBatchObjectsAreReusableValueBacked, ref passed);
@@ -269,6 +270,35 @@ namespace AdaptiveControlTests
                    EpbManager.ShouldIncludeFullDaqIncidentEvidence("90-recovered") &&
                    EpbManager.ShouldIncludeFullDaqIncidentEvidence("90-hardware-confirmed"),
                 "恢复关键窗口仍会重复导出完整诊断和最近圈证据");
+            Assert(EpbManager.ShouldIncludeDaqTimingEvidence("00-trigger") &&
+                   !EpbManager.ShouldIncludeDaqTimingEvidence("40-self-maintenance") &&
+                   EpbManager.ShouldIncludeDaqTimingEvidence("90-recovered"),
+                "触发瞬间未保留轻量时序证据，或维护阶段仍在重复导出");
+        }
+
+        private static void DaqRecoveryPrerequisiteOrder()
+        {
+            var order = new List<string>();
+            EpbManager.ExecuteDaqRecoveryRejoinPrerequisitesAsync(
+                    new[] { 10, 8, 8 },
+                    (channels, _) =>
+                    {
+                        order.Add("Power:" + string.Join(",", channels));
+                        return Task.CompletedTask;
+                    },
+                    (channels, _) =>
+                    {
+                        order.Add("Mechanical:" + string.Join(",", channels));
+                        return Task.CompletedTask;
+                    },
+                    CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+            Assert(order.SequenceEqual(new[] { "Power:8,10", "Mechanical:8,10" }),
+                "DAQ恢复仍在电源安全预检前执行机械定位");
+            Assert(EpbManager.ShouldDeferIndependentRejoinForDaq(true) &&
+                   !EpbManager.ShouldDeferIndependentRejoinForDaq(false),
+                "通道级恢复没有正确服从DAQ组恢复所有权");
         }
 
         private static void IncidentCorrelationAndPriority()
