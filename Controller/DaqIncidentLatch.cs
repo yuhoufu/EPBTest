@@ -184,6 +184,22 @@ namespace Controller
             }
         }
 
+        /// <summary>
+        /// 结束一次已经进入终态的事故。后续同一运行、同一设备再次发生故障时，
+        /// 必须创建新的关联号，不能被上一次恢复的终态去重记录误判为重复事件。
+        /// </summary>
+        public bool Complete(string device, Guid correlationId)
+        {
+            if (string.IsNullOrWhiteSpace(device) || correlationId == Guid.Empty) return false;
+            lock (_gate)
+            {
+                if (!_active.TryGetValue(device, out var found) ||
+                    found.CorrelationId != correlationId)
+                    return false;
+                return _active.Remove(device);
+            }
+        }
+
         private static int Priority(string code)
         {
             if (string.Equals(code, "ControlQueueFull", StringComparison.OrdinalIgnoreCase)) return 400;

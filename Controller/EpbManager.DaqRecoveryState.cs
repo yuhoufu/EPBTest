@@ -23,7 +23,7 @@ namespace Controller
         {
             if (context == null) return;
             if (!context.Terminal.TryCommit(DaqRecoveryTerminal.Cancelled)) return;
-            MarkDaqRecoveryTerminal(context.CorrelationId);
+            MarkDaqRecoveryTerminal(context.CorrelationId, context.Device);
             _daqAutoRecovery.TryRemove(context.Device, out _);
             try { context.Cancellation.Cancel(); } catch { }
             var result = new DaqRecoveryResult
@@ -43,15 +43,39 @@ namespace Controller
                 ex => _log?.Warn($"DAQ取消恢复观察者异常，已隔离：{ex.Message}", "AI"));
         }
 
-        private void MarkDaqRecoveryTerminal(Guid correlationId)
+        private void MarkDaqRecoveryTerminal(Guid correlationId, string device)
         {
             if (correlationId == Guid.Empty) return;
             _daqRecoveryTerminalCorrelations[correlationId] = DateTime.UtcNow;
+            _daqIncidentLatch.Complete(device, correlationId);
             if (_daqRecoveryTerminalCorrelations.Count <= 1024) return;
             var cutoff = DateTime.UtcNow.AddMinutes(-30);
             foreach (var item in _daqRecoveryTerminalCorrelations)
                 if (item.Value < cutoff)
                     _daqRecoveryTerminalCorrelations.TryRemove(item.Key, out _);
+        }
+
+        private void StartDaqRecoveryWatchdog(DaqAutoRecoveryContext context)
+        {
+            if (context == null) return;
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    // 看门狗必须在任何同步断电、写盘封存或诊断动作之前启动。
+                    // 这些步骤中的任意一个即使意外阻塞，也不能让通道永久停留在旧状态。
+                    await Task.Delay(_daqPersistenceRecoveryTimeoutMs, context.Cancellation.Token)
+                        .ConfigureAwait(false);
+                    await EscalateDaqAutoRecoveryAsync(
+                            context.Device,
+                            "DaqRecoveryPipelineStalled",
+                            $"恢复流水线在{_daqPersistenceRecoveryTimeoutMs}ms内未进入终态；" +
+                            "保持受影响组安全隔离并启动软件自维护。",
+                            context.CorrelationId)
+                        .ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) { }
+            });
         }
 
         private async Task CancelAllDaqRecoveriesAsync(string reason)

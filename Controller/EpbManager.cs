@@ -204,6 +204,15 @@ namespace Controller
             return _channelRuntimeStateStore.Snapshot();
         }
 
+        internal static bool ShouldPreserveDaqRecoveringState(
+            ChannelRuntimeState requestedState,
+            bool daqRecoveryActive)
+        {
+            return daqRecoveryActive &&
+                   (requestedState == ChannelRuntimeState.Running ||
+                    requestedState == ChannelRuntimeState.WarningRunning);
+        }
+
         private void PublishChannelRuntimeState(
             int channel,
             ChannelRuntimeState state,
@@ -214,6 +223,26 @@ namespace Controller
             Guid correlationId = default,
             bool allowTerminalReset = false)
         {
+            // DAQ恢复拥有受影响通道的状态机，直至恢复终态提交并移除上下文。
+            // 圈尾软预警/旧Runner回调不得把“系统自恢复”覆盖回“运行/软预警”。
+            if (state == ChannelRuntimeState.Running ||
+                state == ChannelRuntimeState.WarningRunning)
+            {
+                var device = _acq.GetDeviceForEpbChannel(channel);
+                DaqAutoRecoveryContext recovery = null;
+                var recoveryActive = !string.IsNullOrWhiteSpace(device) &&
+                                     _daqAutoRecovery.TryGetValue(device, out recovery) &&
+                                     recovery.Terminal.Current == DaqRecoveryTerminal.None;
+                if (ShouldPreserveDaqRecoveringState(state, recoveryActive))
+                {
+                    state = ChannelRuntimeState.Recovering;
+                    reasonCode = "DaqRecoveryActive";
+                    reasonText = "DAQ软件恢复尚未进入终态；忽略旧运行状态更新。";
+                    affectedChannels = recovery.AffectedChannels;
+                    correlationId = recovery.CorrelationId;
+                    allowTerminalReset = false;
+                }
+            }
             var update = _channelRuntimeStateStore.Publish(
                 new ChannelRuntimeStateChangedEvent
                 {
@@ -2006,6 +2035,7 @@ namespace Controller
                 PreviousGeneration = _acq.GetCurrentGeneration(device)
             };
             if (!_daqAutoRecovery.TryAdd(device, context)) return;
+            StartDaqRecoveryWatchdog(context);
             try
             {
                 _ = ExportDaqIncidentSnapshotAsync(context, reason, "00-trigger");
@@ -2018,16 +2048,8 @@ namespace Controller
                 _persistence.SuppressAfter(device, context.CutoffUtc, context.CorrelationId);
                 foreach (var channel in affected)
                 {
-                    DiscardCurrentCycleForSoftwareRecovery(
-                        channel,
-                        context.CutoffUtc,
-                        $"DAQ:{context.TriggerCode}");
-                    if (_timers.TryGetValue(channel, out var timer)) timer.Pause();
-                    CancelCyclePauseCts(channel);
-                    try { CommandEpbOffHighPriority(channel, "DaqSoftwareRecovery"); } catch { }
-                    UnmarkHydraulicParticipant(channel);
-                    try { ObserveSafetyTask(HydraulicMarkReleaseAsync(channel), "DaqRecoveryRelease", channel); }
-                    catch { }
+                    // 状态必须先于任何外设/落盘调用发布。即使后续同步驱动调用卡住，
+                    // UI和无人值守逻辑也能立即看到“系统自恢复”，而不是保留旧RUN状态。
                     PublishChannelRuntimeState(
                         channel,
                         ChannelRuntimeState.Recovering,
@@ -2039,6 +2061,16 @@ namespace Controller
                         ChannelPaused,
                         channel,
                         ex => _log?.Warn($"DAQ自愈暂停观察者异常，已隔离：{ex.Message}", "AI"));
+                    DiscardCurrentCycleForSoftwareRecovery(
+                        channel,
+                        context.CutoffUtc,
+                        $"DAQ:{context.TriggerCode}");
+                    if (_timers.TryGetValue(channel, out var timer)) timer.Pause();
+                    CancelCyclePauseCts(channel);
+                    try { CommandEpbOffHighPriority(channel, "DaqSoftwareRecovery"); } catch { }
+                    UnmarkHydraulicParticipant(channel);
+                    try { ObserveSafetyTask(HydraulicMarkReleaseAsync(channel), "DaqRecoveryRelease", channel); }
+                    catch { }
                 }
 
                 if (context.RaiseRecoverableAlarm != 0 && context.RecoverableAlarmChannel > 0)
@@ -2102,27 +2134,6 @@ namespace Controller
                     "AI");
                 PublishRecoveryProgress(context, "安全断电已完成，正在恢复数据链。");
                 _ = ExportDaqIncidentSnapshotAsync(context, reason, "10-cutoff");
-
-                // Every recovery mode shares one terminal watchdog.  In particular, a
-                // successful DAQ rebuild can still fail or stall during queue draining,
-                // freshness validation or PSU revalidation; it must never remain Paused
-                // indefinitely.  The terminal CAS makes this harmless when recovery,
-                // StopAll or hardware confirmation wins at the same time.
-                _ = Task.Run(async () =>
-                {
-                    try
-                    {
-                        await Task.Delay(_daqPersistenceRecoveryTimeoutMs, context.Cancellation.Token)
-                            .ConfigureAwait(false);
-                        await EscalateDaqAutoRecoveryAsync(
-                                device,
-                                "DaqRecoveryTimeout",
-                                $"{_daqPersistenceRecoveryTimeoutMs}ms 内未满足自动恢复条件。",
-                                context.CorrelationId)
-                            .ConfigureAwait(false);
-                    }
-                    catch (OperationCanceledException) { }
-                });
 
                 if (restartDaq)
                 {
@@ -2318,7 +2329,7 @@ namespace Controller
                     if (!IsCurrentRecovery(context) ||
                         !context.Terminal.TryCommit(DaqRecoveryTerminal.Recovered))
                         return;
-                    MarkDaqRecoveryTerminal(context.CorrelationId);
+                    MarkDaqRecoveryTerminal(context.CorrelationId, context.Device);
                     _persistence.ResumeAdmission(device);
                     _daqAutoRecovery.TryRemove(device, out _);
                     context.Completion.TrySetResult(result);
@@ -2473,7 +2484,7 @@ namespace Controller
             if (disposition == DaqRecoveryFailureDisposition.ConfirmedHardwareAlarm)
             {
                 if (!context.Terminal.TryCommit(DaqRecoveryTerminal.HardwareConfirmed)) return;
-                MarkDaqRecoveryTerminal(context.CorrelationId);
+                MarkDaqRecoveryTerminal(context.CorrelationId, context.Device);
                 _daqAutoRecovery.TryRemove(device, out _);
                 var primary = context.AffectedChannels.OrderBy(x => x).FirstOrDefault();
                 var result = recoveryResult ?? new DaqRecoveryResult { Device = device };

@@ -34,6 +34,8 @@ namespace IO.NI
         /// </summary>
         private sealed class HighPriorityDoWorker : IDisposable
         {
+            private const int MaxPendingWorkItems = 64;
+
             private sealed class WorkItem
             {
                 public Func<bool> Work;
@@ -46,6 +48,7 @@ namespace IO.NI
             private readonly AutoResetEvent _signal = new AutoResetEvent(false);
 
             private volatile bool _stopping;
+            private int _pendingWorkItems;
             private Thread _thread;
 
             /// <summary>
@@ -84,14 +87,18 @@ namespace IO.NI
             {
                 if (work == null) return false;
 
-                // 若已经在 worker 线程内，直接执行，避免自我等待导致死锁。
+                // 重入时不能在worker线程内再次同步执行NI写入；返回失败交给上层
+                // 电源隔离/重试，避免日志或观察者回调形成递归阻塞。
                 if (Thread.CurrentThread == _thread)
-                {
-                    try { return work(); }
-                    catch { return false; }
-                }
+                    return false;
 
                 StartIfNeeded();
+
+                if (Interlocked.Increment(ref _pendingWorkItems) > MaxPendingWorkItems)
+                {
+                    Interlocked.Decrement(ref _pendingWorkItems);
+                    return false;
+                }
 
                 var item = new WorkItem
                 {
@@ -130,6 +137,7 @@ namespace IO.NI
                     }
                     finally
                     {
+                        Interlocked.Decrement(ref _pendingWorkItems);
                         try { item.Done.Set(); }
                         catch { /* ignore */ }
                     }
@@ -439,26 +447,18 @@ namespace IO.NI
         ///     线程模型：
         ///     <list type="bullet">
         ///         <item>通过专用高优先级 worker 线程执行，减少线程池调度/锁竞争带来的尾部抖动；</item>
-        ///         <item>若 worker 等待超时，则降级为“当前线程直接写入”（保证最终能断电）。</item>
+        ///         <item>若 worker 等待超时则立即返回失败，由上层切断电源组并持续重试；禁止调用线程同步直写。</item>
         ///     </list>
         ///     注意：该方法仍会进入 <see cref="SetEpbOff"/> 的锁保护，
         ///     但因为关键路径集中到单线程，整体竞争通常显著降低。
         /// </remarks>
         public bool SetEpbOffHighPriority(int channelNo)
         {
-            // 关键路径：先尝试在高优先级 worker 中执行。
-            // 超时则降级为直写，避免在极端情况下“排队等不到”导致不断电。
-            var ok = _hiWorker.InvokeHi(() => SetEpbOff(channelNo), timeoutMs: 30);
-            if (ok) return true;
-
-            try
-            {
-                return SetEpbOff(channelNo);
-            }
-            catch
-            {
-                return false;
-            }
+            // 只允许专用worker执行NI同步写。worker超时后若在调用线程再次直写，
+            // 会等待同一个_doTaskLock/NI调用，曾使DAQ恢复协程阻塞二十余分钟。
+            // 超时返回false后，上层会保持电源组隔离并由看门狗持续重试；已排队的
+            // OFF命令仍会在worker恢复后执行，因此不会把软件阻塞扩散到状态机。
+            return _hiWorker.InvokeHi(() => SetEpbOff(channelNo), timeoutMs: 30);
         }
 
         /// <summary>

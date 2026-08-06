@@ -41,6 +41,9 @@ namespace AdaptiveControlTests
             Run("恢复成功超时停止硬件确认并发只提交一个终态", RecoveryTerminalGateCommitsExactlyOnce, ref passed);
             Run("DAQ探测能力缺失不能误确认为硬件拔除", ProbeCapabilityMissingIsNotHardwareEvidence, ref passed);
             Run("DAQ事故关联去重优先级与新运行复位", IncidentCorrelationAndPriority, ref passed);
+            Run("DAQ恢复终态结束旧事故且后续故障使用新关联号", IncidentCompletionStartsNewCorrelation, ref passed);
+            Run("DAQ恢复期间旧运行和软预警不能覆盖恢复状态", DaqRecoveryStateCannotRegress, ref passed);
+            Run("高优先级DO超时不回退到调用线程无限等待", HighPriorityDoTimeoutIsBounded, ref passed);
             Run("DAQ事故先断电后发布诊断", DaqSafetyActionsPrecedePublication, ref passed);
             Run("十万稳态样本控制计算无持续分配", AdaptiveHotLoopDoesNotAllocate, ref passed);
             Run("因果中值滤波跨批正确且原地无持续分配", CausalMedianInPlaceIsCorrectAndAllocationFree, ref passed);
@@ -520,6 +523,66 @@ namespace AdaptiveControlTests
             {
                 if (Directory.Exists(testRoot)) Directory.Delete(testRoot, true);
             }
+        }
+
+        private static void IncidentCompletionStartsNewCorrelation()
+        {
+            var latch = new DaqIncidentLatch();
+            var run = Guid.NewGuid();
+            latch.BeginRun(run, new[] { "Dev1" });
+            var first = latch.Observe(run, "Dev1", 4, "DaqCallbackStale", "first",
+                DateTime.UtcNow, new[] { 4, 5 });
+            Assert(latch.Complete("Dev1", first.Context.CorrelationId),
+                "恢复终态没有结束活动事故");
+            var second = latch.Observe(run, "Dev1", 5, "BackgroundQueueFull", "second",
+                DateTime.UtcNow, new[] { 4, 5 });
+            Assert(second.IsFirst && second.Context.CorrelationId != first.Context.CorrelationId,
+                "同一运行中的后续独立事故仍复用了已终结关联号");
+            Assert(!latch.Complete("Dev1", first.Context.CorrelationId),
+                "旧关联号错误清除了新的活动事故");
+        }
+
+        private static void HighPriorityDoTimeoutIsBounded()
+        {
+            using var controller = new DoController(new DoConfig());
+            var field = typeof(DoController).GetField("_doTaskLock",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert(field != null, "未找到DO任务锁");
+            var gate = field.GetValue(controller);
+            using var entered = new ManualResetEventSlim(false);
+            var holder = new Thread(() =>
+            {
+                lock (gate)
+                {
+                    entered.Set();
+                    Thread.Sleep(500);
+                }
+            });
+            holder.IsBackground = true;
+            holder.Start();
+            Assert(entered.Wait(1000), "未能注入DO锁竞争");
+
+            var clock = Stopwatch.StartNew();
+            var result = controller.SetEpbOffHighPriority(4);
+            clock.Stop();
+            Assert(!result, "锁竞争超时时错误报告断电命令成功");
+            Assert(clock.ElapsedMilliseconds < 250,
+                $"高优先级DO超时后仍在调用线程阻塞 {clock.ElapsedMilliseconds}ms");
+            Assert(holder.Join(1000), "DO锁竞争注入线程未退出");
+        }
+
+        private static void DaqRecoveryStateCannotRegress()
+        {
+            Assert(EpbManager.ShouldPreserveDaqRecoveringState(
+                    ChannelRuntimeState.Running, true) &&
+                   EpbManager.ShouldPreserveDaqRecoveringState(
+                    ChannelRuntimeState.WarningRunning, true),
+                "DAQ恢复期间旧Runner状态仍可覆盖系统自恢复");
+            Assert(!EpbManager.ShouldPreserveDaqRecoveringState(
+                    ChannelRuntimeState.Running, false) &&
+                   !EpbManager.ShouldPreserveDaqRecoveringState(
+                    ChannelRuntimeState.AlarmStopped, true),
+                "正常运行或硬件停机状态被错误拦截");
         }
 
         private static void OwnedRawBatchPreservesPreCalibrationValues()
