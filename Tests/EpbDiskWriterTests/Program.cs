@@ -33,6 +33,7 @@ namespace EpbDiskWriterTests
                 Run("报警圈原子封存与数据库边界一致", AlarmSealMatchesDatabaseBoundary);
                 Run("DAQ时钟恢复圈状态独立封存", DaqClockRecoveryAbortStatusIsDurable);
                 Run("软件自愈作废圈状态独立封存", SoftwareRecoveryAbortStatusIsDurable);
+                Run("软件自愈作废圈可导出警告证据", SoftwareRecoveryAbortCanExportEvidence);
                 Run("报警CSV和BIN不一致时校验失败", AlarmPairValidatorRejectsMismatch);
                 Run("学习与资格圈终态均落盘且不改变正式计数", LearningOutcomesDoNotAffectFormalCounters);
                 Run("学习负圈号跨重启连续且唯一", LearningCycleNumbersSurviveRestart);
@@ -548,6 +549,32 @@ namespace EpbDiskWriterTests
                     Assert(reader.GetString(1) == "AbortedBySoftwareRecovery",
                         "软件自愈作废圈状态被降级为普通failed");
                 }
+            });
+        }
+
+        private static void SoftwareRecoveryAbortCanExportEvidence()
+        {
+            WithRoot(root =>
+            {
+                var policy = NewPolicy(root);
+                var start = DateTime.UtcNow;
+                var exportDir = Path.Combine(root, "warning-attempt");
+                using var writer = new EpbDiskWriter(policy);
+                writer.BeginCycle(5, 152, start);
+                WriteSamples(writer, 5, 7, start);
+                writer.AbortCycle(
+                    5,
+                    152,
+                    7,
+                    start.AddSeconds(1),
+                    "AbortedBySoftwareRecovery");
+                var evidence = writer.ExportCycleAttemptTo(5, 152, exportDir, true, true);
+                Assert(
+                    !evidence.IsCompleteCycle &&
+                    evidence.SampleCount == 7 &&
+                    File.Exists(evidence.CsvPath) &&
+                    File.Exists(evidence.BinPath),
+                    "软件自愈作废圈未导出完整CSV/BIN警告证据");
             });
         }
 

@@ -77,6 +77,10 @@ namespace AdaptiveControlTests
                 Run("EXE安全配置缺失非法时使用安全默认值", ProgramSafetySettingsValidation);
                 Run("程序安全配置快照包含值与来源", ProgramSafetySnapshotIsAuditable);
                 Run("报警配置加载正向低平台连续5圈", AlarmConfigLoadsForwardStallConfirmation);
+                Run("普通故障按尝试圈连续3次确认且单圈去重", GenericFaultConfirmationUsesAttemptCycles);
+                Run("普通故障成功圈清零且通道故障码隔离", GenericFaultConfirmationResetsAndIsolates);
+                Run("电流硬故障与已确认专用策略不二次计数", ImmediateAndPreconfirmedFaultClassification);
+                Run("定时器自身取消不记录ERROR", TimerOwnedCancellationIsNotError);
                 Run("峰值证据连续3圈且有效圈清零", PeakEvidenceMismatchRequiresThreeCycles);
                 Run("报警界面提示不暴露英文故障码", AlarmMessagesAreLocalized);
                 Run("UI配置并发保存保持有效XML", ConcurrentUiConfigSaveIsAtomic);
@@ -1251,6 +1255,7 @@ namespace AdaptiveControlTests
                 loaded.Behavior.AdaptiveForwardStallConfirmCycles == 5 &&
                 loaded.Behavior.AdaptiveOvershootConfirmCycles == 5 &&
                 loaded.Behavior.PeakEvidenceMismatchConfirmCycles == 3 &&
+                loaded.Behavior.GenericFaultConfirmCycles == 3 &&
                 loaded.WarningSnapshots.Enabled &&
                 loaded.WarningSnapshots.SaveCsv &&
                 loaded.WarningSnapshots.SaveBin &&
@@ -1258,6 +1263,67 @@ namespace AdaptiveControlTests
                 loaded.WarningSnapshots.SoftWarningQuotaMb == 0 &&
                 loaded.WarningSnapshots.DiskFreeWarningMb == 10240,
                 "AlarmConfig.xml 未加载连续阈值或预警快照安全默认值");
+        }
+
+        private static void GenericFaultConfirmationUsesAttemptCycles()
+        {
+            var tracker = new FaultConfirmationTracker();
+            var first = tracker.Observe("Channel:4", "DaqSampleStale", 1001, 3);
+            var duplicate = tracker.Observe("Channel:4", "DaqSampleStale", 1001, 3);
+            var second = tracker.Observe("Channel:4", "DaqSampleStale", 1002, 3);
+            var third = tracker.Observe("Channel:4", "DaqSampleStale", 1003, 3);
+            Assert(
+                first.Streak == 1 &&
+                duplicate.DuplicateAttempt && duplicate.Streak == 1 &&
+                second.Streak == 2 &&
+                third.Streak == 3 &&
+                third.Disposition == FaultConfirmationDisposition.ConfirmedRecoverableAlarm,
+                "普通故障未按唯一尝试圈连续3次确认");
+        }
+
+        private static void GenericFaultConfirmationResetsAndIsolates()
+        {
+            var tracker = new FaultConfirmationTracker();
+            tracker.Observe("Channel:4", "OpenCircuit", 1, 3);
+            tracker.Observe("Channel:4", "OpenCircuit", 2, 3);
+            var otherCode = tracker.Observe("Channel:4", "AbsoluteOnTime", 2, 3);
+            var otherChannel = tracker.Observe("Channel:5", "OpenCircuit", 2, 3);
+            tracker.ResetScope("Channel:4");
+            var reset = tracker.Observe("Channel:4", "OpenCircuit", 3, 3);
+            Assert(
+                otherCode.Streak == 1 && otherChannel.Streak == 1 && reset.Streak == 1,
+                "故障确认状态未按作用域和故障码隔离或成功圈清零失败");
+        }
+
+        private static void ImmediateAndPreconfirmedFaultClassification()
+        {
+            Assert(EpbManager.IsImmediateCurrentHardFault("AdaptiveHardFault OverCurrent3Samples"),
+                "实时三采样过流未归入首次硬停");
+            Assert(EpbManager.IsImmediateCurrentHardFault(
+                    "ForwardPeakOvershoot Policy=Immediate Limit=+3.000A"),
+                "整圈峰值硬阈值未归入首次硬停");
+            Assert(EpbManager.IsAlreadyCycleConfirmedFault(
+                    "ForwardCurrentRiseStalled Streak=5/5"),
+                "专用连续圈策略被重复进入通用3圈确认");
+            Assert(!EpbManager.IsImmediateCurrentHardFault("OpenCircuit"),
+                "普通非电流故障被误归入首次硬停");
+        }
+
+        private static void TimerOwnedCancellationIsNotError()
+        {
+            var logger = new CollectingLogger();
+            var timer = new HighPrecisionTimer(1000, OverrunPolicy.AlignToWallClock, logger);
+            var started = new ManualResetEventSlim(false);
+            var task = timer.StartAsync(null, 0, async (_, token) =>
+            {
+                started.Set();
+                await Task.Delay(10000, token).ConfigureAwait(false);
+                return true;
+            });
+            Assert(started.Wait(2000), "定时器测试任务未启动");
+            timer.Stop();
+            Assert(task.Wait(3000), "定时器停止后未退出");
+            Assert(logger.Errors.Count == 0, "定时器自身取消仍被记录为ERROR");
         }
 
         private static void PeakCaptureTokenRejectsCrossCycleIdentity()
@@ -3866,6 +3932,17 @@ namespace AdaptiveControlTests
             var path = Path.Combine(Path.GetTempPath(), "EPBAdaptiveTests", Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(path);
             return path;
+        }
+
+        private sealed class CollectingLogger : Config.IAppLogger
+        {
+            public readonly List<string> Errors = new List<string>();
+            public void Info(string message, string category = null) { }
+            public void Warn(string message, string category = null) { }
+            public void Error(string message, string category = null, Exception ex = null)
+            {
+                Errors.Add(message ?? string.Empty);
+            }
         }
 
         private static void Run(string name, Action test)
