@@ -54,7 +54,6 @@
             this.TsmDAQ,
             this.TsmPlayBack,
             this.TsmSetting,
-            this.TsmDAQCalibrate,
             this.TsmWindows,
             this.关于ToolStripMenuItem1});
             this.menuStripMain.LayoutStyle = System.Windows.Forms.ToolStripLayoutStyle.HorizontalStackWithOverflow;
@@ -69,7 +68,8 @@
             // TsmDAQ
             // 
             this.TsmDAQ.DropDownItems.AddRange(new System.Windows.Forms.ToolStripItem[] {
-            this.TsmRealMinitor});
+            this.TsmRealMinitor,
+            this.TsmDAQCalibrate});
             this.TsmDAQ.Name = "TsmDAQ";
             this.TsmDAQ.Size = new System.Drawing.Size(82, 35);
             this.TsmDAQ.Text = "试验";
@@ -119,7 +119,7 @@
             this.TsmDAQCalibrate.Name = "TsmDAQCalibrate";
             this.TsmDAQCalibrate.Size = new System.Drawing.Size(154, 35);
             this.TsmDAQCalibrate.Text = "数采卡校准";
-            this.TsmDAQCalibrate.Visible = false;
+            this.TsmDAQCalibrate.Visible = true;
             this.TsmDAQCalibrate.Click += new System.EventHandler(this.TsmDAQCalibrate_Click);
             // 
             // TsmWindows
