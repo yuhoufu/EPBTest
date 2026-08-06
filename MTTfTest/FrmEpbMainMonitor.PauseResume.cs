@@ -217,7 +217,7 @@ namespace MTEmbTest
             var toggle = EpbGroup[channel - 1]?.CtrlRunning;
             if (toggle != null)
             {
-                toggle.CheckedText = "启动中";
+                toggle.CheckedText = "START";
                 toggle.Checked = true;
                 toggle.Enabled = false;
                 toggle.Cursor = Cursors.WaitCursor;
@@ -259,14 +259,11 @@ namespace MTEmbTest
         {
             switch (state)
             {
-                case ChannelRuntimeState.Starting:
-                    return "启动中";
-                case ChannelRuntimeState.Learning: return "学习中";
-                case ChannelRuntimeState.ResumeChecking: return "恢复预检";
-                case ChannelRuntimeState.Qualification: return "资格复核";
-                case ChannelRuntimeState.PausePending: return "等待暂停";
-                case ChannelRuntimeState.WarningRunning: return "软预警";
-                case ChannelRuntimeState.Running: return "运行";
+                case ChannelRuntimeState.Starting: return "START";
+                case ChannelRuntimeState.Learning: return "LEARN";
+                case ChannelRuntimeState.ResumeChecking:
+                case ChannelRuntimeState.Qualification: return "CHECK";
+                case ChannelRuntimeState.PausePending: return "WAIT";
                 default: return "RUN";
             }
         }

@@ -3601,6 +3601,7 @@
             this.BtnTest.TabIndex = 50;
             this.BtnTest.Text = "测试";
             this.BtnTest.TipsFont = new System.Drawing.Font("宋体", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(134)));
+            this.BtnTest.Visible = false;
             this.BtnTest.Click += new System.EventHandler(this.BtnTest_Click);
             // 
             // toggleSwitch1
