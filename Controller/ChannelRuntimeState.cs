@@ -47,6 +47,11 @@ namespace Controller
 
     public sealed class ChannelRuntimeStateChangedEvent
     {
+        /// <summary>
+        ///     控制层为同一通道发布的单调递增版本号。
+        ///     UI 必须用它丢弃迟到的异步消息，不能让旧停机状态覆盖新运行状态。
+        /// </summary>
+        public long Revision { get; set; }
         public int Channel { get; set; }
         public ChannelRuntimeState State { get; set; }
         public string ReasonCode { get; set; } = string.Empty;
@@ -61,6 +66,7 @@ namespace Controller
         {
             return new ChannelRuntimeStateChangedEvent
             {
+                Revision = Revision,
                 Channel = Channel,
                 State = State,
                 ReasonCode = ReasonCode,
@@ -71,6 +77,17 @@ namespace Controller
                 CorrelationId = CorrelationId,
                 RunId = RunId
             };
+        }
+
+        public bool IsNewerThan(ChannelRuntimeStateChangedEvent current)
+        {
+            if (current == null) return true;
+            if (Channel != current.Channel) return false;
+
+            // 新版控制层始终提供 Revision。保留时间比较只用于兼容进程内尚未带版本号的旧事件。
+            if (Revision > 0 || current.Revision > 0)
+                return Revision > current.Revision;
+            return TimestampUtc > current.TimestampUtc;
         }
     }
 
@@ -92,14 +109,24 @@ namespace Controller
                 .Distinct()
                 .OrderBy(x => x)
                 .ToArray();
+            var candidate = next.Clone();
 
             return _states.AddOrUpdate(
-                    next.Channel,
-                    _ => next.Clone(),
+                    candidate.Channel,
+                    _ => CloneWithRevision(candidate, 1),
                     (_, current) => IsLatchedStop(current.State) && !allowTerminalReset
                         ? current
-                        : next.Clone())
+                        : CloneWithRevision(candidate, current.Revision + 1))
                 .Clone();
+        }
+
+        private static ChannelRuntimeStateChangedEvent CloneWithRevision(
+            ChannelRuntimeStateChangedEvent state,
+            long revision)
+        {
+            var clone = state.Clone();
+            clone.Revision = revision;
+            return clone;
         }
 
         internal ChannelRuntimeStateChangedEvent Get(int channel)

@@ -76,6 +76,7 @@ namespace Controller
                 $"EPB[{result.Channel}] 启动定位失败并隔离。CorrelationId={fault.CorrelationId:N} {reason}",
                 "报警");
             FlushPersistentLog();
+            PublishFaultRuntimeStates(fault, result.Channel);
             NonCriticalObserver.Invoke(
                 ControlFaultRaised,
                 fault,

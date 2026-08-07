@@ -113,6 +113,17 @@ namespace MTEmbTest
             if (Interlocked.CompareExchange(ref _powerSupplyUiAttached, 1, 0) != 0) return;
             try
             {
+                // 旧事件只保留为用户消息，禁止再直接写 EpbTestRecord.Status。
+                // 通道显示状态统一由 ChannelRuntimeStateChanged 驱动。
+                manager.ChannelAlarmRaised -= OnEpbChannelAlarmRaised;
+                manager.ChannelPaused -= OnEpbChannelPaused;
+                manager.ChannelResumed -= OnEpbChannelResumed;
+                manager.ChannelAlarmRaised -= LogEpbChannelAlarm;
+                manager.ChannelPaused -= LogEpbChannelPaused;
+                manager.ChannelResumed -= LogEpbChannelResumed;
+                manager.ChannelAlarmRaised += LogEpbChannelAlarm;
+                manager.ChannelPaused += LogEpbChannelPaused;
+                manager.ChannelResumed += LogEpbChannelResumed;
                 manager.PowerSupplyTelemetryUpdated += UpdatePowerSupplyStatus;
                 manager.PowerSupplyFaultRaised += ShowPowerSupplyFault;
                 manager.ChannelRuntimeStateChanged += OnChannelRuntimeStateChanged;
@@ -230,17 +241,47 @@ namespace MTEmbTest
         {
             if (state == null || state.Channel < 1 || state.Channel > 12) return;
             lock (_channelRuntimeStates)
+            {
+                _channelRuntimeStates.TryGetValue(state.Channel, out var current);
+                if (!state.IsNewerThan(current)) return;
                 _channelRuntimeStates[state.Channel] = state.Clone();
+            }
             UpdateUnattendedRunAuthorization(state);
             if (IsDisposed || Disposing) return;
             try
             {
                 if (InvokeRequired)
-                    BeginInvoke((Action)(() => ApplyChannelRuntimeState(state)));
+                    BeginInvoke((Action)(() => ApplyLatestChannelRuntimeState(state.Channel)));
                 else
-                    ApplyChannelRuntimeState(state);
+                    ApplyLatestChannelRuntimeState(state.Channel);
             }
             catch { }
+        }
+
+        private void ApplyLatestChannelRuntimeState(int channel)
+        {
+            ChannelRuntimeStateChangedEvent latest;
+            lock (_channelRuntimeStates)
+                latest = _channelRuntimeStates.TryGetValue(channel, out var state)
+                    ? state.Clone()
+                    : null;
+            if (latest != null)
+                ApplyChannelRuntimeState(latest);
+        }
+
+        private void LogEpbChannelAlarm(int channel, string reason)
+        {
+            LogInfo($"卡钳{channel} 报警：{AlarmMessageLocalizer.ToUserMessage(reason)}");
+        }
+
+        private void LogEpbChannelPaused(int channel)
+        {
+            LogInfo($"卡钳{channel} 已暂停");
+        }
+
+        private void LogEpbChannelResumed(int channel)
+        {
+            LogInfo($"卡钳{channel} 已恢复运行");
         }
 
         private void ApplyChannelRuntimeState(ChannelRuntimeStateChangedEvent state)
