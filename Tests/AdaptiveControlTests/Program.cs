@@ -118,6 +118,8 @@ namespace AdaptiveControlTests
                 Run("计划等待窗口内暂停不误启动下一圈", TimerPauseDuringPlannedDelayBlocksNextCycle);
                 Run("Timer暂停事件立即纠正运行态", TimerPauseStateCorrectsRunningStatus);
                 Run("Timer失活看门狗识别停止和陈旧心跳", TimerRuntimeWatchdogDetectsStoppedAndStale);
+                Run("非人工Timer异常允许自动重建续测", TimerAnomalyRecoveryEligibility);
+                Run("Timer自恢复持续退避且不停止重试", TimerRecoveryRetryBackoff);
                 Run("同进程暂停不因时长增加资格门禁", PauseResumeFiveMinutePolicy);
                 Run("单通道恢复按当前公共正式槽重入", PausedChannelRejoinsCurrentSharedFormalSlot);
                 Run("批次暂停和恢复预检期间DAQ自愈不得越权恢复定时器", DaqRecoveryRespectsBatchPausePolicy);
@@ -2571,7 +2573,7 @@ namespace AdaptiveControlTests
             });
 
             Assert(entered.Wait(1000), "Timer状态测试首圈未启动");
-            timer.Pause("FieldSafetyPause");
+            timer.Pause("ChannelGracefulPause");
             Assert(timer.RuntimeState == HighPrecisionTimerRuntimeState.PausePending,
                 "圈内Pause未公开PausePending状态");
             release.Set();
@@ -2579,7 +2581,7 @@ namespace AdaptiveControlTests
                     () => timer.RuntimeState == HighPrecisionTimerRuntimeState.Paused,
                     1000),
                 "当前圈结束后Timer未公开Paused状态");
-            Assert(timer.IsPaused && timer.PauseReason == "FieldSafetyPause" && timer.PauseUtc.HasValue,
+            Assert(timer.IsPaused && timer.PauseReason == "ChannelGracefulPause" && timer.PauseUtc.HasValue,
                 "Timer暂停健康字段不完整");
             lock (states)
                 Assert(states.Contains(HighPrecisionTimerRuntimeState.PausePending) &&
@@ -2605,9 +2607,9 @@ namespace AdaptiveControlTests
                 stopped,
                 DateTime.UtcNow,
                 30000);
-            Assert(stoppedDecision.Action == TimerRuntimeHealthAction.PublishSystemFault &&
+            Assert(stoppedDecision.Action == TimerRuntimeHealthAction.BeginSelfHealing &&
                    stoppedDecision.ReasonCode == "TimerNotRunning",
-                "通道仍显示运行但Timer未启动时未识别系统故障");
+                "通道仍显示运行但Timer未启动时未要求自动自恢复");
 
             var firstCycle = new ManualResetEventSlim(false);
             var timer = new HighPrecisionTimer(1000, OverrunPolicy.AlignToWallClock);
@@ -2623,9 +2625,9 @@ namespace AdaptiveControlTests
                 timer,
                 staleNow,
                 30000);
-            Assert(staleDecision.Action == TimerRuntimeHealthAction.PublishSystemFault &&
+            Assert(staleDecision.Action == TimerRuntimeHealthAction.BeginSelfHealing &&
                    staleDecision.ReasonCode == "TimerHeartbeatStale",
-                "运行Timer超过阈值无新圈时未识别陈旧心跳");
+                "运行Timer超过阈值无新圈时未要求自动自恢复");
             var ignored = EpbManager.EvaluateTimerRuntimeHealth(
                 ChannelRuntimeState.Recovering,
                 timer,
@@ -2635,6 +2637,85 @@ namespace AdaptiveControlTests
                 "自恢复状态被看门狗错误覆盖");
             timer.Stop();
             Assert(run.Wait(1000), "心跳测试停止超时");
+        }
+
+        private static void TimerAnomalyRecoveryEligibility()
+        {
+            Assert(EpbManager.ShouldAutoRecoverTimerAnomaly(
+                    ChannelRuntimeState.Running,
+                    HighPrecisionTimerRuntimeState.Faulted,
+                    "TimeoutException",
+                    true,
+                    BatchPauseState.Running,
+                    false,
+                    false,
+                    true),
+                "软件Timer故障未允许自动重建");
+            Assert(EpbManager.ShouldAutoRecoverTimerAnomaly(
+                    ChannelRuntimeState.WarningRunning,
+                    HighPrecisionTimerRuntimeState.Paused,
+                    "Unspecified",
+                    true,
+                    BatchPauseState.Running,
+                    false,
+                    false,
+                    true),
+                "无归属Timer暂停未允许自动重建");
+            Assert(!EpbManager.ShouldAutoRecoverTimerAnomaly(
+                    ChannelRuntimeState.Running,
+                    HighPrecisionTimerRuntimeState.Paused,
+                    "ChannelGracefulPause",
+                    true,
+                    BatchPauseState.Running,
+                    true,
+                    false,
+                    true),
+                "人工暂停被错误自动拉起");
+            Assert(!EpbManager.ShouldAutoRecoverTimerAnomaly(
+                    ChannelRuntimeState.AlarmStopped,
+                    HighPrecisionTimerRuntimeState.Stopped,
+                    "Stop",
+                    true,
+                    BatchPauseState.Running,
+                    false,
+                    true,
+                    true),
+                "明确卡钳硬件报警被错误自动拉起");
+            Assert(!EpbManager.ShouldAutoRecoverTimerAnomaly(
+                    ChannelRuntimeState.Running,
+                    HighPrecisionTimerRuntimeState.Faulted,
+                    "TimeoutException",
+                    true,
+                    BatchPauseState.Paused,
+                    false,
+                    false,
+                    true),
+                "批次人工暂停期间被错误自动拉起");
+            Assert(!EpbManager.ShouldAutoRecoverTimerAnomaly(
+                    ChannelRuntimeState.Running,
+                    HighPrecisionTimerRuntimeState.Faulted,
+                    "TimeoutException",
+                    true,
+                    BatchPauseState.Running,
+                    false,
+                    false,
+                    false),
+                "项目已禁用卡钳被错误自动拉起");
+        }
+
+        private static void TimerRecoveryRetryBackoff()
+        {
+            Assert(EpbManager.SelectTimerRecoveryRetryDelayMs(1) == 1000,
+                "Timer自恢复首次退避错误");
+            Assert(EpbManager.SelectTimerRecoveryRetryDelayMs(2) == 2000,
+                "Timer自恢复第二次退避错误");
+            Assert(EpbManager.SelectTimerRecoveryRetryDelayMs(3) == 5000,
+                "Timer自恢复第三次退避错误");
+            Assert(EpbManager.SelectTimerRecoveryRetryDelayMs(4) == 10000,
+                "Timer自恢复第四次退避错误");
+            Assert(EpbManager.SelectTimerRecoveryRetryDelayMs(5) == 30000 &&
+                   EpbManager.SelectTimerRecoveryRetryDelayMs(500) == 30000,
+                "Timer自恢复长期重试未限制为30秒且存在停止门槛");
         }
 
         private static void PauseResumeFiveMinutePolicy()

@@ -1,5 +1,8 @@
 using System;
+using System.Collections.Concurrent;
+using System.Linq;
 using System.Threading;
+using System.Threading.Tasks;
 using Timing;
 
 namespace Controller
@@ -9,7 +12,7 @@ namespace Controller
         None = 0,
         PublishPausePending = 1,
         PublishPaused = 2,
-        PublishSystemFault = 3
+        BeginSelfHealing = 3
     }
 
     internal sealed class TimerRuntimeHealthDecision
@@ -24,6 +27,8 @@ namespace Controller
         private readonly System.Threading.Timer _timerRuntimeWatchdog;
         private readonly int _timerRuntimeWatchdogIntervalMs;
         private readonly int _timerRuntimeSilenceThresholdMs;
+        private readonly ConcurrentDictionary<int, byte> _timerRuntimeRecoveries =
+            new ConcurrentDictionary<int, byte>();
         private int _timerRuntimeWatchdogBusy;
 
         private void AttachTimerRuntimeObserver(int channel, HighPrecisionTimer timer)
@@ -48,6 +53,24 @@ namespace Controller
 
             var current = _channelRuntimeStateStore.Get(channel);
             if (current == null || !IsDisplayedAsRunning(current.State)) return;
+
+            if (ShouldAutoRecoverTimerAnomaly(
+                    current.State,
+                    update.State,
+                    update.Reason,
+                    IsBatchSessionActive,
+                    CurrentBatchPauseState,
+                    _channelPausedUtc.ContainsKey(channel),
+                    IsAlarmStopRequested(channel),
+                    IsChannelEnabled(channel)))
+            {
+                BeginTimerRuntimeSelfHealing(
+                    channel,
+                    timer,
+                    "TimerRuntimeStateLost",
+                    $"Timer状态异常：State={update.State} Reason={update.Reason}");
+                return;
+            }
 
             if (update.State == HighPrecisionTimerRuntimeState.PausePending)
             {
@@ -110,19 +133,11 @@ namespace Controller
                         continue;
                     }
 
-                    PublishChannelRuntimeState(
+                    BeginTimerRuntimeSelfHealing(
                         channel,
-                        ChannelRuntimeState.SystemFault,
+                        timer,
                         decision.ReasonCode,
-                        decision.ReasonText,
-                        correlationId: _activeBatchId);
-                    try { timer.Pause($"Watchdog:{decision.ReasonCode}"); } catch { }
-                    try { CancelCyclePauseCts(channel); } catch { }
-                    try { CommandEpbOffSafetyImmediate(channel); } catch { }
-                    _log?.Error(
-                        $"EPB[{channel}] 运行心跳失活，已切换系统故障并执行安全断电。" +
-                        $"Code={decision.ReasonCode} Detail={decision.ReasonText}",
-                        "Timer");
+                        decision.ReasonText);
                 }
             }
             catch (Exception ex)
@@ -147,14 +162,18 @@ namespace Controller
             if (timer.RuntimeState == HighPrecisionTimerRuntimeState.PausePending)
                 return new TimerRuntimeHealthDecision
                 {
-                    Action = TimerRuntimeHealthAction.PublishPausePending,
+                    Action = IsIntentionalOrOwnedTimerPauseReason(timer.PauseReason)
+                        ? TimerRuntimeHealthAction.PublishPausePending
+                        : TimerRuntimeHealthAction.BeginSelfHealing,
                     ReasonCode = "TimerPausePendingMismatch",
                     ReasonText = $"通道仍显示运行，但Timer已等待暂停。Reason={timer.PauseReason}"
                 };
             if (timer.RuntimeState == HighPrecisionTimerRuntimeState.Paused || timer.IsPaused)
                 return new TimerRuntimeHealthDecision
                 {
-                    Action = TimerRuntimeHealthAction.PublishPaused,
+                    Action = IsIntentionalOrOwnedTimerPauseReason(timer.PauseReason)
+                        ? TimerRuntimeHealthAction.PublishPaused
+                        : TimerRuntimeHealthAction.BeginSelfHealing,
                     ReasonCode = "TimerPausedMismatch",
                     ReasonText = $"通道仍显示运行，但Timer已暂停。Reason={timer.PauseReason}"
                 };
@@ -165,7 +184,7 @@ namespace Controller
                 timer.RuntimeState == HighPrecisionTimerRuntimeState.Faulted)
                 return new TimerRuntimeHealthDecision
                 {
-                    Action = TimerRuntimeHealthAction.PublishSystemFault,
+                    Action = TimerRuntimeHealthAction.BeginSelfHealing,
                     ReasonCode = "TimerNotRunning",
                     ReasonText = $"通道仍显示运行，但Timer状态为{timer.RuntimeState}。"
                 };
@@ -175,7 +194,7 @@ namespace Controller
             if (activityUtc.HasValue && (nowUtc - activityUtc.Value).TotalMilliseconds > thresholdMs)
                 return new TimerRuntimeHealthDecision
                 {
-                    Action = TimerRuntimeHealthAction.PublishSystemFault,
+                    Action = TimerRuntimeHealthAction.BeginSelfHealing,
                     ReasonCode = "TimerHeartbeatStale",
                     ReasonText = $"Timer超过{thresholdMs}ms没有新循环心跳；" +
                                  $"LastStart={timer.LastCycleStartedUtc:O} " +
@@ -188,6 +207,184 @@ namespace Controller
         {
             return state == ChannelRuntimeState.Running ||
                    state == ChannelRuntimeState.WarningRunning;
+        }
+
+        internal static bool IsIntentionalOrOwnedTimerPauseReason(string reason)
+        {
+            if (string.IsNullOrWhiteSpace(reason)) return false;
+            var ownedPrefixes = new[]
+            {
+                "BatchGracefulPause",
+                "ChannelGracefulPause",
+                "ManualPause",
+                "Daq",
+                "Hydraulic",
+                "PowerSupply",
+                "RecoverableWarning",
+                "FormalPersistence",
+                "FormalControl",
+                "ActiveCycle",
+                "ElectricalGroup",
+                "TimerSelfHealing",
+                "Watchdog"
+            };
+            return ownedPrefixes.Any(prefix =>
+                reason.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
+        }
+
+        internal static bool ShouldAutoRecoverTimerAnomaly(
+            ChannelRuntimeState runtimeState,
+            HighPrecisionTimerRuntimeState timerState,
+            string reason,
+            bool batchActive,
+            BatchPauseState batchPauseState,
+            bool channelPaused,
+            bool alarmStopRequested,
+            bool channelEnabled)
+        {
+            if (!batchActive || !channelEnabled || channelPaused || alarmStopRequested)
+                return false;
+            if (batchPauseState != BatchPauseState.Running)
+                return false;
+            if (!IsDisplayedAsRunning(runtimeState))
+                return false;
+
+            if (timerState == HighPrecisionTimerRuntimeState.PausePending ||
+                timerState == HighPrecisionTimerRuntimeState.Paused)
+                return !IsIntentionalOrOwnedTimerPauseReason(reason);
+
+            return timerState == HighPrecisionTimerRuntimeState.Stopped ||
+                   timerState == HighPrecisionTimerRuntimeState.Completed ||
+                   timerState == HighPrecisionTimerRuntimeState.Faulted;
+        }
+
+        private bool CanContinueTimerRuntimeSelfHealing(int channel, Guid runId)
+        {
+            if (!IsBatchSessionActive || runId == Guid.Empty || runId != _activeBatchId)
+                return false;
+            if (CurrentBatchPauseState != BatchPauseState.Running ||
+                _channelPausedUtc.ContainsKey(channel) ||
+                IsAlarmStopRequested(channel) ||
+                !IsChannelEnabled(channel))
+                return false;
+            var runtime = _channelRuntimeStateStore.Get(channel);
+            return runtime != null && runtime.State == ChannelRuntimeState.Recovering;
+        }
+
+        private void BeginTimerRuntimeSelfHealing(
+            int channel,
+            HighPrecisionTimer failedTimer,
+            string reasonCode,
+            string reasonText)
+        {
+            if (!_timerRuntimeRecoveries.TryAdd(channel, 0)) return;
+
+            var runId = _activeBatchId;
+            PublishChannelRuntimeState(
+                channel,
+                ChannelRuntimeState.Recovering,
+                "TimerRuntimeSelfHealing",
+                $"{reasonText}；已安全断电，正在自动重建Timer并继续测试。",
+                correlationId: runId);
+            _log?.Error(
+                $"EPB[{channel}] Timer运行异常，进入无人值守自恢复。" +
+                $"Code={reasonCode} Detail={reasonText}",
+                "Timer");
+
+            try { failedTimer?.Pause($"TimerSelfHealing:{reasonCode}"); } catch { }
+            try { CancelCyclePauseCts(channel); } catch { }
+            UnmarkHydraulicParticipant(channel);
+            DiscardCurrentCycleForSoftwareRecovery(
+                channel,
+                DateTime.UtcNow,
+                $"TimerRuntimeSelfHealing:{reasonCode}");
+
+            _ = Task.Run(async () =>
+            {
+                var attempt = 0;
+                try
+                {
+                    while (CanContinueTimerRuntimeSelfHealing(channel, runId))
+                    {
+                        attempt++;
+                        try
+                        {
+                            RequireSoftwareRecoveryOutputOff(channel, "TimerRuntimeSelfHealing");
+                            await HydraulicMarkReleaseAsync(channel).ConfigureAwait(false);
+                            if (!CanContinueTimerRuntimeSelfHealing(channel, runId)) return;
+
+                            await EnsureDaqReadyBeforeStartAsync(
+                                    new[] { channel },
+                                    CancellationToken.None)
+                                .ConfigureAwait(false);
+                            await EnsurePowerSupplyReadyForChannelsAsync(
+                                    new[] { channel },
+                                    CancellationToken.None)
+                                .ConfigureAwait(false);
+                            if (!CanContinueTimerRuntimeSelfHealing(channel, runId)) return;
+
+                            var plan = _activeStaggerPlan ??
+                                       ElectricalStaggerPlanner.Build(
+                                           new[] { channel },
+                                           _cfg.Test.Groups,
+                                           PeriodMs);
+                            await EnsureMotorReleasedBeforeFormalRejoinAsync(
+                                    new[] { channel },
+                                    plan,
+                                    "TimerRuntimeSelfHealing",
+                                    CancellationToken.None)
+                                .ConfigureAwait(false);
+                            if (!CanContinueTimerRuntimeSelfHealing(channel, runId)) return;
+
+                            RejoinFormalChannelsAtSharedFutureSlot(
+                                new[] { channel },
+                                plan,
+                                "TimerRuntimeSelfHealed",
+                                $"Timer异常已完成安全重建并自动续测（Attempt={attempt}）",
+                                allowTerminalReset: false);
+
+                            if (!_timers.TryGetValue(channel, out var replacement) ||
+                                ReferenceEquals(replacement, failedTimer) ||
+                                !replacement.IsRunning)
+                                throw new SoftwareSelfHealingRetryException(
+                                    "新Timer未进入运行态。");
+
+                            _log?.Info(
+                                $"EPB[{channel}] Timer已自动重建并继续测试。Attempt={attempt}",
+                                "Timer");
+                            return;
+                        }
+                        catch (Exception ex)
+                        {
+                            if (!CanContinueTimerRuntimeSelfHealing(channel, runId)) return;
+                            PublishChannelRuntimeState(
+                                channel,
+                                ChannelRuntimeState.Recovering,
+                                "TimerRuntimeSelfHealingRetry",
+                                $"Timer自动重建第{attempt}次未完成，将持续重试：{ex.Message}",
+                                correlationId: runId);
+                            _log?.Warn(
+                                $"EPB[{channel}] Timer自动重建第{attempt}次失败，将持续重试：{ex.Message}",
+                                "Timer");
+                            await Task.Delay(SelectTimerRecoveryRetryDelayMs(attempt))
+                                .ConfigureAwait(false);
+                        }
+                    }
+                }
+                finally
+                {
+                    _timerRuntimeRecoveries.TryRemove(channel, out _);
+                }
+            });
+        }
+
+        internal static int SelectTimerRecoveryRetryDelayMs(int attempt)
+        {
+            if (attempt <= 1) return 1000;
+            if (attempt == 2) return 2000;
+            if (attempt == 3) return 5000;
+            if (attempt == 4) return 10000;
+            return 30000;
         }
     }
 }
