@@ -386,5 +386,8 @@
 			<Members>10,11,12</Members>
 		</Group>
 	</ElectricalGroups>
+	<DataStorageRetention>
+		<Latest RetentionMode="Count" RetainStopPackagesPerChannel="10" />
+	</DataStorageRetention>
 
 </TestConfig>

@@ -4131,6 +4131,11 @@ namespace Controller
                             ?? AlarmConfig?.Behavior?.SnapshotLastNCycles
                             ?? 10;
                 lastN = Math.Max(1, lastN);
+                var includeSameGroup = AlarmConfig?.WarningSnapshots
+                    ?.HardAlarmIncludeSameElectricalGroup == true;
+                var sameGroupLastN = Math.Max(
+                    1,
+                    AlarmConfig?.WarningSnapshots?.HardAlarmSameGroupLastNCycles ?? 10);
 
                 // 根目录：StoreDir\TestName\AlarmSnapshots
                 var baseDir = System.IO.Path.Combine(_cfg.Test.StoreDir, _cfg.Test.TestName, "AlarmSnapshots");
@@ -4158,28 +4163,39 @@ namespace Controller
                     _log.Warn($"DAQ 60秒时序诊断快照导出失败：{ex.Message}", "AI");
                 }
 
-                int[] running;
-                try
-                {
-                    running = _timers.Keys.ToArray();
-                }
-                catch
-                {
-                    running = Array.Empty<int>();
-                }
-
                 var affectedChannels = ResolveAlarmSnapshotAffectedChannels(alarmChannel, reason);
+                var sameGroupChannels = Array.Empty<int>();
+                if (includeSameGroup)
+                {
+                    var alarmGroupId = GetElectricalGroupId(alarmChannel);
+                    if (alarmGroupId > 0)
+                    {
+                        sameGroupChannels = ResolveAlarmCycleEvidenceChannels(
+                                alarmChannel,
+                                _cfg.Test.Groups,
+                                true)
+                            .Where(channel => channel != alarmChannel)
+                            .ToArray();
+                    }
+                    else
+                    {
+                        _log.Warn(
+                            $"EPB[{alarmChannel}] 未找到电源组，报警快照仅导出报警通道。",
+                            "落盘");
+                    }
+                }
 
-                // 先冻结报警通道，保证 PostOffTailMs 是明确边界；其它通道随后作为辅助证据导出。
-                // StopChannelOnAlarm 通常已把报警通道从 _timers 移除，因此显式放到首位。
-                running = new[] { alarmChannel }
-                    .Concat(affectedChannels.Where(channel => channel != alarmChannel))
-                    .Concat(running.Where(channel => channel != alarmChannel))
+                // 圈数据严格限制为报警通道，以及配置允许时的同电源组通道。
+                // DAQ、控制时间线和电源遥测仍按原逻辑保存为公共诊断证据。
+                var cycleEvidenceChannels = new[] { alarmChannel }
+                    .Concat(sameGroupChannels)
                     .Distinct()
                     .ToArray();
+                var exportedCycleChannels = new List<int>();
+                var skippedCycleChannels = new List<int>();
 
                 AlarmCycleSnapshotEvidence alarmEvidence = null;
-                foreach (var ch in running)
+                foreach (var ch in cycleEvidenceChannels)
                 {
                     var subName = ch == alarmChannel ? $"EPB{ch:D2}_ALARM" : $"EPB{ch:D2}";
                     var subDir = System.IO.Path.Combine(snapshotDir, subName);
@@ -4226,15 +4242,32 @@ namespace Controller
                                 alarmEvidence.FinalStatus = "FrozenAbortedCycle";
                             }
                             if (alarmEvidence?.IsValid == true)
+                            {
                                 recorder.FlushRecentTo(ch, lastN, subDir, includeRunningCycle: false);
+                                exportedCycleChannels.Add(ch);
+                            }
+                            else
+                            {
+                                skippedCycleChannels.Add(ch);
+                            }
                         }
                         else
                         {
-                            recorder.FlushRecentTo(ch, lastN, subDir, includeRunningCycle: true);
+                            recorder.FlushRecentTo(ch, sameGroupLastN, subDir, includeRunningCycle: true);
+                            if (System.IO.Directory.EnumerateFiles(
+                                    subDir,
+                                    "*.*",
+                                    System.IO.SearchOption.TopDirectoryOnly)
+                                .Any(path => path.EndsWith(".csv", StringComparison.OrdinalIgnoreCase) ||
+                                             path.EndsWith(".bin", StringComparison.OrdinalIgnoreCase)))
+                                exportedCycleChannels.Add(ch);
+                            else
+                                skippedCycleChannels.Add(ch);
                         }
                     }
                     catch (Exception ex)
                     {
+                        skippedCycleChannels.Add(ch);
                         _log.Warn($"报警快照导出失败：EPB[{ch}] {ex.Message}", "落盘");
                     }
                 }
@@ -4296,7 +4329,12 @@ namespace Controller
                         alarmCycleNumber,
                         lastN,
                         reason,
-                        affectedChannels);
+                        affectedChannels,
+                        cycleEvidenceChannels,
+                        exportedCycleChannels.Distinct().OrderBy(x => x).ToArray(),
+                        skippedCycleChannels.Distinct().OrderBy(x => x).ToArray(),
+                        includeSameGroup,
+                        sameGroupLastN);
                     WriteWarningChain(snapshotDir, alarmChannel, reason, alarmCycleNumber);
                 }
                 catch (Exception ex)
@@ -4394,6 +4432,24 @@ namespace Controller
         public Task<bool> ShutdownPersistenceAsync(int timeoutMs = 10000)
         {
             return _persistence.ShutdownAsync(Math.Max(1, Math.Min(10000, timeoutMs)));
+        }
+
+        public static int[] ResolveAlarmCycleEvidenceChannels(
+            int alarmChannel,
+            IEnumerable<ElectricalGroup> groups,
+            bool includeSameElectricalGroup)
+        {
+            if (alarmChannel < 1 || alarmChannel > 12)
+                throw new ArgumentOutOfRangeException(nameof(alarmChannel));
+            if (!includeSameElectricalGroup) return new[] { alarmChannel };
+            var group = (groups ?? Enumerable.Empty<ElectricalGroup>())
+                .FirstOrDefault(item => item?.Members?.Contains(alarmChannel) == true);
+            return new[] { alarmChannel }
+                .Concat(group?.Members ?? Enumerable.Empty<int>())
+                .Where(channel => channel >= 1 && channel <= 12)
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
         }
 
         public void ReleaseHardwareForRestart()

@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Data.SQLite;
 using System.Threading.Tasks;
+using System.Threading;
 using DataOperation;
 
 namespace EpbDiskWriterTests
@@ -45,6 +46,7 @@ namespace EpbDiskWriterTests
                 Run("批量时间窗边界与重启恢复", BatchedWindowBoundarySurvivesRestart);
                 Run("设备多通道批次事务写入", DeviceBatchWritesMultipleChannels);
                 Run("Latest并发导出原子且无临时残留", ConcurrentLatestExportsAreAtomic);
+                Run("Latest每通道计数收敛且Unlimited不删除", LatestPackageRetentionModes);
                 Console.WriteLine($"PASS {_passed}/{_passed}");
                 return 0;
             }
@@ -901,6 +903,54 @@ namespace EpbDiskWriterTests
                     Assert(Directory.GetFiles(directory, "*.bin").Length == 1, "Latest缺少BIN");
                 }
             });
+        }
+
+        private static void LatestPackageRetentionModes()
+        {
+            WithRoot(root =>
+            {
+                var countRoot = Path.Combine(root, "count");
+                var policy = NewPolicy(countRoot);
+                policy.RetainLatestStopPackagesPerChannel = 3;
+                using (var writer = new EpbDiskWriter(policy))
+                {
+                    WriteCompletedCycle(writer, 1, 1, 4, DateTime.UtcNow);
+                    for (var i = 0; i < 8; i++) writer.ExportLatestCyclesNow(1, 1);
+                    var channel = Path.Combine(policy.IndexAndExportPath, "Latest", "EPB1");
+                    Directory.CreateDirectory(Path.Combine(channel, "unknown-package"));
+                    AssertEventually(
+                        () => Directory.GetDirectories(channel)
+                                  .Count(path => Path.GetFileName(path) != "unknown-package") == 3,
+                        "Latest Count模式未最终收敛到3包");
+                    Assert(Directory.Exists(Path.Combine(channel, "unknown-package")),
+                        "Latest未知目录被错误删除");
+                }
+
+                var unlimitedRoot = Path.Combine(root, "unlimited");
+                var unlimitedPolicy = NewPolicy(unlimitedRoot);
+                unlimitedPolicy.RetainLatestStopPackagesPerChannel = 1;
+                unlimitedPolicy.RetainAllLatestStopPackages = true;
+                using (var writer = new EpbDiskWriter(unlimitedPolicy))
+                {
+                    WriteCompletedCycle(writer, 2, 1, 4, DateTime.UtcNow);
+                    for (var i = 0; i < 4; i++) writer.ExportLatestCyclesNow(2, 1);
+                    var channel = Path.Combine(unlimitedPolicy.IndexAndExportPath, "Latest", "EPB2");
+                    Thread.Sleep(100);
+                    Assert(Directory.GetDirectories(channel).Length == 4,
+                        "Latest Unlimited模式错误删除停止包");
+                }
+            });
+        }
+
+        private static void AssertEventually(Func<bool> predicate, string message)
+        {
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (DateTime.UtcNow < deadline)
+            {
+                if (predicate()) return;
+                Thread.Sleep(20);
+            }
+            throw new InvalidOperationException(message);
         }
 
         private static void WriteCompletedCycle(

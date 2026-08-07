@@ -450,6 +450,32 @@ namespace MTEmbTest
             }
         }
 
+        internal static void ClearForProject(string storeDir, string testName, string reason)
+        {
+            lock (Sync)
+            {
+                var checkpoint = LoadUnsafe();
+                if (checkpoint == null) return;
+                if (!string.Equals(
+                        checkpoint.StoreDir ?? string.Empty,
+                        storeDir ?? string.Empty,
+                        StringComparison.OrdinalIgnoreCase) ||
+                    !string.Equals(
+                        checkpoint.TestName ?? string.Empty,
+                        testName ?? string.Empty,
+                        StringComparison.OrdinalIgnoreCase))
+                    return;
+                checkpoint.Armed = false;
+                checkpoint.GracefulPaused = false;
+                checkpoint.RestartPending = false;
+                checkpoint.RecoveryNonce = string.Empty;
+                checkpoint.RemainingFormalCycles = new Dictionary<string, int>();
+                checkpoint.LastReason = reason ?? "ProjectProgressCleared";
+                checkpoint.UpdatedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+                SaveUnsafe(checkpoint);
+            }
+        }
+
         internal static string ComputeConfigurationHash(GlobalConfig config)
         {
             try

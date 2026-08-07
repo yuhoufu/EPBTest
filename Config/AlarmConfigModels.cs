@@ -20,6 +20,10 @@ namespace Config
         public bool SaveCsv { get; set; } = true;
         public bool SaveBin { get; set; } = true;
         public int HardAlarmLastNCycles { get; set; } = 10;
+        public bool HardAlarmIncludeSameElectricalGroup { get; set; }
+        public int HardAlarmSameGroupLastNCycles { get; set; } = 10;
+        public StorageRetentionMode SoftWarningRetentionMode { get; set; } = StorageRetentionMode.Count;
+        public int SoftWarningRetainCountPerChannelCode { get; set; } = 30;
         public long SoftWarningQuotaMb { get; set; }
         public long DiskFreeWarningMb { get; set; } = 10240;
     }

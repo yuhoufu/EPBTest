@@ -12,7 +12,9 @@ using System.IO;
 using System.IO.MemoryMappedFiles;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace DataOperation;
 
@@ -56,6 +58,15 @@ public sealed class DataRetentionPolicy
 
     /// <summary>活动圈最大样本数；0表示不单独限制。</summary>
     public int MaxActiveCycleRecords { get; set; }
+
+    /// <summary>每通道 Latest 停止包上限；只影响导出副本，不改变圈索引。</summary>
+    public int RetainLatestStopPackagesPerChannel { get; set; } = 10;
+
+    /// <summary>true 时不清理任何 Latest 停止包。</summary>
+    public bool RetainAllLatestStopPackages { get; set; }
+
+    /// <summary>容量清理警告出口；调用失败绝不能抛回控制链路。</summary>
+    public Action<string> RetentionWarningSink { get; set; }
 }
 
 public sealed class ActiveCycleDataLimitExceededException : InvalidOperationException
@@ -187,8 +198,13 @@ public sealed class EpbDiskWriter : IDisposable
         .Select(_ => new object())
         .ToArray();
     private long _latestExportSequence;
+    private readonly int[] _latestCleanupRequested = new int[EPB_COUNT + 1];
+    private readonly int[] _latestCleanupRunning = new int[EPB_COUNT + 1];
     private readonly ConcurrentDictionary<string, object> _exportTargetGates =
         new(StringComparer.OrdinalIgnoreCase);
+    private static readonly Regex LatestPackageNamePattern = new(
+        @"^\d{8}_\d{6}_\d{3}-\d{6}$",
+        RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
     private bool _disposed;
 
@@ -1086,6 +1102,7 @@ public sealed class EpbDiskWriter : IDisposable
     /// <param name="latestN">需要导出的“最近圈数”（默认 10）。</param>
     public void ExportLatestCyclesNow(int epbId, int latestN = 10)
     {
+        var published = false;
         lock (_latestExportGates[epbId])
         {
             latestN = Math.Max(1, latestN);
@@ -1104,6 +1121,7 @@ public sealed class EpbDiskWriter : IDisposable
                 ExportCycleList(epbId, latestList, staging);
                 ValidateExportDirectory(epbId, latestList, staging);
                 Directory.Move(staging, final);
+                published = true;
             }
             finally
             {
@@ -1113,6 +1131,101 @@ public sealed class EpbDiskWriter : IDisposable
                 }
             }
         }
+        if (published) QueueLatestPackageRetention(epbId);
+    }
+
+    private void QueueLatestPackageRetention(int epbId)
+    {
+        if (_policy.RetainAllLatestStopPackages) return;
+        Interlocked.Exchange(ref _latestCleanupRequested[epbId], 1);
+        if (Interlocked.CompareExchange(ref _latestCleanupRunning[epbId], 1, 0) != 0) return;
+
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                while (Interlocked.Exchange(ref _latestCleanupRequested[epbId], 0) == 1)
+                {
+                    lock (_latestExportGates[epbId])
+                    {
+                        try { EnforceLatestPackageRetention(epbId); }
+                        catch (Exception ex) { WarnRetention($"Latest EPB{epbId} 清理失败：{ex.Message}"); }
+                    }
+                }
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _latestCleanupRunning[epbId], 0);
+                if (Volatile.Read(ref _latestCleanupRequested[epbId]) == 1)
+                    QueueLatestPackageRetention(epbId);
+            }
+        });
+    }
+
+    private void EnforceLatestPackageRetention(int epbId)
+    {
+        if (_policy.RetainAllLatestStopPackages) return;
+        var keep = _policy.RetainLatestStopPackagesPerChannel;
+        if (keep < 1) keep = 10;
+        var root = Path.Combine(_indexDir, "Latest", $"EPB{epbId}");
+        if (!Directory.Exists(root)) return;
+
+        var valid = new List<DirectoryInfo>();
+        foreach (var directory in new DirectoryInfo(root).EnumerateDirectories("*", SearchOption.TopDirectoryOnly))
+        {
+            var name = directory.Name;
+            if (name.StartsWith(".", StringComparison.Ordinal) ||
+                name.IndexOf(".tmp-", StringComparison.OrdinalIgnoreCase) >= 0)
+                continue;
+            if (!LatestPackageNamePattern.IsMatch(name) || !IsValidLatestPackage(directory.FullName, epbId))
+            {
+                WarnRetention($"Latest EPB{epbId} 跳过无法识别或不完整目录：{directory.FullName}");
+                continue;
+            }
+            valid.Add(directory);
+        }
+
+        var expired = valid
+            .OrderByDescending(x => x.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenByDescending(x => x.LastWriteTimeUtc)
+            .Skip(keep)
+            .Reverse()
+            .ToArray();
+        foreach (var directory in expired)
+        {
+            try { directory.Delete(true); }
+            catch (Exception ex)
+            {
+                WarnRetention($"Latest EPB{epbId} 删除失败：{directory.FullName} Error={ex.Message}");
+            }
+        }
+    }
+
+    private static bool IsValidLatestPackage(string directory, int epbId)
+    {
+        try
+        {
+            var prefix = $"EPB{epbId}_Cycle_";
+            var csv = Directory.EnumerateFiles(directory, "*.csv", SearchOption.TopDirectoryOnly)
+                .Select(Path.GetFileNameWithoutExtension)
+                .Where(x => x.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var bin = Directory.EnumerateFiles(directory, "*.bin", SearchOption.TopDirectoryOnly)
+                .Select(Path.GetFileNameWithoutExtension)
+                .Where(x => x.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            return csv.Count > 0 && csv.SetEquals(bin);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private void WarnRetention(string message)
+    {
+        try { _policy.RetentionWarningSink?.Invoke(message); }
+        catch { }
     }
 
     private static void ValidateExportDirectory(

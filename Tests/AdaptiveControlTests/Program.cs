@@ -74,9 +74,11 @@ namespace AdaptiveControlTests
                 Run("反向残余负电流不能误判为断电清零", NegativeOffCurrentDoesNotClear);
                 Run("断电清零阈值适配现场零偏且保持安全上限", OffCurrentThresholdTracksTrustedBaseline);
                 Run("项目XML不再保存程序级安全参数", ProjectXmlIgnoresProgramSafetySettings);
+                Run("项目数据保留配置默认回退与保存回读", ProjectRetentionConfigDefaultsValidationAndRoundTrip);
                 Run("EXE安全配置缺失非法时使用安全默认值", ProgramSafetySettingsValidation);
                 Run("程序安全配置快照包含值与来源", ProgramSafetySnapshotIsAuditable);
                 Run("报警配置加载不可恢复连续阈值", AlarmConfigLoadsForwardStallConfirmation);
+                Run("软预警按通道类别保留30次且Unlimited不删除", WarningSnapshotRetentionModes);
                 Run("普通故障按尝试圈连续3次确认且单圈去重", GenericFaultConfirmationUsesAttemptCycles);
                 Run("普通故障成功圈清零且通道故障码隔离", GenericFaultConfirmationResetsAndIsolates);
                 Run("电流硬故障与已确认专用策略不二次计数", ImmediateAndPreconfirmedFaultClassification);
@@ -152,6 +154,7 @@ namespace AdaptiveControlTests
                 Run("重新开始等待旧启动尾声后才允许新启动", FreshRestartJoinsOldStartupCleanup);
                 Run("DO追踪缓冲按运行过滤并限时", DoTraceBufferFiltersRunAndAge);
                 Run("报警辅助证据包含计划和DO时序", AlarmControlEvidenceIsReconstructable);
+                Run("报警圈证据默认仅报警通道且同组开关不跨组", AlarmCycleEvidenceSelectionIsGroupScoped);
                 Run("同组硬故障仅停止故障通道", HardFaultDoesNotStopSiblingChannel);
                 Run("2000Hz样本时间严格递增5000 ticks", TwoKilohertzSampleTimestamps);
                 Run("DAQ追赶回调不造成相邻批时间重叠", CatchUpCallbackDoesNotOverlapBatches);
@@ -1165,6 +1168,67 @@ namespace AdaptiveControlTests
             }
         }
 
+        private static void ProjectRetentionConfigDefaultsValidationAndRoundTrip()
+        {
+            var source = Path.GetFullPath(Path.Combine(
+                AppDomain.CurrentDomain.BaseDirectory,
+                "..", "..", "..", "..", "MTTfTest", "Config", "TestConfig.xml"));
+            var directory = CreateTempDir();
+            var target = Path.Combine(directory, "TestConfig.xml");
+            try
+            {
+                var xml = File.ReadAllText(source);
+                var start = xml.IndexOf("<DataStorageRetention>", StringComparison.Ordinal);
+                var end = xml.IndexOf("</DataStorageRetention>", StringComparison.Ordinal);
+                if (start >= 0 && end > start)
+                    xml = xml.Remove(start, end + "</DataStorageRetention>".Length - start);
+                File.WriteAllText(target, xml);
+                var missing = ConfigLoader.LoadTest(target, NullLogger.Instance);
+                Assert(
+                    missing.DataStorageRetention.Latest.RetentionMode == StorageRetentionMode.Count &&
+                    missing.DataStorageRetention.Latest.RetainStopPackagesPerChannel == 10,
+                    "缺少Latest保留节点时未采用Count/10默认值");
+
+                missing.DataStorageRetention.Latest.RetentionMode = StorageRetentionMode.Unlimited;
+                missing.DataStorageRetention.Latest.RetainStopPackagesPerChannel = 25;
+                ConfigLoader.SaveTest(target, missing);
+                var reloaded = ConfigLoader.LoadTest(target, NullLogger.Instance);
+                Assert(
+                    reloaded.DataStorageRetention.Latest.RetentionMode == StorageRetentionMode.Unlimited &&
+                    reloaded.DataStorageRetention.Latest.RetainStopPackagesPerChannel == 25,
+                    "Latest保留配置保存回读不一致");
+
+                var missingFieldXml = File.ReadAllText(target)
+                    .Replace(" RetentionMode=\"Unlimited\"", string.Empty)
+                    .Replace(" RetainStopPackagesPerChannel=\"25\"", string.Empty);
+                File.WriteAllText(target, missingFieldXml);
+                var missingFieldLogger = new CollectingLogger();
+                var missingFields = ConfigLoader.LoadTest(target, missingFieldLogger);
+                Assert(
+                    missingFields.DataStorageRetention.Latest.RetentionMode == StorageRetentionMode.Count &&
+                    missingFields.DataStorageRetention.Latest.RetainStopPackagesPerChannel == 10 &&
+                    missingFieldLogger.Warnings.Count == 0,
+                    "Latest缺少单个字段时未静默采用默认值");
+
+                ConfigLoader.SaveTest(target, reloaded);
+                var invalidXml = File.ReadAllText(target)
+                    .Replace("RetentionMode=\"Unlimited\"", "RetentionMode=\"1\"")
+                    .Replace("RetainStopPackagesPerChannel=\"25\"", "RetainStopPackagesPerChannel=\"0\"");
+                File.WriteAllText(target, invalidXml);
+                var logger = new CollectingLogger();
+                var invalid = ConfigLoader.LoadTest(target, logger);
+                Assert(
+                    invalid.DataStorageRetention.Latest.RetentionMode == StorageRetentionMode.Count &&
+                    invalid.DataStorageRetention.Latest.RetainStopPackagesPerChannel == 10 &&
+                    logger.Warnings.Count >= 2,
+                    "Latest非法配置未回退并记录警告");
+            }
+            finally
+            {
+                Directory.Delete(directory, true);
+            }
+        }
+
         private static void ProgramSafetySettingsValidation()
         {
             var missing = EpbProgramSafetySettings.FromAppSettings(
@@ -1246,6 +1310,26 @@ namespace AdaptiveControlTests
             }
         }
 
+        private static void AlarmCycleEvidenceSelectionIsGroupScoped()
+        {
+            var first = new ElectricalGroup { Id = 1 };
+            first.Members.AddRange(new[] { 4, 5, 6 });
+            var second = new ElectricalGroup { Id = 2 };
+            second.Members.AddRange(new[] { 7, 8, 9 });
+            var groups = new[] { first, second };
+            Assert(
+                EpbManager.ResolveAlarmCycleEvidenceChannels(4, groups, false)
+                    .SequenceEqual(new[] { 4 }),
+                "同组开关关闭时报警圈证据包含了其他通道");
+            Assert(
+                EpbManager.ResolveAlarmCycleEvidenceChannels(4, groups, true)
+                    .SequenceEqual(new[] { 4, 5, 6 }),
+                "同组开关开启时未仅增加同电源组通道");
+            Assert(
+                !EpbManager.ResolveAlarmCycleEvidenceChannels(4, groups, true).Contains(7),
+                "报警圈证据错误包含不同电源组通道");
+        }
+
         private static void AlarmConfigLoadsForwardStallConfirmation()
         {
             var source = Path.GetFullPath(Path.Combine(
@@ -1268,9 +1352,84 @@ namespace AdaptiveControlTests
                 loaded.WarningSnapshots.SaveCsv &&
                 loaded.WarningSnapshots.SaveBin &&
                 loaded.WarningSnapshots.HardAlarmLastNCycles == 10 &&
+                !loaded.WarningSnapshots.HardAlarmIncludeSameElectricalGroup &&
+                loaded.WarningSnapshots.HardAlarmSameGroupLastNCycles == 10 &&
+                loaded.WarningSnapshots.SoftWarningRetentionMode == StorageRetentionMode.Count &&
+                loaded.WarningSnapshots.SoftWarningRetainCountPerChannelCode == 30 &&
                 loaded.WarningSnapshots.SoftWarningQuotaMb == 0 &&
                 loaded.WarningSnapshots.DiskFreeWarningMb == 10240,
                 "AlarmConfig.xml 未加载连续阈值或预警快照安全默认值");
+
+            var directory = CreateTempDir();
+            try
+            {
+                var target = Path.Combine(directory, "AlarmConfig.xml");
+                File.WriteAllText(
+                    target,
+                    File.ReadAllText(source).Replace(
+                        "SoftWarningRetentionMode=\"Count\"",
+                        "SoftWarningRetentionMode=\"1\""));
+                var logger = new CollectingLogger();
+                var invalid = AlarmConfigLoader.Load(target, logger);
+                Assert(
+                    invalid.WarningSnapshots.SoftWarningRetentionMode == StorageRetentionMode.Count &&
+                    logger.Warnings.Count >= 1,
+                    "AlarmConfig数字模式未按非法值回退并告警");
+            }
+            finally
+            {
+                Directory.Delete(directory, true);
+            }
+        }
+
+        private static void WarningSnapshotRetentionModes()
+        {
+            var directory = CreateTempDir();
+            try
+            {
+                for (var i = 0; i < 31; i++)
+                {
+                    var timeToken = (120000000 + i).ToString("D9", CultureInfo.InvariantCulture);
+                    var eventDirectory = Path.Combine(
+                        directory,
+                        $"20260807_{timeToken}-Cycle{i + 1:D6}-Streak1of3");
+                    Directory.CreateDirectory(eventDirectory);
+                    File.WriteAllText(Path.Combine(eventDirectory, "cycle.csv"), "csv");
+                    File.WriteAllText(Path.Combine(eventDirectory, "cycle.bin"), "bin");
+                    File.WriteAllText(Path.Combine(eventDirectory, "warning-metadata.json"), "{}");
+                    File.WriteAllText(Path.Combine(eventDirectory, "checksums.sha256"), "hash");
+                }
+                var unknown = Path.Combine(directory, "unknown-event");
+                Directory.CreateDirectory(unknown);
+                EpbManager.EnforceSoftWarningCountRetention(
+                    directory,
+                    new WarningSnapshotConfig
+                    {
+                        SoftWarningRetentionMode = StorageRetentionMode.Count,
+                        SoftWarningRetainCountPerChannelCode = 30,
+                        SaveCsv = true,
+                        SaveBin = true
+                    });
+                Assert(
+                    Directory.GetDirectories(directory)
+                        .Count(path => Path.GetFileName(path) != "unknown-event") == 30,
+                    "第31次软预警后未只保留最新30次");
+                Assert(Directory.Exists(unknown), "软预警未知目录被错误删除");
+
+                EpbManager.EnforceSoftWarningCountRetention(
+                    directory,
+                    new WarningSnapshotConfig
+                    {
+                        SoftWarningRetentionMode = StorageRetentionMode.Unlimited,
+                        SoftWarningRetainCountPerChannelCode = 1
+                    });
+                Assert(Directory.GetDirectories(directory).Length == 31,
+                    "软预警Unlimited模式错误删除目录");
+            }
+            finally
+            {
+                Directory.Delete(directory, true);
+            }
         }
 
         private static void GenericFaultConfirmationUsesAttemptCycles()
@@ -4029,8 +4188,12 @@ namespace AdaptiveControlTests
         private sealed class CollectingLogger : Config.IAppLogger
         {
             public readonly List<string> Errors = new List<string>();
+            public readonly List<string> Warnings = new List<string>();
             public void Info(string message, string category = null) { }
-            public void Warn(string message, string category = null) { }
+            public void Warn(string message, string category = null)
+            {
+                Warnings.Add(message ?? string.Empty);
+            }
             public void Error(string message, string category = null, Exception ex = null)
             {
                 Errors.Add(message ?? string.Empty);

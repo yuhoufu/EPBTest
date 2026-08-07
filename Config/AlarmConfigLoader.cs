@@ -7,7 +7,7 @@ namespace Config
 {
     public static class AlarmConfigLoader
     {
-        public static AlarmConfig Load(string path)
+        public static AlarmConfig Load(string path, IAppLogger log = null)
         {
             var doc = new XmlDocument();
             doc.Load(path);
@@ -93,6 +93,43 @@ namespace Config
                 cfg.WarningSnapshots.HardAlarmLastNCycles = Math.Max(
                     1,
                     GetIntAttr(warningNode, "HardAlarmLastNCycles", cfg.WarningSnapshots.HardAlarmLastNCycles));
+                cfg.WarningSnapshots.HardAlarmIncludeSameElectricalGroup = GetBoolAttr(
+                    warningNode,
+                    "HardAlarmIncludeSameElectricalGroup",
+                    cfg.WarningSnapshots.HardAlarmIncludeSameElectricalGroup);
+                cfg.WarningSnapshots.HardAlarmSameGroupLastNCycles = ParseBoundedIntAttr(
+                    warningNode,
+                    "HardAlarmSameGroupLastNCycles",
+                    10,
+                    1,
+                    1000,
+                    path,
+                    log);
+                var warningModeText = warningNode.HasAttribute("SoftWarningRetentionMode")
+                    ? warningNode.GetAttribute("SoftWarningRetentionMode")
+                    : StorageRetentionMode.Count.ToString();
+                StorageRetentionMode warningRetentionMode;
+                if (string.Equals(warningModeText, "Unlimited", StringComparison.OrdinalIgnoreCase))
+                    warningRetentionMode = StorageRetentionMode.Unlimited;
+                else if (string.Equals(warningModeText, "Count", StringComparison.OrdinalIgnoreCase))
+                    warningRetentionMode = StorageRetentionMode.Count;
+                else
+                {
+                    warningRetentionMode = StorageRetentionMode.Count;
+                    log?.Warn(
+                        "SoftWarningRetentionMode 非法，已回退 Count。" +
+                        $"Value={warningModeText} Path={path}",
+                        "配置");
+                }
+                cfg.WarningSnapshots.SoftWarningRetentionMode = warningRetentionMode;
+                cfg.WarningSnapshots.SoftWarningRetainCountPerChannelCode = ParseBoundedIntAttr(
+                    warningNode,
+                    "SoftWarningRetainCountPerChannelCode",
+                    30,
+                    1,
+                    100000,
+                    path,
+                    log);
                 cfg.WarningSnapshots.SoftWarningQuotaMb = Math.Max(
                     0,
                     GetLongAttr(warningNode, "SoftWarningQuotaMb", cfg.WarningSnapshots.SoftWarningQuotaMb));
@@ -100,6 +137,16 @@ namespace Config
                     0,
                     GetLongAttr(warningNode, "DiskFreeWarningMb", cfg.WarningSnapshots.DiskFreeWarningMb));
             }
+
+            log?.Info(
+                "报警快照保留策略已生效：" +
+                $"AlarmCycles={cfg.WarningSnapshots.HardAlarmLastNCycles} " +
+                $"IncludeSameGroup={cfg.WarningSnapshots.HardAlarmIncludeSameElectricalGroup} " +
+                $"SameGroupCycles={cfg.WarningSnapshots.HardAlarmSameGroupLastNCycles} " +
+                $"WarningMode={cfg.WarningSnapshots.SoftWarningRetentionMode} " +
+                $"WarningCount={cfg.WarningSnapshots.SoftWarningRetainCountPerChannelCode} " +
+                $"Path={path}",
+                "配置");
 
             // Mappings
             var epbNodes = doc.SelectNodes("//AlarmConfig/Mappings/Epb");
@@ -173,6 +220,26 @@ namespace Config
 
         private static int GetIntAttr(XmlElement e, string name, int def)
             => int.TryParse(GetAttr(e, name, def.ToString(CultureInfo.InvariantCulture)), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v) ? v : def;
+
+        private static int ParseBoundedIntAttr(
+            XmlElement element,
+            string name,
+            int defaultValue,
+            int minimum,
+            int maximum,
+            string path,
+            IAppLogger log)
+        {
+            if (!element.HasAttribute(name)) return defaultValue;
+            var raw = element.GetAttribute(name);
+            if (int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) &&
+                value >= minimum && value <= maximum)
+                return value;
+            log?.Warn(
+                $"{name} 非法，已回退 {defaultValue}。Value={raw} Path={path}",
+                "配置");
+            return defaultValue;
+        }
 
         private static long GetLongAttr(XmlElement e, string name, long def)
             => long.TryParse(GetAttr(e, name, def.ToString(CultureInfo.InvariantCulture)), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v) ? v : def;

@@ -140,6 +140,9 @@ public sealed class TestConfig
     /// </summary>
     public EpbCycleRunnerConfig EpbCycleRunner { get; set; } = new();
 
+    /// <summary>项目数据副本保留策略；旧项目缺少节点时使用安全默认值。</summary>
+    public DataStorageRetentionConfig DataStorageRetention { get; set; } = new();
+
 
     // ======= 新增：EPB 试验记录集合 =======
     /// <summary>
@@ -381,6 +384,54 @@ public static class ConfigLoader
         cfg.Owner = GetString(doc, "//TestConfig/Basic/Owner", "None");
         cfg.Description = GetString(doc, "//TestConfig/Basic/Description", "None");
         cfg.StoreDir = GetString(doc, "//TestConfig/Basic/StoreDir", "D:\\EPB_Data");
+
+        var latestRetention = new LatestSnapshotRetentionConfig();
+        var latestRetentionNode = doc.SelectSingleNode(
+            "//TestConfig/DataStorageRetention/Latest") as XmlElement;
+        if (latestRetentionNode != null)
+        {
+            if (latestRetentionNode.HasAttribute("RetentionMode"))
+            {
+                var modeText = latestRetentionNode.GetAttribute("RetentionMode");
+                if (string.Equals(modeText, "Unlimited", StringComparison.OrdinalIgnoreCase))
+                    latestRetention.RetentionMode = StorageRetentionMode.Unlimited;
+                else if (string.Equals(modeText, "Count", StringComparison.OrdinalIgnoreCase))
+                    latestRetention.RetentionMode = StorageRetentionMode.Count;
+                else
+                {
+                    latestRetention.RetentionMode = StorageRetentionMode.Count;
+                    log?.Warn(
+                        $"Latest RetentionMode 非法，已回退 Count。Value={modeText} Path={path}",
+                        "配置");
+                }
+            }
+
+            if (latestRetentionNode.HasAttribute("RetainStopPackagesPerChannel"))
+            {
+                var countText = latestRetentionNode.GetAttribute("RetainStopPackagesPerChannel");
+                if (!int.TryParse(
+                        countText,
+                        NumberStyles.Integer,
+                        CultureInfo.InvariantCulture,
+                        out var count) ||
+                    count < 1 ||
+                    count > LatestSnapshotRetentionConfig.MaximumRetainCount)
+                {
+                    count = LatestSnapshotRetentionConfig.DefaultRetainCount;
+                    log?.Warn(
+                        "Latest RetainStopPackagesPerChannel 非法，已回退 10。" +
+                        $"Value={countText} Path={path}",
+                        "配置");
+                }
+                latestRetention.RetainStopPackagesPerChannel = count;
+            }
+        }
+        cfg.DataStorageRetention = new DataStorageRetentionConfig { Latest = latestRetention };
+        log?.Info(
+            "Latest 保留策略已生效：" +
+            $"Mode={latestRetention.RetentionMode} " +
+            $"Count={latestRetention.RetainStopPackagesPerChannel} Path={path}",
+            "配置");
 
 
         var policyText = GetString(doc, "//TestConfig/Timer/OverrunPolicy", "RunToCompletionSkipMissed");
@@ -932,7 +983,28 @@ public static class ConfigLoader
         root.AppendChild(epbNode);
 
         // ===============================
-        // 7) Save to file with temp
+        // 7) 保存项目数据副本保留策略
+        // ===============================
+        var retentionNode = root.SelectSingleNode("DataStorageRetention");
+        if (retentionNode != null) root.RemoveChild(retentionNode);
+        var retentionElement = doc.CreateElement("DataStorageRetention");
+        var latestElement = doc.CreateElement("Latest");
+        var latestRetention = cfg.DataStorageRetention?.Latest ?? new LatestSnapshotRetentionConfig();
+        var retainCount = latestRetention.RetainStopPackagesPerChannel;
+        if (retainCount < 1 || retainCount > LatestSnapshotRetentionConfig.MaximumRetainCount)
+            retainCount = LatestSnapshotRetentionConfig.DefaultRetainCount;
+        var retentionMode = latestRetention.RetentionMode == StorageRetentionMode.Unlimited
+            ? StorageRetentionMode.Unlimited
+            : StorageRetentionMode.Count;
+        latestElement.SetAttribute("RetentionMode", retentionMode.ToString());
+        latestElement.SetAttribute(
+            "RetainStopPackagesPerChannel",
+            retainCount.ToString(CultureInfo.InvariantCulture));
+        retentionElement.AppendChild(latestElement);
+        root.AppendChild(retentionElement);
+
+        // ===============================
+        // 8) Save to file with temp
         // ===============================
         var tmp = path + ".tmp";
         doc.Save(tmp);

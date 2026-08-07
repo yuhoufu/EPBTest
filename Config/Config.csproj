@@ -51,6 +51,7 @@
     <Compile Include="AiConfigDetailRecord.cs" />
     <Compile Include="CalibrationConfigStore.cs" />
     <Compile Include="CalibrationMath.cs" />
+    <Compile Include="DataStorageRetentionConfig.cs" />
     <Compile Include="AlarmConfigLoader.cs" />
     <Compile Include="AlarmConfigModels.cs" />
     <Compile Include="EpbAdaptiveProfiles.cs" />
@@ -61,6 +62,8 @@
     <Compile Include="IAppLogger.cs" />
     <Compile Include="LastProjectSelectionStore.cs" />
     <Compile Include="ProjectLogStore.cs" />
+    <Compile Include="ProjectRestartCleanupService.cs" />
+    <Compile Include="UiInfoLogStore.cs" />
     <Compile Include="Models\EpbCycleRunnerConfig.cs" />
     <Compile Include="PowerSupplyConfig.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />

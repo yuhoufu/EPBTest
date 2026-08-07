@@ -17,7 +17,11 @@ namespace Config
     public sealed class ProjectLogOptions
     {
         public long MaxFileBytes { get; set; } = 50L * 1024L * 1024L;
+        /// <summary>兼容旧调用的通用保留期；新增日志类型未单独配置时使用。</summary>
         public int RetentionDays { get; set; } = 30;
+        public int RunRetentionDays { get; set; } = 7;
+        public int WarningRetentionDays { get; set; } = 30;
+        public int ErrorRetentionDays { get; set; } = 30;
         public int MemoryBufferCapacity { get; set; } = 10000;
         public Func<DateTime> LocalNowProvider { get; set; } = () => DateTime.Now;
         public Func<string, Stream> AppendStreamFactory { get; set; } =
@@ -57,7 +61,7 @@ namespace Config
         private DateTime _lastRetentionDate = DateTime.MinValue;
         private Exception _lastFailure;
         private static readonly Regex ArchiveNamePattern = new Regex(
-            @"^(run|warning|error)\.\d{8}\.\d{3}\.log$",
+            @"^(?<stem>run|warning|error)\.\d{8}\.\d{3}\.log$",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
         public ProjectLogStore(ProjectLogOptions options = null)
@@ -65,6 +69,9 @@ namespace Config
             _options = options ?? new ProjectLogOptions();
             if (_options.MaxFileBytes <= 0) _options.MaxFileBytes = 50L * 1024L * 1024L;
             if (_options.RetentionDays < 0) _options.RetentionDays = 30;
+            if (_options.RunRetentionDays < 0) _options.RunRetentionDays = 7;
+            if (_options.WarningRetentionDays < 0) _options.WarningRetentionDays = 30;
+            if (_options.ErrorRetentionDays < 0) _options.ErrorRetentionDays = 30;
             if (_options.MemoryBufferCapacity <= 0) _options.MemoryBufferCapacity = 10000;
             if (_options.LocalNowProvider == null) _options.LocalNowProvider = () => DateTime.Now;
             if (_options.AppendStreamFactory == null)
@@ -334,17 +341,29 @@ namespace Config
             _lastRetentionDate = now.Date;
             if (!Directory.Exists(_logDirectory)) return;
 
-            var cutoff = now.AddDays(-_options.RetentionDays);
             foreach (var path in Directory.EnumerateFiles(_logDirectory, "*.log", SearchOption.TopDirectoryOnly))
             {
                 var name = Path.GetFileName(path);
-                if (!ArchiveNamePattern.IsMatch(name)) continue;
+                var match = ArchiveNamePattern.Match(name);
+                if (!match.Success) continue;
+                var cutoff = now.AddDays(-GetRetentionDays(match.Groups["stem"].Value));
                 if (File.GetLastWriteTime(path) < cutoff)
                 {
                     try { File.Delete(path); }
                     catch { }
                 }
             }
+        }
+
+        private int GetRetentionDays(string stem)
+        {
+            if (string.Equals(stem, "run", StringComparison.OrdinalIgnoreCase))
+                return _options.RunRetentionDays;
+            if (string.Equals(stem, "warning", StringComparison.OrdinalIgnoreCase))
+                return _options.WarningRetentionDays;
+            if (string.Equals(stem, "error", StringComparison.OrdinalIgnoreCase))
+                return _options.ErrorRetentionDays;
+            return _options.RetentionDays;
         }
 
         private void Remember(ProjectLogMemoryRecord record)

@@ -2027,11 +2027,15 @@ namespace MtEmbTest
                 {
                     var dr = MessageBox.Show(
                         $"当前存储路径下已存在名为“{newName}”的项目。\r\n\r\n" +
-                        "是否切换到该项目？当前界面未保存的修改将丢失。",
+                        "请选择：\r\n" +
+                        "“是”＝继续旧进度；\r\n" +
+                        "“否”＝清空旧进度和运行数据，重新学习后开始；\r\n" +
+                        "“取消”＝不切换。\r\n\r\n" +
+                        "当前界面未保存的修改将丢失。",
                         @"项目已存在",
-                        MessageBoxButtons.YesNo,
-                        MessageBoxIcon.Question);
-                    if (dr != DialogResult.Yes)
+                        MessageBoxButtons.YesNoCancel,
+                        MessageBoxIcon.Warning);
+                    if (dr == DialogResult.Cancel)
                     {
                         RestorePreviousTestName();
                         return;
@@ -2039,7 +2043,58 @@ namespace MtEmbTest
 
                     candidate = await Task.Run(() =>
                         ConfigLoader.LoadProjectTestConfig(newStoreDir, newName, logger));
-                    successMessage = @"已切换到已有项目配置。";
+                    if (dr == DialogResult.No)
+                    {
+                        var monitorOpened = Application.OpenForms
+                            .OfType<MTEmbTest.FrmEpbMainMonitor>()
+                            .Any();
+                        if (monitorOpened)
+                        {
+                            MessageBox.Show(
+                                @"EPB 主监控界面仍处于打开状态，不能清空项目。请先停止试验并关闭主监控界面。",
+                                @"禁止运行中清空",
+                                MessageBoxButtons.OK,
+                                MessageBoxIcon.Warning);
+                            RestorePreviousTestName();
+                            return;
+                        }
+
+                        var confirmClear = MessageBox.Show(
+                            $"即将永久清空项目“{newName}”的旧运行数据、索引和自适应模型。\r\n" +
+                            "项目参数、通道选择和目标次数会保留；旧日志将先轮转。\r\n" +
+                            "下一次开始将重新执行完整学习。\r\n\r\n" +
+                            "该操作不可恢复，请确认已完成项目级外部备份。是否继续？",
+                            @"确认清空并重新学习",
+                            MessageBoxButtons.YesNo,
+                            MessageBoxIcon.Warning,
+                            MessageBoxDefaultButton.Button2);
+                        if (confirmClear != DialogResult.Yes)
+                        {
+                            RestorePreviousTestName();
+                            return;
+                        }
+
+                        var resetResult = await Task.Run(() =>
+                        {
+                            ProjectLogHub.Shutdown();
+                            return ProjectRestartCleanupService.ResetForFreshLearning(
+                                targetRoot,
+                                candidate,
+                                logger,
+                                () => UnattendedRunCheckpointStore.ClearForProject(
+                                    newStoreDir,
+                                    newName,
+                                    "ProjectProgressCleared"));
+                        });
+                        successMessage =
+                            $"已清空旧进度和运行数据，将重新学习。隔离数据：" +
+                            $"{resetResult.BytesIsolated / 1024d / 1024d:F1} MiB。\r\n" +
+                            $"审计日志：{resetResult.AuditPath}";
+                    }
+                    else
+                    {
+                        successMessage = @"已切换到已有项目配置并继续旧进度。";
+                    }
                 }
                 else
                 {
@@ -2152,14 +2207,14 @@ namespace MtEmbTest
         /// <list type="number">
         ///     <item>1. 若 EPB 主监控界面仍打开，则提示用户先关闭该界面；</item>
         ///     <item>2. 把当前界面参数写回到 <see cref="_cfg.Test"/>；</item>
-        ///     <item>3. 将 1..12 通道的 EPB 运行进度全部清零，仅保留目标次数 TotalCount；</item>
-        ///     <item>4. 把重置后的配置保存到“项目 Config\TestConfig.xml”；</item>
+        ///     <item>3. 隔离并删除旧运行数据、索引和自适应模型；</item>
+        ///     <item>4. 将 1..12 通道进度清零并原子保存项目配置；</item>
         ///     <item>5. 调用 <see cref="ConfigLoader.UpdateDefaultTestFromProject"/>，
         ///         同步更新“软件默认 Config\TestConfig.xml”（只同步 TotalCount，默认配置保持为干净模板）；</item>
-        ///     <item>6. 删除当前项目根目录下的 index.db（StoreDir\TestName\index.db）。</item>
+        ///     <item>6. 轮转旧日志、写审计日志并清除匹配的无人值守恢复检查点。</item>
         /// </list>
         /// </summary>
-        private void uiButtonResetEpbRecord_Click(object sender, EventArgs e)
+        private async void uiButtonResetEpbRecord_Click(object sender, EventArgs e)
         {
             if (System.Threading.Interlocked.Exchange(ref _busy, 1) == 1)
                 return;
@@ -2199,13 +2254,17 @@ namespace MtEmbTest
 
                 // ===== 0.5) 用户确认 =====
                 var dr = MessageBox.Show(
-                    $"确认要重置以下当前项目的所有 EPB 运行进度？{Environment.NewLine}" +
+                    $"确认要清空以下当前项目的所有 EPB 运行进度和旧运行数据？{Environment.NewLine}" +
                     $"项目：{currentTestName}{Environment.NewLine}" +
                     $"路径：{currentProjectRoot}{Environment.NewLine}{Environment.NewLine}" +
-                    @"此操作不会修改各通道的目标次数（TotalCount），" + Environment.NewLine +
-                    @"但会把所有通道状态重置为“未启动”，并删除该项目的 index.db。",
-                    @"确认重置",
-                    MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+                    @"将保留项目参数、通道选择和目标次数（TotalCount），" + Environment.NewLine +
+                    @"但会删除旧快照、索引和自适应模型；旧日志先轮转，下一次开始重新学习。" +
+                    Environment.NewLine + Environment.NewLine +
+                    @"操作不可恢复，请确认已经完成项目级外部备份。",
+                    @"确认清空并重新学习",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning,
+                    MessageBoxDefaultButton.Button2);
 
                 if (dr != DialogResult.Yes)
                     return;
@@ -2226,64 +2285,29 @@ namespace MtEmbTest
                 // 液压压力设置：EPB1-6 和 7-12 的目标压力
                 PushHydraulicSettingsToConfig();
 
-                // ===== 2) 清零所有 EPB 的运行进度，仅保留 TotalCount =====
-                // 这里直接复用已经写好的工具方法，保证和其它地方逻辑一致。
-                ResetEpbRecordsRuntimeStateKeepTotalCount();
-
-                // ===== 3) 保存到“项目专用”的 Config\TestConfig.xml（包含真实目标次数）=====
-
-                // 计算当前项目 TestConfig.xml 路径：
-                //   {StoreDir}\{TestName}\Config\TestConfig.xml
-                var projectTestPath = currentProjectConfig;
-                if (!string.IsNullOrEmpty(projectTestPath))
+                EnsureProjectTestConfigExists();
+                var resetResult = await Task.Run(() =>
                 {
-                    // 如有必要，先保证项目 Config 目录和 TestConfig.xml 文件存在
-                    EnsureProjectTestConfigExists();
+                    ProjectLogHub.Shutdown();
+                    return ProjectRestartCleanupService.ResetForFreshLearning(
+                        currentProjectRoot,
+                        _cfg.Test,
+                        logger,
+                        () => UnattendedRunCheckpointStore.ClearForProject(
+                            currentStoreDir,
+                            currentTestName,
+                            "ProjectProgressCleared"));
+                });
 
-                    // 覆盖写入当前项目配置（此时 EpbRecords 的状态已经重置）
-                    ConfigLoader.SaveTest(projectTestPath, _cfg.Test);
-                }
-
-                // ===== 3.5) 更新界面的EPB状态和进度 =====
                 RefreshEpbProgressViewsFromConfig();
-
-
-                // ===== 4) 同步更新“软件默认 Config\TestConfig.xml”（仅同步 TotalCount，进度清零）=====
-                // 这样默认配置始终是“干净模板”，只记录最后一次项目的目标次数和基本信息。
                 ConfigLoader.UpdateDefaultTestFromProject(_cfg.Test);
 
-                // ===== 5) 删除当前项目根目录下的 index.db（如果存在） =====
-                // 项目根目录约定：StoreDir\TestName
-                var storeDir = currentStoreDir;
-                var testName = currentTestName;
-
-                if (!string.IsNullOrEmpty(storeDir) && !string.IsNullOrEmpty(testName))
-                {
-                    var projectRoot = Path.Combine(storeDir, testName);
-                    var indexDbPath = Path.Combine(projectRoot, "index.db");
-
-                    if (File.Exists(indexDbPath))
-                    {
-                        try
-                        {
-                            File.Delete(indexDbPath);
-                        }
-                        catch (Exception exDel)
-                        {
-                            // 删除失败不影响配置重置，只做提示
-                            MessageBox.Show(
-                                @"已重置 EPB 进度，并保存项目/默认配置；" +
-                                @"但删除项目 index.db 失败：\r\n" + exDel.Message,
-                                @"警告", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                            return;
-                        }
-                    }
-                }
-
                 MessageBox.Show(
-                    @"已重置所有 EPB 进度，" +
-                    @"并更新当前项目配置与默认配置（仅保留目标次数），" +
-                    @"项目 index.db 也已清理。",
+                    @"已清空所有 EPB 进度和旧运行数据，下一次开始将重新学习。" +
+                    Environment.NewLine +
+                    $"隔离数据：{resetResult.BytesIsolated / 1024d / 1024d:F1} MiB" +
+                    Environment.NewLine +
+                    $"审计日志：{resetResult.AuditPath}",
                     @"提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (Exception ex)

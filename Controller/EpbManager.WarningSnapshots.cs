@@ -7,6 +7,7 @@ using System.Linq;
 using System.Security.Cryptography;
 using System.IO.Compression;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Config;
@@ -25,11 +26,16 @@ namespace Controller
         private readonly ConcurrentDictionary<string, WarningSnapshotRequest> _pendingWarningSnapshots = new();
         private readonly ConcurrentDictionary<string, byte> _warningSnapshotJobs = new();
         private readonly ConcurrentDictionary<string, ConcurrentQueue<WarningSnapshotLink>> _warningChains = new();
+        private readonly ConcurrentDictionary<string, object> _warningSnapshotCategoryGates =
+            new(StringComparer.OrdinalIgnoreCase);
         private readonly ConcurrentDictionary<Guid, string> _daqIncidentDirectories = new();
         private readonly ConcurrentDictionary<int, int> _formalPersistenceRecoveryAttempts = new();
         private readonly ConcurrentDictionary<int, int> _formalControlRecoveryAttempts = new();
         private readonly SemaphoreSlim _daqIncidentSnapshotGate = new(1, 1);
         private int _warningSnapshotFreeSpaceWarningActive;
+        private static readonly Regex WarningEventDirectoryPattern = new(
+            @"^\d{8}_\d{9}-Cycle-?\d+-Streak\d+of\d+$",
+            RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
         /// <summary>
         /// 软件自愈只能在本通道输出已可靠关闭后继续。若高优先级关闭命令失败，
@@ -740,6 +746,12 @@ namespace Controller
                 var cfg = AlarmConfig?.WarningSnapshots ?? new WarningSnapshotConfig();
                 var warning = request.Warning;
                 var directory = GetWarningSnapshotDirectory(request, cfg);
+                var categoryDirectory = Path.GetDirectoryName(directory);
+                var categoryGate = _warningSnapshotCategoryGates.GetOrAdd(
+                    GetWarningChainKey(request.Channel, warning.NormalizedCode),
+                    _ => new object());
+                lock (categoryGate)
+                {
                 Directory.CreateDirectory(directory);
                 PublishWarningSnapshotStorageStatus();
 
@@ -788,8 +800,22 @@ namespace Controller
                     new UTF8Encoding(false));
 
                 _log.Info($"软预警完整单圈快照已保存：{directory}", "落盘");
+                try
+                {
+                    EnforceSoftWarningCountRetention(
+                        categoryDirectory,
+                        cfg,
+                        message => _log.Warn(message, "落盘"));
+                }
+                catch (Exception ex)
+                {
+                    _log.Warn(
+                        $"软预警计数清理失败但新快照已保留：Directory={categoryDirectory} Error={ex.Message}",
+                        "落盘");
+                }
                 EnforceSoftWarningQuota(request.TestRunId, cfg);
                 PublishWarningSnapshotStorageStatus();
+                }
             }
             catch (Exception ex)
             {
@@ -797,6 +823,63 @@ namespace Controller
                     $"WarningSnapshotExportFailed Key={request.IdempotencyKey} Error={ex.Message}",
                     ex);
             }
+        }
+
+        public static void EnforceSoftWarningCountRetention(
+            string categoryDirectory,
+            WarningSnapshotConfig cfg,
+            Action<string> warningSink = null)
+        {
+            if (cfg == null ||
+                cfg.SoftWarningRetentionMode == StorageRetentionMode.Unlimited ||
+                string.IsNullOrWhiteSpace(categoryDirectory) ||
+                !Directory.Exists(categoryDirectory))
+                return;
+
+            var keep = cfg.SoftWarningRetainCountPerChannelCode;
+            if (keep < 1) keep = 30;
+            var valid = new System.Collections.Generic.List<DirectoryInfo>();
+            foreach (var directory in new DirectoryInfo(categoryDirectory)
+                         .EnumerateDirectories("*", SearchOption.TopDirectoryOnly))
+            {
+                if (string.Equals(directory.Name, "Archive", StringComparison.OrdinalIgnoreCase) ||
+                    directory.Name.StartsWith(".", StringComparison.Ordinal) ||
+                    directory.Name.IndexOf(".tmp-", StringComparison.OrdinalIgnoreCase) >= 0)
+                    continue;
+                if (!WarningEventDirectoryPattern.IsMatch(directory.Name) ||
+                    !IsCompleteWarningEvent(directory.FullName, cfg))
+                {
+                    warningSink?.Invoke($"软预警计数清理跳过未知或不完整目录：{directory.FullName}");
+                    continue;
+                }
+                valid.Add(directory);
+            }
+
+            foreach (var directory in valid
+                         .OrderByDescending(x => x.Name, StringComparer.OrdinalIgnoreCase)
+                         .ThenByDescending(x => x.LastWriteTimeUtc)
+                         .Skip(keep)
+                         .Reverse())
+            {
+                try { directory.Delete(true); }
+                catch (Exception ex)
+                {
+                    warningSink?.Invoke(
+                        $"软预警旧事件删除失败：{directory.FullName} Error={ex.Message}");
+                }
+            }
+        }
+
+        private static bool IsCompleteWarningEvent(string directory, WarningSnapshotConfig cfg)
+        {
+            if (!File.Exists(Path.Combine(directory, "warning-metadata.json")) ||
+                !File.Exists(Path.Combine(directory, "checksums.sha256")))
+                return false;
+            if (cfg.SaveCsv && !Directory.EnumerateFiles(directory, "*.csv", SearchOption.TopDirectoryOnly).Any())
+                return false;
+            if (cfg.SaveBin && !Directory.EnumerateFiles(directory, "*.bin", SearchOption.TopDirectoryOnly).Any())
+                return false;
+            return true;
         }
 
         private void QueueRollingHistoricalSnapshot(int channel, int cycleNumber)
@@ -926,7 +1009,12 @@ namespace Controller
             int alarmCycle,
             int requestedCycles,
             string reason,
-            int[] affectedChannels)
+            int[] affectedChannels,
+            int[] requestedCycleEvidenceChannels,
+            int[] exportedCycleEvidenceChannels,
+            int[] skippedCycleEvidenceChannels,
+            bool includeSameElectricalGroup,
+            int sameGroupRequestedCycles)
         {
             var files = Directory.EnumerateFiles(snapshotDirectory, "*.*", SearchOption.AllDirectories)
                 .Where(path => path.EndsWith(".csv", StringComparison.OrdinalIgnoreCase) ||
@@ -946,8 +1034,17 @@ namespace Controller
                 .Append("\n  \"Reason\": \"").Append(JsonEscape(reason)).Append("\",")
                 .Append("\n  \"AffectedChannels\": [")
                 .Append(string.Join(",", affectedChannels ?? new[] { alarmChannel })).Append("],")
-                .Append("\n  \"GroupCoverage\": \"Primary alarm cycle is sealed for AlarmChannel; ")
-                .Append("sibling channels are exported as recent/running auxiliary evidence\",")
+                .Append("\n  \"RequestedCycleEvidenceChannels\": [")
+                .Append(string.Join(",", requestedCycleEvidenceChannels ?? new[] { alarmChannel })).Append("],")
+                .Append("\n  \"ExportedCycleEvidenceChannels\": [")
+                .Append(string.Join(",", exportedCycleEvidenceChannels ?? Array.Empty<int>())).Append("],")
+                .Append("\n  \"SkippedCycleEvidenceChannels\": [")
+                .Append(string.Join(",", skippedCycleEvidenceChannels ?? Array.Empty<int>())).Append("],")
+                .Append("\n  \"IncludeSameElectricalGroup\": ")
+                .Append(includeSameElectricalGroup ? "true" : "false").Append(',')
+                .Append("\n  \"SameGroupRequestedCycles\": ").Append(sameGroupRequestedCycles).Append(',')
+                .Append("\n  \"GroupCoverage\": \"Cycle evidence is limited to the alarm channel")
+                .Append(includeSameElectricalGroup ? " and its electrical-group siblings\"," : "\",")
                 .Append("\n  \"RequestedCycles\": ").Append(requestedCycles).Append(',')
                 .Append("\n  \"ExportedCycles\": ").Append(alarmCycles).Append(',')
                 .Append("\n  \"ShortfallReason\": \"")

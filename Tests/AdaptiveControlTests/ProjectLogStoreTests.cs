@@ -16,6 +16,9 @@ namespace AdaptiveControlTests
             Run("项目日志达到容量阈值轮转", SizeRotation, ref passed);
             Run("项目日志跨日轮转", DailyRotation, ref passed);
             Run("项目日志仅清理30天前匹配归档", RetentionCleanupIsScoped, ref passed);
+            Run("run保留7天而告警错误保留30天", RetentionCleanupUsesPerLogPolicy, ref passed);
+            Run("ui-info按日大小轮转并仅读取尾部", UiInfoRotationAndTailRead, ref passed);
+            Run("清空项目隔离数据轮转日志并删除学习模型", ProjectRestartCleanupIsIsolated, ref passed);
             Run("项目日志显式Flush", ExplicitFlush, ref passed);
             Run("项目日志写盘失败后降级并重试", WriteFailureRetriesInOrder, ref passed);
             Run("项目日志轮转失败后降级并重试", RotationFailureRetriesInOrder, ref passed);
@@ -168,6 +171,146 @@ namespace AdaptiveControlTests
             {
                 DeleteTempDir(dir);
             }
+        }
+
+        private static void RetentionCleanupUsesPerLogPolicy()
+        {
+            var dir = CreateTempDir();
+            var logDir = Path.Combine(dir, "log");
+            Directory.CreateDirectory(logDir);
+            var run = Path.Combine(logDir, "run.20260722.001.log");
+            var warning = Path.Combine(logDir, "warning.20260722.001.log");
+            var error = Path.Combine(logDir, "error.20260722.001.log");
+            foreach (var path in new[] { run, warning, error })
+            {
+                File.WriteAllText(path, "old");
+                File.SetLastWriteTime(path, new DateTime(2026, 7, 22));
+            }
+            try
+            {
+                using (var store = new ProjectLogStore(new ProjectLogOptions
+                       {
+                           RunRetentionDays = 7,
+                           WarningRetentionDays = 30,
+                           ErrorRetentionDays = 30,
+                           LocalNowProvider = () => new DateTime(2026, 7, 30, 12, 0, 0)
+                       }))
+                    Assert(store.Configure(dir), "分级日志保留配置失败");
+                Assert(!File.Exists(run), "8天前run归档未按7天策略清理");
+                Assert(File.Exists(warning), "8天前warning归档被30天策略误删");
+                Assert(File.Exists(error), "8天前error归档被30天策略误删");
+            }
+            finally
+            {
+                DeleteTempDir(dir);
+            }
+        }
+
+        private static void UiInfoRotationAndTailRead()
+        {
+            var dir = CreateTempDir();
+            var now = new DateTime(2026, 7, 30, 23, 59, 59);
+            try
+            {
+                using (var store = new UiInfoLogStore(new UiInfoLogOptions
+                       {
+                           MaxFileBytes = 100,
+                           RetentionDays = 30,
+                           MaximumRecentLines = 5,
+                           LocalNowProvider = () => now
+                       }))
+                {
+                    Assert(store.Initialize(dir), "ui-info初始化失败");
+                    for (var i = 1; i <= 6; i++)
+                        store.AppendAsync("line-" + i + "-" + new string('x', 18)).GetAwaiter().GetResult();
+                    now = new DateTime(2026, 7, 31, 0, 0, 1);
+                    store.AppendAsync("next-day").GetAwaiter().GetResult();
+                    var recent = store.ReadRecentLines(5);
+                    Assert(recent.Count == 5 && recent.Last() == "next-day",
+                        "ui-info未从活动文件和归档合并读取最近5行");
+                }
+                var logDir = Path.Combine(dir, "log");
+                Assert(Directory.GetFiles(logDir, "ui-info.20260730.*.log").Length >= 2,
+                    "ui-info未按大小和跨日产生归档");
+                Assert(File.Exists(Path.Combine(logDir, "ui-info.log")), "ui-info活动文件缺失");
+            }
+            finally
+            {
+                DeleteTempDir(dir);
+            }
+        }
+
+        private static void ProjectRestartCleanupIsIsolated()
+        {
+            var root = CreateTempDir();
+            try
+            {
+                var configDir = Path.Combine(root, "Config");
+                var logDir = Path.Combine(root, "log");
+                Directory.CreateDirectory(configDir);
+                Directory.CreateDirectory(logDir);
+                var configPath = Path.Combine(configDir, "TestConfig.xml");
+                File.WriteAllText(
+                    configPath,
+                    "<TestConfig><Basic><TestName>reset</TestName><TestTarget>1</TestTarget>" +
+                    "<IsSameCycleForAllEpb>true</IsSameCycleForAllEpb><TestCycle>15</TestCycle>" +
+                    "<LearnCycle>5</LearnCycle><StoreDir>" + EscapeXml(Path.GetDirectoryName(root)) +
+                    "</StoreDir><Owner>x</Owner><Description>x</Description></Basic></TestConfig>");
+                var config = ConfigLoader.LoadTest(configPath, NullLogger.Instance);
+                config.TestName = Path.GetFileName(root);
+                config.StoreDir = Path.GetDirectoryName(root);
+                config.EnsureEpbRecords();
+                config.EpbRecords[0].Enabled = true;
+                config.EpbRecords[0].RunCount = 123;
+                config.EpbRecords[0].TotalCount = 10000;
+                Directory.CreateDirectory(Path.Combine(root, "Latest"));
+                File.WriteAllText(Path.Combine(root, "Latest", "payload.bin"), "payload");
+                Directory.CreateDirectory(Path.Combine(root, "UnknownData"));
+                File.WriteAllText(Path.Combine(root, "UnknownData", "keep.bin"), "keep");
+                File.WriteAllText(Path.Combine(root, "index.db"), "db");
+                File.WriteAllText(Path.Combine(configDir, "EpbAdaptiveProfiles.xml"), "profile");
+                File.WriteAllText(Path.Combine(logDir, "run.log"), "run");
+                File.WriteAllText(Path.Combine(logDir, "ui-info.log"), "ui");
+                var checkpointCleared = false;
+
+                var result = ProjectRestartCleanupService.ResetForFreshLearning(
+                    root,
+                    config,
+                    NullLogger.Instance,
+                    () => checkpointCleared = true,
+                    new DateTime(2026, 8, 7, 12, 0, 0));
+
+                Assert(result.Succeeded && checkpointCleared, "项目清空未成功或恢复检查点未清除");
+                Assert(!Directory.Exists(Path.Combine(root, "Latest")) &&
+                       !File.Exists(Path.Combine(root, "index.db")), "旧运行数据或索引仍在活动路径");
+                Assert(!File.Exists(Path.Combine(configDir, "EpbAdaptiveProfiles.xml")),
+                    "自适应模型未删除");
+                Assert(Directory.Exists(Path.Combine(root, "UnknownData")), "未知目录被错误删除");
+                var reloaded = ConfigLoader.LoadTest(configPath, NullLogger.Instance);
+                var record = reloaded.GetEpbRecord(1);
+                Assert(record.Enabled && record.RunCount == 0 && record.TotalCount == 10000 &&
+                       record.Status == EpbTestStatus.NotStarted,
+                    "清空后未保留通道选择/目标次数或进度未归零");
+                Assert(Directory.GetFiles(logDir, "run.20260807.*.log").Length == 1 &&
+                       Directory.GetFiles(logDir, "ui-info.20260807.*.log").Length == 1,
+                    "活动日志未在清空前轮转");
+                Assert(File.Exists(result.AuditPath) && File.Exists(result.ConfigBackupPath),
+                    "清空审计或配置备份缺失");
+            }
+            finally
+            {
+                DeleteTempDir(root);
+            }
+        }
+
+        private static string EscapeXml(string value)
+        {
+            return (value ?? string.Empty)
+                .Replace("&", "&amp;")
+                .Replace("<", "&lt;")
+                .Replace(">", "&gt;")
+                .Replace("\"", "&quot;")
+                .Replace("'", "&apos;");
         }
 
         private static void ExplicitFlush()

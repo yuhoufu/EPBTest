@@ -114,6 +114,10 @@
     SaveCsv="true"
     SaveBin="true"
     HardAlarmLastNCycles="10"
+    HardAlarmIncludeSameElectricalGroup="false"
+    HardAlarmSameGroupLastNCycles="10"
+    SoftWarningRetentionMode="Count"
+    SoftWarningRetainCountPerChannelCode="30"
     SoftWarningQuotaMb="0"
     DiskFreeWarningMb="10240" />
 </AlarmConfig>

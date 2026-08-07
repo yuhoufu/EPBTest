@@ -297,11 +297,9 @@ namespace MTEmbTest
         private IEpbCycleRecorder _recorder;
 
         private UiConfig _uiCfg;
-        private const string UiInfoLogFileName = "ui-info.log";
-        private string _uiInfoLogFilePath = string.Empty;
-        private readonly SemaphoreSlim _uiInfoLogSemaphore = new(1, 1);
-        private readonly ConcurrentQueue<string> _uiInfoLogWriteQueue = new();
-        private int _uiInfoLogWriterRunning;
+        private const int UiInfoRecentLineLimit = 2000;
+        private const int UiInfoTrimWatermark = 1800;
+        private UiInfoLogStore _uiInfoLogStore;
         private bool _suppressRtbInfoTextChanged;
 
 
@@ -331,7 +329,7 @@ namespace MTEmbTest
                     return;
                 }
 
-                _alarmCfg = AlarmConfigLoader.Load(alarmCfgPath);
+                _alarmCfg = AlarmConfigLoader.Load(alarmCfgPath, logger);
                 _alarmManager = new AlarmManager(_alarmCfg, logger);
 
                 _epb.Alarm = _alarmManager;
@@ -969,13 +967,19 @@ namespace MTEmbTest
                 _shouldBackfillRunCountFromDbOnLoad = File.Exists(existingIndexDbPath);
 
                 // 1) 创建写盘器（使用 DataRetentionPolicy）
+                var latestRetention = _cfg.Test.DataStorageRetention?.Latest
+                                      ?? new LatestSnapshotRetentionConfig();
                 var policy = new DataRetentionPolicy
                 {
                     DataStorePath = Path.Combine(Environment.CurrentDirectory, "DataStore"), // 数据根目录
                     IndexAndExportPath = projectIndexDir, // 索引和导出目录
                     FileSizeMb = 100, // 每通道 .dat大小，单位MB，可按需改 384
                     RetainLatestCycles = 10, // 停止时“最新N圈”
-                    CleanupMode = "archive" // 或 "delete"
+                    CleanupMode = "archive", // 或 "delete"
+                    RetainLatestStopPackagesPerChannel = latestRetention.RetainStopPackagesPerChannel,
+                    RetainAllLatestStopPackages =
+                        latestRetention.RetentionMode == StorageRetentionMode.Unlimited,
+                    RetentionWarningSink = message => logger?.Warn(message, "Storage")
                 };
                 _diskWriter = new EpbDiskWriter(policy);
                 //_diskWriter.StartFreeRun(1); // 暂时注释
@@ -2779,6 +2783,16 @@ namespace MTEmbTest
             }
 
             #endregion
+
+            try
+            {
+                _uiInfoLogStore?.Dispose();
+                _uiInfoLogStore = null;
+            }
+            catch
+            {
+                /* UI log flush failure must not block closing. */
+            }
 
             base.OnFormClosing(e);
         }
@@ -4736,39 +4750,33 @@ namespace MTEmbTest
 
         private void InitializeUiInfoLog()
         {
-            _uiInfoLogFilePath = GetUiInfoLogPath();
-            if (string.IsNullOrEmpty(_uiInfoLogFilePath))
-                return;
-
-            var dir = Path.GetDirectoryName(_uiInfoLogFilePath);
-            if (!string.IsNullOrEmpty(dir))
-                Directory.CreateDirectory(dir);
-
-            if (!File.Exists(_uiInfoLogFilePath))
-                File.WriteAllText(_uiInfoLogFilePath, string.Empty);
-
-            var existingLines = File.ReadAllLines(_uiInfoLogFilePath);
-            _suppressRtbInfoTextChanged = true;
-            RtbInfo.Text = existingLines.Length == 0
-                ? string.Empty
-                : string.Join(Environment.NewLine, existingLines);
-            if (existingLines.Length > 0 && !RtbInfo.Text.EndsWith(Environment.NewLine))
-                RtbInfo.AppendText(Environment.NewLine);
-            _suppressRtbInfoTextChanged = false;
-
-            RtbInfo.TextChanged -= RtbInfo_TextChanged;
-            RtbInfo.TextChanged += RtbInfo_TextChanged;
-        }
-
-        private string GetUiInfoLogPath()
-        {
             var storeDir = _cfg?.Test?.StoreDir;
             var testName = _cfg?.Test?.TestName;
             var projectRoot = ConfigLoader.GetProjectRootDir(storeDir, testName);
             if (string.IsNullOrEmpty(projectRoot))
                 projectRoot = Path.Combine(Environment.CurrentDirectory, "ProjectLogs");
 
-            return Path.Combine(projectRoot, "log", UiInfoLogFileName);
+            _uiInfoLogStore?.Dispose();
+            _uiInfoLogStore = new UiInfoLogStore(new UiInfoLogOptions
+            {
+                MaxFileBytes = 10L * 1024L * 1024L,
+                RetentionDays = 30,
+                MaximumRecentLines = UiInfoRecentLineLimit,
+                WarningSink = (message, exception) =>
+                    logger?.Warn($"{message}: {exception?.Message}", "UI日志")
+            });
+            if (!_uiInfoLogStore.Initialize(projectRoot))
+                return;
+
+            var existingLines = _uiInfoLogStore.ReadRecentLines(UiInfoRecentLineLimit);
+            _suppressRtbInfoTextChanged = true;
+            RtbInfo.Text = existingLines.Count == 0
+                ? string.Empty
+                : string.Join(Environment.NewLine, existingLines) + Environment.NewLine;
+            _suppressRtbInfoTextChanged = false;
+
+            RtbInfo.TextChanged -= RtbInfo_TextChanged;
+            RtbInfo.TextChanged += RtbInfo_TextChanged;
         }
 
         private void LogInfo(string message)
@@ -4778,7 +4786,7 @@ namespace MTEmbTest
 
             var formatted = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {message.Trim()}";
             AppendInfoLine(formatted);
-            EnqueueLineForPersist(formatted);
+            _ = _uiInfoLogStore?.AppendAsync(formatted);
         }
 
         private void AppendInfoLine(string formattedLine)
@@ -4800,6 +4808,10 @@ namespace MTEmbTest
                 else
                     RtbInfo.AppendText(formattedLine + Environment.NewLine);
 
+                var lines = RtbInfo.Lines;
+                if (lines.Length > UiInfoRecentLineLimit)
+                    RtbInfo.Lines = lines.Skip(Math.Max(0, lines.Length - UiInfoTrimWatermark)).ToArray();
+                RtbInfo.SelectionStart = RtbInfo.TextLength;
                 RtbInfo.ScrollToCaret();
             }
             finally
@@ -4808,75 +4820,12 @@ namespace MTEmbTest
             }
         }
 
-        private void EnqueueLineForPersist(string formattedLine)
-        {
-            if (string.IsNullOrEmpty(_uiInfoLogFilePath))
-                return;
-
-            _uiInfoLogWriteQueue.Enqueue(formattedLine);
-            _ = DrainUiInfoLogQueueAsync();
-        }
-
-        private async System.Threading.Tasks.Task DrainUiInfoLogQueueAsync()
-        {
-            if (Interlocked.Exchange(ref _uiInfoLogWriterRunning, 1) == 1)
-                return;
-
-            try
-            {
-                while (_uiInfoLogWriteQueue.TryDequeue(out var line))
-                {
-                    await _uiInfoLogSemaphore.WaitAsync().ConfigureAwait(false);
-                    try
-                    {
-                        using (var writer = new StreamWriter(_uiInfoLogFilePath, true))
-                        {
-                            await writer.WriteLineAsync(line).ConfigureAwait(false);
-                        }
-                    }
-                    finally
-                    {
-                        _uiInfoLogSemaphore.Release();
-                    }
-                }
-            }
-            catch
-            {
-                // Swallow logging failures so main logic is unaffected
-            }
-            finally
-            {
-                Interlocked.Exchange(ref _uiInfoLogWriterRunning, 0);
-                if (!_uiInfoLogWriteQueue.IsEmpty)
-                    _ = DrainUiInfoLogQueueAsync();
-            }
-        }
-
         private async void RtbInfo_TextChanged(object sender, EventArgs e)
         {
-            if (_suppressRtbInfoTextChanged)
+            if (_suppressRtbInfoTextChanged || _uiInfoLogStore == null)
                 return;
 
-            await OverwriteUiInfoLogAsync(RtbInfo.Text).ConfigureAwait(false);
-        }
-
-        private async System.Threading.Tasks.Task OverwriteUiInfoLogAsync(string text)
-        {
-            if (string.IsNullOrEmpty(_uiInfoLogFilePath))
-                return;
-
-            await _uiInfoLogSemaphore.WaitAsync().ConfigureAwait(false);
-            try
-            {
-                using (var writer = new StreamWriter(_uiInfoLogFilePath, false))
-                {
-                    await writer.WriteAsync(text).ConfigureAwait(false);
-                }
-            }
-            finally
-            {
-                _uiInfoLogSemaphore.Release();
-            }
+            await _uiInfoLogStore.ReplaceActiveAsync(RtbInfo.Text).ConfigureAwait(false);
         }
 
         #endregion
