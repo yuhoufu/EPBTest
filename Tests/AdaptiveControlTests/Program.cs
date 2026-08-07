@@ -120,6 +120,9 @@ namespace AdaptiveControlTests
                 Run("Timer失活看门狗识别停止和陈旧心跳", TimerRuntimeWatchdogDetectsStoppedAndStale);
                 Run("非人工Timer异常允许自动重建续测", TimerAnomalyRecoveryEligibility);
                 Run("Timer自恢复持续退避且不停止重试", TimerRecoveryRetryBackoff);
+                Run("只有卡钳通道硬件故障允许锁存停机", ExternalEquipmentFaultsRemainRecoverable);
+                Run("外部设备恢复不得拉起报警禁用或人工暂停通道", InfrastructureRecoveryFiltersStoppedChannels);
+                Run("可恢复卡钳故障持续自启且硬件锁存禁止自启", RecoverableChannelRestartPolicy);
                 Run("同进程暂停不因时长增加资格门禁", PauseResumeFiveMinutePolicy);
                 Run("单通道恢复按当前公共正式槽重入", PausedChannelRejoinsCurrentSharedFormalSlot);
                 Run("批次暂停和恢复预检期间DAQ自愈不得越权恢复定时器", DaqRecoveryRespectsBatchPausePolicy);
@@ -146,6 +149,7 @@ namespace AdaptiveControlTests
                 Run("正式圈连续500圈相位无累积漂移", FormalStaggerHasNoCumulativeDrift);
                 Run("EPB5报警且EPB4联锁状态保持锁存", RuntimeStateDistinguishesSourceAndInterlock);
                 Run("DAQ恢复不得解除报警停机状态", RuntimeStateRecoveryCannotClearAlarm);
+                Run("基础设施恢复只解除系统故障不解除卡钳报警", InfrastructureRecoveryOnlyClearsSystemFault);
                 Run("新运行预检后可复位旧停机状态", RuntimeStateResetsOnlyForNewRun);
                 Run("状态版本阻止迟到报警覆盖新运行状态", RuntimeStateRevisionRejectsLateUiDelivery);
                 Run("安全退出仅允许压力证据单项缺失", StopSafetyExitPolicy);
@@ -643,8 +647,8 @@ namespace AdaptiveControlTests
                 "DAQ过流与新鲜PSU证据并存时未确认硬件故障");
             Assert(
                 EpbManager.ClassifyStartupPositioningFailure(false, false, true) ==
-                FaultClassification.HardwareConfirmed,
-                "启动定位输出关闭失败仍被误当成软件瞬态");
+                FaultClassification.SoftwareTransient,
+                "启动定位输出关闭失败被错误锁存为卡钳硬件故障");
         }
 
         private static void StartupPositioningConfirmsHighCurrentAfterInrush()
@@ -2718,6 +2722,51 @@ namespace AdaptiveControlTests
                 "Timer自恢复长期重试未限制为30秒且存在停止门槛");
         }
 
+        private static void ExternalEquipmentFaultsRemainRecoverable()
+        {
+            Assert(!EpbManager.ShouldAutoRecoverExternalEquipmentFault(FaultScope.Channel),
+                "卡钳通道级硬件故障被错误归入外部设备自动恢复");
+            Assert(EpbManager.ShouldAutoRecoverExternalEquipmentFault(FaultScope.DaqGroup),
+                "DAQ设备故障未保持自动恢复资格");
+            Assert(EpbManager.ShouldAutoRecoverExternalEquipmentFault(FaultScope.HydraulicGroup),
+                "液压设备故障未保持自动恢复资格");
+            Assert(EpbManager.ShouldAutoRecoverExternalEquipmentFault(FaultScope.ElectricalGroup),
+                "程控电源设备故障未保持自动恢复资格");
+        }
+
+        private static void InfrastructureRecoveryFiltersStoppedChannels()
+        {
+            var states = new Dictionary<int, ChannelRuntimeState>
+            {
+                [1] = ChannelRuntimeState.Recovering,
+                [2] = ChannelRuntimeState.AlarmStopped,
+                [3] = ChannelRuntimeState.SystemFault,
+                [4] = ChannelRuntimeState.Recovering,
+                [5] = ChannelRuntimeState.ManualStopped,
+                [6] = ChannelRuntimeState.Recovering
+            };
+            var selected = EpbManager.SelectInfrastructureRecoveryEligibleChannels(
+                Enumerable.Range(1, 6),
+                channel => channel != 4,
+                channel => channel == 2,
+                channel => channel == 6,
+                channel => states[channel]);
+            Assert(selected.SequenceEqual(new[] { 1, 3 }),
+                "外部设备恢复未严格过滤报警、禁用、人工停止或暂停通道");
+        }
+
+        private static void RecoverableChannelRestartPolicy()
+        {
+            Assert(EpbManager.CanContinueRecoverableChannelRestart(true, false, false),
+                "可恢复卡钳故障未保持无人值守重试资格");
+            Assert(!EpbManager.CanContinueRecoverableChannelRestart(false, false, false),
+                "项目禁用通道被错误允许自动启动");
+            Assert(!EpbManager.CanContinueRecoverableChannelRestart(true, true, false),
+                "人工停止通道被错误允许自动启动");
+            Assert(!EpbManager.CanContinueRecoverableChannelRestart(true, false, true),
+                "明确卡钳硬件锁存被错误允许自动启动");
+        }
+
         private static void PauseResumeFiveMinutePolicy()
         {
             var paused = new DateTime(2026, 8, 5, 1, 2, 3, DateTimeKind.Utc);
@@ -3178,6 +3227,41 @@ namespace AdaptiveControlTests
             }, allowTerminalReset: true);
             Assert(store.Get(5).State == ChannelRuntimeState.Starting,
                 "新运行通过启动入口后未能复位旧锁存");
+        }
+
+        private static void InfrastructureRecoveryOnlyClearsSystemFault()
+        {
+            var systemStore = new ChannelRuntimeStateStore();
+            systemStore.Publish(new ChannelRuntimeStateChangedEvent
+            {
+                Channel = 4,
+                State = ChannelRuntimeState.SystemFault,
+                ReasonCode = "LegacyInfrastructureFault"
+            });
+            systemStore.Publish(new ChannelRuntimeStateChangedEvent
+            {
+                Channel = 4,
+                State = ChannelRuntimeState.Recovering,
+                ReasonCode = "InfrastructureSelfHealing"
+            }, allowTerminalReset: false, allowSystemFaultReset: true);
+            Assert(systemStore.Get(4).State == ChannelRuntimeState.Recovering,
+                "基础设施恢复未能解除旧SystemFault锁存");
+
+            var alarmStore = new ChannelRuntimeStateStore();
+            alarmStore.Publish(new ChannelRuntimeStateChangedEvent
+            {
+                Channel = 5,
+                State = ChannelRuntimeState.AlarmStopped,
+                ReasonCode = "OpenCircuitOrOutputFault"
+            });
+            alarmStore.Publish(new ChannelRuntimeStateChangedEvent
+            {
+                Channel = 5,
+                State = ChannelRuntimeState.Running,
+                ReasonCode = "InfrastructureSelfHealing"
+            }, allowTerminalReset: false, allowSystemFaultReset: true);
+            Assert(alarmStore.Get(5).State == ChannelRuntimeState.AlarmStopped,
+                "基础设施恢复越权解除了卡钳硬件报警锁存");
         }
 
         private static void RuntimeStateRevisionRejectsLateUiDelivery()

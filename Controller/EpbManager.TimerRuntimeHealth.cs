@@ -60,7 +60,8 @@ namespace Controller
                     update.Reason,
                     IsBatchSessionActive,
                     CurrentBatchPauseState,
-                    _channelPausedUtc.ContainsKey(channel),
+                    _channelPausedUtc.ContainsKey(channel) ||
+                    _manualStopRequestedChannels.ContainsKey(channel),
                     IsAlarmStopRequested(channel),
                     IsChannelEnabled(channel)))
             {
@@ -264,6 +265,7 @@ namespace Controller
                 return false;
             if (CurrentBatchPauseState != BatchPauseState.Running ||
                 _channelPausedUtc.ContainsKey(channel) ||
+                _manualStopRequestedChannels.ContainsKey(channel) ||
                 IsAlarmStopRequested(channel) ||
                 !IsChannelEnabled(channel))
                 return false;

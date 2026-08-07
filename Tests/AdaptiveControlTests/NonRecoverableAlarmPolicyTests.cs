@@ -120,6 +120,10 @@ namespace AdaptiveControlTests
                 EpbManager.ResolveChannelFaultRecoveryPolicy("DaqSampleStale", false) ==
                 FaultRecoveryPolicy.Recoverable,
                 "无关软件故障被错误改为不可恢复");
+            Assert(
+                EpbManager.ResolveChannelFaultRecoveryPolicy("OutputCommandFailed", true) ==
+                FaultRecoveryPolicy.Recoverable,
+                "输出控制链故障被错误锁存为卡钳硬件故障");
         }
 
         private static void PersistentDisablePreservesDiskProgress()

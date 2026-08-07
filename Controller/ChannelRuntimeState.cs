@@ -97,7 +97,8 @@ namespace Controller
 
         internal ChannelRuntimeStateChangedEvent Publish(
             ChannelRuntimeStateChangedEvent next,
-            bool allowTerminalReset = false)
+            bool allowTerminalReset = false,
+            bool allowSystemFaultReset = false)
         {
             if (next == null) throw new ArgumentNullException(nameof(next));
             if (next.Channel < 1 || next.Channel > 12)
@@ -114,7 +115,10 @@ namespace Controller
             return _states.AddOrUpdate(
                     candidate.Channel,
                     _ => CloneWithRevision(candidate, 1),
-                    (_, current) => IsLatchedStop(current.State) && !allowTerminalReset
+                    (_, current) => IsLatchedStop(current.State) &&
+                                    !allowTerminalReset &&
+                                    !(allowSystemFaultReset &&
+                                      current.State == ChannelRuntimeState.SystemFault)
                         ? current
                         : CloneWithRevision(candidate, current.Revision + 1))
                 .Clone();

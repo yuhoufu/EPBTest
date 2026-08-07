@@ -272,7 +272,11 @@ namespace Controller
                 // 否则 IsAlarmStopRequested 会让后续成功圈也持续写成 status='alarm'，
                 // 且重复报警会在 OnRunnerAlarmRaised 中被去重后直接返回。
                 foreach (var channel in selected)
+                {
+                    _manualStopRequestedChannels.TryRemove(channel, out _);
+                    _nonRecoverableChannelFaultLatch.TryRemove(channel, out _);
                     _alarmStopLatch.BeginRun(channel);
+                }
 
                 // —— 1) 按压力组归类，并为每组计算“锚点零相位” t0（含预热裕度 + 周期上取整）—— //
                 var nowUtc = DateTime.UtcNow;
@@ -454,7 +458,7 @@ namespace Controller
 
                 foreach (var channel in selected)
                 {
-                    try { StopChannel(channel); }
+                    try { StopChannelForInternalCleanup(channel); }
                     catch (Exception stopEx)
                     {
                         _log?.Warn($"批量启动异常后停止 EPB[{channel}] 失败：{stopEx}", "EPB");
@@ -543,7 +547,7 @@ namespace Controller
                         $"DAQ软件自愈第{attempt}次未通过，{delayMs}ms后继续重试；未使能电源与液压。",
                         affectedChannels: selected,
                         correlationId: _activeBatchId,
-                        allowTerminalReset: true);
+                        allowTerminalReset: false);
                 _log?.Warn(
                     $"DAQ启动预检未通过，按软件瞬态持续自愈，不标记启动受阻。" +
                     $"Attempt={attempt} DelayMs={delayMs}；{details}",
@@ -639,7 +643,7 @@ namespace Controller
                             $"程控电源软件自愈第{attempt}次未通过，{delayMs}ms后继续完整重连预检。",
                             affectedChannels: channels,
                             correlationId: _activeBatchId,
-                            allowTerminalReset: true);
+                            allowTerminalReset: false);
                     _log?.Warn(
                         $"程控电源启动预检未通过，无新鲜保护触发证据，按软件瞬态持续自愈。" +
                         $"Attempt={attempt} DelayMs={delayMs} Error={ex.Message}",
@@ -1523,7 +1527,7 @@ namespace Controller
                             $"学习圈证据软件自愈第{attempt}次：本次尝试已作废，随后重做同一逻辑学习圈。",
                             affectedChannels: new[] { channel },
                             correlationId: runId,
-                            allowTerminalReset: true);
+                            allowTerminalReset: false);
                         _log?.Warn(
                             $"EPB[{channel}] 学习圈证据失败已作废，不取消其它通道或整批启动。" +
                             $"Attempt={attempt} DelayMs={GetDaqSelfMaintenanceDelayMs(attempt)} " +
@@ -1543,7 +1547,7 @@ namespace Controller
                     $"学习圈证据自愈完成，共尝试{attempts}次；只保留最后一次有效学习结果。",
                     affectedChannels: new[] { channel },
                     correlationId: runId,
-                    allowTerminalReset: true);
+                    allowTerminalReset: false);
         }
 
         private Task SealLearningCycleAsync(
@@ -1987,7 +1991,7 @@ namespace Controller
                             $"液压软件代次自愈第{attempt}次；已抛弃旧代次并重新建压。",
                             affectedChannels: channelsInGroup?.ToArray() ?? Array.Empty<int>(),
                             correlationId: initialKey.TestRunId,
-                            allowTerminalReset: true);
+                            allowTerminalReset: false);
                     }
                     try
                     {

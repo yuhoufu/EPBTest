@@ -10,6 +10,14 @@ namespace Controller
 {
     public sealed partial class EpbManager
     {
+        internal static bool ShouldAutoRecoverExternalEquipmentFault(FaultScope scope)
+        {
+            // 只有卡钳本体的通道级、已定义硬件故障允许保持锁存停机。
+            // DAQ、液压、电源等外部设备即使硬件暂时离线，也应保持安全断电并持续探测，
+            // 条件恢复后自动续测。
+            return scope != FaultScope.Channel;
+        }
+
         private bool IsCurrentRecovery(DaqAutoRecoveryContext context)
         {
             if (context == null || context.Cancellation.IsCancellationRequested) return false;
@@ -150,10 +158,9 @@ namespace Controller
         }
 
         /// <summary>
-        /// Isolates a software/configuration fault to the channels whose safe control can no
-        /// longer be guaranteed. Unlike an application-wide system fault, this deliberately
-        /// does not publish SystemFaultRaised, so healthy independent groups keep running and
-        /// the unattended coordinator does not execute StopAll/restart.
+        /// Isolates an infrastructure fault while keeping it recoverable. Healthy independent
+        /// groups continue running; affected channels remain safely de-energized in Recovering
+        /// and are handed to the affected-group restart loop instead of a permanent SystemFault.
         /// </summary>
         private void PublishIsolatedSoftwareFault(
             string code,
@@ -179,7 +186,7 @@ namespace Controller
                 try { CommandEpbOffSafetyImmediate(channel); } catch { }
                 PublishChannelRuntimeState(
                     channel,
-                    ChannelRuntimeState.SystemFault,
+                    ChannelRuntimeState.Recovering,
                     code,
                     reason,
                     affectedChannels: channels,
@@ -192,6 +199,7 @@ namespace Controller
                 ControlFaultRaised,
                 fault,
                 ex => _log?.Warn($"DAQ隔离故障观察者异常，已隔离：{ex.Message}", "AI"));
+            ScheduleIsolatedInfrastructureRecovery(channels, code, fault.CorrelationId);
         }
     }
 }

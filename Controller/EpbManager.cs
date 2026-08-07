@@ -195,6 +195,10 @@ namespace Controller
         // 报警触发“立即停机”去重：同一次运行只处理首个报警；新运行必须显式复位
         private readonly ChannelAlarmStopLatch _alarmStopLatch = new();
         private readonly DaqIncidentLatch _daqIncidentLatch = new();
+        private readonly ConcurrentDictionary<int, byte> _manualStopRequestedChannels = new();
+        private readonly ConcurrentDictionary<int, byte> _nonRecoverableChannelFaultLatch = new();
+        private readonly ConcurrentDictionary<int, CancellationTokenSource>
+            _recoverableChannelRestartJobs = new();
 
         private void FlushPersistentLog(bool durable = true)
         {
@@ -227,7 +231,8 @@ namespace Controller
             int? sourceChannel = null,
             IEnumerable<int> affectedChannels = null,
             Guid correlationId = default,
-            bool allowTerminalReset = false)
+            bool allowTerminalReset = false,
+            bool allowSystemFaultReset = false)
         {
             // DAQ恢复拥有受影响通道的状态机，直至恢复终态提交并移除上下文。
             // 圈尾软预警/旧Runner回调不得把“系统自恢复”覆盖回“运行/软预警”。
@@ -247,6 +252,7 @@ namespace Controller
                     affectedChannels = recovery.AffectedChannels;
                     correlationId = recovery.CorrelationId;
                     allowTerminalReset = false;
+                    allowSystemFaultReset = false;
                 }
             }
             var update = _channelRuntimeStateStore.Publish(
@@ -262,7 +268,8 @@ namespace Controller
                     CorrelationId = correlationId,
                     RunId = _activeBatchId
                 },
-                allowTerminalReset);
+                allowTerminalReset,
+                allowSystemFaultReset);
             NonCriticalObserver.Invoke(
                 ChannelRuntimeStateChanged,
                 update,
@@ -1149,6 +1156,8 @@ namespace Controller
                 allowTerminalReset: true);
 
             // 若上一次因报警触发过停机，这里允许重新启动
+            _manualStopRequestedChannels.TryRemove(channel, out _);
+            _nonRecoverableChannelFaultLatch.TryRemove(channel, out _);
             _alarmStopLatch.BeginRun(channel);
 
             //var rcfg = _cfg.Test?.EpbCycleRunner ?? new EpbCycleRunnerConfig();
@@ -1261,7 +1270,7 @@ namespace Controller
                 }
                 catch (Exception ex)
                 {
-                    try { StopChannel(channel); } catch { }
+                    try { StopChannelForInternalCleanup(channel); } catch { }
                     PublishChannelRuntimeState(
                         channel,
                         ChannelRuntimeState.StartBlocked,
@@ -1459,6 +1468,16 @@ namespace Controller
         /// </summary>
         public void StopChannel(int channel)
         {
+            _manualStopRequestedChannels[channel] = 0;
+            if (_recoverableChannelRestartJobs.TryGetValue(channel, out var recovery))
+            {
+                try { recovery.Cancel(); } catch { }
+            }
+            StopChannelForInternalCleanup(channel);
+        }
+
+        private void StopChannelForInternalCleanup(int channel)
+        {
             // 该通道停止后不再参与液压判定
             UnmarkHydraulicParticipant(channel);
 
@@ -1568,6 +1587,13 @@ namespace Controller
             var immediateCurrentHardFault = IsImmediateCurrentHardFault(reason);
             var alreadyCycleConfirmed = IsAlreadyCycleConfirmedFault(reason);
             var hardwareLatched = IsHardwareLatchedControlFault(reason);
+            if (hardwareLatched)
+            {
+                RequestElectricalGroupEmergencyShutdown(
+                    channel,
+                    $"ChannelOutputControlSelfHealing:{reason}");
+                return;
+            }
 
             if (!immediateCurrentHardFault && !alreadyCycleConfirmed && !hardwareLatched)
             {
@@ -1596,6 +1622,10 @@ namespace Controller
             var recoveryPolicy = ResolveChannelFaultRecoveryPolicy(
                 faultCode,
                 hardwareLatched);
+            if (recoveryPolicy == FaultRecoveryPolicy.Recoverable)
+                _nonRecoverableChannelFaultLatch.TryRemove(channel, out _);
+            else
+                _nonRecoverableChannelFaultLatch[channel] = 0;
 
             if (immediateCurrentHardFault)
             {
@@ -1713,24 +1743,93 @@ namespace Controller
                     PersistentlyDisableChannel(channel, reason);
 
                 if (recoveryPolicy == FaultRecoveryPolicy.Recoverable)
+                    BeginRecoverableChannelRestartLoop(channel, reason, channelFaultCorrelationId);
+            });
+        }
+
+        private void BeginRecoverableChannelRestartLoop(
+            int channel,
+            string reason,
+            Guid correlationId)
+        {
+            var cancellation = new CancellationTokenSource();
+            if (!_recoverableChannelRestartJobs.TryAdd(channel, cancellation))
+            {
+                cancellation.Dispose();
+                return;
+            }
+            _ = Task.Run(async () =>
+            {
+                var attempt = 0;
+                try
                 {
-                    try
+                    while (CanContinueRecoverableChannelRestart(
+                        IsChannelEnabled(channel),
+                        _manualStopRequestedChannels.ContainsKey(channel),
+                        _nonRecoverableChannelFaultLatch.ContainsKey(channel)))
                     {
-                        _log.Info(
-                            $"EPB[{channel}] 报警证据已封存，开始无人值守恢复预检与资格复核。",
-                            "报警");
-                        await ResumeAlarmStoppedChannelAsync(channel, true, CancellationToken.None)
-                            .ConfigureAwait(false);
-                    }
-                    catch (Exception ex)
-                    {
-                        _log.Error(
-                            $"EPB[{channel}] 报警后自动恢复失败，保持报警停机：{ex.Message}",
-                            "报警",
-                            ex);
+                        attempt++;
+                        try
+                        {
+                            _log.Info(
+                                $"EPB[{channel}] 可恢复卡钳故障开始第{attempt}次无人值守预检与资格复核。" +
+                                $"CorrelationId={correlationId:N} Reason={reason}",
+                                "报警");
+                            await ResumeAlarmStoppedChannelAsync(
+                                    channel,
+                                    true,
+                                    cancellation.Token,
+                                    unattendedRecovery: true)
+                                .ConfigureAwait(false);
+                            var resumed = _channelRuntimeStateStore.Get(channel);
+                            if (resumed == null ||
+                                (resumed.State != ChannelRuntimeState.Running &&
+                                 resumed.State != ChannelRuntimeState.WarningRunning))
+                                throw new SoftwareSelfHealingRetryException(
+                                    $"恢复入口返回但通道未进入运行态：{resumed?.State}");
+                            _log.Info(
+                                $"EPB[{channel}] 可恢复故障已自动续测。Attempt={attempt}",
+                                "报警");
+                            return;
+                        }
+                        catch (Exception ex)
+                        {
+                            if (!CanContinueRecoverableChannelRestart(
+                                IsChannelEnabled(channel),
+                                _manualStopRequestedChannels.ContainsKey(channel),
+                                _nonRecoverableChannelFaultLatch.ContainsKey(channel)))
+                                return;
+                            var delayMs = SelectTimerRecoveryRetryDelayMs(attempt);
+                            _log.Warn(
+                                $"EPB[{channel}] 自动恢复第{attempt}次未通过，{delayMs}ms后持续重试：" +
+                                ex.Message,
+                                "报警");
+                            await Task.Delay(delayMs, cancellation.Token).ConfigureAwait(false);
+                        }
                     }
                 }
+                catch (OperationCanceledException)
+                {
+                    _log.Info(
+                        $"EPB[{channel}] 无人值守恢复已由人工停止或运行结束取消。",
+                        "报警");
+                }
+                finally
+                {
+                    _recoverableChannelRestartJobs.TryRemove(channel, out _);
+                    cancellation.Dispose();
+                }
             });
+        }
+
+        internal static bool CanContinueRecoverableChannelRestart(
+            bool channelEnabled,
+            bool manualStopRequested,
+            bool nonRecoverableHardwareLatched)
+        {
+            return channelEnabled &&
+                   !manualStopRequested &&
+                   !nonRecoverableHardwareLatched;
         }
 
         internal static FaultRecoveryPolicy ResolveChannelFaultRecoveryPolicy(
@@ -1755,9 +1854,7 @@ namespace Controller
                     StringComparison.OrdinalIgnoreCase))
                 return FaultRecoveryPolicy.NonRecoverableDisableChannel;
 
-            return hardwareLatched
-                ? FaultRecoveryPolicy.NonRecoverable
-                : FaultRecoveryPolicy.Recoverable;
+            return FaultRecoveryPolicy.Recoverable;
         }
 
         private void PersistentlyDisableChannel(int channel, string reason)
@@ -1848,7 +1945,7 @@ namespace Controller
                 reason,
                 affectedChannels: new[] { channel },
                 correlationId: correlationId,
-                allowTerminalReset: true);
+                allowTerminalReset: false);
             if (!TryEnsureSoftwareRecoveryOutputOff(channel, "ConfirmedFaultWarning")) return;
             var pauseCompletion = _timers.TryGetValue(channel, out var timer)
                 ? timer.PauseAfterCurrentCycleAsync($"RecoverableWarning:{faultCode}")
@@ -1885,14 +1982,19 @@ namespace Controller
                         plan,
                         "RecoverableWarningSelfHealed",
                         "警告圈已安全断电并完成机械释放，按未来完整节律槽自动重试",
-                        allowTerminalReset: true);
+                        allowTerminalReset: false);
                 }
                 catch (Exception ex)
                 {
-                    _log.Error(
-                        $"EPB[{channel}] 警告后自动恢复失败，保持暂停：{ex.Message}",
-                        "EPB",
-                        ex);
+                    PublishIsolatedSoftwareFault(
+                        "RecoverableWarningRecoveryFailed",
+                        ex.Message,
+                        new[] { channel },
+                        correlationId);
+                    _log.Warn(
+                        $"EPB[{channel}] 警告后直接恢复未完成，已转入持续组级自恢复：" +
+                        ex.Message,
+                        "EPB");
                 }
             });
         }
@@ -2724,7 +2826,8 @@ namespace Controller
             var disposition = DaqRecoveryFailurePolicy.Evaluate(
                 evidence.Length,
                 evidence.Length > 0 && evidence.All(x => x.Confirmed));
-            if (disposition == DaqRecoveryFailureDisposition.ConfirmedHardwareAlarm)
+            if (disposition == DaqRecoveryFailureDisposition.ConfirmedHardwareAlarm &&
+                !ShouldAutoRecoverExternalEquipmentFault(FaultScope.DaqGroup))
             {
                 if (!context.Terminal.TryCommit(DaqRecoveryTerminal.HardwareConfirmed)) return;
                 MarkDaqRecoveryTerminal(context.CorrelationId, context.Device);
@@ -3255,7 +3358,7 @@ namespace Controller
                 return;
             }
 
-            if (fault.Classification != FaultClassification.HardwareConfirmed)
+            if (ShouldAutoRecoverExternalEquipmentFault(fault.Scope))
             {
                 BeginHydraulicSoftwareRecovery(fault);
                 NonCriticalObserver.Invoke(
@@ -3584,20 +3687,6 @@ namespace Controller
                                 "液压协调");
                             return;
                         }
-                        catch (HydraulicReleaseTimeoutException ex)
-                        {
-                            _hydraulicSoftwareRecoveryGroups.TryRemove(hydraulicId, out _);
-                            OnHydraulicFaultRaised(new ControlFault(
-                                "HydraulicReleaseTimeout",
-                                ex.Message,
-                                FaultScope.HydraulicGroup,
-                                channels,
-                                hydraulicId,
-                                DateTime.UtcNow,
-                                fault.CorrelationId == Guid.Empty ? Guid.NewGuid() : fault.CorrelationId,
-                                FaultClassification.HardwareConfirmed));
-                            return;
-                        }
                         catch (Exception ex)
                         {
                             var delayMs = GetDaqSelfMaintenanceDelayMs(attempt);
@@ -3684,7 +3773,8 @@ namespace Controller
         private void OnPowerSupplyFaultRaised(PowerSupplyFault fault)
         {
             if (fault == null) return;
-            if (fault.Classification == FaultClassification.HardwareConfirmed)
+            if (fault.Classification == FaultClassification.HardwareConfirmed &&
+                !ShouldAutoRecoverExternalEquipmentFault(FaultScope.ElectricalGroup))
                 NotifyRunAuthorizationRevoking(
                     StopSource.AlarmInterlock,
                     fault.Reason,
@@ -3700,7 +3790,7 @@ namespace Controller
                 fault.TimestampUtc == default ? DateTime.UtcNow : fault.TimestampUtc,
                 Guid.NewGuid(),
                 fault.Classification);
-            if (fault.Classification != FaultClassification.HardwareConfirmed)
+            if (ShouldAutoRecoverExternalEquipmentFault(controlFault.Scope))
             {
                 BeginPowerSupplySoftwareRecovery(fault, controlFault);
                 NonCriticalObserver.Invoke(
@@ -3833,7 +3923,11 @@ namespace Controller
                             channel,
                             "PowerSupplySelfHealing"))
                         .ToArray();
-                    if (offFailed.Length > 0) return;
+                    if (offFailed.Length > 0)
+                        _log.Warn(
+                            $"电源组{groupId}首次断电确认失败，保持Recovering并持续重试。" +
+                            $"Channels=[{string.Join(",", offFailed)}]",
+                            "程控电源");
                     foreach (var channel in channels)
                     {
                         UnmarkHydraulicParticipant(channel);
@@ -3873,6 +3967,15 @@ namespace Controller
                         attempt++;
                         try
                         {
+                            var retryOffFailed = channels
+                                .Where(channel => !TryEnsureSoftwareRecoveryOutputOff(
+                                    channel,
+                                    "PowerSupplySelfHealingRetry"))
+                                .ToArray();
+                            if (retryOffFailed.Length > 0)
+                                throw new SoftwareSelfHealingRetryException(
+                                    $"电机断电仍未确认：EPB[{string.Join(",", retryOffFailed)}]");
+
                             try
                             {
                                 await RecoveryStageDeadline.RunAsync(
@@ -3913,6 +4016,23 @@ namespace Controller
                                         .ConfigureAwait(false);
                                 }
                                 catch { }
+                                return;
+                            }
+                            var startupPositioningOwner =
+                                sourceFault.Reason?.IndexOf(
+                                    "StartupPositioning",
+                                    StringComparison.OrdinalIgnoreCase) >= 0;
+                            if (startupPositioningOwner)
+                            {
+                                foreach (var channel in channels.Where(IsChannelEnabled))
+                                    PublishChannelRuntimeState(
+                                        channel,
+                                        ChannelRuntimeState.Recovering,
+                                        "PowerSupplyRecoveredForStartup",
+                                        "电源控制链已恢复；启动定位原流程继续重试，禁止提前进入正式节律。",
+                                        affectedChannels: channels,
+                                        correlationId: controlFault.CorrelationId);
+                                _emergencyPowerGroupLatch.TryRemove(groupId);
                                 return;
                             }
                             var batchPauseState = CurrentBatchPauseState;
@@ -3980,28 +4100,11 @@ namespace Controller
                                 $"电源组{groupId}软件自愈完成 Attempt={attempt}；" +
                                 "作废圈不计数，机械释放后按公共正式槽继续。",
                                 "程控电源");
+                            _emergencyPowerGroupLatch.TryRemove(groupId);
                             return;
                         }
                         catch (Exception ex)
                         {
-                            var snapshot = _powerSupply.GetLatestSnapshot(groupId);
-                            if (snapshot?.ProtectionTripped == true)
-                            {
-                                _powerSoftwareRecoveryGroups.TryRemove(groupId, out _);
-                                OnPowerSupplyFaultRaised(new PowerSupplyFault
-                                {
-                                    TimestampUtc = DateTime.UtcNow,
-                                    SupplyId = sourceFault.SupplyId,
-                                    ElectricalGroupId = groupId,
-                                    Code = "ProtectionTrip",
-                                    Reason = "自愈实时预检确认程控电源保护仍处于触发状态。",
-                                    AffectedChannels = channels,
-                                    Snapshot = snapshot,
-                                    Classification = FaultClassification.HardwareConfirmed
-                                });
-                                return;
-                            }
-
                             var delayMs = GetDaqSelfMaintenanceDelayMs(attempt);
                             _log.Warn(
                                 $"电源组{groupId}软件自愈第{attempt}次失败，" +
@@ -4562,6 +4665,18 @@ namespace Controller
         {
             var startedUtc = DateTime.UtcNow;
             var runId = _activeBatchId;
+            if (context.Source == StopSource.ManualUi ||
+                context.Source == StopSource.ApplicationClosing ||
+                context.Source == StopSource.ProgramExit ||
+                context.Source == StopSource.UnknownLegacy)
+            {
+                foreach (var channel in Enumerable.Range(1, 12))
+                    _manualStopRequestedChannels[channel] = 0;
+                foreach (var recovery in _recoverableChannelRestartJobs.Values)
+                {
+                    try { recovery.Cancel(); } catch { }
+                }
+            }
             if (context.Source != StopSource.SystemFault)
                 NotifyRunAuthorizationRevoking(
                     context.Source,
@@ -4857,28 +4972,13 @@ namespace Controller
                     DateTime.UtcNow,
                     GetAllDaqDeviceChannels(sourceDevice));
 
-            if (registration.ShouldPublishNonDaqFault)
-                NotifyRunAuthorizationRevoking(
-                    StopSource.AlarmInterlock,
-                    reason,
-                    nameof(RequestElectricalGroupEmergencyShutdown),
-                    registration.CorrelationId,
-                    FaultScope.ElectricalGroup);
-
             // 先在当前线程阻止同组任何通道继续执行，并逐路发出高优先级DO关闭；
             // 网络电源关闭及回读随后独立执行，不能阻塞采样回调。
             foreach (var member in members)
             {
-                if (daqDerived)
-                {
-                    if (_timers.TryGetValue(member, out var timer))
-                        timer.Pause($"ElectricalGroupEmergency:{reason}");
-                    CancelCyclePauseCts(member);
-                }
-                else
-                {
-                    try { CancelStopCts(member); } catch { }
-                }
+                if (_timers.TryGetValue(member, out var timer))
+                    timer.Pause($"ElectricalGroupEmergency:{reason}");
+                CancelCyclePauseCts(member);
                 try { CommandEpbOffSafetyImmediate(member); } catch { }
             }
 
@@ -4889,11 +4989,10 @@ namespace Controller
                 foreach (var member in members)
                 {
                     try { UnmarkHydraulicParticipant(member); } catch { }
-                    if (!daqDerived)
-                    {
-                        RemoveTimerRuntime(member, nameof(RequestElectricalGroupEmergencyShutdown));
-                        RemoveRunnerRuntime(member, nameof(RequestElectricalGroupEmergencyShutdown));
-                    }
+                    DiscardCurrentCycleForSoftwareRecovery(
+                        member,
+                        DateTime.UtcNow,
+                        $"ElectricalGroupEmergency:{reason}");
                     try
                     {
                         ObserveSafetyTask(
@@ -4932,12 +5031,22 @@ namespace Controller
                         members,
                         groupId,
                         DateTime.UtcNow,
-                        correlationId);
+                        correlationId,
+                        FaultClassification.SystemFault,
+                        FaultRecoveryPolicy.Recoverable);
                     NonCriticalObserver.Invoke(
                         ControlFaultRaised,
                         interlockFault,
                         ex => _log?.Warn($"电源联锁观察者异常，已隔离：{ex.Message}", "程控电源"));
-                    PublishFaultRuntimeStates(interlockFault, sourceChannel);
+                    foreach (var member in members.Where(IsChannelEnabled))
+                        PublishChannelRuntimeState(
+                            member,
+                            ChannelRuntimeState.Recovering,
+                            "ElectricalGroupEmergencySelfHealing",
+                            $"电源组安全断电异常，正在持续复核并自动续测。Reason={reason}",
+                            sourceChannel,
+                            members,
+                            correlationId);
                 }
 
                 try
@@ -4960,6 +5069,32 @@ namespace Controller
                 {
                     if (_powerSupply == null || _powerSupply.ActiveGroups.Count == 0)
                         EndPowerSupplyTelemetryRecording();
+                }
+
+                if (registration.ShouldPublishNonDaqFault)
+                {
+                    var recoveryFault = new PowerSupplyFault
+                    {
+                        TimestampUtc = DateTime.UtcNow,
+                        SupplyId = groupId,
+                        ElectricalGroupId = groupId,
+                        Code = "OutputOffCommandFailed",
+                        Reason = reason,
+                        AffectedChannels = members,
+                        Classification = FaultClassification.SystemFault
+                    };
+                    BeginPowerSupplySoftwareRecovery(
+                        recoveryFault,
+                        new ControlFault(
+                            "PowerSupplyOutputOffCommandFailed",
+                            reason,
+                            FaultScope.ElectricalGroup,
+                            members,
+                            groupId,
+                            DateTime.UtcNow,
+                            correlationId,
+                            FaultClassification.SystemFault,
+                            FaultRecoveryPolicy.Recoverable));
                 }
             });
         }
@@ -5245,20 +5380,20 @@ namespace Controller
                                 try { offSucceeded = CommandEpbOffSafetyImmediate(ch); } catch { }
                                 if (!offSucceeded)
                                 {
-                                    var offFailure = new StartupPositioningResult
-                                    {
-                                        Channel = ch,
-                                        Succeeded = false,
-                                        Stage = StartupPositioningStage.None,
-                                        Code = "StartupPositioningOutputOffCommandFailed",
-                                        Reason =
-                                            "OutputOffCommandFailed：启动定位软件异常后无法执行安全断电。" +
-                                            $" Original={ex.GetType().Name}: {ex.Message}"
-                                    };
-                                    failedResults.Add(offFailure);
-                                    await PublishStartupPositioningFailureAsync(offFailure)
-                                        .ConfigureAwait(false);
-                                    break;
+                                    RequestElectricalGroupEmergencyShutdown(
+                                        ch,
+                                        "StartupPositioningOutputOffCommandFailed");
+                                    var offDelayMs = GetDaqSelfMaintenanceDelayMs(attempt);
+                                    PublishChannelRuntimeState(
+                                        ch,
+                                        ChannelRuntimeState.Recovering,
+                                        "StartupPositioningOutputOffSelfHealing",
+                                        $"启动定位断电尚未确认，{offDelayMs}ms后持续重试。",
+                                        affectedChannels: enabled,
+                                        correlationId: runId,
+                                        allowTerminalReset: false);
+                                    await Task.Delay(offDelayMs, ct).ConfigureAwait(false);
+                                    continue;
                                 }
                                 var exceptionDelayMs = GetDaqSelfMaintenanceDelayMs(attempt);
                                 PublishChannelRuntimeState(
@@ -5268,7 +5403,7 @@ namespace Controller
                                     $"启动定位软件异常，第{attempt}次自愈，{exceptionDelayMs}ms后重试。",
                                     affectedChannels: enabled,
                                     correlationId: runId,
-                                    allowTerminalReset: true);
+                                    allowTerminalReset: false);
                                 _log.Warn(
                                     $"EPB[{ch}] 启动定位抛出软件异常，自动重试且不标记启动受阻。" +
                                     $"Attempt={attempt} DelayMs={exceptionDelayMs} " +
@@ -5289,24 +5424,20 @@ namespace Controller
                             try { retryOffSucceeded = CommandEpbOffSafetyImmediate(ch); } catch { }
                             if (!retryOffSucceeded)
                             {
-                                var offFailure = new StartupPositioningResult
-                                {
-                                    Channel = ch,
-                                    Succeeded = false,
-                                    Stage = result.Stage,
-                                    Code = "StartupPositioningOutputOffCommandFailed",
-                                    Reason =
-                                        "OutputOffCommandFailed：启动定位重试前无法执行安全断电。" +
-                                        $" Original={result.Code}/{result.Reason}",
-                                    PeakCurrentA = result.PeakCurrentA,
-                                    LastSlopeAperMs = result.LastSlopeAperMs,
-                                    ElapsedMs = result.ElapsedMs,
-                                    Samples = result.Samples
-                                };
-                                failedResults.Add(offFailure);
-                                await PublishStartupPositioningFailureAsync(offFailure)
-                                    .ConfigureAwait(false);
-                                break;
+                                RequestElectricalGroupEmergencyShutdown(
+                                    ch,
+                                    "StartupPositioningOutputOffCommandFailed");
+                                var offDelayMs = GetDaqSelfMaintenanceDelayMs(attempt);
+                                PublishChannelRuntimeState(
+                                    ch,
+                                    ChannelRuntimeState.Recovering,
+                                    "StartupPositioningOutputOffSelfHealing",
+                                    $"启动定位重试前断电尚未确认，{offDelayMs}ms后持续重试。",
+                                    affectedChannels: enabled,
+                                    correlationId: runId,
+                                    allowTerminalReset: false);
+                                await Task.Delay(offDelayMs, ct).ConfigureAwait(false);
+                                continue;
                             }
                             var delayMs = GetDaqSelfMaintenanceDelayMs(attempt);
                             PublishChannelRuntimeState(
@@ -5316,7 +5447,7 @@ namespace Controller
                                 $"启动定位软件瞬态未通过，第{attempt}次自愈，{delayMs}ms后重试。",
                                 affectedChannels: enabled,
                                 correlationId: runId,
-                                allowTerminalReset: true);
+                                allowTerminalReset: false);
                             _log.Warn(
                                 $"EPB[{ch}] 启动定位软件瞬态自动重试，不标记启动受阻。" +
                                 $"Attempt={attempt} DelayMs={delayMs} Code={result.Code} Reason={result.Reason}",

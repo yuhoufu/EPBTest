@@ -25,8 +25,7 @@ namespace Controller
                     result.Channel,
                     "StartupPositioningSelfHealing"))
             {
-                classification = FaultClassification.HardwareConfirmed;
-                reason += " OutputOffCommandFailed：启动定位失败后无法确认安全断电。";
+                reason += " OutputOffCommandFailed：保持电源组安全自恢复，断电确认后继续启动定位。";
             }
             var fault = new ControlFault(
                 string.IsNullOrWhiteSpace(result.Code) ? "StartupPositioningFailed" : result.Code,
@@ -128,7 +127,9 @@ namespace Controller
             bool freshIndependentPowerEvidence,
             bool outputControlFailure = false)
         {
-            return outputControlFailure || (overCurrent && freshIndependentPowerEvidence)
+            // 输出关闭失败属于控制链/外部设备故障，必须保持安全断电重试；
+            // 只有卡钳过流且具备独立、实时电源证据时才锁存为卡钳硬件故障。
+            return overCurrent && freshIndependentPowerEvidence
                 ? FaultClassification.HardwareConfirmed
                 : FaultClassification.SoftwareTransient;
         }

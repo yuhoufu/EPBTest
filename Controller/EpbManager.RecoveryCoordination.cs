@@ -18,11 +18,127 @@ namespace Controller
             new HydraulicRecoveryOwnershipCoordinator();
         private readonly ConcurrentDictionary<int, byte> _affectedGroupResetInProgress = new();
         private readonly ConcurrentDictionary<long, byte> _activeCycleLimitRecoveries = new();
+        private readonly ConcurrentDictionary<int, byte> _isolatedInfrastructureRecoveryScheduled = new();
+        private readonly ConcurrentDictionary<int, int> _isolatedInfrastructureRecoveryAttempts = new();
 
         private static int GetHydraulicGroupForChannel(int channel)
         {
             return channel >= 1 && channel <= 6 ? 1 :
                 channel >= 7 && channel <= 12 ? 2 : 0;
+        }
+
+        internal static int[] SelectInfrastructureRecoveryEligibleChannels(
+            IEnumerable<int> channels,
+            Func<int, bool> isEnabled,
+            Func<int, bool> isAlarmStopped,
+            Func<int, bool> isPaused,
+            Func<int, ChannelRuntimeState> getRuntimeState)
+        {
+            return (channels ?? Array.Empty<int>())
+                .Where(channel => channel >= 1 && channel <= 12)
+                .Where(channel => isEnabled?.Invoke(channel) ?? true)
+                .Where(channel => !(isAlarmStopped?.Invoke(channel) ?? false))
+                .Where(channel => !(isPaused?.Invoke(channel) ?? false))
+                .Where(channel =>
+                {
+                    var state = getRuntimeState?.Invoke(channel) ??
+                                ChannelRuntimeState.Recovering;
+                    return state == ChannelRuntimeState.Recovering ||
+                           state == ChannelRuntimeState.SystemFault;
+                })
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
+        }
+
+        private void ScheduleIsolatedInfrastructureRecovery(
+            IEnumerable<int> affectedChannels,
+            string reason,
+            Guid correlationId)
+        {
+            var runId = _activeBatchId;
+            var runEpoch = Interlocked.Read(ref _runEpoch);
+            foreach (var group in (affectedChannels ?? Array.Empty<int>())
+                         .Where(channel => channel >= 1 && channel <= 12)
+                         .Distinct()
+                         .GroupBy(GetHydraulicGroupForChannel))
+            {
+                var hydraulicGroupId = group.Key;
+                if (hydraulicGroupId <= 0 ||
+                    !_isolatedInfrastructureRecoveryScheduled.TryAdd(hydraulicGroupId, 0))
+                    continue;
+                var requested = group.OrderBy(channel => channel).ToArray();
+                _ = Task.Run(async () =>
+                {
+                    var reschedule = false;
+                    try
+                    {
+                        while (runEpoch == Interlocked.Read(ref _runEpoch) &&
+                               (runId == Guid.Empty || runId == _activeBatchId))
+                        {
+                            var eligible = SelectInfrastructureRecoveryEligibleChannels(
+                                requested,
+                                IsChannelEnabled,
+                                IsAlarmStopRequested,
+                                channel => _channelPausedUtc.ContainsKey(channel) ||
+                                           _manualStopRequestedChannels.ContainsKey(channel),
+                                channel => _channelRuntimeStateStore.Get(channel)?.State ??
+                                           ChannelRuntimeState.NotEnabled);
+                            if (eligible.Length == 0) return;
+
+                            var attempt = _isolatedInfrastructureRecoveryAttempts.AddOrUpdate(
+                                hydraulicGroupId,
+                                1,
+                                (_, current) => current + 1);
+                            await Task.Delay(SelectTimerRecoveryRetryDelayMs(attempt))
+                                .ConfigureAwait(false);
+                            if (IsBatchSessionActive &&
+                                CurrentBatchPauseState != BatchPauseState.Running)
+                                continue;
+
+                            await ExecuteAffectedGroupResetAsync(
+                                    eligible,
+                                    $"InfrastructureSelfHealing:{reason}:Attempt={attempt}",
+                                    correlationId,
+                                    runEpoch)
+                                .ConfigureAwait(false);
+
+                            var stillRecovering = eligible.Any(channel =>
+                            {
+                                var runtime = _channelRuntimeStateStore.Get(channel);
+                                return runtime != null &&
+                                       (runtime.State == ChannelRuntimeState.Recovering ||
+                                        runtime.State == ChannelRuntimeState.SystemFault);
+                            });
+                            if (!stillRecovering)
+                            {
+                                _isolatedInfrastructureRecoveryAttempts.TryRemove(
+                                    hydraulicGroupId,
+                                    out _);
+                                return;
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        reschedule = runEpoch == Interlocked.Read(ref _runEpoch) &&
+                                     (runId == Guid.Empty || runId == _activeBatchId);
+                        _log.Warn(
+                            $"外部设备自恢复调度异常，将重新登记持续重试。" +
+                            $"Hydraulic={hydraulicGroupId} Reason={reason} Error={ex.Message}",
+                            "液压协调");
+                    }
+                    finally
+                    {
+                        _isolatedInfrastructureRecoveryScheduled.TryRemove(hydraulicGroupId, out _);
+                        if (reschedule)
+                            ScheduleIsolatedInfrastructureRecovery(
+                                requested,
+                                reason,
+                                correlationId);
+                    }
+                });
+            }
         }
 
         private async Task<HydraulicRecoveryOwnershipCoordinator.HydraulicRecoveryOwnershipLease[]>
@@ -178,9 +294,18 @@ namespace Controller
                     .Concat(_runners.Keys)
                     .Concat(_hydraulicParticipants.Keys)
                     .Where(channel => GetHydraulicGroupForChannel(channel) == hydraulicGroupId)
+                    .Where(IsChannelEnabled)
+                    .Where(channel => !IsAlarmStopRequested(channel))
+                    .Where(channel => !_channelPausedUtc.ContainsKey(channel))
+                    .Where(channel => !_manualStopRequestedChannels.ContainsKey(channel))
                     .Distinct()
                     .OrderBy(channel => channel)
                     .ToArray();
+                if (channels.Length == 0)
+                {
+                    _affectedGroupResetInProgress.TryRemove(hydraulicGroupId, out _);
+                    continue;
+                }
                 HydraulicRecoveryOwnershipCoordinator.HydraulicRecoveryOwnershipLease lease = null;
                 try
                 {
@@ -204,7 +329,8 @@ namespace Controller
                             "恢复超过硬期限，正在执行受影响组Stop→Start等价清场。",
                             affectedChannels: channels,
                             correlationId: correlationId,
-                            allowTerminalReset: true);
+                            allowTerminalReset: false,
+                            allowSystemFaultReset: true);
                         try { CancelCyclePauseCts(channel); } catch { }
                         try { CancelStopCts(channel); } catch { }
                         RemoveTimerRuntime(channel, "AffectedGroupReset");
@@ -290,7 +416,8 @@ namespace Controller
                         plan,
                         "AffectedGroupResetRecovered",
                         "受影响组已完成Stop→Start等价清场并从未来完整槽重新加入",
-                        allowTerminalReset: true);
+                        allowTerminalReset: false,
+                        allowSystemFaultReset: true);
                     _log.Info(
                         $"受影响液压组{hydraulicGroupId}自动清场完成，" +
                         $"Channels=[{string.Join(",", channels)}] Reason={reason}",

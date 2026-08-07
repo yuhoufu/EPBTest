@@ -674,7 +674,7 @@ namespace Controller
                             $"资格圈证据软件自愈第{attempt}次：本次尝试已作废，随后重做同一资格圈。",
                             affectedChannels: new[] { channel },
                             correlationId: runId,
-                            allowTerminalReset: true);
+                            allowTerminalReset: false);
                         _log.Warn(
                             $"EPB[{channel}] 资格圈证据失败已作废，不停止批次。" +
                             $"Attempt={attempt} DelayMs={GetDaqSelfMaintenanceDelayMs(attempt)} " +
@@ -694,7 +694,7 @@ namespace Controller
                     $"资格圈证据自愈完成，共尝试{attempts}次；只保留最后一次有效资格结果。",
                     affectedChannels: new[] { channel },
                     correlationId: runId,
-                    allowTerminalReset: true);
+                    allowTerminalReset: false);
         }
 
         private void SetBatchPauseState(BatchPauseState state, int[] channels, string reason)
@@ -777,10 +777,18 @@ namespace Controller
         public async Task ResumeAlarmStoppedChannelAsync(
             int channel,
             bool operatorAcknowledged,
-            CancellationToken token = default)
+            CancellationToken token = default,
+            bool unattendedRecovery = false)
         {
             if (!operatorAcknowledged)
                 throw new InvalidOperationException("必须由操作员确认故障原因已排除后才能恢复。");
+            if (unattendedRecovery && _nonRecoverableChannelFaultLatch.ContainsKey(channel))
+                throw new InvalidOperationException("卡钳硬件故障已锁存，禁止无人值守自动拉起。");
+            if (!unattendedRecovery)
+            {
+                _manualStopRequestedChannels.TryRemove(channel, out _);
+                _nonRecoverableChannelFaultLatch.TryRemove(channel, out _);
+            }
             if (!CanAcknowledgeChannelAlarm(channel, out var rejection))
                 throw new InvalidOperationException(rejection);
 
@@ -1114,7 +1122,8 @@ namespace Controller
             ElectricalStaggerPlan staggerPlan,
             string runtimeCode,
             string runtimeReason,
-            bool allowTerminalReset)
+            bool allowTerminalReset,
+            bool allowSystemFaultReset = false)
         {
             var selected = (channels ?? Array.Empty<int>())
                 .Distinct()
@@ -1170,7 +1179,8 @@ namespace Controller
                         sharedFirstSlot,
                         runtimeCode,
                         runtimeReason,
-                        allowTerminalReset);
+                        allowTerminalReset,
+                        allowSystemFaultReset);
                 }
 
                 _log?.Info(
@@ -1196,7 +1206,8 @@ namespace Controller
             long firstSlot,
             string runtimeCode,
             string runtimeReason,
-            bool allowTerminalReset)
+            bool allowTerminalReset,
+            bool allowSystemFaultReset)
         {
             var pressureGroup = channel <= 6 ? 1 : 2;
             _activeFormalT0ByPressureGroup[pressureGroup] = t0;
@@ -1370,7 +1381,8 @@ namespace Controller
                 runtimeCode,
                 $"{runtimeReason}；FutureSlot={firstSlot}",
                 correlationId: _activeBatchId,
-                allowTerminalReset: allowTerminalReset);
+                allowTerminalReset: allowTerminalReset,
+                allowSystemFaultReset: allowSystemFaultReset);
             NonCriticalObserver.Invoke(
                 ChannelResumed,
                 channel,

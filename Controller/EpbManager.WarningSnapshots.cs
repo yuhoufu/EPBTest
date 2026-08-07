@@ -39,7 +39,7 @@ namespace Controller
 
         /// <summary>
         /// 软件自愈只能在本通道输出已可靠关闭后继续。若高优先级关闭命令失败，
-        /// 立即升级为同电源组失效安全联锁，禁止把真实输出控制故障当成可丢圈的软件瞬态。
+        /// 立即进入同电源组失效安全自恢复，保持断电重试；只有确认断电后才允许自动续测。
         /// </summary>
         private bool TryEnsureSoftwareRecoveryOutputOff(int channel, string context)
         {
@@ -51,7 +51,7 @@ namespace Controller
                 channel,
                 $"{context} OutputOffCommandFailed");
             _log?.Error(
-                $"EPB[{channel}] 软件自愈前无法确认电机断电，已升级为电源组失效安全联锁。" +
+                $"EPB[{channel}] 软件自愈前无法确认电机断电，已进入电源组失效安全自恢复。" +
                 $"Context={context}",
                 "EPB");
             return false;
@@ -332,7 +332,7 @@ namespace Controller
                 $"正式圈落盘软件自愈第{attempt}次；当前尝试已作废且不计数，未来完整圈自动重试。",
                 affectedChannels: new[] { channel },
                 correlationId: _activeBatchId,
-                allowTerminalReset: true);
+                allowTerminalReset: false);
             _log.Warn(
                 $"EPB[{channel}] 正式圈落盘软件异常已作废，不停止健康通道。" +
                 $"Cycle={cycleNumber} Stage={stage} Attempt={attempt} Error={cause?.Message}",
@@ -358,7 +358,7 @@ namespace Controller
                 $"正式圈控制软件自愈第{attempt}次；当前圈已作废且不计数，未来完整圈自动重试。",
                 affectedChannels: new[] { channel },
                 correlationId: _activeBatchId,
-                allowTerminalReset: true);
+                allowTerminalReset: false);
             _log.Warn(
                 $"EPB[{channel}] 正式圈控制软件异常已安全断电并作废。" +
                 $"Cycle={cycleNumber} Attempt={attempt} Reason={reason}",
@@ -383,7 +383,7 @@ namespace Controller
                 "本圈已可靠完成。",
                 affectedChannels: new[] { channel },
                 correlationId: _activeBatchId,
-                allowTerminalReset: true);
+                allowTerminalReset: false);
             _log.Info(
                 $"EPB[{channel}] 正式圈软件自愈完成。" +
                 $"ControlDiscarded={controlAttempts} PersistenceDiscarded={persistenceAttempts}。",
