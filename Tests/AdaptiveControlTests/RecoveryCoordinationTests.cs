@@ -16,6 +16,8 @@ namespace AdaptiveControlTests
             Run("EPB8从Slot506起才进入液压成员快照", FutureSlotEligibilityIsAtomic, ref passed);
             Run("液压超时与DAQ恢复只有一个所有者", HigherRecoveryPreemptsAndWaitsForHydraulic, ref passed);
             Run("恢复阶段忽略取消仍受硬期限约束", IgnoredCancellationCannotHoldRecoveryStage, ref passed);
+            Run("DAQ恢复先到必须等待整组截止且重入后才能提交", RecoveryWaitsForCutoffAndRejoin, ref passed);
+            Run("迟到旧代清理不得删除新代液压参与状态", LateCleanupCannotTouchNewParticipantVersion, ref passed);
             Run("连续100次恢复故障无所有权和Failure=1残留", HundredFaultsLeaveNoOwnerOrResetLoop, ref passed);
             Run("活动圈上限不触发DAQ任务重建", ActiveCycleLimitIsNotADaqTaskFault, ref passed);
             return passed;
@@ -97,6 +99,56 @@ namespace AdaptiveControlTests
                         "恢复阶段仍可能无限占用Completing");
                 }
             });
+        }
+
+        private static void RecoveryWaitsForCutoffAndRejoin()
+        {
+            RunAsync(async () =>
+            {
+                var gate = new DaqRecoveryPhaseGate();
+                Assert(gate.BeginCutoff(), "未能进入截止阶段");
+                var recoveredEvent = gate.WaitForCutoffAsync(CancellationToken.None);
+                await Task.Delay(20);
+                Assert(!recoveredEvent.IsCompleted, "恢复事件越过了整组截止屏障");
+                Assert(!gate.TryBeginValidation(), "截止完成前进入了验证阶段");
+
+                Assert(gate.CompleteCutoff(), "未能提交截止完成");
+                await recoveredEvent;
+                var validationReady = gate.WaitForValidationReadyAsync(CancellationToken.None);
+                await Task.Delay(20);
+                Assert(!validationReady.IsCompleted, "DAQ重建完成前进入了恢复验证");
+                Assert(!gate.TryBeginValidation(), "ValidationReady前进入了验证阶段");
+                Assert(gate.EnableValidation(), "未能开放恢复验证");
+                await validationReady;
+                Assert(gate.TryBeginValidation(), "截止完成后未能进入验证");
+                Assert(!gate.TryCommit(), "共同重入前错误提交了恢复成功");
+                Assert(gate.TryBeginRejoin(), "未能进入共同重入阶段");
+                Assert(!gate.TryCommit(), "共同重入完成前错误提交了恢复成功");
+                Assert(gate.CompleteRejoin(), "未能提交共同重入完成");
+                Assert(gate.TryCommit(), "共同重入完成后未能提交恢复成功");
+            });
+        }
+
+        private static void LateCleanupCannotTouchNewParticipantVersion()
+        {
+            Assert(
+                RecoveryEpochGuard.CanApplyParticipantCleanup(
+                    participantExists: true,
+                    expectedVersion: 41,
+                    currentVersion: 41),
+                "同代截止清理被错误拒绝");
+            Assert(
+                !RecoveryEpochGuard.CanApplyParticipantCleanup(
+                    participantExists: true,
+                    expectedVersion: 41,
+                    currentVersion: 42),
+                "迟到的旧代清理仍可删除新代 participant");
+            Assert(
+                RecoveryEpochGuard.CanApplyParticipantCleanup(
+                    participantExists: false,
+                    expectedVersion: 0,
+                    currentVersion: 0),
+                "不存在 participant 时清理未保持幂等");
         }
 
         private static void HundredFaultsLeaveNoOwnerOrResetLoop()

@@ -1123,7 +1123,9 @@ namespace Controller
             string runtimeCode,
             string runtimeReason,
             bool allowTerminalReset,
-            bool allowSystemFaultReset = false)
+            bool allowSystemFaultReset = false,
+            bool ownedByActiveDaqRecovery = false,
+            long recoveryEpoch = 0)
         {
             var selected = (channels ?? Array.Empty<int>())
                 .Distinct()
@@ -1137,56 +1139,103 @@ namespace Controller
             // the owning DAQ group is still in its device-level recovery.  Letting that path
             // replace/restart a timer here can re-pressurize the group before DAQ freshness and
             // power restoration have committed.  The DAQ recovery owns the eventual group rejoin.
-            var deferredForDaq = selected
-                .Where(channel => ShouldDeferIndependentRejoinForDaq(
-                    IsDaqRecoveryActiveForChannel(channel)))
-                .ToArray();
-            if (deferredForDaq.Length > 0)
+            if (!ownedByActiveDaqRecovery)
             {
-                _log?.Info(
-                    $"通道级恢复已移交DAQ组统一恢复：Channels=[{string.Join(",", deferredForDaq)}] " +
-                    $"Reason={runtimeCode}",
-                    "AI");
-                var deferred = new HashSet<int>(deferredForDaq);
-                selected = selected.Where(channel => !deferred.Contains(channel)).ToArray();
-                if (selected.Length == 0) return;
+                var deferredForDaq = selected
+                    .Where(channel => ShouldDeferIndependentRejoinForDaq(
+                        IsDaqRecoveryActiveForChannel(channel)))
+                    .ToArray();
+                if (deferredForDaq.Length > 0)
+                {
+                    _log?.Info(
+                        $"通道级恢复已移交DAQ组统一恢复：Channels=[{string.Join(",", deferredForDaq)}] " +
+                        $"Reason={runtimeCode}",
+                        "AI");
+                    var deferred = new HashSet<int>(deferredForDaq);
+                    selected = selected.Where(channel => !deferred.Contains(channel)).ToArray();
+                    if (selected.Length == 0) return;
+                }
             }
+            else if (recoveryEpoch <= 0)
+                throw new InvalidOperationException("DAQ恢复所有者重入缺少有效 RecoveryEpoch。");
 
             var nowUtc = DateTime.UtcNow;
             foreach (var group in selected.GroupBy(channel => channel <= 6 ? 1 : 2))
             {
-                if (!_activeFormalT0ByPressureGroup.TryGetValue(group.Key, out var t0))
-                    t0 = CeilToBoundary(nowUtc.AddMilliseconds(AnchorWarmupMs), PeriodMs);
-                _activeFormalT0ByPressureGroup[group.Key] = t0;
-                var sharedFirstSlot = SelectSharedFormalRejoinSlot(t0, nowUtc, PeriodMs);
-
                 var members = group.ToArray();
-                foreach (var channel in members)
-                    RemoveTimerRuntime(channel, "FormalSharedSlotRejoin");
-
-                foreach (var channel in members)
+                lock (_formalRejoinGates[group.Key])
                 {
-                    var remaining = Math.Max(
-                        0,
-                        _cfg.Test.GetEpbRecord(channel).TotalCount -
-                        _cfg.Test.GetEpbRecord(channel).RunCount);
-                    if (remaining <= 0) continue;
-                    StartRejoinedFormalChannel(
-                        channel,
-                        remaining,
-                        staggerPlan,
-                        t0,
-                        sharedFirstSlot,
-                        runtimeCode,
-                        runtimeReason,
-                        allowTerminalReset,
-                        allowSystemFaultReset);
-                }
+                    if (!_activeFormalT0ByPressureGroup.TryGetValue(group.Key, out var t0))
+                        t0 = CeilToBoundary(nowUtc.AddMilliseconds(AnchorWarmupMs), PeriodMs);
+                    _activeFormalT0ByPressureGroup[group.Key] = t0;
+                    var sharedFirstSlot = SelectSharedFormalRejoinSlot(t0, nowUtc, PeriodMs);
+                    var remainingByChannel = members.ToDictionary(
+                        channel => channel,
+                        channel => Math.Max(
+                            0,
+                            _cfg.Test.GetEpbRecord(channel).TotalCount -
+                            _cfg.Test.GetEpbRecord(channel).RunCount));
+                    var restartMembers = members
+                        .Where(channel => remainingByChannel[channel] > 0)
+                        .ToArray();
 
-                _log?.Info(
-                    $"通道按公共正式槽重新加入：Hydraulic={group.Key} Slot={sharedFirstSlot} " +
-                    $"Members=[{string.Join(",", members)}] Reason={runtimeCode}",
-                    "液压协调");
+                    foreach (var channel in members)
+                        RemoveTimerRuntime(channel, "FormalSharedSlotRejoin");
+
+                    // 先把本组全部成员登记到同一个未来槽，再启动任何一个 Timer。
+                    // 因此首个 Timer 即使立刻拍摄成员快照，也不可能只看到部分成员。
+                    foreach (var channel in restartMembers)
+                        MarkHydraulicParticipantFromFormalSlot(channel, sharedFirstSlot);
+
+                    try
+                    {
+                        foreach (var channel in restartMembers)
+                            StartRejoinedFormalChannel(
+                                channel,
+                                remainingByChannel[channel],
+                                staggerPlan,
+                                t0,
+                                sharedFirstSlot,
+                                runtimeCode,
+                                runtimeReason,
+                                allowTerminalReset,
+                                allowSystemFaultReset,
+                                publishRuntimeStateAndObserver: !ownedByActiveDaqRecovery);
+
+                        var candidates = group.Key == 1
+                            ? Enumerable.Range(1, 6).ToArray()
+                            : Enumerable.Range(7, 6).ToArray();
+                        var participants = GetHydraulicParticipantsInPressureGroupSnapshot(
+                            group.Key,
+                            candidates,
+                            sharedFirstSlot);
+                        var missing = restartMembers
+                            .Where(channel => !participants.Contains(channel))
+                            .ToArray();
+                        if (missing.Length > 0)
+                            throw new InvalidOperationException(
+                                $"共同重入不变量失败 Hydraulic={group.Key} Slot={sharedFirstSlot} " +
+                                $"Expected=[{string.Join(",", restartMembers)}] " +
+                                $"Actual=[{string.Join(",", participants)}] " +
+                                $"Missing=[{string.Join(",", missing)}]");
+
+                        _log?.Info(
+                            $"通道按公共正式槽原子重新加入：Hydraulic={group.Key} " +
+                            $"Slot={sharedFirstSlot} Members=[{string.Join(",", restartMembers)}] " +
+                            $"Participants=[{string.Join(",", participants)}] " +
+                            $"RecoveryEpoch={recoveryEpoch} Invariant=Passed Reason={runtimeCode}",
+                            "液压协调");
+                    }
+                    catch
+                    {
+                        foreach (var channel in restartMembers)
+                        {
+                            RemoveTimerRuntime(channel, "FormalSharedSlotRejoinRollback");
+                            UnmarkHydraulicParticipant(channel);
+                        }
+                        throw;
+                    }
+                }
             }
         }
 
@@ -1207,7 +1256,8 @@ namespace Controller
             string runtimeCode,
             string runtimeReason,
             bool allowTerminalReset,
-            bool allowSystemFaultReset)
+            bool allowSystemFaultReset,
+            bool publishRuntimeStateAndObserver)
         {
             var pressureGroup = channel <= 6 ? 1 : 2;
             _activeFormalT0ByPressureGroup[pressureGroup] = t0;
@@ -1223,10 +1273,6 @@ namespace Controller
             var baseCycle = Recorder?.GetLastCycleNumber(channel) ?? 0;
             var successfulCycles = 0;
             EpbTestCycle[channel] = remainingRuns;
-            // 先登记“首个合格正式槽”再暴露 participant。正在运行的上一槽即使此刻
-            // 重新拍摄成员快照，也会按槽过滤掉本通道。
-            MarkHydraulicParticipantFromFormalSlot(channel, firstSlot);
-
             _ = timer.StartAsync(null, initialDelay, async (cycleIndex, timerToken) =>
             {
                 var cyclePauseCts = RenewCyclePauseCts(channel);
@@ -1375,18 +1421,21 @@ namespace Controller
                 return controlSucceeded && persistenceCommitted;
             });
 
-            PublishChannelRuntimeState(
-                channel,
-                ChannelRuntimeState.Running,
-                runtimeCode,
-                $"{runtimeReason}；FutureSlot={firstSlot}",
-                correlationId: _activeBatchId,
-                allowTerminalReset: allowTerminalReset,
-                allowSystemFaultReset: allowSystemFaultReset);
-            NonCriticalObserver.Invoke(
-                ChannelResumed,
-                channel,
-                ex => _log?.Warn($"单通道继续观察者异常，已隔离：{ex.Message}", "EPB"));
+            if (publishRuntimeStateAndObserver)
+            {
+                PublishChannelRuntimeState(
+                    channel,
+                    ChannelRuntimeState.Running,
+                    runtimeCode,
+                    $"{runtimeReason}；FutureSlot={firstSlot}",
+                    correlationId: _activeBatchId,
+                    allowTerminalReset: allowTerminalReset,
+                    allowSystemFaultReset: allowSystemFaultReset);
+                NonCriticalObserver.Invoke(
+                    ChannelResumed,
+                    channel,
+                    ex => _log?.Warn($"单通道继续观察者异常，已隔离：{ex.Message}", "EPB"));
+            }
         }
     }
 }

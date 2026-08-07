@@ -261,6 +261,167 @@ namespace Controller
         }
     }
 
+    internal enum DaqRecoveryPhase
+    {
+        Created = 0,
+        CutoffStarted = 1,
+        CutoffCompleted = 2,
+        ValidationReady = 3,
+        Validating = 4,
+        Rejoining = 5,
+        RejoinCompleted = 6,
+        Committed = 7,
+        Terminal = 8
+    }
+
+    /// <summary>
+    ///     DAQ 自恢复的单调阶段门。恢复事件可以先于整组截止完成到达，但验证与重入
+    ///     必须等待 CutoffCompleted；需要重建 DAQ 时还必须等待 ValidationReady；
+    ///     恢复终态只能在共同重入成功后提交。
+    /// </summary>
+    internal sealed class DaqRecoveryPhaseGate
+    {
+        private int _phase;
+        private readonly TaskCompletionSource<bool> _cutoffCompleted =
+            new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<bool> _validationReady =
+            new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal DaqRecoveryPhase Current =>
+            (DaqRecoveryPhase)Volatile.Read(ref _phase);
+
+        internal bool BeginCutoff()
+        {
+            return Interlocked.CompareExchange(
+                       ref _phase,
+                       (int)DaqRecoveryPhase.CutoffStarted,
+                       (int)DaqRecoveryPhase.Created) ==
+                   (int)DaqRecoveryPhase.Created;
+        }
+
+        internal bool CompleteCutoff()
+        {
+            var advanced = Interlocked.CompareExchange(
+                               ref _phase,
+                               (int)DaqRecoveryPhase.CutoffCompleted,
+                               (int)DaqRecoveryPhase.CutoffStarted) ==
+                           (int)DaqRecoveryPhase.CutoffStarted;
+            if (advanced || (int)Current >= (int)DaqRecoveryPhase.CutoffCompleted)
+                _cutoffCompleted.TrySetResult(true);
+            return advanced;
+        }
+
+        internal Task WaitForCutoffAsync(CancellationToken token)
+        {
+            return WaitWithCancellationAsync(_cutoffCompleted.Task, token);
+        }
+
+        internal bool EnableValidation()
+        {
+            var advanced = Interlocked.CompareExchange(
+                               ref _phase,
+                               (int)DaqRecoveryPhase.ValidationReady,
+                               (int)DaqRecoveryPhase.CutoffCompleted) ==
+                           (int)DaqRecoveryPhase.CutoffCompleted;
+            if (advanced || (int)Current >= (int)DaqRecoveryPhase.ValidationReady)
+                _validationReady.TrySetResult(true);
+            return advanced;
+        }
+
+        internal Task WaitForValidationReadyAsync(CancellationToken token)
+        {
+            return WaitWithCancellationAsync(_validationReady.Task, token);
+        }
+
+        internal bool TryBeginValidation()
+        {
+            while (true)
+            {
+                var current = Current;
+                if (current == DaqRecoveryPhase.Validating) return true;
+                if (current != DaqRecoveryPhase.ValidationReady) return false;
+                if (Interlocked.CompareExchange(
+                        ref _phase,
+                        (int)DaqRecoveryPhase.Validating,
+                        (int)DaqRecoveryPhase.ValidationReady) ==
+                    (int)DaqRecoveryPhase.ValidationReady)
+                    return true;
+            }
+        }
+
+        internal bool TryBeginRejoin()
+        {
+            return Interlocked.CompareExchange(
+                       ref _phase,
+                       (int)DaqRecoveryPhase.Rejoining,
+                       (int)DaqRecoveryPhase.Validating) ==
+                   (int)DaqRecoveryPhase.Validating;
+        }
+
+        internal bool CompleteRejoin()
+        {
+            return Interlocked.CompareExchange(
+                       ref _phase,
+                       (int)DaqRecoveryPhase.RejoinCompleted,
+                       (int)DaqRecoveryPhase.Rejoining) ==
+                   (int)DaqRecoveryPhase.Rejoining;
+        }
+
+        internal bool TryCommit()
+        {
+            return Interlocked.CompareExchange(
+                       ref _phase,
+                       (int)DaqRecoveryPhase.Committed,
+                       (int)DaqRecoveryPhase.RejoinCompleted) ==
+                   (int)DaqRecoveryPhase.RejoinCompleted;
+        }
+
+        internal void FailRejoin()
+        {
+            Interlocked.CompareExchange(
+                ref _phase,
+                (int)DaqRecoveryPhase.Validating,
+                (int)DaqRecoveryPhase.Rejoining);
+        }
+
+        internal void MarkTerminal()
+        {
+            Interlocked.Exchange(ref _phase, (int)DaqRecoveryPhase.Terminal);
+        }
+
+        private static async Task WaitWithCancellationAsync(
+            Task task,
+            CancellationToken token)
+        {
+            if (task.IsCompleted)
+            {
+                await task.ConfigureAwait(false);
+                return;
+            }
+
+            token.ThrowIfCancellationRequested();
+            var cancelled = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            using (token.Register(() => cancelled.TrySetCanceled()))
+            {
+                var completed = await Task.WhenAny(task, cancelled.Task).ConfigureAwait(false);
+                await completed.ConfigureAwait(false);
+            }
+        }
+    }
+
+    internal static class RecoveryEpochGuard
+    {
+        internal static bool CanApplyParticipantCleanup(
+            bool participantExists,
+            long expectedVersion,
+            long currentVersion)
+        {
+            if (!participantExists) return true;
+            return expectedVersion > 0 && expectedVersion == currentVersion;
+        }
+    }
+
     internal sealed class RecoveryFailureBackoffState
     {
         private int _consecutiveFailures;

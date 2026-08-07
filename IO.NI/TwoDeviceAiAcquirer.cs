@@ -3685,7 +3685,18 @@ namespace IO.NI
             {
                 if (!DaqQueueAdmission.TryEnter(ref _queueCountDev1, _processingQueueCapacity))
                 {
-                    PublishQueueFullFault(item.Device, item.Generation, "BackgroundQueueFull");
+                    var depth = Volatile.Read(ref _queueCountDev1);
+                    var oldestAgeMs = _queueDev1.TryPeek(out var oldest)
+                        ? AgeMs(oldest.EnqueuedMonotonicTicks, Stopwatch.GetTimestamp())
+                        : 0;
+                    PublishQueueFullFault(
+                        item.Device,
+                        item.Generation,
+                        "BackgroundQueueFull",
+                        "Background",
+                        depth,
+                        _processingQueueCapacity,
+                        oldestAgeMs);
                     return false;
                 }
                 _queueDev1.Enqueue(item);
@@ -3695,7 +3706,18 @@ namespace IO.NI
             {
                 if (!DaqQueueAdmission.TryEnter(ref _queueCountDev2, _processingQueueCapacity))
                 {
-                    PublishQueueFullFault(item.Device, item.Generation, "BackgroundQueueFull");
+                    var depth = Volatile.Read(ref _queueCountDev2);
+                    var oldestAgeMs = _queueDev2.TryPeek(out var oldest)
+                        ? AgeMs(oldest.EnqueuedMonotonicTicks, Stopwatch.GetTimestamp())
+                        : 0;
+                    PublishQueueFullFault(
+                        item.Device,
+                        item.Generation,
+                        "BackgroundQueueFull",
+                        "Background",
+                        depth,
+                        _processingQueueCapacity,
+                        oldestAgeMs);
                     return false;
                 }
                 _queueDev2.Enqueue(item);

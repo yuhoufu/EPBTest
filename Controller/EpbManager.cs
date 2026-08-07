@@ -345,9 +345,16 @@ namespace Controller
         // - 若某通道报警停机或提前结束，但仍被重复登记进 InFlight，则会阻塞其它正常通道到达“电压释放点”后的统一释压。
         // - 因此这里维护一个并发集合，确保每圈只登记“仍在跑/仍参与本轮判定”的通道。
         private readonly ConcurrentDictionary<int, byte> _hydraulicParticipants = new();
+        // participant 版本与通道锁用于拒绝迟到的旧恢复清理。旧代只能移除它在
+        // 截止开始时看到的 participant，不能删除后来共同重入的新代状态。
+        private readonly ConcurrentDictionary<int, long> _hydraulicParticipantVersions = new();
+        private readonly ConcurrentDictionary<int, object> _hydraulicParticipantGates = new();
+        private long _hydraulicParticipantVersionSequence;
         // 恢复通道在未来正式槽重新加入时，只有从该槽开始才可进入液压成员快照。
         // 不能只用全局 participant 布尔集合，否则新成员会污染仍在执行的上一槽。
         private readonly ConcurrentDictionary<int, long> _firstEligibleFormalSlotByChannel = new();
+        private readonly object[] _formalRejoinGates =
+            { new object(), new object(), new object() };
         private readonly ConcurrentDictionary<int, HydraulicCycleLease> _hydraulicLeaseByChannel = new();
         private long _singleHydraulicGeneration;
         private long _startupPositioningGeneration;
@@ -417,6 +424,8 @@ namespace Controller
             public HydraulicRecoveryOwnershipCoordinator.HydraulicRecoveryOwnershipLease[] Ownerships;
             public CancellationTokenRegistration[] OwnershipCancellationRegistrations;
             public int OwnershipReleased;
+            public readonly DaqRecoveryPhaseGate Phase = new DaqRecoveryPhaseGate();
+            public Dictionary<int, long> CutoffParticipantVersions;
         }
 
         private static long DaqAbortedCycleKey(int channel, int cycleNumber)
@@ -501,14 +510,24 @@ namespace Controller
         /// </remarks>
         private void MarkHydraulicParticipant(int channel)
         {
-            _firstEligibleFormalSlotByChannel.TryRemove(channel, out _);
-            _hydraulicParticipants[channel] = 0;
+            lock (GetHydraulicParticipantGate(channel))
+            {
+                _hydraulicParticipantVersions[channel] =
+                    Interlocked.Increment(ref _hydraulicParticipantVersionSequence);
+                _firstEligibleFormalSlotByChannel.TryRemove(channel, out _);
+                _hydraulicParticipants[channel] = 0;
+            }
         }
 
         private void MarkHydraulicParticipantFromFormalSlot(int channel, long firstEligibleSlot)
         {
-            _firstEligibleFormalSlotByChannel[channel] = Math.Max(0, firstEligibleSlot);
-            _hydraulicParticipants[channel] = 0;
+            lock (GetHydraulicParticipantGate(channel))
+            {
+                _hydraulicParticipantVersions[channel] =
+                    Interlocked.Increment(ref _hydraulicParticipantVersionSequence);
+                _firstEligibleFormalSlotByChannel[channel] = Math.Max(0, firstEligibleSlot);
+                _hydraulicParticipants[channel] = 0;
+            }
         }
 
         /// <summary>
@@ -526,8 +545,55 @@ namespace Controller
         /// </remarks>
         private void UnmarkHydraulicParticipant(int channel)
         {
-            _hydraulicParticipants.TryRemove(channel, out _);
-            _firstEligibleFormalSlotByChannel.TryRemove(channel, out _);
+            lock (GetHydraulicParticipantGate(channel))
+            {
+                _hydraulicParticipants.TryRemove(channel, out _);
+                _firstEligibleFormalSlotByChannel.TryRemove(channel, out _);
+            }
+        }
+
+        private object GetHydraulicParticipantGate(int channel)
+        {
+            return _hydraulicParticipantGates.GetOrAdd(channel, _ => new object());
+        }
+
+        private long CaptureHydraulicParticipantVersion(int channel)
+        {
+            lock (GetHydraulicParticipantGate(channel))
+            {
+                return _hydraulicParticipants.ContainsKey(channel) &&
+                       _hydraulicParticipantVersions.TryGetValue(channel, out var version)
+                    ? version
+                    : 0;
+            }
+        }
+
+        private bool TryUnmarkHydraulicParticipant(
+            int channel,
+            long expectedVersion,
+            string reason)
+        {
+            lock (GetHydraulicParticipantGate(channel))
+            {
+                var participantExists = _hydraulicParticipants.ContainsKey(channel);
+                _hydraulicParticipantVersions.TryGetValue(channel, out var currentVersion);
+                if (!RecoveryEpochGuard.CanApplyParticipantCleanup(
+                        participantExists,
+                        expectedVersion,
+                        currentVersion))
+                {
+                    _log?.Warn(
+                        $"EPB[{channel}] 拒绝迟到的液压参与状态清理。" +
+                        $"ExpectedVersion={expectedVersion} CurrentVersion={currentVersion} " +
+                        $"Reason={reason}",
+                        "液压协调");
+                    return false;
+                }
+
+                _hydraulicParticipants.TryRemove(channel, out _);
+                _firstEligibleFormalSlotByChannel.TryRemove(channel, out _);
+                return true;
+            }
         }
 
         /// <summary>
@@ -1049,7 +1115,10 @@ namespace Controller
             }
             finally
             {
-                _hydraulicLeaseByChannel.TryRemove(channel, out _);
+                // 只移除本次取得的旧 lease。若通道已进入新的正式代次，
+                // 迟到的旧释放任务不得删除新 lease。
+                ((ICollection<KeyValuePair<int, HydraulicCycleLease>>)_hydraulicLeaseByChannel)
+                    .Remove(new KeyValuePair<int, HydraulicCycleLease>(channel, lease));
             }
         }
 
@@ -2318,9 +2387,17 @@ namespace Controller
                 RaiseRecoverableAlarm = raiseRecoverableAlarm ? 1 : 0,
                 RecoverableAlarmChannel = recoverableAlarmChannel,
                 BeforeClock = _acq.GetDaqFreshnessSnapshot(device, 100),
-                PreviousGeneration = _acq.GetCurrentGeneration(device)
+                PreviousGeneration = _acq.GetCurrentGeneration(device),
+                CutoffParticipantVersions = affected.ToDictionary(
+                    channel => channel,
+                    CaptureHydraulicParticipantVersion)
             };
             if (!_daqAutoRecovery.TryAdd(device, context)) return;
+            if (!context.Phase.BeginCutoff())
+            {
+                CompleteCancelledRecovery(context, "DaqCutoffPhaseRejected");
+                return;
+            }
             StartDaqRecoveryWatchdog(context);
             StartAffectedGroupRecoveryDeadline(context);
             try
@@ -2339,6 +2416,7 @@ namespace Controller
                     channel => _currentCycleNumberByChannel.TryGetValue(channel, out var cycle)
                         ? cycle
                         : 0);
+                var hydraulicReleaseTasks = new List<Task>(affected.Length);
                 foreach (var channel in affected)
                 {
                     // 先对整组发布状态并断电，再做任何可能等待落盘边界的圈封存。
@@ -2358,9 +2436,20 @@ namespace Controller
                         timer.Pause($"DaqSoftwareRecovery:{context.TriggerCode}");
                     CancelCyclePauseCts(channel);
                     try { CommandEpbOffHighPriority(channel, "DaqSoftwareRecovery"); } catch { }
-                    UnmarkHydraulicParticipant(channel);
-                    try { ObserveSafetyTask(HydraulicMarkReleaseAsync(channel), "DaqRecoveryRelease", channel); }
-                    catch { }
+                    context.CutoffParticipantVersions.TryGetValue(
+                        channel,
+                        out var expectedParticipantVersion);
+                    TryUnmarkHydraulicParticipant(
+                        channel,
+                        expectedParticipantVersion,
+                        $"DaqCutoff:{context.Device}:RecoveryEpoch={context.RecoveryEpoch}");
+                    try { hydraulicReleaseTasks.Add(HydraulicMarkReleaseAsync(channel)); }
+                    catch (Exception ex)
+                    {
+                        _log.Warn(
+                            $"DAQ截止液压释放请求失败 EPB={channel}: {ex.Message}",
+                            "液压协调");
+                    }
                 }
                 foreach (var channel in affected)
                 {
@@ -2373,6 +2462,13 @@ namespace Controller
                             $"DAQ:{context.TriggerCode}",
                             cycle);
                 }
+
+                await RecoveryStageDeadline.RunAsync(
+                        "DaqCutoffHydraulicRelease",
+                        RecoveryStageTimeoutMs,
+                        _ => Task.WhenAll(hydraulicReleaseTasks),
+                        context.Cancellation.Token)
+                    .ConfigureAwait(false);
 
                 if (context.RaiseRecoverableAlarm != 0 && context.RecoverableAlarmChannel > 0)
                 {
@@ -2438,10 +2534,20 @@ namespace Controller
                     _log.Warn($"DAQ快速重同步未执行 Device={device}: {ex.Message}", "AI");
                 }
 
+                if (!context.Phase.CompleteCutoff())
+                    throw new InvalidOperationException(
+                        $"DAQ截止阶段无法提交 Device={device} " +
+                        $"Phase={context.Phase.Current} RecoveryEpoch={context.RecoveryEpoch}");
+                if (!restartDaq && !context.Phase.EnableValidation())
+                    throw new InvalidOperationException(
+                        $"DAQ截止后无法开放验证 Device={device} " +
+                        $"Phase={context.Phase.Current} RecoveryEpoch={context.RecoveryEpoch}");
+
                 _log.Warn(
                     $"DAQ软件自恢复开始 Device={device} Affected=[{string.Join(",", affected)}] " +
                     $"CorrelationId={context.CorrelationId:N} Code={context.TriggerCode} " +
-                    $"FastResyncDiscarded={fastResyncDiscarded}。",
+                    $"RecoveryEpoch={context.RecoveryEpoch} " +
+                    $"FastResyncDiscarded={fastResyncDiscarded} CutoffCompleted=true。",
                     "AI");
                 PublishRecoveryProgress(context, "安全断电已完成，正在恢复数据链。");
                 _ = ExportDaqIncidentSnapshotAsync(context, reason, "10-cutoff");
@@ -2504,6 +2610,10 @@ namespace Controller
                         return;
                     }
                     _persistence.AcceptGeneration(device, _acq.GetCurrentGeneration(device));
+                    if (!context.Phase.EnableValidation())
+                        throw new InvalidOperationException(
+                            $"DAQ重建后无法开放验证 Device={device} " +
+                            $"Phase={context.Phase.Current} RecoveryEpoch={context.RecoveryEpoch}");
                     await TryCompleteDaqAutoRecoveryAsync(device).ConfigureAwait(false);
                     return;
                 }
@@ -2529,11 +2639,19 @@ namespace Controller
             if (Interlocked.CompareExchange(ref context.Completing, 1, 0) != 0) return;
             try
             {
+                context.ValidationPhase = "CutoffBarrier";
+                await context.Phase.WaitForCutoffAsync(context.Cancellation.Token)
+                    .ConfigureAwait(false);
+                context.ValidationPhase = "ValidationReadyBarrier";
+                await context.Phase.WaitForValidationReadyAsync(context.Cancellation.Token)
+                    .ConfigureAwait(false);
                 if (!IsCurrentRecovery(context))
                 {
                     CompleteCancelledRecovery(context, "RunEpochChangedBeforeValidation");
                     return;
                 }
+                if (!context.Phase.TryBeginValidation())
+                    return;
                 context.ValidationPhase = "PersistenceQueue";
                 var queue = _persistence.GetSnapshot(device);
                 if (queue.QueueDepth > _daqPersistenceResumeDepth ||
@@ -2658,17 +2776,49 @@ namespace Controller
                     ElapsedMs = (int)Math.Max(0, (DateTime.UtcNow - context.StartedUtc).TotalMilliseconds),
                     Classification = FaultClassification.SoftwareTransient
                 };
-                context.ValidationPhase = "Commit";
-                lock (_daqRecoveryCommitGate)
+
+                // 共同重入和恢复终态提交共用同一把门。人工 Stop/运行代次取消也必须
+                // 取得该门，因此不可能在“Timer 已重建、终态尚未提交”的缝隙中抢先取消。
+                context.ValidationPhase = "RejoinAndCommit";
+                try
                 {
-                    if (!IsCurrentRecovery(context) ||
-                        !context.Terminal.TryCommit(DaqRecoveryTerminal.Recovered))
-                        return;
-                    context.FailureBackoff.CommitSuccess();
-                    MarkDaqRecoveryTerminal(context.CorrelationId, context.Device);
-                    _persistence.ResumeAdmission(device);
-                    _daqAutoRecovery.TryRemove(device, out _);
-                    context.Completion.TrySetResult(result);
+                    lock (_daqRecoveryCommitGate)
+                    {
+                        if (!IsCurrentRecovery(context)) return;
+                        if (!context.Phase.TryBeginRejoin())
+                            throw new InvalidOperationException(
+                                $"DAQ恢复重入阶段顺序无效 Device={device} " +
+                                $"Phase={context.Phase.Current} RecoveryEpoch={context.RecoveryEpoch}");
+
+                        if (!holdForBatchPause && rejoinChannels.Length > 0)
+                            RejoinFormalChannelsAtSharedFutureSlot(
+                                rejoinChannels,
+                                rejoinPlan,
+                                "DaqSoftwareRecovered",
+                                "DAQ数据链与机械释放均已确认，按当前公共节律槽重新加入",
+                                allowTerminalReset: false,
+                                ownedByActiveDaqRecovery: true,
+                                recoveryEpoch: context.RecoveryEpoch);
+
+                        if (!context.Phase.CompleteRejoin())
+                            throw new InvalidOperationException(
+                                $"DAQ恢复重入完成阶段顺序无效 Device={device} " +
+                                $"Phase={context.Phase.Current} RecoveryEpoch={context.RecoveryEpoch}");
+                        if (!context.Phase.TryCommit() ||
+                            !context.Terminal.TryCommit(DaqRecoveryTerminal.Recovered))
+                            return;
+
+                        context.FailureBackoff.CommitSuccess();
+                        MarkDaqRecoveryTerminal(context.CorrelationId, context.Device);
+                        _persistence.ResumeAdmission(device);
+                        _daqAutoRecovery.TryRemove(device, out _);
+                        context.Completion.TrySetResult(result);
+                    }
+                }
+                catch
+                {
+                    context.Phase.FailRejoin();
+                    throw;
                 }
                 ReleaseDaqRecoveryOwnerships(context);
                 if (holdForBatchPause)
@@ -2682,20 +2832,25 @@ namespace Controller
                             affectedChannels: rejoinChannels,
                             correlationId: context.CorrelationId);
                 }
-                else if (rejoinChannels.Length > 0)
+                else
                 {
-                    RejoinFormalChannelsAtSharedFutureSlot(
-                        rejoinChannels,
-                        rejoinPlan,
-                        "DaqSoftwareRecovered",
-                        "DAQ数据链与机械释放均已确认，按当前公共节律槽重新加入",
-                        allowTerminalReset: false);
+                    foreach (var channel in rejoinChannels)
+                    {
+                        PublishChannelRuntimeState(
+                            channel,
+                            ChannelRuntimeState.Running,
+                            "DaqSoftwareRecoveredCommitted",
+                            "DAQ恢复与共同节拍重入已原子提交",
+                            affectedChannels: rejoinChannels,
+                            correlationId: context.CorrelationId);
+                        NonCriticalObserver.Invoke(
+                            ChannelResumed,
+                            channel,
+                            ex => _log?.Warn(
+                                $"DAQ恢复继续观察者异常，已隔离：{ex.Message}",
+                                "AI"));
+                    }
                 }
-                foreach (var groupId in context.AffectedChannels
-                             .Select(GetElectricalGroupId)
-                             .Where(id => id > 0)
-                             .Distinct())
-                    _emergencyPowerGroupLatch.TryRemove(groupId);
                 foreach (var channel in context.AffectedChannels
                              .Where(channel => _channelPausedUtc.ContainsKey(channel))
                              .Distinct())
@@ -2706,11 +2861,19 @@ namespace Controller
                         "DAQ软件数据链已恢复；通道仍按人工操作保持暂停",
                         affectedChannels: new[] { channel },
                         correlationId: context.CorrelationId);
+                foreach (var groupId in context.AffectedChannels
+                             .Select(GetElectricalGroupId)
+                             .Where(id => id > 0)
+                             .Distinct())
+                    _emergencyPowerGroupLatch.TryRemove(groupId);
                 _log.Info(
                     holdForBatchPause
                         ? $"DAQ软件自动恢复完成 Device={device}；批次状态={batchPauseState}，" +
-                          $"保持定时器暂停，等待批次继续流程统一恢复。CorrelationId={context.CorrelationId:N}。"
-                        : $"DAQ软件自动恢复完成 Device={device} CorrelationId={context.CorrelationId:N}。",
+                          $"保持定时器暂停，等待批次继续流程统一恢复。" +
+                          $"RecoveryEpoch={context.RecoveryEpoch} CorrelationId={context.CorrelationId:N}。"
+                        : $"DAQ软件自动恢复完成 Device={device} " +
+                          $"RecoveryEpoch={context.RecoveryEpoch} RejoinCommitted=true " +
+                          $"CorrelationId={context.CorrelationId:N}。",
                     "AI");
                 if (context.RaiseRecoverableAlarm != 0 &&
                     context.RecoverableAlarmChannel > 0 &&
@@ -2797,22 +2960,16 @@ namespace Controller
                 return;
             if (!_daqAutoRecovery.TryGetValue(device, out var context))
             {
-                var affectedNow = GetDaqGroupChannels(device);
-                if (affectedNow.Length == 0) return;
-                context = new DaqAutoRecoveryContext
-                {
-                    Device = device,
-                    CorrelationId = correlationId == Guid.Empty ? Guid.NewGuid() : correlationId,
-                    StartedUtc = DateTime.UtcNow,
-                    CutoffUtc = DateTime.UtcNow,
-                    AffectedChannels = affectedNow,
-                    TriggerCode = code,
-                    TriggerReason = reason,
-                    RunEpoch = Interlocked.Read(ref _runEpoch),
-                    RecoveryEpoch = Interlocked.Increment(ref _recoveryEpoch)
-                };
-                if (!_daqAutoRecovery.TryAdd(device, context))
-                    context = _daqAutoRecovery[device];
+                await BeginDaqAutoRecoveryAsync(
+                        device,
+                        code,
+                        reason,
+                        correlationId,
+                        restartDaq: false,
+                        eventUtc: DateTime.UtcNow)
+                    .ConfigureAwait(false);
+                if (!_daqAutoRecovery.TryGetValue(device, out context))
+                    return;
             }
             if (context.Terminal.Current != DaqRecoveryTerminal.None) return;
 
@@ -2829,9 +2986,13 @@ namespace Controller
             if (disposition == DaqRecoveryFailureDisposition.ConfirmedHardwareAlarm &&
                 !ShouldAutoRecoverExternalEquipmentFault(FaultScope.DaqGroup))
             {
-                if (!context.Terminal.TryCommit(DaqRecoveryTerminal.HardwareConfirmed)) return;
-                MarkDaqRecoveryTerminal(context.CorrelationId, context.Device);
-                _daqAutoRecovery.TryRemove(device, out _);
+                lock (_daqRecoveryCommitGate)
+                {
+                    if (!context.Terminal.TryCommit(DaqRecoveryTerminal.HardwareConfirmed)) return;
+                    context.Phase.MarkTerminal();
+                    MarkDaqRecoveryTerminal(context.CorrelationId, context.Device);
+                    _daqAutoRecovery.TryRemove(device, out _);
+                }
                 var primary = context.AffectedChannels.OrderBy(x => x).FirstOrDefault();
                 var result = recoveryResult ?? new DaqRecoveryResult { Device = device };
                 result.Classification = FaultClassification.HardwareConfirmed;
@@ -2968,9 +3129,43 @@ namespace Controller
                         return;
                     }
 
+                    // 初次截止若因输出位图未清零而转入自维护，必须等本次 DAQ
+                    // 重建成功后再补交 CutoffCompleted。这样提前到达的 Recovered
+                    // 观察者不会在重建仍进行时抢先验证和共同重入。
+                    if (context.Phase.Current == DaqRecoveryPhase.CutoffStarted)
+                    {
+                        var discarded = 0;
+                        try
+                        {
+                            discarded = _acq.ResynchronizeInactiveControlToLatest(context.Device);
+                        }
+                        catch (Exception ex)
+                        {
+                            _log.Warn(
+                                $"DAQ自维护快速重同步未执行 Device={context.Device}: {ex.Message}",
+                                "AI");
+                        }
+                        if (!context.Phase.CompleteCutoff())
+                            throw new InvalidOperationException(
+                                $"DAQ自维护无法补交截止阶段 Device={context.Device} " +
+                                $"Phase={context.Phase.Current}");
+                        _log.Warn(
+                            $"DAQ自维护确认整组断电、重建成功并补交截止阶段 Device={context.Device} " +
+                            $"RecoveryEpoch={context.RecoveryEpoch} " +
+                            $"FastResyncDiscarded={discarded} CutoffCompleted=true。",
+                            "AI");
+                    }
+                    await context.Phase.WaitForCutoffAsync(context.Cancellation.Token)
+                        .ConfigureAwait(false);
+
                     _persistence.AcceptGeneration(
                         context.Device,
                         _acq.GetCurrentGeneration(context.Device));
+                    if (!context.Phase.EnableValidation() &&
+                        (int)context.Phase.Current < (int)DaqRecoveryPhase.ValidationReady)
+                        throw new InvalidOperationException(
+                            $"DAQ自维护重建后无法开放验证 Device={context.Device} " +
+                            $"Phase={context.Phase.Current}");
 
                     // Persistence and PSU validation can lag the DAQ rebuild briefly. Keep
                     // checking without rebuilding again; successful validation commits the
@@ -4745,8 +4940,14 @@ namespace Controller
                     channel,
                     ChannelRuntimeState.ManualStopped,
                     "StopAll",
-                    context.Reason ?? "停止全部",
-                    affectedChannels: channels);
+                    context.Source == StopSource.ManualUi
+                        ? $"人工停止，启动/自动恢复已取消。{context.Reason ?? string.Empty}"
+                        : context.Reason ?? "停止全部",
+                    affectedChannels: channels,
+                    correlationId: stopCorrelation,
+                    // 现场人工停止是新的权威终态，允许覆盖旧 StartBlocked；
+                    // 原报警/启动失败原因仍保留在历史日志和关联号中。
+                    allowTerminalReset: context.Source == StopSource.ManualUi);
             }
             ClearChannelRuntimes(nameof(RunStopSafetyAsync));
 

@@ -27,6 +27,22 @@ namespace AdaptiveControlTests
             {
                 if (args.Length == 2 && args[0].Equals("--replay", StringComparison.OrdinalIgnoreCase))
                     return ReplayCsv(args[1]);
+                if (args.Length == 1 &&
+                    args[0].Equals("--recovery-coordination", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += RecoveryCoordinationTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
+                    args[0].Equals("--incident-10358-029", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += RecoveryCoordinationTests.RunAll();
+                    Run("峰值偏差只比较同一证据时间窗", PeakEvidenceMismatchRequiresComparableWindow);
+                    Run("人工停止可覆盖旧启动受阻显示", ManualStopReplacesStartBlocked);
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
 
                 Run("正常夹紧", NormalClamp);
                 Run("学习尾部提前量后预测夹紧", LearnedTailLeadPredictsClamp);
@@ -84,6 +100,7 @@ namespace AdaptiveControlTests
                 Run("电流硬故障与已确认专用策略不二次计数", ImmediateAndPreconfirmedFaultClassification);
                 Run("定时器自身取消不记录ERROR", TimerOwnedCancellationIsNotError);
                 Run("峰值证据连续3圈且有效圈清零", PeakEvidenceMismatchRequiresThreeCycles);
+                Run("峰值偏差只比较同一证据时间窗", PeakEvidenceMismatchRequiresComparableWindow);
                 Run("报警界面提示不暴露英文故障码", AlarmMessagesAreLocalized);
                 Run("UI配置并发保存保持有效XML", ConcurrentUiConfigSaveIsAtomic);
                 Run("UI勾选保存防抖并保留最终状态", UiConfigUpdateIsDebounced);
@@ -151,6 +168,7 @@ namespace AdaptiveControlTests
                 Run("DAQ恢复不得解除报警停机状态", RuntimeStateRecoveryCannotClearAlarm);
                 Run("基础设施恢复只解除系统故障不解除卡钳报警", InfrastructureRecoveryOnlyClearsSystemFault);
                 Run("新运行预检后可复位旧停机状态", RuntimeStateResetsOnlyForNewRun);
+                Run("人工停止可覆盖旧启动受阻显示", ManualStopReplacesStartBlocked);
                 Run("状态版本阻止迟到报警覆盖新运行状态", RuntimeStateRevisionRejectsLateUiDelivery);
                 Run("安全退出仅允许压力证据单项缺失", StopSafetyExitPolicy);
                 Run("Dev1与Dev2有界队列容量互不影响", DaqBoundedQueuesAreIndependent);
@@ -2294,6 +2312,27 @@ namespace AdaptiveControlTests
                 "有效匹配圈未清零峰值证据偏差计数");
         }
 
+        private static void PeakEvidenceMismatchRequiresComparableWindow()
+        {
+            var evidenceThrough = new DateTime(
+                2026, 8, 8, 0, 12, 49, 100, DateTimeKind.Utc);
+            Assert(
+                EpbCycleRunner.IsPeakEvidenceWindowComparable(
+                    evidenceThrough,
+                    evidenceThrough.AddMilliseconds(-0.5)),
+                "已包含在快速快照中的完整峰值被错误判为不可比较");
+            Assert(
+                !EpbCycleRunner.IsPeakEvidenceWindowComparable(
+                    evidenceThrough,
+                    evidenceThrough.AddMilliseconds(15)),
+                "快速判定后才入账的完整峰值仍参与偏差硬故障计数");
+            Assert(
+                !EpbCycleRunner.IsPeakEvidenceWindowComparable(
+                    DateTime.MinValue,
+                    evidenceThrough),
+                "缺少快速证据截止时间时仍参与偏差硬故障计数");
+        }
+
         private static void AlarmMessagesAreLocalized()
         {
             var message = AlarmMessageLocalizer.ToUserMessage(
@@ -3227,6 +3266,26 @@ namespace AdaptiveControlTests
             }, allowTerminalReset: true);
             Assert(store.Get(5).State == ChannelRuntimeState.Starting,
                 "新运行通过启动入口后未能复位旧锁存");
+        }
+
+        private static void ManualStopReplacesStartBlocked()
+        {
+            var store = new ChannelRuntimeStateStore();
+            store.Publish(new ChannelRuntimeStateChangedEvent
+            {
+                Channel = 10,
+                State = ChannelRuntimeState.StartBlocked,
+                ReasonCode = "StartupRollback"
+            });
+            store.Publish(new ChannelRuntimeStateChangedEvent
+            {
+                Channel = 10,
+                State = ChannelRuntimeState.ManualStopped,
+                ReasonCode = "StartCanceled",
+                ReasonText = "人工停止，启动/自动恢复已取消"
+            }, allowTerminalReset: true);
+            Assert(store.Get(10).State == ChannelRuntimeState.ManualStopped,
+                "人工停止后仍锁存显示启动受阻");
         }
 
         private static void InfrastructureRecoveryOnlyClearsSystemFault()

@@ -30,9 +30,13 @@ namespace Controller
         private void CompleteCancelledRecovery(DaqAutoRecoveryContext context, string reason)
         {
             if (context == null) return;
-            if (!context.Terminal.TryCommit(DaqRecoveryTerminal.Cancelled)) return;
-            MarkDaqRecoveryTerminal(context.CorrelationId, context.Device);
-            _daqAutoRecovery.TryRemove(context.Device, out _);
+            lock (_daqRecoveryCommitGate)
+            {
+                if (!context.Terminal.TryCommit(DaqRecoveryTerminal.Cancelled)) return;
+                context.Phase.MarkTerminal();
+                MarkDaqRecoveryTerminal(context.CorrelationId, context.Device);
+                _daqAutoRecovery.TryRemove(context.Device, out _);
+            }
             ReleaseDaqRecoveryOwnerships(context);
             try { context.Cancellation.Cancel(); } catch { }
             var result = new DaqRecoveryResult
@@ -41,8 +45,16 @@ namespace Controller
                 Recovered = false,
                 PreviousGeneration = context.PreviousGeneration,
                 RecoveredGeneration = context.RecoveredGeneration,
-                FailureReason = reason ?? "RecoveryCancelled",
-                FailureKind = "Cancelled",
+                FailureReason = reason?.IndexOf(
+                                    "ManualUi",
+                                    StringComparison.OrdinalIgnoreCase) >= 0
+                    ? "人工停止，DAQ自动恢复已取消"
+                    : reason ?? "RecoveryCancelled",
+                FailureKind = reason?.IndexOf(
+                                  "ManualUi",
+                                  StringComparison.OrdinalIgnoreCase) >= 0
+                    ? "ManualCancelled"
+                    : "Cancelled",
                 Classification = FaultClassification.SoftwareTransient
             };
             context.Completion.TrySetResult(result);

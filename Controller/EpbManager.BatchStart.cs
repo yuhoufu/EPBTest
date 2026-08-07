@@ -454,7 +454,9 @@ namespace Controller
                         ex.Message,
                         affectedChannels: selected,
                         correlationId: _activeBatchId,
-                        allowTerminalReset: !expectedCancellation);
+                        // 人工取消必须覆盖启动阶段已锁存的 StartBlocked，避免现场停止后
+                        // 仍显示“启动受阻”。真实启动故障保留在结构化历史日志中。
+                        allowTerminalReset: true);
 
                 foreach (var channel in selected)
                 {

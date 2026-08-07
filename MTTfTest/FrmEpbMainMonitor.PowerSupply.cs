@@ -147,10 +147,22 @@ namespace MTEmbTest
                     "快照导出失败（不影响安全控制）：" + message,
                     true);
                 manager.WarningSnapshotStorageChanged += ShowWarningSnapshotStorageWarning;
-                manager.DaqRecoveryStateChanged += result => PostSafetyStatus(
-                    $"DAQ恢复 {result.Device}：{(result.Recovered ? "成功" : "失败")}，" +
-                    $"新鲜样本={result.FreshCallbacks}/{result.RequiredFreshCallbacks}，{result.ElapsedMs}ms。",
-                    !result.Recovered);
+                manager.DaqRecoveryStateChanged += result =>
+                {
+                    var manuallyCancelled = string.Equals(
+                        result.FailureKind,
+                        "ManualCancelled",
+                        StringComparison.OrdinalIgnoreCase);
+                    var status = result.Recovered
+                        ? "成功"
+                        : manuallyCancelled
+                            ? "已由人工停止取消"
+                            : "失败";
+                    PostSafetyStatus(
+                        $"DAQ恢复 {result.Device}：{status}，" +
+                        $"新鲜样本={result.FreshCallbacks}/{result.RequiredFreshCallbacks}，{result.ElapsedMs}ms。",
+                        !result.Recovered && !manuallyCancelled);
+                };
                 manager.DaqPersistenceStateChanged += state =>
                 {
                     // Lagging 是尚未触发安全暂停的瞬时诊断态，可能每秒上报一次；

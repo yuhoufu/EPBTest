@@ -38,6 +38,7 @@ namespace Controller
         private double _adaptiveForwardPeakA;
         private double _adaptiveForwardControlPeakA;
         private double _adaptiveDecisionPeakEvidenceLagMs = double.NaN;
+        private DateTime _adaptiveDecisionPeakEvidenceThroughUtc = DateTime.MinValue;
         private int _adaptiveClampPeakCaptureStarted;
         private PeakCaptureToken _adaptivePeakCaptureToken;
         private long _lastFastBatchSequence;
@@ -62,6 +63,25 @@ namespace Controller
         internal static bool IsPeakEvidenceMismatchConfirmed(int streak, int confirmCycles)
         {
             return streak >= Math.Max(1, confirmCycles);
+        }
+
+        internal static bool IsPeakEvidenceWindowComparable(
+            DateTime decisionEvidenceThroughUtc,
+            DateTime finalPeakAt,
+            double timestampToleranceMs = 1.0)
+        {
+            if (decisionEvidenceThroughUtc == default ||
+                decisionEvidenceThroughUtc == DateTime.MinValue ||
+                finalPeakAt == default ||
+                finalPeakAt == DateTime.MinValue)
+                return false;
+            var decisionUtc = decisionEvidenceThroughUtc.Kind == DateTimeKind.Utc
+                ? decisionEvidenceThroughUtc
+                : decisionEvidenceThroughUtc.ToUniversalTime();
+            var peakUtc = finalPeakAt.Kind == DateTimeKind.Utc
+                ? finalPeakAt
+                : finalPeakAt.ToUniversalTime();
+            return peakUtc <= decisionUtc.AddMilliseconds(Math.Max(0, timestampToleranceMs));
         }
 
         internal bool ResetTransientRunState()
@@ -248,6 +268,7 @@ namespace Controller
             _adaptiveForwardPeakA = 0;
             _adaptiveForwardControlPeakA = 0;
             _adaptiveDecisionPeakEvidenceLagMs = double.NaN;
+            _adaptiveDecisionPeakEvidenceThroughUtc = DateTime.MinValue;
             Interlocked.Exchange(ref _adaptiveClampPeakCaptureStarted, 0);
             Interlocked.Exchange(ref _adaptiveTerminalOffLatched, 0);
 
@@ -433,9 +454,12 @@ namespace Controller
                         ? sampleUtc
                         : sampleUtc.ToUniversalTime();
                     lock (_adaptiveGate)
+                    {
                         _adaptiveDecisionPeakEvidenceLagMs = Math.Max(
                             0,
                             (normalizedSampleUtc - evidenceThroughUtc).TotalMilliseconds);
+                        _adaptiveDecisionPeakEvidenceThroughUtc = evidenceThroughUtc;
+                    }
                 }
             }
             catch
@@ -957,7 +981,9 @@ namespace Controller
                         var capture = await _acq.EndEpbCurrentPeakAsync(
                                 _adaptivePeakCaptureToken,
                                 100,
-                                cutoffAfterDelay: true,
+                                // 调用时即固定逻辑截止；100ms 只用于等待在途批次入账，
+                                // 不能把断电后的新时间窗混入快速过流证据。
+                                cutoffAfterDelay: false,
                                 cancellationToken: CancellationToken.None)
                             .ConfigureAwait(false);
                         if (capture.IsMatched && capture.Peak.SampleCount > 0)
@@ -1065,7 +1091,7 @@ namespace Controller
 
         private async Task<EpbCycleOutcome> RunOneAdaptiveAsync(int targetPeriodMs, CancellationToken token)
         {
-            const int postOffPeakCaptureMs = 100;
+            const int peakEvidenceDrainMs = 100;
             var balancedUndershootWarningA =
                 _adaptiveSafetyLimits.ForwardAcceptableUndershootA;
             var outcome = new EpbCycleOutcome
@@ -1119,8 +1145,12 @@ namespace Controller
                 string peakEvidenceMismatch = null;
                 var peakEvidenceLag = false;
                 double decisionEvidenceLagMs;
+                DateTime decisionEvidenceThroughUtc;
                 lock (_adaptiveGate)
+                {
                     decisionEvidenceLagMs = _adaptiveDecisionPeakEvidenceLagMs;
+                    decisionEvidenceThroughUtc = _adaptiveDecisionPeakEvidenceThroughUtc;
+                }
                 try
                 {
                     if (_acq != null &&
@@ -1128,8 +1158,10 @@ namespace Controller
                     {
                         var captureResult = await _acq.EndEpbCurrentPeakAsync(
                                 _adaptivePeakCaptureToken,
-                                postOffPeakCaptureMs,
-                                cutoffAfterDelay: true,
+                                peakEvidenceDrainMs,
+                                // 在断电判定完成时固定逻辑截止，随后仅等待截止前的在途
+                                // 全速率样本入账，保证快速/完整证据使用同一时间窗。
+                                cutoffAfterDelay: false,
                                 cancellationToken: token)
                             .ConfigureAwait(false);
                         var peak = captureResult.Peak;
@@ -1156,7 +1188,24 @@ namespace Controller
                             if (peakCaptureValid &&
                                 !double.IsNaN(quickPeak) && !double.IsInfinity(quickPeak) && quickPeak > 0)
                             {
+                                var comparableWindow = IsPeakEvidenceWindowComparable(
+                                    decisionEvidenceThroughUtc,
+                                    peak.MaxAt);
+                                if (!comparableWindow &&
+                                    decisionEvidenceThroughUtc != DateTime.MinValue &&
+                                    peak.MaxAt != DateTime.MinValue)
+                                {
+                                    var finalPeakUtc = peak.MaxAt.Kind == DateTimeKind.Utc
+                                        ? peak.MaxAt
+                                        : peak.MaxAt.ToUniversalTime();
+                                    decisionEvidenceLagMs = Math.Max(
+                                        double.IsNaN(decisionEvidenceLagMs)
+                                            ? 0
+                                            : decisionEvidenceLagMs,
+                                        (finalPeakUtc - decisionEvidenceThroughUtc).TotalMilliseconds);
+                                }
                                 peakEvidenceLag =
+                                    !comparableWindow ||
                                     double.IsNaN(decisionEvidenceLagMs) ||
                                     double.IsInfinity(decisionEvidenceLagMs) ||
                                     decisionEvidenceLagMs >
