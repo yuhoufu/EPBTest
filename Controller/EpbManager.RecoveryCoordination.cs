@@ -368,7 +368,8 @@ namespace Controller
                     $"Cycle={update.CycleNumber} Limit={update.RecordLimit} 并重置液压代次。",
                     affectedChannels: new[] { channel },
                     correlationId: update.CorrelationId);
-                if (_timers.TryGetValue(channel, out var timer)) timer.Pause();
+                if (_timers.TryGetValue(channel, out var timer))
+                    timer.Pause("ActiveCycleDataLimitExceeded");
                 CancelCyclePauseCts(channel);
                 try { CommandEpbOffHighPriority(channel, "ActiveCycleDataLimitExceeded"); }
                 catch { }

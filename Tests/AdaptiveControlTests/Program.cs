@@ -116,6 +116,8 @@ namespace AdaptiveControlTests
                 Run("周期超限不追赶且圈号连续", TimerDoesNotCatchUp);
                 Run("优雅暂停等待当前圈结束且阻止下一圈", TimerGracefulPauseWaitsForCurrentCycle);
                 Run("计划等待窗口内暂停不误启动下一圈", TimerPauseDuringPlannedDelayBlocksNextCycle);
+                Run("Timer暂停事件立即纠正运行态", TimerPauseStateCorrectsRunningStatus);
+                Run("Timer失活看门狗识别停止和陈旧心跳", TimerRuntimeWatchdogDetectsStoppedAndStale);
                 Run("同进程暂停不因时长增加资格门禁", PauseResumeFiveMinutePolicy);
                 Run("单通道恢复按当前公共正式槽重入", PausedChannelRejoinsCurrentSharedFormalSlot);
                 Run("批次暂停和恢复预检期间DAQ自愈不得越权恢复定时器", DaqRecoveryRespectsBatchPausePolicy);
@@ -2548,6 +2550,90 @@ namespace AdaptiveControlTests
             Assert(Volatile.Read(ref cycles) == 1, "暂停竞态导致下一圈误启动");
             timer.Stop();
             Assert(run.Wait(1000), "定时器停止超时");
+        }
+
+        private static void TimerPauseStateCorrectsRunningStatus()
+        {
+            var entered = new ManualResetEventSlim(false);
+            var release = new ManualResetEventSlim(false);
+            var states = new List<HighPrecisionTimerRuntimeState>();
+            var timer = new HighPrecisionTimer(50, OverrunPolicy.AlignToWallClock);
+            timer.StateChanged += update =>
+            {
+                lock (states) states.Add(update.State);
+            };
+            var run = timer.StartAsync(null, 0, async (_, token) =>
+            {
+                entered.Set();
+                while (!release.IsSet) await Task.Delay(5, token);
+                return true;
+            });
+
+            Assert(entered.Wait(1000), "Timer状态测试首圈未启动");
+            timer.Pause("FieldSafetyPause");
+            Assert(timer.RuntimeState == HighPrecisionTimerRuntimeState.PausePending,
+                "圈内Pause未公开PausePending状态");
+            release.Set();
+            Assert(SpinWait.SpinUntil(
+                    () => timer.RuntimeState == HighPrecisionTimerRuntimeState.Paused,
+                    1000),
+                "当前圈结束后Timer未公开Paused状态");
+            Assert(timer.IsPaused && timer.PauseReason == "FieldSafetyPause" && timer.PauseUtc.HasValue,
+                "Timer暂停健康字段不完整");
+            lock (states)
+                Assert(states.Contains(HighPrecisionTimerRuntimeState.PausePending) &&
+                       states.Contains(HighPrecisionTimerRuntimeState.Paused),
+                    "Timer未发布完整暂停状态事件");
+
+            var decision = EpbManager.EvaluateTimerRuntimeHealth(
+                ChannelRuntimeState.Running,
+                timer,
+                DateTime.UtcNow,
+                30000);
+            Assert(decision.Action == TimerRuntimeHealthAction.PublishPaused,
+                "Timer已暂停但通道仍运行时未要求纠正UI状态");
+            timer.Stop();
+            Assert(run.Wait(1000), "Timer状态测试停止超时");
+        }
+
+        private static void TimerRuntimeWatchdogDetectsStoppedAndStale()
+        {
+            var stopped = new HighPrecisionTimer(100, OverrunPolicy.AlignToWallClock);
+            var stoppedDecision = EpbManager.EvaluateTimerRuntimeHealth(
+                ChannelRuntimeState.Running,
+                stopped,
+                DateTime.UtcNow,
+                30000);
+            Assert(stoppedDecision.Action == TimerRuntimeHealthAction.PublishSystemFault &&
+                   stoppedDecision.ReasonCode == "TimerNotRunning",
+                "通道仍显示运行但Timer未启动时未识别系统故障");
+
+            var firstCycle = new ManualResetEventSlim(false);
+            var timer = new HighPrecisionTimer(1000, OverrunPolicy.AlignToWallClock);
+            var run = timer.StartAsync(null, 0, (_, __) =>
+            {
+                firstCycle.Set();
+                return Task.FromResult(true);
+            });
+            Assert(firstCycle.Wait(1000), "心跳测试首圈未完成");
+            var staleNow = (timer.LastCycleCompletedUtc ?? DateTime.UtcNow).AddSeconds(31);
+            var staleDecision = EpbManager.EvaluateTimerRuntimeHealth(
+                ChannelRuntimeState.WarningRunning,
+                timer,
+                staleNow,
+                30000);
+            Assert(staleDecision.Action == TimerRuntimeHealthAction.PublishSystemFault &&
+                   staleDecision.ReasonCode == "TimerHeartbeatStale",
+                "运行Timer超过阈值无新圈时未识别陈旧心跳");
+            var ignored = EpbManager.EvaluateTimerRuntimeHealth(
+                ChannelRuntimeState.Recovering,
+                timer,
+                staleNow,
+                30000);
+            Assert(ignored.Action == TimerRuntimeHealthAction.None,
+                "自恢复状态被看门狗错误覆盖");
+            timer.Stop();
+            Assert(run.Wait(1000), "心跳测试停止超时");
         }
 
         private static void PauseResumeFiveMinutePolicy()

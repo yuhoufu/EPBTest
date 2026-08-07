@@ -899,6 +899,19 @@ namespace Controller
                     "NotEnabled",
                     "本轮未启用",
                     allowTerminalReset: true);
+
+            _timerRuntimeWatchdogIntervalMs = ReadIntAppSetting(
+                "TimerRuntimeWatchdogIntervalMs", 2000, 500, 30000);
+            _timerRuntimeSilenceThresholdMs = ReadIntAppSetting(
+                "TimerRuntimeSilenceThresholdMs",
+                Math.Max(30000, PeriodMs * 2),
+                5000,
+                600000);
+            _timerRuntimeWatchdog = new System.Threading.Timer(
+                InspectTimerRuntimeHealth,
+                null,
+                _timerRuntimeWatchdogIntervalMs,
+                _timerRuntimeWatchdogIntervalMs);
         }
 
         private CancellationTokenSource RenewCyclePauseCts(int channel)
@@ -1418,7 +1431,7 @@ namespace Controller
 
         public void PauseChannel(int channel)
         {
-            if (_timers.TryGetValue(channel, out var t)) t.Pause();
+            if (_timers.TryGetValue(channel, out var t)) t.Pause("ManualPause");
             PublishChannelRuntimeState(channel, ChannelRuntimeState.Paused, "Paused", "试验已暂停");
             NonCriticalObserver.Invoke(
                 ChannelPaused,
@@ -1838,7 +1851,7 @@ namespace Controller
                 allowTerminalReset: true);
             if (!TryEnsureSoftwareRecoveryOutputOff(channel, "ConfirmedFaultWarning")) return;
             var pauseCompletion = _timers.TryGetValue(channel, out var timer)
-                ? timer.PauseAfterCurrentCycleAsync()
+                ? timer.PauseAfterCurrentCycleAsync($"RecoverableWarning:{faultCode}")
                 : Task.CompletedTask;
             UnmarkHydraulicParticipant(channel);
             Task releaseTask;
@@ -2239,7 +2252,8 @@ namespace Controller
                         ChannelPaused,
                         channel,
                         ex => _log?.Warn($"DAQ自愈暂停观察者异常，已隔离：{ex.Message}", "AI"));
-                    if (_timers.TryGetValue(channel, out var timer)) timer.Pause();
+                    if (_timers.TryGetValue(channel, out var timer))
+                        timer.Pause($"DaqSoftwareRecovery:{context.TriggerCode}");
                     CancelCyclePauseCts(channel);
                     try { CommandEpbOffHighPriority(channel, "DaqSoftwareRecovery"); } catch { }
                     UnmarkHydraulicParticipant(channel);
@@ -3074,7 +3088,8 @@ namespace Controller
 
                 if (backgroundQueue)
                 {
-                    if (_timers.TryGetValue(channel, out var timer)) timer.Pause();
+                    if (_timers.TryGetValue(channel, out var timer))
+                        timer.Pause($"DaqDeviceFaultSafety:{device}");
                     CancelCyclePauseCts(channel);
                 }
                 else
@@ -3448,7 +3463,8 @@ namespace Controller
                         return;
                     foreach (var channel in channels)
                     {
-                        if (_timers.TryGetValue(channel, out var timer)) timer.Pause();
+                        if (_timers.TryGetValue(channel, out var timer))
+                            timer.Pause($"HydraulicSelfHealing:{fault.Code}");
                         CancelCyclePauseCts(channel);
                     }
                     var offFailed = channels
@@ -3808,7 +3824,8 @@ namespace Controller
                         return;
                     foreach (var channel in channels)
                     {
-                        if (_timers.TryGetValue(channel, out var timer)) timer.Pause();
+                        if (_timers.TryGetValue(channel, out var timer))
+                            timer.Pause($"PowerSupplySelfHealing:{sourceFault.Code}");
                         CancelCyclePauseCts(channel);
                     }
                     var offFailed = channels
@@ -4532,6 +4549,7 @@ namespace Controller
 
         public void ReleaseHardwareForRestart()
         {
+            try { _timerRuntimeWatchdog?.Dispose(); } catch { }
             try { _powerSupply?.Dispose(); } catch { }
             try { _acq?.Dispose(); } catch { }
             try { _ao?.ResetAll(); } catch { }
@@ -4853,7 +4871,8 @@ namespace Controller
             {
                 if (daqDerived)
                 {
-                    if (_timers.TryGetValue(member, out var timer)) timer.Pause();
+                    if (_timers.TryGetValue(member, out var timer))
+                        timer.Pause($"ElectricalGroupEmergency:{reason}");
                     CancelCyclePauseCts(member);
                 }
                 else

@@ -98,6 +98,7 @@
     <Compile Include="EpbManager.WarningSnapshots.cs" />
     <Compile Include="EpbManager.StartupPositioning.cs" />
     <Compile Include="EpbManager.AdaptiveTrace.cs" />
+    <Compile Include="EpbManager.TimerRuntimeHealth.cs" />
     <Compile Include="EpbManager.cs" />
     <Compile Include="SafetyMarginControlMode.cs" />
     <Compile Include="HydraulicController.cs" />

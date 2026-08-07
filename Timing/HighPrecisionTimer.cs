@@ -6,6 +6,28 @@ using Config;
 
 namespace Timing;
 
+public enum HighPrecisionTimerRuntimeState
+{
+    Created = 0,
+    Running = 1,
+    PausePending = 2,
+    Paused = 3,
+    Completed = 4,
+    Stopped = 5,
+    Faulted = 6
+}
+
+public sealed class HighPrecisionTimerStateChangedEvent
+{
+    public HighPrecisionTimerRuntimeState State { get; set; }
+    public DateTime TimestampUtc { get; set; }
+    public string Reason { get; set; } = string.Empty;
+    public bool IsRunning { get; set; }
+    public bool IsPaused { get; set; }
+    public DateTime? LastCycleStartedUtc { get; set; }
+    public DateTime? LastCycleCompletedUtc { get; set; }
+}
+
 /// <summary>
 ///     高精度定时执行器：以固定周期调度任务，支持超时策略、暂停/恢复/停止。
 /// </summary>
@@ -26,10 +48,28 @@ public sealed class HighPrecisionTimer
     private int _cycleState;
     private TaskCompletionSource<bool> _gracefulPauseCompletion;
 
+    private long _startedUtcTicks;
+    private long _lastCycleStartedUtcTicks;
+    private long _lastCycleCompletedUtcTicks;
+    private long _pauseUtcTicks;
+    private string _pauseReason = string.Empty;
+    private int _runtimeState = (int)HighPrecisionTimerRuntimeState.Created;
+
     private long _ticksStart; // 计划起点
 
     public OverrunPolicy Policy => _policy; // 只读
+    public int PeriodMs => _periodMs;
+    public bool IsRunning => _running;
     public bool IsPaused => Volatile.Read(ref _cycleState) == 2;
+    public HighPrecisionTimerRuntimeState RuntimeState =>
+        (HighPrecisionTimerRuntimeState)Volatile.Read(ref _runtimeState);
+    public DateTime? StartedUtc => ReadUtc(ref _startedUtcTicks);
+    public DateTime? LastCycleStartedUtc => ReadUtc(ref _lastCycleStartedUtcTicks);
+    public DateTime? LastCycleCompletedUtc => ReadUtc(ref _lastCycleCompletedUtcTicks);
+    public DateTime? PauseUtc => ReadUtc(ref _pauseUtcTicks);
+    public string PauseReason => Volatile.Read(ref _pauseReason) ?? string.Empty;
+
+    public event Action<HighPrecisionTimerStateChangedEvent> StateChanged;
 
     public HighPrecisionTimer(int periodMs, OverrunPolicy policy, IAppLogger log = null)
     {
@@ -48,6 +88,8 @@ public sealed class HighPrecisionTimer
     {
         if (_running) throw new InvalidOperationException("Timer already running.");
         _running = true;
+        Interlocked.Exchange(ref _startedUtcTicks, DateTime.UtcNow.Ticks);
+        PublishRuntimeState(HighPrecisionTimerRuntimeState.Running, "Start");
 
         return Task.Run(async () =>
         {
@@ -93,6 +135,7 @@ public sealed class HighPrecisionTimer
                     var t0 = sw.ElapsedMilliseconds;
                     var ok = false;
                     Exception caught = null;
+                    Interlocked.Exchange(ref _lastCycleStartedUtcTicks, DateTime.UtcNow.Ticks);
                     try
                     {
                         ok = await work(i + 1, _cts.Token);
@@ -104,6 +147,7 @@ public sealed class HighPrecisionTimer
                     }
 
                     var t1 = sw.ElapsedMilliseconds;
+                    Interlocked.Exchange(ref _lastCycleCompletedUtcTicks, DateTime.UtcNow.Ticks);
                     Interlocked.Exchange(ref _cycleState, 0);
                     EnterGracefulPauseIfRequested();
                     var elapsed = (int)(t1 - t0);
@@ -163,30 +207,41 @@ public sealed class HighPrecisionTimer
             {
                 _log.Info("定时器取消。", "Timer");
             }
+            catch (Exception ex)
+            {
+                PublishRuntimeState(
+                    HighPrecisionTimerRuntimeState.Faulted,
+                    $"{ex.GetType().Name}:{ex.Message}");
+                throw;
+            }
             finally
             {
                 _running = false;
+                if (RuntimeState == HighPrecisionTimerRuntimeState.Running)
+                    PublishRuntimeState(HighPrecisionTimerRuntimeState.Completed, "RepeatCompleted");
             }
         }, _cts.Token);
     }
 
     /// <summary>暂停周期执行。</summary>
-    public void Pause()
+    public void Pause(string reason = null)
     {
+        SetPauseReason(reason);
         Interlocked.CompareExchange(ref _pauseStartedTimestamp, Stopwatch.GetTimestamp(), 0);
         Interlocked.Exchange(ref _pauseAfterCurrentCycleRequested, 1);
         _pauseGate.Reset();
+        PublishRuntimeState(HighPrecisionTimerRuntimeState.PausePending, PauseReason);
         if (Interlocked.CompareExchange(ref _cycleState, 2, 0) == 0 ||
             Volatile.Read(ref _cycleState) == 2)
             CompleteGracefulPause();
-        _log.Info("定时器已暂停。", "Timer");
+        _log.Info($"定时器已暂停。Reason={PauseReason}", "Timer");
     }
 
     /// <summary>
     /// 请求在当前圈自然结束后暂停；若当前尚未进入圈执行，则立即封住下一圈。
     /// 返回的任务只在定时器确认“不再启动新圈”后完成。
     /// </summary>
-    public Task PauseAfterCurrentCycleAsync()
+    public Task PauseAfterCurrentCycleAsync(string reason = null)
     {
         Task completion;
         lock (_pauseSync)
@@ -200,14 +255,16 @@ public sealed class HighPrecisionTimer
             completion = _gracefulPauseCompletion.Task;
         }
 
+        SetPauseReason(reason);
         Interlocked.CompareExchange(ref _pauseStartedTimestamp, Stopwatch.GetTimestamp(), 0);
         Interlocked.Exchange(ref _pauseAfterCurrentCycleRequested, 1);
         _pauseGate.Reset();
+        PublishRuntimeState(HighPrecisionTimerRuntimeState.PausePending, PauseReason);
         if (Interlocked.CompareExchange(ref _cycleState, 2, 0) == 0 ||
             Volatile.Read(ref _cycleState) == 2)
             CompleteGracefulPause();
 
-        _log.Info("定时器已请求在当前圈结束后暂停。", "Timer");
+        _log.Info($"定时器已请求在当前圈结束后暂停。Reason={PauseReason}", "Timer");
         return completion;
     }
 
@@ -222,7 +279,9 @@ public sealed class HighPrecisionTimer
             var pausedMs = (Stopwatch.GetTimestamp() - pausedAt) * 1000L / Stopwatch.Frequency;
             Interlocked.Add(ref _ticksStart, pausedMs);
         }
+        ClearPauseReason();
         _pauseGate.Set();
+        PublishRuntimeState(HighPrecisionTimerRuntimeState.Running, "Resume");
         _log.Info("定时器已恢复。", "Timer");
     }
 
@@ -236,7 +295,9 @@ public sealed class HighPrecisionTimer
         Interlocked.Exchange(ref _pauseStartedTimestamp, 0);
         Interlocked.Exchange(ref _resumeDelayMs, Math.Max(1, delayMs));
         Interlocked.Exchange(ref _resumeAtFutureBoundaryRequested, 1);
+        ClearPauseReason();
         _pauseGate.Set();
+        PublishRuntimeState(HighPrecisionTimerRuntimeState.Running, "ResumeAtNextBoundary");
         _log.Info($"定时器等待未来同步锚点恢复，Delay={Math.Max(1, delayMs)}ms。", "Timer");
     }
 
@@ -255,7 +316,8 @@ public sealed class HighPrecisionTimer
     {
         _cts.Cancel();
         _pauseGate.Set();
-        CompleteGracefulPause();
+        CompleteGracefulPause(publishPaused: false);
+        PublishRuntimeState(HighPrecisionTimerRuntimeState.Stopped, "Stop");
         _log.Info("定时器 Stop。", "Timer");
     }
 
@@ -270,10 +332,60 @@ public sealed class HighPrecisionTimer
             CompleteGracefulPause();
     }
 
-    private void CompleteGracefulPause()
+    private void CompleteGracefulPause(bool publishPaused = true)
     {
         TaskCompletionSource<bool> completion;
         lock (_pauseSync) completion = _gracefulPauseCompletion;
         completion?.TrySetResult(true);
+        if (publishPaused)
+            PublishRuntimeState(HighPrecisionTimerRuntimeState.Paused, PauseReason);
+    }
+
+    private void SetPauseReason(string reason)
+    {
+        var normalized = string.IsNullOrWhiteSpace(reason) ? "Unspecified" : reason.Trim();
+        Volatile.Write(ref _pauseReason, normalized);
+        Interlocked.CompareExchange(ref _pauseUtcTicks, DateTime.UtcNow.Ticks, 0);
+    }
+
+    private void ClearPauseReason()
+    {
+        Volatile.Write(ref _pauseReason, string.Empty);
+        Interlocked.Exchange(ref _pauseUtcTicks, 0);
+    }
+
+    private void PublishRuntimeState(HighPrecisionTimerRuntimeState state, string reason)
+    {
+        var previous = (HighPrecisionTimerRuntimeState)Interlocked.Exchange(
+            ref _runtimeState,
+            (int)state);
+        if (previous == state) return;
+
+        var update = new HighPrecisionTimerStateChangedEvent
+        {
+            State = state,
+            TimestampUtc = DateTime.UtcNow,
+            Reason = reason ?? string.Empty,
+            IsRunning = _running,
+            IsPaused = IsPaused,
+            LastCycleStartedUtc = LastCycleStartedUtc,
+            LastCycleCompletedUtc = LastCycleCompletedUtc
+        };
+        var handlers = StateChanged;
+        if (handlers == null) return;
+        foreach (Action<HighPrecisionTimerStateChangedEvent> handler in handlers.GetInvocationList())
+        {
+            try { handler(update); }
+            catch (Exception ex)
+            {
+                _log.Warn($"定时器状态观察者异常已隔离：{ex.Message}", "Timer");
+            }
+        }
+    }
+
+    private static DateTime? ReadUtc(ref long ticksField)
+    {
+        var ticks = Interlocked.Read(ref ticksField);
+        return ticks > 0 ? new DateTime(ticks, DateTimeKind.Utc) : (DateTime?)null;
     }
 }

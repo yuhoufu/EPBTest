@@ -1878,6 +1878,7 @@ namespace Controller
                 () => new HighPrecisionTimer(periodMs, overrunPolicy, _log),
                 activate: null,
                 out var created);
+            if (created) AttachTimerRuntimeObserver(ch, timer);
             _log?.Info(
                 $"EPB[{ch}] Timer {(created ? "已创建" : "缓存命中并激活")}，" +
                 $"Instance={System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(timer)}。",

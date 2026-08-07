@@ -73,7 +73,8 @@ namespace Controller
                         affectedChannels: channels,
                         correlationId: _activeBatchId);
 
-                var pauseAll = Task.WhenAll(timers.Select(pair => pair.Value.PauseAfterCurrentCycleAsync()));
+                var pauseAll = Task.WhenAll(timers.Select(pair =>
+                    pair.Value.PauseAfterCurrentCycleAsync("BatchGracefulPause")));
                 var timeoutMs = Math.Max(30000, Math.Min(180000, PeriodMs * 2 + 30000));
                 var timeout = Task.Delay(timeoutMs, token);
                 if (await Task.WhenAny(pauseAll, timeout).ConfigureAwait(false) != pauseAll)
@@ -232,7 +233,7 @@ namespace Controller
                     "ChannelPausePending",
                     "等待当前圈完成后暂停",
                     correlationId: _activeBatchId);
-                var pause = timer.PauseAfterCurrentCycleAsync();
+                var pause = timer.PauseAfterCurrentCycleAsync("ChannelGracefulPause");
                 var timeoutMs = Math.Max(30000, Math.Min(180000, PeriodMs * 2 + 30000));
                 if (await Task.WhenAny(pause, Task.Delay(timeoutMs, token)).ConfigureAwait(false) != pause)
                     throw new TimeoutException(
