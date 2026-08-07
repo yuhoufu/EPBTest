@@ -718,9 +718,24 @@ namespace Controller
 
         public bool CanAcknowledgeChannelAlarm(int channel, out string rejectionReason)
         {
-            rejectionReason = string.Empty;
             var state = _channelRuntimeStateStore.Get(channel);
-            if (state == null || !IsChannelStateRestartable(state.State))
+            return CanOperateConfiguredChannel(
+                IsChannelEnabled(channel),
+                state?.State ?? ChannelRuntimeState.NotEnabled,
+                out rejectionReason);
+        }
+
+        internal static bool CanOperateConfiguredChannel(
+            bool configuredEnabled,
+            ChannelRuntimeState state,
+            out string rejectionReason)
+        {
+            if (!configuredEnabled)
+            {
+                rejectionReason = "当前项目已取消启用该通道；请先在试验设置中重新勾选并保存。";
+                return false;
+            }
+            if (!IsChannelStateRestartable(state))
             {
                 rejectionReason = "通道当前不处于可重新开始的停机状态。";
                 return false;
@@ -728,6 +743,7 @@ namespace Controller
             // 旧故障的作用只是说明上次为什么停止，不再作为新一次启动的许可条件。
             // 重新开始会完整执行DAQ、电源、启动定位和资格圈实时复核；
             // 如果硬件问题仍存在，它会在新运行中被再次发现并停止。
+            rejectionReason = string.Empty;
             return true;
         }
 
@@ -781,6 +797,8 @@ namespace Controller
                 : _activeBatchId;
             try
             {
+                if (!CanAcknowledgeChannelAlarm(channel, out rejection))
+                    throw new InvalidOperationException(rejection);
                 hardDeadline = new CancellationTokenSource(RecoveryGroupHardDeadlineMs);
                 deadlineLinked = CancellationTokenSource.CreateLinkedTokenSource(
                     token,

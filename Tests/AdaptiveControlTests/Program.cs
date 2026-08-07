@@ -121,6 +121,7 @@ namespace AdaptiveControlTests
                 Run("批次暂停和恢复预检期间DAQ自愈不得越权恢复定时器", DaqRecoveryRespectsBatchPausePolicy);
                 Run("旧报警码不再阻止单通道重启", ChannelAlarmResumePolicy);
                 Run("全部停机态均允许单通道重新开始", ChannelStoppedStatesAreRestartable);
+                Run("项目禁用通道不得通过RUN按钮重新启动", DisabledChannelCannotRestart);
                 Run("新运行复位报警停机锁存", AlarmStopLatchResetsForNewRun);
                 Run("报警状态要求CSV和BIN同时存在", AlarmRequiresCsvAndBinFiles);
                 Run("错峰部分通道重新编号", StaggerPartialSelection);
@@ -2631,6 +2632,22 @@ namespace AdaptiveControlTests
                 "正在自愈的通道允许了并发重新开始");
             Assert(!EpbManager.IsChannelStateRestartable(ChannelRuntimeState.Completed),
                 "已完成目标的通道被允许重新开始");
+        }
+
+        private static void DisabledChannelCannotRestart()
+        {
+            Assert(!EpbManager.CanOperateConfiguredChannel(
+                       false,
+                       ChannelRuntimeState.AlarmStopped,
+                       out var disabledReason) &&
+                   disabledReason.Contains("取消启用"),
+                "项目Enabled=false时仍允许从报警停机态重新启动");
+            Assert(EpbManager.CanOperateConfiguredChannel(
+                       true,
+                       ChannelRuntimeState.AlarmStopped,
+                       out var allowedReason) &&
+                   string.IsNullOrEmpty(allowedReason),
+                "项目重新勾选启用后仍不能进入完整恢复预检");
         }
 
         private static void AlarmStopLatchResetsForNewRun()

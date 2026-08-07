@@ -1073,6 +1073,9 @@ namespace Controller
         // （保留你已有的 StartChannelAsync / Pause/Resume/Stop 等实现，不改对外签名）
         public async Task StartChannelAsync(int channel, CancellationToken uiToken = default)
         {
+            if (!IsChannelEnabled(channel))
+                throw new InvalidOperationException(
+                    $"EPB[{channel}] 当前项目已取消启用；请先在试验设置中重新勾选并保存后再启动。");
             if (_timers.ContainsKey(channel))
             {
                 _log.Warn($"EPB[{channel}] 已在运行。", "EPB");

@@ -560,6 +560,7 @@ namespace MTEmbTest
                     .OfType<DevExpress.XtraEditors.CheckEdit>()
                     .FirstOrDefault();
                 if (curve != null) curve.Checked = false;
+                ApplyAllChannelOperationStates();
                 LogInfo(
                     $"卡钳{channel} 已锁存不可自恢复报警并取消当前项目启用；" +
                     "停止后重新开始或重启软件均不会自动选中。");
