@@ -1,393 +1,397 @@
 <?xml version="1.0" encoding="utf-8"?>
-
 <TestConfig>
-	<Basic>
-		<TestName>EPB_Fatigue</TestName>
-		<!-- 周期次数 -->
-		<TestTarget>10</TestTarget>
-		<!-- 是否所有EPB使用相同的周期次数：true-是 false-否 -->
-		<IsSameCycleForAllEpb>true</IsSameCycleForAllEpb>
-		<!-- 试验周期 s，例：10 表示 10s -->
-		<TestCycle>10</TestCycle>
-		<!--自学习周期-->
-		<LearnCycle>10</LearnCycle>
-		
-
-		<StoreDir>D:\EPB_Data</StoreDir>
-
-		<Owner>张三</Owner>
-		<Description>卡钳常温耐久测试</Description>
-	</Basic>
-
-	<Timer>
-		<OverrunPolicy>AlignToWallClock</OverrunPolicy>
-		<!-- 其他可选：RunToCompletionSkipMissed/SkipNextIfOverrun / AlignToWallClock / Throw -->
-	</Timer>
-
-	<EpbRecords>
-		<Record>
-			<Id>1</Id>
-			<Enabled>true</Enabled>
-			<StartTime>2025-09-01 08:30:00</StartTime>
-			<LatestStartTime>2025-09-02 09:00:00</LatestStartTime>
-			<RunTime>0.02:15:30</RunTime>
-			<TotalCount>100000</TotalCount>
-			<RunCount>0</RunCount>
-			<Status>NotStarted</Status>
-		</Record>
-		<Record>
-			<Id>2</Id>
-			<Enabled>false</Enabled>
-			<StartTime>2025-09-01 08:30:00</StartTime>
-			<LatestStartTime>2025-09-02 09:00:00</LatestStartTime>
-			<RunTime>0.00:00:00</RunTime>
-			<TotalCount>100000</TotalCount>
-			<RunCount>0</RunCount>
-			<Status>NotStarted</Status>
-		</Record>
-		<Record>
-			<Id>3</Id>
-			<Enabled>false</Enabled>
-			<StartTime>2025-09-01 08:30:00</StartTime>
-			<LatestStartTime>2025-09-02 09:00:00</LatestStartTime>
-			<RunTime>0.00:00:00</RunTime>
-			<TotalCount>100000</TotalCount>
-			<RunCount>0</RunCount>
-			<Status>NotStarted</Status>
-		</Record>
-		<Record>
-			<Id>4</Id>
-			<Enabled>false</Enabled>
-			<StartTime>2025-09-01 08:30:00</StartTime>
-			<LatestStartTime>2025-09-02 09:00:00</LatestStartTime>
-			<RunTime>0.00:00:00</RunTime>
-			<TotalCount>100000</TotalCount>
-			<RunCount>0</RunCount>
-			<Status>NotStarted</Status>
-		</Record>
-		<Record>
-			<Id>5</Id>
-			<Enabled>false</Enabled>
-			<StartTime>2025-09-01 08:30:00</StartTime>
-			<LatestStartTime>2025-09-02 09:00:00</LatestStartTime>
-			<RunTime>0.00:00:00</RunTime>
-			<TotalCount>100000</TotalCount>
-			<RunCount>0</RunCount>
-			<Status>NotStarted</Status>
-		</Record>
-		<Record>
-			<Id>6</Id>
-			<Enabled>false</Enabled>
-			<StartTime>2025-09-01 08:30:00</StartTime>
-			<LatestStartTime>2025-09-02 09:00:00</LatestStartTime>
-			<RunTime>0.00:00:00</RunTime>
-			<TotalCount>100000</TotalCount>
-			<RunCount>0</RunCount>
-			<Status>NotStarted</Status>
-		</Record>
-		<Record>
-			<Id>7</Id>
-			<Enabled>false</Enabled>
-			<StartTime>2025-09-01 08:30:00</StartTime>
-			<LatestStartTime>2025-09-02 09:00:00</LatestStartTime>
-			<RunTime>0.00:00:00</RunTime>
-			<TotalCount>100000</TotalCount>
-			<RunCount>0</RunCount>
-			<Status>NotStarted</Status>
-		</Record>
-		<Record>
-			<Id>8</Id>
-			<Enabled>false</Enabled>
-			<StartTime>2025-09-01 08:30:00</StartTime>
-			<LatestStartTime>2025-09-02 09:00:00</LatestStartTime>
-			<RunTime>0.00:00:00</RunTime>
-			<TotalCount>100000</TotalCount>
-			<RunCount>0</RunCount>
-			<Status>NotStarted</Status>
-		</Record>
-		<Record>
-			<Id>9</Id>
-			<Enabled>false</Enabled>
-			<StartTime>2025-09-01 08:30:00</StartTime>
-			<LatestStartTime>2025-09-02 09:00:00</LatestStartTime>
-			<RunTime>0.00:00:00</RunTime>
-			<TotalCount>100000</TotalCount>
-			<RunCount>0</RunCount>
-			<Status>NotStarted</Status>
-		</Record>
-		<Record>
-			<Id>10</Id>
-			<Enabled>false</Enabled>
-			<StartTime>2025-09-01 08:30:00</StartTime>
-			<LatestStartTime>2025-09-02 09:00:00</LatestStartTime>
-			<RunTime>0.00:00:00</RunTime>
-			<TotalCount>100000</TotalCount>
-			<RunCount>0</RunCount>
-			<Status>NotStarted</Status>
-		</Record>
-		<Record>
-			<Id>11</Id>
-			<Enabled>false</Enabled>
-			<StartTime>2025-09-01 08:30:00</StartTime>
-			<LatestStartTime>2025-09-02 09:00:00</LatestStartTime>
-			<RunTime>0.00:00:00</RunTime>
-			<TotalCount>100000</TotalCount>
-			<RunCount>0</RunCount>
-			<Status>NotStarted</Status>
-		</Record>
-		<Record>
-			<Id>12</Id>
-			<Enabled>false</Enabled>
-			<StartTime>2025-09-01 08:30:00</StartTime>
-			<LatestStartTime>2025-09-02 09:00:00</LatestStartTime>
-			<RunTime>0.00:00:00</RunTime>
-			<TotalCount>100000</TotalCount>
-			<RunCount>0</RunCount>
-			<Status>NotStarted</Status>
-		</Record>
-	</EpbRecords>
-
-	<!-- 液压是否参与：开关按液压编号整体控制（1 控 1~6；2 控 7~12） -->
-	<Hydraulics>
-		<Hydraulic>
-			<Id>1</Id>
-			<!-- <Enabled>true</Enabled> -->
-			<Enabled>true</Enabled>
-			<Mode>Either</Mode>
-			<!-- ByPressure / ByDuration / Either -->
-			<SetPercent>100</SetPercent>
-			<!-- AO 百分比 -->
-			<PressureThresholdBar>100</PressureThresholdBar>
-			<PressureToleranceBar>10</PressureToleranceBar>
-			<DurationMs>800</DurationMs>
-			<!-- 模式含时长时使用 -->
-			<HoldAfterReachedMs>0</HoldAfterReachedMs>
-			<!-- 达阈后再保持多久再泄压 -->
-			<ReleaseSafePressureBar>5</ReleaseSafePressureBar>
-			<ReleaseStableMs>100</ReleaseStableMs>
-			<ReleaseTimeoutMs>5000</ReleaseTimeoutMs>
-			<BuildTimeoutMs>5000</BuildTimeoutMs>
-			<BuildStableMs>200</BuildStableMs>
-			<PressureSampleMaxAgeMs>100</PressureSampleMaxAgeMs>
-			<HoldDropToleranceBar>10</HoldDropToleranceBar>
-			<HoldDropConfirmMs>1000</HoldDropConfirmMs>
-			<BarrierTimeoutMs>0</BarrierTimeoutMs>
-			<PressureDoId>1</PressureDoId>
-			<!-- 对应 DOConfig/Pressure/Record/编号 -->
-			<!-- 新增：该液压路控制的卡钳 -->
-			<Members>1,2,3,4,5,6</Members>
-		</Hydraulic>
-		<Hydraulic>
-			<Id>2</Id>
-			<!-- <Enabled>true</Enabled> -->
-			<Enabled>true</Enabled>
-			<Mode>ByPressure</Mode>
-			<SetPercent>100</SetPercent>
-			<PressureThresholdBar>100</PressureThresholdBar>
-			<PressureToleranceBar>10</PressureToleranceBar>
-			<DurationMs>0</DurationMs>
-			<HoldAfterReachedMs>200</HoldAfterReachedMs>
-			<ReleaseSafePressureBar>5</ReleaseSafePressureBar>
-			<ReleaseStableMs>100</ReleaseStableMs>
-			<ReleaseTimeoutMs>5000</ReleaseTimeoutMs>
-			<BuildTimeoutMs>5000</BuildTimeoutMs>
-			<BuildStableMs>200</BuildStableMs>
-			<PressureSampleMaxAgeMs>100</PressureSampleMaxAgeMs>
-			<HoldDropToleranceBar>10</HoldDropToleranceBar>
-			<HoldDropConfirmMs>1000</HoldDropConfirmMs>
-			<BarrierTimeoutMs>0</BarrierTimeoutMs>
-			<PressureDoId>2</PressureDoId>
-			<Members>7,8,9,10,11,12</Members>
-		</Hydraulic>
-	</Hydraulics>
-
-	<!-- ===== EPB 循环参数（新版） ===== -->
-	<EpbCycleRunnerConfig>
-		<Record>
-			<Channel>1</Channel>
-			<Name>EPB1</Name>
-			<ForwardA>15</ForwardA>
-			<SafetyMarginA>2</SafetyMarginA>
-			<FwdOnLimitMs>5000</FwdOnLimitMs>
-			<HoldMs>1000</HoldMs>
-			<RevDecayLimitA>3</RevDecayLimitA>
-			<RevDecayRigidMaxMs>1000</RevDecayRigidMaxMs>
-			<RevEmptyFixedMs>2000</RevEmptyFixedMs>
-			<PreReleaseKeepMs>500</PreReleaseKeepMs>
-			<PeakIgnoreMs>100</PeakIgnoreMs>
-		</Record>
-		<Record>
-			<Channel>2</Channel>
-			<Name>EPB2</Name>
-			<ForwardA>15</ForwardA>
-			<SafetyMarginA>2</SafetyMarginA>
-			<FwdOnLimitMs>5000</FwdOnLimitMs>
-			<HoldMs>1000</HoldMs>
-			<RevDecayLimitA>3</RevDecayLimitA>
-			<RevDecayRigidMaxMs>1000</RevDecayRigidMaxMs>
-			<RevEmptyFixedMs>2000</RevEmptyFixedMs>
-			<PreReleaseKeepMs>500</PreReleaseKeepMs>
-			<PeakIgnoreMs>100</PeakIgnoreMs>
-		</Record>
-		<Record>
-			<Channel>3</Channel>
-			<Name>EPB3</Name>
-			<ForwardA>15</ForwardA>
-			<SafetyMarginA>2</SafetyMarginA>
-			<FwdOnLimitMs>5000</FwdOnLimitMs>
-			<HoldMs>1000</HoldMs>
-			<RevDecayLimitA>3</RevDecayLimitA>
-			<RevDecayRigidMaxMs>1000</RevDecayRigidMaxMs>
-			<RevEmptyFixedMs>2000</RevEmptyFixedMs>
-			<PreReleaseKeepMs>500</PreReleaseKeepMs>
-			<PeakIgnoreMs>100</PeakIgnoreMs>
-		</Record>
-		<Record>
-			<Channel>4</Channel>
-			<Name>EPB4</Name>
-			<ForwardA>15</ForwardA>
-			<SafetyMarginA>2</SafetyMarginA>
-			<FwdOnLimitMs>5000</FwdOnLimitMs>
-			<HoldMs>1000</HoldMs>
-			<RevDecayLimitA>3</RevDecayLimitA>
-			<RevDecayRigidMaxMs>1000</RevDecayRigidMaxMs>
-			<RevEmptyFixedMs>2000</RevEmptyFixedMs>
-			<PreReleaseKeepMs>500</PreReleaseKeepMs>
-			<PeakIgnoreMs>100</PeakIgnoreMs>
-		</Record>
-		<Record>
-			<Channel>5</Channel>
-			<Name>EPB5</Name>
-			<ForwardA>15</ForwardA>
-			<SafetyMarginA>2</SafetyMarginA>
-			<FwdOnLimitMs>5000</FwdOnLimitMs>
-			<HoldMs>1000</HoldMs>
-			<RevDecayLimitA>3</RevDecayLimitA>
-			<RevDecayRigidMaxMs>1000</RevDecayRigidMaxMs>
-			<RevEmptyFixedMs>2000</RevEmptyFixedMs>
-			<PreReleaseKeepMs>500</PreReleaseKeepMs>
-			<PeakIgnoreMs>100</PeakIgnoreMs>
-		</Record>
-		<Record>
-			<Channel>6</Channel>
-			<Name>EPB6</Name>
-			<ForwardA>15</ForwardA>
-			<SafetyMarginA>2</SafetyMarginA>
-			<FwdOnLimitMs>5000</FwdOnLimitMs>
-			<HoldMs>1000</HoldMs>
-			<RevDecayLimitA>3</RevDecayLimitA>
-			<RevDecayRigidMaxMs>1000</RevDecayRigidMaxMs>
-			<RevEmptyFixedMs>2000</RevEmptyFixedMs>
-			<PreReleaseKeepMs>500</PreReleaseKeepMs>
-			<PeakIgnoreMs>100</PeakIgnoreMs>
-		</Record>
-		<Record>
-			<Channel>7</Channel>
-			<Name>EPB7</Name>
-			<ForwardA>15</ForwardA>
-			<SafetyMarginA>2</SafetyMarginA>
-			<FwdOnLimitMs>5000</FwdOnLimitMs>
-			<HoldMs>1000</HoldMs>
-			<RevDecayLimitA>3</RevDecayLimitA>
-			<RevDecayRigidMaxMs>1000</RevDecayRigidMaxMs>
-			<RevEmptyFixedMs>2000</RevEmptyFixedMs>
-			<PreReleaseKeepMs>500</PreReleaseKeepMs>
-			<PeakIgnoreMs>100</PeakIgnoreMs>
-		</Record>
-		<Record>
-			<Channel>8</Channel>
-			<Name>EPB8</Name>
-			<ForwardA>15</ForwardA>
-			<SafetyMarginA>2</SafetyMarginA>
-			<FwdOnLimitMs>5000</FwdOnLimitMs>
-			<HoldMs>1000</HoldMs>
-			<RevDecayLimitA>3</RevDecayLimitA>
-			<RevDecayRigidMaxMs>1000</RevDecayRigidMaxMs>
-			<RevEmptyFixedMs>2000</RevEmptyFixedMs>
-			<PreReleaseKeepMs>500</PreReleaseKeepMs>
-			<PeakIgnoreMs>100</PeakIgnoreMs>
-		</Record>
-		<Record>
-			<Channel>9</Channel>
-			<Name>EPB9</Name>
-			<ForwardA>15</ForwardA>
-			<SafetyMarginA>2</SafetyMarginA>
-			<FwdOnLimitMs>5000</FwdOnLimitMs>
-			<HoldMs>1000</HoldMs>
-			<RevDecayLimitA>3</RevDecayLimitA>
-			<RevDecayRigidMaxMs>1000</RevDecayRigidMaxMs>
-			<RevEmptyFixedMs>2000</RevEmptyFixedMs>
-			<PreReleaseKeepMs>500</PreReleaseKeepMs>
-			<PeakIgnoreMs>100</PeakIgnoreMs>
-		</Record>
-		<Record>
-			<Channel>10</Channel>
-			<Name>EPB10</Name>
-			<ForwardA>15</ForwardA>
-			<SafetyMarginA>2</SafetyMarginA>
-			<FwdOnLimitMs>5000</FwdOnLimitMs>
-			<HoldMs>1000</HoldMs>
-			<RevDecayLimitA>3</RevDecayLimitA>
-			<RevDecayRigidMaxMs>1000</RevDecayRigidMaxMs>
-			<RevEmptyFixedMs>2000</RevEmptyFixedMs>
-			<PreReleaseKeepMs>500</PreReleaseKeepMs>
-			<PeakIgnoreMs>100</PeakIgnoreMs>
-		</Record>
-		<Record>
-			<Channel>11</Channel>
-			<Name>EPB11</Name>
-			<ForwardA>15</ForwardA>
-			<SafetyMarginA>2</SafetyMarginA>
-			<FwdOnLimitMs>5000</FwdOnLimitMs>
-			<HoldMs>1000</HoldMs>
-			<RevDecayLimitA>3</RevDecayLimitA>
-			<RevDecayRigidMaxMs>1000</RevDecayRigidMaxMs>
-			<RevEmptyFixedMs>2000</RevEmptyFixedMs>
-			<PreReleaseKeepMs>500</PreReleaseKeepMs>
-			<PeakIgnoreMs>100</PeakIgnoreMs>
-		</Record>
-		<Record>
-			<Channel>12</Channel>
-			<Name>EPB12</Name>
-			<ForwardA>15</ForwardA>
-			<SafetyMarginA>2</SafetyMarginA>
-			<FwdOnLimitMs>5000</FwdOnLimitMs>
-			<HoldMs>1000</HoldMs>
-			<RevDecayLimitA>3</RevDecayLimitA>
-			<RevDecayRigidMaxMs>1000</RevDecayRigidMaxMs>
-			<RevEmptyFixedMs>2000</RevEmptyFixedMs>
-			<PreReleaseKeepMs>500</PreReleaseKeepMs>
-			<PeakIgnoreMs>100</PeakIgnoreMs>
-		</Record>
-	</EpbCycleRunnerConfig>
-
-
-	<!-- 同组电控起始错峰，仅针对“电控”步骤；不同组可同时起 -->
-	<ElectricalGroups>
-		<Group>
-			<Id>1</Id>
-			<StaggerMs>800</StaggerMs>
-			<Members>1,2,3</Members>
-			<!-- 供电1->3 的一个示意，实际按现场配置 -->
-		</Group>
-		<Group>
-			<Id>2</Id>
-			<StaggerMs>800</StaggerMs>
-			<Members>4,5,6</Members>
-		</Group>
-		<Group>
-			<Id>3</Id>
-			<StaggerMs>800</StaggerMs>
-			<Members>7,8,9</Members>
-		</Group>
-		<Group>
-			<Id>4</Id>
-			<StaggerMs>800</StaggerMs>
-			<Members>10,11,12</Members>
-		</Group>
-	</ElectricalGroups>
-	<DataStorageRetention>
-		<Latest RetentionMode="Count" RetainStopPackagesPerChannel="10" />
-	</DataStorageRetention>
-
+  <Basic>
+    <TestName>10358-029</TestName>
+    <!-- 周期次数 -->
+    <TestTarget>100000</TestTarget>
+    <!-- 是否所有EPB使用相同的周期次数：true-是 false-否 -->
+    <IsSameCycleForAllEpb>true</IsSameCycleForAllEpb>
+    <!-- 试验周期 s，例：10 表示 10s -->
+    <TestCycle>15</TestCycle>
+    <!--自学习周期-->
+    <LearnCycle>10</LearnCycle>
+    <StoreDir>D:\EPB_Data</StoreDir>
+    <Owner>fan</Owner>
+    <Description>卡钳常温耐久测试</Description>
+  </Basic>
+  <Timer>
+    <OverrunPolicy>AlignToWallClock</OverrunPolicy>
+    <!-- 其他可选：RunToCompletionSkipMissed/SkipNextIfOverrun / AlignToWallClock / Throw -->
+  </Timer>
+  <!-- 液压是否参与：开关按液压编号整体控制（1 控 1~6；2 控 7~12） -->
+  <!-- ===== EPB 循环参数（新版） ===== -->
+  <!-- 同组电控起始错峰，仅针对“电控”步骤；不同组可同时起 -->
+  <Hydraulics>
+    <Hydraulic>
+      <Id>1</Id>
+      <Enabled>true</Enabled>
+      <Mode>Either</Mode>
+      <SetPercent>100</SetPercent>
+      <PressureThresholdBar>100</PressureThresholdBar>
+      <PressureToleranceBar>10</PressureToleranceBar>
+      <DurationMs>800</DurationMs>
+      <HoldAfterReachedMs>0</HoldAfterReachedMs>
+      <ReleaseSafePressureBar>5</ReleaseSafePressureBar>
+      <ReleaseStableMs>100</ReleaseStableMs>
+      <ReleaseTimeoutMs>5000</ReleaseTimeoutMs>
+      <BuildTimeoutMs>5000</BuildTimeoutMs>
+      <BuildStableMs>200</BuildStableMs>
+      <PressureSampleMaxAgeMs>100</PressureSampleMaxAgeMs>
+      <HoldDropToleranceBar>10</HoldDropToleranceBar>
+      <HoldDropConfirmMs>1000</HoldDropConfirmMs>
+      <BarrierTimeoutMs>0</BarrierTimeoutMs>
+      <PressureDoId>1</PressureDoId>
+      <Members>1,2,3,4,5,6</Members>
+    </Hydraulic>
+    <Hydraulic>
+      <Id>2</Id>
+      <Enabled>true</Enabled>
+      <Mode>ByPressure</Mode>
+      <SetPercent>100</SetPercent>
+      <PressureThresholdBar>100</PressureThresholdBar>
+      <PressureToleranceBar>10</PressureToleranceBar>
+      <DurationMs>0</DurationMs>
+      <HoldAfterReachedMs>200</HoldAfterReachedMs>
+      <ReleaseSafePressureBar>5</ReleaseSafePressureBar>
+      <ReleaseStableMs>100</ReleaseStableMs>
+      <ReleaseTimeoutMs>5000</ReleaseTimeoutMs>
+      <BuildTimeoutMs>5000</BuildTimeoutMs>
+      <BuildStableMs>200</BuildStableMs>
+      <PressureSampleMaxAgeMs>100</PressureSampleMaxAgeMs>
+      <HoldDropToleranceBar>10</HoldDropToleranceBar>
+      <HoldDropConfirmMs>1000</HoldDropConfirmMs>
+      <BarrierTimeoutMs>0</BarrierTimeoutMs>
+      <PressureDoId>2</PressureDoId>
+      <Members>7,8,9,10,11,12</Members>
+    </Hydraulic>
+  </Hydraulics>
+  <ElectricalGroups>
+    <Group>
+      <Id>1</Id>
+      <StaggerMs>800</StaggerMs>
+      <Members>1,2,3</Members>
+    </Group>
+    <Group>
+      <Id>2</Id>
+      <StaggerMs>800</StaggerMs>
+      <Members>4,5,6</Members>
+    </Group>
+    <Group>
+      <Id>3</Id>
+      <StaggerMs>800</StaggerMs>
+      <Members>7,8,9</Members>
+    </Group>
+    <Group>
+      <Id>4</Id>
+      <StaggerMs>800</StaggerMs>
+      <Members>10,11,12</Members>
+    </Group>
+  </ElectricalGroups>
+  <EpbRecords>
+    <Record>
+      <Id>1</Id>
+      <Enabled>True</Enabled>
+      <StartTime>2026-08-07 17:22:54</StartTime>
+      <LatestStartTime>2026-08-07 17:22:54</LatestStartTime>
+      <RunTime>0.00:00:00</RunTime>
+      <TotalCount>100000</TotalCount>
+      <RunCount>0</RunCount>
+      <Status>NotStarted</Status>
+    </Record>
+    <Record>
+      <Id>2</Id>
+      <Enabled>False</Enabled>
+      <StartTime>2026-08-07 17:22:54</StartTime>
+      <LatestStartTime>2026-08-07 17:22:54</LatestStartTime>
+      <RunTime>0.00:00:00</RunTime>
+      <TotalCount>100000</TotalCount>
+      <RunCount>0</RunCount>
+      <Status>NotStarted</Status>
+    </Record>
+    <Record>
+      <Id>3</Id>
+      <Enabled>False</Enabled>
+      <StartTime>2026-08-07 17:22:54</StartTime>
+      <LatestStartTime>2026-08-07 17:22:54</LatestStartTime>
+      <RunTime>0.00:00:00</RunTime>
+      <TotalCount>100000</TotalCount>
+      <RunCount>0</RunCount>
+      <Status>NotStarted</Status>
+    </Record>
+    <Record>
+      <Id>4</Id>
+      <Enabled>False</Enabled>
+      <StartTime>2026-08-07 17:22:54</StartTime>
+      <LatestStartTime>2026-08-07 17:22:54</LatestStartTime>
+      <RunTime>0.00:00:00</RunTime>
+      <TotalCount>100000</TotalCount>
+      <RunCount>0</RunCount>
+      <Status>NotStarted</Status>
+    </Record>
+    <Record>
+      <Id>5</Id>
+      <Enabled>False</Enabled>
+      <StartTime>2026-08-07 17:22:54</StartTime>
+      <LatestStartTime>2026-08-07 17:22:54</LatestStartTime>
+      <RunTime>0.00:00:00</RunTime>
+      <TotalCount>100000</TotalCount>
+      <RunCount>0</RunCount>
+      <Status>NotStarted</Status>
+    </Record>
+    <Record>
+      <Id>6</Id>
+      <Enabled>False</Enabled>
+      <StartTime>2026-08-07 17:22:54</StartTime>
+      <LatestStartTime>2026-08-07 17:22:54</LatestStartTime>
+      <RunTime>0.00:00:00</RunTime>
+      <TotalCount>100000</TotalCount>
+      <RunCount>0</RunCount>
+      <Status>NotStarted</Status>
+    </Record>
+    <Record>
+      <Id>7</Id>
+      <Enabled>False</Enabled>
+      <StartTime>2026-08-07 17:22:54</StartTime>
+      <LatestStartTime>2026-08-07 17:22:54</LatestStartTime>
+      <RunTime>0.00:00:00</RunTime>
+      <TotalCount>100000</TotalCount>
+      <RunCount>0</RunCount>
+      <Status>NotStarted</Status>
+    </Record>
+    <Record>
+      <Id>8</Id>
+      <Enabled>False</Enabled>
+      <StartTime>2026-08-07 17:22:54</StartTime>
+      <LatestStartTime>2026-08-07 17:22:54</LatestStartTime>
+      <RunTime>0.00:00:00</RunTime>
+      <TotalCount>100000</TotalCount>
+      <RunCount>0</RunCount>
+      <Status>NotStarted</Status>
+    </Record>
+    <Record>
+      <Id>9</Id>
+      <Enabled>False</Enabled>
+      <StartTime>2026-08-07 17:22:54</StartTime>
+      <LatestStartTime>2026-08-07 17:22:54</LatestStartTime>
+      <RunTime>0.00:00:00</RunTime>
+      <TotalCount>100000</TotalCount>
+      <RunCount>0</RunCount>
+      <Status>NotStarted</Status>
+    </Record>
+    <Record>
+      <Id>10</Id>
+      <Enabled>False</Enabled>
+      <StartTime>2026-08-07 17:22:54</StartTime>
+      <LatestStartTime>2026-08-07 17:22:54</LatestStartTime>
+      <RunTime>0.00:00:00</RunTime>
+      <TotalCount>100000</TotalCount>
+      <RunCount>0</RunCount>
+      <Status>NotStarted</Status>
+    </Record>
+    <Record>
+      <Id>11</Id>
+      <Enabled>False</Enabled>
+      <StartTime>2026-08-07 17:22:54</StartTime>
+      <LatestStartTime>2026-08-07 17:22:54</LatestStartTime>
+      <RunTime>0.00:00:00</RunTime>
+      <TotalCount>100000</TotalCount>
+      <RunCount>0</RunCount>
+      <Status>NotStarted</Status>
+    </Record>
+    <Record>
+      <Id>12</Id>
+      <Enabled>False</Enabled>
+      <StartTime>2026-08-07 17:22:54</StartTime>
+      <LatestStartTime>2026-08-07 17:22:54</LatestStartTime>
+      <RunTime>0.00:00:00</RunTime>
+      <TotalCount>100000</TotalCount>
+      <RunCount>0</RunCount>
+      <Status>NotStarted</Status>
+    </Record>
+  </EpbRecords>
+  <EpbCycleRunnerConfig>
+    <Record>
+      <Channel>1</Channel>
+      <Name>EPB1</Name>
+      <ForwardA>15</ForwardA>
+      <SafetyMarginA>2</SafetyMarginA>
+      <FwdOnLimitMs>5000</FwdOnLimitMs>
+      <HoldMs>1000</HoldMs>
+      <RevDecayLimitA>3</RevDecayLimitA>
+      <RevDecayRigidMaxMs>1000</RevDecayRigidMaxMs>
+      <RevEmptyFixedMs>2000</RevEmptyFixedMs>
+      <PreReleaseKeepMs>500</PreReleaseKeepMs>
+      <PreReleaseDetectTimeoutMs>
+      </PreReleaseDetectTimeoutMs>
+      <PeakIgnoreMs>100</PeakIgnoreMs>
+    </Record>
+    <Record>
+      <Channel>2</Channel>
+      <Name>EPB2</Name>
+      <ForwardA>15</ForwardA>
+      <SafetyMarginA>2</SafetyMarginA>
+      <FwdOnLimitMs>5000</FwdOnLimitMs>
+      <HoldMs>1000</HoldMs>
+      <RevDecayLimitA>3</RevDecayLimitA>
+      <RevDecayRigidMaxMs>1000</RevDecayRigidMaxMs>
+      <RevEmptyFixedMs>2000</RevEmptyFixedMs>
+      <PreReleaseKeepMs>500</PreReleaseKeepMs>
+      <PreReleaseDetectTimeoutMs>
+      </PreReleaseDetectTimeoutMs>
+      <PeakIgnoreMs>100</PeakIgnoreMs>
+    </Record>
+    <Record>
+      <Channel>3</Channel>
+      <Name>EPB3</Name>
+      <ForwardA>15</ForwardA>
+      <SafetyMarginA>2</SafetyMarginA>
+      <FwdOnLimitMs>5000</FwdOnLimitMs>
+      <HoldMs>1000</HoldMs>
+      <RevDecayLimitA>3</RevDecayLimitA>
+      <RevDecayRigidMaxMs>1000</RevDecayRigidMaxMs>
+      <RevEmptyFixedMs>2000</RevEmptyFixedMs>
+      <PreReleaseKeepMs>500</PreReleaseKeepMs>
+      <PreReleaseDetectTimeoutMs>
+      </PreReleaseDetectTimeoutMs>
+      <PeakIgnoreMs>100</PeakIgnoreMs>
+    </Record>
+    <Record>
+      <Channel>4</Channel>
+      <Name>EPB4</Name>
+      <ForwardA>15</ForwardA>
+      <SafetyMarginA>2</SafetyMarginA>
+      <FwdOnLimitMs>5000</FwdOnLimitMs>
+      <HoldMs>1000</HoldMs>
+      <RevDecayLimitA>3</RevDecayLimitA>
+      <RevDecayRigidMaxMs>1000</RevDecayRigidMaxMs>
+      <RevEmptyFixedMs>2000</RevEmptyFixedMs>
+      <PreReleaseKeepMs>500</PreReleaseKeepMs>
+      <PreReleaseDetectTimeoutMs>
+      </PreReleaseDetectTimeoutMs>
+      <PeakIgnoreMs>100</PeakIgnoreMs>
+    </Record>
+    <Record>
+      <Channel>5</Channel>
+      <Name>EPB5</Name>
+      <ForwardA>15</ForwardA>
+      <SafetyMarginA>2</SafetyMarginA>
+      <FwdOnLimitMs>5000</FwdOnLimitMs>
+      <HoldMs>1000</HoldMs>
+      <RevDecayLimitA>3</RevDecayLimitA>
+      <RevDecayRigidMaxMs>1000</RevDecayRigidMaxMs>
+      <RevEmptyFixedMs>2000</RevEmptyFixedMs>
+      <PreReleaseKeepMs>500</PreReleaseKeepMs>
+      <PreReleaseDetectTimeoutMs>
+      </PreReleaseDetectTimeoutMs>
+      <PeakIgnoreMs>100</PeakIgnoreMs>
+    </Record>
+    <Record>
+      <Channel>6</Channel>
+      <Name>EPB6</Name>
+      <ForwardA>15</ForwardA>
+      <SafetyMarginA>2</SafetyMarginA>
+      <FwdOnLimitMs>5000</FwdOnLimitMs>
+      <HoldMs>1000</HoldMs>
+      <RevDecayLimitA>3</RevDecayLimitA>
+      <RevDecayRigidMaxMs>1000</RevDecayRigidMaxMs>
+      <RevEmptyFixedMs>2000</RevEmptyFixedMs>
+      <PreReleaseKeepMs>500</PreReleaseKeepMs>
+      <PreReleaseDetectTimeoutMs>
+      </PreReleaseDetectTimeoutMs>
+      <PeakIgnoreMs>100</PeakIgnoreMs>
+    </Record>
+    <Record>
+      <Channel>7</Channel>
+      <Name>EPB7</Name>
+      <ForwardA>15</ForwardA>
+      <SafetyMarginA>2</SafetyMarginA>
+      <FwdOnLimitMs>5000</FwdOnLimitMs>
+      <HoldMs>1000</HoldMs>
+      <RevDecayLimitA>3</RevDecayLimitA>
+      <RevDecayRigidMaxMs>1000</RevDecayRigidMaxMs>
+      <RevEmptyFixedMs>2000</RevEmptyFixedMs>
+      <PreReleaseKeepMs>500</PreReleaseKeepMs>
+      <PreReleaseDetectTimeoutMs>
+      </PreReleaseDetectTimeoutMs>
+      <PeakIgnoreMs>100</PeakIgnoreMs>
+    </Record>
+    <Record>
+      <Channel>8</Channel>
+      <Name>EPB8</Name>
+      <ForwardA>15</ForwardA>
+      <SafetyMarginA>2</SafetyMarginA>
+      <FwdOnLimitMs>5000</FwdOnLimitMs>
+      <HoldMs>1000</HoldMs>
+      <RevDecayLimitA>3</RevDecayLimitA>
+      <RevDecayRigidMaxMs>1000</RevDecayRigidMaxMs>
+      <RevEmptyFixedMs>2000</RevEmptyFixedMs>
+      <PreReleaseKeepMs>500</PreReleaseKeepMs>
+      <PreReleaseDetectTimeoutMs>
+      </PreReleaseDetectTimeoutMs>
+      <PeakIgnoreMs>100</PeakIgnoreMs>
+    </Record>
+    <Record>
+      <Channel>9</Channel>
+      <Name>EPB9</Name>
+      <ForwardA>15</ForwardA>
+      <SafetyMarginA>2</SafetyMarginA>
+      <FwdOnLimitMs>5000</FwdOnLimitMs>
+      <HoldMs>1000</HoldMs>
+      <RevDecayLimitA>3</RevDecayLimitA>
+      <RevDecayRigidMaxMs>1000</RevDecayRigidMaxMs>
+      <RevEmptyFixedMs>2000</RevEmptyFixedMs>
+      <PreReleaseKeepMs>500</PreReleaseKeepMs>
+      <PreReleaseDetectTimeoutMs>
+      </PreReleaseDetectTimeoutMs>
+      <PeakIgnoreMs>100</PeakIgnoreMs>
+    </Record>
+    <Record>
+      <Channel>10</Channel>
+      <Name>EPB10</Name>
+      <ForwardA>15</ForwardA>
+      <SafetyMarginA>2</SafetyMarginA>
+      <FwdOnLimitMs>5000</FwdOnLimitMs>
+      <HoldMs>1000</HoldMs>
+      <RevDecayLimitA>3</RevDecayLimitA>
+      <RevDecayRigidMaxMs>1000</RevDecayRigidMaxMs>
+      <RevEmptyFixedMs>2000</RevEmptyFixedMs>
+      <PreReleaseKeepMs>500</PreReleaseKeepMs>
+      <PreReleaseDetectTimeoutMs>
+      </PreReleaseDetectTimeoutMs>
+      <PeakIgnoreMs>100</PeakIgnoreMs>
+    </Record>
+    <Record>
+      <Channel>11</Channel>
+      <Name>EPB11</Name>
+      <ForwardA>15</ForwardA>
+      <SafetyMarginA>2</SafetyMarginA>
+      <FwdOnLimitMs>5000</FwdOnLimitMs>
+      <HoldMs>1000</HoldMs>
+      <RevDecayLimitA>3</RevDecayLimitA>
+      <RevDecayRigidMaxMs>1000</RevDecayRigidMaxMs>
+      <RevEmptyFixedMs>2000</RevEmptyFixedMs>
+      <PreReleaseKeepMs>500</PreReleaseKeepMs>
+      <PreReleaseDetectTimeoutMs>
+      </PreReleaseDetectTimeoutMs>
+      <PeakIgnoreMs>100</PeakIgnoreMs>
+    </Record>
+    <Record>
+      <Channel>12</Channel>
+      <Name>EPB12</Name>
+      <ForwardA>15</ForwardA>
+      <SafetyMarginA>2</SafetyMarginA>
+      <FwdOnLimitMs>5000</FwdOnLimitMs>
+      <HoldMs>1000</HoldMs>
+      <RevDecayLimitA>3</RevDecayLimitA>
+      <RevDecayRigidMaxMs>1000</RevDecayRigidMaxMs>
+      <RevEmptyFixedMs>2000</RevEmptyFixedMs>
+      <PreReleaseKeepMs>500</PreReleaseKeepMs>
+      <PreReleaseDetectTimeoutMs>
+      </PreReleaseDetectTimeoutMs>
+      <PeakIgnoreMs>100</PeakIgnoreMs>
+    </Record>
+  </EpbCycleRunnerConfig>
+  <DataStorageRetention>
+    <Latest RetentionMode="Count" RetainStopPackagesPerChannel="10" />
+  </DataStorageRetention>
 </TestConfig>
