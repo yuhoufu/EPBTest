@@ -1478,7 +1478,10 @@ public sealed class EpbDiskWriter : IDisposable
         }
 
         if (TryReadHistoricalBinSnapshot(epbId, cycle, out var recovered, out _))
+        {
+            if (cycle.SampleCount <= 0) cycle.SampleCount = recovered.Count;
             return recovered;
+        }
 
         throw new InvalidDataException(
             $"{ringFailure.Message}；未在 {_indexDir} 中找到可恢复的完整 BIN 快照。",
@@ -1520,7 +1523,7 @@ public sealed class EpbDiskWriter : IDisposable
     {
         records = null;
         sourcePath = null;
-        if (!Directory.Exists(_indexDir) || cycle.SampleCount <= 0)
+        if (!Directory.Exists(_indexDir))
             return false;
 
         var fileName = $"EPB{epbId}_Cycle_{cycle.CycleNumber:D6}.bin";
@@ -1541,14 +1544,19 @@ public sealed class EpbDiskWriter : IDisposable
         {
             try
             {
-                var expectedLength = (long)cycle.SampleCount * SampleRecord.Size;
                 var info = new FileInfo(candidate);
-                if (info.Length != expectedLength) continue;
+                if (info.Length <= 0 || info.Length % SampleRecord.Size != 0) continue;
+                if (cycle.SampleCount > 0 &&
+                    info.Length != (long)cycle.SampleCount * SampleRecord.Size)
+                    continue;
+                var recordCount = cycle.SampleCount > 0
+                    ? cycle.SampleCount
+                    : checked((int)(info.Length / SampleRecord.Size));
 
-                var recovered = new List<SampleRecord>(cycle.SampleCount);
+                var recovered = new List<SampleRecord>(recordCount);
                 using var fs = new FileStream(candidate, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
                 using var br = new BinaryReader(fs);
-                for (var i = 0; i < cycle.SampleCount; i++)
+                for (var i = 0; i < recordCount; i++)
                 {
                     var rec = new SampleRecord
                     {

@@ -35,6 +35,7 @@ namespace EpbDiskWriterTests
                 Run("DAQ时钟恢复圈状态独立封存", DaqClockRecoveryAbortStatusIsDurable);
                 Run("软件自愈作废圈状态独立封存", SoftwareRecoveryAbortStatusIsDurable);
                 Run("软件自愈作废圈可导出警告证据", SoftwareRecoveryAbortCanExportEvidence);
+                Run("学习负圈索引样本数竞态可从封存BIN恢复", LearningSnapshotRecoversWhenIndexCountIsZero);
                 Run("报警CSV和BIN不一致时校验失败", AlarmPairValidatorRejectsMismatch);
                 Run("学习与资格圈终态均落盘且不改变正式计数", LearningOutcomesDoNotAffectFormalCounters);
                 Run("学习负圈号跨重启连续且唯一", LearningCycleNumbersSurviveRestart);
@@ -637,6 +638,57 @@ namespace EpbDiskWriterTests
                     File.Exists(evidence.CsvPath) &&
                     File.Exists(evidence.BinPath),
                     "软件自愈作废圈未导出完整CSV/BIN警告证据");
+            });
+        }
+
+        private static void LearningSnapshotRecoversWhenIndexCountIsZero()
+        {
+            WithRoot(root =>
+            {
+                var policy = NewPolicy(root);
+                var start = DateTime.UtcNow;
+                var learningDir = Path.Combine(
+                    policy.IndexAndExportPath,
+                    "LearningCycles",
+                    Guid.NewGuid().ToString("N"),
+                    "EPB05",
+                    "Learning_0005",
+                    "Attempt_0002");
+                int cycle;
+                using (var writer = new EpbDiskWriter(policy))
+                {
+                    cycle = writer.BeginLearningCycle(5, start);
+                    WriteSamples(writer, 5, 7, start);
+                    var sealedEvidence = writer.SealAndExportCycle(
+                        5,
+                        cycle,
+                        learningDir,
+                        start.AddSeconds(1),
+                        "learning_failed");
+                    Assert(sealedEvidence.IsValid && sealedEvidence.SampleCount == 7,
+                        "测试前置学习负圈未成功封存");
+
+                    using (var connection = OpenIndex(policy))
+                    using (var command = connection.CreateCommand())
+                    {
+                        command.CommandText =
+                            "UPDATE epb_cycles SET sample_count=0 WHERE epb_id=5 AND cycle_number=@cycle";
+                        command.Parameters.AddWithValue("@cycle", cycle);
+                        command.ExecuteNonQuery();
+                    }
+
+                    var warningDir = Path.Combine(root, "warning-negative-cycle");
+                    var recovered = writer.ExportCycleAttemptTo(
+                        5,
+                        cycle,
+                        warningDir,
+                        true,
+                        true);
+                    Assert(recovered.SampleCount == 7 &&
+                           File.Exists(recovered.CsvPath) &&
+                           File.Exists(recovered.BinPath),
+                        "索引样本数为0时未从LearningCycles/Attempt封存BIN恢复预警证据");
+                }
             });
         }
 
