@@ -48,6 +48,7 @@
     <Compile Include="HydraulicGroupCoordinatorTests.cs" />
     <Compile Include="PowerSupplyCoordinatorTests.cs" />
     <Compile Include="ProjectLogStoreTests.cs" />
+    <Compile Include="PswTcpClientTimeoutTests.cs" />
     <Compile Include="RecoveryCoordinationTests.cs" />
     <Compile Include="NonRecoverableAlarmPolicyTests.cs" />
   </ItemGroup>

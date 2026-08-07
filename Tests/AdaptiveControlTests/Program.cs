@@ -178,6 +178,7 @@ namespace AdaptiveControlTests
                 _passed += CalibrationMathTests.RunAll();
                 _passed += HydraulicGroupCoordinatorTests.RunAll();
                 _passed += PowerSupplyCoordinatorTests.RunAll();
+                _passed += PswTcpClientTimeoutTests.RunAll();
                 _passed += ProjectLogStoreTests.RunAll();
                 _passed += RecoveryCoordinationTests.RunAll();
                 Console.WriteLine($"PASS {_passed}/{_passed}");

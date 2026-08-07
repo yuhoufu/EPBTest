@@ -257,6 +257,7 @@ namespace PowerSupply.Core
             var completed = await Task.WhenAny(task, timeout).ConfigureAwait(false);
             if (completed != task)
             {
+                ObserveLateFault(task);
                 token.ThrowIfCancellationRequested();
                 throw new TimeoutException($"{operation} 超时（{timeoutMs} ms）。");
             }
@@ -269,10 +270,31 @@ namespace PowerSupply.Core
             var completed = await Task.WhenAny(task, timeout).ConfigureAwait(false);
             if (completed != task)
             {
+                ObserveLateFault(task);
                 token.ThrowIfCancellationRequested();
                 throw new TimeoutException($"{operation} 超时（{timeoutMs} ms）。");
             }
             await task.ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// netstandard2.0 的 StreamReader.ReadLineAsync 无法接收 CancellationToken。
+        /// 超时后上层会关闭整条传输连接，使原 I/O Task 稍后以 Socket/Disposed 异常结束；
+        /// 必须继续观察该 Task 的 Exception，避免由终结器线程触发 UnobservedTaskException。
+        /// </summary>
+        private static void ObserveLateFault(Task task)
+        {
+            if (task == null) return;
+            _ = task.ContinueWith(
+                completed =>
+                {
+                    // 访问 Exception 即完成“观察”；异常仍由当前事务的 TimeoutException 表达。
+                    var ignored = completed.Exception;
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted |
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
         }
 
         private void EnsureConnected()
