@@ -423,6 +423,7 @@ namespace Controller
         public bool HasEnergizationPermit(int electricalGroupId, out string reason)
         {
             var state = GetRuntimeState(electricalGroupId);
+            var snapshot = GetLatestSnapshot(electricalGroupId);
             if (!state.ExpectedOutputEnabled)
                 reason = "ExpectedOutputDisabled";
             else if (state.PlannedTransition)
@@ -433,11 +434,15 @@ namespace Controller
                 reason = "TelemetryOutputDisabled";
             else if (state.ProtectionTripped)
                 reason = "ProtectionTripped";
-            else if (state.TelemetryUtc == default)
+            else if (snapshot == null || state.TelemetryUtc == default)
                 reason = "TelemetryMissing";
+            else if (!snapshot.IsConnected)
+                reason = "TelemetryDisconnected";
             else if ((DateTime.UtcNow - state.TelemetryUtc.ToUniversalTime()).TotalMilliseconds >
                      _config.TelemetryStaleMs)
                 reason = "TelemetryStale";
+            else if (snapshot.MeasuredVoltage < RequiredSupply(electricalGroupId).MinimumOutputVoltageV)
+                reason = "OutputVoltageBelowMinimum";
             else
             {
                 reason = string.Empty;

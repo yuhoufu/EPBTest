@@ -2121,6 +2121,12 @@ namespace AdaptiveControlTests
                     new EpbOutputCommandException(4, "Forward")),
                 "真实电机输出命令失败被软件自愈吞掉");
             Assert(EpbCycleRunner.IsSoftwareRecoveryException(
+                    new PowerSupplyEnergizationPermitException(
+                        4,
+                        2,
+                        "TelemetryOutputDisabled")),
+                "电源许可缺失仍被当作卡钳硬件故障累计");
+            Assert(EpbCycleRunner.IsSoftwareRecoveryException(
                     new HydraulicBuildTimeoutException(
                         1, 70, 10, 55, 5000, "BelowToleranceWindow", 2, 3)),
                 "未满3代次的建压不足未进入软件自愈");
