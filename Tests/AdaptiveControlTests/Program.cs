@@ -140,6 +140,7 @@ namespace AdaptiveControlTests
                 Run("EPB5报警且EPB4联锁状态保持锁存", RuntimeStateDistinguishesSourceAndInterlock);
                 Run("DAQ恢复不得解除报警停机状态", RuntimeStateRecoveryCannotClearAlarm);
                 Run("新运行预检后可复位旧停机状态", RuntimeStateResetsOnlyForNewRun);
+                Run("状态版本阻止迟到报警覆盖新运行状态", RuntimeStateRevisionRejectsLateUiDelivery);
                 Run("安全退出仅允许压力证据单项缺失", StopSafetyExitPolicy);
                 Run("Dev1与Dev2有界队列容量互不影响", DaqBoundedQueuesAreIndependent);
                 Run("12通道并发首次创建运行对象", TwelveChannelsCreateRuntimesConcurrently);
@@ -2827,6 +2828,43 @@ namespace AdaptiveControlTests
             }, allowTerminalReset: true);
             Assert(store.Get(5).State == ChannelRuntimeState.Starting,
                 "新运行通过启动入口后未能复位旧锁存");
+        }
+
+        private static void RuntimeStateRevisionRejectsLateUiDelivery()
+        {
+            var store = new ChannelRuntimeStateStore();
+            var alarm = store.Publish(new ChannelRuntimeStateChangedEvent
+            {
+                Channel = 8,
+                State = ChannelRuntimeState.AlarmStopped,
+                ReasonCode = "PeakEvidenceMismatch"
+            });
+            var checking = store.Publish(new ChannelRuntimeStateChangedEvent
+            {
+                Channel = 8,
+                State = ChannelRuntimeState.ResumeChecking,
+                ReasonCode = "AlarmResumeChecking"
+            }, allowTerminalReset: true);
+            var running = store.Publish(new ChannelRuntimeStateChangedEvent
+            {
+                Channel = 8,
+                State = ChannelRuntimeState.Running,
+                ReasonCode = "AlarmResumed"
+            }, allowTerminalReset: true);
+
+            Assert(alarm.Revision > 0 && checking.Revision > alarm.Revision &&
+                   running.Revision > checking.Revision,
+                "通道运行状态未分配单调递增版本号");
+            Assert(running.Clone().Revision == running.Revision,
+                "状态克隆丢失版本号");
+
+            ChannelRuntimeStateChangedEvent uiState = null;
+            if (running.IsNewerThan(uiState)) uiState = running.Clone();
+            // 模拟 UI 线程稍后才收到此前排队的报警消息。
+            if (alarm.IsNewerThan(uiState)) uiState = alarm.Clone();
+            Assert(uiState.State == ChannelRuntimeState.Running &&
+                   uiState.Revision == running.Revision,
+                "迟到的报警状态覆盖了已恢复运行的新状态");
         }
 
         private static void StopSafetyExitPolicy()
