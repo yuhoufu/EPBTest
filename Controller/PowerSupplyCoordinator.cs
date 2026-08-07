@@ -57,6 +57,7 @@ namespace Controller
         Task DisableAllAsync(string reason, CancellationToken token);
         Task ResetFaultAsync(int electricalGroupId, CancellationToken token);
         bool HasFreshPowerFaultEvidence(int electricalGroupId);
+        bool HasEnergizationPermit(int electricalGroupId, out string reason);
         PswSnapshot GetLatestSnapshot(int electricalGroupId);
         PowerSupplyRuntimeState GetRuntimeState(int electricalGroupId);
         IReadOnlyList<PowerSupplyTelemetry> GetRecentTelemetry(int electricalGroupId, TimeSpan window);
@@ -417,6 +418,33 @@ namespace Controller
                    (snapshot.OutputEnabled && snapshot.MeasuredVoltage < supply.MinimumOutputVoltageV) ||
                    (supply.CurrentA.HasValue &&
                     snapshot.MeasuredCurrent >= supply.CurrentA.Value * _config.NearLimitWarnRatio);
+        }
+
+        public bool HasEnergizationPermit(int electricalGroupId, out string reason)
+        {
+            var state = GetRuntimeState(electricalGroupId);
+            if (!state.ExpectedOutputEnabled)
+                reason = "ExpectedOutputDisabled";
+            else if (state.PlannedTransition)
+                reason = "PlannedTransition";
+            else if (!state.Active)
+                reason = "GroupNotActive";
+            else if (!state.TelemetryOutputEnabled)
+                reason = "TelemetryOutputDisabled";
+            else if (state.ProtectionTripped)
+                reason = "ProtectionTripped";
+            else if (state.TelemetryUtc == default)
+                reason = "TelemetryMissing";
+            else if ((DateTime.UtcNow - state.TelemetryUtc.ToUniversalTime()).TotalMilliseconds >
+                     _config.TelemetryStaleMs)
+                reason = "TelemetryStale";
+            else
+            {
+                reason = string.Empty;
+                return true;
+            }
+
+            return false;
         }
 
         public PswSnapshot GetLatestSnapshot(int electricalGroupId)

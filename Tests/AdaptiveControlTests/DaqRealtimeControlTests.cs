@@ -30,6 +30,7 @@ namespace AdaptiveControlTests
             Run("软件恢复失败持续自维护且仅硬件证据报警", DaqSelfMaintenancePolicy, ref passed);
             Run("恢复阶段只在终态导出完整重证据", IncidentSnapshotHeavyEvidencePolicy, ref passed);
             Run("DAQ恢复先恢复安全电源再做机械定位", DaqRecoveryPrerequisiteOrder, ref passed);
+            Run("学习和资格通道即使没有定时器也恢复供电", DaqRecoveryIncludesRunnerOnlyChannels, ref passed);
             Run("UI发布限频不影响首批和周期后批次", UiDispatchGateUsesMonotonicRateLimit, ref passed);
             Run("DAQ陈旧根因区分回调与控制消费", DaqStaleRootClassification, ref passed);
             Run("DAQ批次和兼容队列包装不再持续分配", DaqBatchObjectsAreReusableValueBacked, ref passed);
@@ -304,6 +305,17 @@ namespace AdaptiveControlTests
             Assert(EpbManager.ShouldDeferIndependentRejoinForDaq(true) &&
                    !EpbManager.ShouldDeferIndependentRejoinForDaq(false),
                 "通道级恢复没有正确服从DAQ组恢复所有权");
+        }
+
+        private static void DaqRecoveryIncludesRunnerOnlyChannels()
+        {
+            var selected = EpbManager.SelectDaqRecoveryPowerChannels(
+                new[] { 5, 4, 5, 6 },
+                channel => channel == 6,
+                _ => false,
+                channel => channel != 4);
+            Assert(selected.SequenceEqual(new[] { 5 }),
+                "学习/资格 Runner 通道未进入恢复供电集合，或禁用/报警通道未被隔离");
         }
 
         private static void IncidentCorrelationAndPriority()

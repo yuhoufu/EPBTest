@@ -377,6 +377,7 @@ namespace Controller
             public DateTime CutoffUtc;
             public int[] AffectedChannels;
             public int[] PreviouslyRunningChannels;
+            public int[] PreviouslyActiveChannels;
             public string TriggerCode;
             public int RestartDaq;
             public int Completing;
@@ -2182,6 +2183,14 @@ namespace Controller
                     .Distinct()
                     .OrderBy(channel => channel)
                     .ToArray(),
+                PreviouslyActiveChannels = affected
+                    .Where(channel =>
+                        _timers.ContainsKey(channel) ||
+                        _runners.ContainsKey(channel) ||
+                        IsHydraulicParticipant(channel))
+                    .Distinct()
+                    .OrderBy(channel => channel)
+                    .ToArray(),
                 TriggerCode = string.IsNullOrWhiteSpace(code) ? "DaqPersistenceLag" : code,
                 RestartDaq = restartDaq ? 1 : 0,
                 RecoveryAttempt = recoveryAttempt,
@@ -2454,7 +2463,12 @@ namespace Controller
 
                 var batchPauseState = CurrentBatchPauseState;
                 var holdForBatchPause = ShouldHoldDaqRecoveredChannelsForBatchPause(batchPauseState);
-                var rejoinChannels = (context.PreviouslyRunningChannels ?? context.AffectedChannels)
+                var powerRecoveryChannels = SelectDaqRecoveryPowerChannels(
+                    context.PreviouslyActiveChannels ?? context.AffectedChannels,
+                    IsAlarmStopRequested,
+                    channel => _channelPausedUtc.ContainsKey(channel),
+                    IsChannelEnabled);
+                var rejoinChannels = (context.PreviouslyRunningChannels ?? Array.Empty<int>())
                     .Where(channel =>
                         _timers.ContainsKey(channel) &&
                         !IsAlarmStopRequested(channel) &&
@@ -2469,12 +2483,12 @@ namespace Controller
                                      rejoinChannels,
                                      _cfg.Test.Groups,
                                      PeriodMs);
-                if (!holdForBatchPause && rejoinChannels.Length > 0)
+                if (!holdForBatchPause && powerRecoveryChannels.Length > 0)
                 {
                     context.ValidationPhase = "EmergencyPowerOffBarrier";
                     if (_powerSupply != null)
                     {
-                        foreach (var groupId in rejoinChannels
+                        foreach (var groupId in powerRecoveryChannels
                                      .Select(GetElectricalGroupId)
                                      .Where(groupId => groupId > 0 &&
                                                        _emergencyPowerGroupLatch.ContainsKey(groupId))
@@ -2496,15 +2510,17 @@ namespace Controller
 
                     context.ValidationPhase = "PowerEnableThenMechanicalRelease";
                     await ExecuteDaqRecoveryRejoinPrerequisitesAsync(
-                            rejoinChannels,
+                            powerRecoveryChannels,
                             _powerSupply == null
                                 ? null
                                 : (channels, ct) => _powerSupply.PrepareAndEnableAsync(channels, ct),
-                            (channels, ct) => EnsureMotorReleasedBeforeFormalRejoinAsync(
-                                channels,
-                                rejoinPlan,
-                                $"DaqRecovery:{device}",
-                                ct),
+                            rejoinChannels.Length == 0
+                                ? null
+                                : (_, ct) => EnsureMotorReleasedBeforeFormalRejoinAsync(
+                                    rejoinChannels,
+                                    rejoinPlan,
+                                    $"DaqRecovery:{device}",
+                                    ct),
                             context.Cancellation.Token)
                         .ConfigureAwait(false);
                     if (!IsCurrentRecovery(context)) return;
@@ -3279,6 +3295,65 @@ namespace Controller
                     catch { }
                 }
             });
+        }
+
+        private bool IsChannelEnabled(int channel)
+        {
+            if (channel < 1 || channel > 12 || _cfg?.Test == null) return false;
+            lock (_cfg.Test)
+            {
+                _cfg.Test.EnsureEpbRecords(12);
+                return _cfg.Test.GetEpbRecord(channel).Enabled;
+            }
+        }
+
+        internal static int[] SelectDaqRecoveryPowerChannels(
+            IEnumerable<int> previouslyActiveChannels,
+            Func<int, bool> isAlarmStopped,
+            Func<int, bool> isPaused,
+            Func<int, bool> isEnabled)
+        {
+            return (previouslyActiveChannels ?? Array.Empty<int>())
+                .Where(channel => channel >= 1 && channel <= 12)
+                .Where(channel => !(isAlarmStopped?.Invoke(channel) ?? false))
+                .Where(channel => !(isPaused?.Invoke(channel) ?? false))
+                .Where(channel => isEnabled?.Invoke(channel) ?? true)
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
+        }
+
+        private async Task EnsurePowerSupplyReadyForChannelsAsync(
+            IEnumerable<int> channels,
+            CancellationToken token)
+        {
+            if (_powerSupply == null) return;
+            var selected = (channels ?? Array.Empty<int>())
+                .Where(channel => channel >= 1 && channel <= 12)
+                .Where(IsChannelEnabled)
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
+            if (selected.Length == 0) return;
+            var groups = selected.Select(GetElectricalGroupId).Where(id => id > 0).Distinct().ToArray();
+            if (groups.Length > 0 && groups.All(group => _powerSupply.HasEnergizationPermit(group, out _)))
+                return;
+            await _powerSupply.PrepareAndEnableAsync(selected, token).ConfigureAwait(false);
+            var denied = groups
+                .Select(group => new { Group = group, Allowed = _powerSupply.HasEnergizationPermit(group, out var reason), Reason = reason })
+                .FirstOrDefault(item => !item.Allowed);
+            if (denied != null)
+                throw new InvalidOperationException(
+                    $"PowerSupplyEnergizationPermitMissing Group={denied.Group} Reason={denied.Reason}");
+        }
+
+        internal void EnsurePowerSupplyEnergizationPermit(int channel)
+        {
+            if (_powerSupply == null) return;
+            var groupId = GetElectricalGroupId(channel);
+            var reason = "GroupMappingMissing";
+            if (groupId > 0 && _powerSupply.HasEnergizationPermit(groupId, out reason)) return;
+            throw new PowerSupplyEnergizationPermitException(channel, groupId, reason);
         }
 
         private bool IsDaqRecoveryActiveForChannel(int channel)

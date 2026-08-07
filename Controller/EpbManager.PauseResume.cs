@@ -557,6 +557,8 @@ namespace Controller
             var attempts = await SoftwareSelfHealingLoop.RunAsync(
                     async (attempt, attemptToken) =>
                     {
+                        await EnsurePowerSupplyReadyForChannelsAsync(new[] { channel }, attemptToken)
+                            .ConfigureAwait(false);
                         if (attempt > 1)
                             await EnterHydraulicStartupPhaseWithSelfHealingAsync(
                                     new HydraulicGenerationKey(
@@ -1205,6 +1207,8 @@ namespace Controller
                 var ct = linked.Token;
                 var phaseSlot = firstSlot + cycleIndex - 1L;
                 await WaitForDaqRecoveryAsync(channel, ct).ConfigureAwait(false);
+                await EnsurePowerSupplyReadyForChannelsAsync(new[] { channel }, ct)
+                    .ConfigureAwait(false);
 
                 var candidates = pressureGroup == 1
                     ? Enumerable.Range(1, 6).ToArray()

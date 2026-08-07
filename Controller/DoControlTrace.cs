@@ -11,6 +11,12 @@ using DataOperation;
 
 namespace Controller
 {
+    internal sealed class PowerSupplyEnergizationPermitException : InvalidOperationException
+    {
+        public PowerSupplyEnergizationPermitException(int channel, int groupId, string reason)
+            : base($"PowerSupplyEnergizationPermitMissing Channel={channel} Group={groupId} Reason={reason}") { }
+    }
+
     internal enum EpbDoCommand
     {
         Forward,
@@ -184,11 +190,13 @@ namespace Controller
 
         internal bool CommandEpbForward(int channel, string stage)
         {
+            EnsurePowerSupplyEnergizationPermit(channel);
             return ExecuteDoCommand(channel, stage, EpbDoCommand.Forward, () => _do.SetEpbForward(channel));
         }
 
         internal bool CommandEpbReverse(int channel, string stage)
         {
+            EnsurePowerSupplyEnergizationPermit(channel);
             return ExecuteDoCommand(channel, stage, EpbDoCommand.Reverse, () => _do.SetEpbReverse(channel));
         }
 

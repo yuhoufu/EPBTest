@@ -18,6 +18,7 @@ namespace AdaptiveControlTests
             Run("电源安全配置缺项禁止启动", InvalidSafetyConfigIsRejected, ref passed);
             Run("启动前输出已开启先关闭再改参", PreExistingOutputOnIsSafelyDisabled, ref passed);
             Run("OUTP ON后等待空载电流稳定回零", StartupWaitsForCurrentToReturnToZero, ref passed);
+            Run("OUTP ON初始5A浪涌回零后允许启动", StartupFiveAmpTransientIsAllowed, ref passed);
             Run("启动电压爬升后连续稳定可通过", StartupVoltageRampIsAllowed, ref passed);
             Run("启动电压持续过低才超时回滚", StartupLowVoltageTimeoutRollsBackOutput, ref passed);
             Run("启动电流不回零则关电并禁止启动", StartupZeroTimeoutRollsBackOutput, ref passed);
@@ -96,6 +97,30 @@ namespace AdaptiveControlTests
                 Assert(clients[1].OutputSnapshotReadCount >= 5,
                     "电源启动瞬态尚未回零就允许启动。");
                 Assert(clients[1].OutputEnabled, "电流稳定回零后电源未保持开启。");
+            }
+        }
+
+        private static void StartupFiveAmpTransientIsAllowed()
+        {
+            var config = NewConfig();
+            config.PollIntervalMs = 50;
+            config.StartupZeroStableMs = 100;
+            config.StartupZeroTimeoutMs = 1000;
+            var clients = NewClients(config);
+            clients[1].OutputCurrentSequence.Enqueue(5.0);
+            clients[1].OutputCurrentSequence.Enqueue(4.5);
+            clients[1].OutputCurrentSequence.Enqueue(0.1);
+            clients[1].OutputCurrentSequence.Enqueue(0.1);
+            clients[1].OutputCurrentSequence.Enqueue(0.1);
+
+            using (var coordinator = NewCoordinator(config, clients))
+            {
+                coordinator.PrepareAndEnableAsync(new[] { 1 }, CancellationToken.None)
+                    .GetAwaiter().GetResult();
+                Assert(clients[1].OutputEnabled,
+                    "程控电源刚ON的4至5A短暂波动被误判为启动故障");
+                Assert(coordinator.HasEnergizationPermit(1, out var reason),
+                    "浪涌回零并稳定后仍未签发电机动作许可：" + reason);
             }
         }
 

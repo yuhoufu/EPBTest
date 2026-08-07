@@ -817,6 +817,8 @@ namespace Controller
                             var phaseSlot = firstFormalSlot + cycleIndex - 1L;
 
                             await WaitForDaqRecoveryAsync(ch, token).ConfigureAwait(false);
+                            await EnsurePowerSupplyReadyForChannelsAsync(new[] { ch }, token)
+                                .ConfigureAwait(false);
 
                             // 1) 在本圈锚点时刻为该压力组建压：
                             //    对本组所有参与通道调用 EnterElectricalPhaseAsync，
@@ -1334,6 +1336,8 @@ namespace Controller
             var attempts = await SoftwareSelfHealingLoop.RunAsync(
                     async (attempt, attemptToken) =>
                     {
+                        await EnsurePowerSupplyReadyForChannelsAsync(new[] { channel }, attemptToken)
+                            .ConfigureAwait(false);
                         if (attempt > 1)
                         {
                             await EnterHydraulicStartupPhaseWithSelfHealingAsync(
