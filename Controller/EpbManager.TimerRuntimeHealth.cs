@@ -307,19 +307,28 @@ namespace Controller
                     while (CanContinueTimerRuntimeSelfHealing(channel, runId))
                     {
                         attempt++;
+                        HydraulicRecoveryOwnershipCoordinator.HydraulicRecoveryOwnershipLease ownership = null;
                         try
                         {
+                            ownership = await _recoveryOwnership.AcquireAsync(
+                                    GetHydraulicGroupForChannel(channel),
+                                    $"TIMER:{channel}:{runId:N}",
+                                    RecoveryOwnerPriority.Hydraulic,
+                                    RecoveryOwnershipTakeoverTimeoutMs,
+                                    CancellationToken.None)
+                                .ConfigureAwait(false);
+                            var recoveryToken = ownership.Token;
                             RequireSoftwareRecoveryOutputOff(channel, "TimerRuntimeSelfHealing");
                             await HydraulicMarkReleaseAsync(channel).ConfigureAwait(false);
                             if (!CanContinueTimerRuntimeSelfHealing(channel, runId)) return;
 
                             await EnsureDaqReadyBeforeStartAsync(
                                     new[] { channel },
-                                    CancellationToken.None)
+                                    recoveryToken)
                                 .ConfigureAwait(false);
                             await EnsurePowerSupplyReadyForChannelsAsync(
                                     new[] { channel },
-                                    CancellationToken.None)
+                                    recoveryToken)
                                 .ConfigureAwait(false);
                             if (!CanContinueTimerRuntimeSelfHealing(channel, runId)) return;
 
@@ -332,7 +341,7 @@ namespace Controller
                                     new[] { channel },
                                     plan,
                                     "TimerRuntimeSelfHealing",
-                                    CancellationToken.None)
+                                    recoveryToken)
                                 .ConfigureAwait(false);
                             if (!CanContinueTimerRuntimeSelfHealing(channel, runId)) return;
 
@@ -366,8 +375,14 @@ namespace Controller
                             _log?.Warn(
                                 $"EPB[{channel}] Timer自动重建第{attempt}次失败，将持续重试：{ex.Message}",
                                 "Timer");
+                            ownership?.Dispose();
+                            ownership = null;
                             await Task.Delay(SelectTimerRecoveryRetryDelayMs(attempt))
                                 .ConfigureAwait(false);
+                        }
+                        finally
+                        {
+                            ownership?.Dispose();
                         }
                     }
                 }
