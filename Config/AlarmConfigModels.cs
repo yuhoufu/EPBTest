@@ -89,10 +89,15 @@ namespace Config
         public int Retry { get; set; } = 2;
 
         /// <summary>
-        /// 正向峰值超过阈值的报警增量（A）。
-        /// 例如 3.0 表示 Imax >= Thr + 3.0A 触发报警。
+        /// 正向快速电流保护增量（A）。达到该值时立即断开正向输出，
+        /// 但不再凭单圈直接锁存永久报警。
         /// </summary>
         public double OvershootAlarmDeltaA { get; set; } = 3.0;
+
+        /// <summary>
+        /// 完整速率峰值达到 Target + 该增量时，计入不可自恢复过冲连续圈数。
+        /// </summary>
+        public double AdaptivePermanentOvershootDeltaA { get; set; } = 2.0;
 
         /// <summary>
         /// 自适应控制的峰值平衡带（A）。超出后先软预警并继续释放，
@@ -100,8 +105,8 @@ namespace Config
         /// </summary>
         public double AdaptiveOvershootWarningDeltaA { get; set; } = 0.8;
 
-        /// <summary>自适应峰值连续超出平衡带多少圈后升级为硬故障。</summary>
-        public int AdaptiveOvershootConfirmCycles { get; set; } = 5;
+        /// <summary>完整速率峰值连续超过永久报警线多少个正式提交圈后锁存报警。</summary>
+        public int AdaptiveOvershootConfirmCycles { get; set; } = 8;
 
         /// <summary>
         /// 快速峰值与完整峰值在证据有效且时效合格时，连续偏差多少圈后升级为硬故障。
@@ -113,7 +118,7 @@ namespace Config
         /// 自适应正向峰值低于合格下限且低斜率平台连续出现多少圈后升级为硬故障。
         /// 单圈只立即断正向电、软预警并继续完成反向释放。
         /// </summary>
-        public int AdaptiveForwardStallConfirmCycles { get; set; } = 5;
+        public int AdaptiveForwardStallConfirmCycles { get; set; } = 8;
 
         /// <summary>
         /// 除电流硬故障和已有专用连续圈策略外，其它控制故障连续复现多少次后升级报警。

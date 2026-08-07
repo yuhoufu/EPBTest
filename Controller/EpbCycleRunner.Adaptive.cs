@@ -80,6 +80,43 @@ namespace Controller
             }
         }
 
+        public FormalCycleFaultCommitResult CommitFormalCycleFaultEvidence(
+            Guid testRunId,
+            int cycleNumber)
+        {
+            lock (_adaptiveGate)
+            {
+                var result = FormalCycleFaultPolicy.Commit(
+                    _adaptiveProfile,
+                    LastCycleOutcome,
+                    testRunId,
+                    cycleNumber,
+                    _adaptiveForwardStallConfirmCycles,
+                    _adaptiveOvershootConfirmCycles);
+                _adaptiveStateMachine?.UpdateProfile(_adaptiveProfile);
+                try { _saveAdaptiveProfile?.Invoke(_adaptiveProfile.Clone()); }
+                catch (Exception ex)
+                {
+                    _log?.Warn(
+                        $"EPB[{_channel}] 正式圈卡钳异常连续计数保存失败：{ex.Message}",
+                        "EPB");
+                }
+
+                _log?.Info(
+                    $"EPB[{_channel}] 正式圈异常证据已提交：RunId={testRunId:N} " +
+                    $"Cycle={cycleNumber} Peak={LastCycleOutcome.PeakCurrentA:F3}A " +
+                    $"Target={LastCycleOutcome.TargetCurrentA:F3}A " +
+                    $"Slope={LastCycleOutcome.EstimatedSlopeAperMs:F6}A/ms " +
+                    $"LowPlateau={LastCycleOutcome.ForwardLowPlateauCandidate} " +
+                    $"LowStreak={result.ForwardLowPlateauStreak}/{_adaptiveForwardStallConfirmCycles} " +
+                    $"Overshoot2A={LastCycleOutcome.ForwardPermanentOvershootCandidate} " +
+                    $"OvershootStreak={result.ForwardOvershootStreak}/{_adaptiveOvershootConfirmCycles} " +
+                    "Evidence=FullRateValid Persistence=Committed",
+                    "EPB");
+                return result;
+            }
+        }
+
         public EpbAdaptiveProfile CaptureAdaptiveProfile()
         {
             lock (_adaptiveGate)
@@ -1096,11 +1133,22 @@ namespace Controller
                                 cancellationToken: token)
                             .ConfigureAwait(false);
                         var peak = captureResult.Peak;
+                        var peakEvidenceAgeMs = peak.LastSampleAt == default
+                            ? double.PositiveInfinity
+                            : (DateTime.UtcNow - peak.LastSampleAt.ToUniversalTime()).TotalMilliseconds;
                         peakCaptureValid = captureResult.IsMatched &&
                                            peak.SampleCount > 0 && peak.MaxAmp > 0 &&
-                                           !double.IsNaN(peak.MaxAmp) && !double.IsInfinity(peak.MaxAmp);
+                                           !double.IsNaN(peak.MaxAmp) && !double.IsInfinity(peak.MaxAmp) &&
+                                           peakEvidenceAgeMs >= 0 &&
+                                           peakEvidenceAgeMs <=
+                                           _programSafetySettings.PeakEvidenceMaximumLagMs;
                         if (!captureResult.IsMatched)
                             peakCaptureFailure = captureResult.QualityReason;
+                        else if (!peakCaptureValid)
+                            peakCaptureFailure =
+                                $"FullRatePeakInvalid Samples={peak.SampleCount} " +
+                                $"Peak={peak.MaxAmp:F3}A Age={peakEvidenceAgeMs:F1}ms " +
+                                $"Limit={_programSafetySettings.PeakEvidenceMaximumLagMs:F1}ms";
                         else
                         {
                             _adaptiveForwardPeakA = peak.MaxAmp;
@@ -1226,7 +1274,8 @@ namespace Controller
                 var peakErrorA = peakCaptureValid
                     ? _adaptiveForwardPeakA - _posThrA
                     : double.NaN;
-                var overshootStreak = _adaptiveProfile?.ConsecutiveForwardOvershootCount ?? 0;
+                var committedOvershootStreak =
+                    _adaptiveProfile?.ConsecutiveForwardOvershootCount ?? 0;
                 if (peakCaptureValid)
                 {
                     PersistAdaptiveCutoffObservation(
@@ -1235,15 +1284,6 @@ namespace Controller
                         _adaptiveForwardPeakA,
                         peakErrorA);
 
-                    overshootStreak = _adaptiveProfile.UpdateForwardOvershootStreak(
-                        peakErrorA,
-                        _adaptiveOvershootWarningDeltaA);
-                    _adaptiveStateMachine.UpdateProfile(_adaptiveProfile);
-                    try { _saveAdaptiveProfile?.Invoke(_adaptiveProfile.Clone()); }
-                    catch (Exception ex)
-                    {
-                        _log?.Warn($"EPB[{_channel}] 超调连续计数保存失败：{ex.Message}", "EPB");
-                    }
                 }
                 else
                 {
@@ -1267,88 +1307,22 @@ namespace Controller
                     string.Equals(
                         forward.CutoffReason,
                         "LowTargetPlateau",
-                        StringComparison.Ordinal) &&
+                    StringComparison.Ordinal) &&
                     observedPeakA < acceptableFloorA;
-                var stallStreak = _adaptiveProfile.UpdateForwardStallStreak(lowTargetPlateau);
-                _adaptiveStateMachine.UpdateProfile(_adaptiveProfile);
-                try { _saveAdaptiveProfile?.Invoke(_adaptiveProfile.Clone()); }
-                catch (Exception ex)
-                {
-                    _log?.Warn($"EPB[{_channel}] 正向低平台连续计数保存失败：{ex.Message}", "EPB");
-                }
-
-                if (lowTargetPlateau &&
-                    IsForwardStallConfirmed(
-                        stallStreak,
-                        _adaptiveForwardStallConfirmCycles))
-                {
-                    await hydraulicReleaseTask.ConfigureAwait(false);
-                    DisarmAdaptiveMonitoring();
-                    var reason =
-                        $"ForwardCurrentRiseStalled Peak={observedPeakA:F3}A " +
-                        $"Floor={acceptableFloorA:F3}A Target={_posThrA:F3}A " +
-                        $"slope={forward.EstimatedSlopeAperMs:F6}A/ms " +
-                        $"window={forward.WindowSpanMs}ms median={forward.WindowMedianA:F3}A " +
-                        $"Streak={stallStreak}/{_adaptiveForwardStallConfirmCycles}";
-                    NotifyAlarmSafely("AdaptiveHardFault " + reason);
-                    return new EpbCycleOutcome
-                    {
-                        Kind = EpbCycleOutcomeKind.HardFault,
-                        Stage = EpbCurrentStage.ClampReached,
-                        Reason = reason,
-                        ForwardElapsedMs = _adaptiveForwardElapsedMs,
-                        PeakCurrentA = observedPeakA,
-                        ControlPeakCurrentA = _adaptiveForwardControlPeakA,
-                        TargetCurrentA = _posThrA,
-                        CutoffCurrentA = forward.CutoffCurrentA,
-                        EstimatedSlopeAperMs = forward.EstimatedSlopeAperMs,
-                        PredictedPeakA = forward.PredictedPeakA,
-                        PredictionLeadMs = forward.PredictionLeadMs,
-                        PeakErrorA = observedPeakA - _posThrA,
-                        CutoffReason = forward.CutoffReason,
-                        ForwardEmptyCurrentA = _adaptiveForwardEmptyA
-                    };
-                }
-
-                var immediateOvershoot =
+                var committedStallStreak =
+                    _adaptiveProfile?.ConsecutiveForwardStallCount ?? 0;
+                var prospectiveStallStreak = lowTargetPlateau
+                    ? committedStallStreak + 1
+                    : 0;
+                var permanentOvershoot =
                     peakCaptureValid &&
-                    _overshootAlarmDeltaA > 0 &&
-                    peakErrorA > _overshootAlarmDeltaA;
-                var confirmedOvershoot =
-                    peakCaptureValid &&
-                    peakErrorA > _adaptiveOvershootWarningDeltaA &&
-                    overshootStreak >= _adaptiveOvershootConfirmCycles;
-                if (immediateOvershoot || confirmedOvershoot)
-                {
-                    await hydraulicReleaseTask.ConfigureAwait(false);
-                    DisarmAdaptiveMonitoring();
-                    var policy = immediateOvershoot
-                        ? $"Immediate Limit=+{_overshootAlarmDeltaA:F3}A"
-                        : $"Consecutive Streak={overshootStreak}/{_adaptiveOvershootConfirmCycles} " +
-                          $"WarningLimit=+{_adaptiveOvershootWarningDeltaA:F3}A";
-                    var reason =
-                        $"ForwardPeakOvershoot Peak={_adaptiveForwardPeakA:F3}A " +
-                        $"Target={_posThrA:F3}A Error={peakErrorA:+0.000;-0.000;0.000}A " +
-                        $"Policy={policy}";
-                    NotifyAlarmSafely("AdaptiveHardFault " + reason);
-                    return new EpbCycleOutcome
-                    {
-                        Kind = EpbCycleOutcomeKind.HardFault,
-                        Stage = EpbCurrentStage.ClampReached,
-                        Reason = reason,
-                        ForwardElapsedMs = _adaptiveForwardElapsedMs,
-                        PeakCurrentA = _adaptiveForwardPeakA,
-                        ControlPeakCurrentA = _adaptiveForwardControlPeakA,
-                        TargetCurrentA = _posThrA,
-                        CutoffCurrentA = forward.CutoffCurrentA,
-                        EstimatedSlopeAperMs = forward.EstimatedSlopeAperMs,
-                        PredictedPeakA = forward.PredictedPeakA,
-                        PredictionLeadMs = forward.PredictionLeadMs,
-                        PeakErrorA = peakErrorA,
-                        CutoffReason = forward.CutoffReason,
-                        ForwardEmptyCurrentA = _adaptiveForwardEmptyA
-                    };
-                }
+                    FormalCycleFaultPolicy.IsPermanentOvershoot(
+                        _adaptiveForwardPeakA,
+                        _posThrA,
+                        _adaptivePermanentOvershootDeltaA);
+                var prospectiveOvershootStreak = permanentOvershoot
+                    ? committedOvershootStreak + 1
+                    : 0;
 
                 if (peakCaptureValid && peakErrorA > _adaptiveOvershootWarningDeltaA)
                 {
@@ -1361,12 +1335,14 @@ namespace Controller
                         PeakErrorA = peakErrorA,
                         SlopeAperMs = forward.EstimatedSlopeAperMs,
                         WindowSpanMs = forward.WindowSpanMs,
-                        Streak = overshootStreak,
+                        Streak = prospectiveOvershootStreak,
                         ConfirmThreshold = _adaptiveOvershootConfirmCycles,
                         Reason =
                             $"正向实际峰值单圈超出平衡带：Peak={_adaptiveForwardPeakA:F3}A，" +
                             $"Target={_posThrA:F3}A，Error={peakErrorA:+0.000;-0.000;0.000}A，" +
-                            $"连续={overshootStreak}/{_adaptiveOvershootConfirmCycles}；" +
+                            (permanentOvershoot
+                                ? $"永久报警候选={prospectiveOvershootStreak}/{_adaptiveOvershootConfirmCycles}；"
+                                : $"尚未达到永久报警线+{_adaptivePermanentOvershootDeltaA:F3}A；") +
                             "本圈继续完成反向释放，控流模型已提前修正下一圈断电点。"
                     });
                 }
@@ -1392,14 +1368,14 @@ namespace Controller
                         PeakErrorA = observedPeakA - _posThrA,
                         SlopeAperMs = forward.EstimatedSlopeAperMs,
                         WindowSpanMs = forward.WindowSpanMs,
-                        Streak = stallStreak,
+                        Streak = prospectiveStallStreak,
                         ConfirmThreshold = _adaptiveForwardStallConfirmCycles,
                         Reason =
                             $"正向低于合格下限的平台停滞：Peak={observedPeakA:F3}A，" +
                             $"Floor={acceptableFloorA:F3}A，Target={_posThrA:F3}A，" +
                             $"Slope={forward.EstimatedSlopeAperMs:F6}A/ms，" +
                             $"Window={forward.WindowSpanMs}ms，" +
-                            $"连续={stallStreak}/{_adaptiveForwardStallConfirmCycles}；" +
+                            $"提交后连续={prospectiveStallStreak}/{_adaptiveForwardStallConfirmCycles}；" +
                             "已立即断开正向电，本圈继续完成反向释放并计数。"
                     });
                 }
@@ -1451,7 +1427,11 @@ namespace Controller
                     PeakErrorA = peakErrorA,
                     CutoffReason = forward.CutoffReason,
                     ForwardEmptyCurrentA = _adaptiveForwardEmptyA,
-                    ReverseEmptyCurrentA = _adaptiveReverseEmptyA
+                    ReverseEmptyCurrentA = _adaptiveReverseEmptyA,
+                    ForwardLowPlateauCandidate = lowTargetPlateau,
+                    ForwardPermanentOvershootCandidate = permanentOvershoot,
+                    ForwardAcceptableFloorA = acceptableFloorA,
+                    PermanentOvershootDeltaA = _adaptivePermanentOvershootDeltaA
                 };
 
                 PersistSuccessfulAdaptiveSample(

@@ -63,6 +63,7 @@
   <ItemGroup>
     <Compile Include="Adaptive\AdaptiveDecisionTrace.cs" />
     <Compile Include="Adaptive\EpbAdaptiveControl.cs" />
+    <Compile Include="Adaptive\FormalCycleFaultPolicy.cs" />
     <Compile Include="Adaptive\FastPathTripClassifier.cs" />
     <Compile Include="Adaptive\EpbProgramSafetySettings.cs" />
     <Compile Include="Alarm\AlarmManager.cs" />

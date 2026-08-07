@@ -1001,9 +1001,6 @@ namespace Controller
                             }
 
                         CyclePersistenceFinished:
-                            if (!IsAlarmStopRequested(ch))
-                                ClearCurrentCycleNumber(ch);
-
                             // 若该通道自然完成最后一圈：统一收尾（含“停止即存最近10圈”），
                             // 并从运行集合中移除，避免影响其它仍在运行通道的逻辑。
                             if (IsFormalCycleCountable(
@@ -1011,13 +1008,21 @@ namespace Controller
                                     persistenceCommitted))
                             {
                                 var committedCycles = Interlocked.Increment(ref successfulCycles);
-                                OnFormalCycleCommitted(ch, committedCycles);
-                                if (committedCycles >= runs)
+                                var nonRecoverableAlarm =
+                                    OnFormalCycleCommittedAndEvaluateClampFault(
+                                        runner,
+                                        ch,
+                                        cycleNumber,
+                                        committedCycles);
+                                if (!nonRecoverableAlarm && committedCycles >= runs)
                                 {
                                     FinalizeChannelAfterNaturalCompletion(ch);
                                     timer.Stop();
                                 }
                             }
+
+                            if (!IsAlarmStopRequested(ch))
+                                ClearCurrentCycleNumber(ch);
 
                             ReleaseCyclePauseCts(ch, cyclePauseCts);
                             return controlSucceeded && persistenceCommitted;
@@ -1776,10 +1781,12 @@ namespace Controller
                 overshootAlarmDeltaA: overshootDeltaA,
                 adaptiveOvershootWarningDeltaA:
                     AlarmConfig?.Behavior?.AdaptiveOvershootWarningDeltaA ?? 0.8,
+                adaptivePermanentOvershootDeltaA:
+                    AlarmConfig?.Behavior?.AdaptivePermanentOvershootDeltaA ?? 2.0,
                 adaptiveOvershootConfirmCycles:
-                    AlarmConfig?.Behavior?.AdaptiveOvershootConfirmCycles ?? 5,
+                    AlarmConfig?.Behavior?.AdaptiveOvershootConfirmCycles ?? 8,
                 adaptiveForwardStallConfirmCycles:
-                    AlarmConfig?.Behavior?.AdaptiveForwardStallConfirmCycles ?? 5,
+                    AlarmConfig?.Behavior?.AdaptiveForwardStallConfirmCycles ?? 8,
                 peakEvidenceMismatchConfirmCycles:
                     AlarmConfig?.Behavior?.PeakEvidenceMismatchConfirmCycles ?? 3,
                 safetyMarginControlMode: _safetyMarginControlMode,
@@ -2056,6 +2063,35 @@ namespace Controller
                     $"EPB[{channel}] 正式圈完成观察者异常已隔离，不影响后续试验：{ex.Message}",
                     "EPB"));
         }
+
+        private bool OnFormalCycleCommittedAndEvaluateClampFault(
+            IEpbCycleRunner runner,
+            int channel,
+            int cycleNumber,
+            int sessionRunCount)
+        {
+            OnFormalCycleCommitted(channel, sessionRunCount);
+            Adaptive.FormalCycleFaultCommitResult result;
+            try
+            {
+                result = runner.CommitFormalCycleFaultEvidence(
+                    _activeBatchId,
+                    cycleNumber);
+            }
+            catch (Exception ex)
+            {
+                _log?.Error(
+                    $"EPB[{channel}] 正式圈已完成，但卡钳异常证据提交失败：" +
+                    $"RunId={_activeBatchId:N} Cycle={cycleNumber} {ex.Message}",
+                    "报警",
+                    ex);
+                return false;
+            }
+
+            if (result == null || !result.ShouldLatchAlarm) return false;
+            OnRunnerAlarmRaised(channel, "AdaptiveHardFault " + result.AlarmReason);
+            return true;
+        }
     }
 
     #region 对接所需接口（如果你的类型名不同，请改成你的）
@@ -2109,6 +2145,11 @@ namespace Controller
     {
         /// <summary>最近一次正式单圈的结构化结果。</summary>
         Adaptive.EpbCycleOutcome LastCycleOutcome { get; }
+
+        /// <summary>正式圈落盘成功后提交本圈卡钳异常候选，并返回是否达到永久报警门槛。</summary>
+        Adaptive.FormalCycleFaultCommitResult CommitFormalCycleFaultEvidence(
+            Guid testRunId,
+            int cycleNumber);
 
         /// <summary>
         /// 使用自适应状态机执行一个启动学习圈；不增加正式成功圈计数。

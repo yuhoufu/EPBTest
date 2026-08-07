@@ -171,7 +171,7 @@ namespace Config
         }
 
         /// <summary>
-        /// 更新正向峰值超出平衡带的连续圈数；回到带内立即清零。
+        /// 更新正向完整峰值超过永久报警线的连续正式圈数；回到线内立即清零。
         /// </summary>
         public int UpdateForwardOvershootStreak(double peakErrorA, double warningDeltaA)
         {
@@ -182,6 +182,16 @@ namespace Config
             ConsecutiveForwardOvershootCount = exceeded
                 ? ConsecutiveForwardOvershootCount + 1
                 : 0;
+            UpdatedUtc = DateTime.UtcNow;
+            return ConsecutiveForwardOvershootCount;
+        }
+
+        public int UpdateForwardPermanentOvershootStreak(bool exceeded)
+        {
+            ConsecutiveForwardOvershootCount = exceeded
+                ? ConsecutiveForwardOvershootCount + 1
+                : 0;
+            ModelVersion = CurrentModelVersion;
             UpdatedUtc = DateTime.UtcNow;
             return ConsecutiveForwardOvershootCount;
         }

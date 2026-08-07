@@ -19,6 +19,7 @@ namespace MTEmbTest
         private int _ownedRawPipelineAttached;
         private int _warningSnapshotStorageWarningShown;
         private bool _trimmingSafetyInfoDisplay;
+        private bool _formattingInfoDisplaySpacing;
         private ToolTip _powerSupplyToolTip;
         private ToolTip _channelRuntimeToolTip;
         private readonly Dictionary<int, Label> _channelRuntimeLabels = new Dictionary<int, Label>();
@@ -115,6 +116,15 @@ namespace MTEmbTest
                 manager.PowerSupplyTelemetryUpdated += UpdatePowerSupplyStatus;
                 manager.PowerSupplyFaultRaised += ShowPowerSupplyFault;
                 manager.ChannelRuntimeStateChanged += OnChannelRuntimeStateChanged;
+                manager.ChannelDisableRequested += OnNonRecoverableChannelDisableRequested;
+                manager.ChannelDisablePersistenceFailed += OnChannelDisablePersistenceFailed;
+                for (var index = 0; index < EpbGroup.Length; index++)
+                {
+                    var channelIndex = index;
+                    if (EpbGroup[index]?.CtrlJoinTest != null)
+                        EpbGroup[index].CtrlJoinTest.CheckedChanged +=
+                            (sender, args) => PersistRuntimeChannelSelection(channelIndex);
+                }
                 manager.ChannelWarningRaised += (channel, reason) => PostSafetyStatus(
                     $"卡钳{channel} 警告：{AlarmMessageLocalizer.ToUserMessage(reason)}",
                     false);
@@ -251,7 +261,7 @@ namespace MTEmbTest
                 label,
                 $"EPB{state.Channel:D2} {GetRuntimeStateText(state.State)}\r\n" +
                 $"时间：{localTime:yyyy-MM-dd HH:mm:ss.fff}\r\n" +
-                $"原因：{state.ReasonText ?? state.ReasonCode ?? "-"}\r\n" +
+                $"原因：{AlarmMessageLocalizer.ToUserMessage(state.ReasonText ?? state.ReasonCode ?? "-")}\r\n" +
                 $"故障源：{(state.SourceChannel.HasValue ? "EPB" + state.SourceChannel.Value.ToString("D2") : "-")}\r\n" +
                 $"关联号：{(state.CorrelationId == Guid.Empty ? "-" : state.CorrelationId.ToString("N"))}");
 
@@ -433,8 +443,114 @@ namespace MTEmbTest
         private void InitializeBoundedSafetyInfoDisplay()
         {
             if (RtbInfo == null || RtbInfo.IsDisposed) return;
+            FormatInfoDisplaySpacing();
             TrimSafetyInfoDisplay();
-            RtbInfo.TextChanged += (sender, args) => TrimSafetyInfoDisplay();
+            RtbInfo.TextChanged += (sender, args) =>
+            {
+                FormatInfoDisplaySpacing();
+                TrimSafetyInfoDisplay();
+            };
+        }
+
+        private void FormatInfoDisplaySpacing()
+        {
+            if (_formattingInfoDisplaySpacing || RtbInfo == null || RtbInfo.IsDisposed) return;
+            var contentLines = RtbInfo.Lines
+                .Where(line => !string.IsNullOrWhiteSpace(line))
+                .ToArray();
+            var formatted = contentLines.Length == 0
+                ? string.Empty
+                : string.Join(Environment.NewLine + Environment.NewLine, contentLines) +
+                  Environment.NewLine;
+            if (string.Equals(RtbInfo.Text, formatted, StringComparison.Ordinal)) return;
+
+            _formattingInfoDisplaySpacing = true;
+            _suppressRtbInfoTextChanged = true;
+            try
+            {
+                RtbInfo.Text = formatted;
+                RtbInfo.SelectionStart = RtbInfo.TextLength;
+                RtbInfo.ScrollToCaret();
+            }
+            finally
+            {
+                _suppressRtbInfoTextChanged = false;
+                _formattingInfoDisplaySpacing = false;
+            }
+        }
+
+        private void PersistRuntimeChannelSelection(int channelIndex)
+        {
+            if (_cfg?.Test == null || channelIndex < 0 || channelIndex >= EpbGroup.Length) return;
+            var selected = EpbGroup[channelIndex]?.CtrlJoinTest?.Checked == true;
+            lock (_epbRecordsLock)
+            {
+                EnsureEpbRecord(channelIndex + 1).Enabled = selected;
+                _cfg.Test.GetEpbRecord(channelIndex + 1).Enabled = selected;
+            }
+            SaveEpbRecordsToTestConfigSafe();
+        }
+
+        private void OnNonRecoverableChannelDisableRequested(int channel, string reason)
+        {
+            if (IsDisposed || Disposing) return;
+            try
+            {
+                if (InvokeRequired)
+                {
+                    BeginInvoke(
+                        new Action<int, string>(OnNonRecoverableChannelDisableRequested),
+                        channel,
+                        reason);
+                    return;
+                }
+
+                lock (_epbRecordsLock)
+                {
+                    EnsureEpbRecord(channel).Enabled = false;
+                    if (_cfg?.Test != null)
+                        _cfg.Test.GetEpbRecord(channel).Enabled = false;
+                }
+
+                var index = channel - 1;
+                if (index >= 0 && index < EpbGroup.Length && EpbGroup[index]?.CtrlJoinTest != null)
+                    EpbGroup[index].CtrlJoinTest.Checked = false;
+                var curve = Controls.Find($"CheckEpbA{channel}", true)
+                    .OfType<DevExpress.XtraEditors.CheckEdit>()
+                    .FirstOrDefault();
+                if (curve != null) curve.Checked = false;
+                LogInfo(
+                    $"卡钳{channel} 已锁存不可自恢复报警并取消当前项目启用；" +
+                    "停止后重新开始或重启软件均不会自动选中。");
+            }
+            catch (Exception ex)
+            {
+                PostSafetyStatus($"卡钳{channel} 禁用状态同步到界面失败：{ex.Message}", true);
+            }
+        }
+
+        private void OnChannelDisablePersistenceFailed(int channel, string message)
+        {
+            if (IsDisposed || Disposing) return;
+            try
+            {
+                if (InvokeRequired)
+                {
+                    BeginInvoke(
+                        new Action<int, string>(OnChannelDisablePersistenceFailed),
+                        channel,
+                        message);
+                    return;
+                }
+
+                LogInfo(message);
+                MessageBox.Show(
+                    message,
+                    "卡钳禁用状态保存失败",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+            }
+            catch { }
         }
 
         private void TrimSafetyInfoDisplay()

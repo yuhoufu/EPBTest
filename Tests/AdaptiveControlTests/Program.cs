@@ -61,7 +61,7 @@ namespace AdaptiveControlTests
                 Run("启动定位反向不复用正式循环历史期限", StartupPositioningSeparatesReverseTimingBudgets);
                 Run("10358-029四路启动反向快照均可释放", StartupPositioningReverseFieldSnapshotsRelease);
                 Run("保持阶段不误报断流", HoldDoesNotFault);
-                Run("三样本过流", ThreeSampleOverCurrent);
+                Run("三样本过流快速断电但不单次永久报警", ThreeSampleOverCurrent);
                 Run("开路检测", OpenCircuit);
                 Run("DAQ断流", DaqStale);
                 Run("单点噪声不误停", NoiseSpike);
@@ -76,7 +76,7 @@ namespace AdaptiveControlTests
                 Run("项目XML不再保存程序级安全参数", ProjectXmlIgnoresProgramSafetySettings);
                 Run("EXE安全配置缺失非法时使用安全默认值", ProgramSafetySettingsValidation);
                 Run("程序安全配置快照包含值与来源", ProgramSafetySnapshotIsAuditable);
-                Run("报警配置加载正向低平台连续5圈", AlarmConfigLoadsForwardStallConfirmation);
+                Run("报警配置加载不可恢复连续阈值", AlarmConfigLoadsForwardStallConfirmation);
                 Run("普通故障按尝试圈连续3次确认且单圈去重", GenericFaultConfirmationUsesAttemptCycles);
                 Run("普通故障成功圈清零且通道故障码隔离", GenericFaultConfirmationResetsAndIsolates);
                 Run("电流硬故障与已确认专用策略不二次计数", ImmediateAndPreconfirmedFaultClassification);
@@ -94,7 +94,7 @@ namespace AdaptiveControlTests
                 Run("模型原子保存与重载", ProfilePersistence);
                 Run("控流模型五圈收敛到目标带", CutoffModelConvergesWithinFiveCycles);
                 Run("峰值系统偏差用于提前断电补偿", PeakBiasCorrectionIsLearned);
-                Run("普通过冲连续5圈才达到确认值", OvershootStreakRequiresConsecutiveCycles);
+                Run("峰值超过目标2A连续8圈才达到确认值", OvershootStreakRequiresConsecutiveCycles);
                 Run("重新开始清除瞬态连续计数但保留学习模型", RestartClearsOnlyTransientStreaks);
                 Run("软件自愈循环持续重试直到成功", SoftwareSelfHealingRetriesUntilSuccess);
                 Run("软件自愈持续失败可由停止令牌取消", SoftwareSelfHealingPersistentFailureIsCancelable);
@@ -107,7 +107,8 @@ namespace AdaptiveControlTests
                 Run("作废学习尝试完整回滚自适应模型", DiscardedLearningAttemptRestoresAdaptiveProfile);
                 Run("正式圈异常不得复用上一圈成功结果", FormalCycleRejectsStaleSuccessOutcome);
                 Run("正式圈必须控制与落盘均成功才计数", FormalCycleRequiresPersistenceCommitToCount);
-                Run("正向低平台连续5圈确认且正常圈清零", ForwardStallStreakRequiresFiveCycles);
+                Run("正向低平台连续8圈确认且正常圈清零", ForwardStallStreakRequiresFiveCycles);
+                _passed += NonRecoverableAlarmPolicyTests.RunAll();
                 Run("版本1模型无损升级到版本3", VersionOneProfileMigrates);
                 Run("损坏模型回退", CorruptProfileFallback);
                 Run("周期超限不追赶且圈号连续", TimerDoesNotCatchUp);
@@ -1009,7 +1010,9 @@ namespace AdaptiveControlTests
             machine.OnSample(Tick(10), 18);
             machine.OnSample(Tick(20), 18);
             var fault = machine.OnSample(Tick(30), 18);
-            Assert(fault.HardFault && fault.Reason.Contains("OverCurrent3Samples"), "三样本过流未触发");
+            Assert(!fault.HardFault && fault.ClampReached &&
+                   fault.CutoffReason == "FastOverCurrentCutoff",
+                "三样本过流未执行快速正向断电，或仍被错误升级为单次永久报警");
         }
 
         private static void OpenCircuit()
@@ -1255,8 +1258,9 @@ namespace AdaptiveControlTests
                 "AlarmConfig.xml"));
             var loaded = AlarmConfigLoader.Load(source);
             Assert(
-                loaded.Behavior.AdaptiveForwardStallConfirmCycles == 5 &&
-                loaded.Behavior.AdaptiveOvershootConfirmCycles == 5 &&
+                loaded.Behavior.AdaptiveForwardStallConfirmCycles == 8 &&
+                loaded.Behavior.AdaptiveOvershootConfirmCycles == 8 &&
+                Math.Abs(loaded.Behavior.AdaptivePermanentOvershootDeltaA - 2.0) < 1e-9 &&
                 loaded.Behavior.PeakEvidenceMismatchConfirmCycles == 3 &&
                 loaded.Behavior.GenericFaultConfirmCycles == 3 &&
                 loaded.WarningSnapshots.Enabled &&
@@ -1302,11 +1306,11 @@ namespace AdaptiveControlTests
         {
             Assert(EpbManager.IsImmediateCurrentHardFault("AdaptiveHardFault OverCurrent3Samples"),
                 "实时三采样过流未归入首次硬停");
-            Assert(EpbManager.IsImmediateCurrentHardFault(
-                    "ForwardPeakOvershoot Policy=Immediate Limit=+3.000A"),
-                "整圈峰值硬阈值未归入首次硬停");
+            Assert(!EpbManager.IsImmediateCurrentHardFault(
+                    "ForwardPeakOvershoot2AConfirmed Peak=18.1A Streak=8/8"),
+                "完整峰值累计报警被错误归入快速单次硬停");
             Assert(EpbManager.IsAlreadyCycleConfirmedFault(
-                    "ForwardCurrentRiseStalled Streak=5/5"),
+                    "ForwardLowPlateauConfirmed Streak=8/8"),
                 "专用连续圈策略被重复进入通用3圈确认");
             Assert(!EpbManager.IsImmediateCurrentHardFault("OpenCircuit"),
                 "普通非电流故障被误归入首次硬停");
@@ -1710,20 +1714,11 @@ namespace AdaptiveControlTests
         private static void OvershootStreakRequiresConsecutiveCycles()
         {
             var profile = StableProfile();
-            Assert(profile.UpdateForwardOvershootStreak(0.812, 0.8) == 1,
-                "首次边界超调未记录为1圈");
-            Assert(profile.UpdateForwardOvershootStreak(0.3, 0.8) == 0,
-                "回到平衡带后连续计数未清零");
-            Assert(profile.UpdateForwardOvershootStreak(0.9, 0.8) == 1,
-                "连续超调第1圈计数错误");
-            Assert(profile.UpdateForwardOvershootStreak(0.95, 0.8) == 2,
-                "连续超调第2圈计数错误");
-            Assert(profile.UpdateForwardOvershootStreak(0.85, 0.8) == 3,
-                "连续超调第3圈计数错误");
-            Assert(profile.UpdateForwardOvershootStreak(0.9, 0.8) == 4,
-                "连续超调第4圈计数错误");
-            Assert(profile.UpdateForwardOvershootStreak(0.88, 0.8) == 5,
-                "连续超调第5圈未达到确认值");
+            for (var cycle = 1; cycle <= 8; cycle++)
+                Assert(profile.UpdateForwardPermanentOvershootStreak(true) == cycle,
+                    $"永久过冲第{cycle}圈计数错误");
+            Assert(profile.UpdateForwardPermanentOvershootStreak(false) == 0,
+                "峰值回到目标+2A以内后连续计数未清零");
         }
 
         private static void RestartClearsOnlyTransientStreaks()
@@ -2210,29 +2205,29 @@ namespace AdaptiveControlTests
         private static void ForwardStallStreakRequiresFiveCycles()
         {
             var profile = StableProfile();
-            for (var cycle = 1; cycle <= 4; cycle++)
+            for (var cycle = 1; cycle <= 7; cycle++)
             {
                 Assert(
                     profile.UpdateForwardStallStreak(true) == cycle,
                     $"正向低平台第{cycle}圈连续计数错误");
                 Assert(
-                    profile.ConsecutiveForwardStallCount < 5,
+                    profile.ConsecutiveForwardStallCount < 8,
                     $"正向低平台第{cycle}圈被过早确认为硬故障");
                 Assert(
                     !EpbCycleRunner.IsForwardStallConfirmed(
                         profile.ConsecutiveForwardStallCount,
-                        5),
+                        8),
                     $"正向低平台第{cycle}圈被升级策略过早确认");
             }
 
             Assert(
-                profile.UpdateForwardStallStreak(true) == 5,
-                "正向低平台第5圈未达到硬故障确认值");
+                profile.UpdateForwardStallStreak(true) == 8,
+                "正向低平台第8圈未达到硬故障确认值");
             Assert(
                 EpbCycleRunner.IsForwardStallConfirmed(
                     profile.ConsecutiveForwardStallCount,
-                    5),
-                "正向低平台第5圈未被升级策略确认");
+                    8),
+                "正向低平台第8圈未被升级策略确认");
             Assert(
                 profile.UpdateForwardStallStreak(false) == 0,
                 "正常或近目标圈未清零正向低平台连续计数");

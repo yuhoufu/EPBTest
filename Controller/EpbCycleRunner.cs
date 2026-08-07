@@ -95,9 +95,10 @@ namespace Controller
 
         private readonly double _overshootAlarmDeltaA = 0; // 正向峰值超阈值报警增量（A）；<=0 表示禁用（由 AlarmConfig.xml 注入）
         private readonly double _adaptiveOvershootWarningDeltaA = 0.8;
-        private readonly int _adaptiveOvershootConfirmCycles = 5;
+        private readonly double _adaptivePermanentOvershootDeltaA = 2.0;
+        private readonly int _adaptiveOvershootConfirmCycles = 8;
         private readonly int _peakEvidenceMismatchConfirmCycles = 3;
-        private readonly int _adaptiveForwardStallConfirmCycles = 5;
+        private readonly int _adaptiveForwardStallConfirmCycles = 8;
 
         /// <summary>
         ///     报警事件：由 Runner 判定“异常/过流”等场景触发。
@@ -182,8 +183,9 @@ namespace Controller
             EpbManager manager = null,
             double overshootAlarmDeltaA = 0, // ★ 新增：峰值超限报警增量（A），<=0 禁用
             double adaptiveOvershootWarningDeltaA = 0.8,
-            int adaptiveOvershootConfirmCycles = 5,
-            int adaptiveForwardStallConfirmCycles = 5,
+            double adaptivePermanentOvershootDeltaA = 2.0,
+            int adaptiveOvershootConfirmCycles = 8,
+            int adaptiveForwardStallConfirmCycles = 8,
             int peakEvidenceMismatchConfirmCycles = 3,
             SafetyMarginControlMode safetyMarginControlMode = SafetyMarginControlMode.Legacy20251010,
             EpbControlMode epbControlMode = EpbControlMode.LegacyFixedTiming,
@@ -202,6 +204,7 @@ namespace Controller
             _acq = twoDeviceAiAcquirer;
             _overshootAlarmDeltaA = overshootAlarmDeltaA;
             _adaptiveOvershootWarningDeltaA = Math.Max(0.1, adaptiveOvershootWarningDeltaA);
+            _adaptivePermanentOvershootDeltaA = Math.Max(0.1, adaptivePermanentOvershootDeltaA);
             _adaptiveOvershootConfirmCycles = Math.Max(1, adaptiveOvershootConfirmCycles);
             _adaptiveForwardStallConfirmCycles = Math.Max(1, adaptiveForwardStallConfirmCycles);
             _peakEvidenceMismatchConfirmCycles = Math.Max(1, peakEvidenceMismatchConfirmCycles);

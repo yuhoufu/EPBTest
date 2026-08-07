@@ -103,6 +103,12 @@ namespace Controller
         /// <summary>事件：某个通道产生软预警；不停止通道、不触发蜂鸣器。</summary>
         public event Action<int, string> ChannelWarningRaised;
 
+        /// <summary>不可自恢复报警要求当前项目永久取消该通道启用。</summary>
+        public event Action<int, string> ChannelDisableRequested;
+
+        /// <summary>通道已停机但项目禁用状态写盘失败，UI必须高可见度提示。</summary>
+        public event Action<int, string> ChannelDisablePersistenceFailed;
+
         /// <summary>事件：某个通道被暂停。</summary>
         public event Action<int> ChannelPaused;
 
@@ -1375,22 +1381,27 @@ namespace Controller
                     }
                 }
 
-                if (!IsAlarmStopRequested(channel))
-                    ClearCurrentCycleNumber(channel);
-
                 // 若本通道自然完成最后一圈，则做统一收尾（含“停止即存最近10圈”）
                 if (IsFormalCycleCountable(
                         controlSucceeded,
                         persistenceCommitted))
                 {
                     var committedCycles = Interlocked.Increment(ref singleSuccessfulCycles);
-                    OnFormalCycleCommitted(channel, committedCycles);
-                    if (committedCycles >= _cfg.Test.TestTarget)
+                    var nonRecoverableAlarm =
+                        OnFormalCycleCommittedAndEvaluateClampFault(
+                            runner,
+                            channel,
+                            i,
+                            committedCycles);
+                    if (!nonRecoverableAlarm && committedCycles >= _cfg.Test.TestTarget)
                     {
                         FinalizeChannelAfterNaturalCompletion(channel);
                         timer.Stop();
                     }
                 }
+
+                if (!IsAlarmStopRequested(channel))
+                    ClearCurrentCycleNumber(channel);
 
                 _log.Info(
                     $"EPB[{channel}] 周期 {i}/{_cfg.Test.TestTarget} " +
@@ -1565,6 +1576,10 @@ namespace Controller
                 reason += $" Streak={confirmation.Streak}/{confirmation.ConfirmThreshold}";
             }
 
+            var recoveryPolicy = ResolveChannelFaultRecoveryPolicy(
+                faultCode,
+                hardwareLatched);
+
             if (immediateCurrentHardFault)
             {
                 var groupId = GetElectricalGroupId(channel);
@@ -1594,11 +1609,13 @@ namespace Controller
             }
 
             var channelFaultCorrelationId = Guid.NewGuid();
-            if (hardwareLatched)
+            if (recoveryPolicy != FaultRecoveryPolicy.Recoverable)
                 NotifyRunAuthorizationRevoking(
                     StopSource.AlarmInterlock,
                     reason,
-                    "ChannelHardwareFault",
+                    recoveryPolicy == FaultRecoveryPolicy.NonRecoverableDisableChannel
+                        ? "NonRecoverableDisableChannel"
+                        : "ChannelHardwareFault",
                     channelFaultCorrelationId,
                     FaultScope.Channel);
 
@@ -1620,11 +1637,15 @@ namespace Controller
                 new[] { channel },
                 null,
                 alarmUtc,
-                channelFaultCorrelationId);
+                channelFaultCorrelationId,
+                recoveryPolicy == FaultRecoveryPolicy.Recoverable
+                    ? FaultClassification.SystemFault
+                    : FaultClassification.HardwareConfirmed,
+                recoveryPolicy);
             _log.Error(
-                $"EPB[{channel}] {(hardwareLatched ? "硬件锁存故障" : "确认故障")}，" +
+                $"EPB[{channel}] {(recoveryPolicy == FaultRecoveryPolicy.NonRecoverableDisableChannel ? "不可自恢复故障" : hardwareLatched ? "硬件锁存故障" : "确认故障")}，" +
                 "立即停止该通道并导出报警快照。" +
-                $"CorrelationId={channelFault.CorrelationId:N} 原因={reason}",
+                $"RecoveryPolicy={recoveryPolicy} CorrelationId={channelFault.CorrelationId:N} 原因={reason}",
                 "报警");
             FlushPersistentLog();
             NonCriticalObserver.Invoke(
@@ -1671,7 +1692,10 @@ namespace Controller
                 else
                     _currentCycleNumberByChannel.TryRemove(channel, out _);
 
-                if (!hardwareLatched)
+                if (recoveryPolicy == FaultRecoveryPolicy.NonRecoverableDisableChannel)
+                    PersistentlyDisableChannel(channel, reason);
+
+                if (recoveryPolicy == FaultRecoveryPolicy.Recoverable)
                 {
                     try
                     {
@@ -1690,6 +1714,85 @@ namespace Controller
                     }
                 }
             });
+        }
+
+        internal static FaultRecoveryPolicy ResolveChannelFaultRecoveryPolicy(
+            string faultCode,
+            bool hardwareLatched)
+        {
+            if (string.Equals(
+                    faultCode,
+                    "ForwardLoadRiseNotStarted",
+                    StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(
+                    faultCode,
+                    "OpenCircuitOrOutputFault",
+                    StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(
+                    faultCode,
+                    "ForwardLowPlateauConfirmed",
+                    StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(
+                    faultCode,
+                    "ForwardPeakOvershoot2AConfirmed",
+                    StringComparison.OrdinalIgnoreCase))
+                return FaultRecoveryPolicy.NonRecoverableDisableChannel;
+
+            return hardwareLatched
+                ? FaultRecoveryPolicy.NonRecoverable
+                : FaultRecoveryPolicy.Recoverable;
+        }
+
+        private void PersistentlyDisableChannel(int channel, string reason)
+        {
+            try
+            {
+                var test = _cfg?.Test ??
+                           throw new InvalidOperationException("当前项目配置未加载");
+                lock (test)
+                {
+                    test.EnsureEpbRecords(12);
+                    test.GetEpbRecord(channel).Enabled = false;
+                }
+
+                NonCriticalObserver.Invoke(
+                    ChannelDisableRequested,
+                    channel,
+                    reason,
+                    ex => _log?.Warn(
+                        $"EPB[{channel}] 持久禁用UI观察者异常已隔离：{ex.Message}",
+                        "报警"));
+
+                var projectPath = ConfigLoader.GetProjectTestConfigPath(
+                    test.StoreDir,
+                    test.TestName);
+                if (string.IsNullOrWhiteSpace(projectPath) || !System.IO.File.Exists(projectPath))
+                    throw new System.IO.FileNotFoundException(
+                        "当前项目专用 TestConfig.xml 不存在，禁止回退修改默认模板。",
+                        projectPath);
+
+                ConfigLoader.UpdateTestEpbEnabled(projectPath, channel, false);
+                _log.Error(
+                    $"EPB[{channel}] 已锁存不可自恢复报警并持久禁用当前项目通道。" +
+                    $"Enabled=false Path={projectPath} Reason={reason}",
+                    "报警");
+                FlushPersistentLog();
+            }
+            catch (Exception ex)
+            {
+                var message =
+                    $"卡钳{channel}已停机，但项目禁用状态持久化失败；" +
+                    $"重启前请人工确认该通道保持未启用。原因：{ex.Message}";
+                _log.Error(message, "报警", ex);
+                FlushPersistentLog();
+                NonCriticalObserver.Invoke(
+                    ChannelDisablePersistenceFailed,
+                    channel,
+                    message,
+                    observerEx => _log?.Warn(
+                        $"EPB[{channel}] 禁用持久化失败提示观察者异常：{observerEx.Message}",
+                        "报警"));
+            }
         }
 
         private void PublishRecoverableControlFaultWarning(
@@ -1781,9 +1884,7 @@ namespace Controller
         {
             if (string.IsNullOrWhiteSpace(reason)) return false;
             return reason.IndexOf("OverCurrent", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                   reason.IndexOf("AbnormalHighCurrentPlateau", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                   (reason.IndexOf("ForwardPeakOvershoot", StringComparison.OrdinalIgnoreCase) >= 0 &&
-                    reason.IndexOf("Policy=Immediate", StringComparison.OrdinalIgnoreCase) >= 0);
+                   reason.IndexOf("AbnormalHighCurrentPlateau", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         internal static bool IsAlreadyCycleConfirmedFault(string reason)

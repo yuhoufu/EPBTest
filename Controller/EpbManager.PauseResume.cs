@@ -1319,20 +1319,24 @@ namespace Controller
                                 "落盘");
                     }
                 }
-                if (!IsAlarmStopRequested(channel)) ClearCurrentCycleNumber(channel);
-
                 if (IsFormalCycleCountable(
                         controlSucceeded,
                         persistenceCommitted))
                 {
                     var committedCycles = Interlocked.Increment(ref successfulCycles);
-                    OnFormalCycleCommitted(channel, committedCycles);
-                    if (committedCycles >= remainingRuns)
+                    var nonRecoverableAlarm =
+                        OnFormalCycleCommittedAndEvaluateClampFault(
+                            runner,
+                            channel,
+                            cycleNumber,
+                            committedCycles);
+                    if (!nonRecoverableAlarm && committedCycles >= remainingRuns)
                     {
                         FinalizeChannelAfterNaturalCompletion(channel);
                         timer.Stop();
                     }
                 }
+                if (!IsAlarmStopRequested(channel)) ClearCurrentCycleNumber(channel);
                 ReleaseCyclePauseCts(channel, cyclePauseCts);
                 return controlSucceeded && persistenceCommitted;
             });

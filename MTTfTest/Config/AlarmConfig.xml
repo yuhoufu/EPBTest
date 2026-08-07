@@ -81,11 +81,12 @@
     - BuzzerDebounceMs：蜂鸣器去抖（避免瞬态误触）
     - RearmDelayMs：一键全关后的冷却时间；冷却期内允许记录报警，但不立刻重新拉响
     - TimeoutMs/Retry：串口发送超时与重试次数（尽力策略）
-    - OvershootAlarmDeltaA：峰值超阈值增量报警阈值（Imax >= Thr + Delta 才触发）
+    - OvershootAlarmDeltaA：快速保护断电线（I >= Thr + Delta 连续3样本即断正向电，不单圈永久报警）
+    - AdaptivePermanentOvershootDeltaA：完整峰值永久报警计数线
     - AdaptiveOvershootWarningDeltaA：自适应峰值平衡带；单圈超出只软预警
-    - AdaptiveOvershootConfirmCycles：连续超出平衡带多少圈才升级硬故障
+    - AdaptiveOvershootConfirmCycles：连续多少个正式提交圈超过永久报警计数线才锁存
     - PeakEvidenceMismatchConfirmCycles：有效且新鲜的快速/完整峰值连续偏差多少圈才升级硬故障
-    - AdaptiveForwardStallConfirmCycles：正向低于合格下限的平台停滞连续多少圈才升级硬故障
+    - AdaptiveForwardStallConfirmCycles：正向低于合格下限的平台停滞连续多少个正式提交圈才锁存
     - SnapshotLastNCycles：报警快照导出最近 N 圈（默认 10，且包含当前 running 圈）
     - SnapshotCooldownMs：同一通道报警快照去抖窗（ms）
     - SnapshotPostOffTailMs：立即断电后继续保留的电流/压力尾部（ms，0..3000）
@@ -98,10 +99,11 @@
     TimeoutMs="200"
     Retry="2"
     OvershootAlarmDeltaA="3.0"
+    AdaptivePermanentOvershootDeltaA="2.0"
     AdaptiveOvershootWarningDeltaA="0.8"
-    AdaptiveOvershootConfirmCycles="5"
+    AdaptiveOvershootConfirmCycles="8"
     PeakEvidenceMismatchConfirmCycles="3"
-    AdaptiveForwardStallConfirmCycles="5"
+    AdaptiveForwardStallConfirmCycles="8"
     GenericFaultConfirmCycles="3"
     SnapshotLastNCycles="10"
     SnapshotCooldownMs="2000"

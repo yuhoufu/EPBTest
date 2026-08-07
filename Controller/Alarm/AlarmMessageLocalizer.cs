@@ -15,9 +15,14 @@ namespace Controller.Alarm
             {
                 ["PeakEvidenceMismatch"] = "峰值证据连续偏差",
                 ["PeakCaptureInvalid"] = "峰值数据捕获无效",
+                ["ForwardPeakOvershoot2AConfirmed"] = "连续8圈峰值超过目标2A，卡钳已停用",
                 ["ForwardPeakOvershoot"] = "正向峰值过冲",
                 ["ForwardCurrentRiseStall"] = "正向电流上升停滞",
                 ["ForwardCurrentRiseStalled"] = "正向电流上升停滞",
+                ["ForwardLowPlateauConfirmed"] = "连续8圈夹紧电流停留在合格下限以下，卡钳已停用",
+                ["ForwardLoadRiseNotStarted"] = "连续3次未检测到夹紧电流爬坡，卡钳已停用",
+                ["OpenCircuitOrOutputFault"] = "连续3次上电电流接近0，卡钳已停用",
+                ["ForwardFastOverCurrentCutoff"] = "峰值快速保护已断开正向供电，本圈继续释放",
                 ["ClampReachedNearTargetPlateau"] = "接近目标的高负载平台，已停止正向供电并继续释放",
                 ["DaqSampleStale"] = "采集数据过期",
                 ["BackgroundQueueFull"] = "采集后台队列已满",
@@ -148,6 +153,7 @@ namespace Controller.Alarm
             AddMetric(parts, raw, "Floor", "合格下限");
             AddMetric(parts, raw, "Slope", "平台斜率");
             AddMetric(parts, raw, "ConfirmMs", "确认时长");
+            AddMetric(parts, raw, "confirm", "确认时长");
             AddMetric(parts, raw, "Error", "偏差");
             AddMetric(parts, raw, "Actual", "实际压力");
             AddMetric(parts, raw, "Minimum", "最低压力");

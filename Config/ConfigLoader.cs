@@ -262,6 +262,8 @@ public static class ConfigLoader
     // 1) 在 ConfigLoader 类里补这个字段（线程安全用）
     private static readonly ConcurrentDictionary<string, object> UiFileLocks =
         new(StringComparer.OrdinalIgnoreCase);
+    private static readonly ConcurrentDictionary<string, object> TestFileLocks =
+        new(StringComparer.OrdinalIgnoreCase);
     private static readonly ConcurrentDictionary<string, long> UiSaveVersions =
         new(StringComparer.OrdinalIgnoreCase);
 
@@ -725,6 +727,16 @@ public static class ConfigLoader
     
     public static void SaveTest(string path, TestConfig cfg)
     {
+        if (string.IsNullOrWhiteSpace(path)) throw new ArgumentNullException(nameof(path));
+        if (cfg == null) throw new ArgumentNullException(nameof(cfg));
+        path = Path.GetFullPath(path);
+        var fileLock = TestFileLocks.GetOrAdd(path, _ => new object());
+        lock (fileLock)
+            SaveTestCore(path, cfg);
+    }
+
+    private static void SaveTestCore(string path, TestConfig cfg)
+    {
         var doc = new XmlDocument();
         doc.Load(path);
 
@@ -939,6 +951,67 @@ public static class ConfigLoader
             }
 
             node.InnerText = value ?? "";
+        }
+    }
+
+    /// <summary>
+    /// 原子更新项目 TestConfig 中单个通道的 Enabled，保留磁盘上其余进度和配置字段。
+    /// 用于报警线程持久禁用，避免用可能尚未完成 UI 同步的内存快照覆盖刚提交圈数。
+    /// </summary>
+    public static void UpdateTestEpbEnabled(string path, int channel, bool enabled)
+    {
+        if (string.IsNullOrWhiteSpace(path)) throw new ArgumentNullException(nameof(path));
+        if (channel < 1 || channel > 12) throw new ArgumentOutOfRangeException(nameof(channel));
+        path = Path.GetFullPath(path);
+        var fileLock = TestFileLocks.GetOrAdd(path, _ => new object());
+        lock (fileLock)
+        {
+            var doc = new XmlDocument();
+            doc.Load(path);
+            var records = doc.SelectNodes("/TestConfig/EpbRecords/Record");
+            XmlElement target = null;
+            if (records != null)
+            {
+                foreach (XmlNode node in records)
+                {
+                    if (node is not XmlElement element) continue;
+                    if (int.TryParse(
+                            element.SelectSingleNode("Id")?.InnerText,
+                            NumberStyles.Integer,
+                            CultureInfo.InvariantCulture,
+                            out var id) && id == channel)
+                    {
+                        target = element;
+                        break;
+                    }
+                }
+            }
+            if (target == null)
+                throw new InvalidOperationException($"TestConfig.xml 缺少 EPB{channel} 记录");
+
+            var enabledNode = target.SelectSingleNode("Enabled") as XmlElement;
+            if (enabledNode == null)
+            {
+                enabledNode = doc.CreateElement("Enabled");
+                target.AppendChild(enabledNode);
+            }
+            enabledNode.InnerText = enabled ? "True" : "False";
+
+            var tmp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            try
+            {
+                doc.Save(tmp);
+                if (File.Exists(path)) File.Replace(tmp, path, null);
+                else File.Move(tmp, path);
+            }
+            finally
+            {
+                try
+                {
+                    if (File.Exists(tmp)) File.Delete(tmp);
+                }
+                catch { }
+            }
         }
     }
 

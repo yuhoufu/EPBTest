@@ -74,6 +74,12 @@ namespace Controller.Adaptive
         public string CutoffReason { get; set; }
         public double ForwardEmptyCurrentA { get; set; }
         public double ReverseEmptyCurrentA { get; set; }
+        /// <summary>本圈低于合格下限的平台证据；仅在正式圈提交后更新连续数。</summary>
+        public bool ForwardLowPlateauCandidate { get; set; }
+        /// <summary>本圈完整峰值达到永久过冲线；仅在正式圈提交后更新连续数。</summary>
+        public bool ForwardPermanentOvershootCandidate { get; set; }
+        public double ForwardAcceptableFloorA { get; set; }
+        public double PermanentOvershootDeltaA { get; set; }
         public string SafetyPolicyVersion { get; set; } =
             EpbProgramSafetySettings.SafetyPolicyVersion;
 
@@ -481,8 +487,29 @@ namespace Controller.Adaptive
                     _consecutiveOverCurrent = 0;
 
                 if (_consecutiveOverCurrent >= 3)
+                {
+                    if (_forwardDirection)
+                    {
+                        // 快速保护只负责立即断开正向输出。永久报警必须等待完整速率峰值、
+                        // 反向释放和正式圈落盘均提交后，再按独立的连续圈策略确认。
+                        var slope = PredictionSlopeAperMs();
+                        var peak = Math.Max(current, _observedFullRatePeakA);
+                        decision.SoftWarning = true;
+                        CompleteForwardClamp(
+                            decision,
+                            current,
+                            slope,
+                            peak,
+                            0,
+                            "FastOverCurrentCutoff",
+                            $"ForwardFastOverCurrentCutoff I={current:F3}A " +
+                            $"Limit={overCurrentLimit:F3}A Peak={peak:F3}A");
+                        return decision;
+                    }
+
                     return Fault(decision,
                         $"OverCurrent3Samples I={current:F3}A Limit={overCurrentLimit:F3}A");
+                }
 
                 if (elapsedMs >= _inrushIgnoreMs)
                 {

@@ -27,11 +27,19 @@ namespace Controller
         Global
     }
 
+    public enum FaultRecoveryPolicy
+    {
+        Recoverable = 0,
+        NonRecoverable = 1,
+        NonRecoverableDisableChannel = 2
+    }
+
     public sealed class ControlFault
     {
         public ControlFault(string code, string reason, FaultScope scope, int[] affectedChannels,
             int? groupId, DateTime timestampUtc, Guid correlationId,
-            FaultClassification classification = FaultClassification.HardwareConfirmed)
+            FaultClassification classification = FaultClassification.HardwareConfirmed,
+            FaultRecoveryPolicy recoveryPolicy = FaultRecoveryPolicy.NonRecoverable)
         {
             Code = code ?? string.Empty;
             Reason = reason ?? string.Empty;
@@ -41,6 +49,7 @@ namespace Controller
             TimestampUtc = timestampUtc;
             CorrelationId = correlationId;
             Classification = classification;
+            RecoveryPolicy = recoveryPolicy;
         }
         public string Code { get; }
         public string Reason { get; }
@@ -50,6 +59,9 @@ namespace Controller
         public DateTime TimestampUtc { get; }
         public Guid CorrelationId { get; }
         public FaultClassification Classification { get; }
+        public FaultRecoveryPolicy RecoveryPolicy { get; }
+        public bool DisableChannelOnLatch =>
+            RecoveryPolicy == FaultRecoveryPolicy.NonRecoverableDisableChannel;
     }
 
     public enum HydraulicPhaseKind

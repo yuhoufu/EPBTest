@@ -34,6 +34,12 @@ namespace Config
                 cfg.Behavior.TimeoutMs = GetIntAttr(behaviorNode, "TimeoutMs", cfg.Behavior.TimeoutMs);
                 cfg.Behavior.Retry = GetIntAttr(behaviorNode, "Retry", cfg.Behavior.Retry);
                 cfg.Behavior.OvershootAlarmDeltaA = GetDoubleAttr(behaviorNode, "OvershootAlarmDeltaA", cfg.Behavior.OvershootAlarmDeltaA);
+                cfg.Behavior.AdaptivePermanentOvershootDeltaA = Math.Max(
+                    0.1,
+                    GetDoubleAttr(
+                        behaviorNode,
+                        "AdaptivePermanentOvershootDeltaA",
+                        cfg.Behavior.AdaptivePermanentOvershootDeltaA));
                 cfg.Behavior.AdaptiveOvershootWarningDeltaA = GetDoubleAttr(
                     behaviorNode,
                     "AdaptiveOvershootWarningDeltaA",
