@@ -34,6 +34,7 @@ namespace Controller
         public string Stage { get; set; }
         public EpbDoCommand Command { get; set; }
         public bool DoCommandResult { get; set; }
+        public double CommandElapsedMs { get; set; }
         public double BranchCurrentA { get; set; }
     }
 
@@ -229,9 +230,13 @@ namespace Controller
             catch { /* 电流读取失败不应阻止安全DO命令 */ }
 
             var result = false;
+            var commandStartedTicks = 0L;
+            var commandCompletedTicks = 0L;
             try
             {
+                commandStartedTicks = Stopwatch.GetTimestamp();
                 result = execute();
+                commandCompletedTicks = Stopwatch.GetTimestamp();
                 if (result)
                     SetChannelEnergized(
                         channel,
@@ -240,6 +245,11 @@ namespace Controller
             }
             finally
             {
+                if (commandStartedTicks > 0 && commandCompletedTicks == 0)
+                    commandCompletedTicks = Stopwatch.GetTimestamp();
+                var commandElapsedMs = commandStartedTicks > 0
+                    ? (commandCompletedTicks - commandStartedTicks) * 1000.0 / Stopwatch.Frequency
+                    : 0;
                 try
                 {
                     _runIdByChannel.TryGetValue(channel, out var runId);
@@ -265,6 +275,7 @@ namespace Controller
                         Stage = string.IsNullOrWhiteSpace(stage) ? "Unknown" : stage,
                         Command = command,
                         DoCommandResult = result,
+                        CommandElapsedMs = commandElapsedMs,
                         BranchCurrentA = current
                     };
                     _doControlTrace.Add(traceEvent);
@@ -280,6 +291,7 @@ namespace Controller
                             $"PhaseDueUtc={(hasPhaseDue ? phaseDueUtc.ToString("O") : "Unknown")} " +
                             $"PhaseDeviationMs={(traceEvent.ElectricalPhaseStartDeviationMs?.ToString("F3", CultureInfo.InvariantCulture) ?? "Unknown")} " +
                             $"Stage={traceEvent.Stage} Command={command} DoCommandResult={loggedResult} " +
+                            $"CommandElapsedMs={commandElapsedMs:F3} " +
                             $"CurrentA={currentText} PhysicalOffStatus=NotMeasured";
                         if (loggedResult)
                             _log.Info(message, "EPB-DO");
@@ -538,6 +550,8 @@ namespace Controller
                 json.Append($"\"stage\": \"{EscapeJson(item.Stage)}\", ");
                 json.Append($"\"command\": \"{item.Command}\", ");
                 json.Append($"\"doCommandResult\": {item.DoCommandResult.ToString().ToLowerInvariant()}, ");
+                json.Append(
+                    $"\"commandElapsedMs\": {item.CommandElapsedMs.ToString("F3", CultureInfo.InvariantCulture)}, ");
                 json.Append($"\"branchCurrentA\": {current}");
                 json.Append("}");
             }
@@ -628,7 +642,7 @@ namespace Controller
         {
             var csv = new StringBuilder();
             csv.AppendLine(
-                "Utc,MonotonicTicks,MonotonicElapsedMs,RunId,Cycle,ElectricalGroup,Channel,PlannedPhaseMs,ElectricalPhaseDueUtc,ElectricalPhaseStartDeviationMs,Stage,Command,DoCommandResult,BranchCurrentA,PhysicalPowerState");
+                "Utc,MonotonicTicks,MonotonicElapsedMs,RunId,Cycle,ElectricalGroup,Channel,PlannedPhaseMs,ElectricalPhaseDueUtc,ElectricalPhaseStartDeviationMs,Stage,Command,DoCommandResult,BranchCurrentA,PhysicalPowerState,CommandElapsedMs");
             foreach (var item in (events ?? Array.Empty<DoControlTraceEvent>())
                          .OrderBy(x => x.Utc)
                          .ThenBy(x => x.MonotonicTicks))
@@ -652,6 +666,7 @@ namespace Controller
                     ? string.Empty
                     : item.BranchCurrentA.ToString("F6", CultureInfo.InvariantCulture));
                 csv.Append(",NotMeasured");
+                csv.Append(',').Append(item.CommandElapsedMs.ToString("F3", CultureInfo.InvariantCulture));
                 csv.AppendLine();
             }
 

@@ -90,6 +90,7 @@
     <Compile Include="NonCriticalObserver.cs" />
     <Compile Include="BatchStartLifecycleGate.cs" />
     <Compile Include="ElectricalStaggerPlan.cs" />
+    <Compile Include="EmergencyPowerGroupLatch.cs" />
     <Compile Include="EpbManager.BatchStart.cs" />
     <Compile Include="EpbManager.PauseResume.cs" />
     <Compile Include="EpbManager.DaqRecoveryState.cs" />

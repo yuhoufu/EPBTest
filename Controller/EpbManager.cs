@@ -328,7 +328,7 @@ namespace Controller
         // 通道级“硬停机”取消源：用于中断当前圈内仍在运行的异步流程（Delay/等待判据等）
         private readonly ConcurrentDictionary<int, CancellationTokenSource> _stopCtsByChannel = new();
         private readonly ConcurrentDictionary<int, CancellationTokenSource> _cyclePauseCtsByChannel = new();
-        private readonly ConcurrentDictionary<int, byte> _emergencyPowerGroupLatch = new();
+        private readonly EmergencyPowerGroupLatch _emergencyPowerGroupLatch = new();
         private readonly ConcurrentDictionary<int, byte> _powerSoftwareRecoveryGroups = new();
         private readonly ConcurrentDictionary<int, byte> _hydraulicSoftwareRecoveryGroups = new();
 
@@ -2560,7 +2560,7 @@ namespace Controller
                              .Select(GetElectricalGroupId)
                              .Where(id => id > 0)
                              .Distinct())
-                    _emergencyPowerGroupLatch.TryRemove(groupId, out _);
+                    _emergencyPowerGroupLatch.TryRemove(groupId);
                 foreach (var channel in context.AffectedChannels
                              .Where(channel => _channelPausedUtc.ContainsKey(channel))
                              .Distinct())
@@ -4678,8 +4678,6 @@ namespace Controller
                     "程控电源"));
                 return;
             }
-            if (!_emergencyPowerGroupLatch.TryAdd(groupId, 0)) return;
-
             var members = _cfg.Test.Groups
                 .FirstOrDefault(x => x.Id == groupId)?
                 .Members
@@ -4694,7 +4692,12 @@ namespace Controller
                     "OffCurrentUnverifiableDaqStale",
                     StringComparison.OrdinalIgnoreCase) >= 0 &&
                 _daqIncidentLatch.TryGet(_activeBatchId, sourceDevice, out daqIncident);
-            if (daqDerived)
+            var registration = _emergencyPowerGroupLatch.Register(
+                groupId,
+                daqDerived ? daqIncident.CorrelationId : Guid.NewGuid(),
+                DateTime.UtcNow,
+                nonDaqFault: !daqDerived);
+            if (daqDerived && registration.IsFirst)
                 ObserveDaqIncident(
                     sourceDevice,
                     "OffCurrentUnverifiableDaqStale",
@@ -4702,12 +4705,12 @@ namespace Controller
                     DateTime.UtcNow,
                     GetAllDaqDeviceChannels(sourceDevice));
 
-            if (!daqDerived)
+            if (registration.ShouldPublishNonDaqFault)
                 NotifyRunAuthorizationRevoking(
                     StopSource.AlarmInterlock,
                     reason,
                     nameof(RequestElectricalGroupEmergencyShutdown),
-                    Guid.NewGuid(),
+                    registration.CorrelationId,
                     FaultScope.ElectricalGroup);
 
             // 先在当前线程阻止同组任何通道继续执行，并逐路发出高优先级DO关闭；
@@ -4726,9 +4729,7 @@ namespace Controller
                 try { CommandEpbOffSafetyImmediate(member); } catch { }
             }
 
-            var correlationId = daqDerived
-                ? daqIncident.CorrelationId
-                : Guid.NewGuid();
+            var correlationId = registration.CorrelationId;
 
             _ = Task.Run(async () =>
             {
@@ -4750,13 +4751,26 @@ namespace Controller
                     catch { }
                 }
 
-                _log.Error(
-                    $"电源组{groupId}触发失效安全联锁：Source=EPB{sourceChannel} " +
-                    $"Affected=[{string.Join(",", members)}] CorrelationId={correlationId:N} " +
-                    $"DaqDerived={daqDerived} Reason={reason}",
-                    "程控电源");
+                if (registration.IsFirst)
+                {
+                    _log.Error(
+                        $"电源组{groupId}触发失效安全联锁：Source=EPB{sourceChannel} " +
+                        $"Affected=[{string.Join(",", members)}] CorrelationId={correlationId:N} " +
+                        $"DaqDerived={daqDerived} Reason={reason}",
+                        "程控电源");
+                }
+                else
+                {
+                    _log.Warn(
+                        $"电源组{groupId}收到重复失效安全联锁请求，已复用原关联号并重新执行" +
+                        $"逐路DO关闭和电源OFF回读。Source=EPB{sourceChannel} " +
+                        $"Affected=[{string.Join(",", members)}] CorrelationId={correlationId:N} " +
+                        $"OriginalStartedUtc={registration.StartedUtc:O} " +
+                        $"RequestCount={registration.RequestCount} DaqDerived={daqDerived} Reason={reason}",
+                        "程控电源");
+                }
 
-                if (!daqDerived)
+                if (registration.ShouldPublishNonDaqFault)
                 {
                     var interlockFault = new ControlFault(
                         ExtractFaultCode(reason),

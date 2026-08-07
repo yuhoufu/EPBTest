@@ -44,6 +44,8 @@ namespace AdaptiveControlTests
             Run("DAQ恢复终态结束旧事故且后续故障使用新关联号", IncidentCompletionStartsNewCorrelation, ref passed);
             Run("DAQ恢复期间旧运行和软预警不能覆盖恢复状态", DaqRecoveryStateCannotRegress, ref passed);
             Run("高优先级DO超时不回退到调用线程无限等待", HighPriorityDoTimeoutIsBounded, ref passed);
+            Run("DO报警时间线保留兼容列并追加命令耗时", DoTimelineAppendsCommandElapsed, ref passed);
+            Run("电源组重复联锁复用关联且允许重发安全动作", EmergencyPowerGroupLatchKeepsCorrelation, ref passed);
             Run("DAQ事故先断电后发布诊断", DaqSafetyActionsPrecedePublication, ref passed);
             Run("十万稳态样本控制计算无持续分配", AdaptiveHotLoopDoesNotAllocate, ref passed);
             Run("因果中值滤波跨批正确且原地无持续分配", CausalMedianInPlaceIsCorrectAndAllocationFree, ref passed);
@@ -545,11 +547,20 @@ namespace AdaptiveControlTests
         private static void HighPriorityDoTimeoutIsBounded()
         {
             using var controller = new DoController(new DoConfig());
+            Assert(DoController.HighPriorityOffTimeoutMs == 100,
+                "高优先级DO等待时限未按现场要求设置为100ms");
             var field = typeof(DoController).GetField("_doTaskLock",
                 BindingFlags.Instance | BindingFlags.NonPublic);
             Assert(field != null, "未找到DO任务锁");
             var gate = field.GetValue(controller);
             using var entered = new ManualResetEventSlim(false);
+            using var telemetryReady = new ManualResetEventSlim(false);
+            HighPriorityDoTelemetry telemetry = null;
+            controller.HighPriorityOffCompleted += item =>
+            {
+                telemetry = item;
+                telemetryReady.Set();
+            };
             var holder = new Thread(() =>
             {
                 lock (gate)
@@ -566,9 +577,85 @@ namespace AdaptiveControlTests
             var result = controller.SetEpbOffHighPriority(4);
             clock.Stop();
             Assert(!result, "锁竞争超时时错误报告断电命令成功");
-            Assert(clock.ElapsedMilliseconds < 250,
+            Assert(clock.ElapsedMilliseconds >= 80 && clock.ElapsedMilliseconds < 300,
                 $"高优先级DO超时后仍在调用线程阻塞 {clock.ElapsedMilliseconds}ms");
             Assert(holder.Join(1000), "DO锁竞争注入线程未退出");
+            Assert(telemetryReady.Wait(1000), "超时后实际DO任务完成时未发布晚完成诊断");
+            Assert(telemetry != null &&
+                   telemetry.TimeoutMs == 100 &&
+                   telemetry.CallerTimedOut &&
+                   telemetry.QueueDepthAtEnqueue >= 1 &&
+                   telemetry.LockWaitMs >= 300 &&
+                   telemetry.TotalMs >= telemetry.LockWaitMs,
+                "高优先级DO晚完成诊断缺少队列、锁等待或总耗时证据");
+        }
+
+        private static void EmergencyPowerGroupLatchKeepsCorrelation()
+        {
+            var latch = new EmergencyPowerGroupLatch();
+            var firstCorrelation = Guid.NewGuid();
+            var first = latch.Register(3, firstCorrelation, DateTime.UtcNow);
+            var duplicate = latch.Register(
+                3,
+                Guid.NewGuid(),
+                DateTime.UtcNow.AddSeconds(1),
+                nonDaqFault: true);
+            var repeatedHardFault = latch.Register(
+                3,
+                Guid.NewGuid(),
+                DateTime.UtcNow.AddSeconds(1),
+                nonDaqFault: true);
+
+            Assert(first.IsFirst && first.RequestCount == 1 &&
+                   first.CorrelationId == firstCorrelation,
+                "首次电源组联锁未建立活动关联");
+            Assert(!duplicate.IsFirst && duplicate.RequestCount == 2 &&
+                   duplicate.CorrelationId == first.CorrelationId &&
+                   duplicate.ShouldPublishNonDaqFault,
+                "重复电源组联锁未复用原关联或被错误当成首次请求");
+            Assert(!repeatedHardFault.ShouldPublishNonDaqFault &&
+                   repeatedHardFault.RequestCount == 3,
+                "同一活动联锁重复发布了非DAQ组故障");
+            Assert(latch.ContainsKey(3) && latch.TryRemove(3) && !latch.ContainsKey(3),
+                "电源组联锁恢复提交后未能清除活动关联");
+
+            var next = latch.Register(3, Guid.NewGuid(), DateTime.UtcNow.AddSeconds(2));
+            Assert(next.IsFirst && next.RequestCount == 1 &&
+                   next.CorrelationId != first.CorrelationId,
+                "旧联锁清除后的新事故仍复用了历史关联");
+        }
+
+        private static void DoTimelineAppendsCommandElapsed()
+        {
+            var path = Path.Combine(Path.GetTempPath(), "epb-do-timeline-" + Guid.NewGuid().ToString("N") + ".csv");
+            try
+            {
+                EpbManager.WriteDoTimeline(
+                    path,
+                    new[]
+                    {
+                        new DoControlTraceEvent
+                        {
+                            Utc = DateTime.UtcNow,
+                            MonotonicTicks = 1,
+                            RunId = Guid.NewGuid(),
+                            Channel = 8,
+                            Stage = "EnsureAdaptiveTerminalPowerOff",
+                            Command = EpbDoCommand.OffHighPriority,
+                            DoCommandResult = false,
+                            BranchCurrentA = 0.389,
+                            CommandElapsedMs = 100.5
+                        }
+                    });
+                var csv = File.ReadAllText(path);
+                Assert(csv.Contains("BranchCurrentA,PhysicalPowerState,CommandElapsedMs") &&
+                       csv.Contains(",false,0.389000,NotMeasured,100.500"),
+                    "DO时间线未在兼容列尾追加命令耗时");
+            }
+            finally
+            {
+                if (File.Exists(path)) File.Delete(path);
+            }
         }
 
         private static void DaqRecoveryStateCannotRegress()

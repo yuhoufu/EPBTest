@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading;
 using Config;
 using NationalInstruments.DAQmx;
@@ -17,6 +18,27 @@ using NLogger = Config.NullLogger;
 
 namespace IO.NI
 {
+    internal sealed class HighPriorityDoTelemetry
+    {
+        internal Guid CommandId { get; set; }
+        internal int Channel { get; set; }
+        internal int TimeoutMs { get; set; }
+        internal int QueueDepthAtEnqueue { get; set; }
+        internal bool CallerTimedOut { get; set; }
+        internal bool Result { get; set; }
+        internal double QueueWaitMs { get; set; }
+        internal double WorkerExecutionMs { get; set; }
+        internal double TotalMs { get; set; }
+        internal double LockWaitMs { get; set; }
+        internal double NiWriteMs { get; set; }
+    }
+
+    internal sealed class DoWriteTiming
+    {
+        internal double LockWaitMs { get; set; }
+        internal double NiWriteMs { get; set; }
+    }
+
     /// <summary>
     /// DO 控制器：基于 <see cref="DoConfig"/>（EPB 与 Pressure）统一管理多个数字输出。
     /// - 与 AoController 一致，按“配置对象”而非“读取XML”初始化。
@@ -38,8 +60,16 @@ namespace IO.NI
 
             private sealed class WorkItem
             {
+                public Guid CommandId;
                 public Func<bool> Work;
                 public ManualResetEventSlim Done;
+                public Action<HighPriorityDoTelemetry> Completion;
+                public long EnqueuedTicks;
+                public long DequeuedTicks;
+                public long CompletedTicks;
+                public int QueueDepthAtEnqueue;
+                public int TimeoutMs;
+                public int CallerTimedOut;
                 public bool Result;
                 public Exception Error;
             }
@@ -81,9 +111,12 @@ namespace IO.NI
             /// </summary>
             /// <param name="work">具体写入逻辑；应为短任务（单次 NI 写入）。</param>
             /// <param name="timeoutMs">
-            ///     等待超时（毫秒）。超时后调用方可选择降级为“本线程直接执行”。
+            ///     等待超时（毫秒）。超时后调用方必须进入组级隔离，禁止在调用线程直接写DO。
             /// </param>
-            public bool InvokeHi(Func<bool> work, int timeoutMs)
+            public bool InvokeHi(
+                Func<bool> work,
+                int timeoutMs,
+                Action<HighPriorityDoTelemetry> completion)
             {
                 if (work == null) return false;
 
@@ -94,7 +127,8 @@ namespace IO.NI
 
                 StartIfNeeded();
 
-                if (Interlocked.Increment(ref _pendingWorkItems) > MaxPendingWorkItems)
+                var pending = Interlocked.Increment(ref _pendingWorkItems);
+                if (pending > MaxPendingWorkItems)
                 {
                     Interlocked.Decrement(ref _pendingWorkItems);
                     return false;
@@ -102,16 +136,24 @@ namespace IO.NI
 
                 var item = new WorkItem
                 {
+                    CommandId = Guid.NewGuid(),
                     Work = work,
-                    Done = new ManualResetEventSlim(false)
+                    Done = new ManualResetEventSlim(false),
+                    Completion = completion,
+                    EnqueuedTicks = Stopwatch.GetTimestamp(),
+                    QueueDepthAtEnqueue = pending,
+                    TimeoutMs = Math.Max(1, timeoutMs)
                 };
 
                 _hiQueue.Enqueue(item);
                 _signal.Set();
 
-                // 关键路径：给一个有限等待；若超时由上层决定是否降级直写。
-                if (!item.Done.Wait(Math.Max(1, timeoutMs)))
+                // 关键路径：仅有限等待；超时后由上层立即进入组级隔离，禁止调用线程降级直写。
+                if (!item.Done.Wait(item.TimeoutMs))
+                {
+                    Interlocked.Exchange(ref item.CallerTimedOut, 1);
                     return false;
+                }
 
                 return item.Result;
             }
@@ -128,6 +170,7 @@ namespace IO.NI
 
                     try
                     {
+                        item.DequeuedTicks = Stopwatch.GetTimestamp();
                         item.Result = item.Work();
                     }
                     catch (Exception ex)
@@ -137,11 +180,43 @@ namespace IO.NI
                     }
                     finally
                     {
+                        item.CompletedTicks = Stopwatch.GetTimestamp();
                         Interlocked.Decrement(ref _pendingWorkItems);
                         try { item.Done.Set(); }
                         catch { /* ignore */ }
+                        var completion = item.Completion;
+                        if (completion != null)
+                        {
+                            ThreadPool.QueueUserWorkItem(_ =>
+                            {
+                                try
+                                {
+                                    completion(new HighPriorityDoTelemetry
+                                    {
+                                        CommandId = item.CommandId,
+                                        TimeoutMs = item.TimeoutMs,
+                                        QueueDepthAtEnqueue = item.QueueDepthAtEnqueue,
+                                        CallerTimedOut = Volatile.Read(ref item.CallerTimedOut) != 0,
+                                        Result = item.Result,
+                                        QueueWaitMs = ElapsedMs(item.EnqueuedTicks, item.DequeuedTicks),
+                                        WorkerExecutionMs = ElapsedMs(item.DequeuedTicks, item.CompletedTicks),
+                                        TotalMs = ElapsedMs(item.EnqueuedTicks, item.CompletedTicks)
+                                    });
+                                }
+                                catch
+                                {
+                                    // 诊断观察者不得影响专用DO线程和安全命令结果。
+                                }
+                            });
+                        }
                     }
                 }
+            }
+
+            private static double ElapsedMs(long startedTicks, long completedTicks)
+            {
+                if (startedTicks <= 0 || completedTicks < startedTicks) return 0;
+                return (completedTicks - startedTicks) * 1000.0 / Stopwatch.Frequency;
             }
 
             public void Dispose()
@@ -189,6 +264,9 @@ namespace IO.NI
         // ★新增：高优先级 DO worker（用于“触发后断电”等关键写入）
         private readonly HighPriorityDoWorker _hiWorker = new HighPriorityDoWorker();
 
+        internal const int HighPriorityOffTimeoutMs = 100;
+        private const double HighPriorityOffSlowLogThresholdMs = 20.0;
+
         // 新增：保存配置对象（来源于外部的 cfgDo）
         private readonly DoConfig _cfg;
 
@@ -206,6 +284,8 @@ namespace IO.NI
             _cfg = cfgDo ?? throw new ArgumentNullException(nameof(cfgDo));
             _log = logger ?? NLogger.Instance;
         }
+
+        internal event Action<HighPriorityDoTelemetry> HighPriorityOffCompleted;
 
         /// <summary>
         /// 兼容旧接口：设置 XML 路径（本实现不会再读取 XML，仅为保持方法签名不变）。
@@ -403,8 +483,17 @@ namespace IO.NI
         /// <returns>成功/失败。</returns>
         public bool SetEpbOff(int channelNo)
         {
+            return SetEpbOffCore(channelNo, null);
+        }
+
+        private bool SetEpbOffCore(int channelNo, DoWriteTiming timing)
+        {
+            var lockRequestedTicks = Stopwatch.GetTimestamp();
             lock (_doTaskLock)
             {
+                var lockAcquiredTicks = Stopwatch.GetTimestamp();
+                long niWriteStartedTicks = 0;
+                long niWriteCompletedTicks = 0;
                 try
                 {
                     if (!EnsureReady()) return false;
@@ -423,7 +512,9 @@ namespace IO.NI
                     var toWrite = (bool[])dev.States.Clone();
                     toWrite[map.posIdx] = false;
                     toWrite[map.negIdx] = false;
+                    niWriteStartedTicks = Stopwatch.GetTimestamp();
                     dev.Writer.WriteSingleSampleSingleLine(true, toWrite);
+                    niWriteCompletedTicks = Stopwatch.GetTimestamp();
                     dev.States = toWrite;
                     LogInfo($"EPB[{channelNo}]@{map.dev} => 全关", "DO操作");
                     return true;
@@ -432,6 +523,19 @@ namespace IO.NI
                 {
                     LogError("EPB 关闭失败：" + ex.Message, "DO操作", ex);
                     return false;
+                }
+                finally
+                {
+                    if (timing != null)
+                    {
+                        if (niWriteStartedTicks > 0 && niWriteCompletedTicks == 0)
+                            niWriteCompletedTicks = Stopwatch.GetTimestamp();
+                        timing.LockWaitMs =
+                            (lockAcquiredTicks - lockRequestedTicks) * 1000.0 / Stopwatch.Frequency;
+                        timing.NiWriteMs = niWriteStartedTicks > 0 && niWriteCompletedTicks >= niWriteStartedTicks
+                            ? (niWriteCompletedTicks - niWriteStartedTicks) * 1000.0 / Stopwatch.Frequency
+                            : 0;
+                    }
                 }
             }
         }
@@ -456,7 +560,40 @@ namespace IO.NI
             // 会等待同一个_doTaskLock/NI调用，曾使DAQ恢复协程阻塞二十余分钟。
             // 超时返回false后，上层会保持电源组隔离并由看门狗持续重试；已排队的
             // OFF命令仍会在worker恢复后执行，因此不会把软件阻塞扩散到状态机。
-            return _hiWorker.InvokeHi(() => SetEpbOff(channelNo), timeoutMs: 30);
+            var writeTiming = new DoWriteTiming();
+            return _hiWorker.InvokeHi(
+                () => SetEpbOffCore(channelNo, writeTiming),
+                HighPriorityOffTimeoutMs,
+                telemetry => PublishHighPriorityOffTelemetry(channelNo, telemetry, writeTiming));
+        }
+
+        private void PublishHighPriorityOffTelemetry(
+            int channelNo,
+            HighPriorityDoTelemetry telemetry,
+            DoWriteTiming writeTiming)
+        {
+            if (telemetry == null) return;
+            telemetry.Channel = channelNo;
+            telemetry.LockWaitMs = writeTiming?.LockWaitMs ?? 0;
+            telemetry.NiWriteMs = writeTiming?.NiWriteMs ?? 0;
+
+            if (telemetry.CallerTimedOut || telemetry.TotalMs >= HighPriorityOffSlowLogThresholdMs)
+            {
+                LogWarn(
+                    $"EPB[{channelNo}] 高优先级DO耗时诊断：CommandId={telemetry.CommandId:N} " +
+                    $"Timeout={telemetry.TimeoutMs}ms CallerTimedOut={telemetry.CallerTimedOut} " +
+                    $"FinalResult={telemetry.Result} QueueDepth={telemetry.QueueDepthAtEnqueue} " +
+                    $"QueueWait={telemetry.QueueWaitMs:F3}ms LockWait={telemetry.LockWaitMs:F3}ms " +
+                    $"NIWrite={telemetry.NiWriteMs:F3}ms Worker={telemetry.WorkerExecutionMs:F3}ms " +
+                    $"Total={telemetry.TotalMs:F3}ms",
+                    "DO性能");
+            }
+
+            try { HighPriorityOffCompleted?.Invoke(telemetry); }
+            catch
+            {
+                // 性能诊断观察者不得改变DO结果。
+            }
         }
 
         /// <summary>
@@ -621,6 +758,9 @@ namespace IO.NI
 
         private void LogInfo(string message, string category = null)
             => _log?.Info(message, category ?? "DO");
+
+        private void LogWarn(string message, string category = null)
+            => _log?.Warn(message, category ?? "DO");
 
         private void LogError(string message, string category = null, Exception ex = null)
             => _log?.Error(message, category ?? "DO", ex);
