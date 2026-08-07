@@ -82,6 +82,7 @@
     <Compile Include="DaqPersistenceCoordinator.cs" />
     <Compile Include="DaqRecoveryTerminalGate.cs" />
     <Compile Include="RuntimeBuildIdentity.cs" />
+    <Compile Include="RecoveryCoordination.cs" />
     <Compile Include="SoftwareSelfHealingLoop.cs" />
     <Compile Include="ChannelRuntimeStore.cs" />
     <Compile Include="ChannelRuntimeState.cs" />
@@ -91,6 +92,7 @@
     <Compile Include="EpbManager.BatchStart.cs" />
     <Compile Include="EpbManager.PauseResume.cs" />
     <Compile Include="EpbManager.DaqRecoveryState.cs" />
+    <Compile Include="EpbManager.RecoveryCoordination.cs" />
     <Compile Include="EpbManager.WarningSnapshots.cs" />
     <Compile Include="EpbManager.StartupPositioning.cs" />
     <Compile Include="EpbManager.AdaptiveTrace.cs" />

@@ -61,7 +61,16 @@ public sealed class DataRetentionPolicy
 public sealed class ActiveCycleDataLimitExceededException : InvalidOperationException
 {
     public ActiveCycleDataLimitExceededException(int epbId, int cycleNumber, int limit)
-        : base($"ActiveCycleDataLimitExceeded EPB={epbId} Cycle={cycleNumber} Limit={limit}") { }
+        : base($"ActiveCycleDataLimitExceeded EPB={epbId} Cycle={cycleNumber} Limit={limit}")
+    {
+        EpbId = epbId;
+        CycleNumber = cycleNumber;
+        Limit = limit;
+    }
+
+    public int EpbId { get; }
+    public int CycleNumber { get; }
+    public int Limit { get; }
 }
 
 /// <summary>

@@ -164,12 +164,14 @@ namespace AdaptiveControlTests
                 Run("固定随机种子10万圈耐久仿真", HundredThousandCycleDurabilitySimulation);
                 Run("持久化积压低水位后自动恢复", DaqPersistenceCoordinatorTests.PauseAndRecoverAfterLowWater);
                 Run("持久化硬容量使用独立故障码", DaqPersistenceCoordinatorTests.HardCapacityKeepsRealFaultCode);
+                Run("活动圈上限事件携带EPB圈号和限制", DaqPersistenceCoordinatorTests.ActiveCycleLimitPublishesLifecycleIdentity);
                 Run("持久化诊断观察者异常不重复写盘", DaqPersistenceCoordinatorTests.DiagnosticObserverFailureDoesNotRetryWrite);
                 _passed += DaqRealtimeControlTests.RunAll();
                 _passed += CalibrationMathTests.RunAll();
                 _passed += HydraulicGroupCoordinatorTests.RunAll();
                 _passed += PowerSupplyCoordinatorTests.RunAll();
                 _passed += ProjectLogStoreTests.RunAll();
+                _passed += RecoveryCoordinationTests.RunAll();
                 Console.WriteLine($"PASS {_passed}/{_passed}");
                 return 0;
             }

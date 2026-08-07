@@ -34,6 +34,9 @@ namespace Controller
         public Guid CorrelationId { get; set; }
         public long SuppressedBatchCount { get; set; }
         public long DiscardedGenerationBatchCount { get; set; }
+        public int EpbId { get; set; }
+        public int CycleNumber { get; set; }
+        public int RecordLimit { get; set; }
     }
 
     internal sealed class DaqPersistenceCoordinator : IDisposable
@@ -326,11 +329,16 @@ namespace Controller
                     }
                     return;
                 }
-                catch (ActiveCycleDataLimitExceededException)
+                catch (ActiveCycleDataLimitExceededException ex)
                 {
                     var correlation = EnsureCorrelation(q);
                     Publish(batch, q, DaqPersistenceState.Failed, "ActiveCycleDataLimitExceeded",
-                        "活动圈数据达到安全上限。", correlation);
+                        $"活动圈数据达到安全上限。EPB={ex.EpbId} " +
+                        $"Cycle={ex.CycleNumber} Limit={ex.Limit}。",
+                        correlation,
+                        ex.EpbId,
+                        ex.CycleNumber,
+                        ex.Limit);
                     return;
                 }
                 catch (Exception ex)
@@ -504,7 +512,10 @@ namespace Controller
             DaqPersistenceState state,
             string code,
             string reason,
-            Guid correlationId)
+            Guid correlationId,
+            int epbId = 0,
+            int cycleNumber = 0,
+            int recordLimit = 0)
         {
             var update = new DaqPersistenceStateChanged
             {
@@ -517,7 +528,10 @@ namespace Controller
                 Generation = batch?.Generation ?? Interlocked.Read(ref q.AcceptedGeneration),
                 Sequence = batch?.Sequence ?? Interlocked.Read(ref q.LastPersistedSequence),
                 TimestampUtc = DateTime.UtcNow,
-                CorrelationId = correlationId
+                CorrelationId = correlationId,
+                EpbId = epbId,
+                CycleNumber = cycleNumber,
+                RecordLimit = recordLimit
             };
             if (state == DaqPersistenceState.Lagging)
                 _log?.Warn(reason, "落盘");

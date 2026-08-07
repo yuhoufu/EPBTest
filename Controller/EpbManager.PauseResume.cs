@@ -767,8 +767,33 @@ namespace Controller
 
             await _pauseResumeGate.WaitAsync(token).ConfigureAwait(false);
             CancellationTokenSource resumeCts = null;
+            CancellationTokenSource hardDeadline = null;
+            CancellationTokenSource deadlineLinked = null;
+            CancellationTokenSource ownershipLinked = null;
+            HydraulicRecoveryOwnershipCoordinator.HydraulicRecoveryOwnershipLease ownership = null;
+            var hardDeadlineReached = false;
+            var resetOnHardDeadline = IsBatchSessionActive;
+            var recoveryRunEpoch = Interlocked.Read(ref _runEpoch);
+            var recoveryCorrelation = _activeBatchId == Guid.Empty
+                ? Guid.NewGuid()
+                : _activeBatchId;
             try
             {
+                hardDeadline = new CancellationTokenSource(RecoveryGroupHardDeadlineMs);
+                deadlineLinked = CancellationTokenSource.CreateLinkedTokenSource(
+                    token,
+                    hardDeadline.Token);
+                ownership = await _recoveryOwnership.AcquireAsync(
+                        channel <= 6 ? 1 : 2,
+                        $"ALARM:{channel}:{_activeBatchId:N}",
+                        RecoveryOwnerPriority.AlarmChannel,
+                        RecoveryOwnershipTakeoverTimeoutMs,
+                        deadlineLinked.Token)
+                    .ConfigureAwait(false);
+                ownershipLinked = CancellationTokenSource.CreateLinkedTokenSource(
+                    deadlineLinked.Token,
+                    ownership.Token);
+                var recoveryToken = ownershipLinked.Token;
                 var remaining = Math.Max(
                     0,
                     _cfg.Test.GetEpbRecord(channel).TotalCount -
@@ -788,10 +813,14 @@ namespace Controller
                 if (!IsBatchSessionActive)
                 {
                     EpbTestCycle[channel] = remaining;
-                    await StartBatchFromGracefulCheckpointAsync(
-                            new[] { channel },
-                            2,
-                            token)
+                    await RecoveryStageDeadline.RunAsync(
+                            "AlarmResumeFreshBatch",
+                            RecoveryGroupHardDeadlineMs,
+                            ct => StartBatchFromGracefulCheckpointAsync(
+                                new[] { channel },
+                                2,
+                                ct),
+                            recoveryToken)
                         .ConfigureAwait(false);
                     ClearAlarmIndicatorAfterRecoveryBestEffort(channel);
                     return;
@@ -801,25 +830,43 @@ namespace Controller
                 // 这样操作员在DAQ/电源自愈期间点击停止也能立即取消。
                 RenewStopCts(channel);
                 resumeCts = CreateResumeLinkedTokenSource(
-                    token,
+                    recoveryToken,
                     new[] { channel },
                     includeBatchSession: true);
                 var resumeToken = resumeCts.Token;
 
-                await EnsureDaqReadyBeforeStartAsync(new[] { channel }, resumeToken).ConfigureAwait(false);
+                await RecoveryStageDeadline.RunAsync(
+                        "AlarmResumeDaqReady",
+                        RecoveryStageTimeoutMs,
+                        ct => EnsureDaqReadyBeforeStartAsync(new[] { channel }, ct),
+                        resumeToken)
+                    .ConfigureAwait(false);
                 EnsureStrictCurveControl(new[] { channel });
                 EnsureAdaptiveProfilesReady(new[] { channel });
-                await EnsurePowerSupplyReadyBeforeStartAsync(new[] { channel }, resumeToken)
+                await RecoveryStageDeadline.RunAsync(
+                        "AlarmResumePowerReady",
+                        RecoveryStageTimeoutMs,
+                        ct => EnsurePowerSupplyReadyBeforeStartAsync(new[] { channel }, ct),
+                        resumeToken)
                     .ConfigureAwait(false);
 
                 var plan = _activeStaggerPlan ??
                            ElectricalStaggerPlanner.Build(new[] { channel }, _cfg.Test.Groups, PeriodMs);
                 // 人工确认后开启新的报警代次；资格复核期间若再次触发故障，必须重新锁存并停机。
                 _alarmStopLatch.BeginRun(channel);
-                var positioningFailures = await PreReleaseBatchWithPlanAsync(
-                        new[] { channel },
-                        null,
-                        plan,
+                StartupPositioningResult[] positioningFailures = null;
+                await RecoveryStageDeadline.RunAsync(
+                        "AlarmResumeMechanicalRelease",
+                        RecoveryMechanicalReleaseTimeoutMs,
+                        async ct =>
+                        {
+                            positioningFailures = await PreReleaseBatchWithPlanAsync(
+                                    new[] { channel },
+                                    null,
+                                    plan,
+                                    ct)
+                                .ConfigureAwait(false);
+                        },
                         resumeToken)
                     .ConfigureAwait(false);
                 if (positioningFailures.Length > 0)
@@ -833,9 +880,18 @@ namespace Controller
                     "AlarmQualification",
                     "报警恢复资格复核（2圈，不计入正式目标）",
                     correlationId: _activeBatchId);
-                var qualificationFailed = await RunPausedQualificationAsync(
-                        new[] { channel },
-                        2,
+                int[] qualificationFailed = null;
+                await RecoveryStageDeadline.RunAsync(
+                        "AlarmResumeQualification",
+                        RecoveryGroupHardDeadlineMs,
+                        async ct =>
+                        {
+                            qualificationFailed = await RunPausedQualificationAsync(
+                                    new[] { channel },
+                                    2,
+                                    ct)
+                                .ConfigureAwait(false);
+                        },
                         resumeToken)
                     .ConfigureAwait(false);
                 if (qualificationFailed.Contains(channel))
@@ -848,6 +904,26 @@ namespace Controller
                     "报警恢复完成，已按当前公共节律槽重新加入",
                     allowTerminalReset: true);
                 ClearAlarmIndicatorAfterRecoveryBestEffort(channel);
+            }
+            catch (OperationCanceledException) when (
+                hardDeadline?.IsCancellationRequested == true &&
+                !token.IsCancellationRequested)
+            {
+                hardDeadlineReached = true;
+                PublishChannelRuntimeState(
+                    channel,
+                    resetOnHardDeadline
+                        ? ChannelRuntimeState.Recovering
+                        : ChannelRuntimeState.AlarmStopped,
+                    "AlarmResumeHardDeadline",
+                    $"单通道恢复超过{RecoveryGroupHardDeadlineMs}ms，" +
+                    (resetOnHardDeadline
+                        ? "转入受影响液压组Stop→Start等价清场。"
+                        : "保持安全停机。"),
+                    correlationId: recoveryCorrelation,
+                    allowTerminalReset: true);
+                try { CommandEpbOffHighPriority(channel, "AlarmResumeHardDeadline"); }
+                catch { }
             }
             catch (OperationCanceledException) when (
                 token.IsCancellationRequested ||
@@ -869,8 +945,19 @@ namespace Controller
             finally
             {
                 resumeCts?.Dispose();
+                ownershipLinked?.Dispose();
+                deadlineLinked?.Dispose();
+                hardDeadline?.Dispose();
+                ownership?.Dispose();
                 _pauseResumeGate.Release();
             }
+            if (hardDeadlineReached && resetOnHardDeadline)
+                await ExecuteAffectedGroupResetAsync(
+                        new[] { channel },
+                        "AlarmResumeHardDeadline",
+                        recoveryCorrelation,
+                        recoveryRunEpoch)
+                    .ConfigureAwait(false);
         }
 
         private void ClearAlarmIndicatorAfterRecoveryBestEffort(int channel)
@@ -1104,7 +1191,9 @@ namespace Controller
             var baseCycle = Recorder?.GetLastCycleNumber(channel) ?? 0;
             var successfulCycles = 0;
             EpbTestCycle[channel] = remainingRuns;
-            MarkHydraulicParticipant(channel);
+            // 先登记“首个合格正式槽”再暴露 participant。正在运行的上一槽即使此刻
+            // 重新拍摄成员快照，也会按槽过滤掉本通道。
+            MarkHydraulicParticipantFromFormalSlot(channel, firstSlot);
 
             _ = timer.StartAsync(null, initialDelay, async (cycleIndex, timerToken) =>
             {
@@ -1122,7 +1211,8 @@ namespace Controller
                     : Enumerable.Range(7, 6).ToArray();
                 var participants = GetHydraulicParticipantsInPressureGroupSnapshot(
                     pressureGroup,
-                    candidates);
+                    candidates,
+                    phaseSlot);
                 var key = new HydraulicGenerationKey(
                     _activeBatchId,
                     pressureGroup,

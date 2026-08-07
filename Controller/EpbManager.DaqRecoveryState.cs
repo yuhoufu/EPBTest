@@ -25,6 +25,7 @@ namespace Controller
             if (!context.Terminal.TryCommit(DaqRecoveryTerminal.Cancelled)) return;
             MarkDaqRecoveryTerminal(context.CorrelationId, context.Device);
             _daqAutoRecovery.TryRemove(context.Device, out _);
+            ReleaseDaqRecoveryOwnerships(context);
             try { context.Cancellation.Cancel(); } catch { }
             var result = new DaqRecoveryResult
             {

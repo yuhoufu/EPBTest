@@ -821,7 +821,10 @@ namespace Controller
                             // 1) 在本圈锚点时刻为该压力组建压：
                             //    对本组所有参与通道调用 EnterElectricalPhaseAsync，
                             //    这样 HydraulicGroupCoordinator 能正确维护 InFlight 集合。
-                            var participants = GetHydraulicParticipantsInPressureGroupSnapshot(pg, enabled);
+                            var participants = GetHydraulicParticipantsInPressureGroupSnapshot(
+                                pg,
+                                enabled,
+                                phaseSlot);
                             var hydraulicKey = new HydraulicGenerationKey(
                                 _activeBatchId,
                                 pg,
@@ -1063,7 +1066,8 @@ namespace Controller
         /// </remarks>
         private IReadOnlyList<int> GetHydraulicParticipantsInPressureGroupSnapshot(
             int pressureGroupId,
-            IReadOnlyList<int> candidateChannels)
+            IReadOnlyList<int> candidateChannels,
+            long formalSlot = -1)
         {
             if (candidateChannels == null || candidateChannels.Count == 0)
                 return Array.Empty<int>();
@@ -1085,8 +1089,12 @@ namespace Controller
                     continue;
                 }
 
-                if (IsHydraulicParticipant(ch))
-                    list.Add(ch);
+                if (!IsHydraulicParticipant(ch)) continue;
+                if (formalSlot >= 0 &&
+                    _firstEligibleFormalSlotByChannel.TryGetValue(ch, out var firstEligibleSlot) &&
+                    !FormalSlotEligibility.IsEligible(firstEligibleSlot, formalSlot))
+                    continue;
+                list.Add(ch);
             }
 
             return list;

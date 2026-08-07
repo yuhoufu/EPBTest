@@ -77,6 +77,34 @@ namespace AdaptiveControlTests
                 "诊断观察者异常被误判为写盘失败并重复写入");
         }
 
+        internal static void ActiveCycleLimitPublishesLifecycleIdentity()
+        {
+            const int epbId = 8;
+            const int cycle = 506;
+            const int limit = 120000;
+            var recorder = new ActiveCycleLimitRecorder(epbId, cycle, limit);
+            using var coordinator = new DaqPersistenceCoordinator(
+                () => recorder,
+                Config.NullLogger.Instance,
+                8, 4, 1, 1000, 100, 2000, 1);
+            var states = new ConcurrentQueue<DaqPersistenceStateChanged>();
+            coordinator.StateChanged += states.Enqueue;
+
+            coordinator.Enqueue(NewBatch("Dev2", 506));
+            WaitUntil(
+                () => states.Any(state =>
+                    state.State == DaqPersistenceState.Failed &&
+                    state.Code == "ActiveCycleDataLimitExceeded"),
+                2000,
+                "活动圈上限没有发布独立生命周期故障");
+            var failed = states.First(state =>
+                state.State == DaqPersistenceState.Failed &&
+                state.Code == "ActiveCycleDataLimitExceeded");
+            Assert(failed.EpbId == epbId, "活动圈上限事件丢失EPB标识");
+            Assert(failed.CycleNumber == cycle, "活动圈上限事件丢失圈号");
+            Assert(failed.RecordLimit == limit, "活动圈上限事件丢失样本限制");
+        }
+
         private static void Assert(bool condition, string message)
         {
             if (!condition) throw new InvalidOperationException(message);
@@ -129,6 +157,49 @@ namespace AdaptiveControlTests
                 => Thread.Sleep(_delayMs);
             public void WriteBatch(int epbId, DateTime[] tsUtc, double[] currents, double[] groupPressures)
                 => Thread.Sleep(_delayMs);
+            public void SealCycleWindow(int epbId, int cycleNumber, DateTime endUtc) { }
+            public void BeginCycle(int epbId, int cycleNumber, DateTime utcNow) { }
+            public int BeginLearningCycle(int epbId, DateTime utcNow) => -1;
+            public int GetCurrentCycleSampleCount(int epbId) => 0;
+            public void CompleteCycle(int epbId, int cycleNumber, int finalN, DateTime utcNow) { }
+            public void AlarmCycle(int epbId, int cycleNumber, int finalN, DateTime utcNow) { }
+            public AlarmCycleSnapshotEvidence SealAndExportAlarmCycle(int epbId, int cycleNumber, string exportDir, DateTime fallbackEndUtc) => new();
+            public AlarmCycleSnapshotEvidence SealAndExportCycle(int epbId, int cycleNumber, string exportDir, DateTime fallbackEndUtc, string status) => new();
+            public void AbortCycle(int epbId, int cycleNumber, int finalN, DateTime utcNow, string status) { }
+            public void FlushRecent(int epbId, int lastNCycles) { }
+            public int GetLastCycleNumber(int ch) => 0;
+            public void FlushRecentTo(int epbId, int lastNCycles, string exportDir, bool includeRunningCycle) { }
+        }
+
+        private sealed class ActiveCycleLimitRecorder : IEpbCycleRecorder, IBatchedEpbCycleRecorder
+        {
+            private readonly int _epbId;
+            private readonly int _cycle;
+            private readonly int _limit;
+
+            internal ActiveCycleLimitRecorder(int epbId, int cycle, int limit)
+            {
+                _epbId = epbId;
+                _cycle = cycle;
+                _limit = limit;
+            }
+
+            public void WriteDeviceBatch(
+                DateTime[] timestampsUtc,
+                IReadOnlyList<EpbChannelDiskBatch> channels,
+                int count)
+                => throw new ActiveCycleDataLimitExceededException(_epbId, _cycle, _limit);
+
+            public void WriteBatch(
+                int epbId,
+                DateTime[] timestampsUtc,
+                double[] currents,
+                double[] pressures,
+                int count)
+                => throw new ActiveCycleDataLimitExceededException(_epbId, _cycle, _limit);
+
+            public void WriteBatch(int epbId, DateTime[] tsUtc, double[] currents, double[] groupPressures)
+                => throw new ActiveCycleDataLimitExceededException(_epbId, _cycle, _limit);
             public void SealCycleWindow(int epbId, int cycleNumber, DateTime endUtc) { }
             public void BeginCycle(int epbId, int cycleNumber, DateTime utcNow) { }
             public int BeginLearningCycle(int epbId, DateTime utcNow) => -1;

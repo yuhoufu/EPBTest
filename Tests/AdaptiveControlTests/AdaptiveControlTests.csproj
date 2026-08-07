@@ -48,6 +48,7 @@
     <Compile Include="HydraulicGroupCoordinatorTests.cs" />
     <Compile Include="PowerSupplyCoordinatorTests.cs" />
     <Compile Include="ProjectLogStoreTests.cs" />
+    <Compile Include="RecoveryCoordinationTests.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="Fixtures\20260730_reverse_release_curves.csv">

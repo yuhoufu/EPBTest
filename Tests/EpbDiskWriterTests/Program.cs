@@ -41,6 +41,7 @@ namespace EpbDiskWriterTests
                 Run("正式圈保留策略不删除学习索引", FormalRetentionKeepsLearningRows);
                 Run("按通道圈号精确导出完整证据", ExactCompletedCycleExport);
                 Run("活动圈样本硬上限阻止覆盖", ActiveCycleSampleLimitStopsWrites);
+                Run("连续100次活动圈超限均原子作废且无running遗留", HundredActiveCycleLimitFaultsLeaveNoRunningRows);
                 Run("批量时间窗边界与重启恢复", BatchedWindowBoundarySurvivesRestart);
                 Run("设备多通道批次事务写入", DeviceBatchWritesMultipleChannels);
                 Run("Latest并发导出原子且无临时残留", ConcurrentLatestExportsAreAtomic);
@@ -372,6 +373,65 @@ namespace EpbDiskWriterTests
                 }
                 Assert(thrown, "达到活动圈样本硬上限后仍继续接收数据");
                 Assert(writer.GetCurrentCycleSampleCount(4) == 3, "越界批次写入了半成品样本");
+            });
+        }
+
+        private static void HundredActiveCycleLimitFaultsLeaveNoRunningRows()
+        {
+            WithRoot(root =>
+            {
+                const int epbId = 8;
+                const int limit = 1;
+                var policy = NewPolicy(root);
+                policy.MaxActiveCycleRecords = limit;
+                var start = DateTime.UtcNow;
+                using (var writer = new EpbDiskWriter(policy))
+                {
+                    for (var injection = 1; injection <= 100; injection++)
+                    {
+                        var cycleStart = start.AddSeconds(injection);
+                        writer.BeginCycle(epbId, injection, cycleStart);
+                        WriteSamples(writer, epbId, limit, cycleStart);
+                        try
+                        {
+                            writer.WriteSample(
+                                epbId,
+                                cycleStart.AddMilliseconds(10),
+                                1,
+                                100);
+                            throw new InvalidOperationException(
+                                $"第{injection}次故障注入未触发活动圈上限");
+                        }
+                        catch (ActiveCycleDataLimitExceededException ex)
+                        {
+                            Assert(ex.EpbId == epbId &&
+                                   ex.CycleNumber == injection &&
+                                   ex.Limit == limit,
+                                $"第{injection}次活动圈上限身份字段错误");
+                        }
+
+                        writer.AbortCycle(
+                            epbId,
+                            injection,
+                            writer.GetCurrentCycleSampleCount(epbId),
+                            cycleStart.AddMilliseconds(20),
+                            "AbortedBySoftwareRecovery");
+                        Assert(writer.GetCurrentCycleSampleCount(epbId) == 0,
+                            $"第{injection}次清场后仍有活动圈样本");
+                    }
+                }
+
+                using var connection = OpenIndex(policy);
+                using var command = connection.CreateCommand();
+                command.CommandText =
+                    "SELECT " +
+                    "SUM(CASE WHEN status='running' THEN 1 ELSE 0 END), " +
+                    "SUM(CASE WHEN status='AbortedBySoftwareRecovery' THEN 1 ELSE 0 END) " +
+                    "FROM epb_cycles WHERE epb_id=8";
+                using var reader = command.ExecuteReader();
+                Assert(reader.Read(), "100次活动圈故障注入没有生成索引证据");
+                Assert(reader.GetInt32(0) == 0, "100次活动圈故障注入后仍有running遗留");
+                Assert(reader.GetInt32(1) == 100, "100次活动圈故障未全部作废提交");
             });
         }
 
