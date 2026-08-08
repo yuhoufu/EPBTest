@@ -594,11 +594,12 @@ namespace Controller
                             cutoffAfterDelay: true,
                             cancellationToken: CancellationToken.None)
                         .ConfigureAwait(false);
-                    if (capture.IsMatched && capture.Peak.SampleCount > 0)
+                    if (capture.IsMatched && capture.IsCutoffCovered &&
+                        capture.Peak.SampleCount > 0)
                     {
                         fullRatePeakA = capture.Peak.MaxAmp;
-                        evidenceAgeMs =
-                            (DateTime.UtcNow - capture.Peak.LastSampleAt.ToUniversalTime()).TotalMilliseconds;
+                        evidenceAgeMs = (capture.LogicalCutoffUtc -
+                                         capture.Peak.LastSampleAt.ToUniversalTime()).TotalMilliseconds;
                     }
                 }
             }

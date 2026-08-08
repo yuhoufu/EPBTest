@@ -10,18 +10,25 @@ namespace Controller
     internal sealed class BatchStartLifecycleGate
     {
         private readonly SemaphoreSlim _gate = new SemaphoreSlim(1, 1);
+        private int _activeOperations;
+
+        public bool IsBusy => Volatile.Read(ref _activeOperations) != 0;
 
         public async Task<T> RunAsync<T>(Func<Task<T>> operation, CancellationToken token)
         {
             if (operation == null) throw new ArgumentNullException(nameof(operation));
-            await _gate.WaitAsync(token).ConfigureAwait(false);
+            Interlocked.Increment(ref _activeOperations);
+            var entered = false;
             try
             {
+                await _gate.WaitAsync(token).ConfigureAwait(false);
+                entered = true;
                 return await operation().ConfigureAwait(false);
             }
             finally
             {
-                _gate.Release();
+                if (entered) _gate.Release();
+                Interlocked.Decrement(ref _activeOperations);
             }
         }
 

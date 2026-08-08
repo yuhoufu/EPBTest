@@ -152,6 +152,47 @@ namespace Controller
         }
     }
 
+    public sealed class LogicalQuiescenceSnapshot
+    {
+        public bool BatchLifecycleBusy { get; set; }
+        public bool BatchSessionActive { get; set; }
+        public Guid ActiveBatchId { get; set; }
+        public int TimerCount { get; set; }
+        public int RunnerCount { get; set; }
+        public int StopCtsCount { get; set; }
+        public int CycleCtsCount { get; set; }
+        public int HydraulicParticipantCount { get; set; }
+        public int HydraulicLeaseCount { get; set; }
+        public int DaqRecoveryCount { get; set; }
+        public int SoftwareRecoveryCount { get; set; }
+        public int RecoveryOwnerCount { get; set; }
+        public HydraulicGenerationSnapshot[] HydraulicGroups { get; set; } =
+            Array.Empty<HydraulicGenerationSnapshot>();
+
+        public bool IsQuiescent => !BatchLifecycleBusy &&
+                                   !BatchSessionActive &&
+                                   ActiveBatchId == Guid.Empty &&
+                                   TimerCount == 0 && RunnerCount == 0 &&
+                                   StopCtsCount == 0 && CycleCtsCount == 0 &&
+                                   HydraulicParticipantCount == 0 &&
+                                   HydraulicLeaseCount == 0 &&
+                                   DaqRecoveryCount == 0 && SoftwareRecoveryCount == 0 &&
+                                   RecoveryOwnerCount == 0 &&
+                                   (HydraulicGroups ?? Array.Empty<HydraulicGenerationSnapshot>())
+                                   .All(group => group.IsHealthyForFreshStart);
+
+        public override string ToString()
+        {
+            return $"LifecycleBusy={BatchLifecycleBusy} Session={BatchSessionActive} " +
+                   $"Batch={ActiveBatchId:N} Timers={TimerCount} Runners={RunnerCount} " +
+                   $"StopCts={StopCtsCount} CycleCts={CycleCtsCount} " +
+                   $"Participants={HydraulicParticipantCount} Leases={HydraulicLeaseCount} " +
+                   $"DaqRecovery={DaqRecoveryCount} SoftwareRecovery={SoftwareRecoveryCount} " +
+                   $"RecoveryOwners={RecoveryOwnerCount} " +
+                   $"Hydraulics=[{string.Join(" | ", (HydraulicGroups ?? Array.Empty<HydraulicGenerationSnapshot>()).Select(x => x.ToString()))}]";
+        }
+    }
+
     public sealed class StopSafetyResult
     {
         public string CorrelationId { get; set; } = string.Empty;
@@ -165,9 +206,13 @@ namespace Controller
         public string MotorError { get; set; } = string.Empty;
         public string PowerError { get; set; } = string.Empty;
         public string PressureError { get; set; } = string.Empty;
+        public bool LogicalQuiescenceConfirmed { get; set; }
+        public string LogicalError { get; set; } = string.Empty;
+        public LogicalQuiescenceSnapshot LogicalState { get; set; }
 
         public bool CanReleaseAcquisition => MotorOffCommandSucceeded && PowerOffConfirmed;
         public bool FullyConfirmed => CanReleaseAcquisition && PressureSafeConfirmed;
+        public bool CanRestartInProcess => FullyConfirmed && LogicalQuiescenceConfirmed;
 
         public StopSafetyResult Clone(bool reused = false)
         {
@@ -183,7 +228,10 @@ namespace Controller
                 CompletedUtc = CompletedUtc,
                 MotorError = MotorError,
                 PowerError = PowerError,
-                PressureError = PressureError
+                PressureError = PressureError,
+                LogicalQuiescenceConfirmed = LogicalQuiescenceConfirmed,
+                LogicalError = LogicalError,
+                LogicalState = LogicalState
             };
         }
     }

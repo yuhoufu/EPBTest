@@ -84,6 +84,29 @@ namespace Controller
             return peakUtc <= decisionUtc.AddMilliseconds(Math.Max(0, timestampToleranceMs));
         }
 
+        internal static bool IsFullRatePeakCaptureValid(
+            PeakCaptureResult capture,
+            double maximumTailLagMs,
+            out double evidenceTailLagMs)
+        {
+            evidenceTailLagMs = double.PositiveInfinity;
+            if (capture == null || !capture.IsMatched || !capture.IsCutoffCovered)
+                return false;
+            var peak = capture.Peak;
+            if (peak.SampleCount <= 0 || peak.MaxAmp <= 0 ||
+                double.IsNaN(peak.MaxAmp) || double.IsInfinity(peak.MaxAmp) ||
+                capture.LogicalCutoffUtc == default ||
+                peak.LastSampleAt == default || peak.LastSampleAt == DateTime.MinValue)
+                return false;
+
+            var lastSampleUtc = peak.LastSampleAt.Kind == DateTimeKind.Utc
+                ? peak.LastSampleAt
+                : peak.LastSampleAt.ToUniversalTime();
+            evidenceTailLagMs = (capture.LogicalCutoffUtc - lastSampleUtc).TotalMilliseconds;
+            return evidenceTailLagMs >= 0 &&
+                   evidenceTailLagMs <= Math.Max(0, maximumTailLagMs);
+        }
+
         internal bool ResetTransientRunState()
         {
             lock (_adaptiveGate)
@@ -986,11 +1009,12 @@ namespace Controller
                                 cutoffAfterDelay: false,
                                 cancellationToken: CancellationToken.None)
                             .ConfigureAwait(false);
-                        if (capture.IsMatched && capture.Peak.SampleCount > 0)
+                        if (capture.IsMatched && capture.IsCutoffCovered &&
+                            capture.Peak.SampleCount > 0)
                         {
                             fullRatePeakA = capture.Peak.MaxAmp;
-                            evidenceAgeMs =
-                                (DateTime.UtcNow - capture.Peak.LastSampleAt.ToUniversalTime()).TotalMilliseconds;
+                            evidenceAgeMs = (capture.LogicalCutoffUtc -
+                                             capture.Peak.LastSampleAt.ToUniversalTime()).TotalMilliseconds;
                         }
                     }
                 }
@@ -1165,21 +1189,19 @@ namespace Controller
                                 cancellationToken: token)
                             .ConfigureAwait(false);
                         var peak = captureResult.Peak;
-                        var peakEvidenceAgeMs = peak.LastSampleAt == default
-                            ? double.PositiveInfinity
-                            : (DateTime.UtcNow - peak.LastSampleAt.ToUniversalTime()).TotalMilliseconds;
-                        peakCaptureValid = captureResult.IsMatched &&
-                                           peak.SampleCount > 0 && peak.MaxAmp > 0 &&
-                                           !double.IsNaN(peak.MaxAmp) && !double.IsInfinity(peak.MaxAmp) &&
-                                           peakEvidenceAgeMs >= 0 &&
-                                           peakEvidenceAgeMs <=
-                                           _programSafetySettings.PeakEvidenceMaximumLagMs;
+                        peakCaptureValid = IsFullRatePeakCaptureValid(
+                            captureResult,
+                            _programSafetySettings.PeakEvidenceMaximumLagMs,
+                            out var peakEvidenceTailLagMs);
                         if (!captureResult.IsMatched)
                             peakCaptureFailure = captureResult.QualityReason;
                         else if (!peakCaptureValid)
                             peakCaptureFailure =
                                 $"FullRatePeakInvalid Samples={peak.SampleCount} " +
-                                $"Peak={peak.MaxAmp:F3}A Age={peakEvidenceAgeMs:F1}ms " +
+                                $"Peak={peak.MaxAmp:F3}A TailLag={peakEvidenceTailLagMs:F1}ms " +
+                                $"Covered={captureResult.IsCutoffCovered} " +
+                                $"Drain={captureResult.DrainElapsedMs:F1}ms " +
+                                $"Quality={captureResult.QualityReason} " +
                                 $"Limit={_programSafetySettings.PeakEvidenceMaximumLagMs:F1}ms";
                         else
                         {
@@ -1246,8 +1268,11 @@ namespace Controller
                     await hydraulicReleaseTask.ConfigureAwait(false);
                     DisarmAdaptiveMonitoring();
                     var reason = "PeakCaptureInvalid " + peakCaptureFailure;
-                    NotifyAlarmSafely("AdaptiveHardFault " + reason);
-                    return EpbCycleOutcome.HardFault(EpbCurrentStage.ClampReached, reason);
+                    _log?.Warn(
+                        $"EPB[{_channel}] 全速率峰值证据不完整；当前圈作废并进入软件恢复，" +
+                        $"不确认电流硬故障。{reason}",
+                        "EPB");
+                    return EpbCycleOutcome.SoftwareRecovery(EpbCurrentStage.ClampReached, reason);
                 }
 
                 var mismatchStreak =

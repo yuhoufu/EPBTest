@@ -174,12 +174,18 @@ namespace Controller
             // 安全停止不能因开始按钮调用方取消而半途退出；token 只控制调用方等待旧启动尾声。
             var safety = await StopAllAsync(context, CancellationToken.None).ConfigureAwait(false);
             await _batchLifecycleGate.JoinAsync(token).ConfigureAwait(false);
+            safety = await FinalizeLogicalQuiescenceForRestartAsync(
+                    safety,
+                    "PrepareForFreshRestart",
+                    token)
+                .ConfigureAwait(false);
 
-            if (!safety.CanReleaseAcquisition)
+            if (!safety.CanRestartInProcess)
             {
                 throw new InvalidOperationException(
-                    "重新开始清场未确认电机DO及程控电源均已关闭。" +
-                    $" Motor={safety.MotorError}; Power={safety.PowerError}");
+                    "重新开始清场未通过物理安全与软件逻辑不变量。" +
+                    $" Motor={safety.MotorError}; Power={safety.PowerError}; " +
+                    $"Pressure={safety.PressureError}; Logical={safety.LogicalError}");
             }
 
             _log?.Info(
@@ -229,6 +235,8 @@ namespace Controller
                 _activeBatchId = Guid.NewGuid();
                 BeginDaqIncidentRun(_activeBatchId, selected);
                 InvalidateStopSafetyCache();
+                await EnsureHydraulicCoordinatorHealthyBeforeStartAsync(selected, sessionToken)
+                    .ConfigureAwait(false);
                 ResetTransientFaultStateForRestart(
                     selected,
                     reuseStableProfiles ? "GracefulCheckpointResume" : "FreshBatchStart");
@@ -434,6 +442,9 @@ namespace Controller
             }
             catch (Exception ex)
             {
+                var failedRunId = _activeBatchId == Guid.Empty ? Guid.NewGuid() : _activeBatchId;
+                var circuitFailure = FindInnerException<SoftwareSelfHealingExhaustedException>(ex);
+                var circuitOpen = circuitFailure != null;
                 var expectedCancellation = IsExpectedBatchCancellation(
                     ex,
                     sessionToken.IsCancellationRequested,
@@ -472,7 +483,9 @@ namespace Controller
                     await StopAllAsync(
                             new StopContext
                             {
-                                Source = StopSource.StartupRollback,
+                                Source = circuitOpen
+                                    ? StopSource.SystemFault
+                                    : StopSource.StartupRollback,
                                 Reason = ex.Message,
                                 Initiator = nameof(StartBatchSynchronizedWithResultAsync),
                                 CorrelationId = _activeBatchId == Guid.Empty
@@ -484,6 +497,30 @@ namespace Controller
                         .ConfigureAwait(false);
                 }
                 catch { }
+
+                if (circuitOpen)
+                {
+                    await ExportSoftwareRecoveryCircuitDiagnosticOnceAsync(
+                            circuitFailure,
+                            selected)
+                        .ConfigureAwait(false);
+                    var fault = new ControlFault(
+                        "SoftwareRecoveryCircuitOpen",
+                        ex.Message,
+                        FaultScope.Global,
+                        selected,
+                        null,
+                        DateTime.UtcNow,
+                        failedRunId,
+                        FaultClassification.SystemFault,
+                        FaultRecoveryPolicy.UnattendedBatchRecycle);
+                    NonCriticalObserver.Invoke(
+                        SystemFaultRaised,
+                        fault,
+                        observerEx => _log?.Warn(
+                            $"无人值守整批恢复观察者异常：{observerEx.Message}",
+                            "EPB"));
+                }
 
                 throw;
             }
@@ -551,10 +588,49 @@ namespace Controller
                         correlationId: _activeBatchId,
                         allowTerminalReset: false);
                 _log?.Warn(
-                    $"DAQ启动预检未通过，按软件瞬态持续自愈，不标记启动受阻。" +
+                    $"DAQ启动预检未通过，按软件瞬态有界自愈。" +
                     $"Attempt={attempt} DelayMs={delayMs}；{details}",
                     "AI");
+                if (attempt >= 3)
+                    throw new SoftwareSelfHealingExhaustedException(
+                        "DaqStartPreflight",
+                        attempt,
+                        new InvalidOperationException(details));
                 await Task.Delay(delayMs, token).ConfigureAwait(false);
+            }
+        }
+
+        private async Task EnsureHydraulicCoordinatorHealthyBeforeStartAsync(
+            int[] selected,
+            CancellationToken token)
+        {
+            if (_hydCoordinator == null) return;
+            var hydraulicIds = (_cfg.Test?.Hydraulics ?? new List<HydraulicItem>())
+                .Where(item => item?.Enabled == true)
+                .Select(item => item.Id)
+                .Distinct()
+                .OrderBy(id => id)
+                .ToArray();
+            foreach (var hydraulicId in hydraulicIds)
+            {
+                token.ThrowIfCancellationRequested();
+                var snapshot = _hydCoordinator.ProbeGroupHealth(hydraulicId);
+                if (!snapshot.IsHealthyForFreshStart)
+                {
+                    _log.Warn(
+                        $"批次动作前发现液压组逻辑状态不健康，执行一次安全重建。{snapshot}",
+                        "液压协调");
+                    snapshot = await _hydCoordinator.RebuildGroupAsync(
+                            hydraulicId,
+                            "BatchStartPreflight",
+                            timeoutMs: 10000,
+                            token)
+                        .ConfigureAwait(false);
+                }
+                if (!snapshot.IsHealthyForFreshStart)
+                    throw new InvalidOperationException(
+                        $"HydraulicCoordinatorStartBlocked {snapshot}; " +
+                        $"Selected=[{string.Join(",", selected ?? Array.Empty<int>())}]");
             }
         }
 
@@ -647,9 +723,14 @@ namespace Controller
                             correlationId: _activeBatchId,
                             allowTerminalReset: false);
                     _log?.Warn(
-                        $"程控电源启动预检未通过，无新鲜保护触发证据，按软件瞬态持续自愈。" +
+                        $"程控电源启动预检未通过，无新鲜保护触发证据，按软件瞬态有界自愈。" +
                         $"Attempt={attempt} DelayMs={delayMs} Error={ex.Message}",
                         "程控电源");
+                    if (attempt >= 3)
+                        throw new SoftwareSelfHealingExhaustedException(
+                            "PowerStartPreflight",
+                            attempt,
+                            ex);
                     await Task.Delay(delayMs, token).ConfigureAwait(false);
                 }
             }
@@ -662,6 +743,48 @@ namespace Controller
         {
             return exception is OperationCanceledException &&
                    (sessionCancellationRequested || externalCancellationRequested);
+        }
+
+        private static TException FindInnerException<TException>(Exception exception)
+            where TException : Exception
+        {
+            for (var current = exception; current != null; current = current.InnerException)
+            {
+                if (current is TException match) return match;
+            }
+
+            return null;
+        }
+
+        private async Task ExportSoftwareRecoveryCircuitDiagnosticOnceAsync(
+            SoftwareSelfHealingExhaustedException failure,
+            int[] affectedChannels)
+        {
+            if (failure == null) return;
+            var channels = (affectedChannels ?? Array.Empty<int>())
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
+            var fingerprint = $"{failure.Stage}|{failure.InnerException?.GetType().FullName}|" +
+                              $"{failure.InnerException?.Message}|{string.Join(",", channels)}";
+            if (!_softwareRecoveryCircuitDiagnostics.TryAdd(fingerprint, 0)) return;
+
+            var channel = channels.FirstOrDefault();
+            if (channel <= 0) return;
+            try
+            {
+                await ExportAlarmSnapshotAsync(
+                        channel,
+                        "SoftwareRecoveryCircuitOpen " + failure.Message,
+                        DateTime.UtcNow)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _log?.Warn(
+                    $"软件恢复熔断完整诊断快照导出失败（本指纹不重复导出）：{ex.Message}",
+                    "落盘");
+            }
         }
 
         private CancellationToken BeginBatchSession(CancellationToken externalToken)
@@ -884,6 +1007,10 @@ namespace Controller
                             var recorder = Recorder;
                             if (!TryBeginFormalCycle(recorder, ch, cycleNumber, DateTime.UtcNow))
                             {
+                                await AbortHydraulicLeaseForChannelAsync(
+                                        ch,
+                                        "FormalCyclePersistenceBoundaryRejected")
+                                    .ConfigureAwait(false);
                                 ReleaseCyclePauseCts(ch, cyclePauseCts);
                                 return false;
                             }
@@ -908,6 +1035,15 @@ namespace Controller
                             catch
                             {
                                 ok = false;
+                            }
+                            finally
+                            {
+                                if (_hydraulicLeaseByChannel.TryGetValue(ch, out var activeScope) &&
+                                    !activeScope.IsClosed)
+                                    await AbortHydraulicLeaseForChannelAsync(
+                                            ch,
+                                            "FormalCycleAttemptFinalizer")
+                                        .ConfigureAwait(false);
                             }
                             var controlSucceeded = IsFormalControlSucceeded(
                                 ok,
@@ -1239,6 +1375,8 @@ namespace Controller
                                     // 锚点异常也必须在本组/本通道内收口，不能越过 WhenAll 触发整批启动回滚。
                                     var lease = await anchorTask.ConfigureAwait(false);
                                     channelToken.ThrowIfCancellationRequested();
+                                    try
+                                    {
 
                                     // ② 液压资格完成后整组共享同一执行窗口。
                                     // 禁止各通道按自己的原始相位独立滚动，否则资格时刻恰好落在
@@ -1278,6 +1416,16 @@ namespace Controller
                                             learningRunId,
                                             channelToken)
                                         .ConfigureAwait(false);
+                                    }
+                                    finally
+                                    {
+                                        if (_hydraulicLeaseByChannel.TryGetValue(ch, out var phaseScope) &&
+                                            !phaseScope.IsClosed)
+                                            await AbortHydraulicLeaseForChannelAsync(
+                                                    ch,
+                                                    "LearningPhaseWorkFinalizer")
+                                                .ConfigureAwait(false);
+                                    }
                                 },
                                 phaseToken,
                                 (ex, channelCanceled) =>
@@ -1398,6 +1546,10 @@ namespace Controller
                                         .ConfigureAwait(false);
                                     learningCycleNumber = 0;
                                     runner.RestoreAdaptiveProfile(modelBeforeLogicalCycle);
+                                    await AbortHydraulicLeaseForChannelAsync(
+                                            channel,
+                                            "LearningDaqStaleBeforeRecoveryGeneration")
+                                        .ConfigureAwait(false);
                                     await WaitForDaqRecoveryAsync(channel, attemptToken).ConfigureAwait(false);
                                     await EnterHydraulicStartupPhaseWithSelfHealingAsync(
                                             new HydraulicGenerationKey(
@@ -1515,13 +1667,23 @@ namespace Controller
                             learningCycleNumber = 0;
                             throw;
                         }
+                        finally
+                        {
+                            if (_hydraulicLeaseByChannel.TryGetValue(channel, out var activeScope) &&
+                                !activeScope.IsClosed)
+                                await AbortHydraulicLeaseForChannelAsync(
+                                        channel,
+                                        "LearningAttemptFinalizer")
+                                    .ConfigureAwait(false);
+                        }
                     },
-                    (attempt, ex, attemptToken) =>
+                    async (attempt, ex, attemptToken) =>
                     {
                         runner.RestoreAdaptiveProfile(modelBeforeLogicalCycle);
-                        RequireSoftwareRecoveryOutputOff(
-                            channel,
-                            "LearningPersistenceSelfHealing");
+                        await AbortHydraulicLeaseForChannelAsync(
+                                channel,
+                                "LearningPersistenceSelfHealing")
+                            .ConfigureAwait(false);
                         PublishChannelRuntimeState(
                             channel,
                             ChannelRuntimeState.Recovering,
@@ -1535,7 +1697,6 @@ namespace Controller
                             $"Attempt={attempt} DelayMs={GetDaqSelfMaintenanceDelayMs(attempt)} " +
                             $"Reason={ex.Message}",
                             "落盘");
-                        return Task.CompletedTask;
                     },
                     GetDaqSelfMaintenanceDelayMs,
                     token)
@@ -1935,10 +2096,44 @@ namespace Controller
             if (channelList.Length == 0)
                 return null;
 
+            // 旧作用域必须在申请新代次 Gate 前完成归还，否则泄漏代次会让新申请
+            // 永久等待在旧 Gate 上，连后续重建机会也拿不到。
+            foreach (var ch in channelList)
+            {
+                if (!_hydraulicLeaseByChannel.TryGetValue(ch, out var existing) ||
+                    (!existing.IsClosed && existing.Key.Equals(generationKey)))
+                    continue;
+                await AbortHydraulicLeaseForChannelAsync(
+                        ch,
+                        "HydraulicGenerationBeforeEnter")
+                    .ConfigureAwait(false);
+            }
+
             var lease = await _hydCoordinator.EnterGenerationAsync(generationKey, channelList, token)
                 .ConfigureAwait(false);
             foreach (var ch in channelList)
-                _hydraulicLeaseByChannel[ch] = lease;
+            {
+                if (_hydraulicLeaseByChannel.TryGetValue(ch, out var existing))
+                {
+                    if (!existing.IsClosed &&
+                        existing.Key.Equals(lease.Key) &&
+                        existing.CoordinatorEpoch == lease.CoordinatorEpoch)
+                        continue;
+                    await AbortHydraulicLeaseForChannelAsync(
+                            ch,
+                            "HydraulicGenerationScopeReplacement")
+                        .ConfigureAwait(false);
+                }
+
+                var scope = _hydCoordinator.CreateChannelScope(lease, ch);
+                if (!_hydraulicLeaseByChannel.TryAdd(ch, scope))
+                {
+                    try { await scope.AbortAsync("HydraulicScopeRegistrationRace").ConfigureAwait(false); }
+                    catch { }
+                    throw new InvalidOperationException(
+                        $"HydraulicScopeRegistrationRace EPB={ch} Key={lease.Key}");
+                }
+            }
             NonCriticalObserver.Invoke(
                 PressureQualificationChanged,
                 lease.Qualification,
@@ -2019,6 +2214,11 @@ namespace Controller
                         $"液压组{initialKey.HydraulicId}启动/学习代次软件异常，" +
                         $"{delayMs}ms后创建全新Recovery代次。Attempt={attempt} Error={ex.Message}",
                         "液压协调");
+                    if (attempt >= 3)
+                        throw new SoftwareSelfHealingExhaustedException(
+                            $"HydraulicGeneration:{initialKey.HydraulicId}",
+                            attempt,
+                            ex);
                     await Task.Delay(delayMs, token).ConfigureAwait(false);
                     key = new HydraulicGenerationKey(
                         initialKey.TestRunId,
@@ -2032,6 +2232,7 @@ namespace Controller
         internal static bool IsHydraulicSoftwareRecoveryCandidate(Exception exception)
         {
             if (exception is HydraulicBarrierTimeoutException) return true;
+            if (exception is HydraulicCoordinatorRebuildingException) return true;
             if (exception is HydraulicBuildTimeoutException buildTimeout)
                 return HydraulicGroupCoordinator.ClassifyFault(buildTimeout) !=
                        FaultClassification.HardwareConfirmed;

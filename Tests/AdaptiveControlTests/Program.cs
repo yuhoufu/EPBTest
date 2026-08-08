@@ -39,6 +39,9 @@ namespace AdaptiveControlTests
                 {
                     _passed += RecoveryCoordinationTests.RunAll();
                     Run("峰值偏差只比较同一证据时间窗", PeakEvidenceMismatchRequiresComparableWindow);
+                    Run("峰值排空墙钟等待不计入证据尾差", PeakDrainDelayDoesNotInvalidateEvidence);
+                    Run("六通道并发封口不产生墙钟峰值误判", SixChannelPeakDrainIsConsistent);
+                    Run("软件自愈连续三次无进展后熔断", SoftwareSelfHealingStopsAfterThreeAttempts);
                     Run("人工停止可覆盖旧启动受阻显示", ManualStopReplacesStartBlocked);
                     Console.WriteLine($"PASS {_passed}/{_passed}");
                     return 0;
@@ -101,6 +104,9 @@ namespace AdaptiveControlTests
                 Run("定时器自身取消不记录ERROR", TimerOwnedCancellationIsNotError);
                 Run("峰值证据连续3圈且有效圈清零", PeakEvidenceMismatchRequiresThreeCycles);
                 Run("峰值偏差只比较同一证据时间窗", PeakEvidenceMismatchRequiresComparableWindow);
+                Run("峰值排空墙钟等待不计入证据尾差", PeakDrainDelayDoesNotInvalidateEvidence);
+                Run("六通道并发封口不产生墙钟峰值误判", SixChannelPeakDrainIsConsistent);
+                Run("软件自愈连续三次无进展后熔断", SoftwareSelfHealingStopsAfterThreeAttempts);
                 Run("报警界面提示不暴露英文故障码", AlarmMessagesAreLocalized);
                 Run("UI配置并发保存保持有效XML", ConcurrentUiConfigSaveIsAtomic);
                 Run("UI勾选保存防抖并保留最终状态", UiConfigUpdateIsDebounced);
@@ -1324,7 +1330,7 @@ namespace AdaptiveControlTests
                 var path = settings.SaveEffectiveSnapshot(directory, NullLogger.Instance);
                 var xml = File.ReadAllText(path);
                 Assert(
-                    xml.Contains("policyVersion=\"2026.08.04.1\"") &&
+                    xml.Contains($"policyVersion=\"{EpbProgramSafetySettings.SafetyPolicyVersion}\"") &&
                     xml.Contains("key=\"EpbForwardProgressConfirmMs\" value=\"1200\" source=\"appSettings\"") &&
                     xml.Contains("key=\"EpbForwardProgressDeadlineMs\" value=\"6000\" source=\"appSettings\"") &&
                     xml.Contains("key=\"EpbReverseProgressConfirmMs\" value=\"200\" source=\"compiled-default\"") &&
@@ -2331,6 +2337,102 @@ namespace AdaptiveControlTests
                     DateTime.MinValue,
                     evidenceThrough),
                 "缺少快速证据截止时间时仍参与偏差硬故障计数");
+        }
+
+        private static void PeakDrainDelayDoesNotInvalidateEvidence()
+        {
+            var cutoffUtc = DateTime.UtcNow;
+            var capture = new IO.NI.PeakCaptureResult
+            {
+                IsMatched = true,
+                IsCutoffCovered = true,
+                LogicalCutoffUtc = cutoffUtc,
+                ProcessedThroughUtc = cutoffUtc.AddMilliseconds(1),
+                DrainCompletedUtc = cutoffUtc.AddMilliseconds(110),
+                DrainElapsedMs = 110,
+                QualityReason = "Qualified",
+                Peak = new IO.NI.TwoDeviceAiAcquirer.EpbCurrentPeak
+                {
+                    Channel = 4,
+                    MaxAmp = 22.5,
+                    SampleCount = 1000,
+                    LastSampleAt = cutoffUtc.AddMilliseconds(-0.5).ToLocalTime()
+                }
+            };
+
+            Thread.Sleep(110);
+            Assert(
+                EpbCycleRunner.IsFullRatePeakCaptureValid(capture, 100, out var tailLagMs),
+                "合法峰值因封口后的真实等待被误判为陈旧。 ");
+            Assert(tailLagMs >= 0 && tailLagMs < 2,
+                $"峰值尾差未使用逻辑截止口径：{tailLagMs:F3}ms");
+
+            capture.IsCutoffCovered = false;
+            Assert(
+                !EpbCycleRunner.IsFullRatePeakCaptureValid(capture, 100, out _),
+                "全速率水印未覆盖截止点时仍被判为有效证据。 ");
+        }
+
+        private static void SixChannelPeakDrainIsConsistent()
+        {
+            var checks = Enumerable.Range(1, 6).Select(async channel =>
+            {
+                var cutoffUtc = DateTime.UtcNow;
+                var capture = new IO.NI.PeakCaptureResult
+                {
+                    IsMatched = true,
+                    IsCutoffCovered = true,
+                    LogicalCutoffUtc = cutoffUtc,
+                    ProcessedThroughUtc = cutoffUtc.AddMilliseconds(0.5),
+                    DrainCompletedUtc = cutoffUtc.AddMilliseconds(102 + channel),
+                    DrainElapsedMs = 102 + channel,
+                    QualityReason = "Qualified",
+                    Peak = new IO.NI.TwoDeviceAiAcquirer.EpbCurrentPeak
+                    {
+                        Channel = channel,
+                        MaxAmp = 20 + channel,
+                        SampleCount = 400,
+                        LastSampleAt = cutoffUtc.AddMilliseconds(-0.5).ToLocalTime()
+                    }
+                };
+                await Task.Delay(102 + channel).ConfigureAwait(false);
+                return EpbCycleRunner.IsFullRatePeakCaptureValid(capture, 100, out _);
+            }).ToArray();
+
+            var valid = Task.WhenAll(checks).GetAwaiter().GetResult();
+            Assert(valid.All(value => value),
+                "六通道合法截止窗在并发排空后出现 FullRatePeakInvalid。 ");
+        }
+
+        private static void SoftwareSelfHealingStopsAfterThreeAttempts()
+        {
+            var attempts = 0;
+            var cleanups = 0;
+            try
+            {
+                SoftwareSelfHealingLoop.RunAsync(
+                        (attempt, token) =>
+                        {
+                            Interlocked.Increment(ref attempts);
+                            throw new SoftwareSelfHealingRetryException("same-state");
+                        },
+                        (attempt, ex, token) =>
+                        {
+                            Interlocked.Increment(ref cleanups);
+                            return Task.CompletedTask;
+                        },
+                        _ => 0,
+                        CancellationToken.None)
+                    .GetAwaiter()
+                    .GetResult();
+                throw new InvalidOperationException("自愈循环未在第三次相同失败后熔断。 ");
+            }
+            catch (SoftwareSelfHealingExhaustedException ex)
+            {
+                Assert(ex.Attempts == 3, "熔断异常未记录三次尝试。 ");
+                Assert(attempts == 3 && cleanups == 3,
+                    $"熔断次数不正确 Attempts={attempts} Cleanups={cleanups}");
+            }
         }
 
         private static void AlarmMessagesAreLocalized()

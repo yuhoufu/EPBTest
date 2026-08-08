@@ -8,7 +8,7 @@ exit /b %errorlevel%
 param([string]$RawArgs)
 
 $ErrorActionPreference = 'Stop'
-$ScriptVersion = '2.11.0.16'
+$ScriptVersion = '2.11.0.17'
 $ScanOnly = ($RawArgs -split '\s+') -contains '/scanonly'
 $ProjectRoot = [IO.Path]::GetFullPath((Split-Path -Parent $env:EPB_CLEANUP_SELF)).TrimEnd('\')
 $LogDirectory = Join-Path $ProjectRoot 'log'

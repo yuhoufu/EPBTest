@@ -31,7 +31,8 @@ namespace Controller
     {
         Recoverable = 0,
         NonRecoverable = 1,
-        NonRecoverableDisableChannel = 2
+        NonRecoverableDisableChannel = 2,
+        UnattendedBatchRecycle = 3
     }
 
     public sealed class ControlFault
@@ -111,13 +112,15 @@ namespace Controller
             IReadOnlyList<int> members,
             PressureQualification qualification,
             DateTime actuationAnchorUtc,
-            Task completion)
+            Task completion,
+            long coordinatorEpoch)
         {
             Key = key;
             Members = members;
             Qualification = qualification;
             ActuationAnchorUtc = actuationAnchorUtc;
             Completion = completion ?? Task.CompletedTask;
+            CoordinatorEpoch = coordinatorEpoch;
         }
 
         public HydraulicGenerationKey Key { get; }
@@ -128,7 +131,96 @@ namespace Controller
         /// 防止多个等待者分别以自己的恢复时刻计算相位而重新聚拢。
         /// </summary>
         public DateTime ActuationAnchorUtc { get; }
+        public long CoordinatorEpoch { get; }
         internal Task Completion { get; }
+    }
+
+    public sealed class HydraulicGenerationSnapshot
+    {
+        public int HydraulicId { get; set; }
+        public long CoordinatorEpoch { get; set; }
+        public bool AdmissionOpen { get; set; }
+        public int ActiveGenerationCount { get; set; }
+        public int ActiveOperationCount { get; set; }
+        public int ActiveLeaseCount { get; set; }
+        public bool GenerationGateAvailable { get; set; }
+        public int RebuildCount { get; set; }
+        public string[] ActiveGenerationKeys { get; set; } = Array.Empty<string>();
+        public int[] PendingMembers { get; set; } = Array.Empty<int>();
+        public bool IsHealthyForFreshStart => AdmissionOpen &&
+                                              ActiveGenerationCount == 0 &&
+                                              ActiveOperationCount == 0 &&
+                                              ActiveLeaseCount == 0 &&
+                                              GenerationGateAvailable;
+
+        public override string ToString()
+        {
+            return $"Hydraulic={HydraulicId} Epoch={CoordinatorEpoch} " +
+                   $"Admission={(AdmissionOpen ? "Open" : "Closed")} " +
+                   $"Generations={ActiveGenerationCount} Operations={ActiveOperationCount} " +
+                   $"Leases={ActiveLeaseCount} " +
+                   $"Gate={(GenerationGateAvailable ? "Available" : "Busy")} " +
+                   $"Pending=[{string.Join(",", PendingMembers ?? Array.Empty<int>())}] " +
+                   $"Rebuilds={RebuildCount}";
+        }
+    }
+
+    public sealed class HydraulicChannelLeaseScope
+    {
+        private readonly HydraulicGroupCoordinator _owner;
+        private readonly object _gate = new object();
+        private Task _closeTask;
+        private int _closeKind;
+
+        internal HydraulicChannelLeaseScope(
+            HydraulicGroupCoordinator owner,
+            HydraulicCycleLease lease,
+            int channel)
+        {
+            _owner = owner ?? throw new ArgumentNullException(nameof(owner));
+            Lease = lease ?? throw new ArgumentNullException(nameof(lease));
+            Channel = channel;
+        }
+
+        public HydraulicCycleLease Lease { get; }
+        public int Channel { get; }
+        public HydraulicGenerationKey Key => Lease.Key;
+        public long CoordinatorEpoch => Lease.CoordinatorEpoch;
+        public bool IsClosed => Volatile.Read(ref _closeKind) != 0;
+        public Task Completion
+        {
+            get
+            {
+                lock (_gate) return _closeTask ?? Task.CompletedTask;
+            }
+        }
+
+        public Task CompleteAsync()
+        {
+            return CloseAsync(aborted: false, reason: null);
+        }
+
+        public Task AbortAsync(string reason)
+        {
+            return CloseAsync(aborted: true, reason: reason);
+        }
+
+        private Task CloseAsync(bool aborted, string reason)
+        {
+            lock (_gate)
+            {
+                if (_closeTask != null) return _closeTask;
+                _closeKind = aborted ? 2 : 1;
+                _closeTask = _owner.CloseChannelScopeAsync(this, aborted, reason);
+                return _closeTask;
+            }
+        }
+    }
+
+    internal sealed class HydraulicCoordinatorRebuildingException : InvalidOperationException
+    {
+        public HydraulicCoordinatorRebuildingException(int hydraulicId)
+            : base($"HydraulicCoordinatorRebuilding Hydraulic={hydraulicId}") { }
     }
 
     internal sealed class HydraulicReleaseTimeoutException : TimeoutException
@@ -222,6 +314,12 @@ namespace Controller
         private readonly ConcurrentDictionary<int, int> _buildFailureStreaks = new();
         private readonly ConcurrentDictionary<int, int> _holdFailureStreaks = new();
         private readonly ConcurrentDictionary<int, SemaphoreSlim> _generationGates = new();
+        private readonly ConcurrentDictionary<int, long> _coordinatorEpochs = new();
+        private readonly ConcurrentDictionary<int, int> _groupRebuildFlags = new();
+        private readonly ConcurrentDictionary<int, int> _activeOperationsByGroup = new();
+        private readonly ConcurrentDictionary<int, int> _groupRebuildCounts = new();
+        private readonly ConcurrentDictionary<int, SemaphoreSlim> _groupRebuildGates = new();
+        private readonly ConcurrentDictionary<HydraulicChannelLeaseScope, byte> _activeLeaseScopes = new();
 
         public event Action<ControlFault> FaultRaised;
 
@@ -343,6 +441,11 @@ namespace Controller
             CancellationToken token)
         {
             if (key == null) throw new ArgumentNullException(nameof(key));
+            if (_groupRebuildFlags.ContainsKey(key.HydraulicId))
+                throw new HydraulicCoordinatorRebuildingException(key.HydraulicId);
+            IncrementActiveOperation(key.HydraulicId);
+            try
+            {
             var members = (participants ?? Array.Empty<int>())
                 .Where(ch => _channel2Hyd.TryGetValue(ch, out var h) && h == key.HydraulicId)
                 .Distinct()
@@ -351,7 +454,8 @@ namespace Controller
             if (members.Length == 0)
                 throw new InvalidOperationException($"Hydraulic={key.HydraulicId} 代次没有有效参与成员。");
 
-            var state = _generations.GetOrAdd(key, _ => new GenerationState(key, members));
+            var epoch = _coordinatorEpochs.GetOrAdd(key.HydraulicId, 1);
+            var state = _generations.GetOrAdd(key, _ => new GenerationState(key, members, epoch));
             if (!state.Members.SequenceEqual(members))
                 throw new InvalidOperationException(
                     $"Hydraulic generation members are immutable. Key={key} " +
@@ -369,15 +473,32 @@ namespace Controller
             }
 
             return await initialize.ConfigureAwait(false);
+            }
+            finally
+            {
+                DecrementActiveOperation(key.HydraulicId);
+            }
         }
 
         public async Task MarkVoltageReleaseAsync(HydraulicCycleLease lease, int epbChannel)
         {
             if (lease == null) return;
+            IncrementActiveOperation(lease.Key.HydraulicId);
+            try
+            {
             if (!_generations.TryGetValue(lease.Key, out var state))
             {
                 // 代次从活动表清理后，旧租约仍必须观察到它所属代次的
                 // 终态。成功则幂等返回，失败则重新抛出原异常，不能因清理而吞掉故障。
+                await lease.Completion.ConfigureAwait(false);
+                return;
+            }
+            if (state.CoordinatorEpoch != lease.CoordinatorEpoch)
+            {
+                _log.Warn(
+                    $"忽略迟到旧液压租约：EPB={epbChannel} Key={lease.Key} " +
+                    $"LeaseEpoch={lease.CoordinatorEpoch} CurrentEpoch={state.CoordinatorEpoch}",
+                    "液压协调");
                 await lease.Completion.ConfigureAwait(false);
                 return;
             }
@@ -447,6 +568,60 @@ namespace Controller
             // 误报成 Pending=[] 的屏障超时。
             await state.BarrierReached.Task.ConfigureAwait(false);
             await state.Completion.Task.ConfigureAwait(false);
+            }
+            finally
+            {
+                DecrementActiveOperation(lease.Key.HydraulicId);
+            }
+        }
+
+        public HydraulicChannelLeaseScope CreateChannelScope(
+            HydraulicCycleLease lease,
+            int epbChannel)
+        {
+            if (lease == null) throw new ArgumentNullException(nameof(lease));
+            if (!lease.Members.Contains(epbChannel))
+                throw new InvalidOperationException(
+                    $"EPB={epbChannel} 不属于液压代次 {lease.Key}。 ");
+            var scope = new HydraulicChannelLeaseScope(this, lease, epbChannel);
+            if (!_activeLeaseScopes.TryAdd(scope, 0))
+                throw new InvalidOperationException(
+                    $"HydraulicLeaseScopeRegisterFailed EPB={epbChannel} Key={lease.Key}");
+            return scope;
+        }
+
+        internal async Task CloseChannelScopeAsync(
+            HydraulicChannelLeaseScope scope,
+            bool aborted,
+            string reason)
+        {
+            if (scope == null) return;
+            try
+            {
+                if (aborted)
+                    await AbortGenerationMemberAsync(scope.Lease, scope.Channel, reason)
+                        .ConfigureAwait(false);
+                else
+                    await MarkVoltageReleaseAsync(scope.Lease, scope.Channel)
+                        .ConfigureAwait(false);
+            }
+            finally
+            {
+                _activeLeaseScopes.TryRemove(scope, out _);
+            }
+        }
+
+        public Task AbortGenerationMemberAsync(
+            HydraulicCycleLease lease,
+            int epbChannel,
+            string reason)
+        {
+            if (lease == null) return Task.CompletedTask;
+            _log.Warn(
+                $"液压代次成员作废：EPB={epbChannel} Key={lease.Key} " +
+                $"Epoch={lease.CoordinatorEpoch} Reason={reason ?? "AttemptAborted"}",
+                "液压协调");
+            return MarkVoltageReleaseAsync(lease, epbChannel);
         }
 
         public async Task ForceReleaseAsync(int hydraulicId, string reason)
@@ -465,6 +640,152 @@ namespace Controller
             // 并以实际压力连续安全作为 StopAll/恢复流程的完成依据。
             await ExecuteReleaseOutputAsync(hydraulicId).ConfigureAwait(false);
             await WaitForSafePressureAsync(hydraulicId).ConfigureAwait(false);
+        }
+
+        public HydraulicGenerationSnapshot ProbeGroupHealth(int hydraulicId)
+        {
+            var states = _generations.Values
+                .Where(state => state.Key.HydraulicId == hydraulicId &&
+                                !state.Completion.Task.IsCompleted)
+                .ToArray();
+            var pending = new List<int>();
+            foreach (var state in states)
+            {
+                lock (state.Gate) pending.AddRange(state.Remaining);
+            }
+
+            var admissionOpen = !_groupRebuildFlags.ContainsKey(hydraulicId);
+            var leaseCount = _activeLeaseScopes.Keys.Count(
+                scope => scope.Key.HydraulicId == hydraulicId);
+            var gateAvailable = false;
+            var gate = _generationGates.GetOrAdd(hydraulicId, _ => new SemaphoreSlim(1, 1));
+            if (admissionOpen && states.Length == 0 && gate.Wait(0))
+            {
+                gateAvailable = true;
+                gate.Release();
+            }
+
+            return new HydraulicGenerationSnapshot
+            {
+                HydraulicId = hydraulicId,
+                CoordinatorEpoch = _coordinatorEpochs.GetOrAdd(hydraulicId, 1),
+                AdmissionOpen = admissionOpen,
+                ActiveGenerationCount = states.Length,
+                ActiveOperationCount = GetActiveOperationCount(hydraulicId),
+                ActiveLeaseCount = leaseCount,
+                GenerationGateAvailable = gateAvailable,
+                RebuildCount = _groupRebuildCounts.TryGetValue(hydraulicId, out var rebuilds)
+                    ? rebuilds
+                    : 0,
+                ActiveGenerationKeys = states.Select(state => state.Key.ToString()).ToArray(),
+                PendingMembers = pending.Distinct().OrderBy(channel => channel).ToArray()
+            };
+        }
+
+        public async Task<HydraulicGenerationSnapshot> RebuildGroupAsync(
+            int hydraulicId,
+            string reason,
+            int timeoutMs = 10000,
+            CancellationToken token = default)
+        {
+            var rebuildGate = _groupRebuildGates.GetOrAdd(
+                hydraulicId,
+                _ => new SemaphoreSlim(1, 1));
+            await rebuildGate.WaitAsync(token).ConfigureAwait(false);
+            try
+            {
+                if (!_groupRebuildFlags.TryAdd(hydraulicId, 0))
+                    throw new HydraulicCoordinatorRebuildingException(hydraulicId);
+                try
+                {
+                    await ForceReleaseAsync(
+                            hydraulicId,
+                            "CoordinatorRebuild:" + (reason ?? "Unknown"))
+                        .ConfigureAwait(false);
+
+                    var oldScopes = _activeLeaseScopes.Keys
+                        .Where(scope => scope.Key.HydraulicId == hydraulicId)
+                        .ToArray();
+                    if (oldScopes.Length > 0)
+                    {
+                        var closeTasks = oldScopes
+                            .Select(scope => scope.AbortAsync("CoordinatorRebuild:" + reason))
+                            .ToArray();
+                        try { await Task.WhenAll(closeTasks).ConfigureAwait(false); }
+                        catch
+                        {
+                            // ForceRelease 会以取消异常结束旧代次；作用域 finally 已完成注销。
+                        }
+                    }
+
+                    var deadline = Stopwatch.StartNew();
+                    while ((GetActiveOperationCount(hydraulicId) > 0 ||
+                            _activeLeaseScopes.Keys.Any(scope => scope.Key.HydraulicId == hydraulicId)) &&
+                           deadline.ElapsedMilliseconds < Math.Max(1, timeoutMs))
+                    {
+                        token.ThrowIfCancellationRequested();
+                        await Task.Delay(10, token).ConfigureAwait(false);
+                    }
+                    var remainingLeaseCount = _activeLeaseScopes.Keys.Count(
+                        scope => scope.Key.HydraulicId == hydraulicId);
+                    if (GetActiveOperationCount(hydraulicId) > 0 || remainingLeaseCount > 0)
+                        throw new TimeoutException(
+                            $"HydraulicCoordinatorRebuildOperationsTimeout Hydraulic={hydraulicId} " +
+                            $"Operations={GetActiveOperationCount(hydraulicId)} " +
+                            $"Leases={remainingLeaseCount} Timeout={timeoutMs}ms");
+
+                    foreach (var pair in _generations
+                                 .Where(pair => pair.Key.HydraulicId == hydraulicId)
+                                 .ToArray())
+                        _generations.TryRemove(pair.Key, out _);
+
+                    // 旧 Semaphore 可能已经发生“无活动代次但计数为0”的孤儿占用。
+                    // 所有旧操作退出后直接替换，迟到旧 state 只持有旧实例，无法污染新 epoch。
+                    _generationGates[hydraulicId] = new SemaphoreSlim(1, 1);
+                    _coordinatorEpochs.AddOrUpdate(hydraulicId, 2, (_, epoch) => epoch + 1);
+                    _groupRebuildCounts.AddOrUpdate(hydraulicId, 1, (_, count) => count + 1);
+                    _buildFailureStreaks.TryRemove(hydraulicId, out _);
+                    _holdFailureStreaks.TryRemove(hydraulicId, out _);
+                    _log.Warn(
+                        $"液压组{hydraulicId}协调状态已安全重建。" +
+                        $"Epoch={_coordinatorEpochs[hydraulicId]} Reason={reason}",
+                        "液压协调");
+                }
+                finally
+                {
+                    _groupRebuildFlags.TryRemove(hydraulicId, out _);
+                }
+            }
+            finally
+            {
+                rebuildGate.Release();
+            }
+
+            var snapshot = ProbeGroupHealth(hydraulicId);
+            if (!snapshot.IsHealthyForFreshStart)
+                throw new InvalidOperationException(
+                    "HydraulicCoordinatorRebuildVerificationFailed " + snapshot);
+            return snapshot;
+        }
+
+        private void IncrementActiveOperation(int hydraulicId)
+        {
+            _activeOperationsByGroup.AddOrUpdate(hydraulicId, 1, (_, count) => count + 1);
+        }
+
+        private void DecrementActiveOperation(int hydraulicId)
+        {
+            _activeOperationsByGroup.AddOrUpdate(
+                hydraulicId,
+                0,
+                (_, count) => Math.Max(0, count - 1));
+        }
+
+        private int GetActiveOperationCount(int hydraulicId)
+        {
+            return _activeOperationsByGroup.TryGetValue(hydraulicId, out var count)
+                ? Math.Max(0, count)
+                : 0;
         }
 
         private async Task<HydraulicCycleLease> InitializeGenerationAsync(
@@ -518,7 +839,8 @@ namespace Controller
                     state.Members,
                     qualification,
                     actuationAnchorUtc,
-                    state.Completion.Task);
+                    state.Completion.Task,
+                    state.CoordinatorEpoch);
             }
             catch (OperationCanceledException ex) when (token.IsCancellationRequested)
             {
@@ -1149,11 +1471,12 @@ namespace Controller
 
         private sealed class GenerationState
         {
-            public GenerationState(HydraulicGenerationKey key, int[] members)
+            public GenerationState(HydraulicGenerationKey key, int[] members, long coordinatorEpoch)
             {
                 Key = key;
                 Members = members;
                 Remaining = new HashSet<int>(members);
+                CoordinatorEpoch = coordinatorEpoch;
                 ObserveInternalFault(Completion.Task);
                 ObserveInternalFault(BarrierReached.Task);
             }
@@ -1173,6 +1496,7 @@ namespace Controller
 
             public readonly object Gate = new();
             public HydraulicGenerationKey Key { get; }
+            public long CoordinatorEpoch { get; }
             public int[] Members { get; }
             public HashSet<int> Remaining { get; }
             public Task<HydraulicCycleLease> InitializeTask;

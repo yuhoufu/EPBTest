@@ -660,13 +660,23 @@ namespace Controller
                             cycleNumber = 0;
                             throw;
                         }
+                        finally
+                        {
+                            if (_hydraulicLeaseByChannel.TryGetValue(channel, out var activeScope) &&
+                                !activeScope.IsClosed)
+                                await AbortHydraulicLeaseForChannelAsync(
+                                        channel,
+                                        "QualificationAttemptFinalizer")
+                                    .ConfigureAwait(false);
+                        }
                     },
-                    (attempt, ex, attemptToken) =>
+                    async (attempt, ex, attemptToken) =>
                     {
                         runner.RestoreAdaptiveProfile(modelBeforeLogicalCycle);
-                        RequireSoftwareRecoveryOutputOff(
-                            channel,
-                            "QualificationPersistenceSelfHealing");
+                        await AbortHydraulicLeaseForChannelAsync(
+                                channel,
+                                "QualificationPersistenceSelfHealing")
+                            .ConfigureAwait(false);
                         PublishChannelRuntimeState(
                             channel,
                             ChannelRuntimeState.Qualification,
@@ -680,7 +690,6 @@ namespace Controller
                             $"Attempt={attempt} DelayMs={GetDaqSelfMaintenanceDelayMs(attempt)} " +
                             $"Reason={ex.Message}",
                             "落盘");
-                        return Task.CompletedTask;
                     },
                     GetDaqSelfMaintenanceDelayMs,
                     token)
@@ -1319,6 +1328,10 @@ namespace Controller
                 var recorder = Recorder;
                 if (!TryBeginFormalCycle(recorder, channel, cycleNumber, DateTime.UtcNow))
                 {
+                    await AbortHydraulicLeaseForChannelAsync(
+                            channel,
+                            "RejoinedFormalPersistenceBoundaryRejected")
+                        .ConfigureAwait(false);
                     ReleaseCyclePauseCts(channel, cyclePauseCts);
                     return false;
                 }
@@ -1336,6 +1349,15 @@ namespace Controller
                 }
                 catch (OperationCanceledException) { ok = false; }
                 catch { ok = false; }
+                finally
+                {
+                    if (_hydraulicLeaseByChannel.TryGetValue(channel, out var activeScope) &&
+                        !activeScope.IsClosed)
+                        await AbortHydraulicLeaseForChannelAsync(
+                                channel,
+                                "RejoinedFormalAttemptFinalizer")
+                            .ConfigureAwait(false);
+                }
                 var controlSucceeded = IsFormalControlSucceeded(
                     ok,
                     runner.LastCycleOutcome.IsSuccess);

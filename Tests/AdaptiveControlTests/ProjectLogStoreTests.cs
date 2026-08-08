@@ -269,8 +269,13 @@ namespace AdaptiveControlTests
                 File.WriteAllText(Path.Combine(root, "UnknownData", "keep.bin"), "keep");
                 File.WriteAllText(Path.Combine(root, "index.db"), "db");
                 File.WriteAllText(Path.Combine(configDir, "EpbAdaptiveProfiles.xml"), "profile");
-                File.WriteAllText(Path.Combine(logDir, "run.log"), "run");
-                File.WriteAllText(Path.Combine(logDir, "ui-info.log"), "ui");
+                var runLogPath = Path.Combine(logDir, "run.log");
+                var uiInfoLogPath = Path.Combine(logDir, "ui-info.log");
+                File.WriteAllText(runLogPath, "run");
+                File.WriteAllText(uiInfoLogPath, "ui");
+                var expectedLogDate = new DateTime(2026, 8, 7, 12, 0, 0);
+                File.SetLastWriteTime(runLogPath, expectedLogDate);
+                File.SetLastWriteTime(uiInfoLogPath, expectedLogDate);
                 var checkpointCleared = false;
 
                 var result = ProjectRestartCleanupService.ResetForFreshLearning(
@@ -278,7 +283,7 @@ namespace AdaptiveControlTests
                     config,
                     NullLogger.Instance,
                     () => checkpointCleared = true,
-                    new DateTime(2026, 8, 7, 12, 0, 0));
+                    expectedLogDate);
 
                 Assert(result.Succeeded && checkpointCleared, "项目清空未成功或恢复检查点未清除");
                 Assert(!Directory.Exists(Path.Combine(root, "Latest")) &&

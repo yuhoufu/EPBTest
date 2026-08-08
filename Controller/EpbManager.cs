@@ -338,6 +338,8 @@ namespace Controller
         private readonly EmergencyPowerGroupLatch _emergencyPowerGroupLatch = new();
         private readonly ConcurrentDictionary<int, byte> _powerSoftwareRecoveryGroups = new();
         private readonly ConcurrentDictionary<int, byte> _hydraulicSoftwareRecoveryGroups = new();
+        private readonly ConcurrentDictionary<string, byte> _softwareRecoveryCircuitDiagnostics =
+            new(StringComparer.Ordinal);
 
         // ★ 当前仍参与“液压组判定”的通道集合：用于把“报警停机/提前结束”的通道排除出释压条件
         // 说明：
@@ -355,7 +357,7 @@ namespace Controller
         private readonly ConcurrentDictionary<int, long> _firstEligibleFormalSlotByChannel = new();
         private readonly object[] _formalRejoinGates =
             { new object(), new object(), new object() };
-        private readonly ConcurrentDictionary<int, HydraulicCycleLease> _hydraulicLeaseByChannel = new();
+        private readonly ConcurrentDictionary<int, HydraulicChannelLeaseScope> _hydraulicLeaseByChannel = new();
         private long _singleHydraulicGeneration;
         private long _startupPositioningGeneration;
         private readonly ConcurrentDictionary<string, int> _daqRecoveryAttemptsByDevice = new();
@@ -1066,10 +1068,16 @@ namespace Controller
         }
 
         // EpbManager.cs 里（EpbManager 类内）新增：
-        public Task HydraulicEnterAsync(int channel, CancellationToken token)
+        public async Task HydraulicEnterAsync(int channel, CancellationToken token)
         {
-            if (_hydCoordinator == null) return Task.CompletedTask;
-            if (_hydraulicLeaseByChannel.ContainsKey(channel)) return Task.CompletedTask;
+            if (_hydCoordinator == null) return;
+            if (_hydraulicLeaseByChannel.TryGetValue(channel, out var existing))
+            {
+                if (!existing.IsClosed) return;
+                await existing.Completion.ConfigureAwait(false);
+                ((ICollection<KeyValuePair<int, HydraulicChannelLeaseScope>>)_hydraulicLeaseByChannel)
+                    .Remove(new KeyValuePair<int, HydraulicChannelLeaseScope>(channel, existing));
+            }
 
             var hydId = channel <= 6 ? 1 : 2;
             var runId = _activeBatchId == Guid.Empty ? Guid.NewGuid() : _activeBatchId;
@@ -1078,7 +1086,7 @@ namespace Controller
                 hydId,
                 HydraulicPhaseKind.SingleChannel,
                 Interlocked.Increment(ref _singleHydraulicGeneration));
-            return EnterSingleHydraulicGenerationAsync(key, channel, token);
+            await EnterSingleHydraulicGenerationAsync(key, channel, token).ConfigureAwait(false);
         }
 
         private async Task EnterSingleHydraulicGenerationAsync(
@@ -1088,7 +1096,7 @@ namespace Controller
         {
             var lease = await _hydCoordinator.EnterGenerationAsync(key, new[] { channel }, token)
                 .ConfigureAwait(false);
-            _hydraulicLeaseByChannel[channel] = lease;
+            _hydraulicLeaseByChannel[channel] = _hydCoordinator.CreateChannelScope(lease, channel);
             NonCriticalObserver.Invoke(
                 PressureQualificationChanged,
                 lease.Qualification,
@@ -1103,7 +1111,7 @@ namespace Controller
         public async Task HydraulicMarkReleaseAsync(int channel)
         {
             if (_hydCoordinator == null) return;
-            if (!_hydraulicLeaseByChannel.TryGetValue(channel, out var lease))
+            if (!_hydraulicLeaseByChannel.TryGetValue(channel, out var scope))
             {
                 await _hydCoordinator.MarkVoltageReleaseAsync(channel).ConfigureAwait(false);
                 return;
@@ -1111,14 +1119,31 @@ namespace Controller
 
             try
             {
-                await _hydCoordinator.MarkVoltageReleaseAsync(lease, channel).ConfigureAwait(false);
+                await scope.CompleteAsync().ConfigureAwait(false);
             }
             finally
             {
                 // 只移除本次取得的旧 lease。若通道已进入新的正式代次，
                 // 迟到的旧释放任务不得删除新 lease。
-                ((ICollection<KeyValuePair<int, HydraulicCycleLease>>)_hydraulicLeaseByChannel)
-                    .Remove(new KeyValuePair<int, HydraulicCycleLease>(channel, lease));
+                ((ICollection<KeyValuePair<int, HydraulicChannelLeaseScope>>)_hydraulicLeaseByChannel)
+                    .Remove(new KeyValuePair<int, HydraulicChannelLeaseScope>(channel, scope));
+            }
+        }
+
+        private async Task AbortHydraulicLeaseForChannelAsync(int channel, string reason)
+        {
+            if (!_hydraulicLeaseByChannel.TryGetValue(channel, out var scope)) return;
+            // OFF 未确认时，TryEnsureSoftwareRecoveryOutputOff 已升级为电气组紧急关闭。
+            // 此时必须保留租约映射，禁止把仍可能带电的成员伪装成已归还。
+            RequireSoftwareRecoveryOutputOff(channel, reason ?? "HydraulicLeaseAbort");
+            try
+            {
+                await scope.AbortAsync(reason).ConfigureAwait(false);
+            }
+            finally
+            {
+                ((ICollection<KeyValuePair<int, HydraulicChannelLeaseScope>>)_hydraulicLeaseByChannel)
+                    .Remove(new KeyValuePair<int, HydraulicChannelLeaseScope>(channel, scope));
             }
         }
 
@@ -3535,6 +3560,20 @@ namespace Controller
         private void OnHydraulicFaultRaised(ControlFault fault)
         {
             if (fault == null) return;
+            if (IsBatchSessionActive && CurrentBatchPauseState != BatchPauseState.Running)
+            {
+                // 启动定位/学习/资格的调用栈正在 await 同一液压代次并执行有界重试。
+                // 此处不得再并行创建第二套后台恢复，否则会形成 Recovery 代次风暴。
+                _log.Warn(
+                    $"启动阶段液压故障由当前批次调用栈收口，不创建并行恢复任务。" +
+                    $"Code={fault.Code} Channels=[{string.Join(",", fault.AffectedChannels ?? Array.Empty<int>())}]",
+                    "液压协调");
+                NonCriticalObserver.Invoke(
+                    ControlFaultRaised,
+                    fault,
+                    ex => _log?.Warn($"液压故障观察者异常，已隔离：{ex.Message}", "液压"));
+                return;
+            }
             var daqRecoveryChannels = (fault.AffectedChannels ?? Array.Empty<int>())
                 .Where(channel =>
                 {
@@ -3575,7 +3614,10 @@ namespace Controller
                 try { CommandEpbOff(channel, "HydraulicFailSafe:" + fault.Code); } catch { }
                 try { CancelStopCts(channel); } catch { }
                 UnmarkHydraulicParticipant(channel);
-                _hydraulicLeaseByChannel.TryRemove(channel, out _);
+                ObserveSafetyTask(
+                    AbortHydraulicLeaseForChannelAsync(channel, "HydraulicFailSafe:" + fault.Code),
+                    "HydraulicFaultLeaseAbort",
+                    channel);
             }
             FlushPersistentLog();
             PublishFaultRuntimeStates(
@@ -3774,7 +3816,19 @@ namespace Controller
                     foreach (var channel in channels)
                     {
                         UnmarkHydraulicParticipant(channel);
-                        _hydraulicLeaseByChannel.TryRemove(channel, out _);
+                        try
+                        {
+                            await AbortHydraulicLeaseForChannelAsync(
+                                    channel,
+                                    "HydraulicSelfHealing:" + fault.Code)
+                                .ConfigureAwait(false);
+                        }
+                        catch (Exception leaseEx)
+                        {
+                            _log.Warn(
+                                $"液压自愈归还EPB[{channel}]租约失败：{leaseEx.Message}",
+                                "液压协调");
+                        }
                         DiscardCurrentCycleForSoftwareRecovery(
                             channel,
                             cutoffUtc,
@@ -4815,7 +4869,8 @@ namespace Controller
                     return _stopSafetyTask;
                 if (_lastStopSafetyResult != null && !IsBatchSessionActive &&
                     _activeBatchId == Guid.Empty &&
-                    _lastStopSafetyResult.CanReleaseAcquisition)
+                    _lastStopSafetyResult.CanRestartInProcess &&
+                    CaptureLogicalQuiescenceSnapshot().IsQuiescent)
                     return Task.FromResult(_lastStopSafetyResult.Clone(reused: true));
                 _stopSafetyTask = RunStopSafetyAsync(context, token);
                 return _stopSafetyTask;
@@ -4908,7 +4963,9 @@ namespace Controller
             var channels = _timers.Keys
                 .Concat(_runners.Keys)
                 .Concat(_hydraulicParticipants.Keys)
+                .Concat(_hydraulicLeaseByChannel.Keys)
                 .Concat(_stopCtsByChannel.Keys)
+                .Concat(_cyclePauseCtsByChannel.Keys)
                 .Distinct()
                 .OrderBy(x => x)
                 .ToArray();
@@ -4962,6 +5019,7 @@ namespace Controller
             if (context.Source == StopSource.ApplicationClosing || context.Source == StopSource.ProgramExit)
                 await _persistence.ShutdownAsync(10000).ConfigureAwait(false);
 
+            var logicalState = CaptureLogicalQuiescenceSnapshot();
             var result = new StopSafetyResult
             {
                 CorrelationId = context.CorrelationId ?? string.Empty,
@@ -4973,7 +5031,10 @@ namespace Controller
                 CompletedUtc = DateTime.UtcNow,
                 MotorError = string.Join("; ", motorErrors),
                 PowerError = power.error,
-                PressureError = pressure.error
+                PressureError = pressure.error,
+                LogicalQuiescenceConfirmed = logicalState.IsQuiescent,
+                LogicalError = logicalState.IsQuiescent ? string.Empty : logicalState.ToString(),
+                LogicalState = logicalState
             };
 
             lock (_stopSafetyGate) _lastStopSafetyResult = result.Clone();
@@ -4982,11 +5043,15 @@ namespace Controller
                 $"MotorDO={(result.MotorOffCommandSucceeded ? "Confirmed" : "Unconfirmed")}; " +
                 $"Power={(result.PowerOffConfirmed ? "Confirmed" : "Unconfirmed")}; " +
                 $"Pressure={(result.PressureSafeConfirmed ? "Confirmed" : "Unconfirmed")}; " +
-                $"MotorError={result.MotorError}; PowerError={result.PowerError}; PressureError={result.PressureError}";
-            if (result.FullyConfirmed)
+                $"Logical={(result.LogicalQuiescenceConfirmed ? "Confirmed" : "Pending")}; " +
+                $"MotorError={result.MotorError}; PowerError={result.PowerError}; " +
+                $"PressureError={result.PressureError}; LogicalError={result.LogicalError}";
+            if (result.CanRestartInProcess)
                 _log.Info(logText, "EPB");
+            else if (result.FullyConfirmed)
+                _log.Warn("【物理安全已确认，但软件逻辑清场尚未完成】" + logText, "EPB");
             else if (result.CanReleaseAcquisition)
-                _log.Warn("【仅压力证据未确认，电机DO和程控电源均已确认关闭】" + logText, "EPB");
+                _log.Warn("【电机DO和程控电源已关闭，但压力或逻辑清场未确认】" + logText, "EPB");
             else
                 _log.Error(logText, "EPB");
             EndPowerSupplyTelemetryRecording();
@@ -5298,6 +5363,117 @@ namespace Controller
                             FaultRecoveryPolicy.Recoverable));
                 }
             });
+        }
+
+        private LogicalQuiescenceSnapshot CaptureLogicalQuiescenceSnapshot()
+        {
+            var hydraulicGroups = _hydCoordinator == null
+                ? Array.Empty<HydraulicGenerationSnapshot>()
+                : (_cfg.Test?.Hydraulics ?? new List<HydraulicItem>())
+                .Where(item => item?.Enabled == true)
+                .Select(item => item.Id)
+                .Distinct()
+                .OrderBy(id => id)
+                .Select(_hydCoordinator.ProbeGroupHealth)
+                .ToArray();
+            return new LogicalQuiescenceSnapshot
+            {
+                BatchLifecycleBusy = _batchLifecycleGate.IsBusy,
+                BatchSessionActive = IsBatchSessionActive,
+                ActiveBatchId = _activeBatchId,
+                TimerCount = _timers.Count + _timerCache.Count,
+                RunnerCount = _runners.Count + _runnerCache.Count,
+                StopCtsCount = _stopCtsByChannel.Count,
+                CycleCtsCount = _cyclePauseCtsByChannel.Count,
+                HydraulicParticipantCount = _hydraulicParticipants.Count,
+                HydraulicLeaseCount = _hydraulicLeaseByChannel.Count,
+                DaqRecoveryCount = _daqAutoRecovery.Count,
+                SoftwareRecoveryCount = _hydraulicSoftwareRecoveryGroups.Count +
+                                        _powerSoftwareRecoveryGroups.Count +
+                                        _affectedGroupResetInProgress.Count +
+                                        _isolatedInfrastructureRecoveryScheduled.Count,
+                RecoveryOwnerCount = _recoveryOwnership.ActiveCount,
+                HydraulicGroups = hydraulicGroups
+            };
+        }
+
+        private async Task<StopSafetyResult> FinalizeLogicalQuiescenceForRestartAsync(
+            StopSafetyResult physicalResult,
+            string reason,
+            CancellationToken token)
+        {
+            var result = (physicalResult ?? new StopSafetyResult()).Clone();
+            var errors = new List<string>();
+
+            foreach (var channel in _cyclePauseCtsByChannel.Keys.ToArray())
+                try { CancelCyclePauseCts(channel); } catch { }
+            foreach (var channel in _stopCtsByChannel.Keys.ToArray())
+                try { CancelStopCts(channel); } catch { }
+            foreach (var channel in _hydraulicParticipants.Keys.ToArray())
+                UnmarkHydraulicParticipant(channel);
+
+            foreach (var channel in _hydraulicLeaseByChannel.Keys.ToArray())
+            {
+                try
+                {
+                    await AbortHydraulicLeaseForChannelAsync(
+                            channel,
+                            reason + ":LogicalQuiescence")
+                        .ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    errors.Add($"EPB{channel}Lease:{ex.GetBaseException().Message}");
+                }
+            }
+
+            if (_hydCoordinator != null)
+            {
+                foreach (var hydraulicId in (_cfg.Test?.Hydraulics ?? new List<HydraulicItem>())
+                             .Where(item => item?.Enabled == true)
+                             .Select(item => item.Id)
+                             .Distinct()
+                             .OrderBy(id => id))
+                {
+                    var snapshot = _hydCoordinator.ProbeGroupHealth(hydraulicId);
+                    if (snapshot.IsHealthyForFreshStart) continue;
+                    if (snapshot.ActiveGenerationCount != 0 ||
+                        snapshot.ActiveOperationCount != 0 ||
+                        snapshot.ActiveLeaseCount != 0)
+                    {
+                        errors.Add("ActiveHydraulicWork:" + snapshot);
+                        continue;
+                    }
+                    try
+                    {
+                        await _hydCoordinator.RebuildGroupAsync(
+                                hydraulicId,
+                                reason,
+                                timeoutMs: 10000,
+                                CancellationToken.None)
+                            .ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        errors.Add($"H{hydraulicId}Rebuild:{ex.GetBaseException().Message}");
+                    }
+                }
+            }
+
+            token.ThrowIfCancellationRequested();
+            var logical = CaptureLogicalQuiescenceSnapshot();
+            result.LogicalState = logical;
+            result.LogicalQuiescenceConfirmed = logical.IsQuiescent && errors.Count == 0;
+            result.LogicalError = result.LogicalQuiescenceConfirmed
+                ? string.Empty
+                : string.Join("; ", errors.Concat(new[] { logical.ToString() }));
+            result.CompletedUtc = DateTime.UtcNow;
+            lock (_stopSafetyGate) _lastStopSafetyResult = result.Clone();
+            if (result.LogicalQuiescenceConfirmed)
+                _log.Info("重新开始逻辑清场不变量全部通过：" + logical, "EPB");
+            else
+                _log.Error("重新开始逻辑清场失败：" + result.LogicalError, "EPB");
+            return result;
         }
 
         private void EnsureStrictCurveControl(IEnumerable<int> channels)

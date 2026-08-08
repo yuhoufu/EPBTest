@@ -505,6 +505,16 @@ namespace IO.NI
         public PeakCaptureToken Token { get; set; }
         public TwoDeviceAiAcquirer.EpbCurrentPeak Peak { get; set; }
         public bool IsMatched { get; set; }
+        /// <summary>本次证据窗被冻结的逻辑截止时刻（UTC）。</summary>
+        public DateTime LogicalCutoffUtc { get; set; }
+        /// <summary>全速率处理线程已经处理到的样本水印（UTC）。</summary>
+        public DateTime ProcessedThroughUtc { get; set; }
+        /// <summary>封口等待结束时刻（UTC）。</summary>
+        public DateTime DrainCompletedUtc { get; set; }
+        /// <summary>等待在途全速率样本覆盖逻辑截止点所花的墙钟时间，仅用于诊断。</summary>
+        public double DrainElapsedMs { get; set; }
+        /// <summary>全速率处理水印是否已经越过逻辑截止点。</summary>
+        public bool IsCutoffCovered { get; set; }
         public string QualityReason { get; set; } = string.Empty;
     }
 
@@ -4196,10 +4206,10 @@ namespace IO.NI
             public double MaxAmp;
             public long SampleCount;
             public PeakCaptureToken Token;
+            public DateTime ProcessedThroughAt;
+            public TaskCompletionSource<bool> CutoffCoveredSignal;
 
-
-
-            // —— 新增：逻辑截止时间（用于“延时封口但不扩大统计窗口”）——
+            // 逻辑截止时间用于“等待封口但不扩大统计窗口”。
             public DateTime? CutoffLocal; // 仅纳入 tsLocal <= CutoffLocal 的样本
 
 
@@ -4212,9 +4222,20 @@ namespace IO.NI
                 MaxAmp = double.NegativeInfinity;
                 MaxAt = t0;
                 LastSampleAt = DateTime.MinValue;
+                ProcessedThroughAt = DateTime.MinValue;
                 SampleCount = 0;
-                CutoffLocal = null; // 清空上次的截止
+                CutoffLocal = null;
+                CutoffCoveredSignal = NewCutoffCoveredSignal();
                 Token = token;
+            }
+
+            public Task FreezeCutoff(DateTime cutoffLocal)
+            {
+                if (!CutoffLocal.HasValue)
+                    CutoffLocal = cutoffLocal;
+                if (ProcessedThroughAt >= CutoffLocal.Value)
+                    CutoffCoveredSignal.TrySetResult(true);
+                return CutoffCoveredSignal.Task;
             }
 
             /// <summary>纳入一个样本（全数据逐点）。</summary>
@@ -4223,6 +4244,10 @@ namespace IO.NI
                 // 捕获开始前已在后台队列中的历史样本不得混入本次输出证据。
                 if (tsLocal < StartAt)
                     return;
+                if (tsLocal > ProcessedThroughAt)
+                    ProcessedThroughAt = tsLocal;
+                if (CutoffLocal.HasValue && ProcessedThroughAt >= CutoffLocal.Value)
+                    CutoffCoveredSignal.TrySetResult(true);
                 // 若设置了逻辑截止时间，则仅接受截止内样本
                 if (CutoffLocal.HasValue && tsLocal > CutoffLocal.Value)
                     return;
@@ -4271,6 +4296,23 @@ namespace IO.NI
                     IsActive = Active
                 };
             }
+
+            private static TaskCompletionSource<bool> NewCutoffCoveredSignal()
+            {
+                return new TaskCompletionSource<bool>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+        }
+
+        private sealed class PeakFinalizationResult
+        {
+            public EpbCurrentPeak Peak;
+            public DateTime LogicalCutoffUtc;
+            public DateTime ProcessedThroughUtc;
+            public DateTime DrainCompletedUtc;
+            public double DrainElapsedMs;
+            public bool IsCutoffCovered;
+            public bool IdentityMatched = true;
         }
 
 
@@ -4360,21 +4402,47 @@ namespace IO.NI
                     };
             }
 
-            var peak = await EndEpbCurrentPeakAsync(
+            var finalized = await FinalizePeakCaptureAsync(
                     token.Channel,
+                    tracker,
                     delayMs,
                     cutoffAfterDelay,
-                    cancellationToken)
+                    cancellationToken,
+                    token)
                 .ConfigureAwait(false);
+            var peak = finalized.Peak;
+            if (!finalized.IdentityMatched)
+                return new PeakCaptureResult
+                {
+                    Token = token,
+                    Peak = peak,
+                    IsMatched = false,
+                    LogicalCutoffUtc = finalized.LogicalCutoffUtc,
+                    ProcessedThroughUtc = finalized.ProcessedThroughUtc,
+                    DrainCompletedUtc = finalized.DrainCompletedUtc,
+                    DrainElapsedMs = finalized.DrainElapsedMs,
+                    IsCutoffCovered = finalized.IsCutoffCovered,
+                    QualityReason = "CaptureIdentityMismatchDuringDrain"
+                };
             var timeMatched = peak.StartAt.ToUniversalTime() >= token.StartUtc.AddMilliseconds(-50) &&
                               peak.LastSampleAt != DateTime.MinValue &&
                               peak.LastSampleAt.ToUniversalTime() >= token.StartUtc;
+            var matched = timeMatched && peak.SampleCount > 0;
             return new PeakCaptureResult
             {
                 Token = token,
                 Peak = peak,
-                IsMatched = timeMatched && peak.SampleCount > 0,
-                QualityReason = timeMatched && peak.SampleCount > 0 ? "Qualified" : "CaptureWindowInvalid"
+                IsMatched = matched,
+                LogicalCutoffUtc = finalized.LogicalCutoffUtc,
+                ProcessedThroughUtc = finalized.ProcessedThroughUtc,
+                DrainCompletedUtc = finalized.DrainCompletedUtc,
+                DrainElapsedMs = finalized.DrainElapsedMs,
+                IsCutoffCovered = finalized.IsCutoffCovered,
+                QualityReason = !matched
+                    ? "CaptureWindowInvalid"
+                    : !finalized.IsCutoffCovered
+                        ? "CutoffNotCovered"
+                        : "Qualified"
             };
         }
 
@@ -4483,48 +4551,13 @@ namespace IO.NI
             CancellationToken token = default(CancellationToken),
             Action<EpbCurrentPeak> onCompleted = null)
         {
-            PeakTracker t;
-            if (!_peakTrackers.TryGetValue(epbChannel, out t))
-            {
-                var empty = new EpbCurrentPeak { Channel = epbChannel };
-                onCompleted?.Invoke(empty);
-                return empty;
-            }
-
-            // ① 记录“逻辑截止时刻”，并限制后续仅纳入 ≤ cutoff 的样本
-            DateTime cutoff = DateTime.Now;
-            lock (t.Sync)
-            {
-                // 若你已按我之前建议在 PeakTracker 中新增了 CutoffLocal 字段：
-                t.CutoffLocal = cutoff;
-            }
-
-            // ② 异步等待（不阻塞当前流程）
-            if (delayMs > 0)
-            {
-                try
-                {
-                    await Task.Delay(delayMs, token).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException)
-                {
-                    // 被取消也继续封口，尽量返回截止内已捕获的峰值
-                }
-            }
-
-            // ③ 真正封口并快照 —— 这里要传参！
-            EpbCurrentPeak res;
-            lock (t.Sync)
-            {
-                // 关键修正：Finish 需要一个 DateTime
-                t.Finish(t.CutoffLocal.HasValue ? t.CutoffLocal.Value : cutoff);
-                res = t.Snapshot(epbChannel);
-            }
-
-            // ④ 可选回调
-            try { onCompleted?.Invoke(res); } catch { /* 忽略回调异常 */ }
-
-            return res;
+            return await EndEpbCurrentPeakAsync(
+                    epbChannel,
+                    delayMs,
+                    cutoffAfterDelay: false,
+                    token,
+                    onCompleted)
+                .ConfigureAwait(false);
         }
 
 
@@ -4542,36 +4575,111 @@ namespace IO.NI
                 return empty;
             }
 
-            DateTime callTime = DateTime.Now;
-            lock (t.Sync)
-            {
-                if (!cutoffAfterDelay)
-                    t.CutoffLocal = callTime; // 方式A：调用当下截断
-            }
-
-            if (delayMs > 0)
-            {
-                try { await Task.Delay(delayMs, token).ConfigureAwait(false); }
-                catch (OperationCanceledException) { /* 忽略，继续封口 */ }
-            }
-
-            if (cutoffAfterDelay)
-            {
-                // 方式B：延时结束时截断（窗口更大，可能包含部分断电后的样本）
-                var afterDelay = DateTime.Now;
-                lock (t.Sync) t.CutoffLocal = afterDelay;
-            }
-
-            EpbCurrentPeak res;
-            lock (t.Sync)
-            {
-                var endAt = t.CutoffLocal ?? DateTime.Now;
-                t.Finish(endAt);
-                res = t.Snapshot(epbChannel);
-            }
+            var finalized = await FinalizePeakCaptureAsync(
+                    epbChannel,
+                    t,
+                    delayMs,
+                    cutoffAfterDelay,
+                    token)
+                .ConfigureAwait(false);
+            var res = finalized.Peak;
 
             try { onCompleted?.Invoke(res); } catch { }
             return res;
+        }
+
+        private async Task<PeakFinalizationResult> FinalizePeakCaptureAsync(
+            int epbChannel,
+            PeakTracker tracker,
+            int delayMs,
+            bool cutoffAfterDelay,
+            CancellationToken token,
+            PeakCaptureToken expectedToken = null)
+        {
+            Task coveredTask = Task.CompletedTask;
+            DateTime cutoffLocal = DateTime.MinValue;
+
+            if (cutoffAfterDelay && delayMs > 0)
+            {
+                try { await Task.Delay(delayMs, token).ConfigureAwait(false); }
+                catch (OperationCanceledException) { }
+            }
+
+            var startedTicks = Stopwatch.GetTimestamp();
+
+            lock (tracker.Sync)
+            {
+                if (expectedToken != null &&
+                    !IsPeakCaptureIdentityMatch(tracker.Token, expectedToken))
+                    return BuildPeakFinalizationResult(
+                        epbChannel,
+                        tracker,
+                        startedTicks,
+                        identityMatched: false);
+
+                cutoffLocal = DateTime.Now;
+                coveredTask = tracker.FreezeCutoff(cutoffLocal);
+            }
+
+            // cutoffAfterDelay=true 的 delay 是统计窗口本身；冻结窗口后只追加最多100ms
+            // 的在途覆盖等待，避免把500/1000ms统计窗口再次完整等待一遍。
+            var drainWaitMs = cutoffAfterDelay
+                ? Math.Min(100, Math.Max(0, delayMs))
+                : Math.Max(0, delayMs);
+            if (drainWaitMs > 0 && !coveredTask.IsCompleted)
+            {
+                try
+                {
+                    var timeoutTask = Task.Delay(drainWaitMs, token);
+                    await Task.WhenAny(coveredTask, timeoutTask).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) { }
+            }
+
+            lock (tracker.Sync)
+            {
+                if (expectedToken != null &&
+                    !IsPeakCaptureIdentityMatch(tracker.Token, expectedToken))
+                    return BuildPeakFinalizationResult(
+                        epbChannel,
+                        tracker,
+                        startedTicks,
+                        identityMatched: false);
+
+                tracker.Finish(tracker.CutoffLocal ?? cutoffLocal);
+                return BuildPeakFinalizationResult(
+                    epbChannel,
+                    tracker,
+                    startedTicks,
+                    identityMatched: true);
+            }
+        }
+
+        private static PeakFinalizationResult BuildPeakFinalizationResult(
+            int epbChannel,
+            PeakTracker tracker,
+            long startedTicks,
+            bool identityMatched)
+        {
+            var cutoffLocal = tracker.CutoffLocal ?? DateTime.MinValue;
+            var processedLocal = tracker.ProcessedThroughAt;
+            var completedUtc = DateTime.UtcNow;
+            return new PeakFinalizationResult
+            {
+                Peak = tracker.Snapshot(epbChannel),
+                LogicalCutoffUtc = cutoffLocal == DateTime.MinValue
+                    ? DateTime.MinValue
+                    : cutoffLocal.ToUniversalTime(),
+                ProcessedThroughUtc = processedLocal == DateTime.MinValue
+                    ? DateTime.MinValue
+                    : processedLocal.ToUniversalTime(),
+                DrainCompletedUtc = completedUtc,
+                DrainElapsedMs = (Stopwatch.GetTimestamp() - startedTicks) * 1000.0 /
+                                 Stopwatch.Frequency,
+                IsCutoffCovered = cutoffLocal != DateTime.MinValue &&
+                                  processedLocal >= cutoffLocal,
+                IdentityMatched = identityMatched
+            };
         }
 
 

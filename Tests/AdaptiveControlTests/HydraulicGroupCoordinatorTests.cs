@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Config;
@@ -18,6 +19,9 @@ namespace AdaptiveControlTests
             Run("陈旧低压不得通过释压确认", StaleLowPressureCannotConfirmRelease, ref passed);
             Run("液压同代次重复进入不重新登记已释放成员", SameGenerationReentryDoesNotReAddReleasedMember, ref passed);
             Run("已完成液压代次不阻碍不同成员重新开始", CompletedGenerationAllowsFreshMembership, ref passed);
+            Run("液压通道作用域作废后代次完整归还", ChannelLeaseScopesAlwaysCloseGeneration, ref passed);
+            Run("液压组重建替换旧Gate并递增Epoch", RebuildGroupRestoresFreshStartHealth, ref passed);
+            Run("迟到旧Epoch租约不得释放新代次成员", LateOldEpochLeaseCannotReleaseNewGeneration, ref passed);
             Run("液压代次屏障缺员在一个周期内超时", GenerationBarrierTimeoutIsBounded, ref passed);
             Run("全员到齐后释压时间不计入屏障超时", SafePressureWaitDoesNotConsumeBarrierTimeout, ref passed);
             Run("正式阶段在两相位之间启动时整组滚到同一槽", FormalStartBetweenPhasesUsesOneFutureSlot, ref passed);
@@ -142,6 +146,114 @@ namespace AdaptiveControlTests
             Assert(restarted.Members.Count == 1 && restarted.Members[0] == 8,
                 "完成代次仍保留旧成员快照，阻碍单卡钳重启。 ");
             coordinator.MarkVoltageReleaseAsync(restarted, 8).GetAwaiter().GetResult();
+        }
+
+        private static void ChannelLeaseScopesAlwaysCloseGeneration()
+        {
+            var pressure = 80.0;
+            var coordinator = NewCoordinator(
+                () => Volatile.Read(ref pressure),
+                () =>
+                {
+                    Volatile.Write(ref pressure, 0.0);
+                    return Task.CompletedTask;
+                },
+                stableMs: 0,
+                timeoutMs: 300,
+                barrierTimeoutMs: 300);
+            var key = new HydraulicGenerationKey(Guid.NewGuid(), 2, HydraulicPhaseKind.Learning, 9);
+            var lease = coordinator.EnterGenerationAsync(key, new[] { 8, 9 }, CancellationToken.None)
+                .GetAwaiter().GetResult();
+            var first = coordinator.CreateChannelScope(lease, 8);
+            var second = coordinator.CreateChannelScope(lease, 9);
+
+            Task.WaitAll(
+                first.AbortAsync("BeginLearningCycleFailed"),
+                second.CompleteAsync());
+            var snapshot = coordinator.ProbeGroupHealth(2);
+            Assert(first.IsClosed && second.IsClosed, "通道液压作用域未进入关闭终态。 ");
+            Assert(snapshot.IsHealthyForFreshStart,
+                "作用域全部关闭后液压组仍不可重新开始：" + snapshot);
+        }
+
+        private static void RebuildGroupRestoresFreshStartHealth()
+        {
+            var pressure = 80.0;
+            var coordinator = NewCoordinator(
+                () => Volatile.Read(ref pressure),
+                () =>
+                {
+                    Volatile.Write(ref pressure, 0.0);
+                    return Task.CompletedTask;
+                },
+                stableMs: 0,
+                timeoutMs: 300,
+                barrierTimeoutMs: 300);
+            var key = new HydraulicGenerationKey(Guid.NewGuid(), 2, HydraulicPhaseKind.Recovery, 10);
+            var lease = coordinator.EnterGenerationAsync(key, new[] { 8, 9 }, CancellationToken.None)
+                .GetAwaiter().GetResult();
+            var firstScope = coordinator.CreateChannelScope(lease, 8);
+            var secondScope = coordinator.CreateChannelScope(lease, 9);
+            var before = coordinator.ProbeGroupHealth(2);
+            Assert(!before.IsHealthyForFreshStart && before.ActiveGenerationCount == 1 &&
+                   before.ActiveLeaseCount == 2,
+                "测试前置未建立活动液压代次。 ");
+
+            var rebuilt = coordinator.RebuildGroupAsync(
+                    2,
+                    "RegressionTest",
+                    1000,
+                    CancellationToken.None)
+                .GetAwaiter().GetResult();
+            Assert(rebuilt.IsHealthyForFreshStart,
+                "重建后液压组仍不可重新开始：" + rebuilt);
+            Assert(rebuilt.CoordinatorEpoch > before.CoordinatorEpoch,
+                "液压组重建未递增协调器Epoch。 ");
+            Assert(rebuilt.RebuildCount == before.RebuildCount + 1,
+                "液压组重建次数未准确记录。 ");
+            Assert(firstScope.IsClosed && secondScope.IsClosed && rebuilt.ActiveLeaseCount == 0,
+                "液压组重建未终结并清除旧作用域租约。 ");
+        }
+
+        private static void LateOldEpochLeaseCannotReleaseNewGeneration()
+        {
+            var pressure = 80.0;
+            var coordinator = NewCoordinator(
+                () => Volatile.Read(ref pressure),
+                () =>
+                {
+                    Volatile.Write(ref pressure, 0.0);
+                    return Task.CompletedTask;
+                },
+                stableMs: 0,
+                timeoutMs: 300,
+                barrierTimeoutMs: 300);
+            var key = new HydraulicGenerationKey(Guid.NewGuid(), 2, HydraulicPhaseKind.Recovery, 11);
+            var oldLease = coordinator.EnterGenerationAsync(key, new[] { 8, 9 }, CancellationToken.None)
+                .GetAwaiter().GetResult();
+            coordinator.RebuildGroupAsync(2, "EpochIsolation", 1000, CancellationToken.None)
+                .GetAwaiter().GetResult();
+
+            Volatile.Write(ref pressure, 80.0);
+            var newLease = coordinator.EnterGenerationAsync(key, new[] { 8, 9 }, CancellationToken.None)
+                .GetAwaiter().GetResult();
+            Assert(newLease.CoordinatorEpoch > oldLease.CoordinatorEpoch,
+                "重建后的同Key代次没有使用新Epoch。 ");
+            try
+            {
+                coordinator.MarkVoltageReleaseAsync(oldLease, 8).GetAwaiter().GetResult();
+            }
+            catch (OperationCanceledException)
+            {
+                // 旧代次由重建明确终结，迟到调用应观察旧终态。
+            }
+
+            var snapshot = coordinator.ProbeGroupHealth(2);
+            Assert(snapshot.PendingMembers.SequenceEqual(new[] { 8, 9 }),
+                "迟到旧Epoch租约污染了新代次成员状态：" + snapshot);
+            Task.WaitAll(
+                coordinator.MarkVoltageReleaseAsync(newLease, 8),
+                coordinator.MarkVoltageReleaseAsync(newLease, 9));
         }
 
         private static void StaleLowPressureCannotConfirmRelease()

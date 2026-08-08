@@ -50,6 +50,10 @@ namespace MTEmbTest
         public string LastReason { get; set; }
         public string UpdatedUtc { get; set; }
         public List<string> RestartHistoryUtc { get; set; } = new List<string>();
+        public bool InProcessRecoveryPending { get; set; }
+        public string InProcessRecoveryFingerprint { get; set; }
+        public List<string> InProcessRecoveryHistory { get; set; } = new List<string>();
+        public string LastInProcessRecoveryResult { get; set; }
     }
 
     internal static class UnattendedRunCheckpointStore
@@ -74,9 +78,10 @@ namespace MTEmbTest
             lock (Sync)
             {
                 var checkpoint = LoadUnsafe() ?? new UnattendedRunCheckpoint();
-                checkpoint.SchemaVersion = 2;
+                checkpoint.SchemaVersion = 3;
                 checkpoint.Armed = true;
                 checkpoint.RestartPending = false;
+                checkpoint.InProcessRecoveryPending = false;
                 checkpoint.GracefulPaused = false;
                 checkpoint.StoreDir = config.Test.StoreDir ?? string.Empty;
                 checkpoint.TestName = config.Test.TestName ?? string.Empty;
@@ -107,6 +112,7 @@ namespace MTEmbTest
                 var checkpoint = LoadUnsafe() ?? new UnattendedRunCheckpoint();
                 checkpoint.Armed = false;
                 checkpoint.RestartPending = false;
+                checkpoint.InProcessRecoveryPending = false;
                 checkpoint.GracefulPaused = false;
                 checkpoint.RecoveryNonce = string.Empty;
                 checkpoint.LastReason = string.IsNullOrWhiteSpace(reason) ? "AuthorizationRevoked" : reason;
@@ -200,6 +206,101 @@ namespace MTEmbTest
             }
         }
 
+        internal static bool TryRegisterInProcessRecovery(
+            GlobalConfig config,
+            string fingerprint,
+            out UnattendedRunCheckpoint checkpoint,
+            out string error)
+        {
+            checkpoint = null;
+            error = string.Empty;
+            lock (Sync)
+            {
+                var current = LoadUnsafe();
+                if (current == null || !current.Armed)
+                {
+                    error = "无人值守续测未授权。";
+                    return false;
+                }
+                if (current.InProcessRecoveryPending)
+                {
+                    error = "已有同进程恢复正在执行。";
+                    return false;
+                }
+                if (config?.Test == null ||
+                    !string.Equals(current.StoreDir, config.Test.StoreDir, StringComparison.OrdinalIgnoreCase) ||
+                    !string.Equals(current.TestName, config.Test.TestName, StringComparison.OrdinalIgnoreCase) ||
+                    !string.Equals(current.ConfigurationSha256, ComputeConfigurationHash(config),
+                        StringComparison.OrdinalIgnoreCase) ||
+                    !string.Equals(current.ExecutableSha256, ComputeFileHash(GetExecutablePath()),
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    error = "项目、配置或程序身份已变化，拒绝同进程自动续测。";
+                    return false;
+                }
+
+                var now = DateTime.UtcNow;
+                var normalized = string.IsNullOrWhiteSpace(fingerprint)
+                    ? "UnknownSystemFault"
+                    : fingerprint.Trim();
+                current.InProcessRecoveryHistory = (current.InProcessRecoveryHistory ?? new List<string>())
+                    .Where(entry => TryParseRecoveryHistory(entry, out var timestamp, out _) &&
+                                    now - timestamp <= TimeSpan.FromMinutes(10))
+                    .ToList();
+                if (current.InProcessRecoveryHistory.Any(entry =>
+                        TryParseRecoveryHistory(entry, out _, out var savedFingerprint) &&
+                        string.Equals(savedFingerprint, normalized, StringComparison.OrdinalIgnoreCase)))
+                {
+                    error = "相同故障指纹10分钟内已执行过一次同进程恢复。";
+                    SaveUnsafe(current);
+                    return false;
+                }
+
+                current.SchemaVersion = 3;
+                current.InProcessRecoveryPending = true;
+                current.InProcessRecoveryFingerprint = normalized;
+                current.InProcessRecoveryHistory.Add(
+                    now.ToString("O", CultureInfo.InvariantCulture) + "|" + normalized);
+                current.LastReason = "InProcessRecoveryPending";
+                current.UpdatedUtc = now.ToString("O", CultureInfo.InvariantCulture);
+                SaveUnsafe(current);
+                checkpoint = current;
+                return true;
+            }
+        }
+
+        internal static void CompleteInProcessRecovery(bool success, string reason)
+        {
+            lock (Sync)
+            {
+                var checkpoint = LoadUnsafe();
+                if (checkpoint == null) return;
+                checkpoint.InProcessRecoveryPending = false;
+                checkpoint.LastInProcessRecoveryResult =
+                    DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture) + "|" +
+                    (success ? "Success|" : "Failed|") + (reason ?? "Unknown");
+                checkpoint.LastReason = success
+                    ? "InProcessRecoveryCompleted"
+                    : "InProcessRecoveryFailed: " + (reason ?? "Unknown");
+                checkpoint.UpdatedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+                SaveUnsafe(checkpoint);
+            }
+        }
+
+        private static bool TryParseRecoveryHistory(
+            string value,
+            out DateTime timestampUtc,
+            out string fingerprint)
+        {
+            timestampUtc = DateTime.MinValue;
+            fingerprint = string.Empty;
+            if (string.IsNullOrWhiteSpace(value)) return false;
+            var separator = value.IndexOf('|');
+            if (separator <= 0 || separator >= value.Length - 1) return false;
+            fingerprint = value.Substring(separator + 1);
+            return TryParseUtc(value.Substring(0, separator), out timestampUtc);
+        }
+
         internal static bool TryConsume(
             RecoveryStartupIntent intent,
             GlobalConfig config,
@@ -282,6 +383,7 @@ namespace MTEmbTest
                 if (checkpoint == null) return;
                 checkpoint.Armed = false;
                 checkpoint.RestartPending = false;
+                checkpoint.InProcessRecoveryPending = false;
                 checkpoint.RecoveryNonce = string.Empty;
                 checkpoint.LastReason = reason ?? "RestartCancelled";
                 checkpoint.UpdatedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
@@ -312,9 +414,10 @@ namespace MTEmbTest
             lock (Sync)
             {
                 var checkpoint = LoadUnsafe() ?? new UnattendedRunCheckpoint();
-                checkpoint.SchemaVersion = 2;
+                checkpoint.SchemaVersion = 3;
                 checkpoint.Armed = true;
                 checkpoint.RestartPending = false;
+                checkpoint.InProcessRecoveryPending = false;
                 checkpoint.GracefulPaused = true;
                 checkpoint.StoreDir = config.Test.StoreDir ?? string.Empty;
                 checkpoint.TestName = config.Test.TestName ?? string.Empty;
@@ -536,6 +639,7 @@ namespace MTEmbTest
         {
             checkpoint.Armed = false;
             checkpoint.RestartPending = false;
+            checkpoint.InProcessRecoveryPending = false;
             checkpoint.GracefulPaused = false;
             checkpoint.RecoveryNonce = string.Empty;
             checkpoint.LastReason = reason;
@@ -635,6 +739,7 @@ namespace MTEmbTest
         private static GlobalConfig _config;
         private static Func<Task> _quiesceAndFlush;
         private static int _restartStarted;
+        private static int _inProcessRecoveryStarted;
 
         internal static void Attach(EpbManager manager, GlobalConfig config)
         {
@@ -708,6 +813,11 @@ namespace MTEmbTest
 
         private static void OnSystemFaultRaised(ControlFault fault)
         {
+            if (fault?.RecoveryPolicy == FaultRecoveryPolicy.UnattendedBatchRecycle)
+            {
+                _ = Task.Run(() => RecoverInProcessOrRestartAsync(fault));
+                return;
+            }
             _ = Task.Run(() => RestartAsync(
                 fault?.Reason ?? "SystemFault",
                 fault?.CorrelationId.ToString("N") ?? Guid.NewGuid().ToString("N")));
@@ -716,6 +826,135 @@ namespace MTEmbTest
         private static void OnFormalCycleCompleted(int channel, int sessionRunCount)
         {
             UnattendedRunCheckpointStore.RecordFormalCycleCommitted(channel);
+        }
+
+        private static async Task RecoverInProcessOrRestartAsync(ControlFault fault)
+        {
+            if (Interlocked.CompareExchange(ref _inProcessRecoveryStarted, 1, 0) != 0) return;
+            var reason = fault?.Reason ?? "SoftwareRecoveryCircuitOpen";
+            var correlationId = fault?.CorrelationId.ToString("N") ?? Guid.NewGuid().ToString("N");
+            var affected = string.Join(",", (fault?.AffectedChannels ?? Array.Empty<int>())
+                .Distinct()
+                .OrderBy(channel => channel));
+            var fingerprint =
+                $"{fault?.Code ?? "SystemFault"}|{fault?.Scope}|{fault?.GroupId}|" +
+                $"Channels={affected}|State={reason}";
+            try
+            {
+                EpbManager manager;
+                GlobalConfig config;
+                lock (Sync)
+                {
+                    manager = _manager;
+                    config = _config;
+                }
+                UnattendedRunCheckpoint checkpoint = null;
+                var registrationError = manager == null
+                    ? "ManagerUnavailable"
+                    : config == null
+                        ? "ConfigUnavailable"
+                        : string.Empty;
+                if (manager == null || config == null ||
+                    !UnattendedRunCheckpointStore.TryRegisterInProcessRecovery(
+                        config,
+                        fingerprint,
+                        out checkpoint,
+                        out registrationError))
+                {
+                    ProjectLogHub.Write(
+                        ProjectLogLevel.Warning,
+                        $"同进程自动恢复不可用，升级到进程自重启。" +
+                        $"Reason={registrationError}; Fault={reason}",
+                        "无人值守恢复");
+                    Interlocked.Exchange(ref _inProcessRecoveryStarted, 0);
+                    await RestartAsync(reason, correlationId).ConfigureAwait(false);
+                    return;
+                }
+
+                ProjectLogHub.Write(
+                    ProjectLogLevel.Warning,
+                    $"启动同进程无人值守恢复：冻结旧批次→StopAll→逻辑清场→完整学习。" +
+                    $"Fingerprint={fingerprint}",
+                    "无人值守恢复");
+                var safety = await manager.PrepareForFreshRestartAsync(
+                        new StopContext
+                        {
+                            Source = StopSource.SystemFault,
+                            Reason = "同进程无人值守恢复：" + reason,
+                            Initiator = nameof(UnattendedRecoveryCoordinator),
+                            CorrelationId = correlationId,
+                            RequestedUtc = DateTime.UtcNow
+                        },
+                        CancellationToken.None)
+                    .ConfigureAwait(false);
+                if (!safety.CanRestartInProcess)
+                    throw new InvalidOperationException(
+                        "同进程恢复清场不变量未通过：" + safety.LogicalError);
+
+                var remaining = (checkpoint.RemainingFormalCycles ??
+                                 new Dictionary<string, int>())
+                    .Select(pair => new
+                    {
+                        Parsed = int.TryParse(
+                            pair.Key,
+                            NumberStyles.Integer,
+                            CultureInfo.InvariantCulture,
+                            out var channel),
+                        Channel = channel,
+                        Remaining = Math.Max(0, pair.Value)
+                    })
+                    .Where(item => item.Parsed && item.Channel >= 1 && item.Channel <= 12 &&
+                                   item.Remaining > 0)
+                    .ToDictionary(item => item.Channel, item => item.Remaining);
+                var selected = (checkpoint.SelectedChannels ?? Array.Empty<int>())
+                    .Where(channel => remaining.ContainsKey(channel))
+                    .Distinct()
+                    .OrderBy(channel => channel)
+                    .ToArray();
+                if (selected.Length == 0)
+                {
+                    UnattendedRunCheckpointStore.CompleteInProcessRecovery(true, "NoRemainingCycles");
+                    UnattendedRunCheckpointStore.Disarm("FormalRunAlreadyCompleted");
+                    return;
+                }
+
+                manager.EpbTestCycle = remaining;
+                var learnCycles = Math.Max(5, checkpoint.LearnCycles);
+                await manager.StartBatchSynchronizedWithResultAsync(
+                        selected,
+                        learnCycles,
+                        CancellationToken.None)
+                    .ConfigureAwait(false);
+                var rebuildSummary = safety.LogicalState?.HydraulicGroups == null
+                    ? "Hydraulics=Unavailable"
+                    : "Hydraulics=" + string.Join(
+                        " / ",
+                        safety.LogicalState.HydraulicGroups.Select(group => group.ToString()));
+                UnattendedRunCheckpointStore.CompleteInProcessRecovery(
+                    true,
+                    "Recovered; " + rebuildSummary);
+                ProjectLogHub.Write(
+                    ProjectLogLevel.Info,
+                    $"同进程无人值守恢复完成：Channels=[{string.Join(",", selected)}] " +
+                    $"LearnCycles={learnCycles}",
+                    "无人值守恢复");
+            }
+            catch (Exception ex)
+            {
+                UnattendedRunCheckpointStore.CompleteInProcessRecovery(false, ex.Message);
+                ProjectLogHub.Write(
+                    ProjectLogLevel.Error,
+                    $"同进程无人值守恢复失败，升级到进程自重启：{ex}",
+                    "无人值守恢复");
+                Interlocked.Exchange(ref _inProcessRecoveryStarted, 0);
+                await RestartAsync(reason, correlationId).ConfigureAwait(false);
+                return;
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _inProcessRecoveryStarted, 0);
+                ProjectLogHub.Flush(true);
+            }
         }
 
         private static async Task RestartAsync(string reason, string correlationId)
@@ -765,12 +1004,12 @@ namespace MTEmbTest
                 manager.ReleaseHardwareForRestart();
                 ProjectLogHub.Flush(true);
 
-                if (safety == null || !safety.CanReleaseAcquisition)
+                if (safety == null || !safety.FullyConfirmed)
                 {
                     UnattendedRunCheckpointStore.CancelPendingRestart("SafetyStopUnconfirmed");
                     ProjectLogHub.Write(
                         ProjectLogLevel.Error,
-                        "自重启已取消：电机DO或程控电源关闭未确认。",
+                        "自重启已取消：电机DO、程控电源或安全压力未全部确认。",
                         "无人值守恢复");
                     ProjectLogHub.Flush(true);
                     return;
