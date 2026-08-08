@@ -11,6 +11,13 @@ namespace AdaptiveControlTests
 {
     internal static class HydraulicGroupCoordinatorTests
     {
+        public static int RunRecoveryEvidenceRegression()
+        {
+            var passed = 0;
+            Run("DAQ压力失新不再阻塞协调器安全重建", StalePressureAllowsDeenergizedCoordinatorRebuild, ref passed);
+            return passed;
+        }
+
         public static int RunAll()
         {
             var passed = 0;
@@ -21,6 +28,7 @@ namespace AdaptiveControlTests
             Run("已完成液压代次不阻碍不同成员重新开始", CompletedGenerationAllowsFreshMembership, ref passed);
             Run("液压通道作用域作废后代次完整归还", ChannelLeaseScopesAlwaysCloseGeneration, ref passed);
             Run("液压组重建替换旧Gate并递增Epoch", RebuildGroupRestoresFreshStartHealth, ref passed);
+            Run("DAQ压力失新不再阻塞协调器安全重建", StalePressureAllowsDeenergizedCoordinatorRebuild, ref passed);
             Run("迟到旧Epoch租约不得释放新代次成员", LateOldEpochLeaseCannotReleaseNewGeneration, ref passed);
             Run("液压代次屏障缺员在一个周期内超时", GenerationBarrierTimeoutIsBounded, ref passed);
             Run("全员到齐后释压时间不计入屏障超时", SafePressureWaitDoesNotConsumeBarrierTimeout, ref passed);
@@ -213,6 +221,43 @@ namespace AdaptiveControlTests
                 "液压组重建次数未准确记录。 ");
             Assert(firstScope.IsClosed && secondScope.IsClosed && rebuilt.ActiveLeaseCount == 0,
                 "液压组重建未终结并清除旧作用域租约。 ");
+        }
+
+        private static void StalePressureAllowsDeenergizedCoordinatorRebuild()
+        {
+            var staleTick = Stopwatch.GetTimestamp() - Stopwatch.Frequency;
+            var releases = 0;
+            var config = new TestConfig();
+            var hydraulic = new HydraulicItem
+            {
+                Id = 2,
+                Enabled = true,
+                ReleaseSafePressureBar = 5,
+                ReleaseStableMs = 10,
+                ReleaseTimeoutMs = 40,
+                PressureSampleMaxAgeMs = 100
+            };
+            hydraulic.Members.Add(8);
+            config.Hydraulics.Add(hydraulic);
+            var coordinator = new HydraulicGroupCoordinator(
+                config,
+                _ => new PressureSample(2, 0, DateTime.UtcNow, staleTick),
+                _ =>
+                {
+                    Interlocked.Increment(ref releases);
+                    return Task.CompletedTask;
+                },
+                NullLogger.Instance);
+
+            var rebuilt = coordinator.RebuildGroupAsync(
+                    2,
+                    "DaqGenerationRecovery",
+                    1000,
+                    CancellationToken.None)
+                .GetAwaiter().GetResult();
+            Assert(releases == 1, "压力失新时未先执行DO/AO去能量化");
+            Assert(rebuilt.IsHealthyForFreshStart,
+                "压力失新形成循环依赖，协调器无法重建：" + rebuilt);
         }
 
         private static void LateOldEpochLeaseCannotReleaseNewGeneration()

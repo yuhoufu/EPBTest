@@ -8,6 +8,7 @@ using System.Linq;
 using System.Text;
 using Controller.Adaptive;
 using DataOperation;
+using IO.NI;
 
 namespace Controller
 {
@@ -15,6 +16,12 @@ namespace Controller
     {
         public PowerSupplyEnergizationPermitException(int channel, int groupId, string reason)
             : base($"PowerSupplyEnergizationPermitMissing Channel={channel} Group={groupId} Reason={reason}") { }
+    }
+
+    internal sealed class ChannelExecutionPermitException : InvalidOperationException
+    {
+        public ChannelExecutionPermitException(int channel, ChannelRuntimeState state, string reason)
+            : base($"ChannelExecutionPermitMissing Channel={channel} State={state} Reason={reason}") { }
     }
 
     internal enum EpbDoCommand
@@ -55,6 +62,10 @@ namespace Controller
         public double? VerificationThresholdA { get; set; }
         public int? VerificationWaitMs { get; set; }
         public bool? ElectricalCurrentCleared { get; set; }
+        public Guid CommandId { get; set; }
+        public bool CallerTimedOut { get; set; }
+        public bool LateHardwareSuccess { get; set; }
+        public DateTime? HardwareCompletedUtc { get; set; }
     }
 
     /// <summary>
@@ -117,13 +128,50 @@ namespace Controller
             bool commandSucceeded,
             double commandElapsedMs)
         {
-            _terminalOffSafetyEvidence[channel] = new TerminalOffSafetyEvidence
-            {
-                CommandUtc = DateTime.UtcNow,
-                Reason = reason ?? string.Empty,
-                CommandSucceeded = commandSucceeded,
-                CommandElapsedMs = commandElapsedMs
-            };
+            _terminalOffSafetyEvidence.AddOrUpdate(
+                channel,
+                _ => new TerminalOffSafetyEvidence
+                {
+                    CommandUtc = DateTime.UtcNow,
+                    Reason = reason ?? string.Empty,
+                    CommandSucceeded = commandSucceeded,
+                    CommandElapsedMs = commandElapsedMs
+                },
+                (_, existing) =>
+                {
+                    existing.CommandUtc = DateTime.UtcNow;
+                    existing.Reason = reason ?? string.Empty;
+                    existing.CommandSucceeded = commandSucceeded || existing.LateHardwareSuccess;
+                    existing.CommandElapsedMs = commandElapsedMs;
+                    return existing;
+                });
+        }
+
+        private void RecordLateTerminalOffCompletion(HighPriorityDoTelemetry telemetry)
+        {
+            if (telemetry == null || telemetry.Channel < 1 || telemetry.Channel > 12) return;
+            _terminalOffSafetyEvidence.AddOrUpdate(
+                telemetry.Channel,
+                _ => new TerminalOffSafetyEvidence
+                {
+                    CommandUtc = telemetry.HardwareCompletedUtc,
+                    Reason = "HighPriorityOffLateCompletion",
+                    CommandSucceeded = telemetry.Result,
+                    CommandElapsedMs = telemetry.TotalMs,
+                    CommandId = telemetry.CommandId,
+                    CallerTimedOut = telemetry.CallerTimedOut,
+                    LateHardwareSuccess = telemetry.LateHardwareSuccess,
+                    HardwareCompletedUtc = telemetry.HardwareCompletedUtc
+                },
+                (_, existing) =>
+                {
+                    existing.CommandId = telemetry.CommandId;
+                    existing.CallerTimedOut = telemetry.CallerTimedOut;
+                    existing.LateHardwareSuccess = telemetry.LateHardwareSuccess;
+                    existing.HardwareCompletedUtc = telemetry.HardwareCompletedUtc;
+                    if (telemetry.Result) existing.CommandSucceeded = true;
+                    return existing;
+                });
         }
 
         internal void RecordTerminalOffCurrentVerification(
@@ -157,7 +205,11 @@ namespace Controller
                         VerificationCurrentA = currentA,
                         VerificationThresholdA = thresholdA,
                         VerificationWaitMs = waitMs,
-                        ElectricalCurrentCleared = cleared
+                        ElectricalCurrentCleared = cleared,
+                        CommandId = existing.CommandId,
+                        CallerTimedOut = existing.CallerTimedOut,
+                        LateHardwareSuccess = existing.LateHardwareSuccess,
+                        HardwareCompletedUtc = existing.HardwareCompletedUtc
                     };
                 });
         }
@@ -190,12 +242,14 @@ namespace Controller
 
         internal bool CommandEpbForward(int channel, string stage)
         {
+            EnsureChannelExecutionPermit(channel, stage);
             EnsurePowerSupplyEnergizationPermit(channel);
             return ExecuteDoCommand(channel, stage, EpbDoCommand.Forward, () => _do.SetEpbForward(channel));
         }
 
         internal bool CommandEpbReverse(int channel, string stage)
         {
+            EnsureChannelExecutionPermit(channel, stage);
             EnsurePowerSupplyEnergizationPermit(channel);
             return ExecuteDoCommand(channel, stage, EpbDoCommand.Reverse, () => _do.SetEpbReverse(channel));
         }
@@ -223,6 +277,31 @@ namespace Controller
             var result = _do.SetEpbOffHighPriority(channel);
             if (result) SetChannelEnergized(channel, false);
             return result;
+        }
+
+        private void EnsureChannelExecutionPermit(int channel, string stage)
+        {
+            if (!IsChannelEnabled(channel))
+                throw new ChannelExecutionPermitException(
+                    channel,
+                    ChannelRuntimeState.NotEnabled,
+                    $"Disabled Stage={stage}");
+            var state = _channelRuntimeStateStore.Get(channel)?.State ??
+                        ChannelRuntimeState.NotEnabled;
+            if (!ChannelRuntimeAllowsEnergization(state))
+                throw new ChannelExecutionPermitException(channel, state, stage);
+        }
+
+        internal static bool ChannelRuntimeAllowsEnergization(ChannelRuntimeState state)
+        {
+            return state == ChannelRuntimeState.Starting ||
+                   state == ChannelRuntimeState.Learning ||
+                   state == ChannelRuntimeState.Running ||
+                   state == ChannelRuntimeState.WarningRunning ||
+                   state == ChannelRuntimeState.Recovering ||
+                   state == ChannelRuntimeState.ResumeChecking ||
+                   state == ChannelRuntimeState.Qualification ||
+                   state == ChannelRuntimeState.PausePending;
         }
 
         private bool ExecuteDoCommand(

@@ -202,7 +202,13 @@ namespace Controller
 
         private void FlushPersistentLog(bool durable = true)
         {
-            try { (_log as IFlushableAppLogger)?.Flush(durable); }
+            try
+            {
+                if (_log is IAsyncFlushableAppLogger asynchronous)
+                    asynchronous.RequestFlush(durable);
+                else
+                    (_log as IFlushableAppLogger)?.Flush(durable);
+            }
             catch
             {
                 // 日志刷新失败不得回流控制链路。
@@ -234,6 +240,21 @@ namespace Controller
             bool allowTerminalReset = false,
             bool allowSystemFaultReset = false)
         {
+            // 物理安全目标可以包含同组全部硬件成员，但禁用通道不属于当前运行状态机。
+            // 这是中央不变量：任何故障、恢复或迟到事件都不能把 Enabled=false 污染为
+            // Paused/Recovering/Alarm。硬件 OFF 证据仍由 DO 追踪单独保留。
+            var normalizedState = NormalizeRuntimeStateForEnabled(IsChannelEnabled(channel), state);
+            if (normalizedState != state)
+            {
+                state = normalizedState;
+                reasonCode = "DisabledChannelInvariant";
+                reasonText = "通道未启用；忽略组级故障或恢复状态污染。";
+                sourceChannel = null;
+                affectedChannels = new[] { channel };
+                correlationId = correlationId == Guid.Empty ? Guid.NewGuid() : correlationId;
+                allowTerminalReset = true;
+                allowSystemFaultReset = true;
+            }
             // DAQ恢复拥有受影响通道的状态机，直至恢复终态提交并移除上下文。
             // 圈尾软预警/旧Runner回调不得把“系统自恢复”覆盖回“运行/软预警”。
             if (state == ChannelRuntimeState.Running ||
@@ -266,7 +287,13 @@ namespace Controller
                     AffectedChannels = (affectedChannels ?? new[] { channel }).Distinct().ToArray(),
                     TimestampUtc = DateTime.UtcNow,
                     CorrelationId = correlationId,
-                    RunId = _activeBatchId
+                    RunId = _activeBatchId,
+                    RunEpoch = Interlocked.Read(ref _runEpoch),
+                    Enabled = IsChannelEnabled(channel),
+                    FormalPhaseCommitted = IsFormalPhaseCommitted,
+                    TimerActive = _timers.ContainsKey(channel) || _timerCache.ContainsKey(channel),
+                    RunnerActive = _runners.ContainsKey(channel) || _runnerCache.ContainsKey(channel),
+                    Energized = IsChannelEnergized(channel)
                 },
                 allowTerminalReset,
                 allowSystemFaultReset);
@@ -428,6 +455,13 @@ namespace Controller
             public int OwnershipReleased;
             public readonly DaqRecoveryPhaseGate Phase = new DaqRecoveryPhaseGate();
             public Dictionary<int, long> CutoffParticipantVersions;
+        }
+
+        internal static ChannelRuntimeState NormalizeRuntimeStateForEnabled(
+            bool enabled,
+            ChannelRuntimeState requested)
+        {
+            return enabled ? requested : ChannelRuntimeState.NotEnabled;
         }
 
         private static long DaqAbortedCycleKey(int channel, int cycleNumber)
@@ -836,6 +870,7 @@ namespace Controller
             _cfg = cfg ?? throw new ArgumentNullException(nameof(cfg));
 
             _do = doController;
+            _do.HighPriorityOffCompleted += OnHighPriorityOffCompleted;
             _ao = aoController;
             //_readCurrent = acq.ReadCurrent;
             _readCurrent = acq.ReadCurrentFast;
@@ -1089,6 +1124,21 @@ namespace Controller
             await EnterSingleHydraulicGenerationAsync(key, channel, token).ConfigureAwait(false);
         }
 
+        private void OnHighPriorityOffCompleted(HighPriorityDoTelemetry telemetry)
+        {
+            if (telemetry == null) return;
+            RecordLateTerminalOffCompletion(telemetry);
+            if (telemetry.Result) SetChannelEnergized(telemetry.Channel, false);
+            if (!telemetry.LateHardwareSuccess) return;
+
+            _log.Warn(
+                $"EPB[{telemetry.Channel}] 高优先级OFF调用方曾超时，但同一命令已迟到成功。" +
+                $"CommandId={telemetry.CommandId:N} NIWrite={telemetry.NiWriteMs:F3}ms " +
+                $"Total={telemetry.TotalMs:F3}ms Classification=LateHardwareSuccess；" +
+                "保持电源组失效安全，后续以新鲜电流/电源回读完成最终对账。",
+                "DO性能");
+        }
+
         private async Task EnterSingleHydraulicGenerationAsync(
             HydraulicGenerationKey key,
             int channel,
@@ -1229,15 +1279,11 @@ namespace Controller
             catch (Exception ex)
             {
                 CancelStopCts(channel);
-                PublishChannelRuntimeState(
+                PublishStartBlockedAfterCleanup(
                     channel,
-                    ChannelRuntimeState.StartBlocked,
                     "PreflightFailed",
                     ex.Message,
-                    channel,
-                    new[] { channel },
-                    singleRunId,
-                    allowTerminalReset: true);
+                    singleRunId);
                 throw;
             }
 
@@ -1364,16 +1410,11 @@ namespace Controller
                 }
                 catch (Exception ex)
                 {
-                    try { StopChannelForInternalCleanup(channel); } catch { }
-                    PublishChannelRuntimeState(
+                    PublishStartBlockedAfterCleanup(
                         channel,
-                        ChannelRuntimeState.StartBlocked,
                         "LiveLearningFault",
                         ex.Message,
-                        channel,
-                        new[] { channel },
-                        singleRunId,
-                        allowTerminalReset: true);
+                        singleRunId);
                     _log.Error(
                         $"EPB[{channel}] 本次启动定位/学习确认实时故障，已隔离该通道：{ex.Message}",
                         "EPB",
@@ -1618,6 +1659,73 @@ namespace Controller
                 "ManualStopped",
                 "人工停止");
             TryDisableIdlePowerGroup(channel, "通道停止后电源组已无运行通道");
+        }
+
+        /// <summary>
+        /// 非运行终态提交前的唯一清场入口。先撤销 Timer/Runner/液压参与权并确认 OFF，
+        /// 再允许发布 StartBlocked 等终态，杜绝“红色终态但后台仍继续发命令”。
+        /// </summary>
+        private bool RevokeChannelExecutionBeforeTerminalState(int channel, string reason)
+        {
+            UnmarkHydraulicParticipant(channel);
+            try { CancelStopCts(channel); } catch { }
+            RemoveTimerRuntime(channel, reason);
+
+            var wasEnergized = IsChannelEnergized(channel);
+            var offSucceeded = !wasEnergized;
+            try { offSucceeded = CommandEpbOffHighPriority(channel, reason) || !wasEnergized; }
+            catch { }
+            if (offSucceeded) SetChannelEnergized(channel, false);
+
+            try { ObserveSafetyTask(HydraulicMarkReleaseAsync(channel), reason + "Release", channel); }
+            catch { }
+            RemoveRunnerRuntime(channel, reason);
+
+            return IsTerminalExecutionQuiescent(
+                _timers.ContainsKey(channel),
+                _timerCache.ContainsKey(channel),
+                _runners.ContainsKey(channel),
+                _runnerCache.ContainsKey(channel),
+                IsChannelEnergized(channel),
+                offSucceeded);
+        }
+
+        internal static bool IsTerminalExecutionQuiescent(
+            bool timerActive,
+            bool timerCached,
+            bool runnerActive,
+            bool runnerCached,
+            bool energized,
+            bool offConfirmed)
+        {
+            return !timerActive && !timerCached &&
+                   !runnerActive && !runnerCached &&
+                   !energized && offConfirmed;
+        }
+
+        private void PublishStartBlockedAfterCleanup(
+            int channel,
+            string reasonCode,
+            string reasonText,
+            Guid correlationId,
+            IEnumerable<int> affectedChannels = null)
+        {
+            var revoked = RevokeChannelExecutionBeforeTerminalState(
+                channel,
+                "StartBlocked:" + (reasonCode ?? "Unknown"));
+            PublishChannelRuntimeState(
+                channel,
+                revoked ? ChannelRuntimeState.StartBlocked : ChannelRuntimeState.SystemFault,
+                revoked ? reasonCode : "TerminalCleanupUnverified",
+                revoked
+                    ? reasonText
+                    : "启动失败后的执行资源或电机OFF未确认；保持系统故障和失效安全，禁止显示为已停止。" +
+                      $" Original={reasonCode}/{reasonText}",
+                channel,
+                affectedChannels ?? new[] { channel },
+                correlationId,
+                allowTerminalReset: true,
+                allowSystemFaultReset: false);
         }
 
 
@@ -1865,6 +1973,11 @@ namespace Controller
                         attempt++;
                         try
                         {
+                            await WaitForStandaloneAlarmRecoveryWindowAsync(
+                                    channel,
+                                    correlationId,
+                                    cancellation.Token)
+                                .ConfigureAwait(false);
                             _log.Info(
                                 $"EPB[{channel}] 可恢复卡钳故障开始第{attempt}次无人值守预检与资格复核。" +
                                 $"CorrelationId={correlationId:N} Reason={reason}",
@@ -1914,6 +2027,38 @@ namespace Controller
                     cancellation.Dispose();
                 }
             });
+        }
+
+        private async Task WaitForStandaloneAlarmRecoveryWindowAsync(
+            int channel,
+            Guid correlationId,
+            CancellationToken token)
+        {
+            var logged = false;
+            while (!CanRunStandaloneAlarmRecovery(
+                       IsBatchSessionActive,
+                       IsFormalPhaseCommitted))
+            {
+                token.ThrowIfCancellationRequested();
+                if (!logged)
+                {
+                    logged = true;
+                    _log.Info(
+                        $"EPB[{channel}] 报警发生在批量启动/学习/资格阶段；" +
+                        "恢复所有权保留在批次协调器，禁止单通道提前创建正式Timer。" +
+                        $"Batch={_activeBatchId:N} FormalCommitted={IsFormalPhaseCommitted} " +
+                        $"CorrelationId={correlationId:N}",
+                        "报警");
+                }
+                await Task.Delay(50, token).ConfigureAwait(false);
+            }
+        }
+
+        internal static bool CanRunStandaloneAlarmRecovery(
+            bool batchSessionActive,
+            bool formalPhaseCommitted)
+        {
+            return !batchSessionActive || formalPhaseCommitted;
         }
 
         internal static bool CanContinueRecoverableChannelRestart(
@@ -3653,6 +3798,12 @@ namespace Controller
                     catch { }
                 }
             });
+        }
+
+        private bool IsChannelEnergized(int channel)
+        {
+            if (channel < 1 || channel > 12) return false;
+            return (Interlocked.Read(ref _energizedChannelsMask) & (1L << channel)) != 0;
         }
 
         private bool IsChannelEnabled(int channel)

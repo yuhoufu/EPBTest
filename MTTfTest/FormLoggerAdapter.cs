@@ -9,7 +9,7 @@ namespace MTEmbTest
     /// <summary>
     /// 面向 WinForm 的日志适配器：UI 队列保持窗体内独立，持久化统一交给进程级项目日志中心。
     /// </summary>
-    public class FormLoggerAdapter : IAppLogger, IFlushableAppLogger, IDisposable
+    public class FormLoggerAdapter : IAppLogger, IFlushableAppLogger, IAsyncFlushableAppLogger, IDisposable
     {
         private readonly Control _ui;
         private readonly int _maxInfos;
@@ -44,7 +44,7 @@ namespace MTEmbTest
         public void ConfigureProjectLogDirectory(string projectRoot)
         {
             if (string.IsNullOrWhiteSpace(projectRoot)) return;
-            if (ProjectLogHub.Configure(projectRoot))
+            if (ProjectLogHub.EnqueueConfigure(projectRoot))
                 _configuredProjectRoot = projectRoot;
         }
 
@@ -63,7 +63,7 @@ namespace MTEmbTest
         {
             EnsureProjectLogConfigured();
             Persist(ProjectLogLevel.Warning, message, category, null);
-            ProjectLogHub.Flush(true);
+            ProjectLogHub.RequestFlush(true);
             Dispatch(() => ClsLogProcess.AddToWarnList(
                 _maxWarns,
                 ref _logWarn,
@@ -75,7 +75,7 @@ namespace MTEmbTest
         {
             EnsureProjectLogConfigured();
             Persist(ProjectLogLevel.Error, message, category, ex);
-            ProjectLogHub.Flush(true);
+            ProjectLogHub.RequestFlush(true);
             var detail = ex == null ? message : $"{message} | {ex}";
             Dispatch(() => ClsErrorProcess.AddToErrorList(
                 _maxErrors,
@@ -88,6 +88,12 @@ namespace MTEmbTest
         {
             EnsureProjectLogConfigured();
             return ProjectLogHub.Flush(durable);
+        }
+
+        public bool RequestFlush(bool durable = false)
+        {
+            EnsureProjectLogConfigured();
+            return ProjectLogHub.RequestFlush(durable);
         }
 
         public void Dispose()
@@ -120,7 +126,7 @@ namespace MTEmbTest
             string category,
             Exception exception)
         {
-            if (ProjectLogHub.Write(level, message, category, exception)) return;
+            if (ProjectLogHub.Enqueue(level, message, category, exception)) return;
 
             var failure = ProjectLogHub.LastFailure;
             lock (FailureNoticeGate)
@@ -131,7 +137,7 @@ namespace MTEmbTest
             }
 
             var notice =
-                "项目日志写盘/轮转失败，控制流程继续；内存记录已保留，下次写入将自动重试。" +
+                "项目日志后台队列已满或写盘/轮转失败，控制流程继续；日志链路不会反压实时控制。" +
                 (failure == null ? string.Empty : $" 原因：{failure.Message}");
             Dispatch(() => ClsLogProcess.AddToWarnList(
                 _maxWarns,

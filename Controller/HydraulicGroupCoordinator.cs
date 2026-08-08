@@ -237,7 +237,25 @@ namespace Controller
                 $"Timeout={timeoutMs}ms" +
                 (string.IsNullOrWhiteSpace(detail) ? string.Empty : $" Detail={detail}"))
         {
+            HydraulicId = hydraulicId;
+            LastPressureBar = lastPressureBar;
+            SafePressureBar = safePressureBar;
+            TimeoutMs = timeoutMs;
+            Detail = detail ?? string.Empty;
         }
+
+        public int HydraulicId { get; }
+        public double LastPressureBar { get; }
+        public double SafePressureBar { get; }
+        public int TimeoutMs { get; }
+        public string Detail { get; }
+
+        public bool IsPressureEvidenceUnavailable =>
+            Detail.StartsWith("PressureReaderUnavailable", StringComparison.OrdinalIgnoreCase) ||
+            Detail.StartsWith("PressureReadFailed", StringComparison.OrdinalIgnoreCase) ||
+            Detail.StartsWith("PressureSampleNoSample", StringComparison.OrdinalIgnoreCase) ||
+            Detail.StartsWith("PressureSampleInvalidValue", StringComparison.OrdinalIgnoreCase) ||
+            Detail.StartsWith("PressureSampleStaleSample", StringComparison.OrdinalIgnoreCase);
     }
 
     public enum HydraulicPressureFailureReason
@@ -698,10 +716,28 @@ namespace Controller
                     throw new HydraulicCoordinatorRebuildingException(hydraulicId);
                 try
                 {
-                    await ForceReleaseAsync(
-                            hydraulicId,
-                            "CoordinatorRebuild:" + (reason ?? "Unknown"))
-                        .ConfigureAwait(false);
+                    try
+                    {
+                        await ForceReleaseAsync(
+                                hydraulicId,
+                                "CoordinatorRebuild:" + (reason ?? "Unknown"))
+                            .ConfigureAwait(false);
+                    }
+                    catch (HydraulicReleaseTimeoutException ex)
+                        when (ex.IsPressureEvidenceUnavailable)
+                    {
+                        // 故障 DAQ 不能同时成为“允许重建该 DAQ”的前置证据。
+                        // DO/AO 已幂等回零；压力不可观测时按配置的机械稳定窗口有界等待，
+                        // 重建完成后仍必须由新 generation 的新鲜样本通过后续启动资格。
+                        var item = _test.Hydraulics.FirstOrDefault(h => h.Id == hydraulicId);
+                        var settleMs = Math.Max(100, item?.ReleaseStableMs ?? 100);
+                        _log.Warn(
+                            $"液压组{hydraulicId}压力证据不可观测，已完成DO/AO去能量化；" +
+                            $"等待{settleMs}ms后仅重建协调/DAQ逻辑，后续重新加入仍要求新鲜压力。" +
+                            $" Detail={ex.Detail} Reason={reason}",
+                            "液压协调");
+                        await Task.Delay(settleMs, token).ConfigureAwait(false);
+                    }
 
                     var oldScopes = _activeLeaseScopes.Keys
                         .Where(scope => scope.Key.HydraulicId == hydraulicId)

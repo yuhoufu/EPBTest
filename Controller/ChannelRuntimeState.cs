@@ -61,6 +61,12 @@ namespace Controller
         public DateTime TimestampUtc { get; set; }
         public Guid CorrelationId { get; set; }
         public Guid RunId { get; set; }
+        public long RunEpoch { get; set; }
+        public bool Enabled { get; set; }
+        public bool FormalPhaseCommitted { get; set; }
+        public bool TimerActive { get; set; }
+        public bool RunnerActive { get; set; }
+        public bool Energized { get; set; }
 
         public ChannelRuntimeStateChangedEvent Clone()
         {
@@ -75,7 +81,13 @@ namespace Controller
                 AffectedChannels = AffectedChannels?.ToArray() ?? Array.Empty<int>(),
                 TimestampUtc = TimestampUtc,
                 CorrelationId = CorrelationId,
-                RunId = RunId
+                RunId = RunId,
+                RunEpoch = RunEpoch,
+                Enabled = Enabled,
+                FormalPhaseCommitted = FormalPhaseCommitted,
+                TimerActive = TimerActive,
+                RunnerActive = RunnerActive,
+                Energized = Energized
             };
         }
 

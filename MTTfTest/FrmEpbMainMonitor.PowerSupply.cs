@@ -299,6 +299,14 @@ namespace MTEmbTest
         private void ApplyChannelRuntimeState(ChannelRuntimeStateChangedEvent state)
         {
             if (!_channelRuntimeLabels.TryGetValue(state.Channel, out var label)) return;
+            var record = EnsureEpbRecord(state.Channel);
+            if (!record.Enabled && state.State != ChannelRuntimeState.NotEnabled)
+            {
+                state = state.Clone();
+                state.State = ChannelRuntimeState.NotEnabled;
+                state.ReasonCode = "DisabledChannelInvariant";
+                state.ReasonText = "通道未启用；已拒绝迟到的故障或恢复状态。";
+            }
             var localTime = state.TimestampUtc == default
                 ? DateTime.Now
                 : state.TimestampUtc.ToLocalTime();
@@ -316,7 +324,9 @@ namespace MTEmbTest
                 $"时间：{localTime:yyyy-MM-dd HH:mm:ss.fff}\r\n" +
                 $"原因：{AlarmMessageLocalizer.ToUserMessage(state.ReasonText ?? state.ReasonCode ?? "-")}\r\n" +
                 $"故障源：{(state.SourceChannel.HasValue ? "EPB" + state.SourceChannel.Value.ToString("D2") : "-")}\r\n" +
-                $"关联号：{(state.CorrelationId == Guid.Empty ? "-" : state.CorrelationId.ToString("N"))}");
+                $"关联号：{(state.CorrelationId == Guid.Empty ? "-" : state.CorrelationId.ToString("N"))}\r\n" +
+                $"RunEpoch：{state.RunEpoch}，Formal：{state.FormalPhaseCommitted}\r\n" +
+                $"资源：Timer={state.TimerActive} Runner={state.RunnerActive} Energized={state.Energized}");
 
             if (EpbGroup[state.Channel - 1]?.CtrlRunning != null)
             {
@@ -328,7 +338,6 @@ namespace MTEmbTest
                     EpbGroup[state.Channel - 1].CtrlRunning.Checked = shouldShowRun;
             }
 
-            var record = EnsureEpbRecord(state.Channel);
             lock (_epbRecordsLock)
                 record.Status = MapRuntimeRecordStatus(state.State);
             RefreshCurrentEpbSummary(state.Channel);

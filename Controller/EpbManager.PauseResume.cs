@@ -333,6 +333,7 @@ namespace Controller
 
         internal void MarkBatchRunning(IEnumerable<int> channels, string reason)
         {
+            Interlocked.Exchange(ref _formalPhaseCommitted, 1);
             _batchPausedUtc = DateTime.MinValue;
             _batchPausedChannels = Array.Empty<int>();
             SetBatchPauseState(
@@ -791,6 +792,10 @@ namespace Controller
         {
             if (!operatorAcknowledged)
                 throw new InvalidOperationException("必须由操作员确认故障原因已排除后才能恢复。");
+            if (!CanRunStandaloneAlarmRecovery(IsBatchSessionActive, IsFormalPhaseCommitted))
+                throw new InvalidOperationException(
+                    "批量启动、学习或资格复核尚未提交正式阶段；" +
+                    "单通道恢复不得越过批次协调器创建正式Timer。");
             if (unattendedRecovery && _nonRecoverableChannelFaultLatch.ContainsKey(channel))
                 throw new InvalidOperationException("卡钳硬件故障已锁存，禁止无人值守自动拉起。");
             if (!unattendedRecovery)
@@ -1136,6 +1141,10 @@ namespace Controller
             bool ownedByActiveDaqRecovery = false,
             long recoveryEpoch = 0)
         {
+            if (!CanRunStandaloneAlarmRecovery(IsBatchSessionActive, IsFormalPhaseCommitted))
+                throw new InvalidOperationException(
+                    $"FormalRejoinRejected Batch={_activeBatchId:N} " +
+                    $"FormalCommitted={IsFormalPhaseCommitted}; 批次正式阶段尚未提交。");
             var selected = (channels ?? Array.Empty<int>())
                 .Distinct()
                 .Where(channel => channel >= 1 && channel <= 12)

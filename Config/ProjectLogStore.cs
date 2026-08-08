@@ -1,9 +1,11 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 
 namespace Config
 {
@@ -440,12 +442,60 @@ namespace Config
 
     public static class ProjectLogHub
     {
+        private sealed class AsyncWorkItem
+        {
+            public ProjectLogLevel Level;
+            public string Message;
+            public string Category;
+            public Exception Exception;
+            public bool IsConfigure;
+            public string ProjectRoot;
+            public bool IsFlush;
+            public bool Durable;
+            public ManualResetEventSlim Completion;
+            public bool Result;
+        }
+
+        private const int AsyncQueueCapacity = 32768;
         private static readonly object Gate = new object();
+        private static readonly BlockingCollection<AsyncWorkItem> AsyncQueue =
+            new BlockingCollection<AsyncWorkItem>(
+                new ConcurrentQueue<AsyncWorkItem>(),
+                AsyncQueueCapacity);
+        private static readonly Thread AsyncWriter;
         private static ProjectLogStore _store = new ProjectLogStore();
+        private static Exception _asyncFailure;
+        private static long _droppedAsyncRecords;
+
+        static ProjectLogHub()
+        {
+            AsyncWriter = new Thread(RunAsyncWriter)
+            {
+                IsBackground = true,
+                Name = "EPB-ProjectLogWriter",
+                Priority = ThreadPriority.BelowNormal
+            };
+            AsyncWriter.Start();
+        }
 
         public static bool Configure(string projectRoot)
         {
             return _store.Configure(projectRoot);
+        }
+
+        public static bool EnqueueConfigure(string projectRoot)
+        {
+            if (string.IsNullOrWhiteSpace(projectRoot)) return false;
+            if (AsyncQueue.TryAdd(new AsyncWorkItem
+                {
+                    IsConfigure = true,
+                    ProjectRoot = projectRoot
+                }))
+                return true;
+            Volatile.Write(
+                ref _asyncFailure,
+                new IOException($"项目日志后台队列已满，目录配置未登记，容量={AsyncQueueCapacity}。"));
+            return false;
         }
 
         public static bool Write(
@@ -457,9 +507,74 @@ namespace Config
             return _store.Write(level, message, category, exception);
         }
 
+        /// <summary>
+        /// 将日志登记到有界后台队列。调用方不执行文件 I/O，也不等待日志锁；队列满时
+        /// 返回 false 并累计丢弃计数，绝不反压 DAQ、DO、AO 或安全状态机线程。
+        /// </summary>
+        public static bool Enqueue(
+            ProjectLogLevel level,
+            string message,
+            string category = null,
+            Exception exception = null)
+        {
+            var item = new AsyncWorkItem
+            {
+                Level = level,
+                Message = message,
+                Category = category,
+                Exception = exception
+            };
+            if (AsyncQueue.TryAdd(item)) return true;
+
+            Interlocked.Increment(ref _droppedAsyncRecords);
+            Volatile.Write(
+                ref _asyncFailure,
+                new IOException($"项目日志后台队列已满，容量={AsyncQueueCapacity}。"));
+            return false;
+        }
+
+        /// <summary>登记后台刷新请求，不等待磁盘。</summary>
+        public static bool RequestFlush(bool durable = false)
+        {
+            if (AsyncQueue.TryAdd(new AsyncWorkItem
+                {
+                    IsFlush = true,
+                    Durable = durable
+                }))
+                return true;
+
+            Volatile.Write(
+                ref _asyncFailure,
+                new IOException($"项目日志后台队列已满，刷新请求未登记，容量={AsyncQueueCapacity}。"));
+            return false;
+        }
+
         public static bool Flush(bool durable = false)
         {
-            return _store.Flush(durable);
+            using (var completion = new ManualResetEventSlim(false))
+            {
+                var item = new AsyncWorkItem
+                {
+                    IsFlush = true,
+                    Durable = durable,
+                    Completion = completion
+                };
+                if (!AsyncQueue.TryAdd(item, 5000))
+                {
+                    Volatile.Write(
+                        ref _asyncFailure,
+                        new IOException("项目日志刷新屏障无法进入后台队列。"));
+                    return false;
+                }
+                if (!completion.Wait(15000))
+                {
+                    Volatile.Write(
+                        ref _asyncFailure,
+                        new TimeoutException("项目日志后台刷新超过15秒。"));
+                    return false;
+                }
+                return item.Result;
+            }
         }
 
         public static string GetActivePath(ProjectLogLevel level)
@@ -467,7 +582,9 @@ namespace Config
             return _store.GetActivePath(level);
         }
 
-        public static Exception LastFailure => _store.LastFailure;
+        public static Exception LastFailure => Volatile.Read(ref _asyncFailure) ?? _store.LastFailure;
+
+        public static long DroppedAsyncRecords => Interlocked.Read(ref _droppedAsyncRecords);
 
         public static IReadOnlyList<ProjectLogMemoryRecord> GetMemorySnapshot()
         {
@@ -476,11 +593,42 @@ namespace Config
 
         public static void Shutdown()
         {
+            try { Flush(true); } catch { }
             lock (Gate)
             {
                 var old = _store;
                 _store = new ProjectLogStore();
                 try { old.Dispose(); } catch { }
+                Volatile.Write(ref _asyncFailure, null);
+                Interlocked.Exchange(ref _droppedAsyncRecords, 0);
+            }
+        }
+
+        private static void RunAsyncWriter()
+        {
+            foreach (var item in AsyncQueue.GetConsumingEnumerable())
+            {
+                try
+                {
+                    item.Result = item.IsConfigure
+                        ? _store.Configure(item.ProjectRoot)
+                        : item.IsFlush
+                            ? _store.Flush(item.Durable)
+                            : _store.Write(item.Level, item.Message, item.Category, item.Exception);
+                    if (item.Result)
+                        Volatile.Write(ref _asyncFailure, null);
+                    else
+                        Volatile.Write(ref _asyncFailure, _store.LastFailure);
+                }
+                catch (Exception ex)
+                {
+                    item.Result = false;
+                    Volatile.Write(ref _asyncFailure, ex);
+                }
+                finally
+                {
+                    try { item.Completion?.Set(); } catch { }
+                }
             }
         }
     }

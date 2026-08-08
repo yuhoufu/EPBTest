@@ -38,11 +38,16 @@ namespace AdaptiveControlTests
                     args[0].Equals("--incident-10358-029", StringComparison.OrdinalIgnoreCase))
                 {
                     _passed += RecoveryCoordinationTests.RunAll();
+                    _passed += ProjectLogStoreTests.RunRealtimeIsolationRegression();
+                    _passed += HydraulicGroupCoordinatorTests.RunRecoveryEvidenceRegression();
                     Run("峰值偏差只比较同一证据时间窗", PeakEvidenceMismatchRequiresComparableWindow);
                     Run("峰值排空墙钟等待不计入证据尾差", PeakDrainDelayDoesNotInvalidateEvidence);
                     Run("六通道并发封口不产生墙钟峰值误判", SixChannelPeakDrainIsConsistent);
                     Run("软件自愈连续三次无进展后熔断", SoftwareSelfHealingStopsAfterThreeAttempts);
                     Run("人工停止可覆盖旧启动受阻显示", ManualStopReplacesStartBlocked);
+                    Run("学习期报警不得越权创建正式Timer", AlarmRecoveryWaitsForFormalCommit);
+                    Run("禁用通道拒绝组级恢复状态污染", DisabledChannelStateIsNormalized);
+                    Run("启动受阻提交要求执行资源全部清场", TerminalStateRequiresExecutionQuiescence);
                     Console.WriteLine($"PASS {_passed}/{_passed}");
                     return 0;
                 }
@@ -175,6 +180,10 @@ namespace AdaptiveControlTests
                 Run("基础设施恢复只解除系统故障不解除卡钳报警", InfrastructureRecoveryOnlyClearsSystemFault);
                 Run("新运行预检后可复位旧停机状态", RuntimeStateResetsOnlyForNewRun);
                 Run("人工停止可覆盖旧启动受阻显示", ManualStopReplacesStartBlocked);
+                Run("学习期报警不得越权创建正式Timer", AlarmRecoveryWaitsForFormalCommit);
+                Run("禁用通道拒绝组级恢复状态污染", DisabledChannelStateIsNormalized);
+                Run("非运行终态禁止继续加电", TerminalRuntimeStatesRejectEnergization);
+                Run("启动受阻提交要求执行资源全部清场", TerminalStateRequiresExecutionQuiescence);
                 Run("状态版本阻止迟到报警覆盖新运行状态", RuntimeStateRevisionRejectsLateUiDelivery);
                 Run("安全退出仅允许压力证据单项缺失", StopSafetyExitPolicy);
                 Run("Dev1与Dev2有界队列容量互不影响", DaqBoundedQueuesAreIndependent);
@@ -3388,6 +3397,71 @@ namespace AdaptiveControlTests
             }, allowTerminalReset: true);
             Assert(store.Get(10).State == ChannelRuntimeState.ManualStopped,
                 "人工停止后仍锁存显示启动受阻");
+        }
+
+        private static void AlarmRecoveryWaitsForFormalCommit()
+        {
+            Assert(!EpbManager.CanRunStandaloneAlarmRecovery(true, false),
+                "批量学习尚未提交正式阶段时错误允许单通道恢复创建Timer");
+            Assert(EpbManager.CanRunStandaloneAlarmRecovery(true, true),
+                "正式阶段提交后仍阻止单通道报警恢复");
+            Assert(EpbManager.CanRunStandaloneAlarmRecovery(false, false),
+                "无活动批次时错误阻止单通道新批次恢复");
+        }
+
+        private static void DisabledChannelStateIsNormalized()
+        {
+            Assert(EpbManager.NormalizeRuntimeStateForEnabled(
+                       false,
+                       ChannelRuntimeState.Recovering) == ChannelRuntimeState.NotEnabled,
+                "禁用通道被组级自恢复状态污染");
+            Assert(EpbManager.NormalizeRuntimeStateForEnabled(
+                       false,
+                       ChannelRuntimeState.AlarmStopped) == ChannelRuntimeState.NotEnabled,
+                "禁用通道被故障源报警状态污染");
+            Assert(EpbManager.NormalizeRuntimeStateForEnabled(
+                       true,
+                       ChannelRuntimeState.Recovering) == ChannelRuntimeState.Recovering,
+                "启用通道的合法恢复状态被错误改写");
+        }
+
+        private static void TerminalRuntimeStatesRejectEnergization()
+        {
+            Assert(EpbManager.ChannelRuntimeAllowsEnergization(ChannelRuntimeState.Starting),
+                "启动中状态未获执行许可");
+            Assert(EpbManager.ChannelRuntimeAllowsEnergization(ChannelRuntimeState.Learning),
+                "学习中状态未获执行许可");
+            Assert(EpbManager.ChannelRuntimeAllowsEnergization(ChannelRuntimeState.Running),
+                "运行状态未获执行许可");
+            foreach (var state in new[]
+                     {
+                         ChannelRuntimeState.NotEnabled,
+                         ChannelRuntimeState.StartBlocked,
+                         ChannelRuntimeState.AlarmStopped,
+                         ChannelRuntimeState.InterlockStopped,
+                         ChannelRuntimeState.ManualStopped,
+                         ChannelRuntimeState.Completed,
+                         ChannelRuntimeState.SystemFault,
+                         ChannelRuntimeState.Paused
+                     })
+                Assert(!EpbManager.ChannelRuntimeAllowsEnergization(state),
+                    $"非运行终态 {state} 错误保留加电许可");
+        }
+
+        private static void TerminalStateRequiresExecutionQuiescence()
+        {
+            Assert(EpbManager.IsTerminalExecutionQuiescent(
+                    false, false, false, false, false, true),
+                "资源已清场且OFF确认时未允许终态提交");
+            Assert(!EpbManager.IsTerminalExecutionQuiescent(
+                    true, false, false, false, false, true),
+                "活动Timer存在时错误允许StartBlocked提交");
+            Assert(!EpbManager.IsTerminalExecutionQuiescent(
+                    false, false, false, false, true, true),
+                "仍标记加电时错误允许StartBlocked提交");
+            Assert(!EpbManager.IsTerminalExecutionQuiescent(
+                    false, false, false, false, false, false),
+                "OFF未确认时错误允许StartBlocked提交");
         }
 
         private static void InfrastructureRecoveryOnlyClearsSystemFault()

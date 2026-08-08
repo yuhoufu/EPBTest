@@ -55,6 +55,7 @@ namespace Controller
         private int _batchSessionActive;
         private CancellationTokenSource _batchSessionCts;
         private readonly BatchStartLifecycleGate _batchLifecycleGate = new BatchStartLifecycleGate();
+        private int _formalPhaseCommitted;
         private long _learningRetryGeneration;
         private long _softwareHydraulicRetryGeneration;
         private ElectricalStaggerPlan _activeStaggerPlan;
@@ -64,6 +65,7 @@ namespace Controller
 
         /// <summary>当前是否已有批量学习或正式试验会话。</summary>
         public bool IsBatchSessionActive => Volatile.Read(ref _batchSessionActive) != 0;
+        internal bool IsFormalPhaseCommitted => Volatile.Read(ref _formalPhaseCommitted) != 0;
 
         /// <summary>
         /// 对外暴露的“EPB 单圈完成”事件。
@@ -328,13 +330,10 @@ namespace Controller
                                 failedResult.Code,
                                 $"启动定位失败：Stage={failedResult.Stage}，{failedResult.Reason}",
                                 FaultScope.Channel));
-                            PublishChannelRuntimeState(
+                            PublishStartBlockedAfterCleanup(
                                 failedChannel,
-                                ChannelRuntimeState.StartBlocked,
                                 failedResult.Code,
                                 failedResult.Reason,
-                                failedChannel,
-                                new[] { failedChannel },
                                 _activeBatchId);
                             UnmarkHydraulicParticipant(failedChannel);
                             foreach (var list in groups.Values) list.Remove(failedChannel);
@@ -371,13 +370,10 @@ namespace Controller
                             "Learning",
                             "自学习失败，已隔离通道。",
                             FaultScope.Channel));
-                        PublishChannelRuntimeState(
+                        PublishStartBlockedAfterCleanup(
                             failedChannel,
-                            ChannelRuntimeState.StartBlocked,
                             "LearningFailed",
                             "自学习失败，已隔离通道",
-                            failedChannel,
-                            new[] { failedChannel },
                             _activeBatchId);
                         UnmarkHydraulicParticipant(failedChannel);
                         foreach (var list in groups.Values) list.Remove(failedChannel);
@@ -407,13 +403,10 @@ namespace Controller
                             "Qualification",
                             "资格复核失败，已隔离通道。",
                             FaultScope.Channel));
-                        PublishChannelRuntimeState(
+                        PublishStartBlockedAfterCleanup(
                             failedChannel,
-                            ChannelRuntimeState.StartBlocked,
                             "QualificationFailed",
                             "资格复核失败，已隔离通道",
-                            failedChannel,
-                            new[] { failedChannel },
                             _activeBatchId);
                         UnmarkHydraulicParticipant(failedChannel);
                         foreach (var list in groups.Values) list.Remove(failedChannel);
@@ -456,22 +449,31 @@ namespace Controller
                 EndBatchSession(cancel: true);
 
                 foreach (var channel in selected)
-                    PublishChannelRuntimeState(
-                        channel,
-                        expectedCancellation
-                            ? ChannelRuntimeState.ManualStopped
-                            : ChannelRuntimeState.StartBlocked,
-                        expectedCancellation ? "StartCanceled" : "StartFailed",
-                        ex.Message,
-                        affectedChannels: selected,
-                        correlationId: _activeBatchId,
-                        // 人工取消必须覆盖启动阶段已锁存的 StartBlocked，避免现场停止后
-                        // 仍显示“启动受阻”。真实启动故障保留在结构化历史日志中。
-                        allowTerminalReset: true);
-
-                foreach (var channel in selected)
                 {
-                    try { StopChannelForInternalCleanup(channel); }
+                    try
+                    {
+                        if (expectedCancellation)
+                        {
+                            StopChannelForInternalCleanup(channel);
+                            PublishChannelRuntimeState(
+                                channel,
+                                ChannelRuntimeState.ManualStopped,
+                                "StartCanceled",
+                                ex.Message,
+                                affectedChannels: selected,
+                                correlationId: failedRunId,
+                                allowTerminalReset: true);
+                        }
+                        else
+                        {
+                            PublishStartBlockedAfterCleanup(
+                                channel,
+                                "StartFailed",
+                                ex.Message,
+                                failedRunId,
+                                selected);
+                        }
+                    }
                     catch (Exception stopEx)
                     {
                         _log?.Warn($"批量启动异常后停止 EPB[{channel}] 失败：{stopEx}", "EPB");
@@ -799,6 +801,7 @@ namespace Controller
             try
             {
                 Interlocked.Increment(ref _runEpoch);
+                Interlocked.Exchange(ref _formalPhaseCommitted, 0);
                 var linked = CancellationTokenSource.CreateLinkedTokenSource(externalToken);
                 var previous = Interlocked.Exchange(ref _batchSessionCts, linked);
                 previous?.Dispose();
@@ -827,6 +830,7 @@ namespace Controller
             }
 
             Interlocked.Exchange(ref _batchSessionActive, 0);
+            Interlocked.Exchange(ref _formalPhaseCommitted, 0);
             _activeStaggerPlan = null;
             _activeFormalT0ByPressureGroup.Clear();
             _activeBatchId = Guid.Empty;

@@ -36,6 +36,15 @@ namespace Config
     }
 
     /// <summary>
+    /// 实时控制链使用的非阻塞刷新请求。实现只能登记后台刷新，不能等待磁盘 I/O。
+    /// 显式退出、人工查看日志等非实时路径仍使用 <see cref="IFlushableAppLogger.Flush"/>。
+    /// </summary>
+    public interface IAsyncFlushableAppLogger
+    {
+        bool RequestFlush(bool durable = false);
+    }
+
+    /// <summary>
     /// 空实现：便于未注入时调用安全。
     /// </summary>
     public sealed class NullLogger : IAppLogger

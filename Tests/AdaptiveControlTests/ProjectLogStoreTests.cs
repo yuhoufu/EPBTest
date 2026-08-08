@@ -1,13 +1,23 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Text;
+using System.Threading;
+using System.Diagnostics;
 using Config;
 
 namespace AdaptiveControlTests
 {
     internal static class ProjectLogStoreTests
     {
+        public static int RunRealtimeIsolationRegression()
+        {
+            var passed = 0;
+            Run("项目日志后台队列不反压控制线程", AsyncQueueDoesNotBackpressureCaller, ref passed);
+            return passed;
+        }
+
         public static int RunAll()
         {
             var passed = 0;
@@ -20,6 +30,7 @@ namespace AdaptiveControlTests
             Run("ui-info按日大小轮转并仅读取尾部", UiInfoRotationAndTailRead, ref passed);
             Run("清空项目隔离数据轮转日志并删除学习模型", ProjectRestartCleanupIsIsolated, ref passed);
             Run("项目日志显式Flush", ExplicitFlush, ref passed);
+            Run("项目日志后台队列不反压控制线程", AsyncQueueDoesNotBackpressureCaller, ref passed);
             Run("项目日志写盘失败后降级并重试", WriteFailureRetriesInOrder, ref passed);
             Run("项目日志轮转失败后降级并重试", RotationFailureRetriesInOrder, ref passed);
             return passed;
@@ -335,6 +346,62 @@ namespace AdaptiveControlTests
             }
             finally
             {
+                DeleteTempDir(dir);
+            }
+        }
+
+        private static void AsyncQueueDoesNotBackpressureCaller()
+        {
+            var dir = CreateTempDir();
+            try
+            {
+                ProjectLogHub.Shutdown();
+                Assert(ProjectLogHub.Configure(dir), "后台日志测试配置失败");
+                var storeField = typeof(ProjectLogHub).GetField(
+                    "_store",
+                    BindingFlags.Static | BindingFlags.NonPublic);
+                Assert(storeField != null, "未找到项目日志中心 Store");
+                var store = storeField.GetValue(null);
+                var gateField = typeof(ProjectLogStore).GetField(
+                    "_gate",
+                    BindingFlags.Instance | BindingFlags.NonPublic);
+                Assert(gateField != null, "未找到项目日志 Store 锁");
+                var gate = gateField.GetValue(store);
+                using (var entered = new ManualResetEventSlim(false))
+                {
+                    var holder = new Thread(() =>
+                    {
+                        lock (gate)
+                        {
+                            entered.Set();
+                            Thread.Sleep(500);
+                        }
+                    });
+                    holder.Start();
+                    Assert(entered.Wait(1000), "未能注入日志写盘锁阻塞");
+
+                    var clock = Stopwatch.StartNew();
+                    Assert(ProjectLogHub.Enqueue(
+                            ProjectLogLevel.Warning,
+                            "control-path",
+                            "实时隔离"),
+                        "后台日志未能入队");
+                    Assert(ProjectLogHub.RequestFlush(true), "后台耐久刷新请求未能入队");
+                    clock.Stop();
+                    Assert(clock.ElapsedMilliseconds < 100,
+                        $"日志锁阻塞反压调用线程 {clock.ElapsedMilliseconds}ms");
+                    Assert(holder.Join(2000), "日志锁阻塞注入线程未退出");
+                }
+
+                Assert(ProjectLogHub.Flush(true), "后台日志排空失败");
+                ProjectLogHub.Shutdown();
+                var warningPath = Path.Combine(dir, "log", "warning.log");
+                Assert(File.ReadAllText(warningPath, Encoding.UTF8).Contains("control-path"),
+                    "后台日志排空后记录缺失");
+            }
+            finally
+            {
+                ProjectLogHub.Shutdown();
                 DeleteTempDir(dir);
             }
         }

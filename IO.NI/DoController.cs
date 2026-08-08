@@ -18,19 +18,21 @@ using NLogger = Config.NullLogger;
 
 namespace IO.NI
 {
-    internal sealed class HighPriorityDoTelemetry
+    public sealed class HighPriorityDoTelemetry
     {
-        internal Guid CommandId { get; set; }
-        internal int Channel { get; set; }
-        internal int TimeoutMs { get; set; }
-        internal int QueueDepthAtEnqueue { get; set; }
-        internal bool CallerTimedOut { get; set; }
-        internal bool Result { get; set; }
-        internal double QueueWaitMs { get; set; }
-        internal double WorkerExecutionMs { get; set; }
-        internal double TotalMs { get; set; }
-        internal double LockWaitMs { get; set; }
-        internal double NiWriteMs { get; set; }
+        public Guid CommandId { get; internal set; }
+        public int Channel { get; internal set; }
+        public int TimeoutMs { get; internal set; }
+        public int QueueDepthAtEnqueue { get; internal set; }
+        public bool CallerTimedOut { get; internal set; }
+        public bool Result { get; internal set; }
+        public bool LateHardwareSuccess => CallerTimedOut && Result;
+        public DateTime HardwareCompletedUtc { get; internal set; }
+        public double QueueWaitMs { get; internal set; }
+        public double WorkerExecutionMs { get; internal set; }
+        public double TotalMs { get; internal set; }
+        public double LockWaitMs { get; internal set; }
+        public double NiWriteMs { get; internal set; }
     }
 
     internal sealed class DoWriteTiming
@@ -198,6 +200,7 @@ namespace IO.NI
                                         QueueDepthAtEnqueue = item.QueueDepthAtEnqueue,
                                         CallerTimedOut = Volatile.Read(ref item.CallerTimedOut) != 0,
                                         Result = item.Result,
+                                        HardwareCompletedUtc = DateTime.UtcNow,
                                         QueueWaitMs = ElapsedMs(item.EnqueuedTicks, item.DequeuedTicks),
                                         WorkerExecutionMs = ElapsedMs(item.DequeuedTicks, item.CompletedTicks),
                                         TotalMs = ElapsedMs(item.EnqueuedTicks, item.CompletedTicks)
@@ -285,7 +288,7 @@ namespace IO.NI
             _log = logger ?? NLogger.Instance;
         }
 
-        internal event Action<HighPriorityDoTelemetry> HighPriorityOffCompleted;
+        public event Action<HighPriorityDoTelemetry> HighPriorityOffCompleted;
 
         /// <summary>
         /// 兼容旧接口：设置 XML 路径（本实现不会再读取 XML，仅为保持方法签名不变）。
@@ -500,12 +503,14 @@ namespace IO.NI
 
                     if (!_epbIndex.TryGetValue(channelNo, out var map))
                     {
-                        LogError($"EPB 通道号未找到：{channelNo}", "DO操作");
+                        QueueLog(() => LogError($"EPB 通道号未找到：{channelNo}", "DO操作"));
                         return false;
                     }
                     if (!_devices.TryGetValue(map.dev, out var dev))
                     {
-                        LogError($"EPB[{channelNo}] 所属设备未就绪：{map.dev}", "DO操作");
+                        QueueLog(() => LogError(
+                            $"EPB[{channelNo}] 所属设备未就绪：{map.dev}",
+                            "DO操作"));
                         return false;
                     }
 
@@ -516,12 +521,16 @@ namespace IO.NI
                     dev.Writer.WriteSingleSampleSingleLine(true, toWrite);
                     niWriteCompletedTicks = Stopwatch.GetTimestamp();
                     dev.States = toWrite;
-                    LogInfo($"EPB[{channelNo}]@{map.dev} => 全关", "DO操作");
+                    // 安全 Worker 的完成边界到此为止。日志和任何观察者不得计入
+                    // 100ms OFF 返回期限，也不得在 _doTaskLock 内执行。
+                    QueueLog(() => LogInfo(
+                        $"EPB[{channelNo}]@{map.dev} => 全关",
+                        "DO操作"));
                     return true;
                 }
                 catch (Exception ex)
                 {
-                    LogError("EPB 关闭失败：" + ex.Message, "DO操作", ex);
+                    QueueLog(() => LogError("EPB 关闭失败：" + ex.Message, "DO操作", ex));
                     return false;
                 }
                 finally
@@ -593,6 +602,26 @@ namespace IO.NI
             catch
             {
                 // 性能诊断观察者不得改变DO结果。
+            }
+        }
+
+        private static void QueueLog(Action write)
+        {
+            if (write == null) return;
+            try
+            {
+                ThreadPool.QueueUserWorkItem(_ =>
+                {
+                    try { write(); }
+                    catch
+                    {
+                        // 日志观察者永远不能改变 DO 命令结果或阻塞安全 Worker。
+                    }
+                });
+            }
+            catch
+            {
+                // 线程池不可用时宁可丢失本条诊断，也不能回退为同步日志。
             }
         }
 

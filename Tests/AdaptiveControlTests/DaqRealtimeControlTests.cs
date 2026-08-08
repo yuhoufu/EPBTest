@@ -596,6 +596,8 @@ namespace AdaptiveControlTests
             Assert(telemetry != null &&
                    telemetry.TimeoutMs == 100 &&
                    telemetry.CallerTimedOut &&
+                   telemetry.LateHardwareSuccess == telemetry.Result &&
+                   telemetry.HardwareCompletedUtc != default &&
                    telemetry.QueueDepthAtEnqueue >= 1 &&
                    telemetry.LockWaitMs >= 300 &&
                    telemetry.TotalMs >= telemetry.LockWaitMs,
