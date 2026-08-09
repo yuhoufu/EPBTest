@@ -351,16 +351,47 @@ finally {
     }
 }
 
-$fieldGateOutput = @(& py -3 -m unittest -v Tools.test_validate_epb_field_gate 2>&1)
-$fieldGateExitCode = $LASTEXITCODE
-foreach ($line in $fieldGateOutput) { Write-Host ([string]$line) }
-if ($fieldGateExitCode -ne 0) {
-    throw "现场门禁测试失败，ExitCode=$fieldGateExitCode"
+$fieldGateResultsDirectory = [IO.Path]::GetFullPath((Join-Path `
+    $tempRoot ('epb-release-field-gate-' + [Guid]::NewGuid().ToString('N'))))
+if (-not $fieldGateResultsDirectory.StartsWith(
+        $tempPrefix,
+        [StringComparison]::OrdinalIgnoreCase)) {
+    throw "现场门禁测试临时目录越界：$fieldGateResultsDirectory"
 }
-$fieldGateSummary = @($fieldGateOutput | ForEach-Object { [string]$_ } |
-    Where-Object { $_ -match '^Ran\s+\d+\s+tests?' } | Select-Object -Last 1)
-if ($fieldGateSummary.Count -eq 0) {
-    throw '现场门禁测试未输出 unittest 数量摘要。'
+$fieldGateStdOut = Join-Path $fieldGateResultsDirectory 'stdout.log'
+$fieldGateStdErr = Join-Path $fieldGateResultsDirectory 'stderr.log'
+$fieldGateOutput = @()
+$fieldGateExitCode = -1
+try {
+    [void](New-Item -ItemType Directory -Path $fieldGateResultsDirectory)
+    $pythonLauncher = (Get-Command py.exe -ErrorAction Stop).Source
+    $fieldGateProcess = Start-Process `
+        -FilePath $pythonLauncher `
+        -ArgumentList @('-3', '-m', 'unittest', '-v', 'Tools.test_validate_epb_field_gate') `
+        -WorkingDirectory $repo `
+        -NoNewWindow `
+        -RedirectStandardOutput $fieldGateStdOut `
+        -RedirectStandardError $fieldGateStdErr `
+        -Wait `
+        -PassThru
+    $fieldGateExitCode = $fieldGateProcess.ExitCode
+    $fieldGateOutput = @(
+        @([IO.File]::ReadAllLines($fieldGateStdOut, [Text.Encoding]::UTF8)) +
+        @([IO.File]::ReadAllLines($fieldGateStdErr, [Text.Encoding]::UTF8)))
+    foreach ($line in $fieldGateOutput) { Write-Host ([string]$line) }
+    if ($fieldGateExitCode -ne 0) {
+        throw "现场门禁测试失败，ExitCode=$fieldGateExitCode"
+    }
+    $fieldGateSummary = @($fieldGateOutput | ForEach-Object { [string]$_ } |
+        Where-Object { $_ -match '^Ran\s+\d+\s+tests?' } | Select-Object -Last 1)
+    if ($fieldGateSummary.Count -eq 0) {
+        throw '现场门禁测试未输出 unittest 数量摘要。'
+    }
+}
+finally {
+    if (Test-Path -LiteralPath $fieldGateResultsDirectory -PathType Container) {
+        Remove-Item -LiteralPath $fieldGateResultsDirectory -Recurse -Force
+    }
 }
 
 # 回归期间也可能发生源码切换或编辑；identity 只能在第二次快照仍与开头一致且
