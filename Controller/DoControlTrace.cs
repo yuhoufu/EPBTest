@@ -6,6 +6,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
+using Config;
 using Controller.Adaptive;
 using DataOperation;
 using IO.NI;
@@ -54,6 +55,10 @@ namespace Controller
     internal sealed class TerminalOffSafetyEvidence
     {
         public DateTime CommandUtc { get; set; }
+        public DateTime? DecisionUtc { get; set; }
+        public DateTime? DoWriteStartedUtc { get; set; }
+        public DateTime? DoWriteCompletedUtc { get; set; }
+        public DateTime? CurrentClearedUtc { get; set; }
         public string Reason { get; set; }
         public bool CommandSucceeded { get; set; }
         public double CommandElapsedMs { get; set; }
@@ -126,8 +131,15 @@ namespace Controller
             int channel,
             string reason,
             bool commandSucceeded,
-            double commandElapsedMs)
+            double commandElapsedMs,
+            EpbDoTimingObservation timing = null)
         {
+            var decisionUtc = AsOptionalUtc(timing?.DecisionUtc ?? default);
+            var doWriteStartedUtc = AsOptionalUtc(timing?.DoWriteStartedUtc ?? default);
+            var doWriteCompletedUtc = AsOptionalUtc(timing?.DoWriteCompletedUtc ?? default);
+            var currentClearedUtc = timing?.CurrentClearedUtc.HasValue == true
+                ? AsOptionalUtc(timing.CurrentClearedUtc.Value)
+                : null;
             _terminalOffSafetyEvidence.AddOrUpdate(
                 channel,
                 _ => new TerminalOffSafetyEvidence
@@ -135,7 +147,11 @@ namespace Controller
                     CommandUtc = DateTime.UtcNow,
                     Reason = reason ?? string.Empty,
                     CommandSucceeded = commandSucceeded,
-                    CommandElapsedMs = commandElapsedMs
+                    CommandElapsedMs = commandElapsedMs,
+                    DecisionUtc = decisionUtc,
+                    DoWriteStartedUtc = doWriteStartedUtc,
+                    DoWriteCompletedUtc = doWriteCompletedUtc,
+                    CurrentClearedUtc = currentClearedUtc
                 },
                 (_, existing) =>
                 {
@@ -143,6 +159,27 @@ namespace Controller
                     existing.Reason = reason ?? string.Empty;
                     existing.CommandSucceeded = commandSucceeded || existing.LateHardwareSuccess;
                     existing.CommandElapsedMs = commandElapsedMs;
+                    if (timing != null)
+                    {
+                        if (decisionUtc.HasValue)
+                        {
+                            // 新决策开启一条新的因果时间线，必须清除上一圈尚未被本次
+                            // 物理完成/电流验证覆盖的时刻，禁止跨圈拼接证据。
+                            existing.DecisionUtc = decisionUtc;
+                            existing.DoWriteStartedUtc = doWriteStartedUtc;
+                            existing.DoWriteCompletedUtc = doWriteCompletedUtc;
+                            existing.CurrentClearedUtc = currentClearedUtc;
+                        }
+                        else
+                        {
+                            if (doWriteStartedUtc.HasValue)
+                                existing.DoWriteStartedUtc = doWriteStartedUtc;
+                            if (doWriteCompletedUtc.HasValue)
+                                existing.DoWriteCompletedUtc = doWriteCompletedUtc;
+                            if (currentClearedUtc.HasValue)
+                                existing.CurrentClearedUtc = currentClearedUtc;
+                        }
+                    }
                     return existing;
                 });
         }
@@ -161,7 +198,9 @@ namespace Controller
                     CommandId = telemetry.CommandId,
                     CallerTimedOut = telemetry.CallerTimedOut,
                     LateHardwareSuccess = telemetry.LateHardwareSuccess,
-                    HardwareCompletedUtc = telemetry.HardwareCompletedUtc
+                    HardwareCompletedUtc = telemetry.HardwareCompletedUtc,
+                    DoWriteStartedUtc = EstimateDoWriteStartedUtc(telemetry),
+                    DoWriteCompletedUtc = telemetry.HardwareCompletedUtc
                 },
                 (_, existing) =>
                 {
@@ -170,6 +209,8 @@ namespace Controller
                     existing.LateHardwareSuccess =
                         existing.LateHardwareSuccess || telemetry.LateHardwareSuccess;
                     existing.HardwareCompletedUtc = telemetry.HardwareCompletedUtc;
+                    existing.DoWriteStartedUtc = EstimateDoWriteStartedUtc(telemetry);
+                    existing.DoWriteCompletedUtc = telemetry.HardwareCompletedUtc;
                     if (telemetry.Result) existing.CommandSucceeded = true;
                     return existing;
                 });
@@ -196,7 +237,9 @@ namespace Controller
                     CommandId = telemetry.CommandId,
                     CallerTimedOut = true,
                     LateHardwareSuccess = telemetry.Result,
-                    HardwareCompletedUtc = telemetry.HardwareCompletedUtc
+                    HardwareCompletedUtc = telemetry.HardwareCompletedUtc,
+                    DoWriteStartedUtc = EstimateDoWriteStartedUtc(telemetry),
+                    DoWriteCompletedUtc = telemetry.HardwareCompletedUtc
                 },
                 (_, existing) =>
                 {
@@ -207,6 +250,8 @@ namespace Controller
                     existing.CallerTimedOut = true;
                     existing.LateHardwareSuccess = telemetry.Result;
                     existing.HardwareCompletedUtc = telemetry.HardwareCompletedUtc;
+                    existing.DoWriteStartedUtc = EstimateDoWriteStartedUtc(telemetry);
+                    existing.DoWriteCompletedUtc = telemetry.HardwareCompletedUtc;
                     if (telemetry.Result) existing.CommandSucceeded = true;
                     return existing;
                 });
@@ -217,29 +262,40 @@ namespace Controller
             double currentA,
             double thresholdA,
             int waitMs,
-            bool cleared)
+            bool cleared,
+            DateTime? verificationUtc = null)
         {
+            var observedUtc = verificationUtc.HasValue
+                ? verificationUtc.Value.ToUniversalTime()
+                : DateTime.UtcNow;
             _terminalOffSafetyEvidence.AddOrUpdate(
                 channel,
                 _ => new TerminalOffSafetyEvidence
                 {
                     CommandUtc = DateTime.UtcNow,
                     Reason = "TerminalOffCommandEvidenceMissing",
-                    VerificationUtc = DateTime.UtcNow,
+                    VerificationUtc = observedUtc,
                     VerificationCurrentA = currentA,
                     VerificationThresholdA = thresholdA,
                     VerificationWaitMs = waitMs,
-                    ElectricalCurrentCleared = cleared
+                    ElectricalCurrentCleared = cleared,
+                    CurrentClearedUtc = cleared ? observedUtc : (DateTime?)null
                 },
                 (_, existing) =>
                 {
                     return new TerminalOffSafetyEvidence
                     {
                         CommandUtc = existing.CommandUtc,
+                        DecisionUtc = existing.DecisionUtc,
+                        DoWriteStartedUtc = existing.DoWriteStartedUtc,
+                        DoWriteCompletedUtc = existing.DoWriteCompletedUtc,
+                        CurrentClearedUtc = cleared
+                            ? observedUtc
+                            : existing.CurrentClearedUtc,
                         Reason = existing.Reason,
                         CommandSucceeded = existing.CommandSucceeded,
                         CommandElapsedMs = existing.CommandElapsedMs,
-                        VerificationUtc = DateTime.UtcNow,
+                        VerificationUtc = observedUtc,
                         VerificationCurrentA = currentA,
                         VerificationThresholdA = thresholdA,
                         VerificationWaitMs = waitMs,
@@ -250,6 +306,21 @@ namespace Controller
                         HardwareCompletedUtc = existing.HardwareCompletedUtc
                     };
                 });
+        }
+
+        private static DateTime EstimateDoWriteStartedUtc(HighPriorityDoTelemetry telemetry)
+        {
+            if (telemetry == null || telemetry.HardwareCompletedUtc == default)
+                return DateTime.MinValue;
+            return telemetry.HardwareCompletedUtc.ToUniversalTime().AddMilliseconds(
+                -Math.Max(0, telemetry.NiWriteMs));
+        }
+
+        private static DateTime? AsOptionalUtc(DateTime value)
+        {
+            if (value == default || value == DateTime.MinValue || value == DateTime.MaxValue)
+                return null;
+            return value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();
         }
 
         private void RegisterRunContext(Guid runId, ElectricalStaggerPlan plan)
@@ -599,7 +670,7 @@ namespace Controller
             };
             var json = new StringBuilder();
             json.AppendLine("{");
-            json.AppendLine("  \"schemaVersion\": 4,");
+            json.AppendLine("  \"schemaVersion\": 5,");
             json.AppendLine($"  \"alarmUtc\": \"{alarmUtc:O}\",");
             json.AppendLine($"  \"runId\": \"{runId:N}\",");
             json.AppendLine($"  \"alarmChannel\": {alarmChannel},");
@@ -667,6 +738,10 @@ namespace Controller
                 : "null";
             json.Append("{");
             json.Append($"\"commandUtc\": \"{item.CommandUtc:O}\", ");
+            json.Append($"\"decisionUtc\": {JsonDate(item.DecisionUtc)}, ");
+            json.Append($"\"doWriteStartedUtc\": {JsonDate(item.DoWriteStartedUtc)}, ");
+            json.Append($"\"doWriteCompletedUtc\": {JsonDate(item.DoWriteCompletedUtc)}, ");
+            json.Append($"\"currentClearedUtc\": {JsonDate(item.CurrentClearedUtc)}, ");
             json.Append($"\"reason\": \"{EscapeJson(item.Reason)}\", ");
             json.Append($"\"commandSucceeded\": {item.CommandSucceeded.ToString().ToLowerInvariant()}, ");
             json.Append(

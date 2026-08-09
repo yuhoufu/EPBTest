@@ -87,7 +87,7 @@ namespace Controller
         private int _adaptiveTerminalOffLatched;
         private Task _terminalOffCurrentVerificationTask = Task.CompletedTask;
         private double _adaptivePreEnergizationCurrentA = double.NaN;
-        private double _adaptiveForwardDoCompletionMs = double.NaN;
+        private EpbDoTimingObservation _adaptiveForwardDoTiming;
 
         private const double OffCurrentBaselineWindowMs = 500.0;
         private const double OffCurrentBaselineAllowanceA = 0.05;
@@ -362,6 +362,47 @@ namespace Controller
             return Math.Max(configuredA, baselineAwareA);
         }
 
+        internal static EpbDoTimingObservation BuildAdaptiveDoTimingObservation(
+            DateTime decisionUtc,
+            HighPriorityDoTelemetry telemetry)
+        {
+            if (telemetry == null || telemetry.HardwareCompletedUtc == default)
+                return null;
+            return BuildAdaptiveDoTimingObservation(
+                decisionUtc,
+                telemetry.HardwareCompletedUtc,
+                telemetry.TotalMs,
+                telemetry.NiWriteMs);
+        }
+
+        internal static EpbDoTimingObservation BuildAdaptiveDoTimingObservation(
+            DateTime decisionUtc,
+            DateTime doWriteCompletedUtc,
+            double totalMs,
+            double niWriteMs)
+        {
+            if (decisionUtc == default || doWriteCompletedUtc == default)
+                return null;
+            var completedUtc = doWriteCompletedUtc.Kind == DateTimeKind.Utc
+                ? doWriteCompletedUtc
+                : doWriteCompletedUtc.ToUniversalTime();
+            var normalizedDecisionUtc = decisionUtc.Kind == DateTimeKind.Utc
+                ? decisionUtc
+                : decisionUtc.ToUniversalTime();
+            // DateTime.UtcNow 的墙钟粒度可能比 DO 的单毫秒执行更粗。以物理完成事件
+            // 为锚点，用 worker 的单调总时长约束决策不得晚于实际入队估计时刻。
+            var enqueuedEstimateUtc = completedUtc.AddMilliseconds(-Math.Max(0, totalMs));
+            if (normalizedDecisionUtc > enqueuedEstimateUtc)
+                normalizedDecisionUtc = enqueuedEstimateUtc;
+            return new EpbDoTimingObservation
+            {
+                DecisionUtc = normalizedDecisionUtc,
+                DoWriteStartedUtc = completedUtc.AddMilliseconds(
+                    -Math.Max(0, niWriteMs)),
+                DoWriteCompletedUtc = completedUtc
+            };
+        }
+
         private void BeginAdaptiveForwardMonitoring(int periodMs)
         {
             if (!AdaptiveMonitoringEnabled || _adaptiveStateMachine == null) return;
@@ -379,7 +420,7 @@ namespace Controller
             _adaptiveDecisionPeakEvidenceThroughUtc = DateTime.MinValue;
             Interlocked.Exchange(ref _adaptiveClampPeakCaptureStarted, 0);
             Interlocked.Exchange(ref _adaptiveTerminalOffLatched, 0);
-            _adaptiveForwardDoCompletionMs = double.NaN;
+            _adaptiveForwardDoTiming = null;
 
             lock (_adaptiveGate)
             {
@@ -744,6 +785,7 @@ namespace Controller
             if (Interlocked.Exchange(ref _adaptiveTerminalOffLatched, 1) != 0) return;
 
             // 状态机在下一批会复用 scratch decision；异步完成链只能持有冻结副本。
+            var decisionUtc = DateTime.UtcNow;
             var terminalDecision = decision.Copy();
             var reason = string.IsNullOrWhiteSpace(decision.Reason)
                 ? decision.Stage.ToString()
@@ -775,7 +817,8 @@ namespace Controller
                             reason,
                             direction,
                             terminalDecision,
-                            lifecycle);
+                            lifecycle,
+                            decisionUtc);
                     },
                     out commandId);
             }
@@ -797,7 +840,8 @@ namespace Controller
                         reason,
                         commandId,
                         elapsedMs,
-                        lifecycle));
+                        lifecycle,
+                        decisionUtc));
                 ObserveAdaptiveBackground(deadlineTask, "AdaptiveTerminalOffHardwareDeadline");
                 return;
             }
@@ -806,7 +850,8 @@ namespace Controller
                 _channel,
                 reason,
                 false,
-                submissionElapsedMs);
+                submissionElapsedMs,
+                new EpbDoTimingObservation { DecisionUtc = decisionUtc });
             _manager?.QueueElectricalGroupEmergencyShutdownFromDaqControl(
                 _channel,
                 $"TerminalOffAdmissionRejected CommandId={commandId:N} Reason={reason}");
@@ -861,7 +906,8 @@ namespace Controller
             string reason,
             Guid commandId,
             double elapsedMs,
-            TaskCompletionSource<bool> lifecycle)
+            TaskCompletionSource<bool> lifecycle,
+            DateTime decisionUtc)
         {
             var timeoutReason =
                 $"TerminalOffHardwareTimeout CommandId={commandId:N} " +
@@ -873,7 +919,8 @@ namespace Controller
                     _channel,
                     reason,
                     false,
-                    elapsedMs);
+                    elapsedMs,
+                    new EpbDoTimingObservation { DecisionUtc = decisionUtc });
             }
             catch { }
             try
@@ -927,9 +974,11 @@ namespace Controller
             string reason,
             string direction,
             EpbAdaptiveDecision terminalDecision,
-            TaskCompletionSource<bool> lifecycle)
+            TaskCompletionSource<bool> lifecycle,
+            DateTime decisionUtc)
         {
             var commandElapsedMs = telemetry?.TotalMs ?? 0;
+            var doTiming = BuildAdaptiveDoTimingObservation(decisionUtc, telemetry);
             var commandSucceeded = CompleteSubmittedTerminalOffWithEscalation(
                 telemetry,
                 () => _manager?.QueueElectricalGroupEmergencyShutdownFromDaqControl(
@@ -939,13 +988,14 @@ namespace Controller
                 _channel,
                 reason,
                 commandSucceeded,
-                commandElapsedMs);
+                commandElapsedMs,
+                doTiming);
 
             if (string.Equals(direction, "Forward", StringComparison.Ordinal) &&
                 commandSucceeded)
             {
                 lock (_adaptiveGate)
-                    _adaptiveForwardDoCompletionMs = commandElapsedMs;
+                    _adaptiveForwardDoTiming = doTiming?.Clone();
             }
 
             if (!commandSucceeded)
@@ -971,7 +1021,7 @@ namespace Controller
                 $"QueueWait={telemetry.QueueWaitMs:F3}ms NIWrite={telemetry.NiWriteMs:F3}ms " +
                 $"Total={commandElapsedMs:F3}ms PhysicalOffStatus=NotMeasured",
                 "EPB");
-            var verificationTask = BeginTerminalOffCurrentVerification(reason);
+            var verificationTask = BeginTerminalOffCurrentVerification(reason, direction);
             verificationTask.ContinueWith(
                 completed =>
                 {
@@ -1041,7 +1091,7 @@ namespace Controller
             return succeeded;
         }
 
-        private Task<bool> BeginTerminalOffCurrentVerification(string reason)
+        private Task<bool> BeginTerminalOffCurrentVerification(string reason, string direction)
         {
             var configuredThresholdA = _adaptiveSafetyLimits.OffCurrentClearThresholdA;
             var baselineA = _adaptivePreEnergizationCurrentA;
@@ -1063,12 +1113,14 @@ namespace Controller
                     var currentA = verification.CurrentA;
                     if (!verification.SampleFresh)
                     {
+                        var staleVerificationUtc = DateTime.UtcNow;
                         _manager?.RecordTerminalOffCurrentVerification(
                             _channel,
                             currentA,
                             thresholdA,
                             verification.ElapsedMs,
-                            false);
+                            false,
+                            staleVerificationUtc);
                         var powerEvidence = string.Empty;
                         if (_manager != null &&
                             _manager.TryGetFreshPowerSupplyCurrent(
@@ -1097,14 +1149,24 @@ namespace Controller
                         () => _manager?.RequestElectricalGroupEmergencyShutdown(
                             _channel,
                             $"OffCurrentNotCleared Current={currentA:F3}A Threshold={thresholdA:F3}A"));
+                    var completedVerificationUtc = DateTime.UtcNow;
                     _manager?.RecordTerminalOffCurrentVerification(
                         _channel,
                         currentA,
                         thresholdA,
                         verification.ElapsedMs,
-                        cleared);
+                        cleared,
+                        completedVerificationUtc);
                     if (cleared)
                     {
+                        if (string.Equals(direction, "Forward", StringComparison.Ordinal))
+                        {
+                            lock (_adaptiveGate)
+                            {
+                                if (_adaptiveForwardDoTiming != null)
+                                    _adaptiveForwardDoTiming.CurrentClearedUtc = completedVerificationUtc;
+                            }
+                        }
                         _log?.Info(
                             $"EPB[{_channel}] 断电电流代理确认通过：" +
                             $"ElectricalCurrentCleared=true Current={currentA:F3}A " +
@@ -1134,12 +1196,14 @@ namespace Controller
                 }
                 catch (Exception ex)
                 {
+                    var failedVerificationUtc = DateTime.UtcNow;
                     _manager?.RecordTerminalOffCurrentVerification(
                         _channel,
                         double.NaN,
                         thresholdA,
                         timeoutMs,
-                        false);
+                        false,
+                        failedVerificationUtc);
                     _log?.Error(
                         $"EPB[{_channel}] 断电电流代理确认无法完成，按失效安全触发电源组联锁：" +
                         $"{ex.Message} PhysicalOffStatus=NotMeasured",
@@ -1767,12 +1831,15 @@ namespace Controller
                     _adaptiveProfile?.ConsecutiveForwardOvershootCount ?? 0;
                 if (peakCaptureValid)
                 {
+                    EpbDoTimingObservation doTiming;
+                    lock (_adaptiveGate)
+                        doTiming = _adaptiveForwardDoTiming?.Clone();
                     PersistAdaptiveCutoffObservation(
                         forward.CutoffCurrentA,
                         forward.EstimatedSlopeAperMs,
                         _adaptiveForwardPeakA,
                         peakErrorA,
-                        _adaptiveForwardDoCompletionMs);
+                        doTiming);
 
                 }
                 else
@@ -2147,14 +2214,14 @@ namespace Controller
             double cutoffSlopeAperMs,
             double actualPeakA,
             double peakErrorA,
-            double doCompletionMs)
+            EpbDoTimingObservation doTiming)
         {
             if (!_adaptiveProfile.TryAddCutoffObservation(
                     _posThrA,
                     cutoffCurrentA,
                     cutoffSlopeAperMs,
                     actualPeakA,
-                    doCompletionMs,
+                    doTiming,
                     out var equivalentLeadMs))
             {
                 var now = Stopwatch.GetTimestamp();
@@ -2188,7 +2255,14 @@ namespace Controller
                 $"PhysicalTail={_adaptiveProfile.ForwardPhysicalTailMedianMs:F2}±MAD" +
                 $"{_adaptiveProfile.ForwardPhysicalTailMadMs:F2}ms，" +
                 $"DO={_adaptiveProfile.ForwardDoCompletionMedianMs:F2}±MAD" +
-                $"{_adaptiveProfile.ForwardDoCompletionMadMs:F2}ms，" +
+                $"{_adaptiveProfile.ForwardDoCompletionMadMs:F2}ms/P95" +
+                $"{_adaptiveProfile.ForwardDoCompletionP95Ms:F2}ms，" +
+                $"StartDelay={_adaptiveProfile.ForwardDoStartDelayMedianMs:F2}/P95" +
+                $"{_adaptiveProfile.ForwardDoStartDelayP95Ms:F2}ms，" +
+                $"Write={_adaptiveProfile.ForwardDoWriteMedianMs:F2}/P95" +
+                $"{_adaptiveProfile.ForwardDoWriteP95Ms:F2}ms，" +
+                $"CurrentClear={_adaptiveProfile.ForwardCurrentClearMedianMs:F2}/P95" +
+                $"{_adaptiveProfile.ForwardCurrentClearP95Ms:F2}ms，" +
                 $"PeakError={peakErrorA:+0.000;-0.000;0.000}A。",
                 "EPB");
         }

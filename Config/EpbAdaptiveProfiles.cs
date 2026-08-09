@@ -21,17 +21,85 @@ namespace Config
     }
 
     /// <summary>
+    /// 一次终态 OFF 的因果时间线。四个时刻使用 UTC，分别表示算法作出断电决定、
+    /// NI 写开始、物理写完成事件以及新鲜电流样本首次确认清零。
+    /// </summary>
+    public sealed class EpbDoTimingObservation
+    {
+        public DateTime DecisionUtc { get; set; }
+        public DateTime DoWriteStartedUtc { get; set; }
+        public DateTime DoWriteCompletedUtc { get; set; }
+        public DateTime? CurrentClearedUtc { get; set; }
+
+        public EpbDoTimingObservation Clone()
+        {
+            return new EpbDoTimingObservation
+            {
+                DecisionUtc = DecisionUtc,
+                DoWriteStartedUtc = DoWriteStartedUtc,
+                DoWriteCompletedUtc = DoWriteCompletedUtc,
+                CurrentClearedUtc = CurrentClearedUtc
+            };
+        }
+
+        public bool TryGetDurations(
+            out double decisionToWriteStartedMs,
+            out double doWriteDurationMs,
+            out double decisionToWriteCompletedMs,
+            out double currentClearAfterWriteMs)
+        {
+            decisionToWriteStartedMs = double.NaN;
+            doWriteDurationMs = double.NaN;
+            decisionToWriteCompletedMs = double.NaN;
+            currentClearAfterWriteMs = double.NaN;
+            if (!TryNormalizeUtc(DecisionUtc, out var decisionUtc) ||
+                !TryNormalizeUtc(DoWriteStartedUtc, out var startedUtc) ||
+                !TryNormalizeUtc(DoWriteCompletedUtc, out var completedUtc) ||
+                startedUtc < decisionUtc ||
+                completedUtc < startedUtc)
+                return false;
+
+            decisionToWriteStartedMs = (startedUtc - decisionUtc).TotalMilliseconds;
+            doWriteDurationMs = (completedUtc - startedUtc).TotalMilliseconds;
+            decisionToWriteCompletedMs = (completedUtc - decisionUtc).TotalMilliseconds;
+            if (CurrentClearedUtc.HasValue &&
+                TryNormalizeUtc(CurrentClearedUtc.Value, out var clearedUtc) &&
+                clearedUtc >= completedUtc)
+                currentClearAfterWriteMs = (clearedUtc - completedUtc).TotalMilliseconds;
+            return IsFiniteNonNegative(decisionToWriteStartedMs) &&
+                   IsFiniteNonNegative(doWriteDurationMs) &&
+                   IsFiniteNonNegative(decisionToWriteCompletedMs);
+        }
+
+        private static bool TryNormalizeUtc(DateTime value, out DateTime utc)
+        {
+            utc = DateTime.MinValue;
+            if (value == default || value == DateTime.MinValue || value == DateTime.MaxValue)
+                return false;
+            utc = value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();
+            return true;
+        }
+
+        private static bool IsFiniteNonNegative(double value)
+        {
+            return !double.IsNaN(value) && !double.IsInfinity(value) && value >= 0;
+        }
+    }
+
+    /// <summary>
     /// 单个 EPB 通道的自适应统计模型。
     /// </summary>
     public sealed class EpbAdaptiveProfile
     {
-        // V5 对应“先断电、后用完整 2kHz 证据分类”的控制语义，并包含
-        // 按物理设备合并的 DO 完成延迟。旧模型可能混入输出队列积压和
-        // ThresholdBeforeLoadRise 误分类期间的观测，不能跨策略直接复用。
-        public const int CurrentModelVersion = 5;
+        // V6 在 V5 安全控制语义上增加明确的 DO 因果时间线和每通道 P95。
+        // V5 的学习样本仍与当前策略兼容，可原位迁移；V1-V4 可能混入旧输出队列
+        // 和 ThresholdBeforeLoadRise 误分类观测，不能跨策略直接复用。
+        public const int CurrentModelVersion = 6;
+        public const int MinimumCompatibleModelVersion = 5;
         private const int HistoryCapacity = 30;
         private const double MinimumCutoffSlopeAperMs = 0.001;
         private const double MaximumCutoffLeadMs = 100.0;
+        private const double MaximumCurrentClearMs = 5000.0;
 
         [XmlAttribute]
         public int Channel { get; set; }
@@ -55,10 +123,19 @@ namespace Config
         public double ForwardPhysicalTailMadMs { get; set; }
         public double ForwardDoCompletionMedianMs { get; set; }
         public double ForwardDoCompletionMadMs { get; set; }
+        public double ForwardDoCompletionP95Ms { get; set; }
+        public double ForwardDoStartDelayMedianMs { get; set; }
+        public double ForwardDoStartDelayP95Ms { get; set; }
+        public double ForwardDoWriteMedianMs { get; set; }
+        public double ForwardDoWriteP95Ms { get; set; }
+        public double ForwardCurrentClearMedianMs { get; set; }
+        public double ForwardCurrentClearP95Ms { get; set; }
         public double ForwardPeakErrorMedianA { get; set; }
         public double ForwardPeakErrorMadA { get; set; }
         public int ValidCutoffSampleCount { get; set; }
         public int ValidDoCompletionSampleCount { get; set; }
+        public int ValidDoTimingSampleCount { get; set; }
+        public int ValidCurrentClearSampleCount { get; set; }
         public int ConsecutiveForwardOvershootCount { get; set; }
         public int ConsecutivePeakEvidenceMismatchCount { get; set; }
         public int ConsecutiveForwardStallCount { get; set; }
@@ -84,6 +161,17 @@ namespace Config
 
         [XmlArrayItem("Value")]
         public List<double> ForwardDoCompletionHistoryMs { get; set; } = new List<double>();
+
+        [XmlArrayItem("Value")]
+        public List<double> ForwardDoStartDelayHistoryMs { get; set; } = new List<double>();
+
+        [XmlArrayItem("Value")]
+        public List<double> ForwardDoWriteHistoryMs { get; set; } = new List<double>();
+
+        [XmlArrayItem("Value")]
+        public List<double> ForwardCurrentClearHistoryMs { get; set; } = new List<double>();
+
+        public EpbDoTimingObservation LastForwardDoTiming { get; set; }
 
         [XmlArrayItem("Value")]
         public List<double> ForwardPeakErrorHistoryA { get; set; } = new List<double>();
@@ -161,6 +249,55 @@ namespace Config
             double doCompletionMs,
             out double equivalentLeadMs)
         {
+            return TryAddCutoffObservationCore(
+                targetA,
+                cutoffCurrentA,
+                cutoffSlopeAperMs,
+                actualPeakA,
+                doCompletionMs,
+                null,
+                out equivalentLeadMs);
+        }
+
+        /// <summary>
+        /// 使用四时刻因果证据写入断电观测。总完成延迟用于现有提前量模型；
+        /// 决策至写开始、写持续和完成至电流清零分别形成独立的 median/P95 分布。
+        /// </summary>
+        public bool TryAddCutoffObservation(
+            double targetA,
+            double cutoffCurrentA,
+            double cutoffSlopeAperMs,
+            double actualPeakA,
+            EpbDoTimingObservation doTiming,
+            out double equivalentLeadMs)
+        {
+            var doCompletionMs = double.NaN;
+            if (doTiming != null &&
+                doTiming.TryGetDurations(
+                    out _,
+                    out _,
+                    out var measuredCompletionMs,
+                    out _))
+                doCompletionMs = measuredCompletionMs;
+            return TryAddCutoffObservationCore(
+                targetA,
+                cutoffCurrentA,
+                cutoffSlopeAperMs,
+                actualPeakA,
+                doCompletionMs,
+                doTiming,
+                out equivalentLeadMs);
+        }
+
+        private bool TryAddCutoffObservationCore(
+            double targetA,
+            double cutoffCurrentA,
+            double cutoffSlopeAperMs,
+            double actualPeakA,
+            double doCompletionMs,
+            EpbDoTimingObservation doTiming,
+            out double equivalentLeadMs)
+        {
             equivalentLeadMs = 0;
             if (!IsFinitePositive(targetA) ||
                 !IsFiniteNonNegative(cutoffCurrentA) ||
@@ -168,6 +305,8 @@ namespace Config
                 !IsFinitePositive(cutoffSlopeAperMs) ||
                 cutoffSlopeAperMs < MinimumCutoffSlopeAperMs)
                 return false;
+
+            EnsureHistoryLists();
 
             var tailRiseA = Math.Max(0, actualPeakA - cutoffCurrentA);
             equivalentLeadMs = Math.Min(
@@ -189,7 +328,45 @@ namespace Config
                 ForwardDoCompletionMadMs = Mad(
                     ForwardDoCompletionHistoryMs,
                     ForwardDoCompletionMedianMs);
+                ForwardDoCompletionP95Ms = Percentile(
+                    ForwardDoCompletionHistoryMs,
+                    0.95);
                 ValidDoCompletionSampleCount++;
+
+                if (doTiming != null &&
+                    doTiming.TryGetDurations(
+                        out var startDelayMs,
+                        out var writeDurationMs,
+                        out _,
+                        out var currentClearMs))
+                {
+                    AddBoundedRobust(
+                        ForwardDoStartDelayHistoryMs,
+                        Math.Min(MaximumCutoffLeadMs, startDelayMs));
+                    AddBoundedRobust(
+                        ForwardDoWriteHistoryMs,
+                        Math.Min(MaximumCutoffLeadMs, writeDurationMs));
+                    ForwardDoStartDelayMedianMs = Median(ForwardDoStartDelayHistoryMs);
+                    ForwardDoStartDelayP95Ms = Percentile(
+                        ForwardDoStartDelayHistoryMs,
+                        0.95);
+                    ForwardDoWriteMedianMs = Median(ForwardDoWriteHistoryMs);
+                    ForwardDoWriteP95Ms = Percentile(ForwardDoWriteHistoryMs, 0.95);
+                    ValidDoTimingSampleCount++;
+
+                    if (IsFiniteNonNegative(currentClearMs))
+                    {
+                        AddBoundedRobust(
+                            ForwardCurrentClearHistoryMs,
+                            Math.Min(MaximumCurrentClearMs, currentClearMs));
+                        ForwardCurrentClearMedianMs = Median(ForwardCurrentClearHistoryMs);
+                        ForwardCurrentClearP95Ms = Percentile(
+                            ForwardCurrentClearHistoryMs,
+                            0.95);
+                        ValidCurrentClearSampleCount++;
+                    }
+                    LastForwardDoTiming = doTiming.Clone();
+                }
 
                 equivalentLeadMs = Math.Min(
                     MaximumCutoffLeadMs,
@@ -325,10 +502,19 @@ namespace Config
                 ForwardPhysicalTailMadMs = ForwardPhysicalTailMadMs,
                 ForwardDoCompletionMedianMs = ForwardDoCompletionMedianMs,
                 ForwardDoCompletionMadMs = ForwardDoCompletionMadMs,
+                ForwardDoCompletionP95Ms = ForwardDoCompletionP95Ms,
+                ForwardDoStartDelayMedianMs = ForwardDoStartDelayMedianMs,
+                ForwardDoStartDelayP95Ms = ForwardDoStartDelayP95Ms,
+                ForwardDoWriteMedianMs = ForwardDoWriteMedianMs,
+                ForwardDoWriteP95Ms = ForwardDoWriteP95Ms,
+                ForwardCurrentClearMedianMs = ForwardCurrentClearMedianMs,
+                ForwardCurrentClearP95Ms = ForwardCurrentClearP95Ms,
                 ForwardPeakErrorMedianA = ForwardPeakErrorMedianA,
                 ForwardPeakErrorMadA = ForwardPeakErrorMadA,
                 ValidCutoffSampleCount = ValidCutoffSampleCount,
                 ValidDoCompletionSampleCount = ValidDoCompletionSampleCount,
+                ValidDoTimingSampleCount = ValidDoTimingSampleCount,
+                ValidCurrentClearSampleCount = ValidCurrentClearSampleCount,
                 ConsecutiveForwardOvershootCount = ConsecutiveForwardOvershootCount,
                 ConsecutivePeakEvidenceMismatchCount = ConsecutivePeakEvidenceMismatchCount,
                 ConsecutiveForwardStallCount = ConsecutiveForwardStallCount,
@@ -343,6 +529,13 @@ namespace Config
                     new List<double>(ForwardPhysicalTailHistoryMs ?? new List<double>()),
                 ForwardDoCompletionHistoryMs =
                     new List<double>(ForwardDoCompletionHistoryMs ?? new List<double>()),
+                ForwardDoStartDelayHistoryMs =
+                    new List<double>(ForwardDoStartDelayHistoryMs ?? new List<double>()),
+                ForwardDoWriteHistoryMs =
+                    new List<double>(ForwardDoWriteHistoryMs ?? new List<double>()),
+                ForwardCurrentClearHistoryMs =
+                    new List<double>(ForwardCurrentClearHistoryMs ?? new List<double>()),
+                LastForwardDoTiming = LastForwardDoTiming?.Clone(),
                 ForwardPeakErrorHistoryA =
                     new List<double>(ForwardPeakErrorHistoryA ?? new List<double>())
             };
@@ -374,10 +567,19 @@ namespace Config
             ForwardPhysicalTailMadMs = copy.ForwardPhysicalTailMadMs;
             ForwardDoCompletionMedianMs = copy.ForwardDoCompletionMedianMs;
             ForwardDoCompletionMadMs = copy.ForwardDoCompletionMadMs;
+            ForwardDoCompletionP95Ms = copy.ForwardDoCompletionP95Ms;
+            ForwardDoStartDelayMedianMs = copy.ForwardDoStartDelayMedianMs;
+            ForwardDoStartDelayP95Ms = copy.ForwardDoStartDelayP95Ms;
+            ForwardDoWriteMedianMs = copy.ForwardDoWriteMedianMs;
+            ForwardDoWriteP95Ms = copy.ForwardDoWriteP95Ms;
+            ForwardCurrentClearMedianMs = copy.ForwardCurrentClearMedianMs;
+            ForwardCurrentClearP95Ms = copy.ForwardCurrentClearP95Ms;
             ForwardPeakErrorMedianA = copy.ForwardPeakErrorMedianA;
             ForwardPeakErrorMadA = copy.ForwardPeakErrorMadA;
             ValidCutoffSampleCount = copy.ValidCutoffSampleCount;
             ValidDoCompletionSampleCount = copy.ValidDoCompletionSampleCount;
+            ValidDoTimingSampleCount = copy.ValidDoTimingSampleCount;
+            ValidCurrentClearSampleCount = copy.ValidCurrentClearSampleCount;
             ConsecutiveForwardOvershootCount = copy.ConsecutiveForwardOvershootCount;
             ConsecutivePeakEvidenceMismatchCount = copy.ConsecutivePeakEvidenceMismatchCount;
             ConsecutiveForwardStallCount = copy.ConsecutiveForwardStallCount;
@@ -389,7 +591,61 @@ namespace Config
             ForwardCutoffLeadHistoryMs = copy.ForwardCutoffLeadHistoryMs;
             ForwardPhysicalTailHistoryMs = copy.ForwardPhysicalTailHistoryMs;
             ForwardDoCompletionHistoryMs = copy.ForwardDoCompletionHistoryMs;
+            ForwardDoStartDelayHistoryMs = copy.ForwardDoStartDelayHistoryMs;
+            ForwardDoWriteHistoryMs = copy.ForwardDoWriteHistoryMs;
+            ForwardCurrentClearHistoryMs = copy.ForwardCurrentClearHistoryMs;
+            LastForwardDoTiming = copy.LastForwardDoTiming;
             ForwardPeakErrorHistoryA = copy.ForwardPeakErrorHistoryA;
+        }
+
+        internal void UpgradeCompatibleModel()
+        {
+            EnsureHistoryLists();
+            if (ForwardDoCompletionHistoryMs.Count > 0)
+            {
+                ForwardDoCompletionMedianMs = Median(ForwardDoCompletionHistoryMs);
+                ForwardDoCompletionMadMs = Mad(
+                    ForwardDoCompletionHistoryMs,
+                    ForwardDoCompletionMedianMs);
+                ForwardDoCompletionP95Ms = Percentile(
+                    ForwardDoCompletionHistoryMs,
+                    0.95);
+            }
+            if (ForwardDoStartDelayHistoryMs.Count > 0)
+            {
+                ForwardDoStartDelayMedianMs = Median(ForwardDoStartDelayHistoryMs);
+                ForwardDoStartDelayP95Ms = Percentile(
+                    ForwardDoStartDelayHistoryMs,
+                    0.95);
+            }
+            if (ForwardDoWriteHistoryMs.Count > 0)
+            {
+                ForwardDoWriteMedianMs = Median(ForwardDoWriteHistoryMs);
+                ForwardDoWriteP95Ms = Percentile(ForwardDoWriteHistoryMs, 0.95);
+            }
+            if (ForwardCurrentClearHistoryMs.Count > 0)
+            {
+                ForwardCurrentClearMedianMs = Median(ForwardCurrentClearHistoryMs);
+                ForwardCurrentClearP95Ms = Percentile(
+                    ForwardCurrentClearHistoryMs,
+                    0.95);
+            }
+            ModelVersion = CurrentModelVersion;
+        }
+
+        private void EnsureHistoryLists()
+        {
+            ForwardEmptyHistoryA = ForwardEmptyHistoryA ?? new List<double>();
+            ReverseEmptyHistoryA = ReverseEmptyHistoryA ?? new List<double>();
+            ForwardClampHistoryMs = ForwardClampHistoryMs ?? new List<double>();
+            ReverseReleaseHistoryMs = ReverseReleaseHistoryMs ?? new List<double>();
+            ForwardCutoffLeadHistoryMs = ForwardCutoffLeadHistoryMs ?? new List<double>();
+            ForwardPhysicalTailHistoryMs = ForwardPhysicalTailHistoryMs ?? new List<double>();
+            ForwardDoCompletionHistoryMs = ForwardDoCompletionHistoryMs ?? new List<double>();
+            ForwardDoStartDelayHistoryMs = ForwardDoStartDelayHistoryMs ?? new List<double>();
+            ForwardDoWriteHistoryMs = ForwardDoWriteHistoryMs ?? new List<double>();
+            ForwardCurrentClearHistoryMs = ForwardCurrentClearHistoryMs ?? new List<double>();
+            ForwardPeakErrorHistoryA = ForwardPeakErrorHistoryA ?? new List<double>();
         }
 
         private static void AddBounded(List<double> values, double value)
@@ -444,6 +700,20 @@ namespace Config
         private static double Mad(IEnumerable<double> source, double median)
         {
             return Median((source ?? Enumerable.Empty<double>()).Select(x => Math.Abs(x - median)));
+        }
+
+        private static double Percentile(IEnumerable<double> source, double fraction)
+        {
+            var values = (source ?? Enumerable.Empty<double>())
+                .Where(x => !double.IsNaN(x) && !double.IsInfinity(x))
+                .OrderBy(x => x)
+                .ToArray();
+            if (values.Length == 0) return 0;
+            var boundedFraction = Math.Max(0, Math.Min(1, fraction));
+            var index = Math.Max(
+                0,
+                Math.Min(values.Length - 1, (int)Math.Ceiling(values.Length * boundedFraction) - 1));
+            return values[index];
         }
 
         private static double RelativeDeviation(double actual, double baseline)
@@ -521,10 +791,10 @@ namespace Config
                     if (loaded == null) throw new InvalidDataException("反序列化结果为空。");
                     loaded.Profiles = loaded.Profiles ?? new List<EpbAdaptiveProfile>();
                     var requiresPolicyReset =
-                        loaded.ModelVersion < EpbAdaptiveProfile.CurrentModelVersion ||
+                        loaded.ModelVersion < EpbAdaptiveProfile.MinimumCompatibleModelVersion ||
                         loaded.Profiles.Any(
                             x => x != null &&
-                                 x.ModelVersion < EpbAdaptiveProfile.CurrentModelVersion);
+                                  x.ModelVersion < EpbAdaptiveProfile.MinimumCompatibleModelVersion);
                     if (requiresPolicyReset)
                     {
                         var backup = _path + ".pre-v" +
@@ -553,25 +823,10 @@ namespace Config
                             "EPB");
                     }
 
-                    foreach (var profile in loaded.Profiles.Where(x => x != null))
-                    {
-                        profile.ForwardEmptyHistoryA =
-                            profile.ForwardEmptyHistoryA ?? new List<double>();
-                        profile.ReverseEmptyHistoryA =
-                            profile.ReverseEmptyHistoryA ?? new List<double>();
-                        profile.ForwardClampHistoryMs =
-                            profile.ForwardClampHistoryMs ?? new List<double>();
-                        profile.ReverseReleaseHistoryMs =
-                            profile.ReverseReleaseHistoryMs ?? new List<double>();
-                        profile.ForwardCutoffLeadHistoryMs =
-                            profile.ForwardCutoffLeadHistoryMs ?? new List<double>();
-                        profile.ForwardPhysicalTailHistoryMs =
-                            profile.ForwardPhysicalTailHistoryMs ?? new List<double>();
-                        profile.ForwardDoCompletionHistoryMs =
-                            profile.ForwardDoCompletionHistoryMs ?? new List<double>();
-                        profile.ForwardPeakErrorHistoryA =
-                            profile.ForwardPeakErrorHistoryA ?? new List<double>();
-                    }
+                    loaded.Profiles = loaded.Profiles.Where(x => x != null).ToList();
+                    foreach (var profile in loaded.Profiles)
+                        profile.UpgradeCompatibleModel();
+                    loaded.ModelVersion = EpbAdaptiveProfile.CurrentModelVersion;
                     return loaded;
                 }
             }
