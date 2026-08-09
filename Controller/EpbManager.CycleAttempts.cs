@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using DataOperation;
 
@@ -56,6 +57,7 @@ namespace Controller
                 if (accepted)
                 {
                     created.CancelAttempt();
+                    _cycleAttempts.MarkExecutionCompleted(created);
                     if (_cycleAttempts.IsCurrent(created) &&
                         created.TerminalState == CycleAttemptTerminalState.Active)
                         ReportFormalPersistenceRecovery(
@@ -79,14 +81,120 @@ namespace Controller
                             $"旧圈尝试尚未耐久收口。ExistingAttempt={existing.AttemptId} " +
                             $"ExistingCycle={existing.Cycle} RequestedCycle={cycleNumber}"));
                 }
+                else if (_cycleAttempts.TryGetLastExecution(channel, out var executing))
+                {
+                    ReportFormalPersistenceRecovery(
+                        channel,
+                        executing.Cycle,
+                        "CycleAttemptExecutionStillRunning",
+                        new InvalidOperationException(
+                            $"旧圈Runner尚未退出，拒绝复用通道执行器。" +
+                            $"ExistingAttempt={executing.AttemptId} " +
+                            $"ExistingCycle={executing.Cycle} RequestedCycle={cycleNumber}"));
+                }
                 return false;
             }
             catch (Exception ex)
             {
                 // Begin 已经取得 registry 身份；异常时必须保留，供停止/报警/自恢复精确封圈。
                 created.MarkBeginFailed(ex);
+                _cycleAttempts.MarkExecutionCompleted(created);
                 ReportFormalPersistenceRecovery(channel, cycleNumber, "BeginCycle", ex);
                 return false;
+            }
+        }
+
+        private async System.Threading.Tasks.Task<bool> WaitForPreviousCycleExecutionAsync(
+            int channel,
+            CancellationToken token)
+        {
+            var completed = await _cycleAttempts.WaitForPreviousExecutionAsync(
+                    channel,
+                    _daqPersistenceRecoveryTimeoutMs,
+                    token)
+                .ConfigureAwait(false);
+            if (completed) return true;
+
+            if (_cycleAttempts.TryGetLastExecution(channel, out var previous))
+                _log?.Warn(
+                    $"EPB[{channel}] 旧圈Runner在{_daqPersistenceRecoveryTimeoutMs}ms内未退出，" +
+                    $"保持OFF并拒绝启动新圈。Attempt={previous.AttemptId} Cycle={previous.Cycle}",
+                    "EPB并发");
+            try
+            {
+                TryEnsureSoftwareRecoveryOutputOff(
+                    channel,
+                    "CycleExecutionQuiescenceTimeout");
+            }
+            catch (Exception ex)
+            {
+                _log?.Error(
+                    $"EPB[{channel}] execution quiescence超时后的OFF兜底异常：{ex.Message}",
+                    "EPB并发",
+                    ex);
+            }
+            return false;
+        }
+
+        internal static async System.Threading.Tasks.Task InvokeAfterCycleExecutionQuiescenceAsync(
+            IEnumerable<int> channels,
+            Func<int, CancellationToken, System.Threading.Tasks.Task<bool>> waitOne,
+            Func<CancellationToken, System.Threading.Tasks.Task> action,
+            string stage,
+            CancellationToken token)
+        {
+            if (waitOne == null) throw new ArgumentNullException(nameof(waitOne));
+            if (action == null) throw new ArgumentNullException(nameof(action));
+
+            var selected = (channels ?? Array.Empty<int>())
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
+            var waits = selected.Select(async channel => new
+            {
+                Channel = channel,
+                Completed = await waitOne(channel, token).ConfigureAwait(false)
+            }).ToArray();
+            var results = await System.Threading.Tasks.Task.WhenAll(waits)
+                .ConfigureAwait(false);
+            var blocked = results
+                .Where(result => !result.Completed)
+                .Select(result => result.Channel)
+                .ToArray();
+            if (blocked.Length > 0)
+                throw new InvalidOperationException(
+                    $"CycleExecutionQuiescenceTimeout Stage={stage ?? "Unknown"} " +
+                    $"Channels=[{string.Join(",", blocked)}]");
+
+            token.ThrowIfCancellationRequested();
+            await action(token).ConfigureAwait(false);
+        }
+
+        private void CompleteCycleAttemptExecution(CycleAttemptContext context)
+        {
+            if (context != null)
+                _cycleAttempts.MarkExecutionCompleted(context);
+        }
+
+        private IDisposable CompleteCycleAttemptExecutionOnCallbackExit(
+            CycleAttemptContext context)
+        {
+            return new CycleAttemptExecutionScope(
+                () => CompleteCycleAttemptExecution(context));
+        }
+
+        private sealed class CycleAttemptExecutionScope : IDisposable
+        {
+            private Action _complete;
+
+            internal CycleAttemptExecutionScope(Action complete)
+            {
+                _complete = complete;
+            }
+
+            public void Dispose()
+            {
+                Interlocked.Exchange(ref _complete, null)?.Invoke();
             }
         }
 
@@ -208,7 +316,6 @@ namespace Controller
             if (attemptRemoved)
                 ((ICollection<KeyValuePair<int, int>>)_currentCycleNumberByChannel)
                     .Remove(new KeyValuePair<int, int>(context.Channel, context.Cycle));
-            context.Dispose();
         }
     }
 }

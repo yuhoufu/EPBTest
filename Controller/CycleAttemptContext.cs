@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace Controller
 {
@@ -47,6 +48,11 @@ namespace Controller
         private int _disposed;
         private int _beginState;
         private Exception _beginFailure;
+        private int _executionStarted;
+        private int _executionCompleted;
+        private int _registryRemoved;
+        private readonly TaskCompletionSource<bool> _executionCompletion =
+            new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public CycleAttemptContext(
             Guid runId,
@@ -85,6 +91,9 @@ namespace Controller
         public CycleAttemptTerminalState TerminalState =>
             (CycleAttemptTerminalState)Volatile.Read(ref _terminalState);
         public bool IsDurablyCommitted => Volatile.Read(ref _durablyCommitted) != 0;
+        public bool IsExecutionStarted => Volatile.Read(ref _executionStarted) != 0;
+        public bool IsExecutionCompleted => Volatile.Read(ref _executionCompleted) != 0;
+        public Task ExecutionCompletion => _executionCompletion.Task;
 
         public void MarkBeginSucceeded()
         {
@@ -101,6 +110,48 @@ namespace Controller
                 ref _beginState,
                 (int)CycleAttemptBeginState.Failed,
                 (int)CycleAttemptBeginState.Registered);
+        }
+
+        /// <summary>
+        /// 在真正调用 Runner 前取得本 attempt 的执行所有权。Begin 未成功、已被撤销或
+        /// 已经结束的 attempt 均不得进入硬件执行区。
+        /// </summary>
+        public bool MarkExecutionStarted()
+        {
+            lock (_terminalGate)
+            {
+                if (BeginState != CycleAttemptBeginState.Begun ||
+                    AttemptCts.IsCancellationRequested ||
+                    _terminalState != (int)CycleAttemptTerminalState.Active ||
+                    _durablyCommitted != 0 ||
+                    IsExecutionCompleted ||
+                    _executionStarted != 0)
+                    return false;
+
+                Volatile.Write(ref _executionStarted, 1);
+                return true;
+            }
+        }
+
+        /// <summary>幂等发布 Runner 已彻底退出；允许下一 attempt 复用该通道 Runner。</summary>
+        public bool MarkExecutionCompleted()
+        {
+            if (Interlocked.Exchange(ref _executionCompleted, 1) != 0) return false;
+            _executionCompletion.TrySetResult(true);
+            TryDisposeAfterLifecycleComplete();
+            return true;
+        }
+
+        internal void MarkRegistryRemoved()
+        {
+            Volatile.Write(ref _registryRemoved, 1);
+            TryDisposeAfterLifecycleComplete();
+        }
+
+        private void TryDisposeAfterLifecycleComplete()
+        {
+            if (Volatile.Read(ref _registryRemoved) != 0 && IsExecutionCompleted)
+                Dispose();
         }
 
         /// <summary>竞争锁存唯一终态；只允许 Active 到某一个终态的一次转换。</summary>
@@ -272,13 +323,27 @@ namespace Controller
     {
         private readonly ConcurrentDictionary<int, CycleAttemptContext> _current =
             new ConcurrentDictionary<int, CycleAttemptContext>();
+        private readonly ConcurrentDictionary<int, CycleAttemptContext> _lastExecution =
+            new ConcurrentDictionary<int, CycleAttemptContext>();
+        private readonly ConcurrentDictionary<int, object> _channelGates =
+            new ConcurrentDictionary<int, object>();
 
         public int Count => _current.Count;
 
         public bool TryRegister(CycleAttemptContext context)
         {
             if (context == null) throw new ArgumentNullException(nameof(context));
-            return _current.TryAdd(context.Channel, context);
+            lock (GetChannelGate(context.Channel))
+            {
+                if (_current.ContainsKey(context.Channel)) return false;
+                if (_lastExecution.TryGetValue(context.Channel, out var previous) &&
+                    !previous.IsExecutionCompleted)
+                    return false;
+
+                if (!_current.TryAdd(context.Channel, context)) return false;
+                _lastExecution[context.Channel] = context;
+                return true;
+            }
         }
 
         /// <summary>
@@ -306,8 +371,60 @@ namespace Controller
         public bool TryRemoveExact(CycleAttemptContext context)
         {
             if (context == null) return false;
-            return ((ICollection<KeyValuePair<int, CycleAttemptContext>>)_current)
-                .Remove(new KeyValuePair<int, CycleAttemptContext>(context.Channel, context));
+            lock (GetChannelGate(context.Channel))
+            {
+                var removed =
+                    ((ICollection<KeyValuePair<int, CycleAttemptContext>>)_current)
+                    .Remove(new KeyValuePair<int, CycleAttemptContext>(context.Channel, context));
+                if (removed) context.MarkRegistryRemoved();
+                return removed;
+            }
+        }
+
+        public bool TryGetLastExecution(int channel, out CycleAttemptContext context)
+        {
+            return _lastExecution.TryGetValue(channel, out context);
+        }
+
+        /// <summary>
+        /// 发布执行退出并精确清理 tombstone。旧 attempt 的迟到完成永远不会清除新 attempt。
+        /// </summary>
+        public bool MarkExecutionCompleted(CycleAttemptContext context)
+        {
+            if (context == null) return false;
+            context.MarkExecutionCompleted();
+            return TryClearExecutionTombstoneExact(context);
+        }
+
+        public bool TryClearExecutionTombstoneExact(CycleAttemptContext context)
+        {
+            if (context == null) return false;
+            lock (GetChannelGate(context.Channel))
+            {
+                return ((ICollection<KeyValuePair<int, CycleAttemptContext>>)_lastExecution)
+                    .Remove(new KeyValuePair<int, CycleAttemptContext>(context.Channel, context));
+            }
+        }
+
+        public async Task<bool> WaitForPreviousExecutionAsync(
+            int channel,
+            int timeoutMs,
+            CancellationToken token)
+        {
+            if (!_lastExecution.TryGetValue(channel, out var previous) ||
+                previous.IsExecutionCompleted)
+                return true;
+
+            var completion = previous.ExecutionCompletion;
+            var timeout = Task.Delay(Math.Max(1, timeoutMs), token);
+            var winner = await Task.WhenAny(completion, timeout).ConfigureAwait(false);
+            token.ThrowIfCancellationRequested();
+            return winner == completion;
+        }
+
+        private object GetChannelGate(int channel)
+        {
+            return _channelGates.GetOrAdd(channel, _ => new object());
         }
     }
 

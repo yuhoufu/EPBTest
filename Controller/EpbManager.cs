@@ -1848,6 +1848,13 @@ namespace Controller
                 var cycleNumber = singleBaseCycle + i;
                 MarkElectricalPhaseDue(channel, plannedStartUtc);
 
+                if (!await WaitForPreviousCycleExecutionAsync(channel, ct)
+                        .ConfigureAwait(false))
+                {
+                    ReleaseCyclePauseCts(channel, cyclePauseCts);
+                    return false;
+                }
+
                 _log.Info(
                     $"EPB[{channel}] 周期 {i}/{_cfg.Test.TestTarget} 开始，Run={singleRunId:N} " +
                     $"Group={singleAssignment.ElectricalGroupId} Phase={singleAssignment.PhaseMs}ms " +
@@ -1872,7 +1879,18 @@ namespace Controller
                     return false;
                 }
 
+                if (!cycleAttempt.MarkExecutionStarted())
+                {
+                    if (!cycleAttempt.IsExecutionStarted)
+                        CompleteCycleAttemptExecution(cycleAttempt);
+                    ReleaseCyclePauseCts(channel, cyclePauseCts);
+                    return false;
+                }
+                using var executionScope =
+                    CompleteCycleAttemptExecutionOnCallbackExit(cycleAttempt);
+
                 var ok = false;
+                EpbCycleOutcome cycleOutcome;
                 try
                 {
                     ok = await runner.RunOneAsync(periodMs, cycleAttempt.AttemptCts.Token)
@@ -1886,16 +1904,21 @@ namespace Controller
                 {
                     ok = false;
                 }
+                finally
+                {
+                    // execution scope 尚未释放，故此处取得的引用只属于本 attempt。
+                    cycleOutcome = runner.LastCycleOutcome;
+                }
                 var controlSucceeded = IsFormalControlSucceeded(
                     ok,
-                    runner.LastCycleOutcome.IsSuccess);
+                    cycleOutcome.IsSuccess);
                 var controlNeedsSoftwareRecovery =
-                    runner.LastCycleOutcome.Kind == EpbCycleOutcomeKind.SoftwareRecovery;
+                    cycleOutcome.Kind == EpbCycleOutcomeKind.SoftwareRecovery;
                 if (controlNeedsSoftwareRecovery)
                     ReportFormalControlSoftwareRecovery(
                         channel,
                         cycleNumber,
-                        runner.LastCycleOutcome.Reason);
+                        cycleOutcome.Reason);
 
                 // —— 圈结束：根据是否报警停机决定封圈状态 ——
                 var persistenceCommitted = false;
@@ -1921,7 +1944,7 @@ namespace Controller
                                 recorder,
                                 DateTime.UtcNow,
                                 "AbortedBySoftwareRecovery");
-                        else if (runner.LastCycleOutcome.Kind == EpbCycleOutcomeKind.HardFault)
+                        else if (cycleOutcome.Kind == EpbCycleOutcomeKind.HardFault)
                             AbortFormalCycleAttempt(
                                 cycleAttempt,
                                 recorder,
@@ -1938,7 +1961,7 @@ namespace Controller
                                 cycleAttempt,
                                 recorder,
                                 DateTime.UtcNow,
-                                runner.LastCycleOutcome.Kind == EpbCycleOutcomeKind.Canceled
+                                cycleOutcome.Kind == EpbCycleOutcomeKind.Canceled
                                     ? "canceled"
                                     : "failed");
                     }

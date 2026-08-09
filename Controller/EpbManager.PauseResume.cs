@@ -1270,6 +1270,25 @@ namespace Controller
                 .ToArray();
             if (selected.Length == 0) return;
 
+            await InvokeAfterCycleExecutionQuiescenceAsync(
+                    selected,
+                    WaitForPreviousCycleExecutionAsync,
+                    ct => EnsureMotorReleasedBeforeFormalRejoinCoreAsync(
+                        selected,
+                        staggerPlan,
+                        reason,
+                        ct),
+                    "MotorReleaseBeforeFormalRejoin",
+                    token)
+                .ConfigureAwait(false);
+        }
+
+        private async Task EnsureMotorReleasedBeforeFormalRejoinCoreAsync(
+            int[] selected,
+            ElectricalStaggerPlan staggerPlan,
+            string reason,
+            CancellationToken token)
+        {
             var failures = await PreReleaseBatchWithPlanAsync(
                     selected,
                     null,
@@ -1440,8 +1459,6 @@ namespace Controller
                 1,
                 (int)Math.Ceiling((firstCallbackUtc - DateTime.UtcNow).TotalMilliseconds));
             var phase = staggerPlan.Get(channel).PhaseMs;
-            var runner = (EpbCycleRunner)GetRunner(channel);
-            PrepareRunnerForNoHeadAndTailCompensation(channel);
             var stopCts = RenewStopCts(channel);
             var timer = GetTimer(channel, PeriodMs, OverrunPolicy.AlignToWallClock);
             var baseCycle = Recorder?.GetLastCycleNumber(channel) ?? 0;
@@ -1456,6 +1473,16 @@ namespace Controller
                     cyclePauseCts.Token);
                 var ct = linked.Token;
                 var phaseSlot = firstSlot + cycleIndex - 1L;
+                if (!await WaitForPreviousCycleExecutionAsync(channel, ct)
+                        .ConfigureAwait(false))
+                {
+                    ReleaseCyclePauseCts(channel, cyclePauseCts);
+                    return false;
+                }
+
+                // 只有旧 execution 已完全退出后，才允许取得并重新配置共享 Runner。
+                var runner = (EpbCycleRunner)GetRunner(channel);
+                PrepareRunnerForNoHeadAndTailCompensation(channel);
                 await WaitForDaqRecoveryAsync(channel, ct).ConfigureAwait(false);
                 await EnsurePowerSupplyReadyForChannelsAsync(new[] { channel }, ct)
                     .ConfigureAwait(false);
@@ -1508,7 +1535,22 @@ namespace Controller
                     ReleaseCyclePauseCts(channel, cyclePauseCts);
                     return false;
                 }
+                if (!cycleAttempt.MarkExecutionStarted())
+                {
+                    if (!cycleAttempt.IsExecutionStarted)
+                        CompleteCycleAttemptExecution(cycleAttempt);
+                    await AbortHydraulicLeaseForChannelAsync(
+                            channel,
+                            "RejoinedFormalExecutionOwnershipRejected")
+                        .ConfigureAwait(false);
+                    ReleaseCyclePauseCts(channel, cyclePauseCts);
+                    return false;
+                }
+                using var executionScope =
+                    CompleteCycleAttemptExecutionOnCallbackExit(cycleAttempt);
+
                 var ok = false;
+                Adaptive.EpbCycleOutcome cycleOutcome;
                 try
                 {
                     ok = await runner.RunOneAlignedAsync(
@@ -1524,6 +1566,7 @@ namespace Controller
                 catch { ok = false; }
                 finally
                 {
+                    cycleOutcome = runner.LastCycleOutcome;
                     if (_hydraulicLeaseByChannel.TryGetValue(channel, out var activeScope) &&
                         !activeScope.IsClosed)
                         await AbortHydraulicLeaseForChannelAsync(
@@ -1533,15 +1576,15 @@ namespace Controller
                 }
                 var controlSucceeded = IsFormalControlSucceeded(
                     ok,
-                    runner.LastCycleOutcome.IsSuccess);
+                    cycleOutcome.IsSuccess);
                 var controlNeedsSoftwareRecovery =
-                    runner.LastCycleOutcome.Kind ==
+                    cycleOutcome.Kind ==
                     Adaptive.EpbCycleOutcomeKind.SoftwareRecovery;
                 if (controlNeedsSoftwareRecovery)
                     ReportFormalControlSoftwareRecovery(
                         channel,
                         cycleNumber,
-                        runner.LastCycleOutcome.Reason);
+                        cycleOutcome.Reason);
 
                 var persistenceCommitted = false;
                 try
@@ -1578,7 +1621,7 @@ namespace Controller
                                 cycleAttempt,
                                 recorder,
                                 DateTime.UtcNow,
-                                runner.LastCycleOutcome.Kind == Adaptive.EpbCycleOutcomeKind.Canceled
+                                cycleOutcome.Kind == Adaptive.EpbCycleOutcomeKind.Canceled
                                     ? "canceled"
                                     : "failed");
                     }

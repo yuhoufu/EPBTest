@@ -18,6 +18,10 @@ namespace AdaptiveControlTests
             Run("旧峰值取消不得影响下一尝试令牌", PeakAbortDoesNotAffectNextAttempt, ref passed);
             Run("持久化失败保留context并允许恢复重试", PersistenceFailureKeepsContext, ref passed);
             Run("Begin阻塞期间终态不触碰Recorder且禁止Runner启动", BeginBlockedTerminalDoesNotTouchRecorder, ref passed);
+            Run("外部Abort后旧Runner未退出则拒绝新attempt", ExternalAbortKeepsExecutionTombstone, ref passed);
+            Run("旧Runner退出前异步等待且退出后允许新attempt", ExecutionQuiescenceWaitsThenAllowsNextAttempt, ref passed);
+            Run("旧execution迟到完成不得清除新tombstone", StaleExecutionCompletionCannotClearNewTombstone, ref passed);
+            Run("启动供电与恢复预释放均受execution门保护", HardwareActionsWaitForExecutionQuiescence, ref passed);
             return passed;
         }
 
@@ -44,6 +48,7 @@ namespace AdaptiveControlTests
             releaseBegin.Set();
             Assert(beginTask.GetAwaiter().GetResult(), "Begin完成后注册结果错误");
             Assert(context.BeginState == CycleAttemptBeginState.Begun, "Begin完成状态未提交");
+            registry.MarkExecutionCompleted(context);
             Assert(registry.TryRemoveExact(context), "测试清理旧attempt失败");
         }
 
@@ -84,6 +89,7 @@ namespace AdaptiveControlTests
             Assert(winners == 1, $"终态胜者{winners}个，应为1个");
             Assert(context.IsDurablyCommitted, "胜出终态未标记耐久提交");
             Assert(registry.Count == 0, "耐久终态后registry未精确清理");
+            registry.MarkExecutionCompleted(context);
         }
 
         private static void StaleTerminalCannotRemoveNewAttempt()
@@ -92,6 +98,7 @@ namespace AdaptiveControlTests
             using var oldAttempt = NewContext(channel: 8, attemptId: 30, cycle: 300);
             using var newAttempt = NewContext(channel: 8, attemptId: 31, cycle: 301);
             Assert(registry.TryRegister(oldAttempt), "旧attempt注册失败");
+            registry.MarkExecutionCompleted(oldAttempt);
             Assert(registry.TryRemoveExact(oldAttempt), "旧attempt预清理失败");
             Assert(registry.TryRegister(newAttempt), "新attempt注册失败");
 
@@ -100,6 +107,7 @@ namespace AdaptiveControlTests
             Assert(registry.TryGetCurrent(8, out var current) && ReferenceEquals(current, newAttempt),
                 "旧attempt迟到回调删除了新attempt");
             Assert(registry.TryRemoveExact(newAttempt), "新attempt测试清理失败");
+            registry.MarkExecutionCompleted(newAttempt);
         }
 
         private static void PeakAbortDoesNotAffectNextAttempt()
@@ -141,6 +149,7 @@ namespace AdaptiveControlTests
             Assert(context.TerminalState == CycleAttemptTerminalState.Aborted &&
                    context.IsDurablyCommitted, "恢复终态身份错误");
             Assert(registry.Count == 0, "恢复耐久提交后context仍残留");
+            registry.MarkExecutionCompleted(context);
         }
 
         private static void BeginBlockedTerminalDoesNotTouchRecorder()
@@ -181,6 +190,7 @@ namespace AdaptiveControlTests
             Assert(beginTask.GetAwaiter().GetResult(), "Begin注册任务返回异常");
             Assert(context.BeginState == CycleAttemptBeginState.Begun, "释放后Begin状态未提交");
             Assert(runnerStarts == 0, "已撤销attempt在Begin返回后仍启动Runner");
+            registry.MarkExecutionCompleted(context);
 
             Assert(context.AbortRecorderOnce(
                     () =>
@@ -192,6 +202,144 @@ namespace AdaptiveControlTests
                 "Begin返回后未能精确提交Abort终态");
             Assert(recorderTerminalCalls == 1, "Begin返回后的Recorder终态调用次数错误");
             Assert(registry.Count == 0, "精确收口后registry仍残留");
+        }
+
+        private static void ExternalAbortKeepsExecutionTombstone()
+        {
+            var registry = new CycleAttemptRegistry();
+            using var oldAttempt = NewContext(channel: 4, attemptId: 60, cycle: 600);
+            using var nextAttempt = NewContext(channel: 4, attemptId: 61, cycle: 601);
+            Assert(registry.TryRegister(oldAttempt), "旧attempt注册失败");
+            oldAttempt.MarkBeginSucceeded();
+            Assert(oldAttempt.MarkExecutionStarted(), "旧attempt未进入执行区");
+            Assert(oldAttempt.AbortOnce(() => true, item => registry.TryRemoveExact(item)),
+                "外部Abort未耐久提交");
+            Assert(registry.Count == 0, "终态提交后current身份未移除");
+            Assert(registry.TryGetLastExecution(4, out var tombstone) &&
+                   ReferenceEquals(tombstone, oldAttempt), "旧execution tombstone未保留");
+            Assert(!registry.TryRegister(nextAttempt),
+                "旧Runner未退出时错误接纳了新attempt");
+
+            registry.MarkExecutionCompleted(oldAttempt);
+            Assert(registry.TryRegister(nextAttempt), "旧Runner退出后仍拒绝新attempt");
+            registry.MarkExecutionCompleted(nextAttempt);
+            Assert(registry.TryRemoveExact(nextAttempt), "新attempt清理失败");
+        }
+
+        private static void ExecutionQuiescenceWaitsThenAllowsNextAttempt()
+        {
+            var registry = new CycleAttemptRegistry();
+            using var oldAttempt = NewContext(channel: 5, attemptId: 70, cycle: 700);
+            using var nextAttempt = NewContext(channel: 5, attemptId: 71, cycle: 701);
+            Assert(registry.TryRegister(oldAttempt), "旧attempt注册失败");
+            oldAttempt.MarkBeginSucceeded();
+            Assert(oldAttempt.MarkExecutionStarted(), "旧attempt执行区启动失败");
+            Assert(oldAttempt.AbortOnce(() => true, item => registry.TryRemoveExact(item)),
+                "旧attempt外部终态失败");
+
+            var wait = registry.WaitForPreviousExecutionAsync(
+                5,
+                2000,
+                CancellationToken.None);
+            Assert(!wait.Wait(50), "旧Runner门未释放时等待错误提前完成");
+            Assert(!registry.TryRegister(nextAttempt),
+                "等待期间错误创建新attempt（可能读取旧LastCycleOutcome）");
+
+            registry.MarkExecutionCompleted(oldAttempt);
+            Assert(wait.GetAwaiter().GetResult(), "旧Runner退出后异步等待未成功");
+            Assert(registry.TryRegister(nextAttempt), "quiescence后新attempt未获准");
+            nextAttempt.MarkBeginSucceeded();
+            Assert(nextAttempt.MarkExecutionStarted(), "新attempt无法进入独立执行区");
+            registry.MarkExecutionCompleted(nextAttempt);
+            Assert(registry.TryRemoveExact(nextAttempt), "新attempt清理失败");
+        }
+
+        private static void StaleExecutionCompletionCannotClearNewTombstone()
+        {
+            var registry = new CycleAttemptRegistry();
+            using var oldAttempt = NewContext(channel: 8, attemptId: 80, cycle: 800);
+            using var nextAttempt = NewContext(channel: 8, attemptId: 81, cycle: 801);
+            Assert(registry.TryRegister(oldAttempt), "旧attempt注册失败");
+            oldAttempt.MarkBeginSucceeded();
+            Assert(oldAttempt.MarkExecutionStarted(), "旧attempt执行区启动失败");
+            Assert(oldAttempt.AbortOnce(() => true, item => registry.TryRemoveExact(item)),
+                "旧attempt终态失败");
+
+            // 先只发布完成，再让新attempt原子替换已完成tombstone；模拟旧finally迟到清理。
+            oldAttempt.MarkExecutionCompleted();
+            Assert(registry.TryRegister(nextAttempt), "已完成旧tombstone仍阻止新attempt");
+            Assert(!registry.TryClearExecutionTombstoneExact(oldAttempt),
+                "旧execution迟到清理错误删除了新tombstone");
+            Assert(registry.TryGetLastExecution(8, out var current) &&
+                   ReferenceEquals(current, nextAttempt), "新execution tombstone身份丢失");
+
+            registry.MarkExecutionCompleted(nextAttempt);
+            Assert(registry.TryRemoveExact(nextAttempt), "新attempt清理失败");
+        }
+
+        private static void HardwareActionsWaitForExecutionQuiescence()
+        {
+            AssertHardwareActionWaitsForExecution(channel: 6, attemptId: 90, "PowerReady");
+            AssertHardwareActionWaitsForExecution(channel: 9, attemptId: 91, "PreRelease");
+        }
+
+        private static void AssertHardwareActionWaitsForExecution(
+            int channel,
+            long attemptId,
+            string stage)
+        {
+            var registry = new CycleAttemptRegistry();
+            using var oldAttempt = NewContext(channel, attemptId, (int)(900 + attemptId));
+            Assert(registry.TryRegister(oldAttempt), $"{stage}旧attempt注册失败");
+            oldAttempt.MarkBeginSucceeded();
+            Assert(oldAttempt.MarkExecutionStarted(), $"{stage}旧execution启动失败");
+            Assert(oldAttempt.AbortOnce(() => true, item => registry.TryRemoveExact(item)),
+                $"{stage}外部Abort失败");
+
+            var actionCalls = 0;
+            var blocked = false;
+            try
+            {
+                EpbManager.InvokeAfterCycleExecutionQuiescenceAsync(
+                        new[] { channel },
+                        (candidate, token) => registry.WaitForPreviousExecutionAsync(
+                            candidate,
+                            30,
+                            token),
+                        _ =>
+                        {
+                            Interlocked.Increment(ref actionCalls);
+                            return Task.CompletedTask;
+                        },
+                        stage,
+                        CancellationToken.None)
+                    .GetAwaiter()
+                    .GetResult();
+            }
+            catch (InvalidOperationException ex)
+            {
+                blocked = ex.Message.Contains("CycleExecutionQuiescenceTimeout");
+            }
+            Assert(blocked, $"{stage}未在旧execution未退出时明确阻止硬件动作");
+            Assert(actionCalls == 0, $"{stage}在旧execution未退出时调用了硬件委托");
+
+            registry.MarkExecutionCompleted(oldAttempt);
+            EpbManager.InvokeAfterCycleExecutionQuiescenceAsync(
+                    new[] { channel },
+                    (candidate, token) => registry.WaitForPreviousExecutionAsync(
+                        candidate,
+                        30,
+                        token),
+                    _ =>
+                    {
+                        Interlocked.Increment(ref actionCalls);
+                        return Task.CompletedTask;
+                    },
+                    stage,
+                    CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+            Assert(actionCalls == 1, $"{stage}在旧execution退出后未且仅调用一次硬件委托");
         }
 
         private static CycleAttemptContext NewContext(int channel, long attemptId, int cycle)

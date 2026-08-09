@@ -697,9 +697,22 @@ namespace Controller
             int[] selected,
             CancellationToken token)
         {
+            var channels = (selected ?? Array.Empty<int>()).Distinct().OrderBy(x => x).ToArray();
+            await InvokeAfterCycleExecutionQuiescenceAsync(
+                    channels,
+                    WaitForPreviousCycleExecutionAsync,
+                    ct => EnsurePowerSupplyReadyBeforeStartCoreAsync(channels, ct),
+                    "PowerReadyBeforeStart",
+                    token)
+                .ConfigureAwait(false);
+        }
+
+        private async Task EnsurePowerSupplyReadyBeforeStartCoreAsync(
+            int[] channels,
+            CancellationToken token)
+        {
             if (_powerSupply == null) return;
 
-            var channels = (selected ?? Array.Empty<int>()).Distinct().OrderBy(x => x).ToArray();
             var groupIds = channels
                 .Select(GetElectricalGroupId)
                 .Where(groupId => groupId > 0)
@@ -1029,6 +1042,12 @@ namespace Controller
                             // 因而即使实际回调有毫秒级抖动，也不会在周期边界两侧分槽。
                             var phaseSlot = firstFormalSlot + cycleIndex - 1L;
 
+                            if (!await WaitForPreviousCycleExecutionAsync(ch, token)
+                                    .ConfigureAwait(false))
+                            {
+                                ReleaseCyclePauseCts(ch, cyclePauseCts);
+                                return false;
+                            }
                             await WaitForDaqRecoveryAsync(ch, token).ConfigureAwait(false);
                             await EnsurePowerSupplyReadyForChannelsAsync(new[] { ch }, token)
                                 .ConfigureAwait(false);
@@ -1107,8 +1126,23 @@ namespace Controller
                                 return false;
                             }
 
+                            if (!cycleAttempt.MarkExecutionStarted())
+                            {
+                                if (!cycleAttempt.IsExecutionStarted)
+                                    CompleteCycleAttemptExecution(cycleAttempt);
+                                await AbortHydraulicLeaseForChannelAsync(
+                                        ch,
+                                        "FormalCycleExecutionOwnershipRejected")
+                                    .ConfigureAwait(false);
+                                ReleaseCyclePauseCts(ch, cyclePauseCts);
+                                return false;
+                            }
+                            using var executionScope =
+                                CompleteCycleAttemptExecutionOnCallbackExit(cycleAttempt);
+
                             // 3) 跑一圈（对齐外壳版）
                             var ok = false;
+                            Adaptive.EpbCycleOutcome cycleOutcome;
                             try
                             {
                                 ok = await runner.RunOneAlignedAsync(
@@ -1130,6 +1164,9 @@ namespace Controller
                             }
                             finally
                             {
+                                // 必须在释放 execution tombstone 前取得本圈不可变引用；
+                                // 下一圈获准复用 Runner 后会替换 LastCycleOutcome。
+                                cycleOutcome = runner.LastCycleOutcome;
                                 if (_hydraulicLeaseByChannel.TryGetValue(ch, out var activeScope) &&
                                     !activeScope.IsClosed)
                                     await AbortHydraulicLeaseForChannelAsync(
@@ -1139,19 +1176,19 @@ namespace Controller
                             }
                             var controlSucceeded = IsFormalControlSucceeded(
                                 ok,
-                                runner.LastCycleOutcome.IsSuccess);
+                                cycleOutcome.IsSuccess);
                             var controlNeedsSoftwareRecovery =
-                                runner.LastCycleOutcome.Kind ==
+                                cycleOutcome.Kind ==
                                 Adaptive.EpbCycleOutcomeKind.SoftwareRecovery;
                             if (controlNeedsSoftwareRecovery)
                                 ReportFormalControlSoftwareRecovery(
                                     ch,
                                     cycleNumber,
-                                    runner.LastCycleOutcome.Reason);
+                                    cycleOutcome.Reason);
 
                             if (!ok)
                             {
-                                var failed = runner.LastCycleOutcome;
+                                var failed = cycleOutcome;
                                 _log?.Warn(
                                     $"EPB[{ch}] 周期 {cycleNumber} 返回失败：" +
                                     $"Kind={failed.Kind} Stage={failed.Stage} Reason={failed.Reason} " +
@@ -1185,7 +1222,7 @@ namespace Controller
                                         recorder,
                                         DateTime.UtcNow,
                                         "AbortedBySoftwareRecovery");
-                                else if (runner.LastCycleOutcome.Kind == Adaptive.EpbCycleOutcomeKind.HardFault)
+                                else if (cycleOutcome.Kind == Adaptive.EpbCycleOutcomeKind.HardFault)
                                     AbortFormalCycleAttempt(
                                         cycleAttempt,
                                         recorder,
@@ -1202,7 +1239,7 @@ namespace Controller
                                         cycleAttempt,
                                         recorder,
                                         DateTime.UtcNow,
-                                        runner.LastCycleOutcome.Kind == Adaptive.EpbCycleOutcomeKind.Canceled
+                                        cycleOutcome.Kind == Adaptive.EpbCycleOutcomeKind.Canceled
                                             ? "canceled"
                                             : "failed");
                             }
