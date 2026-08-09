@@ -212,18 +212,28 @@ namespace Controller
         public bool MotorOffCommandSucceeded { get; set; }
         public bool PowerOffConfirmed { get; set; }
         public bool PressureSafeConfirmed { get; set; }
+        public bool PersistenceBoundaryConfirmed { get; set; }
         public bool ReusedPreviousResult { get; set; }
         public DateTime StartedUtc { get; set; }
         public DateTime CompletedUtc { get; set; }
         public string MotorError { get; set; } = string.Empty;
         public string PowerError { get; set; } = string.Empty;
         public string PressureError { get; set; } = string.Empty;
+        public string PersistenceError { get; set; } = string.Empty;
         public bool LogicalQuiescenceConfirmed { get; set; }
         public string LogicalError { get; set; } = string.Empty;
         public LogicalQuiescenceSnapshot LogicalState { get; set; }
 
         public bool CanReleaseAcquisition => MotorOffCommandSucceeded && PowerOffConfirmed;
-        public bool FullyConfirmed => CanReleaseAcquisition && PressureSafeConfirmed;
+        /// <summary>
+        ///     Application exit is stricter than releasing acquisition hardware during a
+        ///     controlled stop. The process must remain alive while the accepted Raw/SQLite
+        ///     prefix is still being retried; otherwise disposing the persistence worker can
+        ///     discard the final batch or alarm evidence.
+        /// </summary>
+        public bool CanCloseApplication => CanReleaseAcquisition && PersistenceBoundaryConfirmed;
+        public bool PhysicalSafetyConfirmed => CanReleaseAcquisition && PressureSafeConfirmed;
+        public bool FullyConfirmed => PhysicalSafetyConfirmed && PersistenceBoundaryConfirmed;
         public bool CanRestartInProcess => FullyConfirmed && LogicalQuiescenceConfirmed;
 
         public StopSafetyResult Clone(bool reused = false)
@@ -235,12 +245,14 @@ namespace Controller
                 MotorOffCommandSucceeded = MotorOffCommandSucceeded,
                 PowerOffConfirmed = PowerOffConfirmed,
                 PressureSafeConfirmed = PressureSafeConfirmed,
+                PersistenceBoundaryConfirmed = PersistenceBoundaryConfirmed,
                 ReusedPreviousResult = reused,
                 StartedUtc = StartedUtc,
                 CompletedUtc = CompletedUtc,
                 MotorError = MotorError,
                 PowerError = PowerError,
                 PressureError = PressureError,
+                PersistenceError = PersistenceError,
                 LogicalQuiescenceConfirmed = LogicalQuiescenceConfirmed,
                 LogicalError = LogicalError,
                 LogicalState = LogicalState

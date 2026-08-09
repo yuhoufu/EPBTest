@@ -141,7 +141,8 @@ namespace MTEmbTest
                     false);
                 manager.ChannelWarningEvidenceRaised += warning => PostSafetyStatus(
                     $"软预警 EPB{warning.Channel:D2}【{AlarmMessageLocalizer.GetWarningName(warning.Code)}】" +
-                    $"连续={warning.Streak}/{warning.ConfirmThreshold}；当前完整圈封存后后台保存证据。",
+                    $"连续={warning.Streak}/{warning.ConfirmThreshold}；轻量证据已异步登记，" +
+                    "完整圈证据仅在配置开启且通过限频门禁时后台保存。",
                     false);
                 manager.SnapshotExportFailed += message => PostSafetyStatus(
                     "快照导出失败（不影响安全控制）：" + message,

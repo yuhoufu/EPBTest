@@ -294,14 +294,8 @@ namespace Controller
             {
                 token.ThrowIfCancellationRequested();
 
-                var now = Stopwatch.GetTimestamp();
-                if (now < nextDue)
-                {
-                    // 紧凑对齐采样节拍：先轻量延时（毫秒级），再自旋等待最后几个微小 tick
-                    var ms = (int)Math.Max(0, (nextDue - now) / tickPerMs - 1);
-                    if (ms > 0) await Task.Delay(ms, token).ConfigureAwait(false);
-                    while ((now = Stopwatch.GetTimestamp()) < nextDue) { /* busy wait to align */ }
-                }
+                var now = await DelayUntilMonotonicAsync(nextDue, token)
+                    .ConfigureAwait(false);
                 nextDue += (long)(Math.Max(1, _sampleMs) * tickPerMs);
 
                 var current = _readCurrent(_channel);
@@ -492,14 +486,8 @@ namespace Controller
             {
                 token.ThrowIfCancellationRequested();
 
-                var now = Stopwatch.GetTimestamp();
-                if (now < nextDue)
-                {
-                    // 紧凑对齐采样节拍：先轻量延时（毫秒级），再自旋等待最后几个微小 tick
-                    var ms = (int)Math.Max(0, (nextDue - now) / tickPerMs - 1);
-                    if (ms > 0) await Task.Delay(ms, token).ConfigureAwait(false);
-                    while ((now = Stopwatch.GetTimestamp()) < nextDue) { /* busy wait to align */ }
-                }
+                var now = await DelayUntilMonotonicAsync(nextDue, token)
+                    .ConfigureAwait(false);
                 nextDue += (long)(Math.Max(1, _sampleMs) * tickPerMs);
 
                 var current = _readCurrent(_channel);

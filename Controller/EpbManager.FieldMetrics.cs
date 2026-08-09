@@ -1,0 +1,226 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Globalization;
+using System.Linq;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace Controller
+{
+    internal sealed class StopPersistenceBoundaryResult
+    {
+        internal string Device { get; set; } = string.Empty;
+        internal long Boundary { get; set; }
+        internal long Published { get; set; }
+        internal long Persisted { get; set; }
+        internal int QueueDepth { get; set; }
+        internal DaqPersistenceState PersistenceState { get; set; }
+        internal bool RawPipelineDrained { get; set; }
+        internal bool Closed { get; set; }
+    }
+
+    public sealed partial class EpbManager
+    {
+        private const int FieldMetricIntervalMs = 2000;
+        private long _lastFieldMetricTicks;
+
+        private static string Metric(double value)
+            => value.ToString("F3", CultureInfo.InvariantCulture);
+
+        private static string MetricToken(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return "none";
+            var builder = new StringBuilder(value.Length);
+            foreach (var character in value.Trim())
+                builder.Append(char.IsWhiteSpace(character) || character == '=' ? '_' : character);
+            return builder.ToString();
+        }
+
+        private void LogFieldSessionMetric(
+            string phase,
+            Guid runId,
+            IEnumerable<int> channels,
+            bool closed,
+            string detail = null)
+        {
+            if (runId == Guid.Empty) return;
+            var identity = RuntimeBuildIdentity.Capture();
+            _log.Info(
+                $"FieldMetric SESSION Phase={MetricToken(phase)} RunId={runId:N} " +
+                $"Channels={string.Join(",", (channels ?? Enumerable.Empty<int>()).Distinct().OrderBy(x => x))} " +
+                $"Closed={closed} Detail={MetricToken(detail)} " +
+                $"ProductVersion={MetricToken(identity.ProductVersion)} " +
+                $"AssemblyVersion={MetricToken(identity.AssemblyVersion)} " +
+                $"ProcessId={identity.ProcessId} " +
+                $"ExecutablePath={MetricToken(identity.ExecutablePath)} " +
+                $"ExeSha256={MetricToken(identity.ExecutableSha256)} " +
+                $"ConfigSha256={MetricToken(identity.ReleaseConfigSha256)} " +
+                $"GitCommit={MetricToken(identity.GitCommit)} GitDirty={MetricToken(identity.GitDirty)} " +
+                $"BuildUtc={MetricToken(identity.BuildUtc)}",
+                "FIELD");
+        }
+
+        private void LogFieldRuntimeStateMetric(ChannelRuntimeStateChangedEvent update)
+        {
+            if (update == null) return;
+            var device = update.Channel <= 6 ? "Dev1" : "Dev2";
+            _log.Info(
+                $"FieldMetric STATE RunId={update.RunId:N} Device={device} " +
+                $"Channel={update.Channel} State={update.State} " +
+                $"Reason={MetricToken(update.ReasonCode)} Revision={update.Revision} " +
+                $"CorrelationId={update.CorrelationId:N} RunEpoch={update.RunEpoch} " +
+                $"Enabled={update.Enabled} Formal={update.FormalPhaseCommitted} " +
+                $"Timer={update.TimerActive} Runner={update.RunnerActive} Energized={update.Energized}",
+                "FIELD");
+        }
+
+        private void TryLogFieldRuntimeMetrics(bool force = false, string phase = "Running")
+        {
+            var nowTicks = Stopwatch.GetTimestamp();
+            var previous = Interlocked.Read(ref _lastFieldMetricTicks);
+            if (!force && previous != 0 &&
+                (nowTicks - previous) * 1000.0 / Stopwatch.Frequency < FieldMetricIntervalMs)
+                return;
+            if (!force &&
+                Interlocked.CompareExchange(ref _lastFieldMetricTicks, nowTicks, previous) != previous)
+                return;
+            if (force) Interlocked.Exchange(ref _lastFieldMetricTicks, nowTicks);
+
+            foreach (var device in new[] { "Dev1", "Dev2" })
+            {
+                try
+                {
+                    var control = _acq.GetControlSnapshot(device);
+                    var freshness = _acq.GetDaqFreshnessSnapshot(device, 100);
+                    var persistence = _persistence.GetSnapshot(device);
+                    var published = _acq.GetLastDiskPublishedSequence(device);
+                    _log.Info(
+                        $"FieldMetric DAQ Phase={phase} Device={device} " +
+                        $"ControlDepth={control.QueueDepth} " +
+                        $"ControlOldestMs={Metric(control.OldestBatchAgeMs)} " +
+                        $"ControlProcessMs={Metric(control.LastBatchProcessMs)} " +
+                        $"SubscriberMaxMs={Metric(control.SubscriberMaxMs)} " +
+                        $"PersistenceState={persistence.State} " +
+                        $"PersistenceDepth={persistence.QueueDepth} " +
+                        $"PersistenceOldestMs={Metric(persistence.OldestBatchAgeMs)} " +
+                        $"CallbackAgeMs={Metric(freshness.CallbackAgeMs)} " +
+                        $"ControlProcessedAgeMs={Metric(freshness.ControlProcessedAgeMs)} " +
+                        $"Produced={freshness.LastProducedSequence} " +
+                        $"Processed={freshness.LastProcessedSequence} " +
+                        $"Published={published} Persisted={persistence.Sequence} " +
+                        $"Discontinuities={freshness.ControlDiscontinuityCount} " +
+                        $"DurabilityBlocked={persistence.DurabilityBlocked} " +
+                        $"Suppressed={persistence.SuppressedBatchCount} " +
+                        $"Discarded={persistence.DiscardedGenerationBatchCount} " +
+                        $"OverCapacityDropped={persistence.OverCapacityDroppedBatchCount}",
+                        "FIELD");
+                }
+                catch (Exception ex)
+                {
+                    _log.Warn(
+                        $"FieldMetric DAQ采集失败已隔离：Device={device} {ex.Message}",
+                        "FIELD");
+                }
+            }
+        }
+
+        private void LogHighPriorityOffFieldMetric(IO.NI.HighPriorityDoTelemetry telemetry)
+        {
+            if (telemetry == null) return;
+            var device = telemetry.Channel <= 6 ? "Dev1" : "Dev2";
+            _log.Info(
+                $"FieldMetric DO_OFF Device={device} Channel={telemetry.Channel} " +
+                $"CommandId={telemetry.CommandId:N} Result={telemetry.Result} " +
+                $"Late={telemetry.LateHardwareSuccess} " +
+                $"QueueWaitMs={Metric(telemetry.QueueWaitMs)} " +
+                $"NIWriteMs={Metric(telemetry.NiWriteMs)} " +
+                $"WorkerMs={Metric(telemetry.WorkerExecutionMs)} " +
+                $"TotalMs={Metric(telemetry.TotalMs)}",
+                "FIELD");
+        }
+
+        internal static bool IsStopPersistenceBoundaryClosed(
+            long boundary,
+            long published,
+            long persisted,
+            int queueDepth,
+            DaqPersistenceState state = DaqPersistenceState.Recovered)
+            => boundary >= 0 && published >= boundary && persisted >= boundary && queueDepth == 0 &&
+               state == DaqPersistenceState.Recovered;
+
+        private async Task<StopPersistenceBoundaryResult[]> WaitForStopPersistenceBoundariesAsync(
+            IReadOnlyDictionary<string, long> boundaries,
+            int timeoutMs)
+        {
+            var deadline = Stopwatch.GetTimestamp() +
+                           (long)(Math.Max(1, timeoutMs) / 1000.0 * Stopwatch.Frequency);
+            var rawDrainMs = (int)Math.Max(
+                1,
+                (deadline - Stopwatch.GetTimestamp()) * 1000.0 / Stopwatch.Frequency);
+            var rawPipelineDrained = await _acq.DrainBackgroundPipelinesAsync(
+                    rawDrainMs,
+                    CancellationToken.None)
+                .ConfigureAwait(false);
+            // DrainBackgroundPipelinesAsync 捕获的是调用时边界。取其完成后的已发布序号作为
+            // 最终持久化边界，可覆盖 Stop 请求发出时正在回调/工程处理中的批次。
+            var effectiveBoundaries = boundaries.ToDictionary(
+                pair => pair.Key,
+                pair => Math.Max(pair.Value, _acq.GetLastDiskPublishedSequence(pair.Key)));
+
+            foreach (var pair in effectiveBoundaries)
+            {
+                var remainingMs = (int)Math.Max(
+                    1,
+                    (deadline - Stopwatch.GetTimestamp()) * 1000.0 / Stopwatch.Frequency);
+                await _persistence.WaitForPersistedAsync(
+                        pair.Key,
+                        pair.Value,
+                        remainingMs,
+                        CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+
+            var remainingDrainMs = (int)Math.Max(
+                1,
+                (deadline - Stopwatch.GetTimestamp()) * 1000.0 / Stopwatch.Frequency);
+            await _persistence.DrainAsync(remainingDrainMs).ConfigureAwait(false);
+
+            var results = effectiveBoundaries.Select(pair =>
+            {
+                var persistence = _persistence.GetSnapshot(pair.Key);
+                var published = _acq.GetLastDiskPublishedSequence(pair.Key);
+                return new StopPersistenceBoundaryResult
+                {
+                    Device = pair.Key,
+                    Boundary = pair.Value,
+                    Published = published,
+                    Persisted = persistence.Sequence,
+                    QueueDepth = persistence.QueueDepth,
+                    PersistenceState = persistence.State,
+                    RawPipelineDrained = rawPipelineDrained,
+                    Closed = rawPipelineDrained && IsStopPersistenceBoundaryClosed(
+                        pair.Value,
+                        published,
+                        persistence.Sequence,
+                        persistence.QueueDepth,
+                        persistence.State)
+                };
+            }).ToArray();
+
+            foreach (var result in results)
+            {
+                var message =
+                    $"FieldMetric STOP_PERSISTENCE Device={result.Device} " +
+                    $"RawDrained={result.RawPipelineDrained} " +
+                    $"Boundary={result.Boundary} Published={result.Published} " +
+                    $"Persisted={result.Persisted} Depth={result.QueueDepth} " +
+                    $"State={result.PersistenceState} Closed={result.Closed}";
+                if (result.Closed) _log.Info(message, "FIELD");
+                else _log.Error(message, "FIELD");
+            }
+            return results;
+        }
+    }
+}

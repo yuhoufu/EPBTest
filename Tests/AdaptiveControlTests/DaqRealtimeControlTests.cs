@@ -18,6 +18,14 @@ namespace AdaptiveControlTests
 {
     internal static class DaqRealtimeControlTests
     {
+        public static int RunFieldClockRegression()
+        {
+            var passed = 0;
+            Run("锁定后低延迟包络连续超前才触发恢复", ClockTimelineRequiresSustainedResidualLead, ref passed);
+            Run("锁定后样本时间持续滞后同样触发恢复", ClockTimelineRequiresSustainedResidualLag, ref passed);
+            return passed;
+        }
+
         internal static int RunAll()
         {
             var passed = 0;
@@ -27,11 +35,13 @@ namespace AdaptiveControlTests
             Run("恢复轮询跨多批仍按连续序号累计", RecoveryVerifierAcceptsBurstProgress, ref passed);
             Run("恢复连续性故障后重新建立干净窗口", RecoveryVerifierResetsOnRealDiscontinuity, ref passed);
             Run("控制积压先追最新而回调故障才重建", DaqFastResyncRecreatePolicy, ref passed);
-            Run("软件恢复失败持续自维护且仅硬件证据报警", DaqSelfMaintenancePolicy, ref passed);
+            Run("DAQ软件恢复三次后整批重建且仅双重硬件证据报警", DaqSelfMaintenancePolicy, ref passed);
             Run("恢复阶段只在终态导出完整重证据", IncidentSnapshotHeavyEvidencePolicy, ref passed);
             Run("DAQ恢复先恢复安全电源再做机械定位", DaqRecoveryPrerequisiteOrder, ref passed);
             Run("学习和资格通道即使没有定时器也恢复供电", DaqRecoveryIncludesRunnerOnlyChannels, ref passed);
             Run("UI发布限频不影响首批和周期后批次", UiDispatchGateUsesMonotonicRateLimit, ref passed);
+            Run("UI最新值唤醒在阻塞期间只保留一个待处理信号", UiLatestValueSignalCoalescesBacklog, ref passed);
+            Run("UI双设备邮箱十万批阻塞后每设备只保留最新一批", UiLatestPairMailboxStaysBounded, ref passed);
             Run("DAQ陈旧根因区分回调与控制消费", DaqStaleRootClassification, ref passed);
             Run("DAQ批次和兼容队列包装不再持续分配", DaqBatchObjectsAreReusableValueBacked, ref passed);
             Run("旧原始二进制写入池化后格式保持不变", LegacyRawWriterKeepsBinaryFormat, ref passed);
@@ -42,17 +52,22 @@ namespace AdaptiveControlTests
             Run("恢复成功超时停止硬件确认并发只提交一个终态", RecoveryTerminalGateCommitsExactlyOnce, ref passed);
             Run("DAQ探测能力缺失不能误确认为硬件拔除", ProbeCapabilityMissingIsNotHardwareEvidence, ref passed);
             Run("DAQ事故关联去重优先级与新运行复位", IncidentCorrelationAndPriority, ref passed);
+            Run("同设备百次事故症状只生成一个上下文触发和终态", HundredIncidentSymptomsMergeIntoOneContext, ref passed);
             Run("DAQ恢复终态结束旧事故且后续故障使用新关联号", IncidentCompletionStartsNewCorrelation, ref passed);
             Run("DAQ恢复期间旧运行和软预警不能覆盖恢复状态", DaqRecoveryStateCannotRegress, ref passed);
             Run("高优先级DO超时不回退到调用线程无限等待", HighPriorityDoTimeoutIsBounded, ref passed);
+            Run("同通道重复OFF合并且不再分配未释放等待句柄", HighPriorityDoCoalescesDuplicateOff, ref passed);
+            Run("DAQ后台同根任务合并并在退出前观察异常", DaqBackgroundTasksAreCoalescedAndDrained, ref passed);
             Run("DO报警时间线保留兼容列并追加命令耗时", DoTimelineAppendsCommandElapsed, ref passed);
             Run("电源组重复联锁复用关联且允许重发安全动作", EmergencyPowerGroupLatchKeepsCorrelation, ref passed);
             Run("DAQ事故先断电后发布诊断", DaqSafetyActionsPrecedePublication, ref passed);
             Run("十万稳态样本控制计算无持续分配", AdaptiveHotLoopDoesNotAllocate, ref passed);
+            Run("六通道学习节拍协作等待不再整毫秒自旋", CooperativeLearningCadenceDoesNotBurnCpu, ref passed);
             Run("因果中值滤波跨批正确且原地无持续分配", CausalMedianInPlaceIsCorrectAndAllocationFree, ref passed);
             Run("普通轨迹25Hz且动作轨迹不降采样", AdaptiveTraceRateAndActionRetention, ref passed);
             Run("控制诊断记录真实64批容量", ControlDiagnosticsUseRealCapacity, ref passed);
             Run("构建身份包含版本哈希位数与Git状态", BuildIdentityIsAuditable, ref passed);
+            Run("1Hz主机探针包含CPU内存句柄线程与磁盘余量", HostRuntimeProbeCapturesAuditableState, ref passed);
             Run("最后项目跨版本恢复且不可用时保留选择", LastProjectSelectionSurvivesUpgradeAndUnavailableStorage, ref passed);
             Run("DAQ生产区拒绝重叠回调", ProducerGateRejectsOverlap, ref passed);
             Run("采样时间按设备起点和累计样本推进", AcquisitionTimelineNeverSnapsCatchUpToFuture, ref passed);
@@ -61,6 +76,7 @@ namespace AdaptiveControlTests
             Run("UTC前后跳变不改变单调采样时间轴", ClockTimelineIgnoresUtcJumps, ref passed);
             Run("时钟越界必须连续确认才失效", ClockTimelineRequiresConsecutiveInvalidEvidence, ref passed);
             Run("锁定后低延迟包络连续超前才触发恢复", ClockTimelineRequiresSustainedResidualLead, ref passed);
+            Run("锁定后样本时间持续滞后同样触发恢复", ClockTimelineRequiresSustainedResidualLag, ref passed);
             Run("DAQ时钟恢复十分钟前三次允许第四次锁存", ClockRecoveryAttemptWindowIsBounded, ref passed);
             Run("自适应时钟十万批稳态无持续分配", ClockTimelineHotLoopDoesNotAllocate, ref passed);
             Run("旧TimelineFuture标志不再使有效电流失效", LegacyTimelineFlagIsDiagnosticOnly, ref passed);
@@ -75,6 +91,76 @@ namespace AdaptiveControlTests
             Run("未来墙钟不改变控制经过时间", FutureWallClockDoesNotChangeControlElapsed, ref passed);
             Run("快速过流由全速率证据最终归因", FastTripClassificationUsesFullRateEvidence, ref passed);
             return passed;
+        }
+
+        private static void HostRuntimeProbeCapturesAuditableState()
+        {
+            var snapshot = HostRuntimeProbe.Capture();
+            Assert(snapshot.ProcessId == Process.GetCurrentProcess().Id, "进程ID不一致");
+            Assert(snapshot.ProcessBitness == 32 || snapshot.ProcessBitness == 64, "进程位数无效");
+            Assert(snapshot.ProcessCpuPercent >= 0 && snapshot.ProcessCpuPercent <= 100, "进程CPU超界");
+            Assert(snapshot.SystemCpuPercent >= 0 && snapshot.SystemCpuPercent <= 100, "系统CPU超界");
+            Assert(snapshot.OtherCpuPercent >= 0 && snapshot.OtherCpuPercent <= 100, "外部进程合计CPU超界");
+            Assert(snapshot.WorkingSetBytes > 0, "工作集未采集");
+            Assert(snapshot.PrivateMemoryBytes > 0, "专用内存未采集");
+            Assert(snapshot.VirtualMemoryBytes > 0, "虚拟内存未采集");
+            Assert(snapshot.HandleCount > 0, "句柄数未采集");
+            Assert(snapshot.ThreadCount > 0, "线程数未采集");
+            Assert(snapshot.SystemAvailableMemoryBytes > 0, "系统可用内存未采集");
+            Assert(snapshot.ProgramDriveFreeBytes > 0, "程序盘余量未采集");
+            Assert(double.IsNaN(snapshot.DiskQueueLength) || snapshot.DiskQueueLength >= 0, "磁盘队列指标无效");
+            Assert(double.IsNaN(snapshot.DiskReadBytesPerSecond) || snapshot.DiskReadBytesPerSecond >= 0,
+                "磁盘读取速率无效");
+            Assert(double.IsNaN(snapshot.DiskWriteBytesPerSecond) || snapshot.DiskWriteBytesPerSecond >= 0,
+                "磁盘写入速率无效");
+        }
+
+        private static void CooperativeLearningCadenceDoesNotBurnCpu()
+        {
+            const int channelCount = 6;
+            const int periodsPerChannel = 120;
+            const int intervalMs = 3;
+            using var process = Process.GetCurrentProcess();
+            var cpuBefore = process.TotalProcessorTime;
+            var wall = Stopwatch.StartNew();
+            var tasks = Enumerable.Range(0, channelCount)
+                .Select(async _ =>
+                {
+                    for (var period = 0; period < periodsPerChannel; period++)
+                    {
+                        var due = Stopwatch.GetTimestamp() +
+                                  (long)(intervalMs / 1000.0 * Stopwatch.Frequency);
+                        var reached = await EpbCycleRunner.DelayUntilMonotonicAsync(
+                                due,
+                                CancellationToken.None)
+                            .ConfigureAwait(false);
+                        Assert(reached >= due, "协作等待在单调截止前提前返回");
+                    }
+                })
+                .ToArray();
+            Task.WhenAll(tasks).GetAwaiter().GetResult();
+            wall.Stop();
+            process.Refresh();
+            var cpuMs = (process.TotalProcessorTime - cpuBefore).TotalMilliseconds;
+            var wallMs = Math.Max(1, wall.Elapsed.TotalMilliseconds);
+            Assert(cpuMs < wallMs * 1.25,
+                $"六通道学习节拍仍接近持续自旋：CpuMs={cpuMs:F1} WallMs={wallMs:F1}");
+
+            using var cancellation = new CancellationTokenSource();
+            cancellation.Cancel();
+            try
+            {
+                EpbCycleRunner.DelayUntilMonotonicAsync(
+                        Stopwatch.GetTimestamp() + Stopwatch.Frequency,
+                        cancellation.Token)
+                    .GetAwaiter()
+                    .GetResult();
+                throw new InvalidOperationException("已取消的协作等待没有退出");
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected.
+            }
         }
 
         private static void PauseDrainRequiresAllPipelineBoundaries()
@@ -177,7 +263,10 @@ namespace AdaptiveControlTests
             Assert(Policy(50, true) == ControlLatencyAction.Warning, "50ms应内部预警");
             Assert(Policy(80, true) == ControlLatencyAction.Warning, "80ms应可追赶且不硬停");
             Assert(Policy(120, true) == ControlLatencyAction.HardFault, "120ms带电未硬停");
+            Assert(Policy(150, true) == ControlLatencyAction.HardFault, "150ms回调空窗带电未硬停");
             Assert(Policy(500, true) == ControlLatencyAction.HardFault, "500ms带电未硬停");
+            Assert(Policy(1000, true) == ControlLatencyAction.HardFault, "1s回调空窗带电未硬停");
+            Assert(Policy(4000, true) == ControlLatencyAction.HardFault, "4s回调空窗带电未硬停");
             Assert(Policy(120, false) == ControlLatencyAction.ResynchronizeInactive,
                 "120ms断电积压未重同步");
             Assert(Policy(500, false) == ControlLatencyAction.ResynchronizeInactive,
@@ -254,7 +343,7 @@ namespace AdaptiveControlTests
         {
             Assert(DaqRecoveryFailurePolicy.Evaluate(0, false) ==
                    DaqRecoveryFailureDisposition.ContinueSelfMaintenance,
-                "普通软件恢复失败被升级成报警停机");
+                "普通软件恢复失败被升级成硬件报警停机");
             Assert(DaqRecoveryFailurePolicy.Evaluate(1, true) ==
                    DaqRecoveryFailureDisposition.ContinueSelfMaintenance,
                 "单份硬件证据被错误锁存报警");
@@ -267,6 +356,9 @@ namespace AdaptiveControlTests
                    EpbManager.GetDaqSelfMaintenanceDelayMs(4) == 10000 &&
                    EpbManager.GetDaqSelfMaintenanceDelayMs(20) == 30000,
                 "自维护退避不是1/2/5/10/30秒有界序列");
+            Assert(!EpbManager.ShouldEscalateSoftwareRecovery(2) &&
+                   EpbManager.ShouldEscalateSoftwareRecovery(3),
+                "DAQ软件恢复未在三次失败后切换为整批软件重建");
         }
 
         private static void IncidentSnapshotHeavyEvidencePolicy()
@@ -476,11 +568,33 @@ namespace AdaptiveControlTests
             var identity = RuntimeBuildIdentity.Capture();
             var json = identity.ToJson();
             Assert(identity.ProcessBitness == IntPtr.Size * 8, "进程位数记录错误");
+            Assert(identity.ProcessId > 0, "进程PID未写入构建身份");
             Assert(!string.IsNullOrWhiteSpace(identity.ProductVersion) &&
                    !string.IsNullOrWhiteSpace(identity.ExecutableSha256) &&
                    !string.IsNullOrWhiteSpace(identity.ConfigSha256), "版本或哈希字段缺失");
-            Assert(json.Contains("\"gitCommit\"") && json.Contains("\"gitDirty\""),
-                "Git构建身份字段缺失");
+            Assert(identity.ProductVersion.Split('.').Length == 4,
+                "产品版本未保留补丁Revision，无法区分2.12.0.x候选");
+            Assert(RuntimeBuildIdentity.FormatProductVersion(new Version(2, 12, 0, 19)) ==
+                   "V2.12.0.19",
+                "四段现场补丁版本被截断，事故身份无法区分候选");
+            Assert(json.Contains("\"gitCommit\"") && json.Contains("\"gitDirty\"") &&
+                   json.Contains("\"processId\"") && json.Contains("\"buildUtc\"") &&
+                   json.Contains("\"releaseConfigSha256\""),
+                "Git/PID/构建时间/发布配置身份字段缺失");
+            var startupLine = identity.ToStartupLogLine();
+            Assert(startupLine.Contains("AssemblyVersion=") &&
+                   startupLine.Contains("PID=") &&
+                   startupLine.Contains("ExecutablePath=\"") &&
+                   startupLine.Contains("ExeSha256=") &&
+                   startupLine.Contains("GitCommit="),
+                "启动日志没有完整输出程序集/PID/路径/EXE哈希/Git身份");
+            var display = identity.ToDisplayText();
+            Assert(display.Contains("程序集版本：") &&
+                   display.Contains("PID ") &&
+                   display.Contains("EXE 路径：") &&
+                   display.Contains("EXE SHA-256：") &&
+                   display.Contains("Git SHA："),
+                "运行身份界面文本缺少程序集/PID/路径/EXE哈希/Git身份");
         }
 
         private static void LastProjectSelectionSurvivesUpgradeAndUnavailableStorage()
@@ -556,11 +670,54 @@ namespace AdaptiveControlTests
                 "旧关联号错误清除了新的活动事故");
         }
 
+        private static void HundredIncidentSymptomsMergeIntoOneContext()
+        {
+            var latch = new DaqIncidentLatch();
+            var run = Guid.NewGuid();
+            var started = DateTime.UtcNow;
+            latch.BeginRun(run, new[] { "Dev1" });
+            Guid correlation = Guid.Empty;
+            var firstCount = 0;
+            for (var index = 0; index < 100; index++)
+            {
+                var observation = latch.Observe(
+                    run,
+                    "Dev1",
+                    10 + index,
+                    index % 2 == 0 ? "DaqCallbackStale" : "DaqSampleStale",
+                    $"fault-{index}",
+                    started.AddMilliseconds(index * 100),
+                    new[] { 4, 5 });
+                if (observation.IsFirst) firstCount++;
+                if (correlation == Guid.Empty) correlation = observation.Context.CorrelationId;
+                Assert(observation.Context.CorrelationId == correlation,
+                    $"第{index + 1}次派生症状创建了新事故关联号");
+            }
+            Assert(firstCount == 1, $"百次症状首触发次数错误：{firstCount}");
+            Assert(latch.TryStartSnapshot(run, "Dev1", out var context),
+                "根事故未允许首次trigger快照");
+            Assert(!latch.TryStartSnapshot(run, "Dev1", out _),
+                "根事故重复允许trigger快照");
+            Assert(latch.Complete("Dev1", context.CorrelationId),
+                "根事故terminal未能完成一次");
+            Assert(!latch.Complete("Dev1", context.CorrelationId),
+                "根事故重复提交terminal成功");
+            Assert(!latch.TryGet(run, "Dev1", out _),
+                "根事故终态后仍残留活动上下文");
+        }
+
         private static void HighPriorityDoTimeoutIsBounded()
         {
             using var controller = new DoController(new DoConfig());
             Assert(DoController.HighPriorityOffTimeoutMs == 100,
                 "高优先级DO等待时限未按现场要求设置为100ms");
+            var deviceType = typeof(DoController).GetNestedType(
+                "DoDevice",
+                BindingFlags.NonPublic);
+            Assert(
+                deviceType?.GetField("WriteGate", BindingFlags.Instance | BindingFlags.Public) != null &&
+                deviceType.GetField("HighPriorityWorker", BindingFlags.Instance | BindingFlags.Public) != null,
+                "DO设备未配置独立写锁和高优先级Worker");
             var field = typeof(DoController).GetField("_doTaskLock",
                 BindingFlags.Instance | BindingFlags.NonPublic);
             Assert(field != null, "未找到DO任务锁");
@@ -599,9 +756,90 @@ namespace AdaptiveControlTests
                    telemetry.LateHardwareSuccess == telemetry.Result &&
                    telemetry.HardwareCompletedUtc != default &&
                    telemetry.QueueDepthAtEnqueue >= 1 &&
-                   telemetry.LockWaitMs >= 300 &&
-                   telemetry.TotalMs >= telemetry.LockWaitMs,
-                "高优先级DO晚完成诊断缺少队列、锁等待或总耗时证据");
+                   telemetry.TotalMs >= 300,
+                "高优先级DO晚完成诊断缺少队列或总耗时证据");
+        }
+
+        private static void HighPriorityDoCoalescesDuplicateOff()
+        {
+            using var worker = new DoController.HighPriorityDoWorker("TestDevice");
+            using var batchEntered = new ManualResetEventSlim(false);
+            using var releaseBatch = new ManualResetEventSlim(false);
+            using var duplicateStart = new ManualResetEventSlim(false);
+            using var duplicateReady = new CountdownEvent(16);
+            var batchCalls = 0;
+            var batchChannelCount = 0;
+            Func<IReadOnlyList<int>, DoWriteTiming, bool> batchWork = (channels, timing) =>
+            {
+                Interlocked.Increment(ref batchCalls);
+                batchChannelCount = channels.Count;
+                batchEntered.Set();
+                return releaseBatch.Wait(2000);
+            };
+
+            var first = Task.Run(() => worker.InvokeHi(4, batchWork, 2000, null));
+            Assert(batchEntered.Wait(1000), "首个OFF未进入专用设备Worker");
+            var duplicates = Enumerable.Range(0, 16)
+                .Select(_ => Task.Run(() =>
+                {
+                    duplicateReady.Signal();
+                    duplicateStart.Wait();
+                    return worker.InvokeHi(4, batchWork, 2000, null);
+                }))
+                .ToArray();
+            Assert(duplicateReady.Wait(1000), "重复OFF并发调用未准备完成");
+            duplicateStart.Set();
+            Assert(SpinWait.SpinUntil(() => worker.CoalescedRequests >= duplicates.Length, 1000),
+                $"重复OFF未全部合并：Coalesced={worker.CoalescedRequests}");
+            Assert(worker.PendingWorkItems == 1,
+                $"同通道重复OFF错误扩大队列：Pending={worker.PendingWorkItems}");
+
+            releaseBatch.Set();
+            Assert(first.Wait(1000) && first.Result, "首个合并OFF未完成");
+            Assert(Task.WaitAll(duplicates, 1000) && duplicates.All(task => task.Result),
+                "合并等待者未收到唯一硬件命令结果");
+            Assert(batchCalls == 1 && batchChannelCount == 1,
+                $"同通道OFF被重复执行：Calls={batchCalls} Channels={batchChannelCount}");
+            Assert(SpinWait.SpinUntil(() => worker.PendingWorkItems == 0, 1000),
+                "合并OFF完成后仍残留待处理命令");
+
+            var workItemType = typeof(DoController.HighPriorityDoWorker).GetNestedType(
+                "WorkItem",
+                BindingFlags.NonPublic);
+            Assert(workItemType != null &&
+                   workItemType.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                       .All(field => field.FieldType != typeof(ManualResetEventSlim)),
+                "高频OFF仍持有必须显式释放的ManualResetEventSlim等待句柄");
+        }
+
+        private static void DaqBackgroundTasksAreCoalescedAndDrained()
+        {
+            using var supervisor = new CoalescingTaskSupervisor(Config.NullLogger.Instance);
+            using var entered = new ManualResetEventSlim(false);
+            using var release = new ManualResetEventSlim(false);
+            var executions = 0;
+            Assert(supervisor.TryRun("DeviceFault:Dev1:QueueFull:1", () =>
+            {
+                Interlocked.Increment(ref executions);
+                entered.Set();
+                release.Wait(2000);
+            }), "首个DAQ后台任务未被接受");
+            Assert(entered.Wait(1000), "DAQ后台任务未开始执行");
+
+            var acceptedDuplicates = 0;
+            for (var i = 0; i < 100; i++)
+                if (supervisor.TryRun("DeviceFault:Dev1:QueueFull:1", () => { }))
+                    acceptedDuplicates++;
+            Assert(acceptedDuplicates == 0 && supervisor.ActiveCount == 1 &&
+                   supervisor.ActiveKeyCount == 1 && supervisor.CoalescedCount == 100,
+                $"同根后台任务未严格合并：Accepted={acceptedDuplicates} Active={supervisor.ActiveCount} " +
+                $"Keys={supervisor.ActiveKeyCount} Coalesced={supervisor.CoalescedCount}");
+
+            release.Set();
+            Assert(supervisor.StopAcceptingAndDrain(1000), "DAQ后台任务未在退出门禁内收口");
+            Assert(executions == 1 && supervisor.ActiveCount == 0 && supervisor.ActiveKeyCount == 0,
+                "DAQ后台任务完成后仍残留活动任务或业务键");
+            Assert(!supervisor.TryRun("late", () => { }), "停止接收后仍启动了迟到后台任务");
         }
 
         private static void EmergencyPowerGroupLatchKeepsCorrelation()
@@ -845,6 +1083,48 @@ namespace AdaptiveControlTests
             Assert(gate.TryAcquire(start + interval + 1), "限频窗口后未发布");
             gate.Reset();
             Assert(gate.TryAcquire(start + interval + 2), "复位后首批未立即发布");
+        }
+
+        private static void UiLatestValueSignalCoalescesBacklog()
+        {
+            using var signal = new CoalescingAsyncSignal();
+            for (var i = 0; i < 10000; i++) signal.Set();
+            Assert(signal.PendingCount == 1, "最新值发布在消费者阻塞时积累了历史空唤醒");
+
+            signal.WaitAsync(CancellationToken.None).GetAwaiter().GetResult();
+            Assert(signal.PendingCount == 0, "消费一次后仍残留历史空唤醒");
+
+            signal.Set();
+            Assert(signal.PendingCount == 1, "消费后新的最新值不能重新唤醒消费者");
+        }
+
+        private static void UiLatestPairMailboxStaysBounded()
+        {
+            var mailbox = new LatestPairMailbox<MailboxValue>();
+            Parallel.Invoke(
+                () =>
+                {
+                    for (var i = 0; i < 100000; i++)
+                        mailbox.Publish(0, new MailboxValue { Sequence = i });
+                },
+                () =>
+                {
+                    for (var i = 0; i < 100000; i++)
+                        mailbox.Publish(1, new MailboxValue { Sequence = 100000 + i });
+                });
+
+            Assert(mailbox.PendingSlotCount == 2,
+                "消费者阻塞后UI邮箱积累了超过两块设备的历史批次");
+            Assert(mailbox.TryTake(out var first, out var second), "UI邮箱未返回最新批次");
+            Assert(first.Sequence == 99999 && second.Sequence == 199999,
+                "UI邮箱没有保留每块设备各自的最新批次");
+            Assert(!mailbox.HasPending && mailbox.PendingSlotCount == 0,
+                "消费最新批次后仍残留历史UI工作");
+        }
+
+        private sealed class MailboxValue
+        {
+            public int Sequence;
         }
 
         private static void DaqStaleRootClassification()
@@ -1174,6 +1454,49 @@ namespace AdaptiveControlTests
                 "锁定后的持续residual超前没有触发DAQ时钟恢复");
             Assert(lockedFitsBeforeInvalid >= 9,
                 $"residual超前未经过连续确认即失效：lockedFits={lockedFitsBeforeInvalid}");
+        }
+
+        private static void ClockTimelineRequiresSustainedResidualLag()
+        {
+            var options = new ClockDisciplineOptions(
+                estimatorWindowSeconds: 60,
+                warmupSeconds: 30,
+                maxAbsSkewPpm: 250,
+                maxCorrectionPpmPerUpdate: 5,
+                residualHardLimitMs: 100,
+                invalidConfirmations: 10);
+            var origin = new DateTime(2026, 8, 8, 23, 50, 0, DateTimeKind.Utc);
+            var originTick = Stopwatch.Frequency * 45L;
+            var timeline = new ClockDisciplinedSampleTimeline(options);
+            timeline.Reset(origin, originTick, 2000);
+            long samples = 0;
+            var lockedSeen = false;
+            var lockedFitsBeforeInvalid = 0;
+            ClockDisciplinedTimelineResult result = default;
+
+            // 复现 V2.12.0.2 现场方向：样本时间轴比回调到达时刻落后 1160ms。
+            // 旧代码只判断 residual>100ms，负 residual 永远不会进入恢复。
+            for (var second = 1; second <= 90; second++)
+            {
+                samples += 2000;
+                var callbackSeconds = samples / 2000.0 + 1.160;
+                var callbackTick = originTick + (long)Math.Round(
+                    callbackSeconds * Stopwatch.Frequency,
+                    MidpointRounding.AwayFromZero);
+                result = timeline.Advance(2000, origin.AddSeconds(callbackSeconds), callbackTick);
+                if (result.ClockState == ClockState.Locked)
+                {
+                    lockedSeen = true;
+                    lockedFitsBeforeInvalid++;
+                }
+                if (result.RequiresRecovery) break;
+            }
+
+            Assert(lockedSeen, "持续residual滞后在模型锁定前错误进入恢复");
+            Assert(result.RequiresRecovery && result.ResidualMs < -100,
+                $"锁定后的持续residual滞后没有触发DAQ时钟恢复：{result.ResidualMs:F1}ms");
+            Assert(lockedFitsBeforeInvalid >= 9,
+                $"residual滞后未经过连续确认即失效：lockedFits={lockedFitsBeforeInvalid}");
         }
 
         private static void ClockRecoveryAttemptWindowIsBounded()

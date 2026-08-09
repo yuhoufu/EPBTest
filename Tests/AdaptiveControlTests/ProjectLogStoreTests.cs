@@ -4,6 +4,7 @@ using System.Linq;
 using System.Reflection;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Diagnostics;
 using Config;
 
@@ -28,6 +29,7 @@ namespace AdaptiveControlTests
             Run("项目日志仅清理30天前匹配归档", RetentionCleanupIsScoped, ref passed);
             Run("run保留7天而告警错误保留30天", RetentionCleanupUsesPerLogPolicy, ref passed);
             Run("ui-info按日大小轮转并仅读取尾部", UiInfoRotationAndTailRead, ref passed);
+            Run("ui-info文件队列有界且退出前可排空", UiInfoQueueIsBoundedAndDrained, ref passed);
             Run("清空项目隔离数据轮转日志并删除学习模型", ProjectRestartCleanupIsIsolated, ref passed);
             Run("项目日志显式Flush", ExplicitFlush, ref passed);
             Run("项目日志后台队列不反压控制线程", AsyncQueueDoesNotBackpressureCaller, ref passed);
@@ -244,6 +246,49 @@ namespace AdaptiveControlTests
                 Assert(Directory.GetFiles(logDir, "ui-info.20260730.*.log").Length >= 2,
                     "ui-info未按大小和跨日产生归档");
                 Assert(File.Exists(Path.Combine(logDir, "ui-info.log")), "ui-info活动文件缺失");
+            }
+            finally
+            {
+                DeleteTempDir(dir);
+            }
+        }
+
+        private static void UiInfoQueueIsBoundedAndDrained()
+        {
+            var dir = CreateTempDir();
+            try
+            {
+                using (var store = new UiInfoLogStore(new UiInfoLogOptions
+                       {
+                           MaximumPendingLines = 2,
+                           MaximumRecentLines = 10
+                       }))
+                {
+                    Assert(store.Initialize(dir), "ui-info有界队列初始化失败");
+                    var gateField = typeof(UiInfoLogStore).GetField(
+                        "_fileGate",
+                        BindingFlags.Instance | BindingFlags.NonPublic);
+                    var fileGate = gateField?.GetValue(store) as SemaphoreSlim;
+                    Assert(fileGate != null, "无法建立ui-info阻塞写入测试门禁");
+                    fileGate.Wait();
+                    var first = store.AppendAsync("blocked-first");
+                    Assert(SpinWait.SpinUntil(() => store.PendingCount == 0, 1000),
+                        "ui-info首条记录未进入阻塞写入状态");
+
+                    var attempts = Enumerable.Range(0, 10)
+                        .Select(i => store.AppendAsync("queued-" + i))
+                        .ToArray();
+                    Assert(store.PendingCount == 2 && store.DroppedLines == 8,
+                        $"ui-info队列容量未严格限制：Pending={store.PendingCount} " +
+                        $"Dropped={store.DroppedLines}");
+                    fileGate.Release();
+
+                    Assert(store.FlushAsync().Wait(TimeSpan.FromSeconds(2)),
+                        "ui-info解除阻塞后未在2秒内排空");
+                    Task.WhenAll(attempts.Concat(new[] { first })).GetAwaiter().GetResult();
+                    Assert(store.PendingCount == 0,
+                        "ui-info排空后仍残留待写记录");
+                }
             }
             finally
             {

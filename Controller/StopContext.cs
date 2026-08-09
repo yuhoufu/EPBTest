@@ -5,6 +5,7 @@ namespace Controller
     public enum StopSource
     {
         ManualUi,
+        TargetCompleted,
         ApplicationClosing,
         AlarmInterlock,
         SystemFault,
@@ -19,6 +20,7 @@ namespace Controller
         public string Reason { get; set; }
         public string Initiator { get; set; }
         public string CorrelationId { get; set; }
+        public string RunId { get; set; }
         public FaultScope? FaultScope { get; set; }
         public DateTime RequestedUtc { get; set; } = DateTime.UtcNow;
 
@@ -38,6 +40,7 @@ namespace Controller
         public string ToLogText()
         {
             return $"Source={Source}; Reason={Reason ?? "-"}; Initiator={Initiator ?? "-"}; " +
+                   $"RunId={RunId ?? "-"}; " +
                    $"CorrelationId={CorrelationId ?? "-"}; FaultScope={FaultScope?.ToString() ?? "-"}; " +
                    $"RequestedUtc={RequestedUtc:O}";
         }

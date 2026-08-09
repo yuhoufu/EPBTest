@@ -57,7 +57,6 @@
     <Reference Include="System.Windows.Forms" />
     <Reference Include="System.ComponentModel.DataAnnotations" />
     <Reference Include="DevExpress.XtraTreeList.v24.2" />
-    <Reference Include="EntityFramework" />
     <Reference Include="DevExpress.Data.v24.2" />
     <Reference Include="DevExpress.Drawing.v24.2" />
     <Reference Include="DevExpress.Mvvm.v24.2" />

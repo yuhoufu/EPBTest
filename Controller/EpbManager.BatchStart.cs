@@ -56,9 +56,33 @@ namespace Controller
         private CancellationTokenSource _batchSessionCts;
         private readonly BatchStartLifecycleGate _batchLifecycleGate = new BatchStartLifecycleGate();
         private int _formalPhaseCommitted;
+        private int _idleSessionClosureScheduled;
         private long _learningRetryGeneration;
         private long _softwareHydraulicRetryGeneration;
         private ElectricalStaggerPlan _activeStaggerPlan;
+
+        /// <summary>
+        /// 复用活动错峰计划前必须确认它覆盖本次恢复通道。单通道无人值守恢复会
+        /// 生成自己的计划；若多个通道依次恢复，旧版直接复用最后一个计划，导致
+        /// “通道不在当前错峰计划中”并再次把已清理的通道送回自维护。
+        /// </summary>
+        private ElectricalStaggerPlan GetCompatibleStaggerPlan(IEnumerable<int> channels)
+        {
+            var selected = (channels ?? Array.Empty<int>())
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
+            if (selected.Length == 0)
+                throw new InvalidOperationException("无法为空通道集合生成错峰计划。");
+
+            var active = _activeStaggerPlan;
+            if (active != null &&
+                active.PeriodMs == PeriodMs &&
+                selected.All(channel => active.Assignments.ContainsKey(channel)))
+                return active;
+
+            return ElectricalStaggerPlanner.Build(selected, _cfg.Test.Groups, PeriodMs);
+        }
         private readonly ConcurrentDictionary<int, DateTime> _activeFormalT0ByPressureGroup =
             new ConcurrentDictionary<int, DateTime>();
         private Guid _activeBatchId;
@@ -235,6 +259,7 @@ namespace Controller
             try
             {
                 _activeBatchId = Guid.NewGuid();
+                Interlocked.Exchange(ref _idleSessionClosureScheduled, 0);
                 BeginDaqIncidentRun(_activeBatchId, selected);
                 InvalidateStopSafetyCache();
                 await EnsureHydraulicCoordinatorHealthyBeforeStartAsync(selected, sessionToken)
@@ -431,6 +456,7 @@ namespace Controller
                 // —— 4) 正式阶段：为每个通道创建对齐到“锚点+相位”的高精计时器 —— //
                 StartFormalPhaseTimers(groups, t0OfGroup, staggerPlan, sessionToken);
                 MarkBatchRunning(activeChannels, "正式试验运行中");
+                LogFieldSessionMetric("Start", _activeBatchId, activeChannels, false, "BatchFormal");
                 return new BatchStartResult(_activeBatchId, activeChannels, startFaults.ToArray());
             }
             catch (Exception ex)
@@ -800,6 +826,7 @@ namespace Controller
 
             try
             {
+                _softwareRecoveryEscalation.Reset();
                 Interlocked.Increment(ref _runEpoch);
                 Interlocked.Exchange(ref _formalPhaseCommitted, 0);
                 var linked = CancellationTokenSource.CreateLinkedTokenSource(externalToken);
@@ -858,10 +885,60 @@ namespace Controller
             }
         }
 
-        private void TryEndBatchSessionWhenIdle()
+        internal static bool AreSessionRuntimesIdle(
+            int activeTimers,
+            int cachedTimers,
+            int activeRunners,
+            int cachedRunners)
         {
-            if (_timers.Count == 0 && _timerCache.Count == 0 && _runners.Count == 0)
-                EndBatchSession(cancel: false);
+            return activeTimers <= 0 && cachedTimers <= 0 &&
+                   activeRunners <= 0 && cachedRunners <= 0;
+        }
+
+        private void TryEndBatchSessionWhenIdle(string terminalPhase = "Complete")
+        {
+            if (!AreSessionRuntimesIdle(
+                    _timers.Count,
+                    _timerCache.Count,
+                    _runners.Count,
+                    _runnerCache.Count))
+                return;
+
+            var runId = _activeBatchId;
+            if (runId == Guid.Empty) return;
+            if (Interlocked.CompareExchange(ref _idleSessionClosureScheduled, 1, 0) != 0) return;
+
+            var source = string.Equals(terminalPhase, "Complete", StringComparison.OrdinalIgnoreCase)
+                ? StopSource.TargetCompleted
+                : string.Equals(terminalPhase, "AlarmStop", StringComparison.OrdinalIgnoreCase)
+                    ? StopSource.AlarmInterlock
+                    : StopSource.ManualUi;
+            var context = new StopContext
+            {
+                Source = source,
+                Reason = $"最后运行通道已进入终态，执行统一安全与耐久收尾。Phase={terminalPhase}",
+                Initiator = nameof(TryEndBatchSessionWhenIdle),
+                CorrelationId = runId.ToString("N"),
+                RequestedUtc = DateTime.UtcNow
+            };
+            ObserveBackgroundTask(
+                FinalizeIdleSessionAsync(runId, context),
+                "FinalizeIdleSession");
+        }
+
+        private async Task FinalizeIdleSessionAsync(Guid runId, StopContext context)
+        {
+            try
+            {
+                await StopAllAsync(context, CancellationToken.None).ConfigureAwait(false);
+            }
+            finally
+            {
+                // StopAll 正常路径会清除活动 RunId。若异常提前退出且本次 Run 仍然活动，
+                // 允许后续终态通知重新登记收尾，不能永久卡死在“已安排”假状态。
+                if (_activeBatchId == runId)
+                    Interlocked.Exchange(ref _idleSessionClosureScheduled, 0);
+            }
         }
 
         #endregion
@@ -934,7 +1011,7 @@ namespace Controller
                     var successfulCycles = 0;
                     
                     // —— 计时器每圈工作（cycleIndex 从 1 开始） —— //
-                    _ = timer.StartAsync(
+                    ObserveBackgroundTask(timer.StartAsync(
                         repeat: null, // 由成功圈计数停止；可恢复失败尝试不消耗目标圈数
                         initialDelay,
                         async (cycleIndex, ct) =>
@@ -1133,18 +1210,11 @@ namespace Controller
                                 }
                                 catch (Exception ex)
                                 {
-                                    if (controlSucceeded)
-                                        AbortFormalCycleWithoutPersistenceBarrier(
-                                            recorder,
-                                            ch,
-                                            cycleNumber,
-                                            DateTime.UtcNow,
-                                            0,
-                                            ex);
-                                    else
-                                        _log?.Warn(
-                                            $"EPB[{ch}] 失败圈封存异常 Cycle={cycleNumber}: {ex.Message}",
-                                            "落盘");
+                                    PreserveFormalCycleForPersistenceRecovery(
+                                        ch,
+                                        cycleNumber,
+                                        "CycleFinalizer",
+                                        ex);
                                 }
                             }
 
@@ -1175,7 +1245,7 @@ namespace Controller
                             ReleaseCyclePauseCts(ch, cyclePauseCts);
                             return controlSucceeded && persistenceCommitted;
 
-                        });
+                        }), "BatchChannelTimer", ch);
                 }
             }
         }
@@ -1623,6 +1693,17 @@ namespace Controller
                         }
                         catch (SoftwareSelfHealingRetryException)
                         {
+                            // 与资格圈相同：软件瞬态的学习尝试也必须先封存，才能开始
+                            // 下一负圈。清零只清控制层变量，不能代替 Recorder 圈终态提交。
+                            if (!IsAlarmStopRequested(channel))
+                                await SealLearningCycleAsync(
+                                        channel,
+                                        learningCycleNumber,
+                                        runId,
+                                        learningOrdinal,
+                                        "learning_failed",
+                                        softwareAttempt: attempt)
+                                    .ConfigureAwait(false);
                             learningCycleNumber = 0;
                             throw;
                         }
@@ -1717,7 +1798,7 @@ namespace Controller
                     allowTerminalReset: false);
         }
 
-        private Task SealLearningCycleAsync(
+        private async Task SealLearningCycleAsync(
             int channel,
             int cycleNumber,
             Guid runId,
@@ -1727,7 +1808,7 @@ namespace Controller
             int softwareAttempt = 1)
         {
             var recorder = Recorder;
-            if (cycleNumber == 0 || recorder == null) return Task.CompletedTask;
+            if (cycleNumber == 0 || recorder == null) return;
 
             var exportDir = System.IO.Path.Combine(
                 _cfg.Test.StoreDir,
@@ -1739,6 +1820,22 @@ namespace Controller
             if (softwareAttempt > 1)
                 exportDir = System.IO.Path.Combine(exportDir, $"Attempt_{softwareAttempt:D4}");
 
+            var cutoffUtc = DateTime.UtcNow;
+            var cutoffCycles = new Dictionary<int, int>
+            {
+                [channel] = cycleNumber
+            };
+            if (!await TryWaitForCycleDurableCutoffAsync(
+                    cutoffCycles,
+                    cutoffUtc,
+                    $"LearningSeal:{status}",
+                    _daqPersistenceRecoveryTimeoutMs,
+                    CancellationToken.None)
+                .ConfigureAwait(false))
+                throw new SoftwareSelfHealingRetryException(
+                    $"EPB[{channel}] 学习/资格圈 Raw/耐久边界尚未闭合。" +
+                    $"Cycle={cycleNumber} Status={status}");
+
             AlarmCycleSnapshotEvidence evidence;
             try
             {
@@ -1746,13 +1843,14 @@ namespace Controller
                     channel,
                     cycleNumber,
                     exportDir,
-                    DateTime.UtcNow,
+                    cutoffUtc,
                     status);
             }
             catch (Exception ex)
             {
                 // 自定义/代理 Recorder 可能在取得圈边界后直接抛异常。显式封为软件作废，
                 // 避免下一次重试继续撞到仍为 running 的旧负圈号。
+                var abortCommitted = false;
                 try
                 {
                     recorder.AbortCycle(
@@ -1761,6 +1859,7 @@ namespace Controller
                         Math.Max(0, recorder.GetCurrentCycleSampleCount(channel)),
                         DateTime.UtcNow,
                         "AbortedBySoftwareRecovery");
+                    abortCommitted = true;
                 }
                 catch (Exception abortEx)
                 {
@@ -1768,9 +1867,16 @@ namespace Controller
                         $"EPB[{channel}] 学习圈封存异常后的软件作废也未确认：{abortEx.Message}",
                         "落盘");
                 }
-                if (_currentCycleNumberByChannel.TryGetValue(channel, out var abortCurrent) &&
+                if (abortCommitted &&
+                    _currentCycleNumberByChannel.TryGetValue(channel, out var abortCurrent) &&
                     abortCurrent == cycleNumber)
-                    _currentCycleNumberByChannel.TryRemove(channel, out _);
+                    ClearCurrentCycleNumber(channel);
+
+                if (!abortCommitted)
+                    throw new SoftwareSelfHealingRetryException(
+                        $"EPB[{channel}] 学习圈终态未提交，保留活动圈等待重试。" +
+                        $"Cycle={cycleNumber} Status={status} Error={ex.Message}",
+                        ex);
 
                 if (requireValidEvidence)
                     throw new SoftwareSelfHealingRetryException(
@@ -1781,18 +1887,18 @@ namespace Controller
                     $"EPB[{channel}] 失败/取消学习圈的辅助证据导出异常：{ex.Message}；" +
                     "不扩大停机范围。",
                     "落盘");
-                return Task.CompletedTask;
+                return;
             }
 
             if (_currentCycleNumberByChannel.TryGetValue(channel, out var current) &&
                 current == cycleNumber)
             {
-                _currentCycleNumberByChannel.TryRemove(channel, out _);
+                ClearCurrentCycleNumber(channel);
             }
 
             // 报警后台已取得封存权时，学习收尾只退出，不重复生成文件或改写状态。
             if (!evidence.WasClaimed)
-                return Task.CompletedTask;
+                return;
             if (!evidence.IsValid)
             {
                 var reason =
@@ -1805,7 +1911,7 @@ namespace Controller
                 FlushPersistentLog();
                 if (requireValidEvidence)
                     throw new SoftwareSelfHealingRetryException(reason);
-                return Task.CompletedTask;
+                return;
             }
 
             _log?.Info(
@@ -1813,7 +1919,6 @@ namespace Controller
                 $"InternalCycle={cycleNumber} Status={status} Samples={evidence.SampleCount} " +
                 $"Dir={exportDir}",
                 "落盘");
-            return Task.CompletedTask;
         }
 
         #endregion

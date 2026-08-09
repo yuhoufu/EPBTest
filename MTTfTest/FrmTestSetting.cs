@@ -29,9 +29,9 @@ namespace MtEmbTest
         private readonly GlobalConfig _cfg; // 全部配置对象
         private List<PressureSettingControl> _pressureSettings; // 压力设置
         public FormLoggerAdapter logger;
-        private const int MaxErrors = 100000;
-        private const int MaxInfos = 100000;
-        private const int MaxWarns = 100000;
+        private const int MaxErrors = 2000;
+        private const int MaxInfos = 2000;
+        private const int MaxWarns = 2000;
         private ConcurrentQueue<string> LogInformation = new();
         private ConcurrentQueue<string> LogWarn = new();
         private ConcurrentQueue<string> LogError = new();

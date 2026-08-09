@@ -25,7 +25,7 @@
     <UpdateRequired>false</UpdateRequired>
     <MapFileExtensions>true</MapFileExtensions>
     <ApplicationRevision>0</ApplicationRevision>
-    <ApplicationVersion>2.12.0.0</ApplicationVersion>
+    <ApplicationVersion>2.12.0.19</ApplicationVersion>
     <IsWebBootstrapper>false</IsWebBootstrapper>
     <UseApplicationTrust>false</UseApplicationTrust>
     <BootstrapperEnabled>true</BootstrapperEnabled>
@@ -255,6 +255,11 @@
     <Compile Include="Components\Base\CheckItemBase.cs" />
     <EmbeddedResource Include="Assets\HTML\ToggleButton.html" />
     <EmbeddedResource Include="Assets\CSS\ToggleButton.css" />
+    <!-- Legacy non-SDK projects do not glob source files. Keep the local control implementation
+         explicit so the main executable does not accidentally compile against ZlgCanComm's copy. -->
+    <Compile Include="Editors\ToggleButton.cs">
+      <SubType>Component</SubType>
+    </Compile>
     <Compile Include="UIHelpers\LedAutoSizer.cs" />
     <Compile Include="Utilities\HtmlCssAsset.cs" />
     <Compile Include="Editors\ChipButton.cs">
@@ -345,10 +350,6 @@
     <ProjectReference Include="..\Timing\Timing.csproj">
       <Project>{3d810ee2-a0ef-4d1f-84cd-2ddcf63fb434}</Project>
       <Name>Timing</Name>
-    </ProjectReference>
-    <ProjectReference Include="..\ZlgCanComm\ZlgCanComm.csproj">
-      <Project>{95cfcfba-a5a3-49b4-8143-ad2ab7e7e03f}</Project>
-      <Name>ZlgCanComm</Name>
     </ProjectReference>
   </ItemGroup>
   <ItemGroup>

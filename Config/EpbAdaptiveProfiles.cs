@@ -25,7 +25,10 @@ namespace Config
     /// </summary>
     public sealed class EpbAdaptiveProfile
     {
-        public const int CurrentModelVersion = 3;
+        // V5 对应“先断电、后用完整 2kHz 证据分类”的控制语义，并包含
+        // 按物理设备合并的 DO 完成延迟。旧模型可能混入输出队列积压和
+        // ThresholdBeforeLoadRise 误分类期间的观测，不能跨策略直接复用。
+        public const int CurrentModelVersion = 5;
         private const int HistoryCapacity = 30;
         private const double MinimumCutoffSlopeAperMs = 0.001;
         private const double MaximumCutoffLeadMs = 100.0;
@@ -48,9 +51,14 @@ namespace Config
         public int ConsecutiveDeviationCount { get; set; }
         public double ForwardCutoffLeadMedianMs { get; set; }
         public double ForwardCutoffLeadMadMs { get; set; }
+        public double ForwardPhysicalTailMedianMs { get; set; }
+        public double ForwardPhysicalTailMadMs { get; set; }
+        public double ForwardDoCompletionMedianMs { get; set; }
+        public double ForwardDoCompletionMadMs { get; set; }
         public double ForwardPeakErrorMedianA { get; set; }
         public double ForwardPeakErrorMadA { get; set; }
         public int ValidCutoffSampleCount { get; set; }
+        public int ValidDoCompletionSampleCount { get; set; }
         public int ConsecutiveForwardOvershootCount { get; set; }
         public int ConsecutivePeakEvidenceMismatchCount { get; set; }
         public int ConsecutiveForwardStallCount { get; set; }
@@ -70,6 +78,12 @@ namespace Config
 
         [XmlArrayItem("Value")]
         public List<double> ForwardCutoffLeadHistoryMs { get; set; } = new List<double>();
+
+        [XmlArrayItem("Value")]
+        public List<double> ForwardPhysicalTailHistoryMs { get; set; } = new List<double>();
+
+        [XmlArrayItem("Value")]
+        public List<double> ForwardDoCompletionHistoryMs { get; set; } = new List<double>();
 
         [XmlArrayItem("Value")]
         public List<double> ForwardPeakErrorHistoryA { get; set; } = new List<double>();
@@ -125,6 +139,28 @@ namespace Config
             double actualPeakA,
             out double equivalentLeadMs)
         {
+            return TryAddCutoffObservation(
+                targetA,
+                cutoffCurrentA,
+                cutoffSlopeAperMs,
+                actualPeakA,
+                double.NaN,
+                out equivalentLeadMs);
+        }
+
+        /// <summary>
+        /// 写入断电观测，并把控制器至 DO 驱动返回的实测完成时间从物理尾升时间中分离。
+        /// 下一圈提前量由“物理尾升中位数 + 本通道 DO 完成延迟中位数”组成；单圈新值在
+        /// 已有稳定历史的鲁棒范围内限幅，避免一次线程调度尖峰污染长期模型。
+        /// </summary>
+        public bool TryAddCutoffObservation(
+            double targetA,
+            double cutoffCurrentA,
+            double cutoffSlopeAperMs,
+            double actualPeakA,
+            double doCompletionMs,
+            out double equivalentLeadMs)
+        {
             equivalentLeadMs = 0;
             if (!IsFinitePositive(targetA) ||
                 !IsFiniteNonNegative(cutoffCurrentA) ||
@@ -138,7 +174,29 @@ namespace Config
                 MaximumCutoffLeadMs,
                 tailRiseA / cutoffSlopeAperMs);
 
-            AddBounded(ForwardCutoffLeadHistoryMs, equivalentLeadMs);
+            var hasDoCompletion = IsFiniteNonNegative(doCompletionMs);
+            if (hasDoCompletion)
+            {
+                var boundedDoCompletionMs = Math.Min(MaximumCutoffLeadMs, doCompletionMs);
+                var physicalTailMs = Math.Max(0, equivalentLeadMs - boundedDoCompletionMs);
+                AddBoundedRobust(ForwardPhysicalTailHistoryMs, physicalTailMs);
+                AddBoundedRobust(ForwardDoCompletionHistoryMs, boundedDoCompletionMs);
+                ForwardPhysicalTailMedianMs = Median(ForwardPhysicalTailHistoryMs);
+                ForwardPhysicalTailMadMs = Mad(
+                    ForwardPhysicalTailHistoryMs,
+                    ForwardPhysicalTailMedianMs);
+                ForwardDoCompletionMedianMs = Median(ForwardDoCompletionHistoryMs);
+                ForwardDoCompletionMadMs = Mad(
+                    ForwardDoCompletionHistoryMs,
+                    ForwardDoCompletionMedianMs);
+                ValidDoCompletionSampleCount++;
+
+                equivalentLeadMs = Math.Min(
+                    MaximumCutoffLeadMs,
+                    ForwardPhysicalTailMedianMs + ForwardDoCompletionMedianMs);
+            }
+
+            AddBoundedRobust(ForwardCutoffLeadHistoryMs, equivalentLeadMs);
             AddBoundedSigned(ForwardPeakErrorHistoryA, actualPeakA - targetA);
             ForwardCutoffLeadMedianMs = Median(ForwardCutoffLeadHistoryMs);
             ForwardCutoffLeadMadMs = Mad(ForwardCutoffLeadHistoryMs, ForwardCutoffLeadMedianMs);
@@ -263,9 +321,14 @@ namespace Config
                 ConsecutiveDeviationCount = ConsecutiveDeviationCount,
                 ForwardCutoffLeadMedianMs = ForwardCutoffLeadMedianMs,
                 ForwardCutoffLeadMadMs = ForwardCutoffLeadMadMs,
+                ForwardPhysicalTailMedianMs = ForwardPhysicalTailMedianMs,
+                ForwardPhysicalTailMadMs = ForwardPhysicalTailMadMs,
+                ForwardDoCompletionMedianMs = ForwardDoCompletionMedianMs,
+                ForwardDoCompletionMadMs = ForwardDoCompletionMadMs,
                 ForwardPeakErrorMedianA = ForwardPeakErrorMedianA,
                 ForwardPeakErrorMadA = ForwardPeakErrorMadA,
                 ValidCutoffSampleCount = ValidCutoffSampleCount,
+                ValidDoCompletionSampleCount = ValidDoCompletionSampleCount,
                 ConsecutiveForwardOvershootCount = ConsecutiveForwardOvershootCount,
                 ConsecutivePeakEvidenceMismatchCount = ConsecutivePeakEvidenceMismatchCount,
                 ConsecutiveForwardStallCount = ConsecutiveForwardStallCount,
@@ -276,6 +339,10 @@ namespace Config
                 ReverseReleaseHistoryMs = new List<double>(ReverseReleaseHistoryMs ?? new List<double>()),
                 ForwardCutoffLeadHistoryMs =
                     new List<double>(ForwardCutoffLeadHistoryMs ?? new List<double>()),
+                ForwardPhysicalTailHistoryMs =
+                    new List<double>(ForwardPhysicalTailHistoryMs ?? new List<double>()),
+                ForwardDoCompletionHistoryMs =
+                    new List<double>(ForwardDoCompletionHistoryMs ?? new List<double>()),
                 ForwardPeakErrorHistoryA =
                     new List<double>(ForwardPeakErrorHistoryA ?? new List<double>())
             };
@@ -303,9 +370,14 @@ namespace Config
             ConsecutiveDeviationCount = copy.ConsecutiveDeviationCount;
             ForwardCutoffLeadMedianMs = copy.ForwardCutoffLeadMedianMs;
             ForwardCutoffLeadMadMs = copy.ForwardCutoffLeadMadMs;
+            ForwardPhysicalTailMedianMs = copy.ForwardPhysicalTailMedianMs;
+            ForwardPhysicalTailMadMs = copy.ForwardPhysicalTailMadMs;
+            ForwardDoCompletionMedianMs = copy.ForwardDoCompletionMedianMs;
+            ForwardDoCompletionMadMs = copy.ForwardDoCompletionMadMs;
             ForwardPeakErrorMedianA = copy.ForwardPeakErrorMedianA;
             ForwardPeakErrorMadA = copy.ForwardPeakErrorMadA;
             ValidCutoffSampleCount = copy.ValidCutoffSampleCount;
+            ValidDoCompletionSampleCount = copy.ValidDoCompletionSampleCount;
             ConsecutiveForwardOvershootCount = copy.ConsecutiveForwardOvershootCount;
             ConsecutivePeakEvidenceMismatchCount = copy.ConsecutivePeakEvidenceMismatchCount;
             ConsecutiveForwardStallCount = copy.ConsecutiveForwardStallCount;
@@ -315,6 +387,8 @@ namespace Config
             ForwardClampHistoryMs = copy.ForwardClampHistoryMs;
             ReverseReleaseHistoryMs = copy.ReverseReleaseHistoryMs;
             ForwardCutoffLeadHistoryMs = copy.ForwardCutoffLeadHistoryMs;
+            ForwardPhysicalTailHistoryMs = copy.ForwardPhysicalTailHistoryMs;
+            ForwardDoCompletionHistoryMs = copy.ForwardDoCompletionHistoryMs;
             ForwardPeakErrorHistoryA = copy.ForwardPeakErrorHistoryA;
         }
 
@@ -330,6 +404,20 @@ namespace Config
             if (values == null || double.IsNaN(value) || double.IsInfinity(value)) return;
             values.Add(value);
             while (values.Count > HistoryCapacity) values.RemoveAt(0);
+        }
+
+        private static void AddBoundedRobust(List<double> values, double value)
+        {
+            if (values == null || double.IsNaN(value) || double.IsInfinity(value) || value < 0)
+                return;
+            if (values.Count >= 5)
+            {
+                var median = Median(values);
+                var mad = Mad(values, median);
+                var maximumStep = Math.Max(5.0, 3.0 * mad);
+                value = Math.Max(0, Math.Min(median + maximumStep, Math.Max(median - maximumStep, value)));
+            }
+            AddBounded(values, value);
         }
 
         private static bool IsFinitePositive(double value)
@@ -432,6 +520,39 @@ namespace Config
                     var loaded = serializer.Deserialize(stream) as EpbAdaptiveProfiles;
                     if (loaded == null) throw new InvalidDataException("反序列化结果为空。");
                     loaded.Profiles = loaded.Profiles ?? new List<EpbAdaptiveProfile>();
+                    var requiresPolicyReset =
+                        loaded.ModelVersion < EpbAdaptiveProfile.CurrentModelVersion ||
+                        loaded.Profiles.Any(
+                            x => x != null &&
+                                 x.ModelVersion < EpbAdaptiveProfile.CurrentModelVersion);
+                    if (requiresPolicyReset)
+                    {
+                        var backup = _path + ".pre-v" +
+                                     EpbAdaptiveProfile.CurrentModelVersion.ToString(
+                                         CultureInfo.InvariantCulture) + "." +
+                                     DateTime.UtcNow.ToString(
+                                         "yyyyMMdd_HHmmss",
+                                         CultureInfo.InvariantCulture);
+                        try { File.Copy(_path, backup, false); }
+                        catch (Exception backupEx)
+                        {
+                            _log.Warn(
+                                $"旧自适应模型失效前备份失败，将继续以空模型启动：{backupEx.Message}；原文件={_path}",
+                                "EPB");
+                        }
+
+                        loaded.Profiles = loaded.Profiles
+                            .Where(x => x != null && x.Channel >= 1 && x.Channel <= 12)
+                            .Select(x => new EpbAdaptiveProfile { Channel = x.Channel })
+                            .ToList();
+                        loaded.ModelVersion = EpbAdaptiveProfile.CurrentModelVersion;
+                        _log.Warn(
+                            $"检测到旧控制策略模型，已保留原文件并使历史学习结果失效；" +
+                            $"所有启用卡钳必须重新完成5个完整有效学习圈。ModelVersion=" +
+                            $"{EpbAdaptiveProfile.CurrentModelVersion}，Backup={backup}",
+                            "EPB");
+                    }
+
                     foreach (var profile in loaded.Profiles.Where(x => x != null))
                     {
                         profile.ForwardEmptyHistoryA =
@@ -444,6 +565,10 @@ namespace Config
                             profile.ReverseReleaseHistoryMs ?? new List<double>();
                         profile.ForwardCutoffLeadHistoryMs =
                             profile.ForwardCutoffLeadHistoryMs ?? new List<double>();
+                        profile.ForwardPhysicalTailHistoryMs =
+                            profile.ForwardPhysicalTailHistoryMs ?? new List<double>();
+                        profile.ForwardDoCompletionHistoryMs =
+                            profile.ForwardDoCompletionHistoryMs ?? new List<double>();
                         profile.ForwardPeakErrorHistoryA =
                             profile.ForwardPeakErrorHistoryA ?? new List<double>();
                     }

@@ -15,6 +15,7 @@ namespace Config
         public long MaxFileBytes { get; set; } = 10L * 1024L * 1024L;
         public int RetentionDays { get; set; } = 30;
         public int MaximumRecentLines { get; set; } = 2000;
+        public int MaximumPendingLines { get; set; } = 512;
         public Func<DateTime> LocalNowProvider { get; set; } = () => DateTime.Now;
         public Action<string, Exception> WarningSink { get; set; }
     }
@@ -36,7 +37,12 @@ namespace Config
         private readonly UiInfoLogOptions _options;
         private readonly SemaphoreSlim _fileGate = new SemaphoreSlim(1, 1);
         private readonly ConcurrentQueue<PendingAppend> _pending = new ConcurrentQueue<PendingAppend>();
+        private readonly object _lifecycleGate = new object();
+        private readonly object _drainGate = new object();
+        private Task _drainTask = Task.CompletedTask;
         private int _drainRunning;
+        private int _pendingCount;
+        private long _droppedLines;
         private string _logDirectory;
         private string _activePath;
         private DateTime _contentDate;
@@ -49,11 +55,14 @@ namespace Config
             if (_options.MaxFileBytes <= 0) _options.MaxFileBytes = 10L * 1024L * 1024L;
             if (_options.RetentionDays < 0) _options.RetentionDays = 30;
             if (_options.MaximumRecentLines < 1) _options.MaximumRecentLines = 2000;
+            if (_options.MaximumPendingLines < 1) _options.MaximumPendingLines = 512;
             if (_options.LocalNowProvider == null) _options.LocalNowProvider = () => DateTime.Now;
         }
 
         public string ActivePath => _activePath;
         public int MaximumRecentLines => _options.MaximumRecentLines;
+        public int PendingCount => Math.Max(0, Volatile.Read(ref _pendingCount));
+        public long DroppedLines => Interlocked.Read(ref _droppedLines);
 
         public bool Initialize(string projectRoot)
         {
@@ -128,11 +137,23 @@ namespace Config
 
         public Task AppendAsync(string line)
         {
-            if (_disposed || string.IsNullOrEmpty(line)) return Task.CompletedTask;
-            var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            _pending.Enqueue(new PendingAppend { Line = line, Completion = completion });
-            StartDrain();
-            return completion.Task;
+            if (string.IsNullOrEmpty(line)) return Task.CompletedTask;
+            lock (_lifecycleGate)
+            {
+                if (_disposed) return Task.CompletedTask;
+                var pending = Interlocked.Increment(ref _pendingCount);
+                if (pending > _options.MaximumPendingLines)
+                {
+                    Interlocked.Decrement(ref _pendingCount);
+                    Interlocked.Increment(ref _droppedLines);
+                    return Task.FromResult(false);
+                }
+                var completion = new TaskCompletionSource<bool>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                _pending.Enqueue(new PendingAppend { Line = line, Completion = completion });
+                StartDrain();
+                return completion.Task;
+            }
         }
 
         public async Task ReplaceActiveAsync(string text)
@@ -157,29 +178,52 @@ namespace Config
 
         public async Task FlushAsync()
         {
-            while (!_pending.IsEmpty || Volatile.Read(ref _drainRunning) != 0)
-                await Task.Delay(10).ConfigureAwait(false);
+            while (Volatile.Read(ref _pendingCount) != 0 ||
+                   Volatile.Read(ref _drainRunning) != 0)
+            {
+                Task drain;
+                lock (_drainGate) drain = _drainTask;
+                var winner = await Task.WhenAny(drain, Task.Delay(10)).ConfigureAwait(false);
+                if (winner == drain)
+                {
+                    try { await drain.ConfigureAwait(false); }
+                    catch (Exception ex) { Warn("ui-info.log 后台写入任务异常", ex); }
+                }
+            }
         }
 
         private void StartDrain()
         {
-            if (Interlocked.CompareExchange(ref _drainRunning, 1, 0) != 0) return;
-            _ = Task.Run(async () =>
+            lock (_drainGate)
             {
-                try
+                if (Volatile.Read(ref _drainRunning) != 0) return;
+                Interlocked.Exchange(ref _drainRunning, 1);
+                var ready = new TaskCompletionSource<bool>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                _drainTask = Task.Run(async () =>
                 {
-                    while (_pending.TryDequeue(out var item))
+                    await ready.Task.ConfigureAwait(false);
+                    try
                     {
-                        var ok = await AppendCoreAsync(item.Line).ConfigureAwait(false);
-                        item.Completion.TrySetResult(ok);
+                        while (_pending.TryDequeue(out var item))
+                        {
+                            Interlocked.Decrement(ref _pendingCount);
+                            var ok = await AppendCoreAsync(item.Line).ConfigureAwait(false);
+                            item.Completion.TrySetResult(ok);
+                        }
                     }
-                }
-                finally
-                {
-                    Interlocked.Exchange(ref _drainRunning, 0);
-                    if (!_pending.IsEmpty) StartDrain();
-                }
-            });
+                    catch (Exception ex)
+                    {
+                        Warn("ui-info.log 后台写入任务异常", ex);
+                    }
+                    finally
+                    {
+                        Interlocked.Exchange(ref _drainRunning, 0);
+                        if (Volatile.Read(ref _pendingCount) != 0) StartDrain();
+                    }
+                });
+                ready.TrySetResult(true);
+            }
         }
 
         private async Task<bool> AppendCoreAsync(string line)
@@ -300,9 +344,22 @@ namespace Config
 
         public void Dispose()
         {
-            if (_disposed) return;
-            _disposed = true;
-            try { FlushAsync().Wait(TimeSpan.FromSeconds(2)); } catch { }
+            lock (_lifecycleGate)
+            {
+                if (_disposed) return;
+                _disposed = true;
+            }
+            var drained = false;
+            try { drained = FlushAsync().Wait(TimeSpan.FromSeconds(5)); }
+            catch (Exception ex) { Warn("ui-info.log 退出排空异常", ex); }
+            if (!drained)
+            {
+                Warn(
+                    $"ui-info.log 退出5秒仍未排空，为避免迟到任务访问已释放资源，保留文件门禁。" +
+                    $"Pending={PendingCount} Dropped={DroppedLines}",
+                    null);
+                return;
+            }
             _fileGate.Dispose();
         }
     }

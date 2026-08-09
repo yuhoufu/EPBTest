@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace IO.NI
 {
@@ -57,6 +58,29 @@ namespace IO.NI
         }
 
         public void Reset() => Interlocked.Exchange(ref _lastDispatchTick, 0);
+    }
+
+    /// <summary>
+    /// Binary asynchronous signal for a latest-value mailbox. Repeated producers coalesce into
+    /// one pending wake-up instead of accumulating historical work after a consumer stall.
+    /// </summary>
+    internal sealed class CoalescingAsyncSignal : IDisposable
+    {
+        private readonly SemaphoreSlim _signal = new(0, 1);
+
+        internal int PendingCount => _signal.CurrentCount;
+
+        public void Set()
+        {
+            try { _signal.Release(); }
+            catch (SemaphoreFullException) { }
+            catch (ObjectDisposedException) { }
+        }
+
+        public Task WaitAsync(CancellationToken cancellationToken) =>
+            _signal.WaitAsync(cancellationToken);
+
+        public void Dispose() => _signal.Dispose();
     }
 
     internal sealed class DaqCallbackProducerGate

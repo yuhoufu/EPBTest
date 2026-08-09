@@ -642,9 +642,34 @@ namespace Controller.Adaptive
 
             if (_stage == EpbCurrentStage.EmptyTravel && current >= _forwardA)
             {
-                Fault(
+                // 某些卡钳负载建立极快，10ms代表样本会从空行程直接跨过目标，来不及
+                // 先观察到 LoadRise。此时无论完整速率证据是否已经到达，都必须立即断电；
+                // 但状态先后本身不能确认硬件故障。完整速率证据已到时记为快速夹紧，
+                // 尚未到时记为FastRiseCandidate，后续仍由2kHz封口、断电清零和连续圈策略归因。
+                if (_observedFullRatePeakA >= _forwardA)
+                {
+                    decision.SoftWarning = true;
+                    CompleteForwardClamp(
+                        decision,
+                        current,
+                        WindowSlopeAperMs(),
+                        _observedFullRatePeakA,
+                        0,
+                        "FullRateRapidClamp",
+                        $"ClampReachedBeforeLoadRiseByFullRateEvidence " +
+                        $"I={current:F3}A Peak={_observedFullRatePeakA:F3}A Target={_forwardA:F3}A");
+                    return;
+                }
+                decision.SoftWarning = true;
+                CompleteForwardClamp(
                     decision,
-                    $"CurveSequenceInvalid ThresholdBeforeLoadRise I={current:F3}A Target={_forwardA:F3}A");
+                    current,
+                    WindowSlopeAperMs(),
+                    current,
+                    0,
+                    "FastRiseCandidate",
+                    $"FastRiseCandidate ClampReachedBeforeLoadRiseAwaitingFullRateEvidence " +
+                    $"I={current:F3}A Target={_forwardA:F3}A");
                 return;
             }
 

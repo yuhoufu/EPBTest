@@ -88,6 +88,7 @@
     <Compile Include="ChannelRuntimeStore.cs" />
     <Compile Include="ChannelRuntimeState.cs" />
     <Compile Include="NonCriticalObserver.cs" />
+    <Compile Include="TaskSupervisor.cs" />
     <Compile Include="BatchStartLifecycleGate.cs" />
     <Compile Include="ElectricalStaggerPlan.cs" />
     <Compile Include="EmergencyPowerGroupLatch.cs" />
@@ -98,11 +99,14 @@
     <Compile Include="EpbManager.WarningSnapshots.cs" />
     <Compile Include="EpbManager.StartupPositioning.cs" />
     <Compile Include="EpbManager.AdaptiveTrace.cs" />
+    <Compile Include="EpbManager.FieldMetrics.cs" />
     <Compile Include="EpbManager.TimerRuntimeHealth.cs" />
     <Compile Include="EpbManager.cs" />
     <Compile Include="SafetyMarginControlMode.cs" />
     <Compile Include="HydraulicController.cs" />
     <Compile Include="HydraulicGroupCoordinator.cs" />
+    <!-- Explicit include is required because this is a legacy non-SDK project. -->
+    <Compile Include="LatestPairMailbox.cs" />
     <Compile Include="PowerSupplyCoordinator.cs" />
     <Compile Include="PowerSupplyTelemetryCsvRecorder.cs" />
     <Compile Include="PressureCalibrationCoordinator.cs" />

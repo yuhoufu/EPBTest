@@ -12,6 +12,7 @@ namespace Controller.Alarm
     {
         private readonly AlarmConfig _cfg;
         private readonly IAppLogger _log;
+        private readonly TaskSupervisor _tasks;
 
         private readonly SemaphoreSlim _ioGate = new(1, 1);
         private readonly Dictionary<(int deviceId, int line), AlarmSingleCoilCommand> _singleCoil;
@@ -28,6 +29,7 @@ namespace Controller.Alarm
         {
             _cfg = cfg ?? throw new ArgumentNullException(nameof(cfg));
             _log = log ?? NullLogger.Instance;
+            _tasks = new TaskSupervisor(_log);
 
             _buzzerEnabled = _cfg.Behavior.BuzzerEnabled;
 
@@ -59,7 +61,7 @@ namespace Controller.Alarm
         public void SetBuzzerEnabled(bool enabled)
         {
             _buzzerEnabled = enabled;
-            _ = RefreshBuzzerAsync();
+            _tasks.Observe(RefreshBuzzerAsync(), "AlarmRefreshBuzzer", Guid.Empty);
         }
 
         public bool IsAnyAlarmActive()
@@ -126,7 +128,7 @@ namespace Controller.Alarm
             }
 
             // 蜂鸣器：去抖
-            _ = RefreshBuzzerAsync();
+            _tasks.Observe(RefreshBuzzerAsync(), "AlarmRefreshBuzzer", Guid.Empty, epbId);
         }
 
         public async Task ClearAllAsync(CancellationToken token = default)
@@ -156,7 +158,7 @@ namespace Controller.Alarm
                 }
 
                 // 冷却结束后，如果期间又产生报警，则刷新一次输出
-                _ = Task.Run(async () =>
+                _tasks.Observe(Task.Run(async () =>
                 {
                     try
                     {
@@ -172,7 +174,7 @@ namespace Controller.Alarm
                     {
                         // ignore
                     }
-                });
+                }), "AlarmCooldownRefresh", Guid.Empty);
             }
             finally
             {
@@ -287,7 +289,7 @@ namespace Controller.Alarm
             var cts = new CancellationTokenSource();
             _buzzerDebounceCts = cts;
 
-            _ = Task.Run(async () =>
+            _tasks.Observe(Task.Run(async () =>
             {
                 try
                 {
@@ -303,7 +305,7 @@ namespace Controller.Alarm
                 {
                     // ignore
                 }
-            });
+            }), "AlarmBuzzerDebounce", Guid.Empty);
         }
 
         private async Task SetSingleCoilAsync(int deviceId, int line, bool on, CancellationToken token)
@@ -368,6 +370,7 @@ namespace Controller.Alarm
                 // ignore
             }
 
+            try { _tasks.DrainAsync(1000).GetAwaiter().GetResult(); } catch { }
             _client.Dispose();
             _ioGate.Dispose();
         }

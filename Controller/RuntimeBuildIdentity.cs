@@ -8,16 +8,19 @@ using System.Text;
 
 namespace Controller
 {
-    internal sealed class RuntimeBuildIdentity
+    public sealed class RuntimeBuildIdentity
     {
         public string ProductVersion { get; private set; }
         public string AssemblyVersion { get; private set; }
         public string ExecutablePath { get; private set; }
         public string ExecutableSha256 { get; private set; }
         public string ConfigSha256 { get; private set; }
+        public string ReleaseConfigSha256 { get; private set; }
         public int ProcessBitness { get; private set; }
+        public int ProcessId { get; private set; }
         public string GitCommit { get; private set; }
         public string GitDirty { get; private set; }
+        public string BuildUtc { get; private set; }
         public DateTime CapturedUtc { get; private set; }
 
         public static RuntimeBuildIdentity Capture()
@@ -27,19 +30,29 @@ namespace Controller
             var executable = TryGetExecutablePath(assembly);
             var gitCommit = ReadBuildMetadata(assembly, "GitCommit", "EPB_GIT_COMMIT");
             var gitDirty = ReadBuildMetadata(assembly, "GitDirty", "EPB_GIT_DIRTY");
+            var buildUtc = ReadBuildMetadata(assembly, "BuildUtc", "EPB_BUILD_UTC");
+            var releaseConfigSha256 = ReadBuildMetadata(
+                assembly,
+                "ConfigSha256",
+                "EPB_CONFIG_SHA256");
             if (gitCommit == "unknown" || gitDirty == "unknown")
                 TryReadGitIdentity(executable, ref gitCommit, ref gitDirty);
             return new RuntimeBuildIdentity
             {
-                ProductVersion = $"V{version?.Major ?? 0}.{version?.Minor ?? 0}.{version?.Build ?? 0}",
+                // 现场补丁版本使用第四段 Revision；截成三段会把 2.12.0.3—.6
+                // 全部记录为同一个 V2.12.0，事故证据无法对应实际二进制。
+                ProductVersion = FormatProductVersion(version),
                 AssemblyVersion = version?.ToString() ?? "unknown",
                 ExecutablePath = string.IsNullOrWhiteSpace(executable) ? "unknown" : executable,
                 ExecutableSha256 = TryComputeSha256(executable),
                 ConfigSha256 = TryComputeSha256(
                     string.IsNullOrWhiteSpace(executable) ? null : executable + ".config"),
+                ReleaseConfigSha256 = releaseConfigSha256,
                 ProcessBitness = IntPtr.Size * 8,
+                ProcessId = TryGetProcessId(),
                 GitCommit = gitCommit,
                 GitDirty = gitDirty,
+                BuildUtc = buildUtc,
                 CapturedUtc = DateTime.UtcNow
             };
         }
@@ -57,11 +70,51 @@ namespace Controller
                    $"  \"executablePath\": \"{Escape(ExecutablePath)}\",\n" +
                    $"  \"executableSha256\": \"{Escape(ExecutableSha256)}\",\n" +
                    $"  \"configSha256\": \"{Escape(ConfigSha256)}\",\n" +
+                   $"  \"releaseConfigSha256\": \"{Escape(ReleaseConfigSha256)}\",\n" +
                    $"  \"processBitness\": {ProcessBitness},\n" +
+                   $"  \"processId\": {ProcessId},\n" +
                    $"  \"gitCommit\": \"{Escape(GitCommit)}\",\n" +
                    $"  \"gitDirty\": \"{Escape(GitDirty)}\",\n" +
+                   $"  \"buildUtc\": \"{Escape(BuildUtc)}\",\n" +
                    $"  \"capturedUtc\": \"{CapturedUtc:O}\"\n" +
                    "}\n";
+        }
+
+        public string ToStartupLogLine()
+        {
+            return $"ProductVersion={ProductVersion} AssemblyVersion={AssemblyVersion} " +
+                   $"PID={ProcessId} Bitness={ProcessBitness} " +
+                   $"ExecutablePath=\"{ExecutablePath}\" ExeSha256={ExecutableSha256} " +
+                   $"ConfigSha256={ConfigSha256} ReleaseConfigSha256={ReleaseConfigSha256} " +
+                   $"GitCommit={GitCommit} GitDirty={GitDirty} BuildUtc={BuildUtc}";
+        }
+
+        public string ToDisplayText()
+        {
+            return $"产品版本：{ProductVersion}\r\n" +
+                   $"程序集版本：{AssemblyVersion}\r\n" +
+                   $"进程：PID {ProcessId} / {ProcessBitness} 位\r\n" +
+                   $"EXE 路径：{ExecutablePath}\r\n" +
+                   $"EXE SHA-256：{ExecutableSha256}\r\n" +
+                   $"配置 SHA-256：{ReleaseConfigSha256}\r\n" +
+                   $"Git SHA：{GitCommit}\r\n" +
+                   $"Git Dirty：{GitDirty}\r\n" +
+                   $"构建时间：{BuildUtc}";
+        }
+
+        internal static string FormatProductVersion(Version version)
+        {
+            return version == null ? "V0.0.0.0" : $"V{version.ToString(4)}";
+        }
+
+        private static int TryGetProcessId()
+        {
+            try
+            {
+                using (var process = Process.GetCurrentProcess())
+                    return process.Id;
+            }
+            catch { return 0; }
         }
 
         private static string TryGetExecutablePath(Assembly assembly)

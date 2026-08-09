@@ -267,8 +267,94 @@ public static class ConfigLoader
         new(StringComparer.OrdinalIgnoreCase);
     private static readonly ConcurrentDictionary<string, object> TestFileLocks =
         new(StringComparer.OrdinalIgnoreCase);
-    private static readonly ConcurrentDictionary<string, long> UiSaveVersions =
+    private static readonly ConcurrentDictionary<string, UiSaveDebouncer> UiSaveDebouncers =
         new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// 每个配置文件最多保留一个300ms单次计时器。高频勾选只更新版本和最终快照，
+    /// 不再为每次变化创建一个 Task.Delay/线程池任务。
+    /// </summary>
+    private sealed class UiSaveDebouncer
+    {
+        private readonly object _gate = new();
+        private readonly string _path;
+        private readonly Timer _timer;
+        private UiConfig _latest;
+        private long _version;
+        private int _flushRunning;
+        private bool _retired;
+
+        internal UiSaveDebouncer(string path)
+        {
+            _path = path;
+            _timer = new Timer(_ => FlushLatest(), null, Timeout.Infinite, Timeout.Infinite);
+        }
+
+        internal bool Schedule(UiConfig config)
+        {
+            lock (_gate)
+            {
+                if (_retired) return false;
+                _latest = config;
+                _version++;
+                _timer.Change(300, Timeout.Infinite);
+                return true;
+            }
+        }
+
+        private void FlushLatest()
+        {
+            if (Interlocked.CompareExchange(ref _flushRunning, 1, 0) != 0) return;
+            UiConfig source;
+            long processedVersion;
+            lock (_gate)
+            {
+                if (_retired)
+                {
+                    Interlocked.Exchange(ref _flushRunning, 0);
+                    return;
+                }
+                source = _latest;
+                processedVersion = _version;
+            }
+
+            try
+            {
+                UiConfig snapshot;
+                lock (source) snapshot = CloneUiConfig(source);
+                SaveUI(_path, snapshot);
+            }
+            catch (Exception ex)
+            {
+                // 非关键UI状态保存失败不冒泡到UI线程；原配置文件由 SaveUI 保留。
+                System.Diagnostics.Trace.TraceWarning(ex.ToString());
+            }
+            finally
+            {
+                var retire = false;
+                lock (_gate)
+                {
+                    if (_version == processedVersion)
+                    {
+                        _retired = true;
+                        retire = true;
+                    }
+                }
+                Interlocked.Exchange(ref _flushRunning, 0);
+                if (retire)
+                {
+                    ((ICollection<KeyValuePair<string, UiSaveDebouncer>>)UiSaveDebouncers)
+                        .Remove(new KeyValuePair<string, UiSaveDebouncer>(_path, this));
+                    _timer.Dispose();
+                }
+                else
+                {
+                    lock (_gate)
+                        if (!_retired) _timer.Change(300, Timeout.Infinite);
+                }
+            }
+        }
+    }
 
 
     /// <summary>加载 AO/DO/Test 三类配置并组合成 <see cref="GlobalConfig" />。</summary>
@@ -1488,20 +1574,15 @@ public static class ConfigLoader
     private static void ScheduleUiSave(string path, UiConfig cfg)
     {
         var fullPath = Path.GetFullPath(ResolveUiPath(path));
-        var version = UiSaveVersions.AddOrUpdate(fullPath, 1, (_, current) => current + 1);
-        _ = Task.Run(async () =>
+        while (true)
         {
-            await Task.Delay(300).ConfigureAwait(false);
-            if (!UiSaveVersions.TryGetValue(fullPath, out var latest) || latest != version) return;
-            UiConfig snapshot;
-            lock (cfg) snapshot = CloneUiConfig(cfg);
-            try { SaveUI(fullPath, snapshot); }
-            catch (Exception ex)
-            {
-                // 非关键UI状态保存失败不冒泡到UI线程；原配置文件由 SaveUI 保留。
-                System.Diagnostics.Trace.TraceWarning(ex.ToString());
-            }
-        });
+            var debouncer = UiSaveDebouncers.GetOrAdd(
+                fullPath,
+                key => new UiSaveDebouncer(key));
+            if (debouncer.Schedule(cfg)) return;
+            ((ICollection<KeyValuePair<string, UiSaveDebouncer>>)UiSaveDebouncers)
+                .Remove(new KeyValuePair<string, UiSaveDebouncer>(fullPath, debouncer));
+        }
     }
 
     private static UiConfig CloneUiConfig(UiConfig source)

@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Concurrent;
-using System.Windows.Forms;
 using Config;
 using DataOperation;
 
@@ -11,7 +10,6 @@ namespace MTEmbTest
     /// </summary>
     public class FormLoggerAdapter : IAppLogger, IFlushableAppLogger, IAsyncFlushableAppLogger, IDisposable
     {
-        private readonly Control _ui;
         private readonly int _maxInfos;
         private readonly int _maxWarns;
         private readonly int _maxErrors;
@@ -30,7 +28,7 @@ namespace MTEmbTest
             ConcurrentQueue<string> logInfo,
             ConcurrentQueue<string> logWarn,
             ConcurrentQueue<string> logError,
-            Control uiForInvoke)
+            System.Windows.Forms.Control uiForInvoke)
         {
             _maxInfos = maxInfos;
             _maxWarns = maxWarns;
@@ -38,7 +36,6 @@ namespace MTEmbTest
             _logInfo = logInfo ?? new ConcurrentQueue<string>();
             _logWarn = logWarn ?? new ConcurrentQueue<string>();
             _logError = logError ?? new ConcurrentQueue<string>();
-            _ui = uiForInvoke;
         }
 
         public void ConfigureProjectLogDirectory(string projectRoot)
@@ -63,7 +60,6 @@ namespace MTEmbTest
         {
             EnsureProjectLogConfigured();
             Persist(ProjectLogLevel.Warning, message, category, null);
-            ProjectLogHub.RequestFlush(true);
             Dispatch(() => ClsLogProcess.AddToWarnList(
                 _maxWarns,
                 ref _logWarn,
@@ -75,7 +71,6 @@ namespace MTEmbTest
         {
             EnsureProjectLogConfigured();
             Persist(ProjectLogLevel.Error, message, category, ex);
-            ProjectLogHub.RequestFlush(true);
             var detail = ex == null ? message : $"{message} | {ex}";
             Dispatch(() => ClsErrorProcess.AddToErrorList(
                 _maxErrors,
@@ -148,19 +143,9 @@ namespace MTEmbTest
 
         private void Dispatch(Action write)
         {
-            if (_ui != null && !_ui.IsDisposed && _ui.IsHandleCreated && _ui.InvokeRequired)
-            {
-                try
-                {
-                    _ui.BeginInvoke(write);
-                    return;
-                }
-                catch
-                {
-                    // 窗体关闭/句柄销毁期间降级为直接写队列。
-                }
-            }
-
+            // 三个目标容器都是 ConcurrentQueue，后台线程可直接追加。
+            // UI 使用自己的定时器批量读取队列；这里若每条日志都 BeginInvoke，
+            // 告警风暴会把 WinForms 消息队列淹没并反向拖慢控制与持久化线程。
             write();
         }
     }

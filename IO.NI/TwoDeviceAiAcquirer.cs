@@ -46,11 +46,14 @@ namespace IO.NI
             var runtimePath = Path.Combine(directory, "daq_runtime.csv");
             using (var writer = new StreamWriter(runtimePath, false, new UTF8Encoding(true)))
             {
-                writer.WriteLine("TimestampUtc,Device,Kind,GC0,GC1,GC2,ManagedMemoryBytes,WorkerThreadsAvailable,IoThreadsAvailable,GcEtwStatus,GcPauseDurationMs,GcPauseUtc,GcPauseCount");
+                writer.WriteLine("TimestampUtc,Device,Kind,GC0,GC1,GC2,ManagedMemoryBytes,ProcessId,ProcessBitness,ProcessCpuPercent,SystemCpuPercent,OtherCpuPercent,WorkingSetBytes,PrivateMemoryBytes,VirtualMemoryBytes,HandleCount,ThreadCount,SystemAvailableMemoryBytes,ProgramDriveFreeBytes,DiskQueueLength,DiskReadBytesPerSecond,DiskWriteBytesPerSecond,WorkerThreadsAvailable,IoThreadsAvailable,GcEtwStatus,GcPauseDurationMs,GcPauseUtc,GcPauseCount");
                 foreach (var x in Records.Where(x => string.Equals(x.Kind, "Runtime", StringComparison.OrdinalIgnoreCase)))
                     writer.WriteLine(
                         $"{x.TimestampUtc:O},{Csv(x.Device)},{Csv(x.Kind)},{x.Gc0},{x.Gc1},{x.Gc2}," +
-                        $"{x.ManagedMemoryBytes},{x.WorkerThreadsAvailable},{x.IoThreadsAvailable}," +
+                        $"{x.ManagedMemoryBytes},{x.ProcessId},{x.ProcessBitness},{x.ProcessCpuPercent:F3},{x.SystemCpuPercent:F3},{x.OtherCpuPercent:F3}," +
+                        $"{x.WorkingSetBytes},{x.PrivateMemoryBytes},{x.VirtualMemoryBytes},{x.HandleCount},{x.ThreadCount}," +
+                        $"{x.SystemAvailableMemoryBytes},{x.ProgramDriveFreeBytes},{x.DiskQueueLength:F3},{x.DiskReadBytesPerSecond:F3},{x.DiskWriteBytesPerSecond:F3}," +
+                        $"{x.WorkerThreadsAvailable},{x.IoThreadsAvailable}," +
                         $"{Csv(x.GcEtwStatus)},{x.GcPauseDurationMs:F3}," +
                         $"{(x.GcPauseUtc == default ? string.Empty : x.GcPauseUtc.ToString("O"))},{x.GcPauseCount}");
             }
@@ -238,6 +241,21 @@ namespace IO.NI
         public int Gc1 { get; set; }
         public int Gc2 { get; set; }
         public long ManagedMemoryBytes { get; set; }
+        public int ProcessId { get; set; }
+        public int ProcessBitness { get; set; }
+        public double ProcessCpuPercent { get; set; }
+        public double SystemCpuPercent { get; set; }
+        public double OtherCpuPercent { get; set; }
+        public long WorkingSetBytes { get; set; }
+        public long PrivateMemoryBytes { get; set; }
+        public long VirtualMemoryBytes { get; set; }
+        public int HandleCount { get; set; }
+        public int ThreadCount { get; set; }
+        public ulong SystemAvailableMemoryBytes { get; set; }
+        public long ProgramDriveFreeBytes { get; set; }
+        public double DiskQueueLength { get; set; }
+        public double DiskReadBytesPerSecond { get; set; }
+        public double DiskWriteBytesPerSecond { get; set; }
         public int WorkerThreadsAvailable { get; set; }
         public int IoThreadsAvailable { get; set; }
         public string GcEtwStatus { get; set; } = string.Empty;
@@ -546,6 +564,7 @@ namespace IO.NI
         private readonly ConcurrentDictionary<string, PressureSample> _lastPressureSample = new();
 
         private readonly ILogger _log;
+        private readonly CoalescingTaskSupervisor _backgroundTasks;
         private readonly int _medianLens;
 
         // 两块采集卡分别处理，避免任一设备的滤波/落盘/UI订阅拖住另一块卡。
@@ -578,6 +597,7 @@ namespace IO.NI
         private long _lastProcessingLagLogTicksDev2;
         private long _lastRuntimeProbeTicksDev1;
         private long _lastRuntimeProbeTicksDev2;
+        private long _lastHostRuntimeLogTicks;
         private long _lastControlWarningTicksDev1;
         private long _lastControlWarningTicksDev2;
         private long _lastControlBatchProcessMsBitsDev1;
@@ -606,7 +626,10 @@ namespace IO.NI
         private readonly ClrGcPauseMonitor _gcPauseMonitor;
         private readonly ConcurrentQueue<OwnedDaqRawBatch> _rawPublicationQueue = new();
         private readonly SemaphoreSlim _rawPublicationSignal = new(0);
-        private readonly SemaphoreSlim _uiPublicationSignal = new(0);
+        // UI 只消费每块设备的最新快照，因此唤醒信号也必须是二值的。
+        // 若使用无上限计数信号，UI/线程池短暂受阻时会积累大量空唤醒；恢复后即使
+        // 最新槽已经取空，工作线程仍会反复空转，形成 CPU 尾部尖峰并继续放大卡顿。
+        private readonly CoalescingAsyncSignal _uiPublicationSignal = new();
         private const int RawPublicationCapacity = 256;
         private int _rawPublicationCount;
         private int _rawPublicationInFlight;
@@ -636,6 +659,8 @@ namespace IO.NI
         private double _aiMax = 10;
         private AITerminalConfiguration _terminalConfiguration = AITerminalConfiguration.Rse;
         private int _disposed;
+        private int _disposeFinalizerStarted;
+        private Thread _disposeFinalizerThread;
 
         private sealed class UiPublication
         {
@@ -975,8 +1000,8 @@ namespace IO.NI
             }
 
             // 这是限频的节拍诊断，并不等同于采集失败；完整数据仍写入诊断记录。
-            // 使用 Info 避免正常的线程调度抖动污染 error.log / warning.log。
-            _ = Task.Run(() => _log?.Info(
+            // 使用按设备合并的监督任务输出，避免回调线程等待日志或制造裸Task。
+            _backgroundTasks.TryRun("DaqTimingLog:" + device, () => _log?.Info(
                 $"[AI][{device}] DAQ回调节拍：N={batchSampleCount} (cfgN={_samplesPerChannel}) Fs={_sampleRate:F0}Hz" +
                 $" 期望批间隔≈{expectBatchMs:F2}ms 回调间隔≈{cbIntervalMs:F2}ms" +
                 $" 到达延迟(尾)≈{arrivalDelayToEndMs:F2}ms 到达延迟(首)≈{arrivalDelayToStartMs:F2}ms" +
@@ -1008,6 +1033,7 @@ namespace IO.NI
                     Interlocked.Exchange(ref lastProbe, nowTicks);
                     ThreadPool.GetAvailableThreads(out var worker, out var io);
                     var gcPause = _gcPauseMonitor.Snapshot();
+                    var host = HostRuntimeProbe.Capture();
                     EnqueueDiagnostic(new DaqTimingValue
                     {
                         TimestampUtc = record.TimestampUtc,
@@ -1018,6 +1044,21 @@ namespace IO.NI
                         Gc1 = GC.CollectionCount(1),
                         Gc2 = GC.CollectionCount(2),
                         ManagedMemoryBytes = GC.GetTotalMemory(false),
+                        ProcessId = host.ProcessId,
+                        ProcessBitness = host.ProcessBitness,
+                        ProcessCpuPercent = host.ProcessCpuPercent,
+                        SystemCpuPercent = host.SystemCpuPercent,
+                        OtherCpuPercent = host.OtherCpuPercent,
+                        WorkingSetBytes = host.WorkingSetBytes,
+                        PrivateMemoryBytes = host.PrivateMemoryBytes,
+                        VirtualMemoryBytes = host.VirtualMemoryBytes,
+                        HandleCount = host.HandleCount,
+                        ThreadCount = host.ThreadCount,
+                        SystemAvailableMemoryBytes = host.SystemAvailableMemoryBytes,
+                        ProgramDriveFreeBytes = host.ProgramDriveFreeBytes,
+                        DiskQueueLength = host.DiskQueueLength,
+                        DiskReadBytesPerSecond = host.DiskReadBytesPerSecond,
+                        DiskWriteBytesPerSecond = host.DiskWriteBytesPerSecond,
                         WorkerThreadsAvailable = worker,
                         IoThreadsAvailable = io,
                         GcEtwStatus = gcPause.Status,
@@ -1025,9 +1066,34 @@ namespace IO.NI
                         GcPauseUtc = gcPause.LastPauseUtc,
                         GcPauseCount = gcPause.PauseCount
                     });
+                    TryLogHostRuntime(host, nowTicks);
                 }
             }
             EnqueueDiagnostic(record);
+        }
+
+        private void TryLogHostRuntime(HostRuntimeSnapshot host, long nowTicks)
+        {
+            var previous = Interlocked.Read(ref _lastHostRuntimeLogTicks);
+            if (previous != 0 &&
+                (nowTicks - previous) * 1000.0 / Stopwatch.Frequency < 1000)
+                return;
+            if (Interlocked.CompareExchange(ref _lastHostRuntimeLogTicks, nowTicks, previous) != previous)
+                return;
+
+            const double mib = 1024.0 * 1024.0;
+            const double gib = 1024.0 * 1024.0 * 1024.0;
+            _log.Info(
+                $"HostRuntime PID={host.ProcessId} Bitness={host.ProcessBitness} " +
+                $"ProcessCpu={host.ProcessCpuPercent:F1}% SystemCpu={host.SystemCpuPercent:F1}% " +
+                $"OtherCpu={host.OtherCpuPercent:F1}% WorkingSet={host.WorkingSetBytes / mib:F1}MiB " +
+                $"Private={host.PrivateMemoryBytes / mib:F1}MiB Virtual={host.VirtualMemoryBytes / mib:F1}MiB " +
+                $"Handles={host.HandleCount} Threads={host.ThreadCount} " +
+                $"AvailableMemory={host.SystemAvailableMemoryBytes / mib:F1}MiB " +
+                $"ProgramDriveFree={host.ProgramDriveFreeBytes / gib:F1}GiB " +
+                $"DiskQueue={host.DiskQueueLength:F2} DiskRead={host.DiskReadBytesPerSecond / mib:F2}MiB/s " +
+                $"DiskWrite={host.DiskWriteBytesPerSecond / mib:F2}MiB/s",
+                "HOST");
         }
 
         private void EnqueueDiagnostic(DaqTimingRecord record)
@@ -1209,6 +1275,7 @@ namespace IO.NI
             _samplesPerChannel = samplesPerChannel;
             _medianLens = Math.Max(1, medianLens);
             _log = log ?? NLogger.Instance;
+            _backgroundTasks = new CoalescingTaskSupervisor(_log);
             _gcPauseMonitor = SharedGcPauseMonitor.Value;
             var evidenceCapacity = Math.Max(
                 64,
@@ -1346,52 +1413,69 @@ namespace IO.NI
             TrySignal(_queueSignalDev1);
             TrySignal(_queueSignalDev2);
             TrySignal(_rawPublicationSignal);
-            TrySignal(_uiPublicationSignal);
+            _uiPublicationSignal.Set();
             TrySignal(_controlSignalDev1);
             TrySignal(_controlSignalDev2);
+            if (Interlocked.Exchange(ref _disposeFinalizerStarted, 1) != 0) return;
+            var finalizer = new Thread(FinalizeDisposeResources)
+            {
+                IsBackground = true,
+                Name = "AI-DisposeFinalizer"
+            };
+            _disposeFinalizerThread = finalizer;
+            finalizer.Start();
+
+            // UI线程绝不阻塞消息泵；测试或服务线程允许有限等待以便及时释放。
+            var scType = SynchronizationContext.Current?.GetType().FullName;
+            var isWinFormsUiContext = string.Equals(
+                scType,
+                "System.Windows.Forms.WindowsFormsSynchronizationContext",
+                StringComparison.Ordinal);
+            if (!isWinFormsUiContext)
+            {
+                try { finalizer.Join(5000); } catch { }
+            }
+        }
+
+        private void FinalizeDisposeResources()
+        {
             try
             {
-                // UI 线程（STA）避免同步等待；否则可能阻塞消息泵并触发 ContextSwitchDeadlock。
-                var sc = SynchronizationContext.Current;
-                var scType = sc?.GetType().FullName;
-                var isWinFormsUiContext = string.Equals(scType, "System.Windows.Forms.WindowsFormsSynchronizationContext",
-                    StringComparison.Ordinal);
-
-                if (isWinFormsUiContext)
+                var workers = new[] { _workerDev1, _workerDev2, _rawPublicationWorker, _uiPublicationWorker }
+                    .Where(worker => worker != null)
+                    .ToArray();
+                if (workers.Length > 0)
                 {
-                    var workers = new[] { _workerDev1, _workerDev2, _rawPublicationWorker, _uiPublicationWorker };
-                    if (workers.Any(w => w != null))
+                    try { Task.WaitAll(workers); }
+                    catch (AggregateException ex)
                     {
-                        Task.Run(() =>
-                        {
-                            try { Task.WaitAll(workers.Where(w => w != null).ToArray(), 1000); } catch { }
-                        });
+                        // WaitAll 已观察所有 worker 异常，记录后继续释放。
+                        try { _log.Error("AI后台Worker退出异常：" + ex.GetBaseException().Message, "AI", ex); }
+                        catch { }
                     }
                 }
-                else
-                {
-                    Task.WaitAll(new[] { _workerDev1, _workerDev2, _rawPublicationWorker, _uiPublicationWorker }, 1000);
-                }
+
+                try { _controlThreadDev1?.Join(); } catch { }
+                try { _controlThreadDev2?.Join(); } catch { }
+                _backgroundTasks?.Dispose();
             }
-            catch
+            finally
             {
+                try { _queueSignalDev1.Dispose(); } catch { }
+                try { _queueSignalDev2.Dispose(); } catch { }
+                try { _rawPublicationSignal.Dispose(); } catch { }
+                try { _uiPublicationSignal.Dispose(); } catch { }
+                try { _controlSignalDev1.Dispose(); } catch { }
+                try { _controlSignalDev2.Dispose(); } catch { }
+                try { _cts.Dispose(); } catch { }
             }
-
-            try { _controlThreadDev1?.Join(500); } catch { }
-            try { _controlThreadDev2?.Join(500); } catch { }
-
-            _queueSignalDev1.Dispose();
-            _queueSignalDev2.Dispose();
-            _rawPublicationSignal.Dispose();
-            _uiPublicationSignal.Dispose();
-            _controlSignalDev1.Dispose();
-            _controlSignalDev2.Dispose();
-            _cts.Dispose();
         }
 
         private static void TrySignal(SemaphoreSlim signal)
         {
-            try { signal?.Release(); } catch (ObjectDisposedException) { }
+            try { signal?.Release(); }
+            catch (SemaphoreFullException) { }
+            catch (ObjectDisposedException) { }
         }
 
         private static void TrySignal(AutoResetEvent signal)
@@ -2784,7 +2868,7 @@ namespace IO.NI
                             }
                             catch (Exception ex)
                             {
-                                _ = Task.Run(() => _log.Warn(
+                                _backgroundTasks.TryRun("ControlSubscriberWarning:" + workerDevice, () => _log.Warn(
                                     $"{workerDevice} 控制样本订阅者异常（已隔离）：{ex.Message}",
                                     "AI"));
                             }
@@ -2822,7 +2906,7 @@ namespace IO.NI
             }
             catch (Exception ex)
             {
-                _ = Task.Run(() =>
+                _backgroundTasks.TryRun("ControlWorkerFault:" + workerDevice, () =>
                     _log.Error($"{workerDevice} DAQ控制工作线程异常：{ex}", "AI", ex));
             }
         }
@@ -2913,7 +2997,7 @@ namespace IO.NI
                 SubscriberMaxMs = subscriberMaxMs,
                 Detail = detail
             });
-            _ = Task.Run(() => _log.Warn(
+            _backgroundTasks.TryRun("ControlTimingWarning:" + device, () => _log.Warn(
                 $"{device} 控制链时序异常：Depth={ring.Depth}/{ring.Capacity} " +
                 $"Oldest={queueAgeMs:F1}ms Process={processMs:F1}ms SubscriberMax={subscriberMaxMs:F1}ms " +
                 $"Detail={detail}",
@@ -3020,7 +3104,7 @@ namespace IO.NI
                 Interlocked.Exchange(ref _latestUiDev1, publication);
             else
                 Interlocked.Exchange(ref _latestUiDev2, publication);
-            TrySignal(_uiPublicationSignal);
+            _uiPublicationSignal.Set();
         }
 
         private async Task UiPublicationLoop()
@@ -3888,8 +3972,9 @@ namespace IO.NI
                 QualityFlags = GetInvariantQualityFlag(code).ToString(),
                 Detail = fault.Reason
             });
-            // 后续事故归并、日志、UI 与快照均转移到后台，控制线程到此即可返回。
-            _ = Task.Run(() =>
+            // 后续事故归并、日志、UI 与快照由按根故障合并的监督任务执行。
+            var publicationKey = $"DeviceFault:{device}:{code}:{generation}";
+            _backgroundTasks.TryRun(publicationKey, () =>
             {
                 try { DeviceFaultPublicationRequested?.Invoke(fault); } catch { }
                 _log.Error(fault.Reason, "AI");

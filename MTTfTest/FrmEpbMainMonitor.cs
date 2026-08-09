@@ -1,4 +1,4 @@
-using System;
+ï»¿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -55,9 +55,10 @@ namespace MTEmbTest
             }
         }
 
-        private const int MaxErrors = 100000;
-        private const int MaxInfos = 100000;
-        private const int MaxWarns = 100000;
+        // æŒä¹…åŒ–æ—¥å¿—ç”± ProjectLogStore ç®¡ç†ï¼›è¿™ä¸‰ä¸ªä»…ä¸ºé—ç•™å†…å­˜æµè§ˆç¼“å†²ï¼Œä¸åº”å„è‡ªä¿ç•™10ä¸‡æ¡ã€‚
+        private const int MaxErrors = 2000;
+        private const int MaxInfos = 2000;
+        private const int MaxWarns = 2000;
 
         private static SafetyMarginControlMode ReadSafetyMarginControlModeFromAppConfig(IAppLogger logger)
         {
@@ -65,63 +66,63 @@ namespace MTEmbTest
             {
                 var raw = ConfigurationManager.AppSettings["EpbSafetyMarginControlMode"];
                 var mode = SafetyMarginControlModeParser.ParseOrDefault(raw, SafetyMarginControlMode.Legacy20251010);
-                logger?.Info($"SafetyMargin ¿ØÖÆÄ£Ê½£º{mode}£¨AppSetting=EpbSafetyMarginControlMode, raw='{raw ?? ""}'£©", "EPB");
+                logger?.Info($"SafetyMargin æ§åˆ¶æ¨¡å¼ï¼š{mode}ï¼ˆAppSetting=EpbSafetyMarginControlMode, raw='{raw ?? ""}'ï¼‰", "EPB");
                 return mode;
             }
             catch (Exception ex)
             {
-                logger?.Warn($"¶ÁÈ¡ App.config µÄ EpbSafetyMarginControlMode Ê§°Ü£º{ex.Message}£¬½«Ê¹ÓÃÄ¬ÈÏ Legacy20251010¡£", "EPB");
+                logger?.Warn($"è¯»å– App.config çš„ EpbSafetyMarginControlMode å¤±è´¥ï¼š{ex.Message}ï¼Œå°†ä½¿ç”¨é»˜è®¤ Legacy20251010ã€‚", "EPB");
                 return SafetyMarginControlMode.Legacy20251010;
             }
         }
 
         // private ConcurrentQueue<CanData> dataQueue = new ConcurrentQueue<CanData>();
-        private const int CacheLens = 6000; //Ã¿Ãë100Ö¡£¬3Ãë´¦ÀíÒ»´Î£¬×î¶à»º´æ6Ãë
+        private const int CacheLens = 6000; //æ¯ç§’100å¸§ï¼Œ3ç§’å¤„ç†ä¸€æ¬¡ï¼Œæœ€å¤šç¼“å­˜6ç§’
 
-        private const int DeviceCount = 6; // ¹²6¸öÉè±¸
+        private const int DeviceCount = 6; // å…±6ä¸ªè®¾å¤‡
         private const string FormKey = "FrmEpbMainMonitor";
-        private const int UI_TARGET_FPS = 10; // Ä¿±êÖ¡ÂÊ£¨½µµÍÒÔ¼õÇáÈ«Í¨µÀ»æÖÆÑ¹Á¦£©ºÏÊÊµÄ·¶Î§ÊÇ 5-15 FPS
+        private const int UI_TARGET_FPS = 10; // ç›®æ ‡å¸§ç‡ï¼ˆé™ä½ä»¥å‡è½»å…¨é€šé“ç»˜åˆ¶å‹åŠ›ï¼‰åˆé€‚çš„èŒƒå›´æ˜¯ 5-15 FPS
 
         private readonly System.Windows.Forms.Timer _autoSaveTimer = new System.Windows.Forms.Timer();
 
 
-        #region ¸ÅÀÀÇøÓòÏà¹ØÊôĞÔ¡¢×Ö¶Î
+        #region æ¦‚è§ˆåŒºåŸŸç›¸å…³å±æ€§ã€å­—æ®µ
 
         /// <summary>
-        /// µ±Ç°ÔÚ¡°EPB ¸ÅÀÀ¡±ÇøÓòÖĞÑ¡ÖĞµÄ EPB Í¨µÀºÅ£¨1..12£»0 ±íÊ¾Î´Ñ¡£©¡£
+        /// å½“å‰åœ¨â€œEPB æ¦‚è§ˆâ€åŒºåŸŸä¸­é€‰ä¸­çš„ EPB é€šé“å·ï¼ˆ1..12ï¼›0 è¡¨ç¤ºæœªé€‰ï¼‰ã€‚
         /// </summary>
         private int _currentEpbSummaryChannel = 0;
 
         #endregion
 
-        // ĞŞ¸ÄÎª¶¯Ì¬´ÓÅäÖÃ¹¹½¨Í¨µÀÓ³Éä
+        // ä¿®æ”¹ä¸ºåŠ¨æ€ä»é…ç½®æ„å»ºé€šé“æ˜ å°„
         private static readonly ChannelDef[] _allChs = BuildChannelsFromConfig();
         private readonly LineItem[] _chCurve = new LineItem[15];
 
-        // ¡ª¡ª 15 ÌõÇúÏß/Êı¾İ/Ê±¼ä»º´æ ¡ª¡ª //
+        // â€”â€” 15 æ¡æ›²çº¿/æ•°æ®/æ—¶é—´ç¼“å­˜ â€”â€” //
         private readonly PointPairList[] _chData = new PointPairList[15];
 
-        // ¡ª¡ª CheckEdit Ó³Éä£¨È«¾ÖË÷Òı -> ¿Ø¼ş£©£¬ÓÃÓÚÊµÊ±¿ØÖÆ¿É¼ûĞÔ ¡ª¡ª //
+        // â€”â€” CheckEdit æ˜ å°„ï¼ˆå…¨å±€ç´¢å¼• -> æ§ä»¶ï¼‰ï¼Œç”¨äºå®æ—¶æ§åˆ¶å¯è§æ€§ â€”â€” //
         private readonly Dictionary<int, CheckEdit> _checkByGlobal = new(16);
         private readonly DeviceContext[] _deviceContexts = new DeviceContext[DeviceCount];
 
-        // ¡ª¡ª Ë²Ê±ÖµÏÔÊ¾¿Ø¼şÓ³Éä£¨È«¾ÖË÷Òı -> ÎÄ±¾¿Ø¼ş£©¡ª¡ª //
+        // â€”â€” ç¬æ—¶å€¼æ˜¾ç¤ºæ§ä»¶æ˜ å°„ï¼ˆå…¨å±€ç´¢å¼• -> æ–‡æœ¬æ§ä»¶ï¼‰â€”â€” //
         private readonly Dictionary<int, TextEdit> _instantDisplayControls = new(16);
         private readonly double[] _lastX = Enumerable.Repeat(0.0, 15).ToArray();
 
-        // ¿ØÖÆÇúÏßÏÔÊ¾µÄcheck¿Ø¼şÃû
+        // æ§åˆ¶æ›²çº¿æ˜¾ç¤ºçš„checkæ§ä»¶å
         private readonly string[] _persistNames =
             Enumerable.Range(1, 12).Select(i => $"CheckEpbA{i}")
                 .Concat(new[] { "CheckP1", "CheckP2", "CheckF" })
                 .ToArray();
 
-        /// <summary>¼Æ»®×Ü´ÎÊıÏÔÊ¾£¨Í¨µÀ ¡ú UILabel£©¡£</summary>
+        /// <summary>è®¡åˆ’æ€»æ¬¡æ•°æ˜¾ç¤ºï¼ˆé€šé“ â†’ UILabelï¼‰ã€‚</summary>
         private readonly Dictionary<int, UILabel> _planLabelByChannel = new();
 
-        // ¡ª¡ª ¿ìËÙÂ·ÓÉ£¨"Dev#ai" -> È«¾ÖË÷Òı£© ¡ª¡ª //
+        // â€”â€” å¿«é€Ÿè·¯ç”±ï¼ˆ"Dev#ai" -> å…¨å±€ç´¢å¼•ï¼‰ â€”â€” //
         private readonly Dictionary<string, int> _route = new(StringComparer.OrdinalIgnoreCase);
 
-        /// <summary>ÇĞ»»¿ª¹Ø£¨Í¨µÀ ¡ú ToggleButton£©¡£</summary>
+        /// <summary>åˆ‡æ¢å¼€å…³ï¼ˆé€šé“ â†’ ToggleButtonï¼‰ã€‚</summary>
         private readonly Dictionary<int, ToggleButton> _switchByChannel =
             new();
 
@@ -129,10 +130,10 @@ namespace MTEmbTest
         private readonly ConcurrentQueue<byte[]> bufferB = new();
 
 
-        private readonly object bufferLock = new(); //ÊµÊ±ÇúÏß»º´æÊı¾İËø
+        private readonly object bufferLock = new(); //å®æ—¶æ›²çº¿ç¼“å­˜æ•°æ®é”
 
         private readonly object[]
-            clampCounterLocks = Enumerable.Range(0, 6).Select(_ => new object()).ToArray(); //Ö¸Áî·¢ËÍ¼ÆÊıËø
+            clampCounterLocks = Enumerable.Range(0, 6).Select(_ => new object()).ToArray(); //æŒ‡ä»¤å‘é€è®¡æ•°é”
 
 
         private readonly object currentDevLock = new();
@@ -143,108 +144,97 @@ namespace MTEmbTest
 
         private readonly Stopwatch Dispstopwatch = new();
 
-        // UI ¼¤»î×´Ì¬£¬ÓÃÓÚÇ°ºóÌ¨ÇĞ»»Ê±µ÷ÕûÇúÏß²¹µã²ßÂÔ£¬½µµÍ¡°´°¿ÚÇĞ×ß¡±´øÀ´µÄÊÓ¾õ¶ÏÏß
+        // UI æ¿€æ´»çŠ¶æ€ï¼Œç”¨äºå‰åå°åˆ‡æ¢æ—¶è°ƒæ•´æ›²çº¿è¡¥ç‚¹ç­–ç•¥ï¼Œé™ä½â€œçª—å£åˆ‡èµ°â€å¸¦æ¥çš„è§†è§‰æ–­çº¿
         private volatile bool _uiActive = true;
 
 
         private readonly ClsEPBControler[] EpbGroup = new ClsEPBControler[12];
-        private readonly object graphLock = new(); //ÇúÏß¸üĞÂËø
+        private readonly object graphLock = new(); //æ›²çº¿æ›´æ–°é”
         private readonly bool IsTestConfirm = false;
         private AoController _ao;
 
-        private CancellationTokenSource _batchCts; // ÅúÁ¿²Ù×÷È¡ÏûÁîÅÆÔ´
+        private CancellationTokenSource _batchCts; // æ‰¹é‡æ“ä½œå–æ¶ˆä»¤ç‰Œæº
         private GlobalConfig _cfg;
 
-        /// <summary>·ÀÖ¹ OnFormClosing ÖØÈëÖ´ĞĞ¡£</summary>
+        /// <summary>é˜²æ­¢ OnFormClosing é‡å…¥æ‰§è¡Œã€‚</summary>
         private int _closingReentry = 0;
 
-        private string _currentDev = "EMB1"; // Ìí¼ÓË½ÓĞ×Ö¶Î
+        private string _currentDev = "EMB1"; // æ·»åŠ ç§æœ‰å­—æ®µ
 
 
-        // ¡ª¡ª Êı¾İÂäÅÌÉÏÏÂÎÄÓë¶¨Ê±Æ÷£¨ÑØÓÃ¾ÉÏîÄ¿½á¹¹£©¡ª¡ª
+        // â€”â€” æ•°æ®è½ç›˜ä¸Šä¸‹æ–‡ä¸å®šæ—¶å™¨ï¼ˆæ²¿ç”¨æ—§é¡¹ç›®ç»“æ„ï¼‰â€”â€”
         private DaqAIContext _daqDev1;
         private DaqAIContext _daqDev2;
         private Timer _daqRawTimerDev1, _daqStatTimerDev1;
         private Timer _daqRawTimerDev2, _daqStatTimerDev2;
 
         /// <summary>
-        ///     Ã¿Ö¡Ñù±¾Ê±¼ä¿ç¶È£¨ºÁÃë£©£¬Óë¾ÉÏîÄ¿Ò»ÖÂ£º1000 / ²ÉÑùÆµÂÊ¡£
-        ///     Êı¾İÂäÅÌÊ¹ÓÃ
+        ///     æ¯å¸§æ ·æœ¬æ—¶é—´è·¨åº¦ï¼ˆæ¯«ç§’ï¼‰ï¼Œä¸æ—§é¡¹ç›®ä¸€è‡´ï¼š1000 / é‡‡æ ·é¢‘ç‡ã€‚
+        ///     æ•°æ®è½ç›˜ä½¿ç”¨
         /// </summary>
-        private double _daqTimeSpanMs = 10.0; // »áÔÚ Load ÖĞÉèÎª 1000.0 / ClsGlobal.DaqFrequency ¿ÉÒÔÊ¹ÓÃDaqTimeSpanMilSeconds
+        private double _daqTimeSpanMs = 10.0; // ä¼šåœ¨ Load ä¸­è®¾ä¸º 1000.0 / ClsGlobal.DaqFrequency å¯ä»¥ä½¿ç”¨DaqTimeSpanMilSeconds
 
-        /// <summary>±¾´ÎÊÔÑéµÄÊı¾İ¸ùÄ¿Â¼£¨Ã¿´ÎÊÔÑéÒ»¸öÎ¨Ò»ÎÄ¼ş¼Ğ£©¡£</summary>
+        /// <summary>æœ¬æ¬¡è¯•éªŒçš„æ•°æ®æ ¹ç›®å½•ï¼ˆæ¯æ¬¡è¯•éªŒä¸€ä¸ªå”¯ä¸€æ–‡ä»¶å¤¹ï¼‰ã€‚</summary>
         private string _dataStorePath = string.Empty;
 
-        private volatile bool _dirtyForRedraw; // ÓĞĞÂÊı¾İ£¬ĞèÒªÖØ»æ
+        private volatile bool _dirtyForRedraw; // æœ‰æ–°æ•°æ®ï¼Œéœ€è¦é‡ç»˜
 
         /// <summary>
-        ///     ¹¤³ÌÖµÅú´Î£¨OnEngBatch£©µ½´ïÊ±µÄ UI ºÏ²¢µ÷¶È±ê¼Ç¡£
+        ///     å·¥ç¨‹å€¼æ‰¹æ¬¡ï¼ˆOnEngBatchï¼‰åˆ°è¾¾æ—¶çš„ UI åˆå¹¶è°ƒåº¦æ ‡è®°ã€‚
         ///     <para>
-        ///     DAQ »Øµ÷ÆµÂÊ½Ï¸ß£¨ÀıÈçÃ¿ 50ms Ò»Åú£©£¬ÈôÃ¿Åú¶¼Ö±½Ó <see cref="Control.BeginInvoke(Delegate)"/>
-        ///     ÔòÈİÒ×Ôì³É UI ÏûÏ¢¶ÓÁĞ¶Ñ»ı£¬½ø¶øÔÚ´°¿ÚÇ°ºóÌ¨ÇĞ»»Ê±´¥·¢¿¨¶ÙÉõÖÁµ÷ÊÔÖúÊÖ
-        ///     <c>ContextSwitchDeadlock</c>¡£
+        ///     DAQ å›è°ƒé¢‘ç‡è¾ƒé«˜ï¼ˆä¾‹å¦‚æ¯ 50ms ä¸€æ‰¹ï¼‰ï¼Œè‹¥æ¯æ‰¹éƒ½ç›´æ¥ <see cref="Control.BeginInvoke(Delegate)"/>
+        ///     åˆ™å®¹æ˜“é€ æˆ UI æ¶ˆæ¯é˜Ÿåˆ—å †ç§¯ï¼Œè¿›è€Œåœ¨çª—å£å‰åå°åˆ‡æ¢æ—¶è§¦å‘å¡é¡¿ç”šè‡³è°ƒè¯•åŠ©æ‰‹
+        ///     <c>ContextSwitchDeadlock</c>ã€‚
         ///     </para>
         /// </summary>
         private int _engUiWorkScheduled;
 
         /// <summary>
-        ///     ×î½üÒ»´Î´ı´¦ÀíµÄ¹¤³ÌÖµÅú´Î£¨°´Éè±¸±£Áô¡°×îĞÂÒ»Åú¡±£¬ÖĞ¼äÅú´Î»á±»¸²¸Ç£©¡£
+        ///     æœ€è¿‘ä¸€æ¬¡å¾…å¤„ç†çš„å·¥ç¨‹å€¼æ‰¹æ¬¡ï¼ˆæŒ‰è®¾å¤‡ä¿ç•™â€œæœ€æ–°ä¸€æ‰¹â€ï¼Œä¸­é—´æ‰¹æ¬¡ä¼šè¢«è¦†ç›–ï¼‰ã€‚
         ///     <remarks>
-        ///     ÕâÊÇÎª UI ²à¡°Ö»È¡×îĞÂÖµÏÔÊ¾¡±Éè¼ÆµÄ£º¿ØÖÆÂß¼­²»ÒÀÀµ¸ÃÊÂ¼ş£»
-        ///     ¶ªÆú²¿·Ö UI Åú´Î²»»áÓ°Ïì¿ØÖÆ£¬µ«ÄÜÏÔÖø½µµÍ UI ¸ºÔØ¡£
+        ///     è¿™æ˜¯ä¸º UI ä¾§â€œåªå–æœ€æ–°å€¼æ˜¾ç¤ºâ€è®¾è®¡çš„ï¼šæ§åˆ¶é€»è¾‘ä¸ä¾èµ–è¯¥äº‹ä»¶ï¼›
+        ///     ä¸¢å¼ƒéƒ¨åˆ† UI æ‰¹æ¬¡ä¸ä¼šå½±å“æ§åˆ¶ï¼Œä½†èƒ½æ˜¾è‘—é™ä½ UI è´Ÿè½½ã€‚
         ///     </remarks>
         /// </summary>
-        private readonly object _engPendingLock = new();
+        private readonly LatestPairMailbox<EngBatchPending> _pendingEngBatches = new();
 
         /// <summary>
-        ///     ¹¤³ÌÖµÅú´ÎÔÚ UI ²àµÄ×î´óÅÅ¶Ó³¤¶È£¨Ã¿Éè±¸£©¡£
+        ///     æ›²çº¿æ˜¾ç¤ºçš„æœ€å¤§â€œç»˜å›¾é‡‡æ ·ç‡â€ï¼ˆHzï¼‰ã€‚
         ///     <para>
-        ///     Ä¿µÄ£ºÈ«Í¨µÀÏÔÊ¾Ê± UI ¿ÉÄÜ¶ÌÔİ¸ú²»ÉÏ»Øµ÷½ÚÅÄ£¬Èô½ö±£Áô¡°×îĞÂÒ»Åú¡±»áÔì³ÉÇúÏß½×Ìİ/±äĞÎ£»
-        ///     ÕâÀïÔÊĞíĞ¡¶ÓÁĞ»º³åÒÔ±£³Ö²¨ĞÎÁ¬ĞøĞÔ£»³¬³öÉÏÏŞÊ±¶ªÆú×î¾ÉÅú´ÎÒÔ·ÀÄÚ´æÔö³¤¡£
+        ///     ä»…å½±å“æ˜¾ç¤ºå±‚ï¼šå¯¹æ§åˆ¶é€»è¾‘/è½ç›˜æ— å½±å“ã€‚é€šè¿‡æŠ½ç¨€ç‚¹æ•°é™ä½å…¨é€šé“æ˜¾ç¤ºæ—¶çš„ CPU/GC/é‡ç»˜å‹åŠ›ã€‚
         ///     </para>
         /// </summary>
-        private const int MaxPendingEngBatchesPerDev = 64; // enlarge to±ÜÃâ¶ÓÁĞÒç³ö¶ªÅú´Î
+        // ä»…ç”¨äºæ˜¾ç¤ºæŠ½ç¨€ï¼›2 kHz åŸå§‹é‡‡é›†ã€å³°å€¼åˆ¤å®šä¸è½ç›˜ä¿æŒä¸å˜ã€‚
+        // ç°åœºå…¨é€šé“è¿è¡Œæ—¶ 100 Hz ç»˜å›¾ä¼šæŒç»­å ç”¨ UI/CPUï¼Œ10 Hz å·²è¶³å¤Ÿè§‚å¯ŸåŠ¨ä½œæ³¢å½¢ã€‚
+        private const int UiMaxPlotHz = 10;
 
+        // æ—§ç‚¹è£å‰ªæŒ‰è‡³å°‘ 1 ç§’æ‰¹é‡æ‰§è¡Œã€‚çª—å£ä»ä¿æŒæœ‰ç•Œï¼Œä½†é¿å…çª—å£æ»šåŠ¨åæ¯ 100ms
+        // ä¸ºæ¯æ¡æ›²çº¿å¤åˆ¶æ•´ä¸ªä¿ç•™æ®µï¼Œé™ä½é•¿æ—¶é—´è¿è¡Œæ—¶çš„ CPU ä¸ GC å‹åŠ›ã€‚
+        private const double UiPurgeBatchMinSec = 1.0;
+
+        // æ˜¾ç¤ºå±‚æŒ‰è®¾å¤‡åªä¿ç•™æœ€æ–°æ‰¹æ¬¡ã€‚æ§åˆ¶ã€å³°å€¼åˆ¤å®šã€Raw è½ç›˜å‡èµ°ç‹¬ç«‹é“¾è·¯ï¼Œ
+        // å› æ­¤ UI å¿™æ—¶è¿½èµ¶å†å²æ˜¾ç¤ºæ‰¹æ¬¡æ—¢æ²¡æœ‰æ•°æ®å®Œæ•´æ€§æ”¶ç›Šï¼Œåè€Œä¼šåœ¨æ¶ˆæ¯æ³µæ¢å¤å
+        // ä¸€æ¬¡å¤„ç†æœ€å¤š 64 æ‰¹ï¼Œåˆ¶é€ é•¿ UI å ç”¨å’Œæ–°çš„è°ƒåº¦æŠ–åŠ¨ã€‚
         /// <summary>
-        ///     µ¥´Î UI µ÷¶ÈÖĞ×î¶à´¦ÀíµÄ¹¤³ÌÖµÅú´ÎÊıÁ¿£¨×ÜÁ¿£©¡£
-        ///     <para>
-        ///     Ä¿µÄ£º±ÜÃâÒ»´Î´¦ÀíÌ«¶àÅú´Îµ¼ÖÂ UI Ïß³Ì³¤Ê±¼äÕ¼ÓÃ¶ø³öÏÖ¸üÑÏÖØ¿¨¶Ù¡£
-        ///     </para>
-        /// </summary>
-        private const int MaxEngBatchesPerUiRun = 64; // µ¥´ÎUIÏû·Ñ¸ü¶àÅú´Î£¬¼õÉÙ»ıÑ¹
-
-        /// <summary>
-        ///     ÇúÏßÏÔÊ¾µÄ×î´ó¡°»æÍ¼²ÉÑùÂÊ¡±£¨Hz£©¡£
-        ///     <para>
-        ///     ½öÓ°ÏìÏÔÊ¾²ã£º¶Ô¿ØÖÆÂß¼­/ÂäÅÌÎŞÓ°Ïì¡£Í¨¹ı³éÏ¡µãÊı½µµÍÈ«Í¨µÀÏÔÊ¾Ê±µÄ CPU/GC/ÖØ»æÑ¹Á¦¡£
-        ///     </para>
-        /// </summary>
-        private const int UiMaxPlotHz = 100;
-
-        private readonly Queue<EngBatchPending> _pendingEngDev1Queue = new Queue<EngBatchPending>(MaxPendingEngBatchesPerDev);
-        private readonly Queue<EngBatchPending> _pendingEngDev2Queue = new Queue<EngBatchPending>(MaxPendingEngBatchesPerDev);
-
-        /// <summary>
-        ///     Ë²Ê±Öµ£¨ÎÄ±¾¿ò£©Ë¢ĞÂ½ÚÁ÷£º±ÜÃâÃ¿Åú¶¼Ë¢ĞÂµ¼ÖÂ UI ¶¶¶¯¡£
+        ///     ç¬æ—¶å€¼ï¼ˆæ–‡æœ¬æ¡†ï¼‰åˆ·æ–°èŠ‚æµï¼šé¿å…æ¯æ‰¹éƒ½åˆ·æ–°å¯¼è‡´ UI æŠ–åŠ¨ã€‚
         /// </summary>
         private int _lastInstantUiUpdateTick;
 
         private const int InstantUiUpdateMinIntervalMs = 200;
 
         /// <summary>
-        ///     »æÍ¼ÁãµãÊ±¼ä£¨¾ø¶ÔÊ±¼ä£©£¬ÓÃÓÚ½« DAQ µÄ¾ø¶ÔÊ±¼ä´Á×ª»»ÎªÇúÏßµÄÏà¶ÔÊ±¼ä X¡£
-        ///     <para>ÔÚ ResetDisplaySystem Ê±ÖØÖÃ£¬ÔÚÊ×¸öÊı¾İ°üµ½´ïÊ±Ãª¶¨¡£</para>
+        ///     ç»˜å›¾é›¶ç‚¹æ—¶é—´ï¼ˆç»å¯¹æ—¶é—´ï¼‰ï¼Œç”¨äºå°† DAQ çš„ç»å¯¹æ—¶é—´æˆ³è½¬æ¢ä¸ºæ›²çº¿çš„ç›¸å¯¹æ—¶é—´ Xã€‚
+        ///     <para>åœ¨ ResetDisplaySystem æ—¶é‡ç½®ï¼Œåœ¨é¦–ä¸ªæ•°æ®åŒ…åˆ°è¾¾æ—¶é”šå®šã€‚</para>
         /// </summary>
         private DateTime _plotZeroTime = DateTime.MinValue;
 
         /// <summary>
-        ///     ¼ÇÂ¼¡°¿ìËÙäÖÈ¾ÉèÖÃ¡±ÊÇ·ñÒÑÊä³ö¹ıÒ»´ÎÈÕÖ¾£¨±ÜÃâ Activated ¶à´Î´¥·¢Ë¢ÆÁ£©¡£
+        ///     è®°å½•â€œå¿«é€Ÿæ¸²æŸ“è®¾ç½®â€æ˜¯å¦å·²è¾“å‡ºè¿‡ä¸€æ¬¡æ—¥å¿—ï¼ˆé¿å… Activated å¤šæ¬¡è§¦å‘åˆ·å±ï¼‰ã€‚
         /// </summary>
         private int _fastRenderSettingsLogged;
 
         /// <summary>
-        ///     OnEngBatch µÄ´ı´¦Àí²ÎÊı°ü£¨ÒıÓÃÀàĞÍ£¬±ãÓÚÓÃ null ±íÊ¾¡°ÎŞ´ı´¦Àí¡±£©¡£
+        ///     OnEngBatch çš„å¾…å¤„ç†å‚æ•°åŒ…ï¼ˆå¼•ç”¨ç±»å‹ï¼Œä¾¿äºç”¨ null è¡¨ç¤ºâ€œæ— å¾…å¤„ç†â€ï¼‰ã€‚
         /// </summary>
         private sealed class EngBatchPending
         {
@@ -254,63 +244,73 @@ namespace MTEmbTest
             public DateTime Last;
         }
 
-        // ÂäÅÌÏà¹Ø×Ö¶Î
+        // è½ç›˜ç›¸å…³å­—æ®µ
         private EpbDiskWriter _diskWriter;
 
         /// <summary>
-        ///     Æô¶¯¼ÓÔØÊÔÑéÊ±£¬ÊÇ·ñÓ¦µ±ÓÃ DB(index.db) »ØÌî RunCount¡£
+        ///     å¯åŠ¨åŠ è½½è¯•éªŒæ—¶ï¼Œæ˜¯å¦åº”å½“ç”¨ DB(index.db) å›å¡« RunCountã€‚
         ///     <para>
-        ///     ½öµ±¡°ÏîÄ¿Ä¿Â¼ÏÂÒÑÓĞ index.db¡±Ê±Îª true£¬±ÜÃâÊ×´ÎĞÂ½¨ÏîÄ¿Ê±Îó°Ñ XML ½ø¶È¸²¸ÇÎª 0¡£
+        ///     ä»…å½“â€œé¡¹ç›®ç›®å½•ä¸‹å·²æœ‰ index.dbâ€æ—¶ä¸º trueï¼Œé¿å…é¦–æ¬¡æ–°å»ºé¡¹ç›®æ—¶è¯¯æŠŠ XML è¿›åº¦è¦†ç›–ä¸º 0ã€‚
         ///     </para>
         /// </summary>
         private bool _shouldBackfillRunCountFromDbOnLoad;
 
         /// <summary>
-        ///     Æô¶¯¼ÓÔØÊÔÑéÊ±£¬RunCount ÊÇ·ñ·¢Éú¹ı DB¡úUI µÄ»ØÌî±ä¸ü¡£
-        ///     <para>ÓÃÓÚ¾ö¶¨ÊÇ·ñÁ¢¼´Ğ´»ØÏîÄ¿ TestConfig.xml¡£</para>
+        ///     å¯åŠ¨åŠ è½½è¯•éªŒæ—¶ï¼ŒRunCount æ˜¯å¦å‘ç”Ÿè¿‡ DBâ†’UI çš„å›å¡«å˜æ›´ã€‚
+        ///     <para>ç”¨äºå†³å®šæ˜¯å¦ç«‹å³å†™å›é¡¹ç›® TestConfig.xmlã€‚</para>
         /// </summary>
         private bool _startupRunCountBackfillChanged;
 
         private DoController _do;
         private EpbManager _epb;
 
-        // ±¨¾¯×ÓÏµÍ³£¨ãü¸ñ M-7055D / RS-485£©
+        // æŠ¥è­¦å­ç³»ç»Ÿï¼ˆæ³“æ ¼ M-7055D / RS-485ï¼‰
         private AlarmManager _alarmManager;
         private Config.AlarmConfig _alarmCfg;
 
-        // ±¨¾¯Ãæ°åÊä³ö²âÊÔ´°Ìå£¨ÓÃÓÚÖ±¿Ø 12 Â·Ö¸Ê¾µÆ + ·äÃùÆ÷£©
+        // æŠ¥è­¦é¢æ¿è¾“å‡ºæµ‹è¯•çª—ä½“ï¼ˆç”¨äºç›´æ§ 12 è·¯æŒ‡ç¤ºç¯ + èœ‚é¸£å™¨ï¼‰
         private FrmAlarmPanelTest _alarmPanelTestForm;
 
-        /// <summary>¹Ì¶¨µÄ X Öá´°¿Ú¿í¶È£¨Ãë£©¡£È±Ê¡ÑØÓÃ ClsGlobal.XDuration¡£</summary>
+        /// <summary>å›ºå®šçš„ X è½´çª—å£å®½åº¦ï¼ˆç§’ï¼‰ã€‚ç¼ºçœæ²¿ç”¨ ClsGlobal.XDurationã€‚</summary>
         private double _fixedXWindowSec;
 
 
-        private int _formClosedFlag; // Ò³Ãæ¹Ø±Õ 0=ÔËĞĞÖĞ£»1=ÒÑ¿ªÊ¼¹Ø±Õ
+        private int _formClosedFlag; // é¡µé¢å…³é—­ 0=è¿è¡Œä¸­ï¼›1=å·²å¼€å§‹å…³é—­
 
 
-        /// <summary>´°ÌåÊÇ·ñÒÑ½øÈë¹Ø±ÕÁ÷³Ì£¨ÖØÈë/»Øµ÷Í³Ò»¶ÌÂ·£©¡£</summary>
+        /// <summary>çª—ä½“æ˜¯å¦å·²è¿›å…¥å…³é—­æµç¨‹ï¼ˆé‡å…¥/å›è°ƒç»Ÿä¸€çŸ­è·¯ï¼‰ã€‚</summary>
         private volatile bool _isClosing;
 
         private bool _isCtrlPowerPressing;
-        private double _latestGlobalX; // ËùÓĞÍ¨µÀÀï×îĞÂµÄ X£¨Ãë£©
+        private double _latestGlobalX; // æ‰€æœ‰é€šé“é‡Œæœ€æ–°çš„ Xï¼ˆç§’ï¼‰
         private Timer[] _logtimers = new Timer[DeviceCount * 2];
         private IEpbCycleRecorder _recorder;
 
         private UiConfig _uiCfg;
         private const int UiInfoRecentLineLimit = 2000;
         private const int UiInfoTrimWatermark = 1800;
+        private const int UiInfoPendingLineLimit = 512;
+        private const int UiInfoBatchMaxLines = 50;
         private UiInfoLogStore _uiInfoLogStore;
         private bool _suppressRtbInfoTextChanged;
+        private readonly BoundedConcurrentQueue<string> _pendingUiInfoLines =
+            new BoundedConcurrentQueue<string>(UiInfoPendingLineLimit);
+        private System.Windows.Forms.Timer _uiInfoFlushTimer;
+        private int _uiInfoVisibleLineCount;
+        private readonly List<double> _uiHeartbeatDelayMs = new List<double>(96);
+        private readonly List<double> _uiHeartbeatFlushMs = new List<double>(96);
+        private long _uiHeartbeatLastTick;
+        private long _uiHeartbeatWindowStartedTick;
 
 
-        /// <summary>ÄÚ´æÖĞµÄ 12 Â· EPB ¼ÇÂ¼£¬À´Ô´ÓÚ TestConfig.xml µÄ &lt;EpbRecords&gt;¡£</summary>
+        /// <summary>å†…å­˜ä¸­çš„ 12 è·¯ EPB è®°å½•ï¼Œæ¥æºäº TestConfig.xml çš„ &lt;EpbRecords&gt;ã€‚</summary>
         private List<EpbTestRecord> _uiEpbRecords = new();
 
-        // ¼ÓÒ»¸öËø£¬±ÜÃâÎ´À´¶àÏß³Ì»Øµ÷Ê±²ÈÌ¤£©
+        // åŠ ä¸€ä¸ªé”ï¼Œé¿å…æœªæ¥å¤šçº¿ç¨‹å›è°ƒæ—¶è¸©è¸ï¼‰
         private readonly object _epbRecordsLock = new object();
 
 
-        // ¡ª¡ª UI Ë¢ĞÂ½ÚÁ÷Ïà¹Ø ¡ª¡ª //
+        // â€”â€” UI åˆ·æ–°èŠ‚æµç›¸å…³ â€”â€” //
         private System.Windows.Forms.Timer _uiTimer;
 
 
@@ -318,14 +318,14 @@ namespace MTEmbTest
         {
             try
             {
-                // Ä¬ÈÏ£ºÏÈ½ûÓÃ/Òş²Ø£¬Ö»ÓĞÆôÓÃ±¨¾¯ºóÔÙ´ò¿ª
+                // é»˜è®¤ï¼šå…ˆç¦ç”¨/éšè—ï¼Œåªæœ‰å¯ç”¨æŠ¥è­¦åå†æ‰“å¼€
                 if (CbBuzzerEnabled != null) { CbBuzzerEnabled.Enabled = false; CbBuzzerEnabled.Visible = false; }
                 if (BtnClearAlarms != null) { BtnClearAlarms.Enabled = false; BtnClearAlarms.Visible = false; }
 
                 var alarmCfgPath = Path.Combine(Environment.CurrentDirectory, "Config", "AlarmConfig.xml");
                 if (!File.Exists(alarmCfgPath))
                 {
-                    logger?.Warn($"Î´ÕÒµ½±¨¾¯ÅäÖÃ£º{alarmCfgPath}£¨½«²»ÆôÓÃ RS-485 ±¨¾¯Êä³ö£©", "±¨¾¯");
+                    logger?.Warn($"æœªæ‰¾åˆ°æŠ¥è­¦é…ç½®ï¼š{alarmCfgPath}ï¼ˆå°†ä¸å¯ç”¨ RS-485 æŠ¥è­¦è¾“å‡ºï¼‰", "æŠ¥è­¦");
                     return;
                 }
 
@@ -335,14 +335,14 @@ namespace MTEmbTest
                 _epb.Alarm = _alarmManager;
                 _epb.AlarmConfig = _alarmCfg;
 
-                // ¡ª¡ª ¸ÄÎª£ºDesigner ÖĞ¹Ì¶¨´æÔÚ¿Ø¼ş£¬ÔËĞĞÊ±Ö»×ö×´Ì¬/ÊÂ¼ş°ó¶¨ ¡ª¡ª
+                // â€”â€” æ”¹ä¸ºï¼šDesigner ä¸­å›ºå®šå­˜åœ¨æ§ä»¶ï¼Œè¿è¡Œæ—¶åªåšçŠ¶æ€/äº‹ä»¶ç»‘å®š â€”â€”
                 if (CbBuzzerEnabled != null)
                 {
                     CbBuzzerEnabled.Visible = true;
                     CbBuzzerEnabled.Enabled = true;
                     CbBuzzerEnabled.Checked = _alarmManager.BuzzerEnabled;
 
-                    // ·ÀÖØ¸´¶©ÔÄ
+                    // é˜²é‡å¤è®¢é˜…
                     CbBuzzerEnabled.CheckedChanged -= CbBuzzerEnabled_CheckedChanged;
                     CbBuzzerEnabled.CheckedChanged += CbBuzzerEnabled_CheckedChanged;
                 }
@@ -352,14 +352,14 @@ namespace MTEmbTest
                     BtnClearAlarms.Visible = true;
                     BtnClearAlarms.Enabled = true;
 
-                    // ·ÀÖØ¸´¶©ÔÄ
+                    // é˜²é‡å¤è®¢é˜…
                     BtnClearAlarms.Click -= BtnClearAlarms_Click;
                     BtnClearAlarms.Click += BtnClearAlarms_Click;
                 }
             }
             catch (Exception ex)
             {
-                logger?.Warn($"±¨¾¯×ÓÏµÍ³³õÊ¼»¯Ê§°Ü£º{ex.Message}", "±¨¾¯");
+                logger?.Warn($"æŠ¥è­¦å­ç³»ç»Ÿåˆå§‹åŒ–å¤±è´¥ï¼š{ex.Message}", "æŠ¥è­¦");
             }
         }
 
@@ -384,7 +384,7 @@ namespace MTEmbTest
             }
             catch (Exception ex)
             {
-                logger?.Warn($"È«¹Ø±¨¾¯Ê§°Ü£º{ex.Message}", "±¨¾¯");
+                logger?.Warn($"å…¨å…³æŠ¥è­¦å¤±è´¥ï¼š{ex.Message}", "æŠ¥è­¦");
             }
         }
         private ConcurrentQueue<byte[]> activeWriteBuffer;
@@ -414,7 +414,7 @@ namespace MTEmbTest
         private ConcurrentQueue<string> LogWarn = new();
         private ConcurrentQueue<byte[]> readyReadBuffer;
 
-        private int[] releaseFailureCounters = new int[6]; //ËÉ¿ªÊ§°Ü¼ÆÊı£¬·¢ËÍÊ±¼Ó1£¬ËÉ¿ªÇåÁã£¬´ËÊı³¬¹ıÔ¤ÉèÖµËµÃ÷Á¬Ğø¼Ó½ô£¬Òª¸æ¾¯²¢ËÉ¿ª¿¨Ç¯
+        private int[] releaseFailureCounters = new int[6]; //æ¾å¼€å¤±è´¥è®¡æ•°ï¼Œå‘é€æ—¶åŠ 1ï¼Œæ¾å¼€æ¸…é›¶ï¼Œæ­¤æ•°è¶…è¿‡é¢„è®¾å€¼è¯´æ˜è¿ç»­åŠ ç´§ï¼Œè¦å‘Šè­¦å¹¶æ¾å¼€å¡é’³
 
         private DateTime runBegin;
 
@@ -435,12 +435,12 @@ namespace MTEmbTest
 
             Deactivate += (_, __) => { _uiActive = false; };
 
-            // ´°¿ÚºÍ¸¸ÈİÆ÷³ß´ç±ä»¯Ê±¶¼Ë¢ĞÂÒ»´Î
+            // çª—å£å’Œçˆ¶å®¹å™¨å°ºå¯¸å˜åŒ–æ—¶éƒ½åˆ·æ–°ä¸€æ¬¡
             Resize += (_, __) => ResizeLedDisplaysUnified();
             Shown += (_, __) => ResizeLedDisplaysUnified();
 
 
-            // ´´½¨×Ô¶¨Òå±êÌâÀ¸
+            // åˆ›å»ºè‡ªå®šä¹‰æ ‡é¢˜æ 
             var titleBar = new Panel
             {
                 Height = 30,
@@ -448,10 +448,10 @@ namespace MTEmbTest
                 BackColor = Color.AliceBlue
             };
 
-            // Ìí¼Ó×Ô¶¨Òå°´Å¥
+            // æ·»åŠ è‡ªå®šä¹‰æŒ‰é’®
             var btnClose = new Button
             {
-                Text = @"¡Á",
+                Text = @"Ã—",
                 Size = new Size(50, 50),
                 Dock = DockStyle.Right
             };
@@ -460,7 +460,7 @@ namespace MTEmbTest
             titleBar.Controls.Add(btnClose);
             Controls.Add(titleBar);
 
-            // Ìí¼ÓÍÏ×§¹¦ÄÜ
+            // æ·»åŠ æ‹–æ‹½åŠŸèƒ½
             titleBar.MouseDown += (s, e) =>
             {
                 if (e.Button == MouseButtons.Left)
@@ -478,29 +478,29 @@ namespace MTEmbTest
             // _do.SetConfigPath($@"{Environment.CurrentDirectory}\Config\DOConfig.xml");
             // if (!_do.Initialize())
             // {
-            //     // ³õÊ¼»¯Ê§°ÜÊ±µÄ´¦Àí
-            //     //MessageBox.Show("DO¿ØÖÆÆ÷³õÊ¼»¯Ê§°Ü£¬Çë¼ì²éÅäÖÃÎÄ¼ş»òÉè±¸Á¬½Ó£¡", "´íÎó", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            //     SetInfoText("DO¿ØÖÆÆ÷³õÊ¼»¯Ê§°Ü£¬Çë¼ì²éÅäÖÃÎÄ¼ş»òÉè±¸Á¬½Ó");
+            //     // åˆå§‹åŒ–å¤±è´¥æ—¶çš„å¤„ç†
+            //     //MessageBox.Show("DOæ§åˆ¶å™¨åˆå§‹åŒ–å¤±è´¥ï¼Œè¯·æ£€æŸ¥é…ç½®æ–‡ä»¶æˆ–è®¾å¤‡è¿æ¥ï¼", "é”™è¯¯", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            //     SetInfoText("DOæ§åˆ¶å™¨åˆå§‹åŒ–å¤±è´¥ï¼Œè¯·æ£€æŸ¥é…ç½®æ–‡ä»¶æˆ–è®¾å¤‡è¿æ¥");
             // }
             //
             // _ao = AOController.FromXml($@"{Environment.CurrentDirectory}\Config\AOConfig.xml",
-            //     logger: logger); // ´«ÈëÄãµÄ IAppLogger
+            //     logger: logger); // ä¼ å…¥ä½ çš„ IAppLogger
             // if (!_ao.Initialize())
             // {
-            //     // ³õÊ¼»¯Ê§°ÜÊ±µÄ´¦Àí
-            //     SetInfoText("AO¿ØÖÆÆ÷³õÊ¼»¯Ê§°Ü£¬Çë¼ì²éÅäÖÃÎÄ¼ş»òÉè±¸Á¬½Ó");
+            //     // åˆå§‹åŒ–å¤±è´¥æ—¶çš„å¤„ç†
+            //     SetInfoText("AOæ§åˆ¶å™¨åˆå§‹åŒ–å¤±è´¥ï¼Œè¯·æ£€æŸ¥é…ç½®æ–‡ä»¶æˆ–è®¾å¤‡è¿æ¥");
             // }
         }
 
         /// <summary>
-        ///     ¶¯Ì¬´ÓAIConfig.xml¶ÁÈ¡ÅäÖÃ²¢¹¹½¨Í¨µÀÓ³Éä£¬°´½çÃæ¿Ø¼şË³ĞòÅÅÁĞ
-        ///     ½çÃæË³Ğò£ºCheckEpbA1-A12, CheckP1, CheckP2, CheckF
+        ///     åŠ¨æ€ä»AIConfig.xmlè¯»å–é…ç½®å¹¶æ„å»ºé€šé“æ˜ å°„ï¼ŒæŒ‰ç•Œé¢æ§ä»¶é¡ºåºæ’åˆ—
+        ///     ç•Œé¢é¡ºåºï¼šCheckEpbA1-A12, CheckP1, CheckP2, CheckF
         /// </summary>
         private static ChannelDef[] BuildChannelsFromConfig()
         {
             try
             {
-                // ¶ÁÈ¡AIConfig.xmlÅäÖÃ
+                // è¯»å–AIConfig.xmlé…ç½®
                 var configPath = Path.Combine(Application.StartupPath, "Config", "AIConfig.xml");
                 var aiConfig = AiConfigLoader.Load(configPath);
                 var enabledRecords = aiConfig.Enabled().ToList();
@@ -508,10 +508,10 @@ namespace MTEmbTest
                 var result = new List<ChannelDef>();
                 var globalIndex = 0;
 
-                // 1. ÏÈÌí¼ÓEPB1-12µçÁ÷£¨°´±àºÅË³Ğò£©
+                // 1. å…ˆæ·»åŠ EPB1-12ç”µæµï¼ˆæŒ‰ç¼–å·é¡ºåºï¼‰
                 for (var epbNum = 1; epbNum <= 12; epbNum++)
                 {
-                    var record = enabledRecords.FirstOrDefault(r => r.²ÎÊıÃû == $"EPB{epbNum}_current");
+                    var record = enabledRecords.FirstOrDefault(r => r.å‚æ•°å == $"EPB{epbNum}_current");
                     if (record != null)
                     {
                         var channelDef = CreateChannelDef(record, globalIndex);
@@ -523,8 +523,8 @@ namespace MTEmbTest
                     }
                 }
 
-                // 2. Ìí¼ÓÑ¹Á¦P1
-                var pressureP1 = enabledRecords.FirstOrDefault(r => r.²ÎÊıÃû == "Pressure_1");
+                // 2. æ·»åŠ å‹åŠ›P1
+                var pressureP1 = enabledRecords.FirstOrDefault(r => r.å‚æ•°å == "Pressure_1");
                 if (pressureP1 != null)
                 {
                     var channelDef = CreateChannelDef(pressureP1, globalIndex);
@@ -535,8 +535,8 @@ namespace MTEmbTest
                     }
                 }
 
-                // 3. Ìí¼ÓÑ¹Á¦P2
-                var pressureP2 = enabledRecords.FirstOrDefault(r => r.²ÎÊıÃû == "Pressure_2");
+                // 3. æ·»åŠ å‹åŠ›P2
+                var pressureP2 = enabledRecords.FirstOrDefault(r => r.å‚æ•°å == "Pressure_2");
                 if (pressureP2 != null)
                 {
                     var channelDef = CreateChannelDef(pressureP2, globalIndex);
@@ -547,8 +547,8 @@ namespace MTEmbTest
                     }
                 }
 
-                // 4. Ìí¼Ó¼Ğ½ôÁ¦F
-                var force = enabledRecords.FirstOrDefault(r => r.²ÎÊıÃû == "Force");
+                // 4. æ·»åŠ å¤¹ç´§åŠ›F
+                var force = enabledRecords.FirstOrDefault(r => r.å‚æ•°å == "Force");
                 if (force != null)
                 {
                     var channelDef = CreateChannelDef(force, globalIndex);
@@ -563,84 +563,84 @@ namespace MTEmbTest
             }
             catch (Exception ex)
             {
-                // ÅäÖÃ¶ÁÈ¡Ê§°ÜÊ±£¬»ØÍËµ½×îĞ¡»¯µÄÄ¬ÈÏÅäÖÃ
-                MessageBox.Show($"¶ÁÈ¡AIConfig.xmlÊ§°Ü£¬Ê¹ÓÃÄ¬ÈÏÅäÖÃ£º{ex.Message}", "ÅäÖÃ´íÎó",
+                // é…ç½®è¯»å–å¤±è´¥æ—¶ï¼Œå›é€€åˆ°æœ€å°åŒ–çš„é»˜è®¤é…ç½®
+                MessageBox.Show($"è¯»å–AIConfig.xmlå¤±è´¥ï¼Œä½¿ç”¨é»˜è®¤é…ç½®ï¼š{ex.Message}", "é…ç½®é”™è¯¯",
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return GetFallbackChannels();
             }
         }
 
         /// <summary>
-        ///     ¸ù¾İÅäÖÃ¼ÇÂ¼´´½¨Í¨µÀ¶¨Òå
+        ///     æ ¹æ®é…ç½®è®°å½•åˆ›å»ºé€šé“å®šä¹‰
         /// </summary>
         private static ChannelDef CreateChannelDef(dynamic record, int globalIndex)
         {
-            // ½âÎöÎïÀíÍ¨µÀ£ºÈç "Dev1/ai0" -> Device="Dev1", AiIndex=0
-            var parts = record.ÎïÀíÍ¨µÀ.Split('/');
+            // è§£æç‰©ç†é€šé“ï¼šå¦‚ "Dev1/ai0" -> Device="Dev1", AiIndex=0
+            var parts = record.ç‰©ç†é€šé“.Split('/');
             if (parts.Length != 2) return null;
 
-            var device = parts[0]; // Dev1 »ò Dev2
+            var device = parts[0]; // Dev1 æˆ– Dev2
             var aiChannel = parts[1]; // ai0, ai1, etc.
 
-            // Ã÷È·³õÊ¼»¯aiIndex±äÁ¿
-            var aiIndex = -1; // Ä¬ÈÏÖµ
+            // æ˜ç¡®åˆå§‹åŒ–aiIndexå˜é‡
+            var aiIndex = -1; // é»˜è®¤å€¼
             if (!aiChannel.StartsWith("ai") ||
                 !int.TryParse(aiChannel.Substring(2), out aiIndex))
-                return null; // ½âÎöÊ§°Ü£¬Ö±½Ó·µ»Ønull
+                return null; // è§£æå¤±è´¥ï¼Œç›´æ¥è¿”å›null
 
-            // ¸ù¾İ²ÎÊıÃû¶¯Ì¬ÅĞ¶ÏĞÅºÅÀàĞÍºÍÏÔÊ¾Ãû
+            // æ ¹æ®å‚æ•°ååŠ¨æ€åˆ¤æ–­ä¿¡å·ç±»å‹å’Œæ˜¾ç¤ºå
             SignalType signalType;
             string displayName;
 
-            if (record.²ÎÊıÃû.Contains("_current"))
+            if (record.å‚æ•°å.Contains("_current"))
             {
                 signalType = SignalType.Current;
-                // ´ÓEPB1_currentÌáÈ¡±àºÅ1
-                var epbNumStr = record.²ÎÊıÃû.Replace("EPB", "").Replace("_current", "");
+                // ä»EPB1_currentæå–ç¼–å·1
+                var epbNumStr = record.å‚æ•°å.Replace("EPB", "").Replace("_current", "");
                 if (int.TryParse(epbNumStr, out int epbNum))
                     displayName = $"DAQ_A{epbNum}_I(A)";
                 else
-                    return null; // ½âÎöÊ§°Ü
+                    return null; // è§£æå¤±è´¥
             }
-            else if (record.²ÎÊıÃû == "Pressure_1")
+            else if (record.å‚æ•°å == "Pressure_1")
             {
                 signalType = SignalType.Pressure;
                 displayName = "DAQ_P1_(bar)";
             }
-            else if (record.²ÎÊıÃû == "Pressure_2")
+            else if (record.å‚æ•°å == "Pressure_2")
             {
                 signalType = SignalType.Pressure;
                 displayName = "DAQ_P2_(bar)";
             }
-            else if (record.²ÎÊıÃû == "Force")
+            else if (record.å‚æ•°å == "Force")
             {
                 signalType = SignalType.Force;
                 displayName = "DAQ_F_(N)";
             }
             else
             {
-                return null; // Ìø¹ı²»ÈÏÊ¶µÄ²ÎÊı
+                return null; // è·³è¿‡ä¸è®¤è¯†çš„å‚æ•°
             }
 
             return new ChannelDef
             {
                 Device = device,
-                AiIndex = aiIndex, // aiIndexÏÖÔÚ¿Ï¶¨ÒÑ¾­³õÊ¼»¯
-                GlobalIndex = globalIndex, // °´½çÃæË³Ğò·ÖÅäÈ«¾ÖË÷Òı
+                AiIndex = aiIndex, // aiIndexç°åœ¨è‚¯å®šå·²ç»åˆå§‹åŒ–
+                GlobalIndex = globalIndex, // æŒ‰ç•Œé¢é¡ºåºåˆ†é…å…¨å±€ç´¢å¼•
                 DisplayName = displayName,
                 Type = signalType
             };
         }
 
         /// <summary>
-        ///     µ±ÅäÖÃ¶ÁÈ¡Ê§°ÜÊ±µÄ»ØÍËÅäÖÃ£¨°´½çÃæË³Ğò£ºEPB1-12, P1, P2, F£©
+        ///     å½“é…ç½®è¯»å–å¤±è´¥æ—¶çš„å›é€€é…ç½®ï¼ˆæŒ‰ç•Œé¢é¡ºåºï¼šEPB1-12, P1, P2, Fï¼‰
         /// </summary>
         private static ChannelDef[] GetFallbackChannels()
         {
             var list = new List<ChannelDef>();
             var globalIndex = 0;
 
-            // 1. EPB1-12µçÁ÷Í¨µÀ£¨°´½çÃæË³Ğò£©
+            // 1. EPB1-12ç”µæµé€šé“ï¼ˆæŒ‰ç•Œé¢é¡ºåºï¼‰
             for (var epbNum = 1; epbNum <= 12; epbNum++)
             {
                 var device = epbNum <= 6 ? "Dev1" : "Dev2";
@@ -656,7 +656,7 @@ namespace MTEmbTest
                 });
             }
 
-            // 2. Ñ¹Á¦P1£¨globalIndex=12£©
+            // 2. å‹åŠ›P1ï¼ˆglobalIndex=12ï¼‰
             list.Add(new ChannelDef
             {
                 GlobalIndex = globalIndex++, // 12
@@ -666,7 +666,7 @@ namespace MTEmbTest
                 Type = SignalType.Pressure
             });
 
-            // 3. Ñ¹Á¦P2£¨globalIndex=13£©
+            // 3. å‹åŠ›P2ï¼ˆglobalIndex=13ï¼‰
             list.Add(new ChannelDef
             {
                 GlobalIndex = globalIndex++, // 13
@@ -676,7 +676,7 @@ namespace MTEmbTest
                 Type = SignalType.Pressure
             });
 
-            // 4. ¼Ğ½ôÁ¦F£¨globalIndex=14£©
+            // 4. å¤¹ç´§åŠ›Fï¼ˆglobalIndex=14ï¼‰
             list.Add(new ChannelDef
             {
                 GlobalIndex = globalIndex++, // 14
@@ -690,7 +690,7 @@ namespace MTEmbTest
         }
 
         /// <summary>
-        ///     ¾É°æ±¾Ó²±àÂëÍ¨µÀÓ³Éä£¨ÓÃÓÚ²âÊÔÎÊÌâ¸ùÔ´£©
+        ///     æ—§ç‰ˆæœ¬ç¡¬ç¼–ç é€šé“æ˜ å°„ï¼ˆç”¨äºæµ‹è¯•é—®é¢˜æ ¹æºï¼‰
         /// </summary>
         private static ChannelDef[] BuildChannelsOld()
         {
@@ -741,7 +741,7 @@ namespace MTEmbTest
         }
 
         /// </summary>
-        /// <param name="seconds">´°¿Ú¿í¶È£¨Ãë£¬´óÓÚ 0£©¡£</param>
+        /// <param name="seconds">çª—å£å®½åº¦ï¼ˆç§’ï¼Œå¤§äº 0ï¼‰ã€‚</param>
         public void SetXWindowSeconds(double seconds)
         {
             if (seconds <= 0) return;
@@ -751,7 +751,7 @@ namespace MTEmbTest
             {
                 var pane = zedGraphRealChart.GraphPane;
 
-                // Æğ²½½×¶ÎÊ¼ÖÕÏÔÊ¾ [0, ¿í¶È]£¬ÕâÑùÖ»ÓĞ×î³õ²Å»á¿´µ½×ó²à¿Õ°×
+                // èµ·æ­¥é˜¶æ®µå§‹ç»ˆæ˜¾ç¤º [0, å®½åº¦]ï¼Œè¿™æ ·åªæœ‰æœ€åˆæ‰ä¼šçœ‹åˆ°å·¦ä¾§ç©ºç™½
                 pane.XAxis.Scale.Min = 0;
                 pane.XAxis.Scale.Max = _fixedXWindowSec;
                 pane.XAxis.Scale.MinAuto = false;
@@ -767,20 +767,20 @@ namespace MTEmbTest
         {
             if (LedRunTime?.Parent == null) return;
 
-            // Step 1: ÏÈ¼ÆËã»ù×¼¿Ø¼ş£¨LedRunTime£©
+            // Step 1: å…ˆè®¡ç®—åŸºå‡†æ§ä»¶ï¼ˆLedRunTimeï¼‰
             LedAutoSizer.ResizeLedToParentWidth(LedRunTime, LedRunTime.Parent);
 
-            // Step 2: È¡³ö»ù×¼µÄ IntervalOn / IntervalIn
+            // Step 2: å–å‡ºåŸºå‡†çš„ IntervalOn / IntervalIn
             var baseIntervalOn = LedRunTime.IntervalOn;
             var baseIntervalIn = LedRunTime.IntervalIn;
 
-            // Step 3: Ö±½ÓÓ¦ÓÃµ½ÆäËûÁ½¸ö¿Ø¼ş
+            // Step 3: ç›´æ¥åº”ç”¨åˆ°å…¶ä»–ä¸¤ä¸ªæ§ä»¶
             ApplySameInterval(LedRunCycles, baseIntervalOn, baseIntervalIn);
             ApplySameInterval(LedLastCycles, baseIntervalOn, baseIntervalIn);
         }
 
         /// <summary>
-        ///     °Ñ IntervalOn/IntervalIn ÉèÖÃ³ÉÒ»ÖÂ£¬²¢¸ù¾İ CharCount ÖØËã¿í¶È
+        ///     æŠŠ IntervalOn/IntervalIn è®¾ç½®æˆä¸€è‡´ï¼Œå¹¶æ ¹æ® CharCount é‡ç®—å®½åº¦
         /// </summary>
         private void ApplySameInterval(UILedDisplay led, int intervalOn, int IntervalIn, int blocksPerChar = 5)
         {
@@ -789,7 +789,7 @@ namespace MTEmbTest
             led.IntervalOn = intervalOn;
             led.IntervalIn = IntervalIn;
 
-            // ÓÃ¹«Ê½ËãÊµ¼Ê¿í¶È
+            // ç”¨å…¬å¼ç®—å®é™…å®½åº¦
             var C = led.CharCount;
             int g = IntervalIn, s = intervalOn, B = blocksPerChar;
             var K = C * (B + 1) - 1;
@@ -797,7 +797,7 @@ namespace MTEmbTest
 
             led.Width = W;
 
-            // ¿ÉÑ¡£ºÈÃ¿Ø¼ş¾ÓÖĞ
+            // å¯é€‰ï¼šè®©æ§ä»¶å±…ä¸­
             if (led.Parent != null) led.Left = Math.Max(0, (led.Parent.ClientSize.Width - led.Width) / 2);
         }
 
@@ -822,7 +822,7 @@ namespace MTEmbTest
 
                 if (Dev1UsedDaqAIChannels.Length < 1)
                 {
-                    MessageBox.Show(@"Î´¶ÁÈ¡µ½ Dev1 DAQ AI Ïà¹ØĞÅÏ¢£¡");
+                    MessageBox.Show(@"æœªè¯»å–åˆ° Dev1 DAQ AI ç›¸å…³ä¿¡æ¯ï¼");
                     return;
                 }
 
@@ -837,14 +837,14 @@ namespace MTEmbTest
 
                 if (Dev2UsedDaqAIChannels.Length < 1)
                 {
-                    MessageBox.Show(@"Î´¶ÁÈ¡µ½ Dev2 DAQ AI Ïà¹ØĞÅÏ¢£¡");
+                    MessageBox.Show(@"æœªè¯»å–åˆ° Dev2 DAQ AI ç›¸å…³ä¿¡æ¯ï¼");
                     return;
                 }
 
 
                 ReadMsg = ClsXmlOperation.GetDaqAIChannelMapping(
                     Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev1", Dev1UsedDaqAIChannels,
-                    out Dev1DaqChannel, new string[] { }); //paramTypeFilter ²ÎÊıÎª¿Õ£¬´¦ÀíËùÓĞÀàĞÍ
+                    out Dev1DaqChannel, new string[] { }); //paramTypeFilter å‚æ•°ä¸ºç©ºï¼Œå¤„ç†æ‰€æœ‰ç±»å‹
                 if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
                 {
                     MessageBox.Show(ReadMsg);
@@ -853,14 +853,14 @@ namespace MTEmbTest
 
                 if (Dev1DaqChannel.Count < 1)
                 {
-                    MessageBox.Show(@"Î´¶ÁÈ¡µ½DAQµçÁ÷ºÍEPB¿¨Ç¯¶ÔÓ¦¹ØÏµ£¡");
+                    MessageBox.Show(@"æœªè¯»å–åˆ°DAQç”µæµå’ŒEPBå¡é’³å¯¹åº”å…³ç³»ï¼");
                     return;
                 }
 
-                // Dev2Í¨µÀ, Dev2DaqChannel
+                // Dev2é€šé“, Dev2DaqChannel
                 ReadMsg = ClsXmlOperation.GetDaqAIChannelMapping(
                     Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev2", Dev2UsedDaqAIChannels,
-                    out Dev2DaqChannel, new string[] { }); //paramTypeFilter ²ÎÊıÎª¿Õ£¬²»¹ıÂË
+                    out Dev2DaqChannel, new string[] { }); //paramTypeFilter å‚æ•°ä¸ºç©ºï¼Œä¸è¿‡æ»¤
                 if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
                 {
                     MessageBox.Show(ReadMsg);
@@ -869,11 +869,11 @@ namespace MTEmbTest
 
                 if (Dev2DaqChannel.Count < 1)
                 {
-                    MessageBox.Show(@"Î´¶ÁÈ¡µ½DAQµçÁ÷ºÍEPB¿¨Ç¯¶ÔÓ¦¹ØÏµ£¡");
+                    MessageBox.Show(@"æœªè¯»å–åˆ°DAQç”µæµå’ŒEPBå¡é’³å¯¹åº”å…³ç³»ï¼");
                     return;
                 }
 
-                // Dev1µÄÏµÊıÓ³Éä
+                // Dev1çš„ç³»æ•°æ˜ å°„
                 ReadMsg = ClsXmlOperation.GetDaqScaleMapping(
                     Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev1", out Dev1ParaNameToScale);
                 if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
@@ -898,7 +898,7 @@ namespace MTEmbTest
                     return;
                 }
 
-                // Dev2µÄÏµÊıÓ³Éä
+                // Dev2çš„ç³»æ•°æ˜ å°„
                 ReadMsg = ClsXmlOperation.GetDaqScaleMapping(
                     Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev2", out Dev2ParaNameToScale);
                 if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
@@ -926,7 +926,7 @@ namespace MTEmbTest
 
                 var handleNo = -1;
 
-                // EmbToChannel ÊÇÎŞĞòµÄ£¬ÒªÅÅĞòºóÔÙ¶ÔÓ¦£¬´Ë´¦Ó¦¸ÃÓĞÎæÁ³µÄ±íÇé°ü
+                // EmbToChannel æ˜¯æ— åºçš„ï¼Œè¦æ’åºåå†å¯¹åº”ï¼Œæ­¤å¤„åº”è¯¥æœ‰æ‚è„¸çš„è¡¨æƒ…åŒ…
 
 
                 var sortedKeys = EmbToChannel.Keys.OrderBy(key => key).ToList();
@@ -934,73 +934,73 @@ namespace MTEmbTest
                 foreach (var key in sortedKeys)
                 {
                     handleNo++;
-                    EmbNoToChannel[handleNo] = EmbToChannel[key]; //´¦ÀíË³ĞòºÍ²¨µÀ¶ÔÓ¦
+                    EmbNoToChannel[handleNo] = EmbToChannel[key]; //å¤„ç†é¡ºåºå’Œæ³¢é“å¯¹åº”
                     EmbNoToName[handleNo] = key;
                 }
 
-                //¸ø´¦ÀíĞòºÅºÍÍ¨µÀºÅ×Öµä¸³Öµ
+                //ç»™å¤„ç†åºå·å’Œé€šé“å·å­—å…¸èµ‹å€¼
 
 
-                // 1) ÏÈ¼ÓÔØ¡°Èí¼şÄ¬ÈÏ Config¡±ÏÂµÄÅäÖÃ£¨Ö÷ÒªÎªÁËÄÃµ½ TestName / StoreDir ÒÔ¼°Ó²¼şÅäÖÃ£©
+                // 1) å…ˆåŠ è½½â€œè½¯ä»¶é»˜è®¤ Configâ€ä¸‹çš„é…ç½®ï¼ˆä¸»è¦ä¸ºäº†æ‹¿åˆ° TestName / StoreDir ä»¥åŠç¡¬ä»¶é…ç½®ï¼‰
                 var defaultConfigDir = Path.Combine(Environment.CurrentDirectory, "Config");
                 var defaultCfg = ConfigLoader.LoadAll(defaultConfigDir, logger);
 
-                // 2) ¸ù¾İÄ¬ÈÏ TestConfig ÍÆËã¡°ÏîÄ¿ Config\TestConfig.xml¡±
-                //    Èô¸ÃÏîÄ¿ÒÑÓĞÅäÖÃ£ºÖ±½Ó¼ÓÔØ£»·ñÔò´´½¨Ò»·İ²¢ÇåÁã EpbRecords ½ø¶È
+                // 2) æ ¹æ®é»˜è®¤ TestConfig æ¨ç®—â€œé¡¹ç›® Config\TestConfig.xmlâ€
+                //    è‹¥è¯¥é¡¹ç›®å·²æœ‰é…ç½®ï¼šç›´æ¥åŠ è½½ï¼›å¦åˆ™åˆ›å»ºä¸€ä»½å¹¶æ¸…é›¶ EpbRecords è¿›åº¦
                 var projectTest = ConfigLoader.EnsureProjectTestConfig(defaultCfg, logger);
 
-                // 3) ÓÃ¡°ÏîÄ¿ TestConfig¡±Ìæ»»Ä¬ÈÏÅäÖÃÖĞµÄ Test ²¿·Ö£¬
-                //    ÕâÑùºóĞø´úÂëÍ³Ò»Ê¹ÓÃ _cfg.Test ¼´±íÊ¾¡°µ±Ç°ÏîÄ¿¡±µÄÊÔÑéÅäÖÃºÍ½ø¶È
+                // 3) ç”¨â€œé¡¹ç›® TestConfigâ€æ›¿æ¢é»˜è®¤é…ç½®ä¸­çš„ Test éƒ¨åˆ†ï¼Œ
+                //    è¿™æ ·åç»­ä»£ç ç»Ÿä¸€ä½¿ç”¨ _cfg.Test å³è¡¨ç¤ºâ€œå½“å‰é¡¹ç›®â€çš„è¯•éªŒé…ç½®å’Œè¿›åº¦
                 defaultCfg.Test = projectTest;
                 _cfg = defaultCfg;
 
                 InitializeUiInfoLog();
 
-                // 4) È·±£Ä¬ÈÏ Config\TestConfig.xml ÖĞÒ²Í¬²½ÁË Basic ºÍ TotalCount£¨µ«½ø¶ÈÇåÁã£©
-                //    ·½±ãÏÂ´ÎÆô¶¯Èí¼şÊ±£¬ÈÔÈ»ÄÜÍ¨¹ıÄ¬ÈÏÅäÖÃÍÆËã³öµ±Ç°ÏîÄ¿Â·¾¶¡£
+                // 4) ç¡®ä¿é»˜è®¤ Config\TestConfig.xml ä¸­ä¹ŸåŒæ­¥äº† Basic å’Œ TotalCountï¼ˆä½†è¿›åº¦æ¸…é›¶ï¼‰
+                //    æ–¹ä¾¿ä¸‹æ¬¡å¯åŠ¨è½¯ä»¶æ—¶ï¼Œä»ç„¶èƒ½é€šè¿‡é»˜è®¤é…ç½®æ¨ç®—å‡ºå½“å‰é¡¹ç›®è·¯å¾„ã€‚
                 ConfigLoader.UpdateDefaultTestFromProject(projectTest, logger);
 
 
-                // ===== Êı¾İÂäÅÌ£ºÓÅÏÈ³õÊ¼»¯Ğ´ÅÌÆ÷£¨ÓÃÓÚÆô¶¯Ê±´Ó DB »ØÌî RunCount£© =====
+                // ===== æ•°æ®è½ç›˜ï¼šä¼˜å…ˆåˆå§‹åŒ–å†™ç›˜å™¨ï¼ˆç”¨äºå¯åŠ¨æ—¶ä» DB å›å¡« RunCountï¼‰ =====
                 var projectIndexDir = Path.Combine(_cfg.Test.StoreDir, _cfg.Test.TestName);
                 var existingIndexDbPath = Path.Combine(projectIndexDir, "index.db");
                 _shouldBackfillRunCountFromDbOnLoad = File.Exists(existingIndexDbPath);
 
-                // 1) ´´½¨Ğ´ÅÌÆ÷£¨Ê¹ÓÃ DataRetentionPolicy£©
+                // 1) åˆ›å»ºå†™ç›˜å™¨ï¼ˆä½¿ç”¨ DataRetentionPolicyï¼‰
                 var latestRetention = _cfg.Test.DataStorageRetention?.Latest
                                       ?? new LatestSnapshotRetentionConfig();
                 var policy = new DataRetentionPolicy
                 {
-                    DataStorePath = Path.Combine(Environment.CurrentDirectory, "DataStore"), // Êı¾İ¸ùÄ¿Â¼
-                    IndexAndExportPath = projectIndexDir, // Ë÷ÒıºÍµ¼³öÄ¿Â¼
-                    FileSizeMb = 100, // Ã¿Í¨µÀ .dat´óĞ¡£¬µ¥Î»MB£¬¿É°´Ğè¸Ä 384
-                    RetainLatestCycles = 10, // Í£Ö¹Ê±¡°×îĞÂNÈ¦¡±
-                    CleanupMode = "archive", // »ò "delete"
+                    DataStorePath = Path.Combine(Environment.CurrentDirectory, "DataStore"), // æ•°æ®æ ¹ç›®å½•
+                    IndexAndExportPath = projectIndexDir, // ç´¢å¼•å’Œå¯¼å‡ºç›®å½•
+                    FileSizeMb = 100, // æ¯é€šé“ .datå¤§å°ï¼Œå•ä½MBï¼Œå¯æŒ‰éœ€æ”¹ 384
+                    RetainLatestCycles = 10, // åœæ­¢æ—¶â€œæœ€æ–°Nåœˆâ€
+                    CleanupMode = "archive", // æˆ– "delete"
                     RetainLatestStopPackagesPerChannel = latestRetention.RetainStopPackagesPerChannel,
                     RetainAllLatestStopPackages =
                         latestRetention.RetentionMode == StorageRetentionMode.Unlimited,
                     RetentionWarningSink = message => logger?.Warn(message, "Storage")
                 };
                 _diskWriter = new EpbDiskWriter(policy);
-                //_diskWriter.StartFreeRun(1); // ÔİÊ±×¢ÊÍ
+                //_diskWriter.StartFreeRun(1); // æš‚æ—¶æ³¨é‡Š
 
-                // ÊÊÅäÆ÷£ºÊµÏÖ IEpbCycleRecorder£¬°Ñ EpbDiskWriter °üÆğÀ´
+                // é€‚é…å™¨ï¼šå®ç° IEpbCycleRecorderï¼ŒæŠŠ EpbDiskWriter åŒ…èµ·æ¥
                 _recorder = new DiskWriterRecorderAdapter(_diskWriter);
 
 
-                // ³õÊ¼»¯ EPB ¿ØÖÆÆ÷µÄ¼ÇÂ¼
+                // åˆå§‹åŒ– EPB æ§åˆ¶å™¨çš„è®°å½•
                 InitializeEpbRecords();
 
-                // ÈôÆô¶¯Ê±°´ DB È¨Íş¿Ú¾¶ĞŞÕıÁË RunCount£¬ÔòÁ¢¼´Ğ´»ØÏîÄ¿ TestConfig.xml£¬±£Ö¤ÏÂ´ÎÆô¶¯Ò»ÖÂ
+                // è‹¥å¯åŠ¨æ—¶æŒ‰ DB æƒå¨å£å¾„ä¿®æ­£äº† RunCountï¼Œåˆ™ç«‹å³å†™å›é¡¹ç›® TestConfig.xmlï¼Œä¿è¯ä¸‹æ¬¡å¯åŠ¨ä¸€è‡´
                 if (_startupRunCountBackfillChanged)
                 {
                     SaveEpbRecordsToTestConfigSafe();
                 }
 
-                // ³õÊ¼»¯Í¨µÀ¼ÇÂ¼¸ÅÀÀÇøÓò
+                // åˆå§‹åŒ–é€šé“è®°å½•æ¦‚è§ˆåŒºåŸŸ
                 InitEpbSummaryPanel();
 
-                // 30 Ãë×Ô¶¯±£´æÒ»´Î£¨30,000 ºÁÃë£©
+                // 30 ç§’è‡ªåŠ¨ä¿å­˜ä¸€æ¬¡ï¼ˆ30,000 æ¯«ç§’ï¼‰
                 _autoSaveTimer.Interval = 30000;
                 _autoSaveTimer.Tick += AutoSaveTimer_Tick;
                 _autoSaveTimer.Start();
@@ -1008,7 +1008,7 @@ namespace MTEmbTest
 
                 LoadEpbController(); // 
 
-                // ³õÊ¼»¯ÇúÏß
+                // åˆå§‹åŒ–æ›²çº¿
                 InitializeCurve();
                 //StartListen();
                 MakeCurveMapping();
@@ -1016,8 +1016,8 @@ namespace MTEmbTest
                 LoadTestConfigToUI();
                 //LoadEMBHandlerAndFrameNo();
 
-                LogInfo("1. ±à¼­ÊÔÑéĞÅÏ¢²¢È·ÈÏ");
-                LogInfo("2. ×ÔÑ§Ï°/¿ªÊ¼ÊÔÑé");
+                LogInfo("1. ç¼–è¾‘è¯•éªŒä¿¡æ¯å¹¶ç¡®è®¤");
+                LogInfo("2. è‡ªå­¦ä¹ /å¼€å§‹è¯•éªŒ");
 
 
                 // ClsDiskProc.MakeSubDir(testConfig.StoreDir);
@@ -1025,17 +1025,17 @@ namespace MTEmbTest
                 // var MainDrive = testConfig.StoreDir.Trim().Substring(0, 2);
                 //
                 // var LastSpace = ClsDiskProc.GetHardDiskSpace(MainDrive);
-                // if (LastSpace == 0) MessageBox.Show("Ö¸¶¨´ÅÅÌ²»´æÔÚ£¡");
+                // if (LastSpace == 0) MessageBox.Show("æŒ‡å®šç£ç›˜ä¸å­˜åœ¨ï¼");
                 //
                 // if (LastSpace < 50)
                 // {
-                // } // ÒÑ¸ü¸Ä£¬ÔİÊ±×¢ÊÍ 2025/08/20
+                // } // å·²æ›´æ”¹ï¼Œæš‚æ—¶æ³¨é‡Š 2025/08/20
 
 
-                // 2) ³õÊ¼»¯ DO ¿ØÖÆÆ÷
+                // 2) åˆå§‹åŒ– DO æ§åˆ¶å™¨
                 _do = new DoController(_cfg.DO, logger);
 
-                // 3) ³õÊ¼»¯ AO ¿ØÖÆÆ÷
+                // 3) åˆå§‹åŒ– AO æ§åˆ¶å™¨
                 _ao = new AoController(_cfg.AO, logger);
 
                 aiConfigDetail =
@@ -1045,11 +1045,11 @@ namespace MTEmbTest
                     ClsGlobal.SamplesPerChannel,
                     10, logger);
 
-                twoDeviceAiAcquirer.OnEngBatch += Acq_OnEngBatch; // ¶©ÔÄ¹¤³ÌÖµÅú´Îµ½´ïÊÂ¼ş
+                twoDeviceAiAcquirer.OnEngBatch += Acq_OnEngBatch; // è®¢é˜…å·¥ç¨‹å€¼æ‰¹æ¬¡åˆ°è¾¾äº‹ä»¶
 
-                twoDeviceAiAcquirer.OnRawBatch += Acq_OnRawBatch; // ¡û ĞÂÔö£º¶©ÔÄÔ­Ê¼Åú´ÎÊÂ¼ş£¨Á½¿¨Í¨ÓÃ ) // 2025/09/09
+                twoDeviceAiAcquirer.OnRawBatch += Acq_OnRawBatch; // â† æ–°å¢ï¼šè®¢é˜…åŸå§‹æ‰¹æ¬¡äº‹ä»¶ï¼ˆä¸¤å¡é€šç”¨ ) // 2025/09/09
 
-                // Ê¹ÓÃÑ­»·³õÊ¼ËùÓĞEpbGroupÖĞµÄCtrlCycles
+                // ä½¿ç”¨å¾ªç¯åˆå§‹æ‰€æœ‰EpbGroupä¸­çš„CtrlCycles
                 foreach (var epbGroup in EpbGroup)
                 {
                     var epbRecord = EnsureEpbRecord(epbGroup.EpbNo);
@@ -1057,7 +1057,7 @@ namespace MTEmbTest
                 }
 
 
-                // epb¹ÜÀíÆ÷³õÊ¼»¯
+                // epbç®¡ç†å™¨åˆå§‹åŒ–
                 var safetyMarginMode = ReadSafetyMarginControlModeFromAppConfig(logger);
                 _epb = new EpbManager(
                     _cfg,
@@ -1067,84 +1067,84 @@ namespace MTEmbTest
                     logger,
                     safetyMarginMode);
 
-                // ¡ï ĞÂÔö£º¶©ÔÄ EPB µ¥È¦Íê³ÉÊÂ¼ş£¬ÓÃÓÚ¸üĞÂ _uiEpbRecords
+                // â˜… æ–°å¢ï¼šè®¢é˜… EPB å•åœˆå®Œæˆäº‹ä»¶ï¼Œç”¨äºæ›´æ–° _uiEpbRecords
                 _epb.ChannelCycleCompleted += OnEpbChannelCycleCompleted;
                 _epb.ChannelAlarmRaised += OnEpbChannelAlarmRaised;
                 _epb.ChannelPaused += OnEpbChannelPaused;
                 _epb.ChannelResumed += OnEpbChannelResumed;
 
 
-                // ===== ±¨¾¯ÏµÍ³³õÊ¼»¯£¨M-7055D / RS-485£©=====
+                // ===== æŠ¥è­¦ç³»ç»Ÿåˆå§‹åŒ–ï¼ˆM-7055D / RS-485ï¼‰=====
                 TryInitAlarmSubsystem(logger);
 
 
-                // 1) ´´½¨Ğ´ÅÌÆ÷£¨Ê¹ÓÃ DataRetentionPolicy£©
-                // 2) ×¢Èëµ½ EpbManager£¬Êı¾İÂäÅÌÓÉ EpbManager ¿ØÖÆ
+                // 1) åˆ›å»ºå†™ç›˜å™¨ï¼ˆä½¿ç”¨ DataRetentionPolicyï¼‰
+                // 2) æ³¨å…¥åˆ° EpbManagerï¼Œæ•°æ®è½ç›˜ç”± EpbManager æ§åˆ¶
                 _epb.Recorder = _recorder;
                 AttachSafetyUiEvents();
 
 
-                #region ÇúÏß¹´Ñ¡¿Ø¼şÏà¹Ø
+                #region æ›²çº¿å‹¾é€‰æ§ä»¶ç›¸å…³
 
-                // 1) ÔØÈë UI ÅäÖÃ
+                // 1) è½½å…¥ UI é…ç½®
                 _uiCfg = _cfg.UI;
 
-                // 2) »ñÈ¡/´´½¨¸Ã±íµ¥µÄÅäÖÃÈİÆ÷
+                // 2) è·å–/åˆ›å»ºè¯¥è¡¨å•çš„é…ç½®å®¹å™¨
                 var formState = _uiCfg.GetOrAddForm(FormKey);
 
-                // 3) Ó¦ÓÃ¸÷¿Ø¼ş×´Ì¬ & °ó¶¨ÊÂ¼ş£¨Ö»°óÒ»´Î£©
+                // 3) åº”ç”¨å„æ§ä»¶çŠ¶æ€ & ç»‘å®šäº‹ä»¶ï¼ˆåªç»‘ä¸€æ¬¡ï¼‰
                 foreach (var name in _persistNames)
                 {
                     var ctl = Controls.Find(name, true).FirstOrDefault();
-                    if (ctl is not CheckEdit cb) continue; // ÈôÊÇ SunnyUI.UICheckBox£¬Í¬ÑùÓĞ Checked/CheckedChanged
+                    if (ctl is not CheckEdit cb) continue; // è‹¥æ˜¯ SunnyUI.UICheckBoxï¼ŒåŒæ ·æœ‰ Checked/CheckedChanged
 
                     var st = formState
-                        .GetOrAdd(name); // Èô xml ÖĞ»¹Ã»ÓĞ£¬»áĞÂ½¨½Úµã£¨Checked=false/Enabled=true/DefaultChecked=false£©
+                        .GetOrAdd(name); // è‹¥ xml ä¸­è¿˜æ²¡æœ‰ï¼Œä¼šæ–°å»ºèŠ‚ç‚¹ï¼ˆChecked=false/Enabled=true/DefaultChecked=falseï¼‰
 
-                    // Ó¦ÓÃ×´Ì¬
+                    // åº”ç”¨çŠ¶æ€
                     cb.Checked = st.Checked;
                     cb.Enabled = st.Enabled;
 
-                    // ·ÀÖØ¸´°ó¶¨
+                    // é˜²é‡å¤ç»‘å®š
                     cb.CheckedChanged -= Cb_CheckedChanged_Save;
                     cb.EnabledChanged -= Cb_EnabledChanged_Save;
 
-                    // ¼´Ê±±£´æ
+                    // å³æ—¶ä¿å­˜
                     cb.CheckedChanged += Cb_CheckedChanged_Save;
                     cb.EnabledChanged += Cb_EnabledChanged_Save;
                 }
 
-                // 4) Èç¹ûÎÄ¼şÀïÈ±ÉÙÄ³Ğ©¿Ø¼şÏî£¬µÚÒ»´Î¼ÓÔØ»á²¹Æë£»ÕâÀïÍ³Ò»±£´æÒ»´Î£¬±£Ö¤ÎÄ¼şÍêÕû
+                // 4) å¦‚æœæ–‡ä»¶é‡Œç¼ºå°‘æŸäº›æ§ä»¶é¡¹ï¼Œç¬¬ä¸€æ¬¡åŠ è½½ä¼šè¡¥é½ï¼›è¿™é‡Œç»Ÿä¸€ä¿å­˜ä¸€æ¬¡ï¼Œä¿è¯æ–‡ä»¶å®Œæ•´
                 // Project configuration is the authoritative upstream source for EPB selection.
                 ApplyProjectEpbSelectionToMonitor();
                 ConfigLoader.SaveUI(_uiCfg);
 
                 #endregion
 
-                twoDeviceAiAcquirer.Start(); // ¿ªÊ¼²É¼¯
+                twoDeviceAiAcquirer.Start(); // å¼€å§‹é‡‡é›†
 
 
-                //Êı¾İÂäÅÌÏà¹Ø
+                //æ•°æ®è½ç›˜ç›¸å…³
 
-                // 1) ¼ÆËãÃ¿Ö¡ºÁÃë¿ç¶È£¨¾É¹¤³Ì×ö·¨£© Êı¾İÂäÅÌÖĞÊ¹ÓÃ  On 2025/09/09
-                _daqTimeSpanMs = 1000.0 / ClsGlobal.DaqFrequency; // ÉèÖÃµ¥¸öÊÔÑéµÄ²ÉÓÃÖÜÆÚ 
+                // 1) è®¡ç®—æ¯å¸§æ¯«ç§’è·¨åº¦ï¼ˆæ—§å·¥ç¨‹åšæ³•ï¼‰ æ•°æ®è½ç›˜ä¸­ä½¿ç”¨  On 2025/09/09
+                _daqTimeSpanMs = 1000.0 / ClsGlobal.DaqFrequency; // è®¾ç½®å•ä¸ªè¯•éªŒçš„é‡‡ç”¨å‘¨æœŸ
 
-                // 2) ×¼±¸ÂäÅÌÄ¿Â¼²¢Æô¶¯¶¨Ê±ÂäÅÌ On 2025/09/09
+                // 2) å‡†å¤‡è½ç›˜ç›®å½•å¹¶å¯åŠ¨å®šæ—¶è½ç›˜ On 2025/09/09
                 PrepareDataStoreDirectory();
-                //InitDaqLogTimer(500); // ½¨Òé 100~500ms£»Óë¾É¹¤³ÌÄ¬ÈÏÏàµ±
+                //InitDaqLogTimer(500); // å»ºè®® 100~500msï¼›ä¸æ—§å·¥ç¨‹é»˜è®¤ç›¸å½“
             }
 
             catch (Exception ex)
             {
-                MessageBox.Show(@"³õÊ¼»¯´íÎó : " + ex.Message);
+                MessageBox.Show(@"åˆå§‹åŒ–é”™è¯¯ : " + ex.Message);
             }
         }
 
         /// <summary>
-        /// ³õÊ¼»¯ EPB ¿ØÖÆÆ÷µÄÊÔÑé¼ÇÂ¼ÁĞ±í£º
-        /// 1) ´Ó <see cref="_cfg.Test.EpbRecords" /> ¼ÓÔØÒÑÓĞ¼ÇÂ¼£»
-        /// 2) È·±£ 1..12 Ã¿¸öÍ¨µÀÖÁÉÙÓĞÒ»Ìõ <see cref="EpbTestRecord" /> ¼ÇÂ¼£»
-        /// 3) ºóĞøÔËĞĞÖĞËùÓĞ¸üĞÂ¶¼Õë¶Ô <see cref="_uiEpbRecords" />¡£
+        /// åˆå§‹åŒ– EPB æ§åˆ¶å™¨çš„è¯•éªŒè®°å½•åˆ—è¡¨ï¼š
+        /// 1) ä» <see cref="_cfg.Test.EpbRecords" /> åŠ è½½å·²æœ‰è®°å½•ï¼›
+        /// 2) ç¡®ä¿ 1..12 æ¯ä¸ªé€šé“è‡³å°‘æœ‰ä¸€æ¡ <see cref="EpbTestRecord" /> è®°å½•ï¼›
+        /// 3) åç»­è¿è¡Œä¸­æ‰€æœ‰æ›´æ–°éƒ½é’ˆå¯¹ <see cref="_uiEpbRecords" />ã€‚
         /// </summary>
         private void InitializeEpbRecords()
         {
@@ -1153,7 +1153,7 @@ namespace MTEmbTest
             var targetCyclesFromBasic = _cfg.Test.TestTarget; // 
 
 
-            // 1) ´ÓÅäÖÃ¼ÓÔØ
+            // 1) ä»é…ç½®åŠ è½½
             var cfgRecords = _cfg?.Test?.EpbRecords;
             if (cfgRecords != null)
             {
@@ -1161,7 +1161,7 @@ namespace MTEmbTest
                 {
                     if (record != null)
                     {
-                        // Èç¹ûIsSameCycleForAllEpbÎªtrue£¬ÔòTotalCount¸³ÖµÎª_cfg.Test.TestTarget;
+                        // å¦‚æœIsSameCycleForAllEpbä¸ºtrueï¼Œåˆ™TotalCountèµ‹å€¼ä¸º_cfg.Test.TestTarget;
                         if (_cfg.Test.IsSameCycleForAllEpb) record.TotalCount = targetCyclesFromBasic;
 
                         _uiEpbRecords.Add(record);
@@ -1169,7 +1169,7 @@ namespace MTEmbTest
                 }
             }
 
-            // 2) ²¹Æë 1..12 µÄÄ¬ÈÏ¼ÇÂ¼£¨Èç¹ûÈ±ÉÙ£©
+            // 2) è¡¥é½ 1..12 çš„é»˜è®¤è®°å½•ï¼ˆå¦‚æœç¼ºå°‘ï¼‰
             for (var id = 1; id <= 12; id++)
             {
                 if (_uiEpbRecords.Find(r => r.Id == id) == null)
@@ -1178,10 +1178,10 @@ namespace MTEmbTest
                 }
             }
 
-            // 3) °´Í¨µÀÅÅĞòÒ»ÏÂ£¬±ãÓÚ UI ÏÔÊ¾
+            // 3) æŒ‰é€šé“æ’åºä¸€ä¸‹ï¼Œä¾¿äº UI æ˜¾ç¤º
             _uiEpbRecords.Sort((a, b) => a.Id.CompareTo(b.Id));
 
-            // 3.1) Æô¶¯¼ÓÔØÊ±£º°´¡°DB ÎªÈ¨Íş¡±µÄ¿Ú¾¶»ØÌî RunCount£¨completed + alarm£©
+            // 3.1) å¯åŠ¨åŠ è½½æ—¶ï¼šæŒ‰â€œDB ä¸ºæƒå¨â€çš„å£å¾„å›å¡« RunCountï¼ˆcompleted + alarmï¼‰
             _startupRunCountBackfillChanged = TryBackfillRunCountFromDiskIndex();
 
             foreach (var rec in _uiEpbRecords)
@@ -1192,33 +1192,33 @@ namespace MTEmbTest
 
 
         /// <summary>
-        ///     Æô¶¯¼ÓÔØÊÔÑéÊ±£¬´Ó SQLite(index.db) »ØÌîÃ¿¸ö EPB µÄÀÛ¼ÆÈ¦´ÎÊıµ½ <see cref="_uiEpbRecords"/>¡£
+        ///     å¯åŠ¨åŠ è½½è¯•éªŒæ—¶ï¼Œä» SQLite(index.db) å›å¡«æ¯ä¸ª EPB çš„ç´¯è®¡åœˆæ¬¡æ•°åˆ° <see cref="_uiEpbRecords"/>ã€‚
         /// </summary>
         /// <returns>
-        ///     Èô´æÔÚÈÎºÎÍ¨µÀµÄ <see cref="EpbTestRecord.RunCount"/> ±»¸üĞÂ£¬Ôò·µ»Ø true£»·ñÔò·µ»Ø false¡£
+        ///     è‹¥å­˜åœ¨ä»»ä½•é€šé“çš„ <see cref="EpbTestRecord.RunCount"/> è¢«æ›´æ–°ï¼Œåˆ™è¿”å› trueï¼›å¦åˆ™è¿”å› falseã€‚
         /// </returns>
         /// <remarks>
         ///     <para>
-        ///     ¿Ú¾¶ËµÃ÷£º
+        ///     å£å¾„è¯´æ˜ï¼š
         ///     <list type="bullet">
         ///         <item>
         ///             <description>
-        ///             ±¾ÏîÄ¿ÖĞ <see cref="EpbTestRecord.RunCount"/> ¼ÈÓÃÓÚ UI Õ¹Ê¾¡°ÒÑÔËĞĞÈ¦Êı¡±£¬Ò²ÓÃÓÚ¡°ÏÂÒ»È¦ºÅ¡±µÄĞøºÅ»ù×¼£»
-        ///             Òò´ËÆô¶¯»ØÌî±ØĞëÓëÂäÅÌÊ¹ÓÃµÄÈ¦ºÅ¿Ú¾¶Ò»ÖÂ¡£
+        ///             æœ¬é¡¹ç›®ä¸­ <see cref="EpbTestRecord.RunCount"/> æ—¢ç”¨äº UI å±•ç¤ºâ€œå·²è¿è¡Œåœˆæ•°â€ï¼Œä¹Ÿç”¨äºâ€œä¸‹ä¸€åœˆå·â€çš„ç»­å·åŸºå‡†ï¼›
+        ///             å› æ­¤å¯åŠ¨å›å¡«å¿…é¡»ä¸è½ç›˜ä½¿ç”¨çš„åœˆå·å£å¾„ä¸€è‡´ã€‚
         ///             </description>
         ///         </item>
         ///         <item>
         ///             <description>
-        ///             »ØÌî²ÉÓÃ£º<c>RunCount = MAX(cycle_number)</c>£¨CycleNumber &gt; 0£©¡£
-        ///             ÕâÑù¼´±ãÏÖ³¡ÊÖ¹¤ĞŞÕı¹ı <c>cycle_number</c>£¨ÀıÈç²¹Æë/ÌøºÅ£©£¬
-        ///             Ò²ÄÜ±£Ö¤ TestConfig.xml Óë index.db µÄ¡°È¦ºÅ»ù×¼¡±Ò»ÖÂ£¬±ÜÃâ¿ªÊ¼ºó³öÏÖ²î 1 »òÎ¨Ò»¼ü³åÍ»¡£
+        ///             å›å¡«é‡‡ç”¨ï¼š<c>RunCount = MAX(cycle_number)</c>ï¼ˆCycleNumber &gt; 0ï¼‰ã€‚
+        ///             è¿™æ ·å³ä¾¿ç°åœºæ‰‹å·¥ä¿®æ­£è¿‡ <c>cycle_number</c>ï¼ˆä¾‹å¦‚è¡¥é½/è·³å·ï¼‰ï¼Œ
+        ///             ä¹Ÿèƒ½ä¿è¯ TestConfig.xml ä¸ index.db çš„â€œåœˆå·åŸºå‡†â€ä¸€è‡´ï¼Œé¿å…å¼€å§‹åå‡ºç°å·® 1 æˆ–å”¯ä¸€é”®å†²çªã€‚
         ///             </description>
         ///         </item>
         ///     </list>
         ///     </para>
         ///     <para>
-        ///     Îª±ÜÃâ¡°Ê×´ÎĞÂ½¨ÏîÄ¿/È±Ê§ DB ÎÄ¼ş¡±µ¼ÖÂ°Ñ XML ½ø¶È¸²¸Ç³É 0£º
-        ///     ½öµ±Æô¶¯Ê±¼ì²âµ½ÏîÄ¿Ä¿Â¼ÏÂÒÑ´æÔÚ index.db Ê±£¬²ÅÖ´ĞĞ»ØÌî¡£
+        ///     ä¸ºé¿å…â€œé¦–æ¬¡æ–°å»ºé¡¹ç›®/ç¼ºå¤± DB æ–‡ä»¶â€å¯¼è‡´æŠŠ XML è¿›åº¦è¦†ç›–æˆ 0ï¼š
+        ///     ä»…å½“å¯åŠ¨æ—¶æ£€æµ‹åˆ°é¡¹ç›®ç›®å½•ä¸‹å·²å­˜åœ¨ index.db æ—¶ï¼Œæ‰æ‰§è¡Œå›å¡«ã€‚
         ///     </para>
         /// </remarks>
         private bool TryBackfillRunCountFromDiskIndex()
@@ -1239,7 +1239,7 @@ namespace MTEmbTest
                     if (rec == null || rec.Id < 1 || rec.Id > 12)
                         continue;
 
-                    // ¹Ø¼ü£ºÊ¹ÓÃ¡°×î´óÈ¦ºÅ¡±»ØÌî£¬±£Ö¤Óë BeginCycle/ĞøºÅ»ù×¼Ò»ÖÂ¡£
+                    // å…³é”®ï¼šä½¿ç”¨â€œæœ€å¤§åœˆå·â€å›å¡«ï¼Œä¿è¯ä¸ BeginCycle/ç»­å·åŸºå‡†ä¸€è‡´ã€‚
                     var dbLastCycleNumber = writer.GetLastCycleNumber(rec.Id);
                     if (dbLastCycleNumber < 0) dbLastCycleNumber = 0;
 
@@ -1252,8 +1252,8 @@ namespace MTEmbTest
             }
             catch (Exception ex)
             {
-                // Æô¶¯Èİ´í£º²»ÒòÎª DB »ØÌîÊ§°Ü×èÈû³ÌĞò
-                logger?.Warn("Æô¶¯Ê±´Ó index.db »ØÌî RunCount Ê§°Ü: " + ex.Message, "Êı¾İÂäÅÌ");
+                // å¯åŠ¨å®¹é”™ï¼šä¸å› ä¸º DB å›å¡«å¤±è´¥é˜»å¡ç¨‹åº
+                logger?.Warn("å¯åŠ¨æ—¶ä» index.db å›å¡« RunCount å¤±è´¥: " + ex.Message, "æ•°æ®è½ç›˜");
                 return false;
             }
 
@@ -1262,11 +1262,11 @@ namespace MTEmbTest
 
 
         /// <summary>
-        /// È·±£²¢·µ»ØÖ¸¶¨Í¨µÀµÄÊÔÑé¼ÇÂ¼£º
-        /// Èç¹ûÁĞ±íÖĞ²»´æÔÚ£¬Ôò´´½¨Ä¬ÈÏ¼ÇÂ¼²¢¼ÓÈëÁĞ±í¡£
+        /// ç¡®ä¿å¹¶è¿”å›æŒ‡å®šé€šé“çš„è¯•éªŒè®°å½•ï¼š
+        /// å¦‚æœåˆ—è¡¨ä¸­ä¸å­˜åœ¨ï¼Œåˆ™åˆ›å»ºé»˜è®¤è®°å½•å¹¶åŠ å…¥åˆ—è¡¨ã€‚
         /// </summary>
-        /// <param name="id">EPB Í¨µÀ Id£¨1..12£©¡£</param>
-        /// <returns>¸ÃÍ¨µÀ¶ÔÓ¦µÄ <see cref="EpbTestRecord" /> ÊµÀı¡£</returns>
+        /// <param name="id">EPB é€šé“ Idï¼ˆ1..12ï¼‰ã€‚</param>
+        /// <returns>è¯¥é€šé“å¯¹åº”çš„ <see cref="EpbTestRecord" /> å®ä¾‹ã€‚</returns>
         private EpbTestRecord EnsureEpbRecord(int id)
         {
             lock (_epbRecordsLock)
@@ -1283,17 +1283,17 @@ namespace MTEmbTest
         }
 
         /// <summary>
-        /// À´×Ô EpbManager µÄ¡°µ¥È¦Íê³É¡±ÊÂ¼ş»Øµ÷£º
-        /// ÔÚÕâÀï°ÑÃ¿¸ö EPB µÄÔËĞĞÈ¦ÊıÍ¬²½µ½ _uiEpbRecords¡£
+        /// æ¥è‡ª EpbManager çš„â€œå•åœˆå®Œæˆâ€äº‹ä»¶å›è°ƒï¼š
+        /// åœ¨è¿™é‡ŒæŠŠæ¯ä¸ª EPB çš„è¿è¡Œåœˆæ•°åŒæ­¥åˆ° _uiEpbRecordsã€‚
         /// </summary>
-        /// <param name="channel">EPB Í¨µÀºÅ£¨1..12£©¡£</param>
+        /// <param name="channel">EPB é€šé“å·ï¼ˆ1..12ï¼‰ã€‚</param>
         /// <param name="sessionRunCount">
-        /// ±¾´ÎÊÔÑé Session ÄÚµÄÈ¦Êı£¨´Ó 1 ¿ªÊ¼£©£¬
-        /// ÈçÎŞĞèÒª¿É½öÓÃÓÚÈÕÖ¾£¬²»²ÎÓë¼ÆËã¡£
+        /// æœ¬æ¬¡è¯•éªŒ Session å†…çš„åœˆæ•°ï¼ˆä» 1 å¼€å§‹ï¼‰ï¼Œ
+        /// å¦‚æ— éœ€è¦å¯ä»…ç”¨äºæ—¥å¿—ï¼Œä¸å‚ä¸è®¡ç®—ã€‚
         /// </param>
         private void OnEpbChannelCycleCompleted(int channel, int sessionRunCount)
         {
-            // ¡ª¡ª 1) UI Ïß³ÌÍ¬²½ ¡ª¡ª //
+            // â€”â€” 1) UI çº¿ç¨‹åŒæ­¥ â€”â€” //
             if (InvokeRequired)
             {
                 try
@@ -1311,7 +1311,7 @@ namespace MTEmbTest
             if (_uiEpbRecords == null)
                 return;
 
-            // ¡ª¡ª 2) ÓÃËø±£»¤¼ÇÂ¼·ÃÎÊ ¡ª¡ª //
+            // â€”â€” 2) ç”¨é”ä¿æŠ¤è®°å½•è®¿é—® â€”â€” //
             EpbTestRecord record;
 
             lock (_epbRecordsLock)
@@ -1320,19 +1320,19 @@ namespace MTEmbTest
                 if (record == null)
                     return;
 
-                // ¸üĞÂÔËĞĞÊ±¼ä + RunCount + LatestStartTime
+                // æ›´æ–°è¿è¡Œæ—¶é—´ + RunCount + LatestStartTime
                 record.IncrementCycleAndUpdateTime(DateTime.Now);
 
-                if (record.Status == EpbTestStatus.Completed) // ÒÑÍê³É
+                if (record.Status == EpbTestStatus.Completed) // å·²å®Œæˆ
                 {
-                    _epb.StopChannel(record.Id); // Í£Ö¹¸ÃÍ¨µÀÊÔÑé
+                    _epb.StopChannel(record.Id); // åœæ­¢è¯¥é€šé“è¯•éªŒ
 
-                    // ====  UI ÌáÊ¾ =====================================================
-                    LogInfo($"EPB-{record.Id} ÒÑÍê³ÉÊÔÑé¡£");
+                    // ====  UI æç¤º =====================================================
+                    LogInfo($"EPB-{record.Id} å·²å®Œæˆè¯•éªŒã€‚");
                 }
             }
 
-            // ¡ª¡ª 3) ¸üĞÂ×ó²à EPBGroup ¡ª¡ª //
+            // â€”â€” 3) æ›´æ–°å·¦ä¾§ EPBGroup â€”â€” //
             EpbGroup[channel - 1].CtrlCycles.Text = record.RunCount.ToString();
 
             if (_currentEpbSummaryChannel == channel && record.Status == EpbTestStatus.Completed)
@@ -1353,8 +1353,8 @@ namespace MTEmbTest
                 RefreshCurrentEpbSummary(channel);
             }
 
-            // ¡ª¡ª 4) ÏÂÀ­¿òÓÒ²àÃæ°åÑ¡ÖĞÊ±Ë¢ĞÂ ¡ª¡ª //
-            // ¡ª¡ª ?? È¡ÏûÊµÊ±±£´æ£¬¸ÄÎª¡°¶¨Ê±×Ô¶¯±£´æ¡± ¡ª¡ª //
+            // â€”â€” 4) ä¸‹æ‹‰æ¡†å³ä¾§é¢æ¿é€‰ä¸­æ—¶åˆ·æ–° â€”â€” //
+            // â€”â€” ?? å–æ¶ˆå®æ—¶ä¿å­˜ï¼Œæ”¹ä¸ºâ€œå®šæ—¶è‡ªåŠ¨ä¿å­˜â€ â€”â€” //
         }
 
         private void OnEpbChannelAlarmRaised(int channel, string reason)
@@ -1362,7 +1362,7 @@ namespace MTEmbTest
             var record = EnsureEpbRecord(channel);
             lock (_epbRecordsLock) record.SetAlarm();
             RefreshCurrentEpbSummary(channel);
-            LogInfo($"¿¨Ç¯{channel} ±¨¾¯£º{AlarmMessageLocalizer.ToUserMessage(reason)}");
+            LogInfo($"å¡é’³{channel} æŠ¥è­¦ï¼š{AlarmMessageLocalizer.ToUserMessage(reason)}");
         }
 
         private void OnEpbChannelPaused(int channel)
@@ -1370,7 +1370,7 @@ namespace MTEmbTest
             var record = EnsureEpbRecord(channel);
             lock (_epbRecordsLock) record.Pause();
             RefreshCurrentEpbSummary(channel);
-            LogInfo($"¿¨Ç¯{channel} ÒÑÔİÍ£");
+            LogInfo($"å¡é’³{channel} å·²æš‚åœ");
         }
 
         private void OnEpbChannelResumed(int channel)
@@ -1378,12 +1378,12 @@ namespace MTEmbTest
             var record = EnsureEpbRecord(channel);
             lock (_epbRecordsLock) record.Resume(DateTime.Now);
             RefreshCurrentEpbSummary(channel);
-            LogInfo($"¿¨Ç¯{channel} ÒÑ»Ö¸´ÔËĞĞ");
+            LogInfo($"å¡é’³{channel} å·²æ¢å¤è¿è¡Œ");
         }
 
 
         /// <summary>
-        ///     ½« TestConfig ÄÚÈİ¼ÓÔØµ½ UI£¨´ø¿ÕÖµ±£»¤ + ÅÉÉúÖµ + Led ÏÔÊ¾¸üĞÂ£©
+        ///     å°† TestConfig å†…å®¹åŠ è½½åˆ° UIï¼ˆå¸¦ç©ºå€¼ä¿æŠ¤ + æ´¾ç”Ÿå€¼ + Led æ˜¾ç¤ºæ›´æ–°ï¼‰
         /// </summary>
         private void LoadTestConfigToUI()
         {
@@ -1391,28 +1391,28 @@ namespace MTEmbTest
             {
                 if (_cfg?.Test == null)
                 {
-                    MessageBox.Show(@"TestConfig ÉĞÎ´¼ÓÔØ£¡", @"ÌáÊ¾",
+                    MessageBox.Show(@"TestConfig å°šæœªåŠ è½½ï¼", @"æç¤º",
                         MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
 
                 var test = _cfg.Test;
 
-                // ====  ÎÄ±¾¿òÏÔÊ¾»ù±¾²ÎÊı ===========================================
+                // ====  æ–‡æœ¬æ¡†æ˜¾ç¤ºåŸºæœ¬å‚æ•° ===========================================
                 TxtTestName.Text = test.TestName ?? string.Empty;
                 TxtTestCycleTime.Text = test.TestPeriod.ToString(CultureInfo.InvariantCulture);
                 TxtTargetCycles.Text = test.TestTarget.ToString(CultureInfo.InvariantCulture);
 
-                //¡ª¡ª IsSameCycleForAllEpb ¡ª¡ª //
+                //â€”â€” IsSameCycleForAllEpb â€”â€” //
                 uiCheckBoxIsSameCycleForAllEpb.Checked = test.IsSameCycleForAllEpb;
 
-                // ====  UI ÌáÊ¾ =====================================================
-                LogInfo("ÒÑ¼ÓÔØÊÔÑéÅäÖÃ¡£");
+                // ====  UI æç¤º =====================================================
+                LogInfo("å·²åŠ è½½è¯•éªŒé…ç½®ã€‚");
             }
             catch (Exception ex)
             {
-                MessageBox.Show($@"¼ÓÔØÊÔÑéÅäÖÃÊ§°Ü£º{ex.Message}",
-                    @"´íÎó", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show($@"åŠ è½½è¯•éªŒé…ç½®å¤±è´¥ï¼š{ex.Message}",
+                    @"é”™è¯¯", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
@@ -1508,7 +1508,7 @@ namespace MTEmbTest
                 EpbGroup[2].CtrlAlert = AlertEmb3;
                 EpbGroup[3].CtrlAlert = AlertEmb4;
                 EpbGroup[4].CtrlAlert = AlertEmb5;
-                EpbGroup[5].CtrlAlert = AlertEmb6;   // ½çÃæÉÏÃ»ÓĞÕâĞ©¿Ø¼ş£¬ÔİÊ±×¢ÊÍµô
+                EpbGroup[5].CtrlAlert = AlertEmb6;   // ç•Œé¢ä¸Šæ²¡æœ‰è¿™äº›æ§ä»¶ï¼Œæš‚æ—¶æ³¨é‡Šæ‰
                 */
 
 
@@ -1522,11 +1522,11 @@ namespace MTEmbTest
 
                 for (var i = 0; i < 12; i++)
                 {
-                    //EpbGroup[i].CtrlRunning.Enabled = false; //µ¥¸öÆô¶¯°´Å¥ÉèÎª²»ÔÊĞí£¬Æô¶¯Ö®ºó²ÅÔÊĞí
+                    //EpbGroup[i].CtrlRunning.Enabled = false; //å•ä¸ªå¯åŠ¨æŒ‰é’®è®¾ä¸ºä¸å…è®¸ï¼Œå¯åŠ¨ä¹‹åæ‰å…è®¸
                     var index = i;
                     EpbGroup[i].CtrlJoinTest.CheckedChanged += (sender, e) => JoinEmbChanged(sender, e, index);
 
-                    // EpbGroup[i].CtrlCurrentEmb.CheckedChanged += (sender, e) => CurrentEmbChanged(sender, e, index); // ½çÃæÉÏÃ»ÓĞÕâ¸ö¿Ø¼ş£¬ÔİÊ±×¢ÊÍµô
+                    // EpbGroup[i].CtrlCurrentEmb.CheckedChanged += (sender, e) => CurrentEmbChanged(sender, e, index); // ç•Œé¢ä¸Šæ²¡æœ‰è¿™ä¸ªæ§ä»¶ï¼Œæš‚æ—¶æ³¨é‡Šæ‰
 
 
                     EpbGroup[i].CtrlRunning.CheckedChanged += (sender, e) =>
@@ -1544,7 +1544,7 @@ namespace MTEmbTest
             }
             catch (Exception ex)
             {
-                MessageBox.Show(@"³õÊ¼»¯×é¼şÊ§°Ü£¡" + ex.Message);
+                MessageBox.Show(@"åˆå§‹åŒ–ç»„ä»¶å¤±è´¥ï¼" + ex.Message);
             }
         }
 
@@ -1555,10 +1555,10 @@ namespace MTEmbTest
 
         private void RunningClick(object sender, EventArgs e, int index)
         {
-            // ÔİÊ±×¢ÊÍ´¦Àí
-            /*if (!EpbGroup[index].CtrlPower.Checked && EpbGroup[index].CtrlRunning.Checked) //ÔËĞĞ×´Ì¬
+            // æš‚æ—¶æ³¨é‡Šå¤„ç†
+            /*if (!EpbGroup[index].CtrlPower.Checked && EpbGroup[index].CtrlRunning.Checked) //è¿è¡ŒçŠ¶æ€
             {
-                MessageBox.Show(@"ÇëÏÈ´ò¿ªµçÔ´£¡");
+                MessageBox.Show(@"è¯·å…ˆæ‰“å¼€ç”µæºï¼");
                 EpbGroup[index].CtrlRunning.Checked = false;
             }*/
         }
@@ -1569,13 +1569,13 @@ namespace MTEmbTest
             if (_isCtrlPowerPressing) return;
 
             _isCtrlPowerPressing = true;
-            EpbGroup[index].CtrlPower.Enabled = false; // ½ûÓÃ°´Å¥£¬·ÀÖ¹ÖØ¸´µã»÷
-            EPBGroupBox.Enabled = false; // ½ûÓÃÕû¸ö×é¿ò£¬·ÀÖ¹ÆäËû²Ù×÷
+            EpbGroup[index].CtrlPower.Enabled = false; // ç¦ç”¨æŒ‰é’®ï¼Œé˜²æ­¢é‡å¤ç‚¹å‡»
+            EPBGroupBox.Enabled = false; // ç¦ç”¨æ•´ä¸ªç»„æ¡†ï¼Œé˜²æ­¢å…¶ä»–æ“ä½œ
             try
             {
                 if (!IsTestConfirm)
                 {
-                    MessageBox.Show(@"ÇëÏÈÈ·ÈÏÊÔÑéĞÅÏ¢£¡");
+                    MessageBox.Show(@"è¯·å…ˆç¡®è®¤è¯•éªŒä¿¡æ¯ï¼");
                     EpbGroup[index].CtrlPower.Toggle();
 
                     // EpbGroup[index].CtrlPower.Checked = false;
@@ -1585,30 +1585,30 @@ namespace MTEmbTest
                 }
 
 
-                if (!EpbGroup[index].CtrlPower.Checked && EpbGroup[index].CtrlRunning.Checked) //ÔËĞĞ×´Ì¬Ïë¹ØµçÔ´
+                if (!EpbGroup[index].CtrlPower.Checked && EpbGroup[index].CtrlRunning.Checked) //è¿è¡ŒçŠ¶æ€æƒ³å…³ç”µæº
                 {
-                    MessageBox.Show(@"ÇëÏÈÍ£Ö¹ÔËĞĞÔÙ¹Ø±ÕµçÔ´£¡");
+                    MessageBox.Show(@"è¯·å…ˆåœæ­¢è¿è¡Œå†å…³é—­ç”µæºï¼");
                     EpbGroup[index].CtrlPower.Checked = true;
                     return;
                 }
 
-                if (!EpbGroup[index].CtrlPower.Checked && !EpbGroup[index].CtrlRunning.Checked) //·ÇÔËĞĞ×´Ì¬Ïë¹ØµçÔ´
+                if (!EpbGroup[index].CtrlPower.Checked && !EpbGroup[index].CtrlRunning.Checked) //éè¿è¡ŒçŠ¶æ€æƒ³å…³ç”µæº
                 {
-                    // MessageBox.Show("µ÷ÓÃÖ´ĞĞ¹Ø±Õ·Ö¿ª¹ØµÄº¯Êı£¡");
+                    // MessageBox.Show("è°ƒç”¨æ‰§è¡Œå…³é—­åˆ†å¼€å…³çš„å‡½æ•°ï¼");
                     // var mainForm = this.MdiParent as Main_Frm;
 
 
                     //string powerMsg = mainForm.PowerClose(index / 2 + 1);
                     //if (powerMsg.IndexOf("OK") < 0)
                     //{
-                    //    RtbInfo.Invoke(new SetTextCallback(SetInfoText), DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "¹Ø±ÕEMB" + (index + 1).ToString() + "µçÔ´Ê§°Ü!" + powerMsg);
-                    //    ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "¹Ø±ÕEMB" + (index + 1).ToString() + "µçÔ´¿ª¹ØÊ§°Ü!", "µçÔ´¿ª¹Ø²Ù×÷");
+                    //    RtbInfo.Invoke(new SetTextCallback(SetInfoText), DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "å…³é—­EMB" + (index + 1).ToString() + "ç”µæºå¤±è´¥!" + powerMsg);
+                    //    ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "å…³é—­EMB" + (index + 1).ToString() + "ç”µæºå¼€å…³å¤±è´¥!", "ç”µæºå¼€å…³æ“ä½œ");
 
                     //}
                     //else
                     //{
-                    //    RtbInfo.Invoke(new SetTextCallback(SetInfoText), DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "¹Ø±ÕEMB" + (index + 1).ToString() + "µçÔ´!");
-                    //    ClsLogProcess.AddToInfoList(MaxInfos, ref LogInformation, "¹Ø±ÕEMB" + (index + 1).ToString() + "µçÔ´¿ª¹Ø!", "µçÔ´¿ª¹Ø²Ù×÷");
+                    //    RtbInfo.Invoke(new SetTextCallback(SetInfoText), DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "å…³é—­EMB" + (index + 1).ToString() + "ç”µæº!");
+                    //    ClsLogProcess.AddToInfoList(MaxInfos, ref LogInformation, "å…³é—­EMB" + (index + 1).ToString() + "ç”µæºå¼€å…³!", "ç”µæºå¼€å…³æ“ä½œ");
 
                     //}
 
@@ -1616,16 +1616,16 @@ namespace MTEmbTest
                     var OpenSuccess = await ClosePowerChannel((byte)index, ClsGlobal.SerialPortRetrys);
                     if (!OpenSuccess)
                     {
-                        LogInfo($"¹Ø±ÕEMB{index + 1} ¼ÌµçÆ÷¿ª¹ØÊ§°Ü");
+                        LogInfo($"å…³é—­EMB{index + 1} ç»§ç”µå™¨å¼€å…³å¤±è´¥");
                         ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError,
-                            "¹Ø±ÕEMB" + (index + 1) + "¼ÌµçÆ÷¿ª¹ØÊ§°Ü!", "´®¿Ú²Ù×÷");
+                            "å…³é—­EMB" + (index + 1) + "ç»§ç”µå™¨å¼€å…³å¤±è´¥!", "ä¸²å£æ“ä½œ");
                         ClsGlobal.PowerStatus[index] = 2;
                     }
                     else
                     {
-                        LogInfo($"¹Ø±ÕEMB{index + 1} ¼ÌµçÆ÷¿ª¹Ø");
+                        LogInfo($"å…³é—­EMB{index + 1} ç»§ç”µå™¨å¼€å…³");
                         ClsLogProcess.AddToInfoList(MaxInfos, ref LogInformation,
-                            "¹Ø±ÕEMB" + (index + 1) + "¼ÌµçÆ÷¿ª¹Ø!", "UI ²Ù×÷");
+                            "å…³é—­EMB" + (index + 1) + "ç»§ç”µå™¨å¼€å…³!", "UI æ“ä½œ");
                         ClsGlobal.PowerStatus[index] = 1;
 
 
@@ -1644,21 +1644,21 @@ namespace MTEmbTest
 
                 if (EpbGroup[index].CtrlPower.Checked)
                 {
-                    // MessageBox.Show("µ÷ÓÃÖ´ĞĞ´ò¿ª·Ö¿ª¹ØµÄº¯Êı£¡");
+                    // MessageBox.Show("è°ƒç”¨æ‰§è¡Œæ‰“å¼€åˆ†å¼€å…³çš„å‡½æ•°ï¼");
 
                     // var mainForm = this.MdiParent as Main_Frm;
 
                     //string powerMsg = mainForm.PowerOpen(index / 2 + 1);
                     //if (powerMsg.IndexOf("OK") < 0)
                     //{
-                    //    RtbInfo.Invoke(new SetTextCallback(SetInfoText), DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "´ò¿ªEMB" + (index + 1).ToString() + "µçÔ´Ê§°Ü!" + powerMsg);
-                    //    ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "´ò¿ªEMB" + (index + 1).ToString() + "µçÔ´¿ª¹ØÊ§°Ü!", "µçÔ´¿ª¹Ø²Ù×÷");
+                    //    RtbInfo.Invoke(new SetTextCallback(SetInfoText), DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "æ‰“å¼€EMB" + (index + 1).ToString() + "ç”µæºå¤±è´¥!" + powerMsg);
+                    //    ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "æ‰“å¼€EMB" + (index + 1).ToString() + "ç”µæºå¼€å…³å¤±è´¥!", "ç”µæºå¼€å…³æ“ä½œ");
 
                     //}
                     //else
                     //{
-                    //    RtbInfo.Invoke(new SetTextCallback(SetInfoText), DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "´ò¿ªEMB" + (index + 1).ToString() + "µçÔ´!");
-                    //    ClsLogProcess.AddToInfoList(MaxInfos, ref LogInformation, "´ò¿ªEMB" + (index + 1).ToString() + "µçÔ´¿ª¹Ø!", "µçÔ´¿ª¹Ø²Ù×÷");
+                    //    RtbInfo.Invoke(new SetTextCallback(SetInfoText), DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff  > ") + "æ‰“å¼€EMB" + (index + 1).ToString() + "ç”µæº!");
+                    //    ClsLogProcess.AddToInfoList(MaxInfos, ref LogInformation, "æ‰“å¼€EMB" + (index + 1).ToString() + "ç”µæºå¼€å…³!", "ç”µæºå¼€å…³æ“ä½œ");
 
                     //}
 
@@ -1666,16 +1666,16 @@ namespace MTEmbTest
                     var OpenSuccess = await OpenPowerChannel((byte)index, ClsGlobal.SerialPortRetrys);
                     if (!OpenSuccess)
                     {
-                        LogInfo($"´ò¿ªEMB{index + 1} ¼ÌµçÆ÷¿ª¹ØÊ§°Ü");
+                        LogInfo($"æ‰“å¼€EMB{index + 1} ç»§ç”µå™¨å¼€å…³å¤±è´¥");
                         ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError,
-                            "´ò¿ªEMB" + (index + 1) + "¼ÌµçÆ÷¿ª¹ØÊ§°Ü!", "´®¿Ú²Ù×÷");
+                            "æ‰“å¼€EMB" + (index + 1) + "ç»§ç”µå™¨å¼€å…³å¤±è´¥!", "ä¸²å£æ“ä½œ");
                         ClsGlobal.PowerStatus[index] = 1;
                     }
                     else
                     {
-                        LogInfo($"´ò¿ªEMB{index + 1} ¼ÌµçÆ÷¿ª¹Ø");
+                        LogInfo($"æ‰“å¼€EMB{index + 1} ç»§ç”µå™¨å¼€å…³");
                         ClsLogProcess.AddToInfoList(MaxInfos, ref LogInformation,
-                            "´ò¿ªEMB" + (index + 1) + "¼ÌµçÆ÷¿ª¹Ø!", "UI ²Ù×÷");
+                            "æ‰“å¼€EMB" + (index + 1) + "ç»§ç”µå™¨å¼€å…³!", "UI æ“ä½œ");
                         ClsGlobal.PowerStatus[index] = 2;
                         /*if (EpbGroup[index].IsEnabel)
                     {
@@ -1690,13 +1690,13 @@ namespace MTEmbTest
             {
                 _isCtrlPowerPressing = false;
 
-                EpbGroup[index].CtrlPower.Enabled = true; // ÖØĞÂÆôÓÃ°´Å¥
-                EPBGroupBox.Enabled = true; // ÖØĞÂÆôÓÃÕû¸ö×é¿ò
+                EpbGroup[index].CtrlPower.Enabled = true; // é‡æ–°å¯ç”¨æŒ‰é’®
+                EPBGroupBox.Enabled = true; // é‡æ–°å¯ç”¨æ•´ä¸ªç»„æ¡†
             }
         }
 
 
-        // ¹ØµôµçÔ´Í¨µÀ£¬Ä¿Ç°²Ù×÷Îª¿Õ
+        // å…³æ‰ç”µæºé€šé“ï¼Œç›®å‰æ“ä½œä¸ºç©º
         private async Task<bool> ClosePowerChannel(byte ChannelNo, int maxRetries)
         {
             return false;
@@ -1750,19 +1750,19 @@ namespace MTEmbTest
 
             if (checkBox.Checked)
             {
-                // EpbGroup[index].CtrlCurrentEmb.Enabled = true; // ½çÃæÉÏÃ»ÓĞÕâ¸ö¿Ø¼ş£¬ÔİÊ±×¢ÊÍµô
-                // EpbGroup[index].CtrlPower.Enabled = true; // ½çÃæÉÏÃ»ÓĞÕâ¸ö¿Ø¼ş£¬ÔİÊ±×¢ÊÍ
-                // EpbGroup[index].CtrlAlert.Enabled = true; // ½çÃæÉÏÃ»ÓĞÕâ¸ö¿Ø¼ş£¬ÔİÊ±×¢ÊÍµô
+                // EpbGroup[index].CtrlCurrentEmb.Enabled = true; // ç•Œé¢ä¸Šæ²¡æœ‰è¿™ä¸ªæ§ä»¶ï¼Œæš‚æ—¶æ³¨é‡Šæ‰
+                // EpbGroup[index].CtrlPower.Enabled = true; // ç•Œé¢ä¸Šæ²¡æœ‰è¿™ä¸ªæ§ä»¶ï¼Œæš‚æ—¶æ³¨é‡Š
+                // EpbGroup[index].CtrlAlert.Enabled = true; // ç•Œé¢ä¸Šæ²¡æœ‰è¿™ä¸ªæ§ä»¶ï¼Œæš‚æ—¶æ³¨é‡Šæ‰
                 EpbGroup[index].CtrlCycles.Enabled = true;
                 EpbGroup[index].IsEnabel = true;
             }
             else
             {
-                // EpbGroup[index].CtrlCurrentEmb.Enabled = false; // ½çÃæÉÏÃ»ÓĞÕâ¸ö¿Ø¼ş£¬ÔİÊ±×¢ÊÍµô
-                // EpbGroup[index].CtrlPower.Enabled = false; // ½çÃæÉÏÃ»ÓĞÕâ¸ö¿Ø¼şÔİÊ±×¢ÊÍ
-                // EpbGroup[index].CtrlAlert.Enabled = false; // ½çÃæÉÏÃ»ÓĞÕâ¸ö¿Ø¼ş£¬ÔİÊ±×¢ÊÍµô
+                // EpbGroup[index].CtrlCurrentEmb.Enabled = false; // ç•Œé¢ä¸Šæ²¡æœ‰è¿™ä¸ªæ§ä»¶ï¼Œæš‚æ—¶æ³¨é‡Šæ‰
+                // EpbGroup[index].CtrlPower.Enabled = false; // ç•Œé¢ä¸Šæ²¡æœ‰è¿™ä¸ªæ§ä»¶æš‚æ—¶æ³¨é‡Š
+                // EpbGroup[index].CtrlAlert.Enabled = false; // ç•Œé¢ä¸Šæ²¡æœ‰è¿™ä¸ªæ§ä»¶ï¼Œæš‚æ—¶æ³¨é‡Šæ‰
                 EpbGroup[index].CtrlCycles.Enabled = false;
-                // EpbGroup[index].CtrlCurrentEmb.Checked = false; // ½çÃæÉÏÃ»ÓĞÕâ¸ö¿Ø¼ş£¬ÔİÊ±×¢ÊÍµô
+                // EpbGroup[index].CtrlCurrentEmb.Checked = false; // ç•Œé¢ä¸Šæ²¡æœ‰è¿™ä¸ªæ§ä»¶ï¼Œæš‚æ—¶æ³¨é‡Šæ‰
                 EpbGroup[index].IsEnabel = false;
             }
         }
@@ -1770,14 +1770,14 @@ namespace MTEmbTest
         private void RuningStatusChanged(object sender, bool value, int index)
         {
             // if (value)
-            //     // StartEmbControlTimer(index); // Æô¶¯Ö¸¶¨Í¨µÀ
+            //     // StartEmbControlTimer(index); // å¯åŠ¨æŒ‡å®šé€šé“
             // // EpbGroup[index].CtrlAlert.OffCenterColor = Color.FromArgb(140, 140, 140);
             // // EpbGroup[index].CtrlAlert.OffColor = Color.FromArgb(140, 140, 140);
             // // EpbGroup[index].CtrlAlert.OnCenterColor = Color.Lime;
             // // EpbGroup[index].CtrlAlert.OnColor = Color.Lime;
             // // EpbGroup[index].CtrlAlert.State = UILightState.Blink;
             // else
-            //     // StopEmbControlTimer(index); // Í£Ö¹Ö¸¶¨Í¨µÀ
+            //     // StopEmbControlTimer(index); // åœæ­¢æŒ‡å®šé€šé“
             // // EpbGroup[index].CtrlAlert.State = UILightState.On;
         }
 
@@ -1787,7 +1787,7 @@ namespace MTEmbTest
             {
                 if (_alarmManager == null)
                 {
-                    MessageBox.Show(@"±¨¾¯×ÓÏµÍ³Î´³õÊ¼»¯£¨Î´¼ÓÔØ AlarmConfig.xml »ò³õÊ¼»¯Ê§°Ü£©¡£", @"ÌáÊ¾",
+                    MessageBox.Show(@"æŠ¥è­¦å­ç³»ç»Ÿæœªåˆå§‹åŒ–ï¼ˆæœªåŠ è½½ AlarmConfig.xml æˆ–åˆå§‹åŒ–å¤±è´¥ï¼‰ã€‚", @"æç¤º",
                         MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
@@ -1805,20 +1805,20 @@ namespace MTEmbTest
             }
             catch (Exception ex)
             {
-                MessageBox.Show($@"´ò¿ª²âÊÔ½çÃæÊ§°Ü£º{ex.Message}", @"ÌáÊ¾", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show($@"æ‰“å¼€æµ‹è¯•ç•Œé¢å¤±è´¥ï¼š{ex.Message}", @"æç¤º", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
         }
 
-        #region ²âÊÔÏà¹Ø´úÂë - ÕıÊ½ÔËĞĞÉ¾³ı
+        #region æµ‹è¯•ç›¸å…³ä»£ç  - æ­£å¼è¿è¡Œåˆ é™¤
 
         /// <summary>
-        ///     ÇĞ»»¿ª¹ØÊÂ¼ş£¬²âÊÔ´úÂë£¬ÕıÊ½ÔËĞĞÊ±ÇëÉ¾³ı
+        ///     åˆ‡æ¢å¼€å…³äº‹ä»¶ï¼Œæµ‹è¯•ä»£ç ï¼Œæ­£å¼è¿è¡Œæ—¶è¯·åˆ é™¤
         /// </summary>
         /// <param name="sender"></param>
         /// <param name="e"></param>
         private async void toggleSwitch1_Toggled(object sender, EventArgs e)
         {
-            // ´ò¿ªËùÓĞepb
+            // æ‰“å¼€æ‰€æœ‰epb
             //for (var i = 0; i < 12; i++) _do.SetEpb(i + 1, toggleSwitch1.IsOn);
 
             // if (toggleSwitch1.IsOn)
@@ -1826,7 +1826,7 @@ namespace MTEmbTest
             // else
             //     _epb.StopChannel(4);
 
-            // ´ò¿ªÆø¸×²âÊÔ
+            // æ‰“å¼€æ°”ç¼¸æµ‹è¯•
             // _ao.SetPercent("Cylinder1", 50); // => ~5V
             // _ao.SetPercent("Cylinder2", 50); // => ~5V
         }
@@ -1835,18 +1835,18 @@ namespace MTEmbTest
 
 
         /// <summary>
-        ///     ´°Ìå¹Ø±ÕÊÂ¼ş£¬ÊÍ·Å×ÊÔ´
+        ///     çª—ä½“å…³é—­äº‹ä»¶ï¼Œé‡Šæ”¾èµ„æº
         /// </summary>
         /// <param name="sender"></param>
         /// <param name="e"></param>
         private void FrmEpbMainMonitor_FormClosed(object sender, FormClosedEventArgs e)
         {
-            // _do?.Dispose(); // ÊÍ·ÅDO¶ÔÏó×ÊÔ´
-            // _ao?.Dispose(); // ÊÍ·ÅAO¶ÔÏó×ÊÔ´
-            _do?.AllOff(); // Í£Ö¹ËùÓĞEPB²Ù×÷
+            // _do?.Dispose(); // é‡Šæ”¾DOå¯¹è±¡èµ„æº
+            // _ao?.Dispose(); // é‡Šæ”¾AOå¯¹è±¡èµ„æº
+            _do?.AllOff(); // åœæ­¢æ‰€æœ‰EPBæ“ä½œ
             _do?.Dispose();
-            _ao?.ResetAll(); // Í£Ö¹ËùÓĞAO²Ù×÷
-            _ao?.Dispose(); // ÊÍ·ÅAO¶ÔÏó×ÊÔ´
+            _ao?.ResetAll(); // åœæ­¢æ‰€æœ‰AOæ“ä½œ
+            _ao?.Dispose(); // é‡Šæ”¾AOå¯¹è±¡èµ„æº
 
             // twoDeviceAiAcquirer.Stop();
             //
@@ -1856,52 +1856,34 @@ namespace MTEmbTest
             //base.OnFormClosed(e);
         }
 
-        #region 1) Åú´Î»Øµ÷£ºÖ»×ö¡°Â·ÓÉ + ×·¼Óµã¡±
+        #region 1) æ‰¹æ¬¡å›è°ƒï¼šåªåšâ€œè·¯ç”± + è¿½åŠ ç‚¹â€
 
         /// <summary>
-        ///     ¹¤³ÌÖµÅú´Îµ½´ï£¨dev = "Dev1"/"Dev2"£¬<paramref name="eng" />: ĞĞ=Í¨µÀ¡¢ÁĞ=Ñù±¾£©¡£
-        ///     ½ö¸ºÔğÂ·ÓÉÃ¿Ò»ĞĞµ½È«¾ÖÇúÏß£¬²¢°ÑÊı¾İÅúÁ¿×·¼Ó£»
-        ///     ²»×öÉ¾³ı/¸ÄÖá/Ë¢ĞÂ ¡ª¡ª ÕâĞ©¶¼ÓÉ UI ¶¨Ê±Æ÷Í³Ò»Íê³É¡£
+        ///     å·¥ç¨‹å€¼æ‰¹æ¬¡åˆ°è¾¾ï¼ˆdev = "Dev1"/"Dev2"ï¼Œ<paramref name="eng" />: è¡Œ=é€šé“ã€åˆ—=æ ·æœ¬ï¼‰ã€‚
+        ///     ä»…è´Ÿè´£è·¯ç”±æ¯ä¸€è¡Œåˆ°å…¨å±€æ›²çº¿ï¼Œå¹¶æŠŠæ•°æ®æ‰¹é‡è¿½åŠ ï¼›
+        ///     ä¸åšåˆ é™¤/æ”¹è½´/åˆ·æ–° â€”â€” è¿™äº›éƒ½ç”± UI å®šæ—¶å™¨ç»Ÿä¸€å®Œæˆã€‚
         /// </summary>
         private void Acq_OnEngBatch(string dev, double[,] eng, DateTime current, DateTime last)
         {
-            // ¡ª¡ª ÒÑ½øÈë¹Ø±ÕÁ÷³Ì»ò´°ÌåÒÑÏú»Ù£ºÖ±½Ó·µ»Ø ¡ª¡ª //
+            // â€”â€” å·²è¿›å…¥å…³é—­æµç¨‹æˆ–çª—ä½“å·²é”€æ¯ï¼šç›´æ¥è¿”å› â€”â€” //
             if (_isClosing || Volatile.Read(ref _formClosedFlag) == 1 || IsDisposed || !IsHandleCreated)
                 return;
 
-            // ¡ª¡ª ºÏ²¢£º½ö±£ÁôÃ¿¸öÉè±¸¡°×îĞÂÒ»Åú¡±£¬²¢µ÷¶ÈÒ»´Î UI ´¦Àí ¡ª¡ª //
+            // â€”â€” åˆå¹¶ï¼šä»…ä¿ç•™æ¯ä¸ªè®¾å¤‡â€œæœ€æ–°ä¸€æ‰¹â€ï¼Œå¹¶è°ƒåº¦ä¸€æ¬¡ UI å¤„ç† â€”â€” //
             if (eng == null) return;
 
-            lock (_engPendingLock)
-            {
-                var item = new EngBatchPending { Dev = dev, Eng = eng, Current = current, Last = last };
-
-                if (string.Equals(dev, "Dev1", StringComparison.OrdinalIgnoreCase))
-                {
-                    _pendingEngDev1Queue.Enqueue(item);
-                    while (_pendingEngDev1Queue.Count > MaxPendingEngBatchesPerDev) _pendingEngDev1Queue.Dequeue();
-                }
-                else if (string.Equals(dev, "Dev2", StringComparison.OrdinalIgnoreCase))
-                {
-                    _pendingEngDev2Queue.Enqueue(item);
-                    while (_pendingEngDev2Queue.Count > MaxPendingEngBatchesPerDev) _pendingEngDev2Queue.Dequeue();
-                }
-                else
-                {
-                    // Î´Ê¶±ğÉè±¸£ºÈÔÈ»°´ Dev1 ¶ÓÁĞ´¦Àí
-                    _pendingEngDev1Queue.Enqueue(item);
-                    while (_pendingEngDev1Queue.Count > MaxPendingEngBatchesPerDev) _pendingEngDev1Queue.Dequeue();
-                }
-            }
+            var item = new EngBatchPending { Dev = dev, Eng = eng, Current = current, Last = last };
+            var slot = string.Equals(dev, "Dev2", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
+            _pendingEngBatches.Publish(slot, item);
 
             ScheduleEngBatchUiWork();
         }
 
         /// <summary>
-        ///     µ÷¶ÈÒ»´Î¡°¹¤³ÌÖµÅú´Î¡±µÄ UI ´¦Àí¡£
+        ///     è°ƒåº¦ä¸€æ¬¡â€œå·¥ç¨‹å€¼æ‰¹æ¬¡â€çš„ UI å¤„ç†ã€‚
         ///     <para>
-        ///     ¸Ã·½·¨±£Ö¤Í¬Ò»Ê±¿Ì×î¶àÖ»ÓĞÒ»¸ö UI ´¦ÀíÈÎÎñÔÚÏûÏ¢¶ÓÁĞÖĞ£¬±ÜÃâ¸ßÆµ»Øµ÷Ôì³ÉµÄ
-        ///     <see cref="Control.BeginInvoke(Delegate)"/> ºé·ºÓë STA ÏûÏ¢±Ã×èÈû¡£
+        ///     è¯¥æ–¹æ³•ä¿è¯åŒä¸€æ—¶åˆ»æœ€å¤šåªæœ‰ä¸€ä¸ª UI å¤„ç†ä»»åŠ¡åœ¨æ¶ˆæ¯é˜Ÿåˆ—ä¸­ï¼Œé¿å…é«˜é¢‘å›è°ƒé€ æˆçš„
+        ///     <see cref="Control.BeginInvoke(Delegate)"/> æ´ªæ³›ä¸ STA æ¶ˆæ¯æ³µé˜»å¡ã€‚
         ///     </para>
         /// </summary>
         private void ScheduleEngBatchUiWork()
@@ -1930,9 +1912,9 @@ namespace MTEmbTest
         }
 
         /// <summary>
-        ///     ÔÚ UI Ïß³ÌÉÏ´¦Àí¡°´ı´¦ÀíµÄ×îĞÂ¹¤³ÌÖµÅú´Î¡±¡£
+        ///     åœ¨ UI çº¿ç¨‹ä¸Šå¤„ç†â€œå¾…å¤„ç†çš„æœ€æ–°å·¥ç¨‹å€¼æ‰¹æ¬¡â€ã€‚
         ///     <remarks>
-        ///     ´¦Àí²ßÂÔ£ºÃ¿¸öÉè±¸½öÏû·Ñ×îºóÒ»Åú£»Èô´¦Àí¹ı³ÌÖĞÓÖÓĞĞÂÅú´Îµ½´ï£¬ÍË³öÇ°»áÔÙ´Îµ÷¶È¡£
+        ///     å¤„ç†ç­–ç•¥ï¼šæ¯ä¸ªè®¾å¤‡ä»…æ¶ˆè´¹æœ€åä¸€æ‰¹ï¼›è‹¥å¤„ç†è¿‡ç¨‹ä¸­åˆæœ‰æ–°æ‰¹æ¬¡åˆ°è¾¾ï¼Œé€€å‡ºå‰ä¼šå†æ¬¡è°ƒåº¦ã€‚
         ///     </remarks>
         /// </summary>
         private void ProcessPendingEngBatches()
@@ -1945,64 +1927,43 @@ namespace MTEmbTest
 
             try
             {
-                var processed = 0;
+                EngBatchPending p1;
+                EngBatchPending p2;
 
-                while (processed < MaxEngBatchesPerUiRun)
+                _pendingEngBatches.TryTake(out p1, out p2);
+
+                if (p1 != null)
+                    ApplyEngBatchToCurves(p1.Dev, p1.Eng, p1.Current, p1.Last);
+
+                if (p2 != null)
+                    ApplyEngBatchToCurves(p2.Dev, p2.Eng, p2.Current, p2.Last);
+
+                // ç¬æ—¶å€¼åˆ·æ–°èŠ‚æµï¼šæœ€å¤šæ¯ 200ms æ›´æ–°ä¸€æ¬¡
+                var nowTick = Environment.TickCount;
+                if ((p1 != null || p2 != null) &&
+                    unchecked(nowTick - _lastInstantUiUpdateTick) >= InstantUiUpdateMinIntervalMs)
                 {
-                    EngBatchPending p1 = null;
-                    EngBatchPending p2 = null;
-
-                    lock (_engPendingLock)
-                    {
-                        if (_pendingEngDev1Queue.Count > 0) p1 = _pendingEngDev1Queue.Dequeue();
-                        if (_pendingEngDev2Queue.Count > 0) p2 = _pendingEngDev2Queue.Dequeue();
-                    }
-
-                    if (p1 == null && p2 == null) break;
-
-                    if (p1 != null)
-                    {
-                        ApplyEngBatchToCurves(p1.Dev, p1.Eng, p1.Current, p1.Last);
-                        processed++;
-                    }
-
-                    if (p2 != null)
-                    {
-                        ApplyEngBatchToCurves(p2.Dev, p2.Eng, p2.Current, p2.Last);
-                        processed++;
-                    }
-
-                    // Ë²Ê±ÖµË¢ĞÂ½ÚÁ÷£º×î¶àÃ¿ 200ms ¸üĞÂÒ»´Î
-                    var nowTick = Environment.TickCount;
-                    if (unchecked(nowTick - _lastInstantUiUpdateTick) >= InstantUiUpdateMinIntervalMs)
-                    {
-                        _lastInstantUiUpdateTick = nowTick;
-                        UpdateInstantDisplayValues();
-                    }
+                    _lastInstantUiUpdateTick = nowTick;
+                    UpdateInstantDisplayValues();
                 }
             }
             finally
             {
                 Interlocked.Exchange(ref _engUiWorkScheduled, 0);
 
-                // ÈôÔÚ´¦ÀíÆÚ¼äÓÖÀ´ÁËĞÂÅú´Î£º²¹Ò»´Îµ÷¶È
-                lock (_engPendingLock)
-                {
-                    if (_pendingEngDev1Queue.Count > 0 || _pendingEngDev2Queue.Count > 0)
-                    {
-                        ScheduleEngBatchUiWork();
-                    }
-                }
+                // è‹¥åœ¨å¤„ç†æœŸé—´åˆæ¥äº†æ–°æ‰¹æ¬¡ï¼šè¡¥ä¸€æ¬¡è°ƒåº¦
+                if (_pendingEngBatches.HasPending)
+                    ScheduleEngBatchUiWork();
             }
         }
 
         /// <summary>
-        ///     ½«µ¥¸öÉè±¸µÄÒ»Åú¹¤³ÌÖµÑù±¾Â·ÓÉ²¢×·¼Óµ½ÇúÏß»º´æ¡£
+        ///     å°†å•ä¸ªè®¾å¤‡çš„ä¸€æ‰¹å·¥ç¨‹å€¼æ ·æœ¬è·¯ç”±å¹¶è¿½åŠ åˆ°æ›²çº¿ç¼“å­˜ã€‚
         /// </summary>
-        /// <param name="dev">Éè±¸±êÊ¶£¨Í¨³£Îª "Dev1" »ò "Dev2"£©¡£</param>
-        /// <param name="eng">¹¤³ÌÖµ¾ØÕó£ºĞĞ=Í¨µÀ£¬ÁĞ=Ñù±¾¡£</param>
-        /// <param name="current">±¾Åú´Îµ½´ïÊ±¼ä¡£</param>
-        /// <param name="last">ÉÏÒ»Åú´Îµ½´ïÊ±¼ä¡£</param>
+        /// <param name="dev">è®¾å¤‡æ ‡è¯†ï¼ˆé€šå¸¸ä¸º "Dev1" æˆ– "Dev2"ï¼‰ã€‚</param>
+        /// <param name="eng">å·¥ç¨‹å€¼çŸ©é˜µï¼šè¡Œ=é€šé“ï¼Œåˆ—=æ ·æœ¬ã€‚</param>
+        /// <param name="current">æœ¬æ‰¹æ¬¡åˆ°è¾¾æ—¶é—´ã€‚</param>
+        /// <param name="last">ä¸Šä¸€æ‰¹æ¬¡åˆ°è¾¾æ—¶é—´ã€‚</param>
         private void ApplyEngBatchToCurves(string dev, double[,] eng, DateTime current, DateTime last)
         {
             if (_isClosing || Volatile.Read(ref _formClosedFlag) == 1) return;
@@ -2014,15 +1975,15 @@ namespace MTEmbTest
 
             if (ClsGlobal.DaqFrequency <= 0)
             {
-                ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "DaqFrequency Î´ÕıÈ·ÉèÖÃ", "ÇúÏßÏÔÊ¾");
+                ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "DaqFrequency æœªæ­£ç¡®è®¾ç½®", "æ›²çº¿æ˜¾ç¤º");
                 return;
             }
 
             var dt = 1.0 / ClsGlobal.DaqFrequency;
 
-            // ¡ª¡ª Ê±¼äÖá¶ÔÆë ¡ª¡ª
-            // ¾ÉµÄ gapSec Âß¼­ÒÑÒÆ³ı£¬¸ÄÓÃ¾ø¶ÔÊ±¼ä´Á current ¶ÔÆë£¬³¹µ×½â¾ö¶àÉè±¸²»Í¬²½ÎÊÌâ¡£
-            // ÎŞÂÛ UI ÊÇ·ñ¶ªÖ¡£¬X Öá¶¼ÑÏ¸ñÃª¶¨µ½ DAQ µÄ¾ø¶ÔÊ±¼ä¡£
+            // â€”â€” æ—¶é—´è½´å¯¹é½ â€”â€”
+            // æ—§çš„ gapSec é€»è¾‘å·²ç§»é™¤ï¼Œæ”¹ç”¨ç»å¯¹æ—¶é—´æˆ³ current å¯¹é½ï¼Œå½»åº•è§£å†³å¤šè®¾å¤‡ä¸åŒæ­¥é—®é¢˜ã€‚
+            // æ— è®º UI æ˜¯å¦ä¸¢å¸§ï¼ŒX è½´éƒ½ä¸¥æ ¼é”šå®šåˆ° DAQ çš„ç»å¯¹æ—¶é—´ã€‚
 
             try
             {
@@ -2033,7 +1994,7 @@ namespace MTEmbTest
 
                     var draw = _checkByGlobal.TryGetValue(g, out var cb) ? cb.Checked : true;
 
-                    // Ö±½Ó´Ó¾ØÕó×·¼Ó£¬±ÜÃâÃ¿Åú/Ã¿Í¨µÀ·ÖÅäÊı×éÔì³É GC ¶¶¶¯
+                    // ç›´æ¥ä»çŸ©é˜µè¿½åŠ ï¼Œé¿å…æ¯æ‰¹/æ¯é€šé“åˆ†é…æ•°ç»„é€ æˆ GC æŠ–åŠ¨
                     AppendChannelBatchFromMatrix(g, eng, r, cols, dt, draw, current);
                 }
 
@@ -2041,20 +2002,20 @@ namespace MTEmbTest
             }
             catch (Exception ex)
             {
-                ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "Åú´Î»æÖÆ³ö´í: " + ex.Message, "ÇúÏßÏÔÊ¾");
+                ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "æ‰¹æ¬¡ç»˜åˆ¶å‡ºé”™: " + ex.Message, "æ›²çº¿æ˜¾ç¤º");
             }
         }
 
         /// <summary>
-        ///     ´Ó¹¤³ÌÖµ¾ØÕóÖĞÈ¡³öÖ¸¶¨ĞĞ£¨Í¨µÀ£©µÄÒ»ÅúÑù±¾×·¼Óµ½ÇúÏß»º´æ¡£
+        ///     ä»å·¥ç¨‹å€¼çŸ©é˜µä¸­å–å‡ºæŒ‡å®šè¡Œï¼ˆé€šé“ï¼‰çš„ä¸€æ‰¹æ ·æœ¬è¿½åŠ åˆ°æ›²çº¿ç¼“å­˜ã€‚
         /// </summary>
-        /// <param name="globalIndex">È«¾ÖÍ¨µÀË÷Òı£¨0..14£©¡£</param>
-        /// <param name="eng">¹¤³ÌÖµ¾ØÕó£ºĞĞ=Í¨µÀ£¬ÁĞ=Ñù±¾¡£</param>
-        /// <param name="row">Òª×·¼ÓµÄĞĞË÷Òı¡£</param>
-        /// <param name="colCount">Ñù±¾ÁĞÊı£¨±¾Åú´ÎÑù±¾Êı£©¡£</param>
-        /// <param name="dt">ÏàÁÚÑù±¾Ê±¼ä¼ä¸ô£¨Ãë/µã£©¡£</param>
-        /// <param name="draw">ÊÇ·ñÏÔÊ¾¸ÃÍ¨µÀ¡£</param>
-        /// <param name="batchEndUtc">±¾Åú´Î½áÊøµÄ¾ø¶ÔÊ±¼ä´Á£¨ÓÃÓÚ¾ø¶Ô¶ÔÆë£©¡£</param>
+        /// <param name="globalIndex">å…¨å±€é€šé“ç´¢å¼•ï¼ˆ0..14ï¼‰ã€‚</param>
+        /// <param name="eng">å·¥ç¨‹å€¼çŸ©é˜µï¼šè¡Œ=é€šé“ï¼Œåˆ—=æ ·æœ¬ã€‚</param>
+        /// <param name="row">è¦è¿½åŠ çš„è¡Œç´¢å¼•ã€‚</param>
+        /// <param name="colCount">æ ·æœ¬åˆ—æ•°ï¼ˆæœ¬æ‰¹æ¬¡æ ·æœ¬æ•°ï¼‰ã€‚</param>
+        /// <param name="dt">ç›¸é‚»æ ·æœ¬æ—¶é—´é—´éš”ï¼ˆç§’/ç‚¹ï¼‰ã€‚</param>
+        /// <param name="draw">æ˜¯å¦æ˜¾ç¤ºè¯¥é€šé“ã€‚</param>
+        /// <param name="batchEndUtc">æœ¬æ‰¹æ¬¡ç»“æŸçš„ç»å¯¹æ—¶é—´æˆ³ï¼ˆç”¨äºç»å¯¹å¯¹é½ï¼‰ã€‚</param>
         private void AppendChannelBatchFromMatrix(int globalIndex, double[,] eng, int row, int colCount, double dt,
             bool draw, DateTime batchEndUtc)
         {
@@ -2085,32 +2046,32 @@ namespace MTEmbTest
             var line = _chCurve[globalIndex];
             if (line != null) line.IsVisible = draw;
 
-            // ¡ª¡ª ¾ø¶ÔÊ±¼äÖá¼ÆËã£¨³¹µ×½â¾ö²»Í¬²½£© ¡ª¡ª //
-            // 1. È·±£»æÍ¼ÁãµãÒÑÃª¶¨
+            // â€”â€” ç»å¯¹æ—¶é—´è½´è®¡ç®—ï¼ˆå½»åº•è§£å†³ä¸åŒæ­¥ï¼‰ â€”â€” //
+            // 1. ç¡®ä¿ç»˜å›¾é›¶ç‚¹å·²é”šå®š
             if (_plotZeroTime == DateTime.MinValue)
                 _plotZeroTime = batchEndUtc.AddSeconds(-(colCount - 1) * dt);
 
-            // 2. ¼ÆËã±¾Åú´ÎÊ×¸öÑù±¾µÄ¾ø¶Ô X ×ø±ê
-            //    batchEndUtc ¶ÔÓ¦ index = colCount - 1
-            //    startX ¶ÔÓ¦ index = 0
+            // 2. è®¡ç®—æœ¬æ‰¹æ¬¡é¦–ä¸ªæ ·æœ¬çš„ç»å¯¹ X åæ ‡
+            //    batchEndUtc å¯¹åº” index = colCount - 1
+            //    startX å¯¹åº” index = 0
             var endX = (batchEndUtc - _plotZeroTime).TotalSeconds;
             var startX = endX - (colCount - 1) * dt;
 
-            // 3. ¼ì²éÊÇ·ñĞèÒª¶ÏÏß£¨Gap Detection£©
-            //    Èç¹û startX ±È _lastX ´óÌ«¶à£¬ËµÃ÷ÖĞ¼äÓĞ¶ª°ü»òÍ£¶Ù
+            // 3. æ£€æŸ¥æ˜¯å¦éœ€è¦æ–­çº¿ï¼ˆGap Detectionï¼‰
+            //    å¦‚æœ startX æ¯” _lastX å¤§å¤ªå¤šï¼Œè¯´æ˜ä¸­é—´æœ‰ä¸¢åŒ…æˆ–åœé¡¿
             var lastX = _lastX[globalIndex];
             var expectedX = list.Count > 0 ? lastX + dt : startX;
             var gap = startX - expectedX;
 
-            if (gap > 0.3) // ãĞÖµ 0.3s
+            if (gap > 0.3) // é˜ˆå€¼ 0.3s
             {
-                // ²»ÒªÓÃ NaN ×÷Îª X£º·ñÔòºóĞøÇåÀíÊ± (x < purgeBefore) ±È½ÏºãÎª false£¬¿ÉÄÜ¿¨×¡²Ã¼ôµ¼ÖÂµãÊıÎŞÏŞÔö³¤¡£
-                // ¶ÏÏßÓÃ¡°Õı³£ X + Y=NaN¡±¼´¿ÉÈÃ ZedGraph ¶Ï±Ê£¬Í¬Ê±²»Ó°Ïì²Ã¼ô¡£
+                // ä¸è¦ç”¨ NaN ä½œä¸º Xï¼šå¦åˆ™åç»­æ¸…ç†æ—¶ (x < purgeBefore) æ¯”è¾ƒæ’ä¸º falseï¼Œå¯èƒ½å¡ä½è£å‰ªå¯¼è‡´ç‚¹æ•°æ— é™å¢é•¿ã€‚
+                // æ–­çº¿ç”¨â€œæ­£å¸¸ X + Y=NaNâ€å³å¯è®© ZedGraph æ–­ç¬”ï¼ŒåŒæ—¶ä¸å½±å“è£å‰ªã€‚
                 if (list.Count > 0)
                     list.Add(expectedX, double.NaN);
             }
 
-            // ÏÔÊ¾²ã³éÏ¡
+            // æ˜¾ç¤ºå±‚æŠ½ç¨€
             var stride = 1;
             try
             {
@@ -2126,8 +2087,8 @@ namespace MTEmbTest
             }
             var step = dt * stride;
 
-            // 4. Ñ­»·Ìí¼Óµã
-            //    ×¢Òâ£ºÕâÀïÖ±½ÓÓÃ startX + i*dt ¼ÆËã£¬²»ÔÙÒÀÀµÀÛ¼Ó£¬±ÜÃâ¸¡µãÆ¯ÒÆ
+            // 4. å¾ªç¯æ·»åŠ ç‚¹
+            //    æ³¨æ„ï¼šè¿™é‡Œç›´æ¥ç”¨ startX + i*dt è®¡ç®—ï¼Œä¸å†ä¾èµ–ç´¯åŠ ï¼Œé¿å…æµ®ç‚¹æ¼‚ç§»
             for (var i = 0; i < colCount; i += stride)
             {
                 var y = eng[row, i];
@@ -2135,7 +2096,7 @@ namespace MTEmbTest
                 list.Add(startX + i * dt, y);
             }
 
-            // ¸üĞÂ×îºóÒ»µãµÄ X
+            // æ›´æ–°æœ€åä¸€ç‚¹çš„ X
             _lastX[globalIndex] = startX + (colCount - 1) * dt;
 
             _latestGlobalX = Math.Max(_latestGlobalX, _lastX[globalIndex]);
@@ -2144,17 +2105,17 @@ namespace MTEmbTest
 
         #endregion
 
-        #region 2) ×·¼ÓÑù±¾£ºÖ»¼Óµã + ±ê¼ÇÖØ»æ£¨²»É¾µã/²»Ë¢ĞÂ£©
+        #region 2) è¿½åŠ æ ·æœ¬ï¼šåªåŠ ç‚¹ + æ ‡è®°é‡ç»˜ï¼ˆä¸åˆ ç‚¹/ä¸åˆ·æ–°ï¼‰
 
         /// <summary>
-        ///     ÏòÖ¸¶¨¡°È«¾ÖÍ¨µÀ¡±×·¼ÓÒ»ÅúÑù±¾£»
-        ///     ½ö¸ºÔğ°Ñµã×·¼Óµ½¶ÔÓ¦ <see cref="_chData" />£¬²¢¸üĞÂÈ«¾Ö×îĞÂÊ±¼ä£»
-        ///     ²»×ö AxisChange/Invalidate£¬²»²Ã¼ôÊı¾İ¡¢²»¸Ä×ø±êÖá¡£
+        ///     å‘æŒ‡å®šâ€œå…¨å±€é€šé“â€è¿½åŠ ä¸€æ‰¹æ ·æœ¬ï¼›
+        ///     ä»…è´Ÿè´£æŠŠç‚¹è¿½åŠ åˆ°å¯¹åº” <see cref="_chData" />ï¼Œå¹¶æ›´æ–°å…¨å±€æœ€æ–°æ—¶é—´ï¼›
+        ///     ä¸åš AxisChange/Invalidateï¼Œä¸è£å‰ªæ•°æ®ã€ä¸æ”¹åæ ‡è½´ã€‚
         /// </summary>
-        /// <param name="globalIndex">È«¾ÖÍ¨µÀË÷Òı£¨0..14£©¡£</param>
-        /// <param name="daqData">¹¤³ÌÖµÑù±¾Êı×é¡£</param>
-        /// <param name="dt">ÏàÁÚÑù±¾µÄÊ±¼ä¼ä¸ô£¨Ãë/µã£©¡£</param>
-        /// <param name="draw">ÊÇ·ñÏÔÊ¾¸ÃÍ¨µÀ£¨ÓÉ CheckEdit ¿ØÖÆ£©¡£</param>
+        /// <param name="globalIndex">å…¨å±€é€šé“ç´¢å¼•ï¼ˆ0..14ï¼‰ã€‚</param>
+        /// <param name="daqData">å·¥ç¨‹å€¼æ ·æœ¬æ•°ç»„ã€‚</param>
+        /// <param name="dt">ç›¸é‚»æ ·æœ¬çš„æ—¶é—´é—´éš”ï¼ˆç§’/ç‚¹ï¼‰ã€‚</param>
+        /// <param name="draw">æ˜¯å¦æ˜¾ç¤ºè¯¥é€šé“ï¼ˆç”± CheckEdit æ§åˆ¶ï¼‰ã€‚</param>
         private void AppendChannelBatch(int globalIndex, double[] daqData, double dt, bool draw)
         {
             if (_isClosing || Volatile.Read(ref _formClosedFlag) == 1) return;
@@ -2164,14 +2125,14 @@ namespace MTEmbTest
             {
                 try
                 {
-                    // ±ÜÃâÍ¬²½ Invoke ×èÈû STA ÏûÏ¢±Ã£¨µ÷ÊÔÆÚÒ×´¥·¢ ContextSwitchDeadlock£©
+                    // é¿å…åŒæ­¥ Invoke é˜»å¡ STA æ¶ˆæ¯æ³µï¼ˆè°ƒè¯•æœŸæ˜“è§¦å‘ ContextSwitchDeadlockï¼‰
                     zedGraphRealChart.BeginInvoke(
                         new Action<int, double[], double, bool>(AppendChannelBatch),
                         globalIndex, daqData, dt, draw);
                 }
                 catch
                 {
-                    /* ´°¿ÚÒÑÏú»Ù/¾ä±úÎŞĞ§£¬ºöÂÔ */
+                    /* çª—å£å·²é”€æ¯/å¥æŸ„æ— æ•ˆï¼Œå¿½ç•¥ */
                 }
 
                 return;
@@ -2184,12 +2145,12 @@ namespace MTEmbTest
             var line = _chCurve[globalIndex];
             if (line != null) line.IsVisible = draw;
 
-            // ¡ª¡ª Á¬ĞøÊ±¼äÖá×·¼Ó ¡ª¡ª //
+            // â€”â€” è¿ç»­æ—¶é—´è½´è¿½åŠ  â€”â€” //
             var x = _lastX[globalIndex];
             if (list.Count == 0 && x == 0.0) x = 0.0;
             else x += dt;
 
-            // ÏÔÊ¾²ã³éÏ¡£º±£³ÖÓë¾ØÕó×·¼ÓÒ»ÖÂµÄ×î´ó»æÍ¼²ÉÑùÂÊ
+            // æ˜¾ç¤ºå±‚æŠ½ç¨€ï¼šä¿æŒä¸çŸ©é˜µè¿½åŠ ä¸€è‡´çš„æœ€å¤§ç»˜å›¾é‡‡æ ·ç‡
             var stride = 1;
             try
             {
@@ -2215,7 +2176,7 @@ namespace MTEmbTest
 
             _lastX[globalIndex] = x - dt;
 
-            // ¡ª¡ª Ö»¸üĞÂÈ«¾Ö×îĞÂ X ²¢ÇëÇó UI ¶¨Ê±Æ÷Ë¢ĞÂ ¡ª¡ª //
+            // â€”â€” åªæ›´æ–°å…¨å±€æœ€æ–° X å¹¶è¯·æ±‚ UI å®šæ—¶å™¨åˆ·æ–° â€”â€” //
             _latestGlobalX = Math.Max(_latestGlobalX, _lastX[globalIndex]);
             _dirtyForRedraw = true;
         }
@@ -2225,12 +2186,12 @@ namespace MTEmbTest
 
         private async void BtnStartTest_Click(object sender, EventArgs e)
         {
-            #region ¾ÉµÄ´úÂë
+            #region æ—§çš„ä»£ç 
 
             /*
             try
             {
-                // 4) ×é×° EpbManager£¨°Ñ»Øµ÷Î¯ÍĞ½Ó½øÈ¥£©
+                // 4) ç»„è£… EpbManagerï¼ˆæŠŠå›è°ƒå§”æ‰˜æ¥è¿›å»ï¼‰
                 /*_epb = new EpbManager(
                     _cfg,
                     _do,
@@ -2238,19 +2199,19 @@ namespace MTEmbTest
                     twoDeviceAiAcquirer,
                     logger);#1#
 
-                // 5) Æô¶¯¡°¿¨Ç¯1¡±Í¨µÀ
-                //    StartChannel ÄÚ²¿»á¸ù¾İ Test.TestTarget ´ÎÊı¡¢PeriodMs ÖÜÆÚ¡¢Groups ´í·åµÈ×Ô¶¯Ñ­»·
-                // _epb.StartChannel(2); //½çÃæ¿¨¶Ù£¬×¢ÊÍ
+                // 5) å¯åŠ¨â€œå¡é’³1â€é€šé“
+                //    StartChannel å†…éƒ¨ä¼šæ ¹æ® Test.TestTarget æ¬¡æ•°ã€PeriodMs å‘¨æœŸã€Groups é”™å³°ç­‰è‡ªåŠ¨å¾ªç¯
+                // _epb.StartChannel(2); //ç•Œé¢å¡é¡¿ï¼Œæ³¨é‡Š
                 // await _epb.StartChannelAsync(1);
                 // await _epb.StartChannelAsync(2);
                 //await _epb.StartChannelAsync(4);
                 //await _epb.StartChannelAsync(5);
 
 
-                #region ¡¾Í¬²½ÆğÅÜ£¨µçÔ´±£»¤£©¡¿£ºÑ§Ï°½×¶ÎÍ¬×é´í·å + ÕıÊ½½×¶ÎÃªµã¶ÔÆëÇÒÍ¬×é´í·å£¨Ê×ÖÜÆÚ£©
+                #region ã€åŒæ­¥èµ·è·‘ï¼ˆç”µæºä¿æŠ¤ï¼‰ã€‘ï¼šå­¦ä¹ é˜¶æ®µåŒç»„é”™å³° + æ­£å¼é˜¶æ®µé”šç‚¹å¯¹é½ä¸”åŒç»„é”™å³°ï¼ˆé¦–å‘¨æœŸï¼‰
 
 
-                // 1) ÊÕ¼¯¹´Ñ¡Í¨µÀ
+                // 1) æ”¶é›†å‹¾é€‰é€šé“
                 var selected = new List<int>();
                 for (int chIndex = 0; chIndex < 12; chIndex++)
                 {
@@ -2264,11 +2225,11 @@ namespace MTEmbTest
                     // Create and initialize an object with message box settings.
                     XtraMessageBoxArgs args = new XtraMessageBoxArgs()
                     {
-                        Caption = "ÌáÊ¾",
-                        Text = "ÇëÖÁÉÙ¹´Ñ¡Ò»¸öÍ¨µÀ£¡",
+                        Caption = "æç¤º",
+                        Text = "è¯·è‡³å°‘å‹¾é€‰ä¸€ä¸ªé€šé“ï¼",
                         Buttons = new DialogResult[] { DialogResult.Yes },
-                        Icon = SystemIcons.Warning,        // ¾¯¸æÍ¼±ê
-                        DefaultButtonIndex = 0                  // Ä¬ÈÏ°´Å¥£¨0=µÚÒ»¸ö£©
+                        Icon = SystemIcons.Warning,        // è­¦å‘Šå›¾æ ‡
+                        DefaultButtonIndex = 0                  // é»˜è®¤æŒ‰é’®ï¼ˆ0=ç¬¬ä¸€ä¸ªï¼‰
 
                     };
                     // Assign a message box icon.
@@ -2281,26 +2242,26 @@ namespace MTEmbTest
                 {
                     using var cts = new CancellationTokenSource();
 
-                    // ¿É°ó¶¨µ½¡°Í£Ö¹¡±°´Å¥ÒÔ´¥·¢È¡Ïû£º
+                    // å¯ç»‘å®šåˆ°â€œåœæ­¢â€æŒ‰é’®ä»¥è§¦å‘å–æ¶ˆï¼š
                     // uiButtonStop.Click += (_, __) => cts.Cancel();
 
-                    // ÈôÄãÏ£Íû¡°ÈÎÒ»Í¨µÀÑ§Ï°Ê§°Ü¼´ÕûÌåÖĞÖ¹¡±£¬°ÑµÚÈı¸ö²ÎÊı´« true
+                    // è‹¥ä½ å¸Œæœ›â€œä»»ä¸€é€šé“å­¦ä¹ å¤±è´¥å³æ•´ä½“ä¸­æ­¢â€ï¼ŒæŠŠç¬¬ä¸‰ä¸ªå‚æ•°ä¼  true
                     await _epb.StartChannelsSynchronizedPowerAwareAsync(selected, cts.Token, abortAllIfAnyLearnFailed: false);
 
 
-                    RtbInfo?.AppendText($"ÒÑ°´µçÔ´±£»¤²ßÂÔ£ºÑ§Ï°´í·å + ×é¼äÍ¬²½ÆğÅÜ£¨Í¬×éÊ×ÖÜÆÚ´í·å£©\n");
+                    RtbInfo?.AppendText($"å·²æŒ‰ç”µæºä¿æŠ¤ç­–ç•¥ï¼šå­¦ä¹ é”™å³° + ç»„é—´åŒæ­¥èµ·è·‘ï¼ˆåŒç»„é¦–å‘¨æœŸé”™å³°ï¼‰\n");
                 }
                 catch (OperationCanceledException)
                 {
-                    RtbInfo?.AppendText($"²Ù×÷ÒÑÈ¡Ïû\n");
+                    RtbInfo?.AppendText($"æ“ä½œå·²å–æ¶ˆ\n");
                 }
                 catch (Exception ex)
                 {
-                    RtbInfo?.AppendText($"Æô¶¯Ê§°Ü£º{ex.Message}\n");
+                    RtbInfo?.AppendText($"å¯åŠ¨å¤±è´¥ï¼š{ex.Message}\n");
                 }
                 finally
                 {
-                    //ÆôÓÃ°´Å¥
+                    //å¯ç”¨æŒ‰é’®
                 }
 
 
@@ -2309,12 +2270,12 @@ namespace MTEmbTest
 
 
 
-                // UI ÌáÊ¾
-                RtbInfo?.AppendText($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  > ¿¨Ç¯1²âÊÔÒÑÆô¶¯\n");
+                // UI æç¤º
+                RtbInfo?.AppendText($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  > å¡é’³1æµ‹è¯•å·²å¯åŠ¨\n");
             }
             catch (Exception ex)
             {
-                MessageBox.Show($@"Æô¶¯¿¨Ç¯1²âÊÔÊ§°Ü£º{ex.Message}", "ÌáÊ¾", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show($@"å¯åŠ¨å¡é’³1æµ‹è¯•å¤±è´¥ï¼š{ex.Message}", "æç¤º", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
             */
 
@@ -2324,7 +2285,7 @@ namespace MTEmbTest
             var startedChannels = Array.Empty<int>();
             try
             {
-                // 4) ×é×° EpbManager£¨°Ñ»Øµ÷Î¯ÍĞ½Ó½øÈ¥£©
+                // 4) ç»„è£… EpbManagerï¼ˆæŠŠå›è°ƒå§”æ‰˜æ¥è¿›å»ï¼‰
                 /*_epb = new EpbManager(
                     _cfg,
                     _do,
@@ -2332,17 +2293,17 @@ namespace MTEmbTest
                     twoDeviceAiAcquirer,
                     logger);*/
 
-                // 5) Æô¶¯¡°¿¨Ç¯1¡±Í¨µÀ
-                //    StartChannel ÄÚ²¿»á¸ù¾İ Test.TestTarget ´ÎÊı¡¢PeriodMs ÖÜÆÚ¡¢Groups ´í·åµÈ×Ô¶¯Ñ­»·
-                // _epb.StartChannel(2); //½çÃæ¿¨¶Ù£¬×¢ÊÍ
+                // 5) å¯åŠ¨â€œå¡é’³1â€é€šé“
+                //    StartChannel å†…éƒ¨ä¼šæ ¹æ® Test.TestTarget æ¬¡æ•°ã€PeriodMs å‘¨æœŸã€Groups é”™å³°ç­‰è‡ªåŠ¨å¾ªç¯
+                // _epb.StartChannel(2); //ç•Œé¢å¡é¡¿ï¼Œæ³¨é‡Š
                 // await _epb.StartChannelAsync(1);
                 // await _epb.StartChannelAsync(2);
                 //await _epb.StartChannelAsync(4);
                 //await _epb.StartChannelAsync(5);
 
-                #region ¡¾Í¬²½ÆğÅÜ£¨µçÔ´±£»¤£©¡¿£ºÑ§Ï°½×¶ÎÍ¬×é´í·å + ÕıÊ½½×¶ÎÃªµã¶ÔÆëÇÒÍ¬×é´í·å£¨Ê×ÖÜÆÚ£©
+                #region ã€åŒæ­¥èµ·è·‘ï¼ˆç”µæºä¿æŠ¤ï¼‰ã€‘ï¼šå­¦ä¹ é˜¶æ®µåŒç»„é”™å³° + æ­£å¼é˜¶æ®µé”šç‚¹å¯¹é½ä¸”åŒç»„é”™å³°ï¼ˆé¦–å‘¨æœŸï¼‰
 
-                // 1) ÊÕ¼¯¹´Ñ¡Í¨µÀ
+                // 1) æ”¶é›†å‹¾é€‰é€šé“
                 var selected = new List<int>();
                 for (var chIndex = 0; chIndex < 12; chIndex++)
                 {
@@ -2358,11 +2319,11 @@ namespace MTEmbTest
                     // Create and initialize an object with message box settings.
                     var args = new XtraMessageBoxArgs
                     {
-                        Caption = "ÌáÊ¾",
-                        Text = "ÇëÖÁÉÙ¹´Ñ¡Ò»¸öÍ¨µÀ£¡",
+                        Caption = "æç¤º",
+                        Text = "è¯·è‡³å°‘å‹¾é€‰ä¸€ä¸ªé€šé“ï¼",
                         Buttons = new[] { DialogResult.Yes },
-                        Icon = SystemIcons.Warning, // ¾¯¸æÍ¼±ê
-                        DefaultButtonIndex = 0 // Ä¬ÈÏ°´Å¥£¨0=µÚÒ»¸ö£©
+                        Icon = SystemIcons.Warning, // è­¦å‘Šå›¾æ ‡
+                        DefaultButtonIndex = 0 // é»˜è®¤æŒ‰é’®ï¼ˆ0=ç¬¬ä¸€ä¸ªï¼‰
                     };
                     // Assign a message box icon.
                     // Display the message box and close the application if the user clicks "Yes".
@@ -2370,17 +2331,17 @@ namespace MTEmbTest
                         return;
                 }
 
-                // ¶ÁÈ¡×ÔÑ§Ï°È¦Êı£¨±ÈÈç´ÓÒ»¸öÎÄ±¾¿ò£»Ã»ÓĞ¾ÍÓÃ3£©
+                // è¯»å–è‡ªå­¦ä¹ åœˆæ•°ï¼ˆæ¯”å¦‚ä»ä¸€ä¸ªæ–‡æœ¬æ¡†ï¼›æ²¡æœ‰å°±ç”¨3ï¼‰
                 var learnCycles = _cfg.Test.LearnCycles;
 
 
-                #region ÖØĞÂ¸øÃ¿¸öÍ¨µÀµÄÖ´ĞĞ´ÎÊı¸³Öµ
+                #region é‡æ–°ç»™æ¯ä¸ªé€šé“çš„æ‰§è¡Œæ¬¡æ•°èµ‹å€¼
 
                 Dictionary<int, int> epbTestCycle = new Dictionary<int, int>();
-                // Ìí¼ÓÃ¿¸öepbÍ¨µÀµÄÄ¿±ê´ÎÊı
+                // æ·»åŠ æ¯ä¸ªepbé€šé“çš„ç›®æ ‡æ¬¡æ•°
                 foreach (var epbRecord in _cfg.Test.EpbRecords)
                 {
-                    epbTestCycle!.Add(epbRecord.Id, epbRecord.TotalCount - epbRecord.RunCount); // ĞèÒªÄÜ¹»Ã¿´Î¿ªÊ¼ÓÉ×Ü´ÎÊı-ÒÑÔËĞĞ´ÎÊı
+                    epbTestCycle!.Add(epbRecord.Id, epbRecord.TotalCount - epbRecord.RunCount); // éœ€è¦èƒ½å¤Ÿæ¯æ¬¡å¼€å§‹ç”±æ€»æ¬¡æ•°-å·²è¿è¡Œæ¬¡æ•°
                 }
 
                 _epb.EpbTestCycle = epbTestCycle;
@@ -2388,7 +2349,7 @@ namespace MTEmbTest
                 #endregion 
 
 
-                // int.TryParse(TxtLearnCycles.Text, out learnCycles) Ò²¿ÉÒÔ
+                // int.TryParse(TxtLearnCycles.Text, out learnCycles) ä¹Ÿå¯ä»¥
 
                 if (_batchCts != null)
                 {
@@ -2398,37 +2359,37 @@ namespace MTEmbTest
 
                 _batchCts = new CancellationTokenSource();
 
-                channels = selected.ToArray(); // ÀıÈç: {1,2,4,6} »ò {1..12}
+                channels = selected.ToArray(); // ä¾‹å¦‚: {1,2,4,6} æˆ– {1..12}
 
-                LogInfo($"×¼±¸Æô¶¯¿¨Ç¯£º{string.Join(",", channels)}£»×ÔÑ§Ï° {learnCycles} È¦¡£");
+                LogInfo($"å‡†å¤‡å¯åŠ¨å¡é’³ï¼š{string.Join(",", channels)}ï¼›è‡ªå­¦ä¹  {learnCycles} åœˆã€‚");
                 try
                 {
                     var startResult = await _epb.StartBatchSynchronizedWithResultAsync(
-                        channels, // ÅúÁ¿ÒªÅÜµÄÍ¨µÀ
-                        learnCycles, // ×ÔÑ§Ï°È¦Êı£¨°´ÄãÆÚÍû£©
-                        _batchCts.Token // È¡ÏûÁîÅÆ£¨Stop °´Å¥ÓÃ£©
+                        channels, // æ‰¹é‡è¦è·‘çš„é€šé“
+                        learnCycles, // è‡ªå­¦ä¹ åœˆæ•°ï¼ˆæŒ‰ä½ æœŸæœ›ï¼‰
+                        _batchCts.Token // å–æ¶ˆä»¤ç‰Œï¼ˆStop æŒ‰é’®ç”¨ï¼‰
                     );
                     startedChannels = startResult.StartedChannels;
 
                     if (startResult.Faults.Length > 0)
                         LogInfo(
-                            $"[°²È«] ÅúÁ¿²¿·ÖÆô¶¯£ºÔËĞĞ¿¨Ç¯[{string.Join(",", startResult.StartedChannels)}]£»" +
-                            $"¸ôÀë¿¨Ç¯[{string.Join(",", startResult.Faults.Select(x => x.Channel))}]¡£Çë²é¿´ÉÏ·½Í¨µÀ±¨¾¯¼° AlarmSnapshots¡£");
+                            $"[å®‰å…¨] æ‰¹é‡éƒ¨åˆ†å¯åŠ¨ï¼šè¿è¡Œå¡é’³[{string.Join(",", startResult.StartedChannels)}]ï¼›" +
+                            $"éš”ç¦»å¡é’³[{string.Join(",", startResult.Faults.Select(x => x.Channel))}]ã€‚è¯·æŸ¥çœ‹ä¸Šæ–¹é€šé“æŠ¥è­¦åŠ AlarmSnapshotsã€‚");
                     else
-                        LogInfo("ÅúÁ¿Æô¶¯Íê³É£ºÑ§Ï°½×¶ÎÒÑ¶ÔÆë²¢´í·å£¬ÉÏÏßºóÃ¿È¦¶ÔÆëÔËĞĞÖĞ¡­");
+                        LogInfo("æ‰¹é‡å¯åŠ¨å®Œæˆï¼šå­¦ä¹ é˜¶æ®µå·²å¯¹é½å¹¶é”™å³°ï¼Œä¸Šçº¿åæ¯åœˆå¯¹é½è¿è¡Œä¸­â€¦");
                 }
                 catch (OperationCanceledException)
                 {
-                    LogInfo("ÅúÁ¿Æô¶¯È¡Ïû¡£");
+                    LogInfo("æ‰¹é‡å¯åŠ¨å–æ¶ˆã€‚");
                 }
                 catch (Exception ex)
                 {
-                    LogInfo($"ÅúÁ¿Æô¶¯Ê§°Ü£º{ex.Message}");
+                    LogInfo($"æ‰¹é‡å¯åŠ¨å¤±è´¥ï¼š{ex.Message}");
                 }
 
                 #endregion
 
-                // µã»÷¡°¿ªÊ¼ÊÔÑé¡±°´Å¥Ê± ¸üĞÂÏà¹ØÍ¨µÀ£»
+                // ç‚¹å‡»â€œå¼€å§‹è¯•éªŒâ€æŒ‰é’®æ—¶ æ›´æ–°ç›¸å…³é€šé“ï¼›
                 foreach (var channel in startedChannels)
                 {
                     var record = EnsureEpbRecord(channel);
@@ -2437,25 +2398,25 @@ namespace MTEmbTest
                 }
 
 
-                // UI ÌáÊ¾
-                // RtbInfo?.AppendText($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  > ¿¨Ç¯1²âÊÔÒÑÆô¶¯\n");
+                // UI æç¤º
+                // RtbInfo?.AppendText($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  > å¡é’³1æµ‹è¯•å·²å¯åŠ¨\n");
             }
             catch (Exception ex)
             {
-                LogInfo($"Æô¶¯¿¨Ç¯{string.Join(",", channels)} ²âÊÔÊ§°Ü£º{ex.Message}");
-                MessageBox.Show($@"Æô¶¯¿¨Ç¯{channels}²âÊÔÊ§°Ü£º{ex.Message}", @"ÌáÊ¾", MessageBoxButtons.OK,
+                LogInfo($"å¯åŠ¨å¡é’³{string.Join(",", channels)} æµ‹è¯•å¤±è´¥ï¼š{ex.Message}");
+                MessageBox.Show($@"å¯åŠ¨å¡é’³{channels}æµ‹è¯•å¤±è´¥ï¼š{ex.Message}", @"æç¤º", MessageBoxButtons.OK,
                     MessageBoxIcon.Warning);
             }
         }
 
         /// <summary>
-        ///     Í£Ö¹ÊÔÑé°´Å¥
+        ///     åœæ­¢è¯•éªŒæŒ‰é’®
         /// </summary>
         /// <param name="sender"></param>
         /// <param name="e"></param>
         private void BtnStop_Click(object sender, EventArgs e)
         {
-            #region ¾ÉµÄ´úÂë
+            #region æ—§çš„ä»£ç 
 
             /*try
             {
@@ -2464,44 +2425,44 @@ namespace MTEmbTest
                 // _epb.StopChannel(4);
                 // _epb.StopChannel(5);
 
-                _epb.StopAll(); // Í£Ö¹ËùÓĞÍ¨µÀ
-                RtbInfo?.AppendText($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  > Í£Ö¹ÊÔÑé\n");
+                _epb.StopAll(); // åœæ­¢æ‰€æœ‰é€šé“
+                RtbInfo?.AppendText($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  > åœæ­¢è¯•éªŒ\n");
             }
             catch (Exception ex)
             {
-                RtbInfo?.AppendText($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  > Í£Ö¹¿¨Ç¯2²âÊÔÊ§°Ü\n");
+                RtbInfo?.AppendText($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  > åœæ­¢å¡é’³2æµ‹è¯•å¤±è´¥\n");
             }*/
 
             #endregion
 
-            // ¹Ø±ÕËùÓĞÍ¨µÀ
+            // å…³é—­æ‰€æœ‰é€šé“
             for (var chIndex = 0; chIndex < 12; chIndex++)
             {
                 var ch = chIndex + 1;
-                EpbGroup[chIndex].CtrlRunning.Checked = false; // Æô¶¯°´Å¥ÉèÎªÔÊĞí
+                EpbGroup[chIndex].CtrlRunning.Checked = false; // å¯åŠ¨æŒ‰é’®è®¾ä¸ºå…è®¸
             }
 
 
             try
             {
-                _batchCts?.Cancel(); // ´¥·¢Íâ¿ÇµÄ await Í£ÏÂÑ§Ï°/¼ÆÊ±Æ÷¹¤×÷
-                _epb.StopAll(); // ÄÚ²¿ DO/AO/Runner Í£Ö¹
-                LogInfo("Í£Ö¹ÊÔÑé");
+                _batchCts?.Cancel(); // è§¦å‘å¤–å£³çš„ await åœä¸‹å­¦ä¹ /è®¡æ—¶å™¨å·¥ä½œ
+                _epb.StopAll(); // å†…éƒ¨ DO/AO/Runner åœæ­¢
+                LogInfo("åœæ­¢è¯•éªŒ");
             }
             catch (Exception ex)
             {
-                LogInfo($"Í£Ö¹Ê§°Ü£º{ex.Message}");
+                LogInfo($"åœæ­¢å¤±è´¥ï¼š{ex.Message}");
             }
         }
 
-        #region 3) ´°Ìå¹Ø±Õ£ºÒ»´ÎĞÔ½â°ó/Í£Ö¹/ÊÍ·Å
+        #region 3) çª—ä½“å…³é—­ï¼šä¸€æ¬¡æ€§è§£ç»‘/åœæ­¢/é‡Šæ”¾
 
         /// <summary>
-        ///     ´°Ìå¹Ø±Õ£º±ê¼Ç¹Ø±Õ×´Ì¬£¬½â°óÊÂ¼ş£¬Í£Ö¹ UI ¶¨Ê±Æ÷Óë²É¼¯£¬±ÜÃâ»Øµ÷´òµ½ÒÑÏú»ÙµÄ UI¡£
+        ///     çª—ä½“å…³é—­ï¼šæ ‡è®°å…³é—­çŠ¶æ€ï¼Œè§£ç»‘äº‹ä»¶ï¼Œåœæ­¢ UI å®šæ—¶å™¨ä¸é‡‡é›†ï¼Œé¿å…å›è°ƒæ‰“åˆ°å·²é”€æ¯çš„ UIã€‚
         /// </summary>
         private async void FrmEpbMainMonitor_FormClosing(object sender, FormClosingEventArgs e)
         {
-            // Ê×´Î¹Ø±ÕÖ»Æô¶¯Ò»´Î°²È«ÊÕÎ²£»È·ÈÏºóÖØÈë±¾´¦ÀíÆ÷£¬ÔÙÊÍ·ÅDAQ¼°ÆäËü×ÊÔ´¡£
+            // é¦–æ¬¡å…³é—­åªå¯åŠ¨ä¸€æ¬¡å®‰å…¨æ”¶å°¾ï¼›ç¡®è®¤åé‡å…¥æœ¬å¤„ç†å™¨ï¼Œå†é‡Šæ”¾DAQåŠå…¶å®ƒèµ„æºã€‚
             if (Volatile.Read(ref _closingReentry) != 2)
             {
                 e.Cancel = true;
@@ -2515,7 +2476,7 @@ namespace MTEmbTest
                             new StopContext
                             {
                                 Source = StopSource.ApplicationClosing,
-                                Reason = "Ö÷´°Ìå¹Ø±Õ",
+                                Reason = "ä¸»çª—ä½“å…³é—­",
                                 Initiator = nameof(FrmEpbMainMonitor_FormClosing),
                                 CorrelationId = Guid.NewGuid().ToString("N"),
                                 RequestedUtc = DateTime.UtcNow
@@ -2535,12 +2496,29 @@ namespace MTEmbTest
                 {
                     var items = new List<string>();
                     if (!safety.MotorOffCommandSucceeded)
-                        items.Add("µç»úDO¹Ø±ÕÎ´È·ÈÏ£º" + (safety.MotorError ?? "ÎŞÏêÏ¸ĞÅÏ¢"));
+                        items.Add("ç”µæœºDOå…³é—­æœªç¡®è®¤ï¼š" + (safety.MotorError ?? "æ— è¯¦ç»†ä¿¡æ¯"));
                     if (!safety.PowerOffConfirmed)
-                        items.Add("³Ì¿ØµçÔ´¹Ø±Õ»Ø¶ÁÎ´È·ÈÏ£º" + (safety.PowerError ?? "ÎŞÏêÏ¸ĞÅÏ¢"));
+                        items.Add("ç¨‹æ§ç”µæºå…³é—­å›è¯»æœªç¡®è®¤ï¼š" + (safety.PowerError ?? "æ— è¯¦ç»†ä¿¡æ¯"));
                     MessageBox.Show(
-                        string.Join("\r\n", items) + "\r\n\r\n´°¿Ú±£³Ö´ò¿ª£¬Çë¼ì²éºóÖØÊÔ¹Ø±Õ¡£",
-                        "°²È«¹Ø±ÕÎ´È·ÈÏ",
+                        string.Join("\r\n", items) + "\r\n\r\nçª—å£ä¿æŒæ‰“å¼€ï¼Œè¯·æ£€æŸ¥åé‡è¯•å…³é—­ã€‚",
+                        "å®‰å…¨å…³é—­æœªç¡®è®¤",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Error);
+                    _isClosing = false;
+                    Interlocked.Exchange(ref _closingReentry, 0);
+                    return;
+                }
+
+                if (!safety.CanCloseApplication)
+                {
+                    MessageBox.Show(
+                        "ç”µæœºå’Œç¨‹æ§ç”µæºå·²ç»å®‰å…¨å…³é—­ï¼Œä½†æœ€åä¸€æ‰¹ Raw/SQLite æ•°æ®å°šæœªå®Œæˆè½ç›˜ã€‚\r\n" +
+                        (string.IsNullOrWhiteSpace(safety.PersistenceError)
+                            ? "å†™ç›˜æ¢å¤é“¾ä»åœ¨åå°é‡è¯•ã€‚"
+                            : safety.PersistenceError) +
+                        "\r\n\r\nçª—å£ä¿æŒæ‰“å¼€ï¼Œç¦æ­¢ç»“æŸè¿›ç¨‹ã€‚è¯·æ¢å¤ç£ç›˜/ç½‘ç»œå­˜å‚¨åå†æ¬¡å…³é—­ï¼Œ" +
+                        "é¿å…ä¸¢å¤±æœ€ååœˆæˆ–æŠ¥è­¦è¯æ®ã€‚",
+                        "æ•°æ®è€ä¹…è¾¹ç•Œæœªç¡®è®¤",
                         MessageBoxButtons.OK,
                         MessageBoxIcon.Error);
                     _isClosing = false;
@@ -2549,7 +2527,7 @@ namespace MTEmbTest
                 }
 
                 if (!safety.PressureSafeConfirmed)
-                    LogInfo("[°²È«¾¯¸æ] µç»úDOºÍ³Ì¿ØµçÔ´¾ùÒÑÈ·ÈÏ¹Ø±Õ£»½öÑ¹Á¦°²È«Ö¤¾İÒò²ÉÑù³Â¾É/²»¿ÉÓÃÎ´È·ÈÏ£¬°´ÏÖ³¡²ßÂÔ¼ÌĞøÍË³ö¡£" +
+                    LogInfo("[å®‰å…¨è­¦å‘Š] ç”µæœºDOå’Œç¨‹æ§ç”µæºå‡å·²ç¡®è®¤å…³é—­ï¼›ä»…å‹åŠ›å®‰å…¨è¯æ®å› é‡‡æ ·é™ˆæ—§/ä¸å¯ç”¨æœªç¡®è®¤ï¼ŒæŒ‰ç°åœºç­–ç•¥ç»§ç»­é€€å‡ºã€‚" +
                             (string.IsNullOrWhiteSpace(safety.PressureError) ? string.Empty : " " + safety.PressureError));
 
                 Interlocked.Exchange(ref _closingReentry, 2);
@@ -2557,11 +2535,25 @@ namespace MTEmbTest
                 return;
             }
 
-            // Ö»Ö´ĞĞÒ»´Î
+            // åªæ‰§è¡Œä¸€æ¬¡
             if (Interlocked.Exchange(ref _formClosedFlag, 1) != 0) return;
             _isClosing = true;
 
-            // 1) ½â°óÇúÏß¿É¼ûĞÔÊÂ¼ş£¨±ÜÃâ¹Ø±Õ¹ı³ÌÖĞÔÙ´Î´¥·¢£©
+            // StopAll å·²ç»å®Œæˆç‰©ç†å®‰å…¨å’ŒæŒä¹…åŒ–è¾¹ç•Œï¼›åœ¨çª—ä½“ç›´æ¥é‡Šæ”¾ DAQ/DO/æ¶²å‹
+            // å¯¹è±¡ä¹‹å‰ï¼Œå¿…é¡»å…ˆè®©æ§åˆ¶å±‚ç›‘ç£çš„æ¢å¤ã€è¯æ®å’Œè®¾å¤‡ä»»åŠ¡å®Œæˆå¼‚å¸¸è§‚å¯Ÿä¸é€€åœºã€‚
+            // å¦åˆ™è¿Ÿåˆ°ä»»åŠ¡ä»å¯èƒ½è®¿é—®ä¸‹é¢å³å°† Dispose çš„é‡‡é›†å™¨/å†™ç›˜å™¨ã€‚
+            var controlHardwareReleased = false;
+            try
+            {
+                _epb?.ReleaseHardwareForRestart();
+                controlHardwareReleased = _epb != null;
+            }
+            catch (Exception ex)
+            {
+                logger?.Warn("å…³é—­çª—å£æ—¶æ§åˆ¶å±‚åå°ä»»åŠ¡/ç¡¬ä»¶é‡Šæ”¾å¤±è´¥ï¼š" + ex.Message, "EPB");
+            }
+
+            // 1) è§£ç»‘æ›²çº¿å¯è§æ€§äº‹ä»¶ï¼ˆé¿å…å…³é—­è¿‡ç¨‹ä¸­å†æ¬¡è§¦å‘ï¼‰
             try
             {
                 foreach (var kv in _checkByGlobal)
@@ -2570,10 +2562,10 @@ namespace MTEmbTest
             }
             catch
             {
-                /* ºöÂÔ¸ö±ğ¿Ø¼şÒì³£ */
+                /* å¿½ç•¥ä¸ªåˆ«æ§ä»¶å¼‚å¸¸ */
             }
 
-            // 2) Í£Ö¹²¢ÊÍ·Å UI ¶¨Ê±Æ÷£¨ÖØ»æ½»ÓÉ¶¨Ê±Æ÷Í³Ò»Íê³É£¬¹Ø±ÕÊ±±ØĞëÏÈÍ££©
+            // 2) åœæ­¢å¹¶é‡Šæ”¾ UI å®šæ—¶å™¨ï¼ˆé‡ç»˜äº¤ç”±å®šæ—¶å™¨ç»Ÿä¸€å®Œæˆï¼Œå…³é—­æ—¶å¿…é¡»å…ˆåœï¼‰
             try
             {
                 if (_uiTimer != null)
@@ -2588,10 +2580,10 @@ namespace MTEmbTest
                 // ignored
             }
 
-            // 3) ½â°ó²É¼¯ÊÂ¼ş²¢Í£Ö¹²É¼¯£¨°´ÄãµÄÊµÀıÃû/ÊÂ¼şÃûĞŞ¸Ä£©
+            // 3) è§£ç»‘é‡‡é›†äº‹ä»¶å¹¶åœæ­¢é‡‡é›†ï¼ˆæŒ‰ä½ çš„å®ä¾‹å/äº‹ä»¶åä¿®æ”¹ï¼‰
             try
             {
-                // Èç¹ûÊÂ¼şÃû²»Í¬£¬Çë¸ÄÎªÄãµÄÊµ¼ÊÊÂ¼şÃû
+                // å¦‚æœäº‹ä»¶åä¸åŒï¼Œè¯·æ”¹ä¸ºä½ çš„å®é™…äº‹ä»¶å
                 if (twoDeviceAiAcquirer != null)
                 {
                     try
@@ -2603,22 +2595,25 @@ namespace MTEmbTest
                         // ignored
                     }
 
-                    try
+                    if (!controlHardwareReleased)
                     {
-                        twoDeviceAiAcquirer.Stop();
-                    }
-                    catch
-                    {
-                        // ignored
-                    }
+                        try
+                        {
+                            twoDeviceAiAcquirer.Stop();
+                        }
+                        catch
+                        {
+                            // ignored
+                        }
 
-                    try
-                    {
-                        twoDeviceAiAcquirer?.Dispose();
-                    }
-                    catch
-                    {
-                        // ignored
+                        try
+                        {
+                            twoDeviceAiAcquirer.Dispose();
+                        }
+                        catch
+                        {
+                            // ignored
+                        }
                     }
 
                     twoDeviceAiAcquirer = null;
@@ -2629,7 +2624,7 @@ namespace MTEmbTest
                 // ignored
             }
 
-            // 3.5) ÊÍ·Å±¨¾¯×ÓÏµÍ³£¨´®¿Ú£©
+            // 3.5) é‡Šæ”¾æŠ¥è­¦å­ç³»ç»Ÿï¼ˆä¸²å£ï¼‰
             try
             {
                 try
@@ -2654,10 +2649,10 @@ namespace MTEmbTest
                 // ignored
             }
 
-            // 4) Í£Ö¹²¢ÊÍ·ÅÂäÅÌ¶¨Ê±Æ÷£¬²¢×ö×îºóÒ»´Î Flush on 2025/09/09
+            // 4) åœæ­¢å¹¶é‡Šæ”¾è½ç›˜å®šæ—¶å™¨ï¼Œå¹¶åšæœ€åä¸€æ¬¡ Flush on 2025/09/09
             try
             {
-                // Í£Ö¹¶¨Ê±Æ÷
+                // åœæ­¢å®šæ—¶å™¨
                 void StopTimer(ref Timer t)
                 {
                     try
@@ -2677,50 +2672,48 @@ namespace MTEmbTest
                 StopTimer(ref _daqRawTimerDev2);
                 StopTimer(ref _daqStatTimerDev2);
 
-                // ĞŞ¸´£ºÊ¹ÓÃTask.RunÒì²½Ö´ĞĞFlush²Ù×÷£¬±ÜÃâUIÏß³Ì×èÈû
-                _ = System.Threading.Tasks.Task.Run(async () =>
+                // ç›´æ¥ç­‰å¾…å¼‚æ­¥Flushå®Œæˆåå†é‡Šæ”¾å†™ç›˜å™¨ã€‚äº‹ä»¶å¤„ç†å™¨æœ¬èº«æ˜¯asyncï¼Œ
+                // ä¸ä¼šé˜»å¡æ¶ˆæ¯æ³µï¼Œä¹Ÿä¸ä¼šç•™ä¸‹â€œçª—å£å·²å…³é—­ä½†Flushä»è®¿é—®å·²é‡Šæ”¾èµ„æºâ€çš„è£¸ä»»åŠ¡ã€‚
+                try
                 {
-                    try
+                    if (_daqDev1 != null)
                     {
-                        if (_daqDev1 != null)
-                        {
-                            await _daqDev1.FlushRawToDiskAsync();
-                            await _daqDev1.FlushStatToDiskAsync();
-                        }
+                        await _daqDev1.FlushRawToDiskAsync();
+                        await _daqDev1.FlushStatToDiskAsync();
+                    }
 
-                        if (_daqDev2 != null)
-                        {
-                            await _daqDev2.FlushRawToDiskAsync();
-                            await _daqDev2.FlushStatToDiskAsync();
-                        }
-                    }
-                    catch
+                    if (_daqDev2 != null)
                     {
-                        /* ¹Ø±Õ½×¶ÎºöÂÔµ¥´ÎÊ§°Ü */
+                        await _daqDev2.FlushRawToDiskAsync();
+                        await _daqDev2.FlushStatToDiskAsync();
                     }
-                });
+                }
+                catch (Exception ex)
+                {
+                    logger?.Error("å…³é—­çª—å£æ—¶DAQæœ€ç»ˆFlushå¤±è´¥ï¼š" + ex.Message, "DAQ", ex);
+                }
             }
             catch
             {
-                /* ¹Ø±Õ½×¶ÎºöÂÔµ¥´ÎÊ§°Ü */
+                /* å…³é—­é˜¶æ®µå¿½ç•¥å•æ¬¡å¤±è´¥ */
             }
 
 
-            // // ²âÊÔ
+            // // æµ‹è¯•
             // _diskWriter.ExportFreeRunBySamples(1, 100000,
             //     Path.Combine(Environment.CurrentDirectory, @$"DataStore\EPB1-{DateTime.Now:yyyy_MM_dd-HH_mm_ss}.csv"));
 
-            // ½áÊø×Ô¶¯¶¨Ê±±£´æÆ÷ 
+            // ç»“æŸè‡ªåŠ¨å®šæ—¶ä¿å­˜å™¨
             try
             {
-                // ¡ª¡ª 1) Í£Ö¹×Ô¶¯±£´æ¶¨Ê±Æ÷ ¡ª¡ª //
+                // â€”â€” 1) åœæ­¢è‡ªåŠ¨ä¿å­˜å®šæ—¶å™¨ â€”â€” //
                 if (_autoSaveTimer != null)
                 {
                     _autoSaveTimer.Stop();
-                    _autoSaveTimer.Tick -= AutoSaveTimer_Tick; // ÇåÀíÊÂ¼ş
+                    _autoSaveTimer.Tick -= AutoSaveTimer_Tick; // æ¸…ç†äº‹ä»¶
                 }
 
-                // ¡ª¡ª 2) ×îÖÕ±£´æÒ»´Î£¨¶µµ×£©¡ª¡ª //
+                // â€”â€” 2) æœ€ç»ˆä¿å­˜ä¸€æ¬¡ï¼ˆå…œåº•ï¼‰â€”â€” //
                 lock (_epbRecordsLock)
                 {
                     FlushUiEpbRecordsToConfig();
@@ -2730,22 +2723,22 @@ namespace MTEmbTest
             }
             catch (Exception ex)
             {
-                logger?.Warn("¹Ø±Õ´°¿ÚÊ±±£´æ EPB ¼ÇÂ¼Ê§°Ü£º" + ex.Message, "EPB");
+                logger?.Warn("å…³é—­çª—å£æ—¶ä¿å­˜ EPB è®°å½•å¤±è´¥ï¼š" + ex.Message, "EPB");
             }
 
 
             try
             {
-                // 5) ¹Ø±Õ²¢ÊÍ·ÅÂäÅÌÆ÷£¨·Ç³£¹Ø¼ü£©£º
-                //    EpbDiskWriter ÄÚ²¿³ÖÓĞ MemoryMappedFile ºÍ SQLite Á¬½Ó£¬Èç¹û²» Dispose£¬
-                //    ¶ÔÓ¦µÄ EPB*_sliding.dat ÎÄ¼ş»áÒ»Ö±±»µ±Ç°½ø³Ì¶ÀÕ¼£¬µ¼ÖÂÏÂ´Î new Ê±´ò²»¿ª¡£
+                // 5) å…³é—­å¹¶é‡Šæ”¾è½ç›˜å™¨ï¼ˆéå¸¸å…³é”®ï¼‰ï¼š
+                //    EpbDiskWriter å†…éƒ¨æŒæœ‰ MemoryMappedFile å’Œ SQLite è¿æ¥ï¼Œå¦‚æœä¸ Disposeï¼Œ
+                //    å¯¹åº”çš„ EPB*_sliding.dat æ–‡ä»¶ä¼šä¸€ç›´è¢«å½“å‰è¿›ç¨‹ç‹¬å ï¼Œå¯¼è‡´ä¸‹æ¬¡ new æ—¶æ‰“ä¸å¼€ã€‚
                 var writer = _diskWriter;
-                _diskWriter = null; // ÌáÇ°ÖÃ¿Õ£¬·ÀÖ¹ºóĞøÎóÓÃ
+                _diskWriter = null; // æå‰ç½®ç©ºï¼Œé˜²æ­¢åç»­è¯¯ç”¨
 
                 if (writer != null)
                 {
-                    // Èç¹ûÄãÈ·ÊµĞèÒªÔÚ´°Ìå¹Ø±ÕÊ±µ¼³öÒ»·İ Free-Run Êı¾İ£¬
-                    // ¿ÉÒÔ±£ÁôÏÂÃæÕâ¶Îµ¼³öÂß¼­£»²»ĞèÒªµÄ»°¿ÉÒÔÕûÌåÉ¾µô¡£
+                    // å¦‚æœä½ ç¡®å®éœ€è¦åœ¨çª—ä½“å…³é—­æ—¶å¯¼å‡ºä¸€ä»½ Free-Run æ•°æ®ï¼Œ
+                    // å¯ä»¥ä¿ç•™ä¸‹é¢è¿™æ®µå¯¼å‡ºé€»è¾‘ï¼›ä¸éœ€è¦çš„è¯å¯ä»¥æ•´ä½“åˆ æ‰ã€‚
                     try
                     {
                         // var exportPath = Path.Combine(
@@ -2756,19 +2749,19 @@ namespace MTEmbTest
                     }
                     catch
                     {
-                        // ¹Ø±Õ½×¶Îµ¼³öÊ§°Ü¿ÉÒÔºöÂÔ£¬±ÜÃâÓ°ÏìÖ÷Á÷³Ì
+                        // å…³é—­é˜¶æ®µå¯¼å‡ºå¤±è´¥å¯ä»¥å¿½ç•¥ï¼Œé¿å…å½±å“ä¸»æµç¨‹
                     }
 
-                    // ÕæÕıÊÍ·ÅÎÄ¼ş¾ä±úºÍÄÚ´æÓ³Éä
+                    // çœŸæ­£é‡Šæ”¾æ–‡ä»¶å¥æŸ„å’Œå†…å­˜æ˜ å°„
                     writer.Dispose();
                 }
             }
             catch
             {
-                /* ¹Ø±Õ½×¶ÎºöÂÔµ¥´ÎÊ§°Ü */
+                /* å…³é—­é˜¶æ®µå¿½ç•¥å•æ¬¡å¤±è´¥ */
             }
 
-            #region ½â°óChannelCycleCompletedÊÂ¼ş
+            #region è§£ç»‘ChannelCycleCompletedäº‹ä»¶
 
             try
             {
@@ -2779,13 +2772,21 @@ namespace MTEmbTest
             }
             catch
             {
-                // ºöÂÔÒì³£
+                // å¿½ç•¥å¼‚å¸¸
             }
 
             #endregion
 
             try
             {
+                if (_uiInfoFlushTimer != null)
+                {
+                    _uiInfoFlushTimer.Stop();
+                    _uiInfoFlushTimer.Tick -= UiInfoFlushTimer_Tick;
+                    _uiInfoFlushTimer.Dispose();
+                    _uiInfoFlushTimer = null;
+                }
+
                 _uiInfoLogStore?.Dispose();
                 _uiInfoLogStore = null;
             }
@@ -2800,16 +2801,16 @@ namespace MTEmbTest
         #endregion
 
 
-        // °ÑÈ«Ñ¡ÖĞÏî×öÖÃÁã»òÇåÁã
+        // æŠŠå…¨é€‰ä¸­é¡¹åšç½®é›¶æˆ–æ¸…é›¶
         private void ZeroOrClearSelected(bool isZero)
         {
             if (twoDeviceAiAcquirer == null)
             {
-                XtraMessageBox.Show("²É¼¯Æ÷Î´³õÊ¼»¯¡£");
+                XtraMessageBox.Show("é‡‡é›†å™¨æœªåˆå§‹åŒ–ã€‚");
                 return;
             }
 
-            // È¡±»¹´Ñ¡µÄÈ«¾ÖË÷Òı£¨1..15£©
+            // å–è¢«å‹¾é€‰çš„å…¨å±€ç´¢å¼•ï¼ˆ1..15ï¼‰
             var picked = _checkByGlobal
                 .Where(kv => kv.Value?.Checked == true)
                 .Select(kv => kv.Key)
@@ -2818,20 +2819,20 @@ namespace MTEmbTest
 
             if (picked.Count == 0)
             {
-                XtraMessageBox.Show("ÇëÏÈ¹´Ñ¡Òª²Ù×÷µÄÍ¨µÀ¡£");
+                XtraMessageBox.Show("è¯·å…ˆå‹¾é€‰è¦æ“ä½œçš„é€šé“ã€‚");
                 return;
             }
 
             foreach (var idx in picked)
                 if (idx >= 0 && idx <= 11)
                 {
-                    // EPB µçÁ÷Í¨µÀ
+                    // EPB ç”µæµé€šé“
                     if (isZero) twoDeviceAiAcquirer.ZeroEpbChannel(idx + 1);
                     else twoDeviceAiAcquirer.ClearZeroEpbChannel(idx + 1);
                 }
                 else
                 {
-                    // P1 / P2 / F -> ²ÎÊıÃû
+                    // P1 / P2 / F -> å‚æ•°å
                     var paramName = idx switch
                     {
                         12 => "Pressure_1",
@@ -2845,14 +2846,14 @@ namespace MTEmbTest
                     else twoDeviceAiAcquirer.ClearZeroByParamName(paramName);
                 }
 
-            // ¿ÉÑ¡£º¼òµ¥ÌáÊ¾
-            var label = isZero ? "ÖÃÁã" : "Çå³ıÖÃÁã";
+            // å¯é€‰ï¼šç®€å•æç¤º
+            var label = isZero ? "ç½®é›¶" : "æ¸…é™¤ç½®é›¶";
             var list = string.Join(", ", picked.Select(IndexToDisplayName));
-            // ÄãÒ²¿ÉÒÔ»»³É×´Ì¬À¸ÌáÊ¾
-            Console.WriteLine($"{label}Íê³É£º{list}");
+            // ä½ ä¹Ÿå¯ä»¥æ¢æˆçŠ¶æ€æ æç¤º
+            Console.WriteLine($"{label}å®Œæˆï¼š{list}");
         }
 
-        // °ÑÈ«¾ÖË÷Òı×ª³É½çÃæÏÔÊ¾Ãû£¨1..12, P1, P2, F£©
+        // æŠŠå…¨å±€ç´¢å¼•è½¬æˆç•Œé¢æ˜¾ç¤ºåï¼ˆ1..12, P1, P2, Fï¼‰
         private static string IndexToDisplayName(int idx)
         {
             return idx switch
@@ -2875,7 +2876,7 @@ namespace MTEmbTest
             ZeroOrClearSelected(false);
         }
 
-        /// <summary>ĞÅºÅÀàĞÍ£¨ÓÃÓÚ¾ö¶¨·ÅÄÄ¸ùÖáÓëÃüÃûµÈ£©¡£</summary>
+        /// <summary>ä¿¡å·ç±»å‹ï¼ˆç”¨äºå†³å®šæ”¾å“ªæ ¹è½´ä¸å‘½åç­‰ï¼‰ã€‚</summary>
         private enum SignalType
         {
             Current,
@@ -2883,22 +2884,22 @@ namespace MTEmbTest
             Force
         }
 
-        /// <summary>È«¾ÖÍ¨µÀ¶¨Òå£¨°ÑÉè±¸ + AI ĞĞºÅ£¬Ó³Éäµ½ 15 Â·È«¾ÖÇúÏß£©¡£</summary>
+        /// <summary>å…¨å±€é€šé“å®šä¹‰ï¼ˆæŠŠè®¾å¤‡ + AI è¡Œå·ï¼Œæ˜ å°„åˆ° 15 è·¯å…¨å±€æ›²çº¿ï¼‰ã€‚</summary>
         private sealed class ChannelDef
         {
-            /// <summary>Éè±¸ÄÚ AI ĞĞºÅ£¨0-based£©¡£</summary>
+            /// <summary>è®¾å¤‡å†… AI è¡Œå·ï¼ˆ0-basedï¼‰ã€‚</summary>
             public int AiIndex;
 
-            /// <summary>ËùÊôÉè±¸£¨"Dev1"/"Dev2"£©¡£</summary>
+            /// <summary>æ‰€å±è®¾å¤‡ï¼ˆ"Dev1"/"Dev2"ï¼‰ã€‚</summary>
             public string Device;
 
-            /// <summary>ÇúÏßÏÔÊ¾Ãû¡£</summary>
+            /// <summary>æ›²çº¿æ˜¾ç¤ºåã€‚</summary>
             public string DisplayName;
 
-            /// <summary>È«¾ÖË÷Òı£ºEPB1..12 -> 0..11£»P1->12£»P2->13£»F->14¡£</summary>
+            /// <summary>å…¨å±€ç´¢å¼•ï¼šEPB1..12 -> 0..11ï¼›P1->12ï¼›P2->13ï¼›F->14ã€‚</summary>
             public int GlobalIndex;
 
-            /// <summary>ĞÅºÅÀàĞÍ¡£</summary>
+            /// <summary>ä¿¡å·ç±»å‹ã€‚</summary>
             public SignalType Type;
         }
 
@@ -2909,50 +2910,50 @@ namespace MTEmbTest
             public bool IsActive { get; set; }
         }
 
-        #region EPB ¸ÅÀÀÇøÓò Ïà¹Ø·½·¨
+        #region EPB æ¦‚è§ˆåŒºåŸŸ ç›¸å…³æ–¹æ³•
 
         /// <summary>
-        /// ³õÊ¼»¯ EPB ¸ÅÀÀÇøÓò£º
-        /// 1. ÓÃ _uiEpbRecords Ìî³äÏÂÀ­¿ò£»
-        /// 2. Ä¬ÈÏÑ¡ÖĞµÚÒ»¸öÍ¨µÀ²¢Ë¢ĞÂ Led / ½ø¶ÈÌõ / ×´Ì¬µÆ¡£
+        /// åˆå§‹åŒ– EPB æ¦‚è§ˆåŒºåŸŸï¼š
+        /// 1. ç”¨ _uiEpbRecords å¡«å……ä¸‹æ‹‰æ¡†ï¼›
+        /// 2. é»˜è®¤é€‰ä¸­ç¬¬ä¸€ä¸ªé€šé“å¹¶åˆ·æ–° Led / è¿›åº¦æ¡ / çŠ¶æ€ç¯ã€‚
         /// </summary>
         private void InitEpbSummaryPanel()
         {
-            // ±£»¤£ºÃ»ÓĞ¼ÇÂ¼¾ÍÖ±½Ó·µ»Ø
+            // ä¿æŠ¤ï¼šæ²¡æœ‰è®°å½•å°±ç›´æ¥è¿”å›
             if (_uiEpbRecords == null || _uiEpbRecords.Count == 0)
                 return;
 
-            // Çå¿ÕÔ­ÓĞÏîÄ¿
+            // æ¸…ç©ºåŸæœ‰é¡¹ç›®
             comboBoxEditCurrentRecord.Properties.Items.Clear();
 
-            // °´Í¨µÀºÅÅÅĞòºóÌîÈëÏÂÀ­¿ò
+            // æŒ‰é€šé“å·æ’åºåå¡«å…¥ä¸‹æ‹‰æ¡†
             foreach (var rec in _uiEpbRecords.OrderBy(r => r.Id))
             {
-                // ÏÔÊ¾ÎÄ±¾Äã¿ÉÒÔ×Ô¼º¶¨£¬ÕâÀïÓÃ EPB-1¡¢EPB-2 ...
+                // æ˜¾ç¤ºæ–‡æœ¬ä½ å¯ä»¥è‡ªå·±å®šï¼Œè¿™é‡Œç”¨ EPB-1ã€EPB-2 ...
                 string displayText = $"EPB-{rec.Id}";
                 comboBoxEditCurrentRecord.Properties.Items.Add(displayText);
             }
 
-            // ·ÀÖ¹ÖØ¸´°ó¶¨ÊÂ¼ş
+            // é˜²æ­¢é‡å¤ç»‘å®šäº‹ä»¶
             comboBoxEditCurrentRecord.SelectedIndexChanged -= comboBoxEditCurrentRecord_SelectedIndexChanged;
 
-            // Èç¹ûÓĞÏîÄ¿£¬Ä¬ÈÏÑ¡ÖĞµÚÒ»Ïî
+            // å¦‚æœæœ‰é¡¹ç›®ï¼Œé»˜è®¤é€‰ä¸­ç¬¬ä¸€é¡¹
             if (comboBoxEditCurrentRecord.Properties.Items.Count > 0)
             {
                 var initialChannel = EpbProjectPolicies.FindInitialSummaryChannel(_uiEpbRecords);
                 comboBoxEditCurrentRecord.SelectedIndex = Math.Max(0, initialChannel - 1);
             }
 
-            // ÖØĞÂ°ó¶¨ÊÂ¼ş
+            // é‡æ–°ç»‘å®šäº‹ä»¶
             comboBoxEditCurrentRecord.SelectedIndexChanged += comboBoxEditCurrentRecord_SelectedIndexChanged;
 
-            // ¸ù¾İÄ¬ÈÏÑ¡ÖĞµÄÏîË¢ĞÂÒ»±éÏÔÊ¾
+            // æ ¹æ®é»˜è®¤é€‰ä¸­çš„é¡¹åˆ·æ–°ä¸€éæ˜¾ç¤º
             RefreshSummaryByComboSelection();
         }
 
         /// <summary>
-        /// ¸ÅÀÀÇøÓòÏÂÀ­¿òÑ¡ÖĞ±ä»¯£º
-        /// ½âÎöÑ¡ÖĞµÄÎÄ±¾µÃµ½ EPB Í¨µÀºÅ£¬È»ºóË¢ĞÂÏÔÊ¾¡£
+        /// æ¦‚è§ˆåŒºåŸŸä¸‹æ‹‰æ¡†é€‰ä¸­å˜åŒ–ï¼š
+        /// è§£æé€‰ä¸­çš„æ–‡æœ¬å¾—åˆ° EPB é€šé“å·ï¼Œç„¶ååˆ·æ–°æ˜¾ç¤ºã€‚
         /// </summary>
         private void comboBoxEditCurrentRecord_SelectedIndexChanged(object sender, EventArgs e)
         {
@@ -2960,14 +2961,14 @@ namespace MTEmbTest
         }
 
         /// <summary>
-        /// ¸ù¾İÏÂÀ­¿òµ±Ç°Ñ¡Ïî£¬½âÎö³ö EPB Í¨µÀºÅ£¬²¢µ÷ÓÃ <see>
+        /// æ ¹æ®ä¸‹æ‹‰æ¡†å½“å‰é€‰é¡¹ï¼Œè§£æå‡º EPB é€šé“å·ï¼Œå¹¶è°ƒç”¨ <see>
         ///     <cref>UpdateEpbSummaryPanel</cref>
         /// </see>
-        /// Ë¢ĞÂÏÔÊ¾¡£
+        /// åˆ·æ–°æ˜¾ç¤ºã€‚
         /// </summary>
         private void RefreshSummaryByComboSelection()
         {
-            // ¡ª¡ª 1) »ù±¾°²È«¼ì²é ¡ª¡ª //
+            // â€”â€” 1) åŸºæœ¬å®‰å…¨æ£€æŸ¥ â€”â€” //
             if (comboBoxEditCurrentRecord == null ||
                 comboBoxEditCurrentRecord.Properties == null ||
                 comboBoxEditCurrentRecord.Properties.Items == null)
@@ -2975,7 +2976,7 @@ namespace MTEmbTest
                 return;
             }
 
-            // Î´Ñ¡ÖĞÈÎºÎÏî£ºÇå¿ÕÏÔÊ¾¼´¿É
+            // æœªé€‰ä¸­ä»»ä½•é¡¹ï¼šæ¸…ç©ºæ˜¾ç¤ºå³å¯
             if (comboBoxEditCurrentRecord.SelectedIndex < 0)
             {
                 _currentEpbSummaryChannel = 0;
@@ -2999,8 +3000,8 @@ namespace MTEmbTest
                 return;
             }
 
-            // ¡ª¡ª 2) ´ÓÎÄ±¾ÖĞ½âÎöÍ¨µÀºÅ ¡ª¡ª //
-            // ÔÊĞí "EPB-1" / "EPB1" / "EPB 01" µÈ¸ñÊ½£ºÈ¡×îºóÒ»¶ÎÊı×Ö
+            // â€”â€” 2) ä»æ–‡æœ¬ä¸­è§£æé€šé“å· â€”â€” //
+            // å…è®¸ "EPB-1" / "EPB1" / "EPB 01" ç­‰æ ¼å¼ï¼šå–æœ€åä¸€æ®µæ•°å­—
             Match lastDigitMatch = null;
             var matches = Regex.Matches(selectedText, @"\d+");
             if (matches.Count > 0)
@@ -3011,13 +3012,13 @@ namespace MTEmbTest
             int channelId;
             if (lastDigitMatch == null || !int.TryParse(lastDigitMatch.Value, out channelId))
             {
-                // ÎÄ±¾Àï¸ù±¾Ã»ÓĞÊı×Ö£¬·ÀÓùĞÔ´¦Àí£ºÇå¿ÕÏÔÊ¾
+                // æ–‡æœ¬é‡Œæ ¹æœ¬æ²¡æœ‰æ•°å­—ï¼Œé˜²å¾¡æ€§å¤„ç†ï¼šæ¸…ç©ºæ˜¾ç¤º
                 _currentEpbSummaryChannel = 0;
                 ClearEpbSummaryPanel();
                 return;
             }
 
-            // ÕâÀï¿ÉÒÔ¸ù¾İÊµ¼ÊÍ¨µÀ·¶Î§×öÒ»´ÎÏŞ·ù£¬ÀıÈç 1..12
+            // è¿™é‡Œå¯ä»¥æ ¹æ®å®é™…é€šé“èŒƒå›´åšä¸€æ¬¡é™å¹…ï¼Œä¾‹å¦‚ 1..12
             if (channelId < 1 || channelId > 12)
             {
                 _currentEpbSummaryChannel = 0;
@@ -3025,7 +3026,7 @@ namespace MTEmbTest
                 return;
             }
 
-            // ¡ª¡ª 3) ¸üĞÂµ±Ç°Ñ¡ÖĞÍ¨µÀ²¢Ë¢ĞÂÏÔÊ¾ ¡ª¡ª //
+            // â€”â€” 3) æ›´æ–°å½“å‰é€‰ä¸­é€šé“å¹¶åˆ·æ–°æ˜¾ç¤º â€”â€” //
             _currentEpbSummaryChannel = channelId;
             var curRecord = EnsureEpbRecord(channelId);
 
@@ -3065,7 +3066,7 @@ namespace MTEmbTest
         }
 
         /// <summary>
-        /// Çå¿Õ EPB ¸ÅÀÀÇøÓòÏÔÊ¾£¬ÓÃÓÚ¡°Î´Ñ¡ÖĞ¡±»ò½âÎöÊ§°ÜµÄÇé¿ö¡£
+        /// æ¸…ç©º EPB æ¦‚è§ˆåŒºåŸŸæ˜¾ç¤ºï¼Œç”¨äºâ€œæœªé€‰ä¸­â€æˆ–è§£æå¤±è´¥çš„æƒ…å†µã€‚
         /// </summary>
         private void SelectEpbSummaryChannel(int channel)
         {
@@ -3079,19 +3080,19 @@ namespace MTEmbTest
 
         private void ClearEpbSummaryPanel()
         {
-            // ¢Ú ÔËĞĞÊ±¼ä
+            // â‘¡ è¿è¡Œæ—¶é—´
             LedRunTime.Text = "00D 00H 00M 00S";
 
-            // ¢Û Íê³É´ÎÊı
+            // â‘¢ å®Œæˆæ¬¡æ•°
             LedRunCycles.Text = "0";
 
-            // ¢Ü Ê£Óà´ÎÊı
+            // â‘£ å‰©ä½™æ¬¡æ•°
             LedLastCycles.Text = "0";
 
-            // ¢İ ½ø¶ÈÌõ
+            // â‘¤ è¿›åº¦æ¡
             ProcBar.Value = 0;
 
-            // ¢Ş ×´Ì¬µÆ£¨»ÒÉ«Ï¨Ãğ£©
+            // â‘¥ çŠ¶æ€ç¯ï¼ˆç°è‰²ç†„ç­ï¼‰
             uiLightStatus.OnCenterColor = Color.Gray;
             uiLightStatus.OnColor = Color.Gray;
             uiLightStatus.State = UILightState.Off;
@@ -3099,36 +3100,36 @@ namespace MTEmbTest
 
 
         /// <summary>
-        /// ¸ù¾İÖ¸¶¨ EPB Í¨µÀµÄÊÔÑé¼ÇÂ¼£¬Ë¢ĞÂ£º
-        /// ¢Ú LedRunTime    ¨C ÔËĞĞÊ±¼ä
-        /// ¢Û LedRunCycles  ¨C Íê³É´ÎÊı
-        /// ¢Ü LedLastCycles ¨C Ê£Óà´ÎÊı
-        /// ¢İ ProcBar       ¨C ½ø¶ÈÌõ
-        /// ¢Ş uiLightStatus   ¨C ×´Ì¬µÆ(ÔËĞĞ=ÂÌÉÁ£»±¨¾¯=ºìÉÁ£»ÆäËû=»ÒÉ«³£Ãğ)
+        /// æ ¹æ®æŒ‡å®š EPB é€šé“çš„è¯•éªŒè®°å½•ï¼Œåˆ·æ–°ï¼š
+        /// â‘¡ LedRunTime    â€“ è¿è¡Œæ—¶é—´
+        /// â‘¢ LedRunCycles  â€“ å®Œæˆæ¬¡æ•°
+        /// â‘£ LedLastCycles â€“ å‰©ä½™æ¬¡æ•°
+        /// â‘¤ ProcBar       â€“ è¿›åº¦æ¡
+        /// â‘¥ uiLightStatus   â€“ çŠ¶æ€ç¯(è¿è¡Œ=ç»¿é—ªï¼›æŠ¥è­¦=çº¢é—ªï¼›å…¶ä»–=ç°è‰²å¸¸ç­)
         /// </summary>
-        /// <param name="record">EPB Í¨µÀ¼ÇÂ¼£¨1..12£©¡£</param>
+        /// <param name="record">EPB é€šé“è®°å½•ï¼ˆ1..12ï¼‰ã€‚</param>
         private void UpdateEpbSummaryPanel(EpbTestRecord record)
         {
             if (record == null) return;
 
-            // === ¢Ú LedRunTime ÏÔÊ¾ "00D 00H 00M" ===
+            // === â‘¡ LedRunTime æ˜¾ç¤º "00D 00H 00M" ===
             LedRunTime.Text = EpbTestRecord.FormatDHMS(record.RunTimeSpan);
 
-            // === ¢Û Íê³É´ÎÊı ===
+            // === â‘¢ å®Œæˆæ¬¡æ•° ===
             LedRunCycles.Text = record.RunCount.ToString();
 
-            // === ¢Ü Ê£Óà´ÎÊı ===
+            // === â‘£ å‰©ä½™æ¬¡æ•° ===
             int total = record.TotalCount > 0 ? record.TotalCount : (_cfg?.Test?.TestTarget ?? 0);
             int left = Math.Max(0, total - record.RunCount);
             LedLastCycles.Text = left.ToString();
 
-            // === ¢İ ½ø¶ÈÌõ°Ù·Ö±È ===
+            // === â‘¤ è¿›åº¦æ¡ç™¾åˆ†æ¯” ===
             int percent = (total > 0) ? (int)Math.Round(record.RunCount * 100.0 / total) : 0;
 
             percent = Math.Max(0, Math.Min(100, percent));
             ProcBar.Value = percent;
 
-            // === ¢Ş ×´Ì¬µÆ ===
+            // === â‘¥ çŠ¶æ€ç¯ ===
             switch (record.Status)
             {
                 case EpbTestStatus.Running:
@@ -3158,18 +3159,18 @@ namespace MTEmbTest
         }
 
         /// <summary>
-        /// ½«½çÃæÎ¬»¤µÄ <see cref="_uiEpbRecords"/> Ğ´»Øµ½µ×²ãÅäÖÃ
+        /// å°†ç•Œé¢ç»´æŠ¤çš„ <see cref="_uiEpbRecords"/> å†™å›åˆ°åº•å±‚é…ç½®
         /// <see>
         ///     <cref>_cfg.Test.EpbRecords</cref>
         /// </see>
-        /// ÖĞ¡£
+        /// ä¸­ã€‚
         /// </summary>
         /// <remarks>
-        /// - ½ö¸ºÔğÄÚ´æ¶ÔÏóÖ®¼äµÄÍ¬²½£¬²»¸ºÔğĞ´Èë´ÅÅÌ£»
-        /// - µ÷ÓÃ·½ÈôĞèÂäÅÌ£¬ÇëÔÙµ÷ÓÃ <see>
+        /// - ä»…è´Ÿè´£å†…å­˜å¯¹è±¡ä¹‹é—´çš„åŒæ­¥ï¼Œä¸è´Ÿè´£å†™å…¥ç£ç›˜ï¼›
+        /// - è°ƒç”¨æ–¹è‹¥éœ€è½ç›˜ï¼Œè¯·å†è°ƒç”¨ <see>
         ///     <cref>SaveEpbRecordsToTestConfigSafe</cref>
         /// </see>
-        /// ¡£
+        /// ã€‚
         /// </remarks>
         private void FlushUiEpbRecordsToConfig()
         {
@@ -3180,19 +3181,19 @@ namespace MTEmbTest
                 var target = _cfg.Test.EpbRecords;
                 target.Clear();
 
-                // °´Í¨µÀºÅÅÅĞòºóĞ´»Ø£¬±£Ö¤ XML ÖĞË³Ğò¹æÕû£¨1..12£©
+                // æŒ‰é€šé“å·æ’åºåå†™å›ï¼Œä¿è¯ XML ä¸­é¡ºåºè§„æ•´ï¼ˆ1..12ï¼‰
                 foreach (var r in _uiEpbRecords.OrderBy(x => x.Id))
                 {
-                    // ÕâÀïÖ±½Ó°ÑÒıÓÃ·Å»ØÈ¥¼´¿É£º
-                    // _uiEpbRecords ±¾Éí¾ÍÊÇ EpbTestRecord ¶ÔÏóÁĞ±í£¬²»±ØÔÙ¿ËÂ¡
+                    // è¿™é‡Œç›´æ¥æŠŠå¼•ç”¨æ”¾å›å»å³å¯ï¼š
+                    // _uiEpbRecords æœ¬èº«å°±æ˜¯ EpbTestRecord å¯¹è±¡åˆ—è¡¨ï¼Œä¸å¿…å†å…‹éš†
                     target.Add(r);
                 }
             }
         }
 
         /// <summary>
-        /// °Ñµ±Ç° UI ²à EPB ¼ÇÂ¼»ØĞ´µ½ <see cref="_cfg.Test.EpbRecords"/>£¬
-        /// ²¢³¢ÊÔ±£´æµ½ Config\TestConfig.xml¡£
+        /// æŠŠå½“å‰ UI ä¾§ EPB è®°å½•å›å†™åˆ° <see cref="_cfg.Test.EpbRecords"/>ï¼Œ
+        /// å¹¶å°è¯•ä¿å­˜åˆ° Config\TestConfig.xmlã€‚
         /// </summary>
         private void SaveEpbRecordsToTestConfigSafeOld()
         {
@@ -3200,23 +3201,23 @@ namespace MTEmbTest
 
             try
             {
-                // 1) ÏÈ°Ñ _uiEpbRecords Ğ´»Ø _cfg.Test.EpbRecords
+                // 1) å…ˆæŠŠ _uiEpbRecords å†™å› _cfg.Test.EpbRecords
                 FlushUiEpbRecordsToConfig();
 
-                // 2) ÔÙµ÷ÓÃ ConfigLoader Í³Ò»±£´æ£¨ÄÚ²¿¸ºÔğÆ´ TestConfig.xml Â·¾¶£©
+                // 2) å†è°ƒç”¨ ConfigLoader ç»Ÿä¸€ä¿å­˜ï¼ˆå†…éƒ¨è´Ÿè´£æ‹¼ TestConfig.xml è·¯å¾„ï¼‰
                 ConfigLoader.SaveTest(_cfg.Test);
             }
             catch (Exception ex)
             {
-                // ²»ÒòÎª±£´æÊ§°Ü¸ÉÈÅÊÔÑé£¬Ö»´ò¸öÈÕÖ¾
-                logger?.Warn("±£´æ EPB ÊÔÑé¼ÇÂ¼µ½ TestConfig.xml Ê§°Ü: " + ex.Message, "ÅäÖÃ");
+                // ä¸å› ä¸ºä¿å­˜å¤±è´¥å¹²æ‰°è¯•éªŒï¼Œåªæ‰“ä¸ªæ—¥å¿—
+                logger?.Warn("ä¿å­˜ EPB è¯•éªŒè®°å½•åˆ° TestConfig.xml å¤±è´¥: " + ex.Message, "é…ç½®");
             }
         }
 
 
         /// <summary>
-        /// °Ñµ±Ç° UI ²à EPB ¼ÇÂ¼»ØĞ´µ½ <see cref="_cfg.Test.EpbRecords"/>£¬
-        /// ²¢³¢ÊÔ±£´æµ½¡°ÏîÄ¿¡±ÏÂµÄ Config\TestConfig.xml¡£
+        /// æŠŠå½“å‰ UI ä¾§ EPB è®°å½•å›å†™åˆ° <see cref="_cfg.Test.EpbRecords"/>ï¼Œ
+        /// å¹¶å°è¯•ä¿å­˜åˆ°â€œé¡¹ç›®â€ä¸‹çš„ Config\TestConfig.xmlã€‚
         /// </summary>
         private void SaveEpbRecordsToTestConfigSafe()
         {
@@ -3224,40 +3225,40 @@ namespace MTEmbTest
 
             try
             {
-                // 1) ÏÈ°Ñ _uiEpbRecords Ğ´»Ø _cfg.Test.EpbRecords
+                // 1) å…ˆæŠŠ _uiEpbRecords å†™å› _cfg.Test.EpbRecords
                 FlushUiEpbRecordsToConfig();
 
-                // 2) ¼ÆËã¡°ÏîÄ¿ÅäÖÃ¡±µÄ TestConfig.xml Â·¾¶£º
-                //    Ô¼¶¨£ºÏîÄ¿ Config Ä¿Â¼ = StoreDir\TestName\Config
-                //          ÏîÄ¿ TestConfig = StoreDir\TestName\Config\TestConfig.xml
+                // 2) è®¡ç®—â€œé¡¹ç›®é…ç½®â€çš„ TestConfig.xml è·¯å¾„ï¼š
+                //    çº¦å®šï¼šé¡¹ç›® Config ç›®å½• = StoreDir\TestName\Config
+                //          é¡¹ç›® TestConfig = StoreDir\TestName\Config\TestConfig.xml
                 var projectPath = ConfigLoader.GetProjectTestConfigPath(
                     _cfg.Test.StoreDir,
                     _cfg.Test.TestName);
 
                 if (!string.IsNullOrEmpty(projectPath) && File.Exists(projectPath))
                 {
-                    // ÓÅÏÈĞ´Èë¡°ÏîÄ¿×¨ÓÃ¡±µÄ TestConfig.xml£¨´øÔËĞĞ½ø¶È£©
+                    // ä¼˜å…ˆå†™å…¥â€œé¡¹ç›®ä¸“ç”¨â€çš„ TestConfig.xmlï¼ˆå¸¦è¿è¡Œè¿›åº¦ï¼‰
                     ConfigLoader.SaveTest(projectPath, _cfg.Test);
                 }
                 else
                 {
-                    // ÈôÏîÄ¿Â·¾¶ÎŞĞ§»òÎÄ¼ş²»´æÔÚ£¨¼«¶ËÇé¿ö/¾ÉÏîÄ¿£©£¬
-                    // ÍË»Øµ½¾ÉÂß¼­£ºĞ´ÈëÈí¼şÄ¬ÈÏ Config\TestConfig.xml
-                    // £¨±£Ö¤¼æÈİĞÔ£¬µ«Õı³£Çé¿öÏÂ²»»á×ßµ½ÕâÀï£©
+                    // è‹¥é¡¹ç›®è·¯å¾„æ— æ•ˆæˆ–æ–‡ä»¶ä¸å­˜åœ¨ï¼ˆæç«¯æƒ…å†µ/æ—§é¡¹ç›®ï¼‰ï¼Œ
+                    // é€€å›åˆ°æ—§é€»è¾‘ï¼šå†™å…¥è½¯ä»¶é»˜è®¤ Config\TestConfig.xml
+                    // ï¼ˆä¿è¯å…¼å®¹æ€§ï¼Œä½†æ­£å¸¸æƒ…å†µä¸‹ä¸ä¼šèµ°åˆ°è¿™é‡Œï¼‰
                     ConfigLoader.SaveTest(_cfg.Test);
                 }
             }
             catch (Exception ex)
             {
-                // ²»ÒòÎª±£´æÊ§°Ü¸ÉÈÅÊÔÑé£¬Ö»´ò¸öÈÕÖ¾
-                logger?.Warn("±£´æ EPB ÊÔÑé¼ÇÂ¼µ½ÏîÄ¿ TestConfig.xml Ê§°Ü: " + ex.Message, "ÅäÖÃ");
+                // ä¸å› ä¸ºä¿å­˜å¤±è´¥å¹²æ‰°è¯•éªŒï¼Œåªæ‰“ä¸ªæ—¥å¿—
+                logger?.Warn("ä¿å­˜ EPB è¯•éªŒè®°å½•åˆ°é¡¹ç›® TestConfig.xml å¤±è´¥: " + ex.Message, "é…ç½®");
             }
         }
 
 
         private void AutoSaveTimer_Tick(object sender, EventArgs e)
         {
-            // Ê¹ÓÃ lock È·±£Óë OnEpbChannelCycleCompleted ²¢·¢°²È«
+            // ä½¿ç”¨ lock ç¡®ä¿ä¸ OnEpbChannelCycleCompleted å¹¶å‘å®‰å…¨
             lock (_epbRecordsLock)
             {
                 FlushUiEpbRecordsToConfig();
@@ -3268,7 +3269,7 @@ namespace MTEmbTest
 
         #endregion
 
-        #region ÇúÏß´¦ÀíÏà¹Ø±äÁ¿
+        #region æ›²çº¿å¤„ç†ç›¸å…³å˜é‡
 
         private LineItem curveForce;
         private PointPairList listForce;
@@ -3279,7 +3280,7 @@ namespace MTEmbTest
         private LineItem curveCanCurrent;
         private PointPairList listCanCurrent;
 
-        // ¸ß¶Ô±È¶ÈÉîÉ«Ïµµ÷É«°å£¨ÖÁÉÙ 15 ÖÖ£¬±ãÓÚÇø·Ö²»Í¬ÇúÏß£©
+        // é«˜å¯¹æ¯”åº¦æ·±è‰²ç³»è°ƒè‰²æ¿ï¼ˆè‡³å°‘ 15 ç§ï¼Œä¾¿äºåŒºåˆ†ä¸åŒæ›²çº¿ï¼‰
         private readonly Color[] _curveColors =
         {
             Color.Blue,
@@ -3299,18 +3300,18 @@ namespace MTEmbTest
             Color.DarkGreen
         };
 
-        // ÇúÏß¶ÔÏó¼¯ºÏ£¨ZedGraph µÄ LineItem ÁĞ±í£©
+        // æ›²çº¿å¯¹è±¡é›†åˆï¼ˆZedGraph çš„ LineItem åˆ—è¡¨ï¼‰
         private readonly List<LineItem> _curveItems = new();
 
-        // ÇúÏßÊı¾İÔ´¼¯ºÏ£¨ZedGraph µÄ PointPairList ÁĞ±í£©
+        // æ›²çº¿æ•°æ®æºé›†åˆï¼ˆZedGraph çš„ PointPairList åˆ—è¡¨ï¼‰
         private readonly List<PointPairList> _curveDataLists = new();
 
         #endregion
 
-        //AlertStatus  0 Õı³£  1 ÖµÌ«Ğ¡£¬Á¬Ğø¼Ğ½ô   2 ÖµÌ«¸ß  3 FaultMode ±¨¾¯
+        //AlertStatus  0 æ­£å¸¸  1 å€¼å¤ªå°ï¼Œè¿ç»­å¤¹ç´§   2 å€¼å¤ªé«˜  3 FaultMode æŠ¥è­¦
 
 
-        #region DAQ_AI±äÁ¿
+        #region DAQ_AIå˜é‡
 
         private ConcurrentDictionary<string, double> Dev1ParaNameToScale = new();
         private ConcurrentDictionary<string, double> Dev1ParaNameToOffset = new();
@@ -3399,7 +3400,7 @@ namespace MTEmbTest
         #endregion
 
 
-        #region ¶¨Ê±´¦Àí±äÁ¿
+        #region å®šæ—¶å¤„ç†å˜é‡
 
         [DllImport("winmm.dll")]
         private static extern uint timeSetEvent(uint msDelay, uint msResolution, TimerProc handler, UIntPtr dwUser,
@@ -3414,7 +3415,7 @@ namespace MTEmbTest
         [DllImport("winmm.dll")]
         private static extern uint timeEndPeriod(uint uPeriod);
 
-        // ¶¨Ê±Æ÷»Øµ÷Î¯ÍĞ
+        // å®šæ—¶å™¨å›è°ƒå§”æ‰˜
         private delegate void TimerProc(
             UIntPtr uTimerID,
             uint uMsg,
@@ -3422,7 +3423,7 @@ namespace MTEmbTest
             UIntPtr dw1,
             UIntPtr dw2);
 
-        // ¶¨Ê±Æ÷×´Ì¬Àà
+        // å®šæ—¶å™¨çŠ¶æ€ç±»
         private class TimerState
         {
             public uint TimerId { get; set; }
@@ -3458,23 +3459,23 @@ namespace MTEmbTest
 
         #endregion
 
-        #region ÇúÏßµÄ¹´Ñ¡¿Ø¼şÏà¹Ø
+        #region æ›²çº¿çš„å‹¾é€‰æ§ä»¶ç›¸å…³
 
-        // ¡ª¡ª ¹´Ñ¡±ä¸ü£ºÁ¢¼´±£´æ ¡ª¡ª //
+        // â€”â€” å‹¾é€‰å˜æ›´ï¼šç«‹å³ä¿å­˜ â€”â€” //
         private void Cb_CheckedChanged_Save(object sender, EventArgs e)
         {
             if (sender is CheckEdit cb)
                 ConfigLoader.UpdateUIChecked(_uiCfg, FormKey, cb.Name, cb.Checked);
         }
 
-        // ¡ª¡ª ÆôÓÃ×´Ì¬±ä¸ü£ºÁ¢¼´±£´æ ¡ª¡ª //
+        // â€”â€” å¯ç”¨çŠ¶æ€å˜æ›´ï¼šç«‹å³ä¿å­˜ â€”â€” //
         private void Cb_EnabledChanged_Save(object sender, EventArgs e)
         {
             if (sender is CheckEdit cb)
                 ConfigLoader.UpdateUIChecked(_uiCfg, FormKey, cb.Name, cb.Checked, cb.Enabled);
         }
 
-        // ¡ª¡ª ¿ÉÑ¡£º»Ö¸´Ä¬ÈÏ°´Å¥£¨°ÑËùÓĞ¹´Ñ¡»Ö¸´Îª DefaultChecked£¬²¢´¥·¢±£´æ£© ¡ª¡ª //
+        // â€”â€” å¯é€‰ï¼šæ¢å¤é»˜è®¤æŒ‰é’®ï¼ˆæŠŠæ‰€æœ‰å‹¾é€‰æ¢å¤ä¸º DefaultCheckedï¼Œå¹¶è§¦å‘ä¿å­˜ï¼‰ â€”â€” //
         private void BtnRestoreDefault_Click(object sender, EventArgs e)
         {
             var formState = _uiCfg.GetOrAddForm(FormKey);
@@ -3484,12 +3485,12 @@ namespace MTEmbTest
                 if (ctl is CheckBox cb)
                 {
                     var st = formState.GetOrAdd(name);
-                    cb.Checked = st.DefaultChecked; // ´¥·¢ CheckedChanged ¡ú ×Ô¶¯±£´æ
+                    cb.Checked = st.DefaultChecked; // è§¦å‘ CheckedChanged â†’ è‡ªåŠ¨ä¿å­˜
                 }
             }
         }
 
-        // ¡ª¡ª ¿ÉÑ¡£º½«¡°µ±Ç°×´Ì¬¡±Ğ´ÎªÄ¬ÈÏÖµ£¬²¢±£´æµ½ÎÄ¼ş ¡ª¡ª //
+        // â€”â€” å¯é€‰ï¼šå°†â€œå½“å‰çŠ¶æ€â€å†™ä¸ºé»˜è®¤å€¼ï¼Œå¹¶ä¿å­˜åˆ°æ–‡ä»¶ â€”â€” //
         private void BtnSetCurrentAsDefault_Click(object sender, EventArgs e)
         {
             foreach (var name in _persistNames)
@@ -3499,17 +3500,17 @@ namespace MTEmbTest
                     ConfigLoader.UpdateUIDefaultChecked(_uiCfg, FormKey, name, cb.Checked);
             }
 
-            MessageBox.Show(@"ÒÑ½«µ±Ç°¹´Ñ¡×´Ì¬±£´æÎªÄ¬ÈÏÖµ¡£");
+            MessageBox.Show(@"å·²å°†å½“å‰å‹¾é€‰çŠ¶æ€ä¿å­˜ä¸ºé»˜è®¤å€¼ã€‚");
         }
 
         #endregion
 
 
-        #region ÇúÏß´¦Àí
+        #region æ›²çº¿å¤„ç†
 
         /// <summary>
-        ///     ÇúÏß³õÊ¼»¯£º´´½¨ 15 ÌõÇúÏß£¨EPB µçÁ÷ 12 Â· + P1 + P2 + F£©£¬
-        ///     ¹´Ñ¡¿Ø¼ş£¨CheckEdit£©ÊµÊ±¿ØÖÆ¿É¼ûĞÔ£»X ÖáÎªÊ±¼ä£¨Ãë£©¡£
+        ///     æ›²çº¿åˆå§‹åŒ–ï¼šåˆ›å»º 15 æ¡æ›²çº¿ï¼ˆEPB ç”µæµ 12 è·¯ + P1 + P2 + Fï¼‰ï¼Œ
+        ///     å‹¾é€‰æ§ä»¶ï¼ˆCheckEditï¼‰å®æ—¶æ§åˆ¶å¯è§æ€§ï¼›X è½´ä¸ºæ—¶é—´ï¼ˆç§’ï¼‰ã€‚
         /// </summary>
         private void InitializeCurve()
         {
@@ -3518,14 +3519,14 @@ namespace MTEmbTest
                 var pane = zedGraphRealChart.GraphPane;
                 var fontSize = 12;
 
-                // ·ÀÓù£ºÈôÀúÊ·´úÂë/Òì³£Â·¾¶Ôø¾­Ïò YAxisList/Y2AxisList ×·¼Ó¹ı¶îÍâÖá£¬
-                // »á³ÖĞø¼·Ñ¹»æÍ¼Çø£¨¿´ÆğÀ´¡°ÇúÏßÏÔÊ¾ÇøÓòÔ½À´Ô½Ğ¡¡±£©¡£
-                // ÕâÀïÍ³Ò»°Ñ¡°·Ç±ØĞèÖá¡±Òş²Ø£¬Ö»±£Áô£º
-                // - ×ó²à£ºÖ÷ Y Öá +£¨¿ÉÑ¡£©Ñ¹Á¦Öá
-                // - ÓÒ²à£ºÖ÷ Y2 Öá
+                // é˜²å¾¡ï¼šè‹¥å†å²ä»£ç /å¼‚å¸¸è·¯å¾„æ›¾ç»å‘ YAxisList/Y2AxisList è¿½åŠ è¿‡é¢å¤–è½´ï¼Œ
+                // ä¼šæŒç»­æŒ¤å‹ç»˜å›¾åŒºï¼ˆçœ‹èµ·æ¥â€œæ›²çº¿æ˜¾ç¤ºåŒºåŸŸè¶Šæ¥è¶Šå°â€ï¼‰ã€‚
+                // è¿™é‡Œç»Ÿä¸€æŠŠâ€œéå¿…éœ€è½´â€éšè—ï¼Œåªä¿ç•™ï¼š
+                // - å·¦ä¾§ï¼šä¸» Y è½´ +ï¼ˆå¯é€‰ï¼‰å‹åŠ›è½´
+                // - å³ä¾§ï¼šä¸» Y2 è½´
                 NormalizeRealtimeAxes(pane);
 
-                // ¡ª¡ª »ù´¡Íâ¹Û£¨ÑØÓÃÄãÔ­ÓĞÉèÖÃ£©¡ª¡ª
+                // â€”â€” åŸºç¡€å¤–è§‚ï¼ˆæ²¿ç”¨ä½ åŸæœ‰è®¾ç½®ï¼‰â€”â€”
                 pane.CurveList.Clear();
                 _curveItems.Clear();
                 _curveDataLists.Clear();
@@ -3567,25 +3568,25 @@ namespace MTEmbTest
                 pane.Y2Axis.Title.FontSpec.Size = fontSize;
                 pane.Y2Axis.Scale.FontSpec.Size = fontSize;
 
-                // Öá²¼¾ÖÔ¼¶¨£¨°´ÏÖ³¡Ï°¹ß£©£º×ó²à=µçÁ÷ + Ñ¹Á¦£¬ÓÒ²à=Á¦
-                // - µçÁ÷£ºÓÃÖ÷×óÖá£¨YAxis, index 0£©
-                // - Ñ¹Á¦£ºÓÃµÚ¶ş×óÖá£¨PRESSURE_AXIS£©
-                // - Á¦£ºÓÃÓÒÖá£¨Y2Axis, index 0£©
+                // è½´å¸ƒå±€çº¦å®šï¼ˆæŒ‰ç°åœºä¹ æƒ¯ï¼‰ï¼šå·¦ä¾§=ç”µæµ + å‹åŠ›ï¼Œå³ä¾§=åŠ›
+                // - ç”µæµï¼šç”¨ä¸»å·¦è½´ï¼ˆYAxis, index 0ï¼‰
+                // - å‹åŠ›ï¼šç”¨ç¬¬äºŒå·¦è½´ï¼ˆPRESSURE_AXISï¼‰
+                // - åŠ›ï¼šç”¨å³è½´ï¼ˆY2Axis, index 0ï¼‰
                 pane.Y2Axis.Color = Color.Purple;
                 pane.Y2Axis.Scale.FontSpec.FontColor = Color.Purple;
                 pane.Y2Axis.Title.FontSpec.FontColor = Color.Purple;
                 pane.Y2Axis.Title.IsVisible = false;
 
 
-                // ¡ï ĞÂÔö£ºÈ·±£ÓĞÒ»¸öÓÃÓÚÑ¹Á¦µÄµÚ¶ş×óÖá£¬²¢ÄÃµ½ËüµÄË÷Òı
+                // â˜… æ–°å¢ï¼šç¡®ä¿æœ‰ä¸€ä¸ªç”¨äºå‹åŠ›çš„ç¬¬äºŒå·¦è½´ï¼Œå¹¶æ‹¿åˆ°å®ƒçš„ç´¢å¼•
                 var pressureAxisIndex = EnsurePressureYAxis(pane);
 
-                // ¡ª¡ª Â·ÓÉ±íÖØ½¨ ¡ª¡ª //
+                // â€”â€” è·¯ç”±è¡¨é‡å»º â€”â€” //
                 _route.Clear();
                 foreach (var c in _allChs)
                     _route[RouteKey(c.Device, c.AiIndex)] = c.GlobalIndex;
 
-                // ¡ª¡ª °ó¶¨/»º´æ 15 ¸ö CheckEdit ¡ª¡ª //
+                // â€”â€” ç»‘å®š/ç¼“å­˜ 15 ä¸ª CheckEdit â€”â€” //
                 _checkByGlobal.Clear();
                 _instantDisplayControls.Clear();
                 var n = Math.Min(_allChs.Length, _persistNames.Length);
@@ -3596,11 +3597,11 @@ namespace MTEmbTest
                     if (ctl == null) continue;
 
                     _checkByGlobal[g] = ctl;
-                    ctl.Tag = g; // ±£´æÈ«¾ÖÇúÏßË÷Òı
-                    ctl.CheckedChanged -= OnCurveCheckChanged; // ·ÀÖ¹ÖØ¸´°ó¶¨
+                    ctl.Tag = g; // ä¿å­˜å…¨å±€æ›²çº¿ç´¢å¼•
+                    ctl.CheckedChanged -= OnCurveCheckChanged; // é˜²æ­¢é‡å¤ç»‘å®š
                     ctl.CheckedChanged += OnCurveCheckChanged;
 
-                    // Ó³ÉäË²Ê±ÏÔÊ¾¿Ø¼ş - Ö±½ÓÍ¨¹ıÊôĞÔÒıÓÃ¶ø·ÇControls.Find
+                    // æ˜ å°„ç¬æ—¶æ˜¾ç¤ºæ§ä»¶ - ç›´æ¥é€šè¿‡å±æ€§å¼•ç”¨è€ŒéControls.Find
                     TextEdit displayCtl = null;
                     if (g < _allChs.Length)
                     {
@@ -3608,10 +3609,10 @@ namespace MTEmbTest
                         switch (ch.Type)
                         {
                             case SignalType.Current:
-                                // EPBµçÁ÷Í¨µÀ - ¸ù¾İDisplayNameÖĞµÄ±àºÅÓ³Éäµ½¶ÔÓ¦¿Ø¼ş
+                                // EPBç”µæµé€šé“ - æ ¹æ®DisplayNameä¸­çš„ç¼–å·æ˜ å°„åˆ°å¯¹åº”æ§ä»¶
                                 if (ch.DisplayName.Contains("DAQ_A") && ch.DisplayName.Contains("_I(A)"))
                                 {
-                                    // ´Ó"DAQ_A7_I(A)"ÖĞÌáÈ¡±àºÅ7
+                                    // ä»"DAQ_A7_I(A)"ä¸­æå–ç¼–å·7
                                     var startIndex = ch.DisplayName.IndexOf("DAQ_A") + 5;
                                     var endIndex = ch.DisplayName.IndexOf("_I(A)");
                                     if (startIndex < endIndex &&
@@ -3637,27 +3638,27 @@ namespace MTEmbTest
 
                                 break;
                             case SignalType.Pressure:
-                                // Ñ¹Á¦Í¨µÀ -> textEditP1, textEditP2
+                                // å‹åŠ›é€šé“ -> textEditP1, textEditP2
                                 displayCtl = ch.DisplayName.Contains("P1") ? textEditP1 :
                                     ch.DisplayName.Contains("P2") ? textEditP2 : null;
                                 break;
                             case SignalType.Force:
-                                // ¼Ğ½ôÁ¦Í¨µÀ -> textEditF
+                                // å¤¹ç´§åŠ›é€šé“ -> textEditF
                                 displayCtl = textEditF;
                                 break;
                         }
 
                         if (displayCtl != null)
                             _instantDisplayControls[g] = displayCtl;
-                        // µ÷ÊÔÈÕÖ¾
+                        // è°ƒè¯•æ—¥å¿—
                         // logger?.Info(
-                        //     $"¿Ø¼şÓ³Éä³É¹¦: È«¾ÖË÷Òı{g} -> {displayCtl.Name} (Éè±¸:{ch.Device}, Í¨µÀ:{ch.AiIndex}, ²ÎÊı:{ch.DisplayName}, ÀàĞÍ:{ch.Type})");
+                        //     $"æ§ä»¶æ˜ å°„æˆåŠŸ: å…¨å±€ç´¢å¼•{g} -> {displayCtl.Name} (è®¾å¤‡:{ch.Device}, é€šé“:{ch.AiIndex}, å‚æ•°:{ch.DisplayName}, ç±»å‹:{ch.Type})");
                         else
-                            logger?.Warn($"Î´ÕÒµ½¶ÔÓ¦¿Ø¼ş: È«¾ÖË÷Òı{g}, ²ÎÊı:{ch.DisplayName}, ÀàĞÍ:{ch.Type}");
+                            logger?.Warn($"æœªæ‰¾åˆ°å¯¹åº”æ§ä»¶: å…¨å±€ç´¢å¼•{g}, å‚æ•°:{ch.DisplayName}, ç±»å‹:{ch.Type}");
                     }
                 }
 
-                // ¡ª¡ª ´´½¨ 15 ÌõÇúÏß ¡ª¡ª //
+                // â€”â€” åˆ›å»º 15 æ¡æ›²çº¿ â€”â€” //
                 for (var g = 0; g < _allChs.Length; g++)
                 {
                     _chData[g] = new PointPairList();
@@ -3666,50 +3667,50 @@ namespace MTEmbTest
                     var curve = pane.AddCurve(_allChs[g].DisplayName, _chData[g], color, SymbolType.None);
                     curve.Line.Width = 2f;
 
-                    // µçÁ÷ -> Y2£»Ñ¹Á¦/¼Ğ½ôÁ¦ -> ×óÖá
-                    // curve.IsY2Axis = _allChs[g].Type == SignalType.Current; //Ô­À´µÄyÖá·ÖÅäÂß¼­
+                    // ç”µæµ -> Y2ï¼›å‹åŠ›/å¤¹ç´§åŠ› -> å·¦è½´
+                    // curve.IsY2Axis = _allChs[g].Type == SignalType.Current; //åŸæ¥çš„yè½´åˆ†é…é€»è¾‘
 
-                    // ¡ï ¹Ø¼ü£º°´ĞÅºÅÀàĞÍ°ÑÇúÏß·ÖÅäµ½¶ÔÓ¦µÄÖá
+                    // â˜… å…³é”®ï¼šæŒ‰ä¿¡å·ç±»å‹æŠŠæ›²çº¿åˆ†é…åˆ°å¯¹åº”çš„è½´
                     switch (_allChs[g].Type)
                     {
                         case SignalType.Current:
-                            // µçÁ÷ -> ×ó²àÖ÷Öá£¨YAxis, index 0£©
+                            // ç”µæµ -> å·¦ä¾§ä¸»è½´ï¼ˆYAxis, index 0ï¼‰
                             curve.IsY2Axis = false;
                             curve.YAxisIndex = 0;
                             break;
 
                         case SignalType.Pressure:
-                            // Á½¸öÑ¹Á¦ -> ĞÂÔöµÄµÚ¶ş×óÖá£¨pressureAxisIndex >= 1£©
-                            curve.IsY2Axis = false; // ×ó²àÖá×å
+                            // ä¸¤ä¸ªå‹åŠ› -> æ–°å¢çš„ç¬¬äºŒå·¦è½´ï¼ˆpressureAxisIndex >= 1ï¼‰
+                            curve.IsY2Axis = false; // å·¦ä¾§è½´æ—
                             curve.YAxisIndex = pressureAxisIndex;
                             break;
 
                         case SignalType.Force:
                         default:
-                            // Á¦ -> ÓÒ²àÖá£¨Y2Axis, index 0£©
+                            // åŠ› -> å³ä¾§è½´ï¼ˆY2Axis, index 0ï¼‰
                             curve.IsY2Axis = true;
-                            // curve.Y2AxisIndex = 0; // Ä¬ÈÏ 0
+                            // curve.Y2AxisIndex = 0; // é»˜è®¤ 0
                             break;
                     }
 
 
-                    // ³õÊ¼¿É¼ûĞÔ = ¸´Ñ¡¿ò×´Ì¬£¨ÈôÎ´ÕÒµ½¿Ø¼şÔòÄ¬ÈÏ¿É¼û£©
+                    // åˆå§‹å¯è§æ€§ = å¤é€‰æ¡†çŠ¶æ€ï¼ˆè‹¥æœªæ‰¾åˆ°æ§ä»¶åˆ™é»˜è®¤å¯è§ï¼‰
                     var visible = !_checkByGlobal.TryGetValue(g, out var cb) || cb.Checked;
                     curve.IsVisible = visible;
 
                     _chCurve[g] = curve;
 
-                    // Îª¼æÈİÄã¾ÉÂß¼­±£ÁôµÄ¼¯ºÏ£¨ÓĞÈË¿ÉÄÜ»¹ÔÚÓÃ£©
+                    // ä¸ºå…¼å®¹ä½ æ—§é€»è¾‘ä¿ç•™çš„é›†åˆï¼ˆæœ‰äººå¯èƒ½è¿˜åœ¨ç”¨ï¼‰
                     _curveItems.Add(curve);
                     _curveDataLists.Add(_chData[g]);
                 }
 
                 ApplyZedGraphFastRenderSettings();
 
-                // ¼æÈİ¾É×Ö¶Î£ºÈÃ listForce Ö¸Ïò F µÄÊı¾İ£¬±ÜÃâ ResetDisplaySystem() ¿ÕÒıÓÃ
+                // å…¼å®¹æ—§å­—æ®µï¼šè®© listForce æŒ‡å‘ F çš„æ•°æ®ï¼Œé¿å… ResetDisplaySystem() ç©ºå¼•ç”¨
                 listForce = _chData[14];
 
-                // ³õÊ¼ X Öá´°¿Ú
+                // åˆå§‹ X è½´çª—å£
                 pane.XAxis.Scale.Min = 0;
                 pane.XAxis.Scale.Max = ClsGlobal.XDuration;
 
@@ -3724,33 +3725,33 @@ namespace MTEmbTest
                 zedGraphRealChart.Invalidate();
                 zedGraphRealChart.Refresh();
 
-                // ¡ª¡ª ¹Øµô¿¹¾â³İ£¬¼õÉÙ CPU ÏûºÄ ¡ª¡ª //
+                // â€”â€” å…³æ‰æŠ—é”¯é½¿ï¼Œå‡å°‘ CPU æ¶ˆè€— â€”â€” //
                 zedGraphRealChart.IsAntiAlias = false;
 
-                // ÉèÖÃÇúÏßµÄÓ¦¸ÃµÄ¹Ì¶¨¿í¶ÈÎªÖÜÆÚµÄ4±¶
+                // è®¾ç½®æ›²çº¿çš„åº”è¯¥çš„å›ºå®šå®½åº¦ä¸ºå‘¨æœŸçš„4å€
                 // ReSharper disable once PossibleLossOfFraction
                 _fixedXWindowSec = _cfg.Test.PeriodMs / 1000 * 2;
 
-                // ÇúÏßÓ¦ÓÃ¹Ì¶¨¿í¶È£¨ÈôÎ´ÏÔÊ½ÉèÖÃ£¬ÔòÓÃ ClsGlobal.XDuration£©
+                // æ›²çº¿åº”ç”¨å›ºå®šå®½åº¦ï¼ˆè‹¥æœªæ˜¾å¼è®¾ç½®ï¼Œåˆ™ç”¨ ClsGlobal.XDurationï¼‰
                 SetXWindowSeconds(_fixedXWindowSec > 0 ? _fixedXWindowSec : ClsGlobal.XDuration);
 
 
-                // ¡ª¡ª Æô¶¯ UI ¶¨Ê±Æ÷£¨25FPS£©£¬Í³Ò» AxisChange + Invalidate ¡ª¡ª //
+                // â€”â€” å¯åŠ¨ UI å®šæ—¶å™¨ï¼ˆ25FPSï¼‰ï¼Œç»Ÿä¸€ AxisChange + Invalidate â€”â€” //
                 StartUiRedrawTimer();
             }
             catch (Exception ex)
             {
-                MessageBox.Show(@"³õÊ¼»¯ÇúÏßÏÔÊ¾Ê§°Ü£¡" + ex.Message, @"ÌáÊ¾",
+                MessageBox.Show(@"åˆå§‹åŒ–æ›²çº¿æ˜¾ç¤ºå¤±è´¥ï¼" + ex.Message, @"æç¤º",
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError,
-                    "³õÊ¼»¯ÇúÏßÏÔÊ¾Ê§°Ü£¡" + ex.Message, "³õÊ¼»¯");
+                    "åˆå§‹åŒ–æ›²çº¿æ˜¾ç¤ºå¤±è´¥ï¼" + ex.Message, "åˆå§‹åŒ–");
             }
         }
 
 
         /// <summary>
-        ///     Í³Ò»¹æÕûÊµÊ±ÇúÏßµÄ×ø±êÖá£º**ÒÆ³ı**¶àÓà¶ÑµşÖá£¨¶ø²»ÊÇ½öÒş²Ø£©£¬±ÜÃâ»æÍ¼Çø±»¼·Ñ¹¡£
-        ///     ZedGraph ¼´Ê¹Öá IsVisible=false£¬Öá¶ÔÏóÈÔÔÚÁĞ±íÖĞÊ±¿ÉÄÜÓ°Ïì²¼¾Ö¼ÆËã¡£
+        ///     ç»Ÿä¸€è§„æ•´å®æ—¶æ›²çº¿çš„åæ ‡è½´ï¼š**ç§»é™¤**å¤šä½™å †å è½´ï¼ˆè€Œä¸æ˜¯ä»…éšè—ï¼‰ï¼Œé¿å…ç»˜å›¾åŒºè¢«æŒ¤å‹ã€‚
+        ///     ZedGraph å³ä½¿è½´ IsVisible=falseï¼Œè½´å¯¹è±¡ä»åœ¨åˆ—è¡¨ä¸­æ—¶å¯èƒ½å½±å“å¸ƒå±€è®¡ç®—ã€‚
         /// </summary>
         private static void NormalizeRealtimeAxes(GraphPane pane)
         {
@@ -3758,45 +3759,45 @@ namespace MTEmbTest
 
             try
             {
-                // ÓÒ²à£ºÒÆ³ıËùÓĞ¶îÍâµÄ Y2 Öá£¬Ö»±£ÁôÖ÷ Y2 Öá£¨Index 0£©
+                // å³ä¾§ï¼šç§»é™¤æ‰€æœ‰é¢å¤–çš„ Y2 è½´ï¼Œåªä¿ç•™ä¸» Y2 è½´ï¼ˆIndex 0ï¼‰
                 if (pane.Y2AxisList != null)
                     while (pane.Y2AxisList.Count > 1)
                         pane.Y2AxisList.RemoveAt(pane.Y2AxisList.Count - 1);
 
-                // ×ó²à£ºÒÆ³ıËùÓĞ¶îÍâµÄ Y Öá£¬Ö»±£ÁôÖ÷ Y Öá£¨Index 0£©
-                // Ñ¹Á¦Öá»áÔÚ EnsurePressureYAxis ÖĞÖØĞÂ´´½¨£¨ÓĞ Tag ·ÀÖØ¸´£©
+                // å·¦ä¾§ï¼šç§»é™¤æ‰€æœ‰é¢å¤–çš„ Y è½´ï¼Œåªä¿ç•™ä¸» Y è½´ï¼ˆIndex 0ï¼‰
+                // å‹åŠ›è½´ä¼šåœ¨ EnsurePressureYAxis ä¸­é‡æ–°åˆ›å»ºï¼ˆæœ‰ Tag é˜²é‡å¤ï¼‰
                 if (pane.YAxisList != null)
                     while (pane.YAxisList.Count > 1)
                         pane.YAxisList.RemoveAt(pane.YAxisList.Count - 1);
             }
             catch
             {
-                // ¹æÕûÊ§°Ü²»Ó°ÏìÖ÷Á÷³Ì
+                // è§„æ•´å¤±è´¥ä¸å½±å“ä¸»æµç¨‹
             }
         }
 
-        #region Öá´´½¨ÓëÑ¡Ôñ
+        #region è½´åˆ›å»ºä¸é€‰æ‹©
 
         /// <summary>
-        ///     ´´½¨»ò»ñÈ¡ÓÃÓÚ¡°Ñ¹Á¦£¨bar£©¡±ÏÔÊ¾µÄ×ó²àµÚ¶ş Y Öá£¬²¢·µ»ØÆäË÷Òı¡£
-        ///     - Öá·ÅÔÚ×ó²à£¨YAxisList£©
-        ///     - Í¨¹ı Axis.Tag ±ê¼Ç£¬±ÜÃâÖØ¸´´´½¨
-        ///     - ÎªÁËÇø·Ö£¬²ÉÓÃ¶Ô±È¶È½Ï¸ßµÄÅäÉ«£»Íø¸ñÄ¬ÈÏ¹Ø±Õ£¬·ÀÖ¹ÓëÖ÷Öá»ìÂÒ
+        ///     åˆ›å»ºæˆ–è·å–ç”¨äºâ€œå‹åŠ›ï¼ˆbarï¼‰â€æ˜¾ç¤ºçš„å·¦ä¾§ç¬¬äºŒ Y è½´ï¼Œå¹¶è¿”å›å…¶ç´¢å¼•ã€‚
+        ///     - è½´æ”¾åœ¨å·¦ä¾§ï¼ˆYAxisListï¼‰
+        ///     - é€šè¿‡ Axis.Tag æ ‡è®°ï¼Œé¿å…é‡å¤åˆ›å»º
+        ///     - ä¸ºäº†åŒºåˆ†ï¼Œé‡‡ç”¨å¯¹æ¯”åº¦è¾ƒé«˜çš„é…è‰²ï¼›ç½‘æ ¼é»˜è®¤å…³é—­ï¼Œé˜²æ­¢ä¸ä¸»è½´æ··ä¹±
         /// </summary>
-        /// <param name="pane">ZedGraph µÄ GraphPane</param>
-        /// <returns>Ñ¹Á¦ÖáÔÚ YAxisList ÖĞµÄË÷Òı£¨>=1£©</returns>
+        /// <param name="pane">ZedGraph çš„ GraphPane</param>
+        /// <returns>å‹åŠ›è½´åœ¨ YAxisList ä¸­çš„ç´¢å¼•ï¼ˆ>=1ï¼‰</returns>
         private static int EnsurePressureYAxis(GraphPane pane)
         {
-            // 1) ÈôÒÑ´æÔÚ£¨Í¨¹ı Tag ±ê¼Ç£©£¬Ö±½Ó·µ»Ø
+            // 1) è‹¥å·²å­˜åœ¨ï¼ˆé€šè¿‡ Tag æ ‡è®°ï¼‰ï¼Œç›´æ¥è¿”å›
             for (var i = 0; i < pane.YAxisList.Count; i++)
                 if (pane.YAxisList[i]?.Tag is string tag && tag == "PRESSURE_AXIS")
                     return i;
 
-            // 2) ´´½¨ĞÂµÄ×ó²à Y Öá£¨½«³öÏÖÔÚÄ¬ÈÏ Y ÖáµÄ×ó±ß¶ÑµşÏÔÊ¾£©
+            // 2) åˆ›å»ºæ–°çš„å·¦ä¾§ Y è½´ï¼ˆå°†å‡ºç°åœ¨é»˜è®¤ Y è½´çš„å·¦è¾¹å †å æ˜¾ç¤ºï¼‰
             var pressureAxis = new YAxis("Pressure (bar)")
             {
                 IsVisible = true,
-                // ÑÕÉ«¾¡Á¿ÓëÖ÷Öá£¨À¶É«Ïµ£©Çø·Ö
+                // é¢œè‰²å°½é‡ä¸ä¸»è½´ï¼ˆè“è‰²ç³»ï¼‰åŒºåˆ†
 
                 /*
                 Color = Color.DarkOrange,
@@ -3813,14 +3814,14 @@ namespace MTEmbTest
                 MinorTic = { Size = 0.0f }
             };
 
-            // 3) ¹Ø±Õ×Ô¶¯¡°ÊıÁ¿¼¶/¸ñÊ½¡±Ìø±ä£¬ÓëÄãÏÖÓĞ×ö·¨±£³ÖÒ»ÖÂ£¬±ÜÃâÉÁ¶¯
+            // 3) å…³é—­è‡ªåŠ¨â€œæ•°é‡çº§/æ ¼å¼â€è·³å˜ï¼Œä¸ä½ ç°æœ‰åšæ³•ä¿æŒä¸€è‡´ï¼Œé¿å…é—ªåŠ¨
             pressureAxis.Scale.MagAuto = false;
             pressureAxis.Scale.FormatAuto = false;
 
-            // 4) ´ò¸ö±êÇ©£¬±ãÓÚÏÂ´Î²éÕÒ
+            // 4) æ‰“ä¸ªæ ‡ç­¾ï¼Œä¾¿äºä¸‹æ¬¡æŸ¥æ‰¾
             pressureAxis.Tag = "PRESSURE_AXIS";
 
-            // 5) ¼ÓÈëµ½×óÖáÁĞ±í²¢·µ»ØË÷Òı
+            // 5) åŠ å…¥åˆ°å·¦è½´åˆ—è¡¨å¹¶è¿”å›ç´¢å¼•
             pane.YAxisList.Add(pressureAxis);
             return pane.YAxisList.Count - 1;
         }
@@ -3829,15 +3830,15 @@ namespace MTEmbTest
 
 
         /// <summary>
-        ///     ¶Ô ZedGraph µÄ»æÖÆ²ÎÊı×ö¡°ĞÔÄÜÓÅÏÈ¡±ÉèÖÃ¡£
+        ///     å¯¹ ZedGraph çš„ç»˜åˆ¶å‚æ•°åšâ€œæ€§èƒ½ä¼˜å…ˆâ€è®¾ç½®ã€‚
         /// </summary>
         /// <remarks>
         ///     <para>
-        ///     ¸Ã·½·¨µÄÄ¿±êÊÇ£ºÔÚÈ«Í¨µÀÏÔÊ¾Óë´°¿ÚÇ°ºóÌ¨ÇĞ»»³¡¾°ÏÂ£¬¾¡Á¿½µµÍ»æÖÆ¿ªÏú²¢¼õÉÙäÖÈ¾¶¶¶¯¡£
+        ///     è¯¥æ–¹æ³•çš„ç›®æ ‡æ˜¯ï¼šåœ¨å…¨é€šé“æ˜¾ç¤ºä¸çª—å£å‰åå°åˆ‡æ¢åœºæ™¯ä¸‹ï¼Œå°½é‡é™ä½ç»˜åˆ¶å¼€é”€å¹¶å‡å°‘æ¸²æŸ“æŠ–åŠ¨ã€‚
         ///     </para>
         ///     <para>
-        ///     ZedGraph µÄ²»Í¬°æ±¾/·ÖÖ§¿ÉÄÜ²»´æÔÚ <c>IsFastLine</c> ÊôĞÔ£¬Òò´ËÕâÀïÓÃ·´Éä¡°ÓĞÔòÆôÓÃ£¬ÎŞÔòÌø¹ı¡±£¬
-        ///     ÒÔ±ÜÃâÒò°æ±¾²îÒìµ¼ÖÂ±àÒëÊ§°Ü¡£
+        ///     ZedGraph çš„ä¸åŒç‰ˆæœ¬/åˆ†æ”¯å¯èƒ½ä¸å­˜åœ¨ <c>IsFastLine</c> å±æ€§ï¼Œå› æ­¤è¿™é‡Œç”¨åå°„â€œæœ‰åˆ™å¯ç”¨ï¼Œæ— åˆ™è·³è¿‡â€ï¼Œ
+        ///     ä»¥é¿å…å› ç‰ˆæœ¬å·®å¼‚å¯¼è‡´ç¼–è¯‘å¤±è´¥ã€‚
         ///     </para>
         /// </remarks>
         private void ApplyZedGraphFastRenderSettings()
@@ -3853,7 +3854,7 @@ namespace MTEmbTest
                     return;
                 }
 
-                // ¿Ø¼ş¼¶±ğ¿¹¾â³İ£¨ÄãÖ®Ç°ÒÑ¾­¹Ø±Õ¹ı£¬ÕâÀï×öÒ»´Î¶µµ×£©
+                // æ§ä»¶çº§åˆ«æŠ—é”¯é½¿ï¼ˆä½ ä¹‹å‰å·²ç»å…³é—­è¿‡ï¼Œè¿™é‡Œåšä¸€æ¬¡å…œåº•ï¼‰
                 zedGraphRealChart.IsAntiAlias = false;
 
                 var pane = zedGraphRealChart.GraphPane;
@@ -3861,7 +3862,7 @@ namespace MTEmbTest
 
                 var hasFastLineProperty = false;
 
-                // ÇúÏß¼¶±ğ£º¹Ø±Õ¿¹¾â³İ/Æ½»¬£¬¾¡Á¿×ß¡°¿ìÏß¡±Â·¾¶
+                // æ›²çº¿çº§åˆ«ï¼šå…³é—­æŠ—é”¯é½¿/å¹³æ»‘ï¼Œå°½é‡èµ°â€œå¿«çº¿â€è·¯å¾„
                 foreach (var item in pane.CurveList)
                 {
                     if (item is not LineItem li) continue;
@@ -3869,31 +3870,31 @@ namespace MTEmbTest
                     li.Line.IsAntiAlias = false;
                     li.Line.IsSmooth = false;
 
-                    // Ä³Ğ© ZedGraph °æ±¾Ö§³Ö IsFastLine£»ÓĞÔò¿ªÆô
+                    // æŸäº› ZedGraph ç‰ˆæœ¬æ”¯æŒ IsFastLineï¼›æœ‰åˆ™å¼€å¯
                     hasFastLineProperty |= TrySetBoolProperty(li.Line, "IsFastLine", true);
                     hasFastLineProperty |= TrySetBoolProperty(li, "IsFastLine", true);
                 }
 
                 if (Interlocked.Exchange(ref _fastRenderSettingsLogged, 1) == 0)
                     logger?.Info(
-                        $"ZedGraph ¿ìËÙäÖÈ¾ÉèÖÃÒÑÓ¦ÓÃ£ºAntiAlias=OFF, Smooth=OFF, IsFastLine={(hasFastLineProperty ? "ON" : "N/A")}, Curves={pane.CurveList.Count}",
+                        $"ZedGraph å¿«é€Ÿæ¸²æŸ“è®¾ç½®å·²åº”ç”¨ï¼šAntiAlias=OFF, Smooth=OFF, IsFastLine={(hasFastLineProperty ? "ON" : "N/A")}, Curves={pane.CurveList.Count}",
                         "UI");
             }
             catch
             {
-                // ĞÔÄÜÉèÖÃÊ§°Ü²»Ó°ÏìÖ÷Á÷³Ì
+                // æ€§èƒ½è®¾ç½®å¤±è´¥ä¸å½±å“ä¸»æµç¨‹
             }
         }
 
 
         /// <summary>
-        ///     Í¨¹ı·´Éä¸øÄ¿±ê¶ÔÏóÉèÖÃ²¼¶ûÊôĞÔ£¨ÊôĞÔ²»´æÔÚ/²»¿ÉĞ´ÔòºöÂÔ£©¡£
+        ///     é€šè¿‡åå°„ç»™ç›®æ ‡å¯¹è±¡è®¾ç½®å¸ƒå°”å±æ€§ï¼ˆå±æ€§ä¸å­˜åœ¨/ä¸å¯å†™åˆ™å¿½ç•¥ï¼‰ã€‚
         /// </summary>
-        /// <param name="target">ÒªÉèÖÃÊôĞÔµÄ¶ÔÏó¡£</param>
-        /// <param name="propertyName">ÊôĞÔÃû¡£</param>
-        /// <param name="value">ÒªĞ´ÈëµÄÖµ¡£</param>
+        /// <param name="target">è¦è®¾ç½®å±æ€§çš„å¯¹è±¡ã€‚</param>
+        /// <param name="propertyName">å±æ€§åã€‚</param>
+        /// <param name="value">è¦å†™å…¥çš„å€¼ã€‚</param>
         /// <returns>
-        ///     ÈôÊôĞÔ´æÔÚÇÒ³É¹¦Ğ´Èë·µ»Ø <c>true</c>£»·ñÔò·µ»Ø <c>false</c>¡£
+        ///     è‹¥å±æ€§å­˜åœ¨ä¸”æˆåŠŸå†™å…¥è¿”å› <c>true</c>ï¼›å¦åˆ™è¿”å› <c>false</c>ã€‚
         /// </returns>
         private static bool TrySetBoolProperty(object target, string propertyName, bool value)
         {
@@ -3918,8 +3919,8 @@ namespace MTEmbTest
 
 
         /// <summary>
-        ///     Æô¶¯ UI ÖØ»æ¶¨Ê±Æ÷£ºÍ³Ò»ÔÚ¸Ã¶¨Ê±Æ÷Àï½øĞĞ AxisChange / Invalidate£¬
-        ///     ²¢ÅúÁ¿É¾³ı¾Éµã£¬±ÜÃâÔÚ²É¼¯»Øµ÷Àï¸ßÆµÖØ»æµ¼ÖÂ¿¨¶Ù¡£
+        ///     å¯åŠ¨ UI é‡ç»˜å®šæ—¶å™¨ï¼šç»Ÿä¸€åœ¨è¯¥å®šæ—¶å™¨é‡Œè¿›è¡Œ AxisChange / Invalidateï¼Œ
+        ///     å¹¶æ‰¹é‡åˆ é™¤æ—§ç‚¹ï¼Œé¿å…åœ¨é‡‡é›†å›è°ƒé‡Œé«˜é¢‘é‡ç»˜å¯¼è‡´å¡é¡¿ã€‚
         /// </summary>
         private void StartUiRedrawTimer()
         {
@@ -3927,7 +3928,7 @@ namespace MTEmbTest
 
             _uiTimer = new System.Windows.Forms.Timer
             {
-                Interval = Math.Max(10, 1000 / UI_TARGET_FPS) // Ô¼ UI_TARGET_FPS FPS
+                Interval = Math.Max(10, 1000 / UI_TARGET_FPS) // çº¦ UI_TARGET_FPS FPS
             };
 
             _uiTimer.Tick += (_, __) =>
@@ -3939,35 +3940,40 @@ namespace MTEmbTest
 
                 var pane = zedGraphRealChart.GraphPane;
 
-                // ¢Ù ¹Ì¶¨´°¿Ú¿í¶È£¨Ãë£©
+                // â‘  å›ºå®šçª—å£å®½åº¦ï¼ˆç§’ï¼‰
                 var width = _fixedXWindowSec > 0 ? _fixedXWindowSec : Math.Max(1.0, ClsGlobal.XDuration);
 
-                // ¢Ú ¼ÆËãÏÔÊ¾´°¿Ú [minX, maxX]
+                // â‘¡ è®¡ç®—æ˜¾ç¤ºçª—å£ [minX, maxX]
                 var maxX = Math.Max(0.0, _latestGlobalX);
                 var minX = maxX < width ? 0.0 : maxX - width;
 
-                // ¢Û Ó¦ÓÃµ½×ø±êÖá£ºÆğ²½½×¶ÎÖ»ÏÔÊ¾ [0, width]£»Ö®ºó¹ö¶¯ [maxX - width, maxX]
+                // â‘¢ åº”ç”¨åˆ°åæ ‡è½´ï¼šèµ·æ­¥é˜¶æ®µåªæ˜¾ç¤º [0, width]ï¼›ä¹‹åæ»šåŠ¨ [maxX - width, maxX]
                 pane.XAxis.Scale.Min = minX;
                 pane.XAxis.Scale.Max = maxX < width ? width : maxX;
 
-                // ¢Ü ½öÉ¾³ı¡°´°¿ÚÖ®Íâ¡±µÄµã£¬µ«Áô³öÒ»¸ö°²È«±ß¾à£¨padding£©£¬
-                //    ·ÀÖ¹ÓÉÓÚ¸÷Í¨µÀÊ±¼äÖáÎ¢¶¶¶¯/³éÏ¡/²»Í¬Åú´Îµ¼ÖÂµÄ¡°´°¿ÚÄÚ±»É¾¡±¡£
-                //    ½¨Òé padding Îª´°¿Ú¿í¶ÈµÄ 1%¡«5%£¬ÇÒ²»Ğ¡ÓÚ 0.2s¡£
+                // â‘£ ä»…åˆ é™¤â€œçª—å£ä¹‹å¤–â€çš„ç‚¹ï¼Œä½†ç•™å‡ºä¸€ä¸ªå®‰å…¨è¾¹è·ï¼ˆpaddingï¼‰ï¼Œ
+                //    é˜²æ­¢ç”±äºå„é€šé“æ—¶é—´è½´å¾®æŠ–åŠ¨/æŠ½ç¨€/ä¸åŒæ‰¹æ¬¡å¯¼è‡´çš„â€œçª—å£å†…è¢«åˆ â€ã€‚
+                //    å»ºè®® padding ä¸ºçª—å£å®½åº¦çš„ 1%ï½5%ï¼Œä¸”ä¸å°äº 0.2sã€‚
                 var padding = Math.Max(0.2, width * 0.02);
                 var purgeBefore = Math.Max(0.0, minX - padding);
+                var purgeTriggerBefore = Math.Max(
+                    0.0,
+                    purgeBefore - Math.Max(UiPurgeBatchMinSec, width * 0.02));
 
-                // ¡ª¡ª °´Í¨µÀÅúÁ¿ÇåÀí ¡ª¡ª //
+                // â€”â€” æŒ‰é€šé“æ‰¹é‡æ¸…ç† â€”â€” //
                 for (var g = 0; g < _chData.Length; g++)
                 {
                     var list = _chData[g];
                     if (list == null || list.Count == 0) continue;
 
-                    // ×îÔçµÄµãÈÔÔÚ¡°±£ÁôÇø¡±(>= purgeBefore)£¬ÎŞĞèÇåÀí
-                    // Èô×îÔçµã X ÊÇ NaN/Inf£¬ÔòºóĞø±È½Ï»áÊ§Ğ§£ºĞèÒªÇ¿ÖÆ½øÈë²Ã¼ôÂß¼­ÇåµôËü
-                    if (!double.IsNaN(list[0].X) && !double.IsInfinity(list[0].X) && list[0].X >= purgeBefore)
+                    // æœ€æ—©çš„ç‚¹å°šæœªè¶Šè¿‡æ‰¹é‡è£å‰ªè§¦å‘çº¿æ—¶ç»§ç»­ä¿ç•™ï¼›è¿™åªå¤šä¿ç•™çº¦ 1 ç§’
+                    // æ˜¾ç¤ºç‚¹ï¼Œä¸æ”¹å˜å¯è§çª—å£ï¼Œä¹Ÿé¿å…æ¯ä¸ª UI Tick éƒ½å¤åˆ¶æ•´ä¸ªç‚¹åˆ—ã€‚
+                    // è‹¥æœ€æ—©ç‚¹ X æ˜¯ NaN/Infï¼Œåˆ™åç»­æ¯”è¾ƒä¼šå¤±æ•ˆï¼šéœ€è¦å¼ºåˆ¶è¿›å…¥è£å‰ªé€»è¾‘æ¸…æ‰å®ƒ
+                    if (!double.IsNaN(list[0].X) && !double.IsInfinity(list[0].X) &&
+                        list[0].X >= purgeTriggerBefore)
                         continue;
 
-                    // ÏßĞÔÑ°½ç£¨µãÊıºÜ¶àÊ±¿É¸Ä³É¶ş·ÖËÑË÷£©
+                    // çº¿æ€§å¯»ç•Œï¼ˆç‚¹æ•°å¾ˆå¤šæ—¶å¯æ”¹æˆäºŒåˆ†æœç´¢ï¼‰
                     int cut = 0, cnt = list.Count;
                     while (cut < cnt)
                     {
@@ -3983,7 +3989,7 @@ namespace MTEmbTest
 
                     if (cut > 0)
                     {
-                        // Ò»´ÎĞÔ¿½±´±£Áô¶Î£¬±ÜÃâ O(n^2) µÄÍ·É¾
+                        // ä¸€æ¬¡æ€§æ‹·è´ä¿ç•™æ®µï¼Œé¿å… O(n^2) çš„å¤´åˆ 
                         var keep = cnt - cut;
                         if (keep > 0)
                         {
@@ -3999,8 +4005,8 @@ namespace MTEmbTest
                         }
                     }
 
-                    // ¡ª¡ª£¨¿ÉÑ¡¸üÇ¿±£»¤£©°´Í¨µÀ×ÔÉí¡°×îºó X¡±ÔÙÁôÒ»²ãÓàÁ¿£º
-                    //     ±£Ö¤Ã¿ÌõÇúÏß×ÔÉíÖÁÉÙ±£Áô width + padding µÄ¿ç¶È
+                    // â€”â€”ï¼ˆå¯é€‰æ›´å¼ºä¿æŠ¤ï¼‰æŒ‰é€šé“è‡ªèº«â€œæœ€å Xâ€å†ç•™ä¸€å±‚ä½™é‡ï¼š
+                    //     ä¿è¯æ¯æ¡æ›²çº¿è‡ªèº«è‡³å°‘ä¿ç•™ width + padding çš„è·¨åº¦
                     var lastX = _lastX != null && g < _lastX.Length ? _lastX[g] :
                         list.Count > 0 ? list[list.Count - 1].X : 0.0;
                     var ownKeepMin = Math.Max(0.0, lastX - (width + padding));
@@ -4031,7 +4037,7 @@ namespace MTEmbTest
                     }
                 }
 
-                // Í³Ò»ÖØËãÓëË¢ĞÂ
+                // ç»Ÿä¸€é‡ç®—ä¸åˆ·æ–°
                 zedGraphRealChart.AxisChange();
                 zedGraphRealChart.Invalidate();
 
@@ -4044,8 +4050,8 @@ namespace MTEmbTest
 
 
         /// <summary>
-        ///     CheckEdit ¹´Ñ¡±ä»¯ -> ÏÔÒş¶ÔÓ¦ÇúÏß¡£
-        ///     Ê¹ÓÃ¿Ø¼şµÄ Tag ×÷ÎªÈ«¾ÖÇúÏßË÷Òı£¬±ÜÃâ±Õ°üÎÊÌâ¡£
+        ///     CheckEdit å‹¾é€‰å˜åŒ– -> æ˜¾éšå¯¹åº”æ›²çº¿ã€‚
+        ///     ä½¿ç”¨æ§ä»¶çš„ Tag ä½œä¸ºå…¨å±€æ›²çº¿ç´¢å¼•ï¼Œé¿å…é—­åŒ…é—®é¢˜ã€‚
         /// </summary>
         private void OnCurveCheckChanged(object sender, EventArgs e)
         {
@@ -4067,15 +4073,15 @@ namespace MTEmbTest
         {
             lock (graphLock)
             {
-                // ½öÇå¿ÕµãÊı¾İÓë»º³åÇø£¬²»ÖØ½¨ÇúÏß/×ø±êÖá¡£
-                // ±ÜÃâÔËĞĞÖĞ£¨Îó´¥·¢/Òì³£Â·¾¶£©·´¸´ InitializeCurve() µ¼ÖÂÖá¶Ñµş¼·Ñ¹»æÍ¼Çø¡£
+                // ä»…æ¸…ç©ºç‚¹æ•°æ®ä¸ç¼“å†²åŒºï¼Œä¸é‡å»ºæ›²çº¿/åæ ‡è½´ã€‚
+                // é¿å…è¿è¡Œä¸­ï¼ˆè¯¯è§¦å‘/å¼‚å¸¸è·¯å¾„ï¼‰åå¤ InitializeCurve() å¯¼è‡´è½´å †å æŒ¤å‹ç»˜å›¾åŒºã€‚
                 listForce?.Clear();
                 for (var g = 0; g < _chData.Length; g++)
                     _chData[g]?.Clear();
 
                 for (var i = 0; i < _lastX.Length; i++) _lastX[i] = 0.0;
                 _latestGlobalX = 0.0;
-                _plotZeroTime = DateTime.MinValue; // ÖØÖÃ»æÍ¼Áãµã
+                _plotZeroTime = DateTime.MinValue; // é‡ç½®ç»˜å›¾é›¶ç‚¹
                 _dirtyForRedraw = true;
 
                 bufferA.Clear();
@@ -4090,7 +4096,7 @@ namespace MTEmbTest
         {
             try
             {
-                // ¿ìËÙÌáÈ¡Êı¾İ£¨×îĞ¡»¯Ëø·¶Î§£©
+                // å¿«é€Ÿæå–æ•°æ®ï¼ˆæœ€å°åŒ–é”èŒƒå›´ï¼‰
 
                 var currentTimestamp = Dispstopwatch.ElapsedMilliseconds;
 
@@ -4100,17 +4106,17 @@ namespace MTEmbTest
                 // DateTime dispTime = DateTime.Now;
                 lock (bufferLock)
                 {
-                    // ½»»»»º³åÇø
+                    // äº¤æ¢ç¼“å†²åŒº
                     (activeWriteBuffer, readyReadBuffer) = (readyReadBuffer, activeWriteBuffer);
 
-                    // ´´½¨Êı¾İ¿ìÕÕ
+                    // åˆ›å»ºæ•°æ®å¿«ç…§
                     daqSnapshot = ProcessDaqCurrentData();
                     forceSnapshot = readyReadBuffer.ToList();
 
                     activeWriteBuffer.Clear();
                 }
 
-                // UI¸üĞÂ£¨¶ÀÁ¢Ëø£©
+                // UIæ›´æ–°ï¼ˆç‹¬ç«‹é”ï¼‰
                 if (Monitor.TryEnter(graphLock, 1000))
                     try
                     {
@@ -4124,7 +4130,7 @@ namespace MTEmbTest
             }
             catch (Exception ex)
             {
-                ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "¶¨Ê±Ë¢ĞÂÊı¾İÇúÏß³ö´í: " + ex.Message, "¶¨Ê±Ë¢ĞÂÊı¾İÇúÏß");
+                ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "å®šæ—¶åˆ·æ–°æ•°æ®æ›²çº¿å‡ºé”™: " + ex.Message, "å®šæ—¶åˆ·æ–°æ•°æ®æ›²çº¿");
             }
         }
 
@@ -4143,7 +4149,7 @@ namespace MTEmbTest
             {
                 try
                 {
-                    // ¼ÆËã×î´óÖµ
+                    // è®¡ç®—æœ€å¤§å€¼
                     var maxDaq = DaqData.Length > 0 ? DaqData.Max() : 0.0;
                     var minDaq = DaqData.Length > 0 ? DaqData.Min() : 0.0;
 
@@ -4169,8 +4175,8 @@ namespace MTEmbTest
                                 out forceValue, out faultflg, out torque, out currentValue);
 
                             if (parseMsg.IndexOf("OK") < 0)
-                                ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "CANÊı¾İ½âÎö³ö´í: " + parseMsg,
-                                    "CANÊı¾İ½âÎö");
+                                ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "CANæ•°æ®è§£æå‡ºé”™: " + parseMsg,
+                                    "CANæ•°æ®è§£æ");
 
 
                             maxForce = Math.Max(maxForce, forceValue);
@@ -4190,42 +4196,42 @@ namespace MTEmbTest
                     if (minCurrent == double.MaxValue) minCurrent = 0.0;
 
 
-                    // ³õÊ¼»¯ÁĞ£¨Ê×´ÎÔËĞĞÊ±£©
+                    // åˆå§‹åŒ–åˆ—ï¼ˆé¦–æ¬¡è¿è¡Œæ—¶ï¼‰
                     if (dgvRealData.Columns.Count == 0)
                     {
                         dgvRealData.Columns.Add(new DataGridViewCheckBoxColumn
                         {
                             Name = "colCheckBox",
-                            HeaderText = "Ñ¡Ôñ",
-                            Width = 60 // CheckBoxÁĞÉÔÕ­
+                            HeaderText = "é€‰æ‹©",
+                            Width = 60 // CheckBoxåˆ—ç¨çª„
                         });
 
                         var paramColumn = new DataGridViewTextBoxColumn
                         {
                             Name = "colParameter",
-                            HeaderText = "²ÎÊı",
+                            HeaderText = "å‚æ•°",
                             Width = 120
                         };
 
                         var maxValueColumn = new DataGridViewTextBoxColumn
                         {
                             Name = "colMaxValue",
-                            HeaderText = "×î´óÖµ",
+                            HeaderText = "æœ€å¤§å€¼",
                             Width = 120,
                             DefaultCellStyle = new DataGridViewCellStyle
                             {
-                                Format = "F3" // Í³Ò»Êı×Ö¸ñÊ½
+                                Format = "F3" // ç»Ÿä¸€æ•°å­—æ ¼å¼
                             }
                         };
 
                         var minValueColumn = new DataGridViewTextBoxColumn
                         {
                             Name = "colMinValue",
-                            HeaderText = "×îĞ¡Öµ",
+                            HeaderText = "æœ€å°å€¼",
                             Width = 120,
                             DefaultCellStyle = new DataGridViewCellStyle
                             {
-                                Format = "F3" // Í³Ò»Êı×Ö¸ñÊ½
+                                Format = "F3" // ç»Ÿä¸€æ•°å­—æ ¼å¼
                             }
                         };
 
@@ -4233,7 +4239,7 @@ namespace MTEmbTest
                         dgvRealData.Columns.AddRange(paramColumn, maxValueColumn, minValueColumn);
                     }
 
-                    // ¸üĞÂ»òÌí¼ÓĞĞ
+                    // æ›´æ–°æˆ–æ·»åŠ è¡Œ
                     UpdateDataRow("DAQ_I", maxDaq, minDaq);
                     UpdateDataRow("Act_F", maxForce, minForce);
                     UpdateDataRow("Act_I", maxCurrent, minCurrent);
@@ -4241,7 +4247,7 @@ namespace MTEmbTest
                 }
                 catch (Exception ex)
                 {
-                    ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "¸üĞÂÊı¾İ±í¸ñ³ö´í: " + ex.Message, "Êı¾İ±í¸ñ");
+                    ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "æ›´æ–°æ•°æ®è¡¨æ ¼å‡ºé”™: " + ex.Message, "æ•°æ®è¡¨æ ¼");
                 }
             }
         }
@@ -4250,7 +4256,7 @@ namespace MTEmbTest
         {
             try
             {
-                // ²éÕÒÏÖÓĞĞĞ
+                // æŸ¥æ‰¾ç°æœ‰è¡Œ
                 foreach (DataGridViewRow row in dgvRealData.Rows)
                     if (row.Cells["colParameter"].Value?.ToString() == parameter)
                     {
@@ -4259,17 +4265,17 @@ namespace MTEmbTest
                         return;
                     }
 
-                // Ìí¼ÓĞÂĞĞ
+                // æ·»åŠ æ–°è¡Œ
                 var idx = dgvRealData.Rows.Add(
-                    true, // CheckBox³õÊ¼×´Ì¬
-                    parameter, // ²ÎÊıÁĞ
-                    maxValue, // ÖµÁĞ
+                    true, // CheckBoxåˆå§‹çŠ¶æ€
+                    parameter, // å‚æ•°åˆ—
+                    maxValue, // å€¼åˆ—
                     minValue
                 );
             }
             catch (Exception ex)
             {
-                ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "¸üĞÂÊı¾İ±í¸ñ³ö´í: " + ex.Message, "¸üĞÂ±í¸ñ");
+                ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "æ›´æ–°æ•°æ®è¡¨æ ¼å‡ºé”™: " + ex.Message, "æ›´æ–°è¡¨æ ¼");
             }
         }
 
@@ -4321,7 +4327,7 @@ namespace MTEmbTest
                     if (listDaqCurrent != null && listDaqCurrent.Count > 0 &&
                         listDaqCurrent[listDaqCurrent.Count - 1].X - listDaqCurrent[0].X > ClsGlobal.XDuration)
                     {
-                        // ÒÆ³ı×î¾ÉµÄÒ»°ëÊı¾İµã
+                        // ç§»é™¤æœ€æ—§çš„ä¸€åŠæ•°æ®ç‚¹
 
                         var MidTime = (listDaqCurrent[0].X + listDaqCurrent[listDaqCurrent.Count - 1].X) / 2.0;
 
@@ -4337,9 +4343,9 @@ namespace MTEmbTest
                     var j = 0;
 
 
-                    // ½âÎöÊı¾İ²¢Ìî³äÇúÏß
+                    // è§£ææ•°æ®å¹¶å¡«å……æ›²çº¿
                     foreach (var data in dataQueue)
-                        // ¼ÙÉèÊı¾İ¸ñÊ½£ºÃ¿¸öÊı¾İ°ü°üº¬Ò»¸öshortÀàĞÍµÄÁ¦Öµ
+                        // å‡è®¾æ•°æ®æ ¼å¼ï¼šæ¯ä¸ªæ•°æ®åŒ…åŒ…å«ä¸€ä¸ªshortç±»å‹çš„åŠ›å€¼
                         if (data.Length >= 2)
                         {
                             double forceValue = 0;
@@ -4353,8 +4359,8 @@ namespace MTEmbTest
                                 out forceValue, out faultflg, out torque, out currentValue);
 
                             if (parseMsg.IndexOf("OK") < 0)
-                                ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "CANÊı¾İ½âÎö³ö´í: " + parseMsg,
-                                    "CANÊı¾İ½âÎö");
+                                ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "CANæ•°æ®è§£æå‡ºé”™: " + parseMsg,
+                                    "CANæ•°æ®è§£æ");
 
                             listForce.Add(graphyHeadertime + j * CanDeltTime, forceValue);
                             listCanCurrent.Add(graphyHeadertime + j * CanDeltTime, currentValue);
@@ -4366,7 +4372,7 @@ namespace MTEmbTest
                     if (listForce != null && listForce.Count > 0 &&
                         listForce[listForce.Count - 1].X - listForce[0].X > ClsGlobal.XDuration)
                     {
-                        // ÒÆ³ı×î¾ÉµÄÒ»°ëÊı¾İµã
+                        // ç§»é™¤æœ€æ—§çš„ä¸€åŠæ•°æ®ç‚¹
 
                         var MidTime = (listForce[0].X + listForce[listForce.Count - 1].X) / 2.0;
 
@@ -4387,8 +4393,8 @@ namespace MTEmbTest
                 }
                 catch (Exception ex)
                 {
-                    ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "¸üĞÂÇúÏßÏÔÊ¾³ö´í: " + ex.Message, "ÇúÏßÏÔÊ¾");
-                    // ¼ÇÂ¼Òì³£
+                    ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "æ›´æ–°æ›²çº¿æ˜¾ç¤ºå‡ºé”™: " + ex.Message, "æ›²çº¿æ˜¾ç¤º");
+                    // è®°å½•å¼‚å¸¸
                 }
                 finally
                 {
@@ -4399,19 +4405,19 @@ namespace MTEmbTest
 
 
         /// <summary>
-        ///     ¸üĞÂÊµÊ±ÇúÏß£¨½ö DAQ_I Ò»ÌõÇúÏß£©¡£
-        ///     ´«ÈëµÄÊı¾İÓ¦Îª¹¤³ÌÖµ£¨ÒÑ×öÁãµã¡¢±ÈÀı¡¢Æ«ÖÃÓëÂË²¨£©£¬·½·¨ÄÚ²¿»á°´ÕÕ²ÉÑùÂÊ
-        ///     ½«Ñù±¾Ó³Éäµ½ X Öá£¨µ¥Î»£ºÃë£©£¬²¢Î¬³Ö X Öá¹Ì¶¨Ê±´°£¨ClsGlobal.XDuration£©¡£
+        ///     æ›´æ–°å®æ—¶æ›²çº¿ï¼ˆä»… DAQ_I ä¸€æ¡æ›²çº¿ï¼‰ã€‚
+        ///     ä¼ å…¥çš„æ•°æ®åº”ä¸ºå·¥ç¨‹å€¼ï¼ˆå·²åšé›¶ç‚¹ã€æ¯”ä¾‹ã€åç½®ä¸æ»¤æ³¢ï¼‰ï¼Œæ–¹æ³•å†…éƒ¨ä¼šæŒ‰ç…§é‡‡æ ·ç‡
+        ///     å°†æ ·æœ¬æ˜ å°„åˆ° X è½´ï¼ˆå•ä½ï¼šç§’ï¼‰ï¼Œå¹¶ç»´æŒ X è½´å›ºå®šæ—¶çª—ï¼ˆClsGlobal.XDurationï¼‰ã€‚
         /// </summary>
         /// <param name="daqData">
-        ///     Ò»´ÎË¢ĞÂµÄ DAQ_I Êı¾İ¶Î£¨¹¤³ÌÖµ£©¡£ÔÊĞíÎª¿Õ»ò³¤¶ÈÎª 0£¨´ËÊ±²»×öÈÎºÎ¸üĞÂ£©¡£
+        ///     ä¸€æ¬¡åˆ·æ–°çš„ DAQ_I æ•°æ®æ®µï¼ˆå·¥ç¨‹å€¼ï¼‰ã€‚å…è®¸ä¸ºç©ºæˆ–é•¿åº¦ä¸º 0ï¼ˆæ­¤æ—¶ä¸åšä»»ä½•æ›´æ–°ï¼‰ã€‚
         /// </param>
         public void UpdateGraphDisplay2(double[] daqData)
         {
-            // ¿Ø¼şÎ´³õÊ¼»¯Ö±½Ó·µ»Ø
+            // æ§ä»¶æœªåˆå§‹åŒ–ç›´æ¥è¿”å›
             if (zedGraphRealChart == null) return;
 
-            // ¿çÏß³Ì·âËÍ
+            // è·¨çº¿ç¨‹å°é€
             if (zedGraphRealChart.InvokeRequired)
             {
                 zedGraphRealChart.Invoke(new Action<double[]>(UpdateGraphDisplay2), daqData);
@@ -4423,8 +4429,8 @@ namespace MTEmbTest
                 if (daqData == null || daqData.Length == 0)
                     return;
 
-                // ===== Ö»ÏÔÊ¾ DAQ_I£¬¶ÔÓ¦ Y2 Öá£»Òş²ØÆäËûÖá£¨Èô´æÔÚÔòÒş²Ø£©=====
-                // Èç¹ûÄãÈÔÈ»Ê¹ÓÃ curveDictionary À´¿ØÖÆ¿É¼ûĞÔ£¬ÕâÀïÒ²°Ñ DAQ_I ´ò¿ª
+                // ===== åªæ˜¾ç¤º DAQ_Iï¼Œå¯¹åº” Y2 è½´ï¼›éšè—å…¶ä»–è½´ï¼ˆè‹¥å­˜åœ¨åˆ™éšè—ï¼‰=====
+                // å¦‚æœä½ ä»ç„¶ä½¿ç”¨ curveDictionary æ¥æ§åˆ¶å¯è§æ€§ï¼Œè¿™é‡Œä¹ŸæŠŠ DAQ_I æ‰“å¼€
                 if (curveDictionary != null && curveDictionary.TryGetValue("DAQ_I", out var op))
                 {
                     op.IsActive = true;
@@ -4432,30 +4438,30 @@ namespace MTEmbTest
                 }
 
                 var pane = zedGraphRealChart.GraphPane;
-                pane.YAxis.IsVisible = false; // Ö»»­ DAQ_I£¬²»ÓÃ×ó²à Y Öá
-                pane.Y2Axis.IsVisible = true; // ¿ªÆô Y2
-                if (pane.Y2AxisList.Count > 1) // Èç¹ûÔø¾­¼Ó¹ıµÚ¶ş¸ö Y2£¨Act_I£©£¬ÕâÀïÒş²Ø
+                pane.YAxis.IsVisible = false; // åªç”» DAQ_Iï¼Œä¸ç”¨å·¦ä¾§ Y è½´
+                pane.Y2Axis.IsVisible = true; // å¼€å¯ Y2
+                if (pane.Y2AxisList.Count > 1) // å¦‚æœæ›¾ç»åŠ è¿‡ç¬¬äºŒä¸ª Y2ï¼ˆAct_Iï¼‰ï¼Œè¿™é‡Œéšè—
                     pane.Y2AxisList[1].IsVisible = false;
 
-                // ===== °Ñ²ÉÑùÓ³Éäµ½Ê±¼äÖá =====
-                // ²ÉÑùÖÜÆÚ£¨Ãë/µã£©
+                // ===== æŠŠé‡‡æ ·æ˜ å°„åˆ°æ—¶é—´è½´ =====
+                // é‡‡æ ·å‘¨æœŸï¼ˆç§’/ç‚¹ï¼‰
                 if (ClsGlobal.DaqFrequency <= 0)
-                    throw new InvalidOperationException("DaqFrequency Î´ÕıÈ·ÉèÖÃ¡£");
+                    throw new InvalidOperationException("DaqFrequency æœªæ­£ç¡®è®¾ç½®ã€‚");
 
                 var dt = 1.0 / ClsGlobal.DaqFrequency;
 
-                // ±¾´Î×·¼ÓµÄÆğÊ¼ X£¨Ãë£©¡£
-                // ÈôÒÑÓĞµã£¬Ôò´Ó×îºóÒ»¸öµãµÄÏÂÒ»²½¿ªÊ¼£»·ñÔò´Ó 0 ¿ªÊ¼¡£
+                // æœ¬æ¬¡è¿½åŠ çš„èµ·å§‹ Xï¼ˆç§’ï¼‰ã€‚
+                // è‹¥å·²æœ‰ç‚¹ï¼Œåˆ™ä»æœ€åä¸€ä¸ªç‚¹çš„ä¸‹ä¸€æ­¥å¼€å§‹ï¼›å¦åˆ™ä» 0 å¼€å§‹ã€‚
                 double xStart;
                 if (listDaqCurrent != null && listDaqCurrent.Count > 0)
                     xStart = listDaqCurrent[listDaqCurrent.Count - 1].X + dt;
                 else
                     xStart = 0.0;
 
-                // Öğµã×·¼Ó£¨X ÖáÎªÏà¶ÔÊ±¼ä£¬µ¥Î»£ºÃë£©
+                // é€ç‚¹è¿½åŠ ï¼ˆX è½´ä¸ºç›¸å¯¹æ—¶é—´ï¼Œå•ä½ï¼šç§’ï¼‰
                 for (var i = 0; i < daqData.Length; i++) listDaqCurrent.Add(xStart + i * dt, daqData[i]);
 
-                // ===== Î¬³Ö¹Ì¶¨Ê±´°£¨»¬¶¯´°¿Ú£©=====
+                // ===== ç»´æŒå›ºå®šæ—¶çª—ï¼ˆæ»‘åŠ¨çª—å£ï¼‰=====
                 if (listDaqCurrent != null && listDaqCurrent.Count > 0)
                 {
                     var firstX = listDaqCurrent[0].X;
@@ -4463,22 +4469,22 @@ namespace MTEmbTest
 
                     if (lastX - firstX > ClsGlobal.XDuration)
                     {
-                        // ÒÆ³ı×î¾ÉµÄÒ»°ë£¬±ÜÃâÆµ·±ÕûÌå¿½±´µ¼ÖÂ¿¨¶Ù
+                        // ç§»é™¤æœ€æ—§çš„ä¸€åŠï¼Œé¿å…é¢‘ç¹æ•´ä½“æ‹·è´å¯¼è‡´å¡é¡¿
                         var mid = (firstX + lastX) / 2.0;
                         listDaqCurrent.RemoveAll(p => p.X < mid);
 
-                        // »¬¶¯ X Öá·¶Î§µ½×îĞÂ´°¿Ú
+                        // æ»‘åŠ¨ X è½´èŒƒå›´åˆ°æœ€æ–°çª—å£
                         pane.XAxis.Scale.Min = listDaqCurrent[0].X;
                         pane.XAxis.Scale.Max = listDaqCurrent[0].X + ClsGlobal.XDuration;
                     }
                 }
 
-                // Ë¢ĞÂ
+                // åˆ·æ–°
                 zedGraphRealChart.AxisChange();
                 zedGraphRealChart.Invalidate();
 
-                // =====£¨¿ÉÑ¡£©Î¬»¤ lastGraphyTime£¬ÓÃÓÚÄãÆäËûµØ·½µÄÊ±¼ä»ù×¼ =====
-                // ÒÔÑùµãÊıÓë²ÉÑùÂÊÍÆÇ° lastGraphyTime£¬±£³ÖÓë¾É´úÂë¼æÈİ
+                // =====ï¼ˆå¯é€‰ï¼‰ç»´æŠ¤ lastGraphyTimeï¼Œç”¨äºä½ å…¶ä»–åœ°æ–¹çš„æ—¶é—´åŸºå‡† =====
+                // ä»¥æ ·ç‚¹æ•°ä¸é‡‡æ ·ç‡æ¨å‰ lastGraphyTimeï¼Œä¿æŒä¸æ—§ä»£ç å…¼å®¹
                 if (daqData.Length > 0)
                 {
                     var spanSec = daqData.Length * (1.0 / ClsGlobal.DaqFrequency);
@@ -4487,7 +4493,7 @@ namespace MTEmbTest
             }
             catch (Exception ex)
             {
-                ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "¸üĞÂÇúÏßÏÔÊ¾³ö´í: " + ex.Message, "ÇúÏßÏÔÊ¾");
+                ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "æ›´æ–°æ›²çº¿æ˜¾ç¤ºå‡ºé”™: " + ex.Message, "æ›²çº¿æ˜¾ç¤º");
             }
         }
 
@@ -4502,11 +4508,11 @@ namespace MTEmbTest
 
             lock (graphLock)
             {
-                // Çå¿ÕÊı¾İÁĞ±í
-                // ÖØÖÃÊ±¼äÆ«ÒÆ
+                // æ¸…ç©ºæ•°æ®åˆ—è¡¨
+                // é‡ç½®æ—¶é—´åç§»
                 // timeOffset = 0;
 
-                // ÖØÖÃ×ø±êÖá·¶Î§
+                // é‡ç½®åæ ‡è½´èŒƒå›´
                 // zedGraphRealChart.GraphPane.XAxis.Scale.Min = 0;
                 // zedGraphRealChart.GraphPane.XAxis.Scale.Max = xDuration;
 
@@ -4517,7 +4523,7 @@ namespace MTEmbTest
                     zedGraphRealChart.GraphPane.XAxis.Scale.Min = listForce[listForce.Count - 1].X;
                     listForce.Clear();
 
-                    // Á¢¼´Ë¢ĞÂÍ¼±í
+                    // ç«‹å³åˆ·æ–°å›¾è¡¨
                     zedGraphRealChart.AxisChange();
                     zedGraphRealChart.Invalidate();
                 }
@@ -4553,9 +4559,9 @@ namespace MTEmbTest
         #endregion
 
 
-        #region ÖÜÆÚ¶¨Ê±´¦Àí
+        #region å‘¨æœŸå®šæ—¶å¤„ç†
 
-        // ³õÊ¼»¯12¸ö¶¨Ê±Æ÷
+        // åˆå§‹åŒ–12ä¸ªå®šæ—¶å™¨
         private void InitializeEmbControlTimers(uint TimeInterval)
         {
             try
@@ -4575,11 +4581,11 @@ namespace MTEmbTest
 
             catch (Exception ex)
             {
-                MessageBox.Show(@"³õÊ¼»¯¶¨Ê±·ÃÎÊ×é¼şÊ§°Ü£¡" + ex.Message);
+                MessageBox.Show(@"åˆå§‹åŒ–å®šæ—¶è®¿é—®ç»„ä»¶å¤±è´¥ï¼" + ex.Message);
             }
         }
 
-        // Æô¶¯Ö¸¶¨¶¨Ê±Æ÷
+        // å¯åŠ¨æŒ‡å®šå®šæ—¶å™¨
         public bool StartEmbControlTimer(int EmbIndex)
         {
             try
@@ -4591,7 +4597,7 @@ namespace MTEmbTest
                 if (timer.IsRunning)
                     return true;
 
-                // Ê×´ÎÆô¶¯Ê±ÉèÖÃ¸ß¾«¶È¶¨Ê±Æ÷
+                // é¦–æ¬¡å¯åŠ¨æ—¶è®¾ç½®é«˜ç²¾åº¦å®šæ—¶å™¨
                 if (Interlocked.Increment(ref activeTimersCount) == 1) timeBeginPeriod(DEFAULT_RESOLUTION);
 
                 timer.Handler = EmbControlTimerHandler;
@@ -4618,12 +4624,12 @@ namespace MTEmbTest
             catch (Exception ex)
             {
                 ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError,
-                    "Æô¶¯EMB" + EmbIndex + "¶¨Ê±¿ØÖÆÊ§°Ü£¡" + ex.Message, "CANÍ¨ĞÅ");
+                    "å¯åŠ¨EMB" + EmbIndex + "å®šæ—¶æ§åˆ¶å¤±è´¥ï¼" + ex.Message, "CANé€šä¿¡");
                 return false;
             }
         }
 
-        // Í£Ö¹Ö¸¶¨¶¨Ê±Æ÷
+        // åœæ­¢æŒ‡å®šå®šæ—¶å™¨
         public bool StopEmbControlTimer(int index)
         {
             try
@@ -4642,7 +4648,7 @@ namespace MTEmbTest
                 EmbControlTimers[index].TimerId = 0;
                 EmbControlTimers[index].Handler = null;
 
-                // ×îºóÒ»¸ö¶¨Ê±Æ÷Í£Ö¹Ê±»Ö¸´·Ö±æÂÊ
+                // æœ€åä¸€ä¸ªå®šæ—¶å™¨åœæ­¢æ—¶æ¢å¤åˆ†è¾¨ç‡
                 if (Interlocked.Decrement(ref activeTimersCount) == 0) timeEndPeriod(DEFAULT_RESOLUTION);
 
                 return true;
@@ -4651,15 +4657,15 @@ namespace MTEmbTest
             catch (Exception ex)
             {
                 ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError,
-                    "Í£Ö¹EMB" + index + "¶¨Ê±¿ØÖÆÊ§°Ü£¡" + ex.Message, "CANÍ¨ĞÅ");
+                    "åœæ­¢EMB" + index + "å®šæ—¶æ§åˆ¶å¤±è´¥ï¼" + ex.Message, "CANé€šä¿¡");
                 return false;
             }
         }
 
-        // ¶¨Ê±Æ÷»Øµ÷´¦Àí
+        // å®šæ—¶å™¨å›è°ƒå¤„ç†
         private void EmbControlTimerHandler(UIntPtr uTimerID, uint uMsg, UIntPtr dwUser, UIntPtr dw1, UIntPtr dw2)
         {
-            //´«ÈëEMB´¦ÀíµÄĞòºÅ
+            //ä¼ å…¥EMBå¤„ç†çš„åºå·
             var index = (int)dwUser.ToUInt32();
             if (index < 0 || index >= 6)
                 return;
@@ -4667,15 +4673,15 @@ namespace MTEmbTest
             {
                 var timer = EmbControlTimers[index];
 
-                // Ô­ÏÈÊÇcanÍ¨ĞÅ²Ù×÷£¬ĞèÒª¸ÄÎª6002µÄAO²Ù×÷
+                // åŸå…ˆæ˜¯cané€šä¿¡æ“ä½œï¼Œéœ€è¦æ”¹ä¸º6002çš„AOæ“ä½œ
                 Action action = () =>
                 {
                     //  SafeLogError("Enter No " + index.ToString());
                     timer.CycleCounter[index]++;
 
-                    if (timer.CycleCounter[index] % 6000 == 0) //60Ãë¼ÇÂ¼Ò»´Î
+                    if (timer.CycleCounter[index] % 6000 == 0) //60ç§’è®°å½•ä¸€æ¬¡
                         ClsLogProcess.AddToInfoList(MaxInfos, ref LogInformation,
-                            "EMB" + (index + 1) + " ·¢ËÍ¼Ğ½ôÖ¸Áî ", "CANÍ¨ĞÅ");
+                            "EMB" + (index + 1) + " å‘é€å¤¹ç´§æŒ‡ä»¤ ", "CANé€šä¿¡");
 
                     /*
                     lock (clampCounterLocks[index])
@@ -4688,7 +4694,7 @@ namespace MTEmbTest
                             SendReleaseCommandToDevice(EmbNoToName[index]);
                             ApplyAutoSend(EmbNoToChannel[index]);
                             releaseFailureCounters[index] = 0;
-                            ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "EMB" + (index + 1).ToString() + "Á¬Ğø¼Ğ½ô¸æ¾¯£¡", "¸æ¾¯");
+                            ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "EMB" + (index + 1).ToString() + "è¿ç»­å¤¹ç´§å‘Šè­¦ï¼", "å‘Šè­¦");
                         }
                     }*/
                 };
@@ -4701,17 +4707,17 @@ namespace MTEmbTest
             catch (Exception ex)
             {
                 ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError,
-                    "EMB" + (index + 1) + "¶¨Ê±·¢ËÍÖ¸Áî³ö´í£¡" + ex.Message, "¶¨Ê±·¢ËÍÖ¸Áî");
+                    "EMB" + (index + 1) + "å®šæ—¶å‘é€æŒ‡ä»¤å‡ºé”™ï¼" + ex.Message, "å®šæ—¶å‘é€æŒ‡ä»¤");
             }
         }
 
-        // Í£Ö¹ËùÓĞ¶¨Ê±Æ÷
+        // åœæ­¢æ‰€æœ‰å®šæ—¶å™¨
         public void StopAllEmbControlTimers()
         {
             for (var i = 0; i < 6; i++) StopEmbControlTimer(i);
         }
 
-        // ÉèÖÃ¶¨Ê±Æ÷¼ä¸ô
+        // è®¾ç½®å®šæ—¶å™¨é—´éš”
         public bool SetEmbControlTimerInterval(int index, uint newInterval)
         {
             if (index < 0 || index >= 6)
@@ -4731,7 +4737,7 @@ namespace MTEmbTest
             return true;
         }
 
-        // »ñÈ¡¶¨Ê±Æ÷×´Ì¬ĞÅÏ¢
+        // è·å–å®šæ—¶å™¨çŠ¶æ€ä¿¡æ¯
         public string GetTimerStatus(int index)
         {
             if (index < 0 || index >= 6)
@@ -4746,7 +4752,7 @@ namespace MTEmbTest
         #endregion
 
 
-        #region UI¹ö¶¯ÏûÏ¢
+        #region UIæ»šåŠ¨æ¶ˆæ¯
 
         private void InitializeUiInfoLog()
         {
@@ -4763,7 +4769,7 @@ namespace MTEmbTest
                 RetentionDays = 30,
                 MaximumRecentLines = UiInfoRecentLineLimit,
                 WarningSink = (message, exception) =>
-                    logger?.Warn($"{message}: {exception?.Message}", "UIÈÕÖ¾")
+                    logger?.Warn($"{message}: {exception?.Message}", "UIæ—¥å¿—")
             });
             if (!_uiInfoLogStore.Initialize(projectRoot))
                 return;
@@ -4773,10 +4779,20 @@ namespace MTEmbTest
             RtbInfo.Text = existingLines.Count == 0
                 ? string.Empty
                 : string.Join(Environment.NewLine, existingLines) + Environment.NewLine;
+            _uiInfoVisibleLineCount = existingLines.Count;
             _suppressRtbInfoTextChanged = false;
 
             RtbInfo.TextChanged -= RtbInfo_TextChanged;
             RtbInfo.TextChanged += RtbInfo_TextChanged;
+
+            if (_uiInfoFlushTimer == null)
+            {
+                _uiInfoFlushTimer = new System.Windows.Forms.Timer { Interval = 150 };
+                _uiInfoFlushTimer.Tick += UiInfoFlushTimer_Tick;
+                _uiHeartbeatLastTick = Stopwatch.GetTimestamp();
+                _uiHeartbeatWindowStartedTick = _uiHeartbeatLastTick;
+                _uiInfoFlushTimer.Start();
+            }
         }
 
         private void LogInfo(string message)
@@ -4791,33 +4807,105 @@ namespace MTEmbTest
 
         private void AppendInfoLine(string formattedLine)
         {
-            if (RtbInfo == null || RtbInfo.IsDisposed)
+            if (string.IsNullOrEmpty(formattedLine) || _isClosing)
                 return;
 
-            if (RtbInfo.InvokeRequired)
-            {
-                RtbInfo.BeginInvoke(new Action<string>(AppendInfoLine), formattedLine);
-                return;
-            }
+            _pendingUiInfoLines.Enqueue(formattedLine);
+        }
 
-            _suppressRtbInfoTextChanged = true;
+        private void UiInfoFlushTimer_Tick(object sender, EventArgs e)
+        {
+            var enteredTick = Stopwatch.GetTimestamp();
             try
             {
-                if (string.IsNullOrEmpty(RtbInfo.Text))
-                    RtbInfo.Text = formattedLine + Environment.NewLine;
-                else
-                    RtbInfo.AppendText(formattedLine + Environment.NewLine);
+                if (_isClosing || RtbInfo == null || RtbInfo.IsDisposed)
+                    return;
 
-                var lines = RtbInfo.Lines;
-                if (lines.Length > UiInfoRecentLineLimit)
-                    RtbInfo.Lines = lines.Skip(Math.Max(0, lines.Length - UiInfoTrimWatermark)).ToArray();
-                RtbInfo.SelectionStart = RtbInfo.TextLength;
-                RtbInfo.ScrollToCaret();
+                var batch = new List<string>(UiInfoBatchMaxLines);
+                while (batch.Count < UiInfoBatchMaxLines && _pendingUiInfoLines.TryDequeue(out var line))
+                {
+                    batch.Add(line);
+                }
+                if (batch.Count == 0)
+                    return;
+
+                _suppressRtbInfoTextChanged = true;
+                try
+                {
+                    RtbInfo.AppendText(string.Join(Environment.NewLine, batch) + Environment.NewLine);
+                    _uiInfoVisibleLineCount += batch.Count;
+
+                    // åªæœ‰è·¨è¶Šæ°´ä½çº¿æ—¶æ‰æ‰«æ Linesï¼›é¿å…æ¯æ¡æ—¥å¿—éƒ½å¤åˆ¶æ•´ä¸ª RichTextBoxã€‚
+                    if (_uiInfoVisibleLineCount > UiInfoRecentLineLimit)
+                    {
+                        var lines = RtbInfo.Lines;
+                        var retained = lines.Skip(Math.Max(0, lines.Length - UiInfoTrimWatermark)).ToArray();
+                        RtbInfo.Lines = retained;
+                        _uiInfoVisibleLineCount = retained.Length;
+                    }
+                    RtbInfo.SelectionStart = RtbInfo.TextLength;
+                    RtbInfo.ScrollToCaret();
+                }
+                finally
+                {
+                    _suppressRtbInfoTextChanged = false;
+                }
             }
             finally
             {
-                _suppressRtbInfoTextChanged = false;
+                RecordUiHeartbeat(enteredTick, Stopwatch.GetTimestamp());
             }
+        }
+
+        private void RecordUiHeartbeat(long enteredTick, long completedTick)
+        {
+            var previous = _uiHeartbeatLastTick;
+            _uiHeartbeatLastTick = enteredTick;
+            if (previous > 0 && enteredTick >= previous)
+            {
+                var intervalMs = (enteredTick - previous) * 1000.0 / Stopwatch.Frequency;
+                _uiHeartbeatDelayMs.Add(Math.Max(0, intervalMs - 150.0));
+            }
+            if (completedTick >= enteredTick)
+                _uiHeartbeatFlushMs.Add(
+                    (completedTick - enteredTick) * 1000.0 / Stopwatch.Frequency);
+
+            var windowStarted = _uiHeartbeatWindowStartedTick;
+            if (windowStarted <= 0)
+            {
+                _uiHeartbeatWindowStartedTick = enteredTick;
+                return;
+            }
+            if ((completedTick - windowStarted) * 1000.0 / Stopwatch.Frequency < 10000)
+                return;
+
+            var delayP95 = Percentile(_uiHeartbeatDelayMs, 0.95);
+            var delayMax = _uiHeartbeatDelayMs.Count == 0 ? 0 : _uiHeartbeatDelayMs.Max();
+            var flushP95 = Percentile(_uiHeartbeatFlushMs, 0.95);
+            var flushMax = _uiHeartbeatFlushMs.Count == 0 ? 0 : _uiHeartbeatFlushMs.Max();
+            var filePending = _uiInfoLogStore?.PendingCount ?? 0;
+            var fileDropped = _uiInfoLogStore?.DroppedLines ?? 0;
+            logger?.Info(
+                $"FieldMetric UI DelayP95Ms={delayP95:F3} DelayMaxMs={delayMax:F3} " +
+                $"FlushP95Ms={flushP95:F3} FlushMaxMs={flushMax:F3} " +
+                $"Pending={_pendingUiInfoLines.Count} Dropped={_pendingUiInfoLines.DroppedCount} " +
+                $"FilePending={filePending} FileDropped={fileDropped}",
+                "FIELD");
+            _uiHeartbeatDelayMs.Clear();
+            _uiHeartbeatFlushMs.Clear();
+            _uiHeartbeatWindowStartedTick = completedTick;
+        }
+
+        private static double Percentile(IReadOnlyCollection<double> values, double fraction)
+        {
+            if (values == null || values.Count == 0) return 0;
+            var ordered = values.OrderBy(value => value).ToArray();
+            var index = Math.Min(
+                ordered.Length - 1,
+                Math.Max(0, (int)Math.Round(
+                    (ordered.Length - 1) * fraction,
+                    MidpointRounding.AwayFromZero)));
+            return ordered[index];
         }
 
         private async void RtbInfo_TextChanged(object sender, EventArgs e)
@@ -4830,10 +4918,10 @@ namespace MTEmbTest
 
         #endregion
 
-        #region ÈÕÖ¾Ïà¹Ø
+        #region æ—¥å¿—ç›¸å…³
 
         /// <summary>
-        ///     °´Å¥µã»÷ÊÂ¼ş£¬²é¿´ÔËĞĞÈÕÖ¾
+        ///     æŒ‰é’®ç‚¹å‡»äº‹ä»¶ï¼ŒæŸ¥çœ‹è¿è¡Œæ—¥å¿—
         /// </summary>
         /// <param name="sender"></param>
         /// <param name="e"></param>
@@ -4843,7 +4931,7 @@ namespace MTEmbTest
         }
 
         /// <summary>
-        ///     ¾¯¸æÈÕÖ¾°´Å¥µã»÷ÊÂ¼ş
+        ///     è­¦å‘Šæ—¥å¿—æŒ‰é’®ç‚¹å‡»äº‹ä»¶
         /// </summary>
         /// <param name="sender"></param>
         /// <param name="e"></param>
@@ -4853,7 +4941,7 @@ namespace MTEmbTest
         }
 
         /// <summary>
-        ///     °´Å¥µã»÷ÊÂ¼ş£¬²é¿´´íÎóÈÕÖ¾
+        ///     æŒ‰é’®ç‚¹å‡»äº‹ä»¶ï¼ŒæŸ¥çœ‹é”™è¯¯æ—¥å¿—
         /// </summary>
         /// <param name="sender"></param>
         /// <param name="e"></param>
@@ -4889,11 +4977,11 @@ namespace MTEmbTest
         #endregion
 
 
-        #region Êı¾İÂäÅÌÏà¹Ø 2025/09/09
+        #region æ•°æ®è½ç›˜ç›¸å…³ 2025/09/09
 
         /// <summary>
-        ///     Éú³ÉÒ»´ÎÊÔÑéµÄÂäÅÌ¸ùÄ¿Â¼£¬²¢¿½±´¹Ø¼üÅäÖÃ£¬±ãÓÚ×·Ëİ¡£
-        ///     ÃüÃûÊ¾Àı£ºDataStore\2025-09-08_12-34-56\
+        ///     ç”Ÿæˆä¸€æ¬¡è¯•éªŒçš„è½ç›˜æ ¹ç›®å½•ï¼Œå¹¶æ‹·è´å…³é”®é…ç½®ï¼Œä¾¿äºè¿½æº¯ã€‚
+        ///     å‘½åç¤ºä¾‹ï¼šDataStore\2025-09-08_12-34-56\
         /// </summary>
         private void PrepareDataStoreDirectory()
         {
@@ -4902,7 +4990,7 @@ namespace MTEmbTest
             _dataStorePath = Path.Combine(root, DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss"));
             Directory.CreateDirectory(_dataStorePath);
 
-            // ±¸·İ¹Ø¼üÅäÖÃ£¨AI/DO/AO/Test£©£¬ºÍ¾ÉÏîÄ¿Ò»Ñù±ãÓÚ×·Ëİ
+            // å¤‡ä»½å…³é”®é…ç½®ï¼ˆAI/DO/AO/Testï¼‰ï¼Œå’Œæ—§é¡¹ç›®ä¸€æ ·ä¾¿äºè¿½æº¯
             void TryCopy(string file)
             {
                 try
@@ -4912,7 +5000,7 @@ namespace MTEmbTest
                 }
                 catch
                 {
-                    /* ºöÂÔµ¥¸öÎÄ¼şµÄ¿½±´Ê§°Ü */
+                    /* å¿½ç•¥å•ä¸ªæ–‡ä»¶çš„æ‹·è´å¤±è´¥ */
                 }
             }
 
@@ -4923,35 +5011,35 @@ namespace MTEmbTest
         }
 
         /// <summary>
-        ///     ³õÊ¼»¯ DAQ Êı¾İÂäÅÌÉÏÏÂÎÄÓë¶¨Ê±Æ÷£¨°´Éè±¸»®·Ö£ºDev1/Dev2£©¡£
+        ///     åˆå§‹åŒ– DAQ æ•°æ®è½ç›˜ä¸Šä¸‹æ–‡ä¸å®šæ—¶å™¨ï¼ˆæŒ‰è®¾å¤‡åˆ’åˆ†ï¼šDev1/Dev2ï¼‰ã€‚
         /// </summary>
-        /// <param name="logSpanMs">¶¨Ê±ÂäÅÌÖÜÆÚ£¨ºÁÃë£©£¬½¨Òé 100~500ms£»Óë¾ÉÏîÄ¿ÏàÍ¬¡£</param>
+        /// <param name="logSpanMs">å®šæ—¶è½ç›˜å‘¨æœŸï¼ˆæ¯«ç§’ï¼‰ï¼Œå»ºè®® 100~500msï¼›ä¸æ—§é¡¹ç›®ç›¸åŒã€‚</param>
         private void InitDaqLogTimer(int logSpanMs)
         {
-            // 1) Dev1 ÉÏÏÂÎÄ
-            var dev1ChannelCount = Dev1UsedDaqAIChannels?.Length ?? 0; //dev1µÄÊ¹ÓÃÍ¨µÀÊıÁ¿£¬¶¯Ì¬»ñÈ¡
+            // 1) Dev1 ä¸Šä¸‹æ–‡
+            var dev1ChannelCount = Dev1UsedDaqAIChannels?.Length ?? 0; //dev1çš„ä½¿ç”¨é€šé“æ•°é‡ï¼ŒåŠ¨æ€è·å–
 
 
             _daqDev1 = new DaqAIContext(
                 "Dev1",
-                100, // µ¥Åú»º´æÉÏÏŞ£¨ÑØÓÃ¾É¹¤³ÌÈ±Ê¡£©
+                100, // å•æ‰¹ç¼“å­˜ä¸Šé™ï¼ˆæ²¿ç”¨æ—§å·¥ç¨‹ç¼ºçœï¼‰
                 ClsGlobal.FileChangeMinutes,
-                _daqTimeSpanMs, // »òÓÃ DaqTimeSpanMilSeconds
+                _daqTimeSpanMs, // æˆ–ç”¨ DaqTimeSpanMilSeconds
                 dev1ChannelCount,
                 ClsGlobal.SamplesPerChannel,
                 _dataStorePath)
             {
-                // Dev1£º½¨Á¢Í¨µÀÓ³Éä£¨EPB1..6µçÁ÷ + Pressure_1Ñ¹Á¦ -> Dev1¸÷Í¨µÀĞòºÅ£©
-                // ¾É¹¤³ÌÓÃ ClsXmlOperation.GetDaqAIChannelMapping ¶Áµ½µÄ EMB->Í¨µÀË÷ÒıÓÃÓÚÍ³¼ÆÂäÅÌ¡£
-                // Äãµ±Ç°´°ÌåÒÑ¼ÓÔØÁË Dev1 µÄ Dev1DaqChannel£¬¿ÉÖ±½Ó¸´ÓÃ¡£
+                // Dev1ï¼šå»ºç«‹é€šé“æ˜ å°„ï¼ˆEPB1..6ç”µæµ + Pressure_1å‹åŠ› -> Dev1å„é€šé“åºå·ï¼‰
+                // æ—§å·¥ç¨‹ç”¨ ClsXmlOperation.GetDaqAIChannelMapping è¯»åˆ°çš„ EMB->é€šé“ç´¢å¼•ç”¨äºç»Ÿè®¡è½ç›˜ã€‚
+                // ä½ å½“å‰çª—ä½“å·²åŠ è½½äº† Dev1 çš„ Dev1DaqChannelï¼Œå¯ç›´æ¥å¤ç”¨ã€‚
                 eMBToDaqCurrentChannel = new SortedDictionary<string, int>(Dev1DaqChannel),
-                // Dev1£º¹¤³ÌÖµ±ä»»£¨scale/offset/zero£©£¬ÓÃÓÚÍ³¼ÆÂäÅÌ×ª¹¤³ÌÖµ:contentReference[oaicite:18]{index=18}
+                // Dev1ï¼šå·¥ç¨‹å€¼å˜æ¢ï¼ˆscale/offset/zeroï¼‰ï¼Œç”¨äºç»Ÿè®¡è½ç›˜è½¬å·¥ç¨‹å€¼:contentReference[oaicite:18]{index=18}
                 paraNameToScale = new ConcurrentDictionary<string, double>(Dev1ParaNameToScale),
                 paraNameToOffset = new ConcurrentDictionary<string, double>(Dev1ParaNameToOffset),
                 paraNameToZeroValue = new ConcurrentDictionary<string, double>(Dev1ParaNameToZeroValue)
             };
 
-            // 2) Dev2 ÉÏÏÂÎÄ£¨Óë Dev1 ¶Ô³Æ£©
+            // 2) Dev2 ä¸Šä¸‹æ–‡ï¼ˆä¸ Dev1 å¯¹ç§°ï¼‰
             var dev2ChannelCount = Dev2UsedDaqAIChannels?.Length ?? 0;
             _daqDev2 = new DaqAIContext(
                 "Dev2",
@@ -4962,16 +5050,16 @@ namespace MTEmbTest
                 ClsGlobal.SamplesPerChannel,
                 _dataStorePath);
 
-            // Dev2 µÄ EMB->Í¨µÀÓ³Éä£º½¨ÒéÔÙ´Îµ÷ÓÃÅäÖÃ¶ÁÈ¡·½·¨»ñÈ¡ Dev2 µÄÓ³Éä
-            // £¨ÈôÄãµÄ AIConfig.xml ÒÑ¶¨Òå EPB7..12 -> Dev2/ai#£©£¬·ñÔòÍ³¼ÆÂäÅÌ»áÖ»Ğ´ Dev1¡£
-            // ÕâÀïÑİÊ¾¶ÁÈ¡£º
+            // Dev2 çš„ EMB->é€šé“æ˜ å°„ï¼šå»ºè®®å†æ¬¡è°ƒç”¨é…ç½®è¯»å–æ–¹æ³•è·å– Dev2 çš„æ˜ å°„
+            // ï¼ˆè‹¥ä½ çš„ AIConfig.xml å·²å®šä¹‰ EPB7..12 -> Dev2/ai#ï¼‰ï¼Œå¦åˆ™ç»Ÿè®¡è½ç›˜ä¼šåªå†™ Dev1ã€‚
+            // è¿™é‡Œæ¼”ç¤ºè¯»å–ï¼š
 
             _daqDev2.eMBToDaqCurrentChannel = new SortedDictionary<string, int>(Dev2DaqChannel);
             _daqDev2.paraNameToScale = new ConcurrentDictionary<string, double>(Dev2ParaNameToScale);
             _daqDev2.paraNameToOffset = new ConcurrentDictionary<string, double>(Dev2ParaNameToOffset);
             _daqDev2.paraNameToZeroValue = new ConcurrentDictionary<string, double>(Dev2ParaNameToZeroValue);
 
-            // 3) ¶¨Ê±Æ÷£ºÔ­Ê¼ÂäÅÌ + Í³¼ÆÂäÅÌ£¨Óë¾ÉÏîÄ¿Ò»ÑùË«¶¨Ê±Æ÷£¬Ã¿¸öÉè±¸Á½Ö»£©
+            // 3) å®šæ—¶å™¨ï¼šåŸå§‹è½ç›˜ + ç»Ÿè®¡è½ç›˜ï¼ˆä¸æ—§é¡¹ç›®ä¸€æ ·åŒå®šæ—¶å™¨ï¼Œæ¯ä¸ªè®¾å¤‡ä¸¤åªï¼‰
             _daqRawTimerDev1 = new Timer(async _ =>
                 {
                     try
@@ -4984,7 +5072,7 @@ namespace MTEmbTest
                 },
                 null, logSpanMs, logSpanMs);
 
-            // ÔİÊ±×¢ÊÍ
+            // æš‚æ—¶æ³¨é‡Š
             /*_daqStatTimerDev1 = new Timer(async _ =>
                 {
                     try
@@ -5009,7 +5097,7 @@ namespace MTEmbTest
                 },
                 null, logSpanMs, logSpanMs);
 
-            // ÔİÊ±×¢ÊÍ
+            // æš‚æ—¶æ³¨é‡Š
             /*_daqStatTimerDev2 = new Timer(async _ =>
                 {
                     try
@@ -5024,33 +5112,33 @@ namespace MTEmbTest
         }
 
         /// <summary>
-        ///     ¸ù¾İÈ«¾ÖÍ¨µÀË÷Òı»ñÈ¡¶ÔÓ¦µÄË²Ê±ÏÔÊ¾¿Ø¼şÃû³Æ
+        ///     æ ¹æ®å…¨å±€é€šé“ç´¢å¼•è·å–å¯¹åº”çš„ç¬æ—¶æ˜¾ç¤ºæ§ä»¶åç§°
         /// </summary>
-        /// <param name="globalIndex">È«¾ÖÍ¨µÀË÷Òı 0-14</param>
-        /// <returns>¿Ø¼şÃû³Æ£¬Èç¹ûÃ»ÓĞ¶ÔÓ¦¿Ø¼şÔò·µ»Ønull</returns>
+        /// <param name="globalIndex">å…¨å±€é€šé“ç´¢å¼• 0-14</param>
+        /// <returns>æ§ä»¶åç§°ï¼Œå¦‚æœæ²¡æœ‰å¯¹åº”æ§ä»¶åˆ™è¿”å›null</returns>
         private static string GetDisplayControlName(int globalIndex)
         {
             return globalIndex switch
             {
-                // EPBµçÁ÷Í¨µÀ (0-11) -> textEditCurrent1-12
+                // EPBç”µæµé€šé“ (0-11) -> textEditCurrent1-12
                 >= 0 and <= 11 => $"textEditCurrent{globalIndex + 1}",
-                // Ñ¹Á¦Í¨µÀ (12-13) -> textEditP1, textEditP2
+                // å‹åŠ›é€šé“ (12-13) -> textEditP1, textEditP2
                 12 => "textEditP1",
                 13 => "textEditP2",
-                // ¼Ğ½ôÁ¦Í¨µÀ (14) -> textEditF
+                // å¤¹ç´§åŠ›é€šé“ (14) -> textEditF
                 14 => "textEditF",
                 _ => null
             };
         }
 
         /// <summary>
-        ///     ¶¯Ì¬¸üĞÂËùÓĞÍ¨µÀµÄË²Ê±ÏÔÊ¾Öµ
+        ///     åŠ¨æ€æ›´æ–°æ‰€æœ‰é€šé“çš„ç¬æ—¶æ˜¾ç¤ºå€¼
         /// </summary>
         private void UpdateInstantDisplayValues()
         {
             if (_isClosing || IsDisposed || !IsHandleCreated) return;
 
-            // Èç¹ûĞèÒª¿çÏß³Ìµ÷ÓÃ£¬·âËÍµ½UIÏß³Ì
+            // å¦‚æœéœ€è¦è·¨çº¿ç¨‹è°ƒç”¨ï¼Œå°é€åˆ°UIçº¿ç¨‹
             if (InvokeRequired)
             {
                 try
@@ -5059,7 +5147,7 @@ namespace MTEmbTest
                 }
                 catch
                 {
-                    // ´°ÌåÒÑÏú»Ù£¬ºöÂÔ
+                    // çª—ä½“å·²é”€æ¯ï¼Œå¿½ç•¥
                 }
 
                 return;
@@ -5084,14 +5172,14 @@ namespace MTEmbTest
                     }
                     catch (Exception ex)
                     {
-                        // ºöÂÔµ¥¸ö¿Ø¼ş¸üĞÂÊ§°Ü£¬±ÜÃâÓ°ÏìÆäËû¿Ø¼ş
-                        logger?.Error($"¸üĞÂÍ¨µÀ{globalIndex}ÏÔÊ¾ÖµÊ§°Ü: {ex.Message}");
+                        // å¿½ç•¥å•ä¸ªæ§ä»¶æ›´æ–°å¤±è´¥ï¼Œé¿å…å½±å“å…¶ä»–æ§ä»¶
+                        logger?.Error($"æ›´æ–°é€šé“{globalIndex}æ˜¾ç¤ºå€¼å¤±è´¥: {ex.Message}");
                     }
                 }
             }
             catch (Exception ex)
             {
-                logger?.Error($"ÅúÁ¿¸üĞÂË²Ê±ÏÔÊ¾ÖµÊ§°Ü: {ex.Message}");
+                logger?.Error($"æ‰¹é‡æ›´æ–°ç¬æ—¶æ˜¾ç¤ºå€¼å¤±è´¥: {ex.Message}");
             }
         }
 
@@ -5101,11 +5189,11 @@ namespace MTEmbTest
 
 
         /// <summary>
-        ///     ¸ù¾İÍ¨µÀÀàĞÍ¸ñÊ½»¯ÏÔÊ¾Öµ
+        ///     æ ¹æ®é€šé“ç±»å‹æ ¼å¼åŒ–æ˜¾ç¤ºå€¼
         /// </summary>
-        /// <param name="globalIndex">È«¾ÖÍ¨µÀË÷Òı</param>
-        /// <param name="value">Ô­Ê¼ÊıÖµ</param>
-        /// <returns>¸ñÊ½»¯ºóµÄÏÔÊ¾ÎÄ±¾</returns>
+        /// <param name="globalIndex">å…¨å±€é€šé“ç´¢å¼•</param>
+        /// <param name="value">åŸå§‹æ•°å€¼</param>
+        /// <returns>æ ¼å¼åŒ–åçš„æ˜¾ç¤ºæ–‡æœ¬</returns>
         private string FormatDisplayValue(int globalIndex, double value)
         {
             if (globalIndex < 0 || globalIndex >= _allChs.Length)
@@ -5114,16 +5202,16 @@ namespace MTEmbTest
             var channel = _allChs[globalIndex];
             return channel.Type switch
             {
-                SignalType.Current => $"{value:F3} A", // µçÁ÷ÏÔÊ¾3Î»Ğ¡Êı + µ¥Î»A
-                SignalType.Pressure => $"{value:F1} bar", // Ñ¹Á¦ÏÔÊ¾1Î»Ğ¡Êı + µ¥Î»bar
-                SignalType.Force => $"{value:F0} N", // ¼Ğ½ôÁ¦ÏÔÊ¾ÕûÊı + µ¥Î»N
+                SignalType.Current => $"{value:F3} A", // ç”µæµæ˜¾ç¤º3ä½å°æ•° + å•ä½A
+                SignalType.Pressure => $"{value:F1} bar", // å‹åŠ›æ˜¾ç¤º1ä½å°æ•° + å•ä½bar
+                SignalType.Force => $"{value:F0} N", // å¤¹ç´§åŠ›æ˜¾ç¤ºæ•´æ•° + å•ä½N
                 _ => $"{value:F2}"
             };
         }
 
         /// <summary>
-        ///     ²É¼¯Ïß³Ì»Øµ÷£º½ÓÊÕÔ­Ê¼¶şÎ¬ÕóÁĞ²¢Èë¶Ó£¨¾ÉÏîÄ¿Í¬¿î²ßÂÔ£©¡£
-        ///     ×¢Òâ£ºÕâÀïÖ»×öÈë¶Ó£¬²»×ö´ÅÅÌ I/O£»I/O ½»¸ø¶¨Ê±Æ÷Ïß³Ì×ö£¨±ÜÃâ×èÈû²É¼¯£©¡£
+        ///     é‡‡é›†çº¿ç¨‹å›è°ƒï¼šæ¥æ”¶åŸå§‹äºŒç»´é˜µåˆ—å¹¶å…¥é˜Ÿï¼ˆæ—§é¡¹ç›®åŒæ¬¾ç­–ç•¥ï¼‰ã€‚
+        ///     æ³¨æ„ï¼šè¿™é‡Œåªåšå…¥é˜Ÿï¼Œä¸åšç£ç›˜ I/Oï¼›I/O äº¤ç»™å®šæ—¶å™¨çº¿ç¨‹åšï¼ˆé¿å…é˜»å¡é‡‡é›†ï¼‰ã€‚
         /// </summary>
         private void Acq_OnRawBatch(string device, double[,] raw, DateTime current, DateTime last)
         {
@@ -5132,7 +5220,7 @@ namespace MTEmbTest
             if (device.Equals("Dev1", StringComparison.OrdinalIgnoreCase))
             {
                 _daqDev1?.EnqueueRawData(raw, current, last);
-                _daqDev1?.EnqueueStatData(raw, current); // Í³¼Æ¶ÓÁĞ£¨ÒÀÀµ eMB->Í¨µÀÓ³Éä£©
+                _daqDev1?.EnqueueStatData(raw, current); // ç»Ÿè®¡é˜Ÿåˆ—ï¼ˆä¾èµ– eMB->é€šé“æ˜ å°„ï¼‰
             }
             else if (device.Equals("Dev2", StringComparison.OrdinalIgnoreCase))
             {

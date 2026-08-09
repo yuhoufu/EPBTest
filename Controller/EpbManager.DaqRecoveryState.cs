@@ -79,7 +79,7 @@ namespace Controller
         private void StartDaqRecoveryWatchdog(DaqAutoRecoveryContext context)
         {
             if (context == null) return;
-            _ = Task.Run(async () =>
+            ObserveBackgroundTask(Task.Run(async () =>
             {
                 try
                 {
@@ -96,7 +96,7 @@ namespace Controller
                         .ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) { }
-            });
+            }), "DaqRecoveryWatchdog");
         }
 
         private async Task CancelAllDaqRecoveriesAsync(string reason)

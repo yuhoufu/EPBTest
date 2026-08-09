@@ -2,7 +2,9 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using System.Threading;
+using System.Threading.Tasks;
 using Config;
 using NationalInstruments.DAQmx;
 
@@ -56,15 +58,16 @@ namespace IO.NI
         ///     设计目的：将“触发后断电”等关键 DO 写入从线程池/多线程锁竞争中剥离出来，
         ///     以更稳定的调度优先级执行写入，减少尾部抖动。
         /// </summary>
-        private sealed class HighPriorityDoWorker : IDisposable
+        internal sealed class HighPriorityDoWorker : IDisposable
         {
             private const int MaxPendingWorkItems = 64;
 
             private sealed class WorkItem
             {
                 public Guid CommandId;
-                public Func<bool> Work;
-                public ManualResetEventSlim Done;
+                public int Channel;
+                public Func<IReadOnlyList<int>, DoWriteTiming, bool> BatchWork;
+                public TaskCompletionSource<bool> Done;
                 public Action<HighPriorityDoTelemetry> Completion;
                 public long EnqueuedTicks;
                 public long DequeuedTicks;
@@ -77,11 +80,26 @@ namespace IO.NI
             }
 
             private readonly ConcurrentQueue<WorkItem> _hiQueue = new ConcurrentQueue<WorkItem>();
+            private readonly ConcurrentDictionary<int, WorkItem> _pendingByChannel =
+                new ConcurrentDictionary<int, WorkItem>();
             private readonly AutoResetEvent _signal = new AutoResetEvent(false);
+            private readonly string _workerName;
+            private readonly bool _combineDistinctChannels;
 
             private volatile bool _stopping;
             private int _pendingWorkItems;
+            private long _coalescedRequests;
             private Thread _thread;
+
+            internal HighPriorityDoWorker(string workerName, bool combineDistinctChannels = true)
+            {
+                _workerName = string.IsNullOrWhiteSpace(workerName) ? "Unknown" : workerName.Trim();
+                _combineDistinctChannels = combineDistinctChannels;
+            }
+
+            internal int PendingWorkItems => Math.Max(0, Volatile.Read(ref _pendingWorkItems));
+
+            internal long CoalescedRequests => Interlocked.Read(ref _coalescedRequests);
 
             /// <summary>
             ///     启动高优先级 worker 线程。
@@ -100,7 +118,7 @@ namespace IO.NI
                 var t = new Thread(Loop)
                 {
                     IsBackground = true,
-                    Name = "DO-HighPriorityWorker",
+                    Name = "DO-HP-" + _workerName,
                     Priority = ThreadPriority.Highest
                 };
 
@@ -116,11 +134,12 @@ namespace IO.NI
             ///     等待超时（毫秒）。超时后调用方必须进入组级隔离，禁止在调用线程直接写DO。
             /// </param>
             public bool InvokeHi(
-                Func<bool> work,
+                int channel,
+                Func<IReadOnlyList<int>, DoWriteTiming, bool> batchWork,
                 int timeoutMs,
                 Action<HighPriorityDoTelemetry> completion)
             {
-                if (work == null) return false;
+                if (channel <= 0 || batchWork == null || _stopping) return false;
 
                 // 重入时不能在worker线程内再次同步执行NI写入；返回失败交给上层
                 // 电源隔离/重试，避免日志或观察者回调形成递归阻塞。
@@ -129,35 +148,65 @@ namespace IO.NI
 
                 StartIfNeeded();
 
-                var pending = Interlocked.Increment(ref _pendingWorkItems);
-                if (pending > MaxPendingWorkItems)
+                while (!_stopping)
                 {
-                    Interlocked.Decrement(ref _pendingWorkItems);
-                    return false;
+                    if (_pendingByChannel.TryGetValue(channel, out var existing))
+                    {
+                        Interlocked.Increment(ref _coalescedRequests);
+                        return WaitForCompletion(existing, timeoutMs);
+                    }
+
+                    var pending = Interlocked.Increment(ref _pendingWorkItems);
+                    if (pending > MaxPendingWorkItems)
+                    {
+                        Interlocked.Decrement(ref _pendingWorkItems);
+                        return false;
+                    }
+
+                    var item = new WorkItem
+                    {
+                        CommandId = Guid.NewGuid(),
+                        Channel = channel,
+                        BatchWork = batchWork,
+                        Done = new TaskCompletionSource<bool>(
+                            TaskCreationOptions.RunContinuationsAsynchronously),
+                        Completion = completion,
+                        EnqueuedTicks = Stopwatch.GetTimestamp(),
+                        QueueDepthAtEnqueue = pending,
+                        TimeoutMs = Math.Max(1, timeoutMs)
+                    };
+
+                    if (!_pendingByChannel.TryAdd(channel, item))
+                    {
+                        Interlocked.Decrement(ref _pendingWorkItems);
+                        continue;
+                    }
+
+                    _hiQueue.Enqueue(item);
+                    _signal.Set();
+                    return WaitForCompletion(item, timeoutMs);
                 }
 
-                var item = new WorkItem
-                {
-                    CommandId = Guid.NewGuid(),
-                    Work = work,
-                    Done = new ManualResetEventSlim(false),
-                    Completion = completion,
-                    EnqueuedTicks = Stopwatch.GetTimestamp(),
-                    QueueDepthAtEnqueue = pending,
-                    TimeoutMs = Math.Max(1, timeoutMs)
-                };
+                return false;
+            }
 
-                _hiQueue.Enqueue(item);
-                _signal.Set();
-
-                // 关键路径：仅有限等待；超时后由上层立即进入组级隔离，禁止调用线程降级直写。
-                if (!item.Done.Wait(item.TimeoutMs))
+            private static bool WaitForCompletion(WorkItem item, int timeoutMs)
+            {
+                if (item == null) return false;
+                var boundedTimeoutMs = Math.Max(1, timeoutMs);
+                try
                 {
-                    Interlocked.Exchange(ref item.CallerTimedOut, 1);
+                    if (!item.Done.Task.Wait(boundedTimeoutMs))
+                    {
+                        Interlocked.Exchange(ref item.CallerTimedOut, 1);
+                        return false;
+                    }
+                    return item.Done.Task.Status == TaskStatus.RanToCompletion && item.Done.Task.Result;
+                }
+                catch
+                {
                     return false;
                 }
-
-                return item.Result;
             }
 
             private void Loop()
@@ -170,40 +219,65 @@ namespace IO.NI
                         continue;
                     }
 
+                    var batch = new List<WorkItem> { item };
+                    if (_combineDistinctChannels)
+                    {
+                        while (_hiQueue.TryDequeue(out var additional))
+                            batch.Add(additional);
+                    }
+
+                    var batchResult = false;
+                    Exception batchError = null;
+                    var timing = new DoWriteTiming();
+                    var dequeuedTicks = Stopwatch.GetTimestamp();
                     try
                     {
-                        item.DequeuedTicks = Stopwatch.GetTimestamp();
-                        item.Result = item.Work();
+                        var channels = batch.Select(workItem => workItem.Channel).Distinct().ToArray();
+                        batchResult = item.BatchWork(channels, timing);
                     }
                     catch (Exception ex)
                     {
-                        item.Error = ex;
-                        item.Result = false;
+                        batchError = ex;
+                        batchResult = false;
                     }
                     finally
                     {
-                        item.CompletedTicks = Stopwatch.GetTimestamp();
-                        Interlocked.Decrement(ref _pendingWorkItems);
-                        try { item.Done.Set(); }
-                        catch { /* ignore */ }
-                        var completion = item.Completion;
-                        if (completion != null)
+                        var completedTicks = Stopwatch.GetTimestamp();
+                        foreach (var completedItem in batch)
                         {
+                            completedItem.DequeuedTicks = dequeuedTicks;
+                            completedItem.CompletedTicks = completedTicks;
+                            completedItem.Error = batchError;
+                            completedItem.Result = batchResult;
+                            completedItem.Done.TrySetResult(batchResult);
+                            RemovePending(completedItem);
+                            Interlocked.Decrement(ref _pendingWorkItems);
+                            var completion = completedItem.Completion;
+                            if (completion == null) continue;
                             ThreadPool.QueueUserWorkItem(_ =>
                             {
                                 try
                                 {
                                     completion(new HighPriorityDoTelemetry
                                     {
-                                        CommandId = item.CommandId,
-                                        TimeoutMs = item.TimeoutMs,
-                                        QueueDepthAtEnqueue = item.QueueDepthAtEnqueue,
-                                        CallerTimedOut = Volatile.Read(ref item.CallerTimedOut) != 0,
-                                        Result = item.Result,
+                                        CommandId = completedItem.CommandId,
+                                        Channel = completedItem.Channel,
+                                        TimeoutMs = completedItem.TimeoutMs,
+                                        QueueDepthAtEnqueue = completedItem.QueueDepthAtEnqueue,
+                                        CallerTimedOut = Volatile.Read(ref completedItem.CallerTimedOut) != 0,
+                                        Result = completedItem.Result,
                                         HardwareCompletedUtc = DateTime.UtcNow,
-                                        QueueWaitMs = ElapsedMs(item.EnqueuedTicks, item.DequeuedTicks),
-                                        WorkerExecutionMs = ElapsedMs(item.DequeuedTicks, item.CompletedTicks),
-                                        TotalMs = ElapsedMs(item.EnqueuedTicks, item.CompletedTicks)
+                                        QueueWaitMs = ElapsedMs(
+                                            completedItem.EnqueuedTicks,
+                                            completedItem.DequeuedTicks),
+                                        WorkerExecutionMs = ElapsedMs(
+                                            completedItem.DequeuedTicks,
+                                            completedItem.CompletedTicks),
+                                        TotalMs = ElapsedMs(
+                                            completedItem.EnqueuedTicks,
+                                            completedItem.CompletedTicks),
+                                        LockWaitMs = timing.LockWaitMs,
+                                        NiWriteMs = timing.NiWriteMs
                                     });
                                 }
                                 catch
@@ -226,16 +300,43 @@ namespace IO.NI
             {
                 _stopping = true;
                 try { _signal.Set(); } catch { /* ignore */ }
+                var thread = _thread;
+                if (thread != null && Thread.CurrentThread != thread)
+                {
+                    try { thread.Join(1000); } catch { /* ignore */ }
+                }
+                while (_hiQueue.TryDequeue(out var pending))
+                {
+                    RemovePending(pending);
+                    Interlocked.Decrement(ref _pendingWorkItems);
+                    pending.Result = false;
+                    pending.Done.TrySetResult(false);
+                }
                 try { _signal.Dispose(); } catch { /* ignore */ }
+            }
+
+            private void RemovePending(WorkItem item)
+            {
+                if (item == null) return;
+                ((ICollection<KeyValuePair<int, WorkItem>>)_pendingByChannel).Remove(
+                    new KeyValuePair<int, WorkItem>(item.Channel, item));
             }
         }
 
         /// <summary>每个 NI 设备的上下文。</summary>
         private sealed class DoDevice
         {
+            public DoDevice(string name)
+            {
+                Name = name;
+                HighPriorityWorker = new HighPriorityDoWorker(name);
+            }
+
             public string Name;
             public NIDaqTask Task;
             public DigitalMultiChannelWriter Writer;
+            public readonly object WriteGate = new object();
+            public readonly HighPriorityDoWorker HighPriorityWorker;
 
             // 每设备独立的通道与默认值表
             public readonly List<string> Lines = new List<string>();
@@ -246,18 +347,19 @@ namespace IO.NI
         }
 
         private readonly object _doTaskLock = new object();
+        private int _disposed;
 
         // 设备名 -> 设备上下文
-        private readonly Dictionary<string, DoDevice> _devices =
-            new Dictionary<string, DoDevice>(StringComparer.OrdinalIgnoreCase);
+        private readonly ConcurrentDictionary<string, DoDevice> _devices =
+            new ConcurrentDictionary<string, DoDevice>(StringComparer.OrdinalIgnoreCase);
 
         // EPB: 通道号 -> (设备名, 正Idx, 反Idx) —— 索引是该设备 DefaultStates/States 的索引
-        private readonly Dictionary<int, (string dev, int posIdx, int negIdx)> _epbIndex
-            = new Dictionary<int, (string, int, int)>();
+        private readonly ConcurrentDictionary<int, (string dev, int posIdx, int negIdx)> _epbIndex
+            = new ConcurrentDictionary<int, (string, int, int)>();
 
         // 压力: 编号 -> (设备名, 索引)
-        private readonly Dictionary<int, (string dev, int idx)> _pressureIndex
-            = new Dictionary<int, (string, int)>();
+        private readonly ConcurrentDictionary<int, (string dev, int idx)> _pressureIndex
+            = new ConcurrentDictionary<int, (string, int)>();
 
         // 兼容旧接口：不再使用，但保留以免外部调用报错
         private string _configPath;
@@ -265,7 +367,8 @@ namespace IO.NI
         private readonly ILogger _log;
 
         // ★新增：高优先级 DO worker（用于“触发后断电”等关键写入）
-        private readonly HighPriorityDoWorker _hiWorker = new HighPriorityDoWorker();
+        private readonly HighPriorityDoWorker _uninitializedHiWorker =
+            new HighPriorityDoWorker("Uninitialized", combineDistinctChannels: false);
 
         internal const int HighPriorityOffTimeoutMs = 100;
         private const double HighPriorityOffSlowLogThresholdMs = 20.0;
@@ -306,8 +409,10 @@ namespace IO.NI
         /// <returns>成功/失败。</returns>
         public bool Initialize()
         {
+            if (Volatile.Read(ref _disposed) != 0) return false;
             lock (_doTaskLock)
             {
+                if (Volatile.Read(ref _disposed) != 0) return false;
                 try
                 {
                     ResetAllDevices(clearMaps: true);
@@ -429,54 +534,55 @@ namespace IO.NI
         /// <returns>成功/失败。</returns>
         public bool SetEpb(int channelNo, bool directionIsForward)
         {
-            lock (_doTaskLock)
+            const int maxRetries = 1;
+            var attempts = 0;
+
+            while (attempts <= maxRetries)
             {
-                const int maxRetries = 1;
-                int attempts = 0;
-
-                while (attempts <= maxRetries)
+                try
                 {
-                    try
+                    if (!EnsureReady()) { attempts++; continue; }
+
+                    if (!_epbIndex.TryGetValue(channelNo, out var map))
                     {
-                        if (!EnsureReady()) { attempts++; continue; }
+                        LogError($"EPB 通道号未找到：{channelNo}", "DO操作");
+                        return false;
+                    }
 
-                        if (!_epbIndex.TryGetValue(channelNo, out var map))
-                        {
-                            LogError($"EPB 通道号未找到：{channelNo}", "DO操作");
-                            return false;
-                        }
+                    if (!_devices.TryGetValue(map.dev, out var dev))
+                    {
+                        LogError($"EPB[{channelNo}] 所属设备未就绪：{map.dev}", "DO操作");
+                        return false;
+                    }
 
-                        if (!_devices.TryGetValue(map.dev, out var dev))
-                        {
-                            LogError($"EPB[{channelNo}] 所属设备未就绪：{map.dev}", "DO操作");
-                            return false;
-                        }
-
+                    lock (dev.WriteGate)
+                    {
                         var toWrite = (bool[])dev.States.Clone();
                         toWrite[map.posIdx] = directionIsForward;
                         toWrite[map.negIdx] = !directionIsForward;
 
                         dev.Writer.WriteSingleSampleSingleLine(true, toWrite);
                         dev.States = toWrite;
-                        LogInfo($"EPB[{channelNo}]@{map.dev} => {(directionIsForward ? "正" : "反")}", "DO操作");
-                        return true;
                     }
-                    catch (DaqException ex)
-                    {
-                        attempts++;
-                        LogError($"EPB 写入失败（第{attempts}/{maxRetries + 1}次）：{ex.Message}", "DO操作", ex);
-                        if (attempts <= maxRetries) { ResetAllDevices(clearMaps: false); Initialize(); }
-                    }
-                    catch (Exception ex2)
-                    {
-                        LogError($"EPB 写入异常：{ex2}", "DO操作", ex2);
-                        break;
-                    }
+                    LogInfo($"EPB[{channelNo}]@{map.dev} => {(directionIsForward ? "正" : "反")}", "DO操作");
+                    return true;
                 }
-
-                LogError("EPB 写入失败：超过最大重试次数", "DO操作");
-                return false;
+                catch (DaqException ex)
+                {
+                    attempts++;
+                    LogError($"EPB 写入失败（第{attempts}/{maxRetries + 1}次）：{ex.Message}", "DO操作", ex);
+                    if (attempts <= maxRetries) Initialize();
+                }
+                catch (Exception ex2)
+                {
+                    attempts++;
+                    LogError($"EPB 写入异常：{ex2}", "DO操作", ex2);
+                    if (attempts <= maxRetries) Initialize();
+                }
             }
+
+            LogError("EPB 写入失败：超过最大重试次数", "DO操作");
+            return false;
         }
 
         /// <summary>
@@ -492,28 +598,29 @@ namespace IO.NI
         private bool SetEpbOffCore(int channelNo, DoWriteTiming timing)
         {
             var lockRequestedTicks = Stopwatch.GetTimestamp();
-            lock (_doTaskLock)
+            long lockAcquiredTicks = 0;
+            long niWriteStartedTicks = 0;
+            long niWriteCompletedTicks = 0;
+            try
             {
-                var lockAcquiredTicks = Stopwatch.GetTimestamp();
-                long niWriteStartedTicks = 0;
-                long niWriteCompletedTicks = 0;
-                try
+                if (!EnsureReady()) return false;
+
+                if (!_epbIndex.TryGetValue(channelNo, out var map))
                 {
-                    if (!EnsureReady()) return false;
+                    QueueLog(() => LogError($"EPB 通道号未找到：{channelNo}", "DO操作"));
+                    return false;
+                }
+                if (!_devices.TryGetValue(map.dev, out var dev))
+                {
+                    QueueLog(() => LogError(
+                        $"EPB[{channelNo}] 所属设备未就绪：{map.dev}",
+                        "DO操作"));
+                    return false;
+                }
 
-                    if (!_epbIndex.TryGetValue(channelNo, out var map))
-                    {
-                        QueueLog(() => LogError($"EPB 通道号未找到：{channelNo}", "DO操作"));
-                        return false;
-                    }
-                    if (!_devices.TryGetValue(map.dev, out var dev))
-                    {
-                        QueueLog(() => LogError(
-                            $"EPB[{channelNo}] 所属设备未就绪：{map.dev}",
-                            "DO操作"));
-                        return false;
-                    }
-
+                lock (dev.WriteGate)
+                {
+                    lockAcquiredTicks = Stopwatch.GetTimestamp();
                     var toWrite = (bool[])dev.States.Clone();
                     toWrite[map.posIdx] = false;
                     toWrite[map.negIdx] = false;
@@ -521,30 +628,28 @@ namespace IO.NI
                     dev.Writer.WriteSingleSampleSingleLine(true, toWrite);
                     niWriteCompletedTicks = Stopwatch.GetTimestamp();
                     dev.States = toWrite;
-                    // 安全 Worker 的完成边界到此为止。日志和任何观察者不得计入
-                    // 100ms OFF 返回期限，也不得在 _doTaskLock 内执行。
-                    QueueLog(() => LogInfo(
-                        $"EPB[{channelNo}]@{map.dev} => 全关",
-                        "DO操作"));
-                    return true;
                 }
-                catch (Exception ex)
+                // 安全 Worker 的完成边界到此为止。日志和观察者不计入100ms期限。
+                QueueLog(() => LogInfo($"EPB[{channelNo}]@{map.dev} => 全关", "DO操作"));
+                return true;
+            }
+            catch (Exception ex)
+            {
+                QueueLog(() => LogError("EPB 关闭失败：" + ex.Message, "DO操作", ex));
+                return false;
+            }
+            finally
+            {
+                if (timing != null)
                 {
-                    QueueLog(() => LogError("EPB 关闭失败：" + ex.Message, "DO操作", ex));
-                    return false;
-                }
-                finally
-                {
-                    if (timing != null)
-                    {
-                        if (niWriteStartedTicks > 0 && niWriteCompletedTicks == 0)
-                            niWriteCompletedTicks = Stopwatch.GetTimestamp();
-                        timing.LockWaitMs =
-                            (lockAcquiredTicks - lockRequestedTicks) * 1000.0 / Stopwatch.Frequency;
-                        timing.NiWriteMs = niWriteStartedTicks > 0 && niWriteCompletedTicks >= niWriteStartedTicks
-                            ? (niWriteCompletedTicks - niWriteStartedTicks) * 1000.0 / Stopwatch.Frequency
-                            : 0;
-                    }
+                    if (niWriteStartedTicks > 0 && niWriteCompletedTicks == 0)
+                        niWriteCompletedTicks = Stopwatch.GetTimestamp();
+                    timing.LockWaitMs = lockAcquiredTicks > 0
+                        ? (lockAcquiredTicks - lockRequestedTicks) * 1000.0 / Stopwatch.Frequency
+                        : 0;
+                    timing.NiWriteMs = niWriteStartedTicks > 0 && niWriteCompletedTicks >= niWriteStartedTicks
+                        ? (niWriteCompletedTicks - niWriteStartedTicks) * 1000.0 / Stopwatch.Frequency
+                        : 0;
                 }
             }
         }
@@ -569,22 +674,115 @@ namespace IO.NI
             // 会等待同一个_doTaskLock/NI调用，曾使DAQ恢复协程阻塞二十余分钟。
             // 超时返回false后，上层会保持电源组隔离并由看门狗持续重试；已排队的
             // OFF命令仍会在worker恢复后执行，因此不会把软件阻塞扩散到状态机。
-            var writeTiming = new DoWriteTiming();
-            return _hiWorker.InvokeHi(
-                () => SetEpbOffCore(channelNo, writeTiming),
+            var worker = _uninitializedHiWorker;
+            string expectedDevice = null;
+            if (_epbIndex.TryGetValue(channelNo, out var map) &&
+                _devices.TryGetValue(map.dev, out var dev))
+            {
+                worker = dev.HighPriorityWorker;
+                expectedDevice = map.dev;
+            }
+            return worker.InvokeHi(
+                channelNo,
+                (channels, timing) => SetEpbOffBatchCore(expectedDevice, channels, timing),
                 HighPriorityOffTimeoutMs,
-                telemetry => PublishHighPriorityOffTelemetry(channelNo, telemetry, writeTiming));
+                telemetry => PublishHighPriorityOffTelemetry(channelNo, telemetry));
+        }
+
+        /// <summary>
+        ///     在同一物理设备上把同时排队的多个 OFF 合并为一次位图写。
+        ///     任何通道映射缺失或跨设备混入都拒绝整批，禁止报告部分成功。
+        /// </summary>
+        private bool SetEpbOffBatchCore(
+            string expectedDevice,
+            IReadOnlyList<int> channels,
+            DoWriteTiming timing)
+        {
+            if (channels == null || channels.Count == 0) return false;
+            var lockRequestedTicks = Stopwatch.GetTimestamp();
+            long lockAcquiredTicks = 0;
+            long niWriteStartedTicks = 0;
+            long niWriteCompletedTicks = 0;
+            try
+            {
+                if (!EnsureReady()) return false;
+
+                DoDevice targetDevice = null;
+                var maps = new List<(int channel, int posIdx, int negIdx)>(channels.Count);
+                foreach (var channel in channels.Distinct())
+                {
+                    if (!_epbIndex.TryGetValue(channel, out var map) ||
+                        !_devices.TryGetValue(map.dev, out var device))
+                    {
+                        QueueLog(() => LogError($"EPB[{channel}] 高优先级OFF映射不存在。", "DO操作"));
+                        return false;
+                    }
+                    if (!string.IsNullOrWhiteSpace(expectedDevice) &&
+                        !string.Equals(expectedDevice, map.dev, StringComparison.OrdinalIgnoreCase))
+                    {
+                        QueueLog(() => LogError(
+                            $"高优先级OFF批次混入其他设备：Expected={expectedDevice} Actual={map.dev} EPB={channel}",
+                            "DO操作"));
+                        return false;
+                    }
+                    if (targetDevice != null && !ReferenceEquals(targetDevice, device))
+                    {
+                        QueueLog(() => LogError("高优先级OFF批次跨越物理设备，已拒绝整批。", "DO操作"));
+                        return false;
+                    }
+                    targetDevice = device;
+                    maps.Add((channel, map.posIdx, map.negIdx));
+                }
+
+                if (targetDevice == null) return false;
+                lock (targetDevice.WriteGate)
+                {
+                    lockAcquiredTicks = Stopwatch.GetTimestamp();
+                    var toWrite = (bool[])targetDevice.States.Clone();
+                    foreach (var map in maps)
+                    {
+                        toWrite[map.posIdx] = false;
+                        toWrite[map.negIdx] = false;
+                    }
+                    niWriteStartedTicks = Stopwatch.GetTimestamp();
+                    targetDevice.Writer.WriteSingleSampleSingleLine(true, toWrite);
+                    niWriteCompletedTicks = Stopwatch.GetTimestamp();
+                    targetDevice.States = toWrite;
+                }
+
+                var channelText = string.Join(",", maps.Select(map => map.channel));
+                QueueLog(() => LogInfo(
+                    $"EPB[{channelText}]@{targetDevice.Name} => 合并全关，一次位图写入",
+                    "DO操作"));
+                return true;
+            }
+            catch (Exception ex)
+            {
+                QueueLog(() => LogError("EPB 合并关闭失败：" + ex.Message, "DO操作", ex));
+                return false;
+            }
+            finally
+            {
+                if (timing != null)
+                {
+                    if (niWriteStartedTicks > 0 && niWriteCompletedTicks == 0)
+                        niWriteCompletedTicks = Stopwatch.GetTimestamp();
+                    timing.LockWaitMs = lockAcquiredTicks > 0
+                        ? (lockAcquiredTicks - lockRequestedTicks) * 1000.0 / Stopwatch.Frequency
+                        : 0;
+                    timing.NiWriteMs = niWriteStartedTicks > 0 && niWriteCompletedTicks >= niWriteStartedTicks
+                        ? (niWriteCompletedTicks - niWriteStartedTicks) * 1000.0 / Stopwatch.Frequency
+                        : 0;
+                }
+            }
         }
 
         private void PublishHighPriorityOffTelemetry(
             int channelNo,
-            HighPriorityDoTelemetry telemetry,
-            DoWriteTiming writeTiming)
+            HighPriorityDoTelemetry telemetry)
         {
             if (telemetry == null) return;
             telemetry.Channel = channelNo;
-            telemetry.LockWaitMs = writeTiming?.LockWaitMs ?? 0;
-            telemetry.NiWriteMs = writeTiming?.NiWriteMs ?? 0;
 
             if (telemetry.CallerTimedOut || telemetry.TotalMs >= HighPriorityOffSlowLogThresholdMs)
             {
@@ -633,53 +831,54 @@ namespace IO.NI
         /// <returns>成功/失败。</returns>
         public bool SetPressure(int id, bool start)
         {
-            lock (_doTaskLock)
+            const int maxRetries = 1;
+            var attempts = 0;
+
+            while (attempts <= maxRetries)
             {
-                const int maxRetries = 1;
-                int attempts = 0;
-
-                while (attempts <= maxRetries)
+                try
                 {
-                    try
+                    if (!EnsureReady()) { attempts++; continue; }
+
+                    if (!_pressureIndex.TryGetValue(id, out var map))
                     {
-                        if (!EnsureReady()) { attempts++; continue; }
+                        LogError($"压力编号未找到：{id}", "DO操作");
+                        return false;
+                    }
 
-                        if (!_pressureIndex.TryGetValue(id, out var map))
-                        {
-                            LogError($"压力编号未找到：{id}", "DO操作");
-                            return false;
-                        }
+                    if (!_devices.TryGetValue(map.dev, out var dev))
+                    {
+                        LogError($"压力[{id}] 所属设备未就绪：{map.dev}", "DO操作");
+                        return false;
+                    }
 
-                        if (!_devices.TryGetValue(map.dev, out var dev))
-                        {
-                            LogError($"压力[{id}] 所属设备未就绪：{map.dev}", "DO操作");
-                            return false;
-                        }
-
+                    lock (dev.WriteGate)
+                    {
                         var toWrite = (bool[])dev.States.Clone();
                         toWrite[map.idx] = start;
 
                         dev.Writer.WriteSingleSampleSingleLine(true, toWrite);
                         dev.States = toWrite;
-                        LogInfo($"压力[{id}]@{map.dev} => {(start ? "启动" : "停止")}", "DO操作");
-                        return true;
                     }
-                    catch (DaqException ex)
-                    {
-                        attempts++;
-                        LogError($"压力写入失败（第{attempts}/{maxRetries + 1}次）：{ex.Message}", "DO操作", ex);
-                        if (attempts <= maxRetries) { ResetAllDevices(clearMaps: false); Initialize(); }
-                    }
-                    catch (Exception ex2)
-                    {
-                        LogError($"压力写入异常：{ex2}", "DO操作", ex2);
-                        break;
-                    }
+                    LogInfo($"压力[{id}]@{map.dev} => {(start ? "启动" : "停止")}", "DO操作");
+                    return true;
                 }
-
-                LogError("压力写入失败：超过最大重试次数", "DO操作");
-                return false;
+                catch (DaqException ex)
+                {
+                    attempts++;
+                    LogError($"压力写入失败（第{attempts}/{maxRetries + 1}次）：{ex.Message}", "DO操作", ex);
+                    if (attempts <= maxRetries) Initialize();
+                }
+                catch (Exception ex2)
+                {
+                    attempts++;
+                    LogError($"压力写入异常：{ex2}", "DO操作", ex2);
+                    if (attempts <= maxRetries) Initialize();
+                }
             }
+
+            LogError("压力写入失败：超过最大重试次数", "DO操作");
+            return false;
         }
 
         #endregion
@@ -697,9 +896,12 @@ namespace IO.NI
 
                     foreach (var dev in _devices.Values)
                     {
-                        var zeros = new bool[dev.States.Length];
-                        dev.Writer.WriteSingleSampleSingleLine(true, zeros);
-                        dev.States = zeros;
+                        lock (dev.WriteGate)
+                        {
+                            var zeros = new bool[dev.States.Length];
+                            dev.Writer.WriteSingleSampleSingleLine(true, zeros);
+                            dev.States = zeros;
+                        }
                     }
 
                     LogInfo("DO 全部关闭（所有设备）", "DO操作");
@@ -734,9 +936,8 @@ namespace IO.NI
         {
             if (!_devices.TryGetValue(deviceName, out var dev))
             {
-                dev = new DoDevice
+                dev = new DoDevice(deviceName)
                 {
-                    Name = deviceName,
                     Task = new NIDaqTask("DO_" + deviceName)
                 };
                 _devices[deviceName] = dev;
@@ -755,6 +956,7 @@ namespace IO.NI
         /// <summary>确保当前对象已完成初始化，必要时调用 <see cref="Initialize"/>。</summary>
         private bool EnsureReady()
         {
+            if (Volatile.Read(ref _disposed) != 0) return false;
             if (_devices.Count == 0) return Initialize();
 
             foreach (var dev in _devices.Values)
@@ -770,12 +972,19 @@ namespace IO.NI
         {
             foreach (var dev in _devices.Values)
             {
-                try { dev.Task?.Dispose(); } catch { /* ignore */ }
-                dev.Task = null;
-                dev.Writer = null;
-                dev.Lines.Clear();
-                dev.DefaultStates.Clear();
-                dev.States = null;
+                lock (dev.WriteGate)
+                {
+                    try { dev.Task?.Dispose(); } catch { /* ignore */ }
+                    dev.Task = null;
+                    dev.Writer = null;
+                    dev.Lines.Clear();
+                    dev.DefaultStates.Clear();
+                    dev.States = null;
+                }
+                if (clearMaps)
+                {
+                    try { dev.HighPriorityWorker.Dispose(); } catch { /* ignore */ }
+                }
             }
             if (clearMaps)
             {
@@ -802,7 +1011,8 @@ namespace IO.NI
         /// </remarks>
         public void Dispose()
         {
-            try { _hiWorker.Dispose(); } catch { /* ignore */ }
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            try { _uninitializedHiWorker.Dispose(); } catch { /* ignore */ }
 
             lock (_doTaskLock)
             {

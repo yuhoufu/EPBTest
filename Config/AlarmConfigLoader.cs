@@ -88,6 +88,10 @@ namespace Config
                     warningNode,
                     "RootDirectory",
                     cfg.WarningSnapshots.RootDirectory);
+                cfg.WarningSnapshots.FullEvidenceEnabled = GetBoolAttr(
+                    warningNode,
+                    "FullEvidenceEnabled",
+                    cfg.WarningSnapshots.FullEvidenceEnabled);
                 cfg.WarningSnapshots.SaveCsv = GetBoolAttr(warningNode, "SaveCsv", cfg.WarningSnapshots.SaveCsv);
                 cfg.WarningSnapshots.SaveBin = GetBoolAttr(warningNode, "SaveBin", cfg.WarningSnapshots.SaveBin);
                 cfg.WarningSnapshots.HardAlarmLastNCycles = Math.Max(
@@ -136,6 +140,30 @@ namespace Config
                 cfg.WarningSnapshots.DiskFreeWarningMb = Math.Max(
                     0,
                     GetLongAttr(warningNode, "DiskFreeWarningMb", cfg.WarningSnapshots.DiskFreeWarningMb));
+                cfg.WarningSnapshots.FullEvidenceMinimumIntervalSeconds = ParseBoundedIntAttr(
+                    warningNode,
+                    "FullEvidenceMinimumIntervalSeconds",
+                    cfg.WarningSnapshots.FullEvidenceMinimumIntervalSeconds,
+                    0,
+                    86400,
+                    path,
+                    log);
+                cfg.WarningSnapshots.FullEvidenceQueueCapacity = ParseBoundedIntAttr(
+                    warningNode,
+                    "FullEvidenceQueueCapacity",
+                    cfg.WarningSnapshots.FullEvidenceQueueCapacity,
+                    1,
+                    16,
+                    path,
+                    log);
+                cfg.WarningSnapshots.ScalarEvidenceQueueCapacity = ParseBoundedIntAttr(
+                    warningNode,
+                    "ScalarEvidenceQueueCapacity",
+                    cfg.WarningSnapshots.ScalarEvidenceQueueCapacity,
+                    128,
+                    65536,
+                    path,
+                    log);
             }
 
             log?.Info(
@@ -145,6 +173,10 @@ namespace Config
                 $"SameGroupCycles={cfg.WarningSnapshots.HardAlarmSameGroupLastNCycles} " +
                 $"WarningMode={cfg.WarningSnapshots.SoftWarningRetentionMode} " +
                 $"WarningCount={cfg.WarningSnapshots.SoftWarningRetainCountPerChannelCode} " +
+                $"FullEvidence={cfg.WarningSnapshots.FullEvidenceEnabled} " +
+                $"EvidenceInterval={cfg.WarningSnapshots.FullEvidenceMinimumIntervalSeconds}s " +
+                $"EvidenceQueue={cfg.WarningSnapshots.FullEvidenceQueueCapacity} " +
+                $"ScalarQueue={cfg.WarningSnapshots.ScalarEvidenceQueueCapacity} " +
                 $"Path={path}",
                 "配置");
 

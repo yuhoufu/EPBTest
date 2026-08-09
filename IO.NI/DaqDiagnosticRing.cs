@@ -30,6 +30,21 @@ namespace IO.NI
         public int Gc1;
         public int Gc2;
         public long ManagedMemoryBytes;
+        public int ProcessId;
+        public int ProcessBitness;
+        public double ProcessCpuPercent;
+        public double SystemCpuPercent;
+        public double OtherCpuPercent;
+        public long WorkingSetBytes;
+        public long PrivateMemoryBytes;
+        public long VirtualMemoryBytes;
+        public int HandleCount;
+        public int ThreadCount;
+        public ulong SystemAvailableMemoryBytes;
+        public long ProgramDriveFreeBytes;
+        public double DiskQueueLength;
+        public double DiskReadBytesPerSecond;
+        public double DiskWriteBytesPerSecond;
         public int WorkerThreadsAvailable;
         public int IoThreadsAvailable;
         public string GcEtwStatus;
@@ -82,6 +97,21 @@ namespace IO.NI
                 Gc1 = value.Gc1,
                 Gc2 = value.Gc2,
                 ManagedMemoryBytes = value.ManagedMemoryBytes,
+                ProcessId = value.ProcessId,
+                ProcessBitness = value.ProcessBitness,
+                ProcessCpuPercent = value.ProcessCpuPercent,
+                SystemCpuPercent = value.SystemCpuPercent,
+                OtherCpuPercent = value.OtherCpuPercent,
+                WorkingSetBytes = value.WorkingSetBytes,
+                PrivateMemoryBytes = value.PrivateMemoryBytes,
+                VirtualMemoryBytes = value.VirtualMemoryBytes,
+                HandleCount = value.HandleCount,
+                ThreadCount = value.ThreadCount,
+                SystemAvailableMemoryBytes = value.SystemAvailableMemoryBytes,
+                ProgramDriveFreeBytes = value.ProgramDriveFreeBytes,
+                DiskQueueLength = value.DiskQueueLength,
+                DiskReadBytesPerSecond = value.DiskReadBytesPerSecond,
+                DiskWriteBytesPerSecond = value.DiskWriteBytesPerSecond,
                 WorkerThreadsAvailable = value.WorkerThreadsAvailable,
                 IoThreadsAvailable = value.IoThreadsAvailable,
                 GcEtwStatus = value.GcEtwStatus,

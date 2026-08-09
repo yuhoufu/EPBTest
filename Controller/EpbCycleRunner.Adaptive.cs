@@ -49,6 +49,7 @@ namespace Controller
         private int _adaptiveTerminalOffLatched;
         private Task _terminalOffCurrentVerificationTask = Task.CompletedTask;
         private double _adaptivePreEnergizationCurrentA = double.NaN;
+        private double _adaptiveForwardDoCompletionMs = double.NaN;
 
         private const double OffCurrentBaselineWindowMs = 500.0;
         private const double OffCurrentBaselineAllowanceA = 0.05;
@@ -82,6 +83,33 @@ namespace Controller
                 ? finalPeakAt
                 : finalPeakAt.ToUniversalTime();
             return peakUtc <= decisionUtc.AddMilliseconds(Math.Max(0, timestampToleranceMs));
+        }
+
+        internal static bool IsPeakEvidenceLagExceeded(
+            double decisionEvidenceLagMs,
+            double maximumLagMs)
+        {
+            // “时间窗不可比较”只意味着本圈不能做快速/完整峰值偏差比较；
+            // 它不等同于后台处理滞后。只有可量化且真实超过阈值的尾差才报滞后。
+            return !double.IsNaN(decisionEvidenceLagMs) &&
+                   !double.IsInfinity(decisionEvidenceLagMs) &&
+                   decisionEvidenceLagMs > Math.Max(0, maximumLagMs);
+        }
+
+        internal static AdaptiveWarningCode? ClassifyPeakEvidenceDiagnostic(
+            DateTime decisionEvidenceThroughUtc,
+            DateTime finalPeakAt,
+            double decisionEvidenceLagMs,
+            double maximumLagMs)
+        {
+            if (decisionEvidenceThroughUtc == default ||
+                decisionEvidenceThroughUtc == DateTime.MinValue ||
+                finalPeakAt == default ||
+                finalPeakAt == DateTime.MinValue)
+                return AdaptiveWarningCode.PeakEvidenceTimestampMissing;
+            return IsPeakEvidenceLagExceeded(decisionEvidenceLagMs, maximumLagMs)
+                ? AdaptiveWarningCode.PeakEvidenceLagWarning
+                : (AdaptiveWarningCode?)null;
         }
 
         internal static bool IsFullRatePeakCaptureValid(
@@ -294,6 +322,7 @@ namespace Controller
             _adaptiveDecisionPeakEvidenceThroughUtc = DateTime.MinValue;
             Interlocked.Exchange(ref _adaptiveClampPeakCaptureStarted, 0);
             Interlocked.Exchange(ref _adaptiveTerminalOffLatched, 0);
+            _adaptiveForwardDoCompletionMs = double.NaN;
 
             lock (_adaptiveGate)
             {
@@ -569,6 +598,7 @@ namespace Controller
         private void HandleAdaptiveDecision(EpbAdaptiveDecision decision)
         {
             if (decision == null || !decision.HasAction) return;
+            var infrastructureOpenCircuit = TryReclassifyInfrastructureOpenCircuit(decision);
             EnsureAdaptiveTerminalPowerOff(decision);
 
             if (decision.StateChanged &&
@@ -632,6 +662,12 @@ namespace Controller
             forward?.TrySetResult(terminalDecision);
             reverse?.TrySetResult(terminalDecision);
 
+            if (infrastructureOpenCircuit)
+            {
+                NotifyRecoverableFaultSafely(decision.Reason);
+                return;
+            }
+
             if (decision.Reason?.IndexOf("DaqSampleStale", StringComparison.OrdinalIgnoreCase) >= 0)
             {
                 NotifyRecoverableFaultSafely(decision.Reason);
@@ -642,10 +678,10 @@ namespace Controller
             if (FastPathTripClassifier.IsFastSignalDependentFault(decision.Reason)) return;
 
             var alarmReason = "AdaptiveHardFault " + decision.Reason;
-            _ = Task.Run(() =>
+            ObserveAdaptiveBackground(Task.Run(() =>
             {
                 NotifyAlarmSafely(alarmReason);
-            });
+            }), "AdaptiveHardFaultNotification");
         }
 
         private void EnsureAdaptiveTerminalPowerOff(EpbAdaptiveDecision decision)
@@ -680,11 +716,17 @@ namespace Controller
                 reason,
                 commandSucceeded,
                 commandElapsedMs);
+            if (string.Equals(_adaptiveDirection, "Forward", StringComparison.Ordinal) &&
+                commandSucceeded)
+            {
+                lock (_adaptiveGate)
+                    _adaptiveForwardDoCompletionMs = commandElapsedMs;
+            }
 
             if (!commandSucceeded)
             {
                 var elapsed = commandElapsedMs;
-                _ = Task.Run(() =>
+                ObserveAdaptiveBackground(Task.Run(() =>
                 {
                     _log?.Error(
                         $"EPB[{_channel}] 终态高优先级断电失败，立即触发电源组联锁。" +
@@ -692,16 +734,16 @@ namespace Controller
                         "EPB");
                     NotifyAlarmSafely(
                         $"AdaptiveHardFault TerminalOffCommandFailed {reason}");
-                });
+                }), "TerminalOffFailureNotification");
                 return;
             }
 
             var successfulElapsed = commandElapsedMs;
-            _ = Task.Run(() => _log?.Info(
+            ObserveAdaptiveBackground(Task.Run(() => _log?.Info(
                 $"EPB[{_channel}] 终态断电命令已优先执行。" +
                 $"Reason={reason} CommandElapsed={successfulElapsed:F3}ms " +
                 "PhysicalOffStatus=NotMeasured",
-                "EPB"));
+                "EPB")), "TerminalOffEvidenceLog");
             BeginTerminalOffCurrentVerification(reason);
         }
 
@@ -815,6 +857,41 @@ namespace Controller
                 }
             });
             Interlocked.Exchange(ref _terminalOffCurrentVerificationTask, verificationTask);
+            ObserveAdaptiveBackground(verificationTask, "TerminalOffCurrentVerification");
+        }
+
+        internal static bool ShouldReclassifyOpenCircuit(
+            string decisionReason,
+            bool infrastructureTransition)
+        {
+            return infrastructureTransition &&
+                   !string.IsNullOrWhiteSpace(decisionReason) &&
+                   decisionReason.IndexOf(
+                       "OpenCircuitOrOutputFault",
+                       StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private bool TryReclassifyInfrastructureOpenCircuit(EpbAdaptiveDecision decision)
+        {
+            if (decision == null || _manager == null || !decision.HardFault ||
+                string.IsNullOrWhiteSpace(decision.Reason) ||
+                decision.Reason.IndexOf(
+                    "OpenCircuitOrOutputFault",
+                    StringComparison.OrdinalIgnoreCase) < 0)
+                return false;
+            if (!_manager.IsInfrastructureTransitionForChannel(_channel, out var transitionReason) ||
+                !ShouldReclassifyOpenCircuit(decision.Reason, true))
+                return false;
+
+            var original = decision.Reason;
+            decision.Reason =
+                $"InfrastructureTransitionOpenCircuit Channel={_channel} " +
+                $"Transition={transitionReason} Original={original}";
+            _log?.Warn(
+                $"EPB[{_channel}] 近零电流发生在设备计划恢复/供电许可缺失窗口，" +
+                $"本圈按软件恢复作废，不累计卡钳开路报警。{decision.Reason}",
+                "EPB");
+            return true;
         }
 
         internal Task GetTerminalOffCurrentVerificationTask()
@@ -1062,10 +1139,38 @@ namespace Controller
         private void RaiseAdaptiveWarning(string reason)
         {
             var warningReason = reason ?? "AdaptiveWarning";
-            _ = Task.Run(() =>
+            ObserveAdaptiveBackground(Task.Run(() =>
             {
                 NotifyWarningSafely(warningReason);
-            });
+            }), "AdaptiveWarningNotification");
+        }
+
+        private void ObserveAdaptiveBackground(Task task, string operation)
+        {
+            if (task == null) return;
+            if (_manager != null)
+            {
+                _manager.ObserveBackgroundTask(task, operation, _channel);
+                return;
+            }
+
+            _ = task.ContinueWith(
+                completed =>
+                {
+                    var exception = completed.Exception?.GetBaseException();
+                    try
+                    {
+                        _log?.Error(
+                            $"EPB[{_channel}] 后台异步操作失败：Task={operation} " +
+                            $"Error={exception?.Message}",
+                            "EPB",
+                            exception);
+                    }
+                    catch { }
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
         }
 
         private void RaiseAdaptiveWarning(AdaptiveWarningEvent warning)
@@ -1145,6 +1250,13 @@ namespace Controller
                 var forward = await WaitAdaptiveDecisionAsync(forwardCompletion, token).ConfigureAwait(false);
                 if (forward.HardFault)
                 {
+                    if (forward.Reason?.IndexOf(
+                            "InfrastructureTransitionOpenCircuit",
+                            StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        DisarmAdaptiveMonitoring();
+                        return EpbCycleOutcome.SoftwareRecovery(forward.Stage, forward.Reason);
+                    }
                     var finalReason = await FinalizeFastPathFaultAsync(forward).ConfigureAwait(false);
                     DisarmAdaptiveMonitoring();
                     return EpbCycleOutcome.HardFault(forward.Stage, finalReason);
@@ -1168,6 +1280,7 @@ namespace Controller
                 string peakCaptureFailure = null;
                 string peakEvidenceMismatch = null;
                 var peakEvidenceLag = false;
+                var peakEvidenceTimestampMissing = false;
                 double decisionEvidenceLagMs;
                 DateTime decisionEvidenceThroughUtc;
                 lock (_adaptiveGate)
@@ -1226,13 +1339,16 @@ namespace Controller
                                             : decisionEvidenceLagMs,
                                         (finalPeakUtc - decisionEvidenceThroughUtc).TotalMilliseconds);
                                 }
+                                var peakDiagnostic = ClassifyPeakEvidenceDiagnostic(
+                                    decisionEvidenceThroughUtc,
+                                    peak.MaxAt,
+                                    decisionEvidenceLagMs,
+                                    _programSafetySettings.PeakEvidenceMaximumLagMs);
                                 peakEvidenceLag =
-                                    !comparableWindow ||
-                                    double.IsNaN(decisionEvidenceLagMs) ||
-                                    double.IsInfinity(decisionEvidenceLagMs) ||
-                                    decisionEvidenceLagMs >
-                                        _programSafetySettings.PeakEvidenceMaximumLagMs;
-                                if (!peakEvidenceLag &&
+                                    peakDiagnostic == AdaptiveWarningCode.PeakEvidenceLagWarning;
+                                peakEvidenceTimestampMissing =
+                                    peakDiagnostic == AdaptiveWarningCode.PeakEvidenceTimestampMissing;
+                                if (comparableWindow && !peakEvidenceLag &&
                                     Math.Abs(quickPeak - peak.MaxAmp) >
                                     _programSafetySettings.PeakEvidenceMismatchToleranceA)
                                     peakEvidenceMismatch =
@@ -1263,21 +1379,36 @@ namespace Controller
                     _log?.Warn($"EPB[{_channel}] 断电后峰值捕获失败：{ex.Message}", "EPB");
                 }
 
+                string forwardEvidenceSoftwareRecoveryReason = null;
                 if (!string.IsNullOrWhiteSpace(peakCaptureFailure))
                 {
-                    await hydraulicReleaseTask.ConfigureAwait(false);
-                    DisarmAdaptiveMonitoring();
-                    var reason = "PeakCaptureInvalid " + peakCaptureFailure;
+                    forwardEvidenceSoftwareRecoveryReason =
+                        "PeakCaptureInvalid " + peakCaptureFailure;
                     _log?.Warn(
                         $"EPB[{_channel}] 全速率峰值证据不完整；当前圈作废并进入软件恢复，" +
-                        $"不确认电流硬故障。{reason}",
+                        "不确认电流硬故障；但必须先完成反向机械释放，禁止夹紧状态进入下一圈。" +
+                        forwardEvidenceSoftwareRecoveryReason,
                         "EPB");
-                    return EpbCycleOutcome.SoftwareRecovery(EpbCurrentStage.ClampReached, reason);
                 }
 
                 var mismatchStreak =
                     _adaptiveProfile?.ConsecutivePeakEvidenceMismatchCount ?? 0;
-                if (peakEvidenceLag)
+                if (peakEvidenceTimestampMissing)
+                {
+                    _adaptiveSoftWarningSeen = true;
+                    RaiseAdaptiveWarning(new AdaptiveWarningEvent
+                    {
+                        Code = AdaptiveWarningCode.PeakEvidenceTimestampMissing,
+                        PeakCurrentA = _adaptiveForwardPeakA,
+                        TargetCurrentA = _posThrA,
+                        Streak = mismatchStreak,
+                        ConfirmThreshold = _peakEvidenceMismatchConfirmCycles,
+                        Reason =
+                            "峰值证据时间戳缺失：无法比较快速判定窗口与完整峰值窗口；" +
+                            "本圈不参与峰值偏差连续计数。该诊断不是100ms处理滞后，请检查DAQ时间轴证据。"
+                    });
+                }
+                else if (peakEvidenceLag)
                 {
                     var lagText = double.IsNaN(decisionEvidenceLagMs) ||
                                   double.IsInfinity(decisionEvidenceLagMs)
@@ -1289,6 +1420,7 @@ namespace Controller
                         Code = AdaptiveWarningCode.PeakEvidenceLagWarning,
                         PeakCurrentA = _adaptiveForwardPeakA,
                         TargetCurrentA = _posThrA,
+                        EvidenceLagMs = decisionEvidenceLagMs,
                         Streak = mismatchStreak,
                         ConfirmThreshold = _peakEvidenceMismatchConfirmCycles,
                         Reason =
@@ -1356,7 +1488,8 @@ namespace Controller
                         forward.CutoffCurrentA,
                         forward.EstimatedSlopeAperMs,
                         _adaptiveForwardPeakA,
-                        peakErrorA);
+                        peakErrorA,
+                        _adaptiveForwardDoCompletionMs);
 
                 }
                 else
@@ -1469,6 +1602,13 @@ namespace Controller
                 var reverse = await WaitAdaptiveDecisionAsync(reverseCompletion, token).ConfigureAwait(false);
                 if (reverse.HardFault)
                 {
+                    if (reverse.Reason?.IndexOf(
+                            "InfrastructureTransitionOpenCircuit",
+                            StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        DisarmAdaptiveMonitoring();
+                        return EpbCycleOutcome.SoftwareRecovery(reverse.Stage, reverse.Reason);
+                    }
                     var finalReason = await FinalizeFastPathFaultAsync(reverse).ConfigureAwait(false);
                     DisarmAdaptiveMonitoring();
                     return EpbCycleOutcome.HardFault(reverse.Stage, finalReason);
@@ -1481,6 +1621,17 @@ namespace Controller
 
                 _adaptiveReverseEmptyA = _adaptiveStateMachine.ObservedReverseEmptyA;
                 DisarmAdaptiveMonitoring();
+
+                if (!string.IsNullOrWhiteSpace(forwardEvidenceSoftwareRecoveryReason))
+                {
+                    _log?.Info(
+                        $"EPB[{_channel}] 峰值证据异常圈已完成反向机械释放；" +
+                        "本圈不计数，未来完整圈重试。",
+                        "EPB");
+                    return EpbCycleOutcome.SoftwareRecovery(
+                        EpbCurrentStage.Released,
+                        forwardEvidenceSoftwareRecoveryReason);
+                }
 
                 outcome = new EpbCycleOutcome
                 {
@@ -1525,6 +1676,21 @@ namespace Controller
                     $"Trigger={outcome.CutoffReason}，SafetyPolicy={EpbProgramSafetySettings.SafetyPolicyVersion}，" +
                     $"结果={outcome.Kind}。",
                     "EPB");
+                var metricRunId = Guid.Empty;
+                var metricCycle = 0;
+                _manager?.GetPeakCaptureIdentity(_channel, out metricRunId, out metricCycle);
+                var metricFloor = outcome.TargetCurrentA -
+                                  _adaptiveSafetyLimits.ForwardAcceptableUndershootA;
+                var metricCeiling = outcome.TargetCurrentA + _adaptiveOvershootWarningDeltaA;
+                var metricQualified = outcome.PeakCurrentA >= metricFloor &&
+                                      outcome.PeakCurrentA <= metricCeiling;
+                _log?.Info(
+                    $"FieldMetric CYCLE RunId={metricRunId:N} Channel={_channel} " +
+                    $"Cycle={metricCycle} Phase={(metricCycle > 0 ? "Formal" : "Learning")} " +
+                    $"Peak={outcome.PeakCurrentA:F3} Target={outcome.TargetCurrentA:F3} " +
+                    $"Floor={metricFloor:F3} Ceiling={metricCeiling:F3} " +
+                    $"Qualified={metricQualified} Result={outcome.Kind}",
+                    "FIELD");
                 return outcome;
             }
             catch (HydraulicBarrierTimeoutException ex)
@@ -1697,13 +1863,15 @@ namespace Controller
             double cutoffCurrentA,
             double cutoffSlopeAperMs,
             double actualPeakA,
-            double peakErrorA)
+            double peakErrorA,
+            double doCompletionMs)
         {
             if (!_adaptiveProfile.TryAddCutoffObservation(
                     _posThrA,
                     cutoffCurrentA,
                     cutoffSlopeAperMs,
                     actualPeakA,
+                    doCompletionMs,
                     out var equivalentLeadMs))
             {
                 var now = Stopwatch.GetTimestamp();
@@ -1734,6 +1902,10 @@ namespace Controller
                 $"本圈等效Lead={equivalentLeadMs:F2}ms，" +
                 $"模型Lead={_adaptiveProfile.ForwardCutoffLeadMedianMs:F2}±MAD" +
                 $"{_adaptiveProfile.ForwardCutoffLeadMadMs:F2}ms，" +
+                $"PhysicalTail={_adaptiveProfile.ForwardPhysicalTailMedianMs:F2}±MAD" +
+                $"{_adaptiveProfile.ForwardPhysicalTailMadMs:F2}ms，" +
+                $"DO={_adaptiveProfile.ForwardDoCompletionMedianMs:F2}±MAD" +
+                $"{_adaptiveProfile.ForwardDoCompletionMadMs:F2}ms，" +
                 $"PeakError={peakErrorA:+0.000;-0.000;0.000}A。",
                 "EPB");
         }

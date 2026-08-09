@@ -4,15 +4,43 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Config;
 
 namespace Controller
 {
+    /// <summary>
+    ///     Ensures that repeated software-recovery failures open at most one batch-recycle
+    ///     circuit per RunId.  A new formal run resets the gate; competing recovery owners
+    ///     that observe an already-open gate must stop retrying instead of creating another
+    ///     self-maintenance loop.
+    /// </summary>
+    internal sealed class SoftwareRecoveryEscalationGate
+    {
+        private readonly ConcurrentDictionary<Guid, byte> _openedRuns = new();
+
+        internal bool TryOpen(Guid runId)
+        {
+            return runId != Guid.Empty && _openedRuns.TryAdd(runId, 0);
+        }
+
+        internal bool IsOpen(Guid runId)
+        {
+            return runId != Guid.Empty && _openedRuns.ContainsKey(runId);
+        }
+
+        internal void Reset()
+        {
+            _openedRuns.Clear();
+        }
+    }
+
     public sealed partial class EpbManager
     {
         private const int RecoveryOwnershipTakeoverTimeoutMs = 10_000;
         private const int RecoveryStageTimeoutMs = 15_000;
         private const int RecoveryMechanicalReleaseTimeoutMs = 20_000;
         internal const int RecoveryGroupHardDeadlineMs = 60_000;
+        internal const int SoftwareRecoveryEscalationAttempts = 3;
 
         private readonly HydraulicRecoveryOwnershipCoordinator _recoveryOwnership =
             new HydraulicRecoveryOwnershipCoordinator();
@@ -20,6 +48,100 @@ namespace Controller
         private readonly ConcurrentDictionary<long, byte> _activeCycleLimitRecoveries = new();
         private readonly ConcurrentDictionary<int, byte> _isolatedInfrastructureRecoveryScheduled = new();
         private readonly ConcurrentDictionary<int, int> _isolatedInfrastructureRecoveryAttempts = new();
+        private readonly SoftwareRecoveryEscalationGate _softwareRecoveryEscalation = new();
+
+        internal static bool ShouldEscalateSoftwareRecovery(int attempt)
+        {
+            return attempt >= SoftwareRecoveryEscalationAttempts;
+        }
+
+        internal static ControlFault CreateSoftwareRecoveryCircuitFault(
+            Guid runId,
+            IEnumerable<int> affectedChannels,
+            string detail)
+        {
+            if (runId == Guid.Empty)
+                throw new ArgumentException("软件恢复熔断必须携带非空 RunId。", nameof(runId));
+            var channels = (affectedChannels ?? Array.Empty<int>())
+                .Where(channel => channel >= 1 && channel <= 12)
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
+            return new ControlFault(
+                "SoftwareRecoveryCircuitOpen",
+                detail ?? string.Empty,
+                FaultScope.Global,
+                channels,
+                null,
+                DateTime.UtcNow,
+                runId,
+                FaultClassification.SystemFault,
+                FaultRecoveryPolicy.UnattendedBatchRecycle);
+        }
+
+        /// <summary>
+        ///     Repeated infrastructure recovery failure is a software lifecycle failure, not
+        ///     proof that every affected caliper is broken.  Stop the local retry loop and ask
+        ///     the unattended coordinator for one complete StopAll/in-process rebuild.  The
+        ///     existing coordinator escalates again to a process restart when the in-process
+        ///     rebuild cannot establish all safety and durability invariants.
+        /// </summary>
+        private bool TryEscalateSoftwareRecoveryCircuitOpen(
+            string stage,
+            string reason,
+            IEnumerable<int> affectedChannels,
+            Guid runId,
+            long runEpoch,
+            int attempt)
+        {
+            if (!ShouldEscalateSoftwareRecovery(attempt) ||
+                runId == Guid.Empty ||
+                runId != _activeBatchId ||
+                runEpoch != Interlocked.Read(ref _runEpoch))
+                return false;
+
+            // Another group/Timer may already have opened the same batch circuit.  Returning
+            // true is intentional: every local owner must stop retrying once one owner has
+            // requested the common batch recycle.
+            if (!_softwareRecoveryEscalation.TryOpen(runId))
+                return _softwareRecoveryEscalation.IsOpen(runId);
+
+            var channels = (affectedChannels ?? Array.Empty<int>())
+                .Where(channel => channel >= 1 && channel <= 12)
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
+            var detail =
+                $"Stage={stage ?? "Unknown"} Attempt={attempt} " +
+                $"Channels=[{string.Join(",", channels)}] Error={reason ?? "Unknown"}";
+
+            foreach (var channel in channels)
+            {
+                try { CommandEpbOffSafetyImmediate(channel); } catch { }
+                PublishChannelRuntimeState(
+                    channel,
+                    ChannelRuntimeState.SystemFault,
+                    "SoftwareRecoveryCircuitOpen",
+                    "局部软件自愈连续失败，已停止重复自维护并转入整批安全重建。" + detail,
+                    affectedChannels: channels,
+                    correlationId: runId,
+                    runIdOverride: runId);
+            }
+
+            var fault = CreateSoftwareRecoveryCircuitFault(runId, channels, detail);
+            _log.Error(
+                "局部软件自愈达到有界阈值，停止重复自维护并升级为一次整批安全重建。" + detail,
+                "EPB");
+            NonCriticalObserver.Invoke(
+                ControlFaultRaised,
+                fault,
+                ex => _log?.Warn($"软件恢复熔断观察者异常，已隔离：{ex.Message}", "EPB"));
+            NonCriticalObserver.Invoke(
+                SystemFaultRaised,
+                fault,
+                ex => _log?.Warn($"无人值守整批重建观察者异常，已隔离：{ex.Message}", "EPB"));
+            return true;
+        }
 
         private static int GetHydraulicGroupForChannel(int channel)
         {
@@ -58,6 +180,7 @@ namespace Controller
         {
             var runId = _activeBatchId;
             var runEpoch = Interlocked.Read(ref _runEpoch);
+            var sessionToken = _batchSessionCts?.Token ?? CancellationToken.None;
             foreach (var group in (affectedChannels ?? Array.Empty<int>())
                          .Where(channel => channel >= 1 && channel <= 12)
                          .Distinct()
@@ -68,7 +191,7 @@ namespace Controller
                     !_isolatedInfrastructureRecoveryScheduled.TryAdd(hydraulicGroupId, 0))
                     continue;
                 var requested = group.OrderBy(channel => channel).ToArray();
-                _ = Task.Run(async () =>
+                ObserveBackgroundTask(Task.Run(async () =>
                 {
                     var reschedule = false;
                     try
@@ -90,7 +213,9 @@ namespace Controller
                                 hydraulicGroupId,
                                 1,
                                 (_, current) => current + 1);
-                            await Task.Delay(SelectTimerRecoveryRetryDelayMs(attempt))
+                            await Task.Delay(
+                                    SelectTimerRecoveryRetryDelayMs(attempt),
+                                    sessionToken)
                                 .ConfigureAwait(false);
                             if (IsBatchSessionActive &&
                                 CurrentBatchPauseState != BatchPauseState.Running)
@@ -117,16 +242,59 @@ namespace Controller
                                     out _);
                                 return;
                             }
+
+                            if (TryEscalateSoftwareRecoveryCircuitOpen(
+                                    "IsolatedInfrastructureRecovery",
+                                    $"Reason={reason}; Hydraulic={hydraulicGroupId}",
+                                    eligible,
+                                    runId,
+                                    runEpoch,
+                                    attempt))
+                                return;
                         }
+                    }
+                    catch (OperationCanceledException) when (sessionToken.IsCancellationRequested)
+                    {
+                        reschedule = false;
                     }
                     catch (Exception ex)
                     {
-                        reschedule = runEpoch == Interlocked.Read(ref _runEpoch) &&
-                                     (runId == Guid.Empty || runId == _activeBatchId);
-                        _log.Warn(
-                            $"外部设备自恢复调度异常，将重新登记持续重试。" +
-                            $"Hydraulic={hydraulicGroupId} Reason={reason} Error={ex.Message}",
-                            "液压协调");
+                        var runStillCurrent = runEpoch == Interlocked.Read(ref _runEpoch) &&
+                                              runId != Guid.Empty &&
+                                              runId == _activeBatchId;
+                        var attempt = _isolatedInfrastructureRecoveryAttempts.TryGetValue(
+                            hydraulicGroupId,
+                            out var currentAttempt)
+                            ? currentAttempt
+                            : 1;
+                        var eligible = SelectInfrastructureRecoveryEligibleChannels(
+                            requested,
+                            IsChannelEnabled,
+                            IsAlarmStopRequested,
+                            channel => _channelPausedUtc.ContainsKey(channel) ||
+                                       _manualStopRequestedChannels.ContainsKey(channel),
+                            channel => _channelRuntimeStateStore.Get(channel)?.State ??
+                                       ChannelRuntimeState.NotEnabled);
+                        if (runStillCurrent &&
+                            TryEscalateSoftwareRecoveryCircuitOpen(
+                                "IsolatedInfrastructureRecoveryException",
+                                $"Reason={reason}; Hydraulic={hydraulicGroupId}; Error={ex.Message}",
+                                eligible.Length > 0 ? eligible : requested,
+                                runId,
+                                runEpoch,
+                                attempt))
+                        {
+                            reschedule = false;
+                        }
+                        else
+                        {
+                            reschedule = runStillCurrent;
+                            _log.Warn(
+                                $"外部设备自恢复调度第{attempt}次异常，将重新登记有界重试；" +
+                                $"三次失败后整批重建。Hydraulic={hydraulicGroupId} " +
+                                $"Reason={reason} Error={ex.Message}",
+                                "液压协调");
+                        }
                     }
                     finally
                     {
@@ -137,7 +305,7 @@ namespace Controller
                                 reason,
                                 correlationId);
                     }
-                });
+                }), "IsolatedInfrastructureRecovery");
             }
         }
 
@@ -197,8 +365,11 @@ namespace Controller
                     catch { }
                     // 所有权抢占必须有一个确定的退出提交点。仅取消令牌不够：
                     // 自维护任务可能正处在下一次定时重试之前，没有活动 await 负责释放 lease。
-                    _ = Task.Run(() =>
-                        CompleteCancelledRecovery(context, "RecoveryOwnershipPreempted"));
+                    ObserveBackgroundTask(
+                        Task.Run(() => CompleteCancelledRecovery(
+                            context,
+                            "RecoveryOwnershipPreempted")),
+                        "DaqRecoveryOwnershipPreempted");
                 }))
                 .ToArray();
         }
@@ -224,7 +395,7 @@ namespace Controller
         private void StartAffectedGroupRecoveryDeadline(DaqAutoRecoveryContext context)
         {
             if (context == null) return;
-            _ = Task.Run(async () =>
+            ObserveBackgroundTask(Task.Run(async () =>
             {
                 try
                 {
@@ -265,7 +436,7 @@ namespace Controller
                         context.AffectedChannels,
                         context.CorrelationId);
                 }
-            });
+            }), "AffectedGroupRecoveryDeadline");
         }
 
         private async Task ExecuteAffectedGroupResetAsync(
@@ -318,6 +489,13 @@ namespace Controller
                             CancellationToken.None)
                         .ConfigureAwait(false);
 
+                    var cutoffUtc = DateTime.UtcNow;
+                    var cutoffCycles = CaptureSoftwareRecoveryCycles(channels);
+                    TrySealSoftwareRecoveryCycleWindows(
+                        cutoffCycles,
+                        cutoffUtc,
+                        reason);
+
                     // 先完成与人工Stop相同的内存清场和安全断电。此时即使后续预检失败，
                     // 通道也已经处于明确隔离态，不会继续显示一个永不结束的旧恢复。
                     foreach (var channel in channels)
@@ -337,10 +515,6 @@ namespace Controller
                         RemoveRunnerRuntime(channel, "AffectedGroupReset");
                         UnmarkHydraulicParticipant(channel);
                         try { CommandEpbOffHighPriority(channel, "AffectedGroupReset"); } catch { }
-                        DiscardCurrentCycleForSoftwareRecovery(
-                            channel,
-                            DateTime.UtcNow,
-                            reason);
                     }
 
                     await RecoveryStageDeadline.RunAsync(
@@ -351,6 +525,16 @@ namespace Controller
                                 "AffectedGroupReset:" + reason),
                             lease.Token)
                         .ConfigureAwait(false);
+
+                    if (!await TryFinalizeSoftwareRecoveryCyclesAfterDurableCutoffAsync(
+                            cutoffCycles,
+                            cutoffUtc,
+                            reason,
+                            _daqPersistenceRecoveryTimeoutMs,
+                            lease.Token)
+                        .ConfigureAwait(false))
+                        throw new SoftwareSelfHealingRetryException(
+                            "受影响组 Raw/耐久边界尚未闭合；保持断能并持续清场重试。");
 
                     if (expectedRunEpoch != Interlocked.Read(ref _runEpoch)) return;
                     foreach (var device in channels
@@ -393,11 +577,7 @@ namespace Controller
                                 lease.Token)
                             .ConfigureAwait(false);
 
-                    var plan = _activeStaggerPlan ??
-                               ElectricalStaggerPlanner.Build(
-                                   channels,
-                                   _cfg.Test.Groups,
-                                   PeriodMs);
+                    var plan = GetCompatibleStaggerPlan(channels);
                     await RecoveryStageDeadline.RunAsync(
                             "AffectedGroupMechanicalRelease",
                             RecoveryMechanicalReleaseTimeoutMs,
@@ -501,14 +681,26 @@ namespace Controller
                 try { CommandEpbOffHighPriority(channel, "ActiveCycleDataLimitExceeded"); }
                 catch { }
                 UnmarkHydraulicParticipant(channel);
-                if (!DiscardCurrentCycleForSoftwareRecovery(
-                    channel,
-                    update.TimestampUtc,
+                var cutoffCycles = new Dictionary<int, int>
+                {
+                    [channel] = update.CycleNumber
+                };
+                var cutoffReason =
                     $"ActiveCycleDataLimitExceeded EPB={channel} " +
-                    $"Cycle={update.CycleNumber} Limit={update.RecordLimit}",
-                    update.CycleNumber))
+                    $"Cycle={update.CycleNumber} Limit={update.RecordLimit}";
+                TrySealSoftwareRecoveryCycleWindows(
+                    cutoffCycles,
+                    update.TimestampUtc,
+                    cutoffReason);
+                if (!await TryFinalizeSoftwareRecoveryCyclesAfterDurableCutoffAsync(
+                        cutoffCycles,
+                        update.TimestampUtc,
+                        cutoffReason,
+                        _daqPersistenceRecoveryTimeoutMs,
+                        lease.Token)
+                    .ConfigureAwait(false))
                     throw new InvalidOperationException(
-                        $"ActiveCycleCleanupCommitFailed EPB={channel} " +
+                        $"ActiveCycleDurableCleanupFailed EPB={channel} " +
                         $"Cycle={update.CycleNumber} Limit={update.RecordLimit}");
 
                 await RecoveryStageDeadline.RunAsync(
@@ -531,22 +723,20 @@ namespace Controller
                         $"活动圈已作废且液压代次已重置；另有DAQ陈旧证据，" +
                         $"转入DaqSampleStale恢复。EPB={channel} Device={update.Device}",
                         "AI");
-                    _ = BeginDaqAutoRecoveryAsync(
+                    ObserveBackgroundTask(BeginDaqAutoRecoveryAsync(
                         update.Device,
                         "DaqSampleStale",
                         $"ActiveCycle cleanup completed; CallbackAge={freshness?.CallbackAgeMs:F1}ms " +
                         $"ControlAge={freshness?.ControlProcessedAgeMs:F1}ms",
                         update.CorrelationId,
                         restartDaq: true,
-                        eventUtc: DateTime.UtcNow);
+                        eventUtc: DateTime.UtcNow),
+                        "BeginDaqAutoRecoveryAfterCycleCleanup",
+                        channel);
                     return;
                 }
 
-                var plan = _activeStaggerPlan ??
-                           ElectricalStaggerPlanner.Build(
-                               new[] { channel },
-                               _cfg.Test.Groups,
-                               PeriodMs);
+                var plan = GetCompatibleStaggerPlan(new[] { channel });
                 await RecoveryStageDeadline.RunAsync(
                         "ActiveCycleMechanicalRelease",
                         RecoveryMechanicalReleaseTimeoutMs,

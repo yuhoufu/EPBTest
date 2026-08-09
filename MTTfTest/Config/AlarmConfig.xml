@@ -111,6 +111,7 @@
   <WarningSnapshots
     Enabled="true"
     RootDirectory="WarningSnapshots"
+    FullEvidenceEnabled="false"
     SaveCsv="true"
     SaveBin="true"
     HardAlarmLastNCycles="10"
@@ -119,5 +120,8 @@
     SoftWarningRetentionMode="Count"
     SoftWarningRetainCountPerChannelCode="30"
     SoftWarningQuotaMb="0"
-    DiskFreeWarningMb="10240" />
+    DiskFreeWarningMb="10240"
+    FullEvidenceMinimumIntervalSeconds="600"
+    FullEvidenceQueueCapacity="1"
+    ScalarEvidenceQueueCapacity="4096" />
 </AlarmConfig>

@@ -1,6 +1,7 @@
 using System;
 using System.Linq;
 using System.Threading.Tasks;
+using Config;
 using Controller;
 
 namespace MTEmbTest
@@ -41,7 +42,7 @@ namespace MTEmbTest
                 var selected = Enumerable.Range(1, 12)
                     .Where(channel => EpbGroup[channel - 1]?.CtrlJoinTest?.Checked == true)
                     .ToArray();
-                UnattendedRecoveryCoordinator.Arm(_cfg, selected);
+                UnattendedRecoveryCoordinator.Arm(_cfg, selected, state.RunId);
                 return;
             }
 
@@ -53,7 +54,9 @@ namespace MTEmbTest
                 if (checkpoint.SelectedChannels.All(channel =>
                         _channelRuntimeStates.TryGetValue(channel, out var current) &&
                         current.State == ChannelRuntimeState.Completed))
-                    UnattendedRecoveryCoordinator.Disarm("FormalRunCompleted");
+                    UnattendedRunCheckpointStore.DisarmIfRunMatches(
+                        state.RunId.ToString("N"),
+                        "FormalRunCompleted");
             }
         }
 
@@ -92,6 +95,23 @@ namespace MTEmbTest
         {
             if (!UnattendedRunCheckpointStore.IsGracefulPauseArmed())
                 UnattendedRecoveryCoordinator.Disarm("MonitorClosing");
+            try
+            {
+                if (!UnattendedRecoveryCoordinator.DrainBackgroundTasksAsync(2000)
+                        .GetAwaiter()
+                        .GetResult())
+                    ProjectLogHub.Write(
+                        ProjectLogLevel.Warning,
+                        "窗口关闭时无人值守恢复任务未在2秒内收口；任务仍受监督，进程退出后不会继续控制硬件。",
+                        "无人值守恢复");
+            }
+            catch (Exception ex)
+            {
+                ProjectLogHub.Write(
+                    ProjectLogLevel.Error,
+                    "窗口关闭等待无人值守恢复任务异常：" + ex.Message,
+                    "无人值守恢复");
+            }
             base.OnFormClosing(e);
         }
     }

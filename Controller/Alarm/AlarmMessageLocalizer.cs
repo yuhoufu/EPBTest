@@ -23,6 +23,7 @@ namespace Controller.Alarm
                 ["ForwardLoadRiseNotStarted"] = "连续3次未检测到夹紧电流爬坡，卡钳已停用",
                 ["OpenCircuitOrOutputFault"] = "连续3次上电电流接近0，卡钳已停用",
                 ["ForwardFastOverCurrentCutoff"] = "峰值快速保护已断开正向供电，本圈继续释放",
+                ["FastRiseCandidate"] = "快速夹紧候选已断开正向供电，正在等待完整数据确认",
                 ["ClampReachedNearTargetPlateau"] = "接近目标的高负载平台，已停止正向供电并继续释放",
                 ["DaqSampleStale"] = "采集数据过期",
                 ["BackgroundQueueFull"] = "采集后台队列已满",
@@ -124,6 +125,8 @@ namespace Controller.Alarm
                     return "峰值证据偏差预警";
                 case AdaptiveWarningCode.PeakEvidenceLagWarning:
                     return "峰值完整数据处理滞后预警";
+                case AdaptiveWarningCode.PeakEvidenceTimestampMissing:
+                    return "峰值证据时间戳缺失诊断";
                 default:
                     return "控制预警";
             }

@@ -21,9 +21,9 @@ namespace MtEmbTest
         private ConcurrentQueue<string> LogError = new();
         private ConcurrentQueue<string> LogWarn = new();
         private ConcurrentQueue<byte[]> readyReadBuffer;
-        private const int MaxErrors = 100000;
-        private const int MaxInfos = 100000;
-        private const int MaxWarns = 100000;
+        private const int MaxErrors = 2000;
+        private const int MaxInfos = 2000;
+        private const int MaxWarns = 2000;
         public GlobalConfig Cfg;
 
         #endregion
@@ -128,6 +128,9 @@ namespace MtEmbTest
             // 初始化日志系统
             Logger = new FormLoggerAdapter(MaxInfos, MaxWarns, MaxErrors,
                 LogInformation, LogWarn, LogError, this);
+            var buildIdentity = RuntimeBuildIdentity.Capture();
+            Text = $"{BuildWindowTitle()} [PID {buildIdentity.ProcessId}]";
+            Logger.Info(buildIdentity.ToStartupLogLine(), "启动构建身份");
 
             // 加载配置文件
             Cfg = ConfigLoader.LoadAll($@"{Environment.CurrentDirectory}\Config", Logger);
@@ -356,6 +359,20 @@ namespace MtEmbTest
 
             // 设置自定义渲染器
             menuStripMain.Renderer = new ToolStripProfessionalRenderer(colorTable);
+            关于ToolStripMenuItem1.Visible = true;
+            关于ToolStripMenuItem1.Text = "运行身份";
+            关于ToolStripMenuItem1.Click += ShowRuntimeBuildIdentity;
+        }
+
+        private void ShowRuntimeBuildIdentity(object sender, EventArgs e)
+        {
+            var identity = RuntimeBuildIdentity.Capture();
+            MessageBox.Show(
+                this,
+                identity.ToDisplayText(),
+                "当前运行身份",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
         }
 
         private void TsmCharacterPlayBack_Click(object sender, EventArgs e)

@@ -45,6 +45,7 @@ namespace MTEmbTest
         public string ConfigurationSha256 { get; set; }
         public string ExecutableSha256 { get; set; }
         public string BuildVersion { get; set; }
+        public string RunId { get; set; }
         public string ActiveFaultCorrelationId { get; set; }
         public string RecoveryNonce { get; set; }
         public string LastReason { get; set; }
@@ -58,6 +59,7 @@ namespace MTEmbTest
 
     internal static class UnattendedRunCheckpointStore
     {
+        private const int CurrentSchemaVersion = 4;
         private static readonly object Sync = new object();
         private static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
         internal static readonly string CheckpointPath = Path.Combine(
@@ -65,7 +67,7 @@ namespace MTEmbTest
             "MTTFTest",
             "unattended-run-checkpoint.json");
 
-        internal static void Arm(GlobalConfig config, IEnumerable<int> channels)
+        internal static void Arm(GlobalConfig config, IEnumerable<int> channels, Guid runId)
         {
             if (config?.Test == null) return;
             var selected = (channels ?? Enumerable.Empty<int>())
@@ -78,7 +80,7 @@ namespace MTEmbTest
             lock (Sync)
             {
                 var checkpoint = LoadUnsafe() ?? new UnattendedRunCheckpoint();
-                checkpoint.SchemaVersion = 3;
+                checkpoint.SchemaVersion = CurrentSchemaVersion;
                 checkpoint.Armed = true;
                 checkpoint.RestartPending = false;
                 checkpoint.InProcessRecoveryPending = false;
@@ -90,6 +92,7 @@ namespace MTEmbTest
                 checkpoint.ConfigurationSha256 = ComputeConfigurationHash(config);
                 checkpoint.ExecutableSha256 = ComputeFileHash(GetExecutablePath());
                 checkpoint.BuildVersion = Assembly.GetEntryAssembly()?.GetName().Version?.ToString() ?? "unknown";
+                checkpoint.RunId = runId == Guid.Empty ? string.Empty : runId.ToString("N");
                 checkpoint.ActiveFaultCorrelationId = string.Empty;
                 checkpoint.RecoveryNonce = string.Empty;
                 checkpoint.LastReason = "FormalRunArmed";
@@ -121,6 +124,21 @@ namespace MTEmbTest
             }
         }
 
+        internal static bool DisarmIfRunMatches(string runId, string reason)
+        {
+            lock (Sync)
+            {
+                var checkpoint = LoadUnsafe();
+                if (checkpoint == null) return true;
+                if (!EpbManager.ShouldApplyRunAuthorizationRevocation(checkpoint.RunId, runId))
+                    return false;
+                DisarmUnsafe(
+                    checkpoint,
+                    string.IsNullOrWhiteSpace(reason) ? "AuthorizationRevoked" : reason);
+                return true;
+            }
+        }
+
         internal static void RecordFormalCycleCommitted(int channel)
         {
             lock (Sync)
@@ -142,6 +160,7 @@ namespace MTEmbTest
 
         internal static bool TryRegisterRestart(
             string correlationId,
+            string expectedRunId,
             out RecoveryStartupIntent intent,
             out string error)
         {
@@ -153,6 +172,18 @@ namespace MTEmbTest
                 if (checkpoint == null || !checkpoint.Armed)
                 {
                     error = "无人值守续测未授权。";
+                    return false;
+                }
+                if (!string.IsNullOrWhiteSpace(expectedRunId) &&
+                    !EpbManager.AreSameNonEmptyRunIds(checkpoint.RunId, expectedRunId))
+                {
+                    error = "RunIdMismatch";
+                    return false;
+                }
+                if (checkpoint.SchemaVersion < CurrentSchemaVersion ||
+                    !EpbManager.AreSameNonEmptyRunIds(checkpoint.RunId, checkpoint.RunId))
+                {
+                    error = "检查点缺少V4运行身份，拒绝自动续测。";
                     return false;
                 }
 
@@ -209,6 +240,7 @@ namespace MTEmbTest
         internal static bool TryRegisterInProcessRecovery(
             GlobalConfig config,
             string fingerprint,
+            string expectedRunId,
             out UnattendedRunCheckpoint checkpoint,
             out string error)
         {
@@ -220,6 +252,16 @@ namespace MTEmbTest
                 if (current == null || !current.Armed)
                 {
                     error = "无人值守续测未授权。";
+                    return false;
+                }
+                if (!EpbManager.AreSameNonEmptyRunIds(current.RunId, expectedRunId))
+                {
+                    error = "RunIdMismatch";
+                    return false;
+                }
+                if (current.SchemaVersion < CurrentSchemaVersion)
+                {
+                    error = "检查点版本低于V4，拒绝同进程自动续测。";
                     return false;
                 }
                 if (current.InProcessRecoveryPending)
@@ -256,7 +298,8 @@ namespace MTEmbTest
                     return false;
                 }
 
-                current.SchemaVersion = 3;
+                // Schema 只能单调前进。V4 包含 RunId，恢复登记不得把它降回旧格式。
+                current.SchemaVersion = CurrentSchemaVersion;
                 current.InProcessRecoveryPending = true;
                 current.InProcessRecoveryFingerprint = normalized;
                 current.InProcessRecoveryHistory.Add(
@@ -399,10 +442,13 @@ namespace MTEmbTest
         internal static void SaveGracefulPause(
             GlobalConfig config,
             IEnumerable<int> channels,
-            DateTime pausedUtc)
+            DateTime pausedUtc,
+            Guid runId)
         {
             if (config?.Test == null)
                 throw new ArgumentNullException(nameof(config));
+            if (runId == Guid.Empty)
+                throw new InvalidOperationException("正常暂停缺少有效RunId，拒绝生成可自动恢复检查点。");
             var selected = (channels ?? Enumerable.Empty<int>())
                 .Where(channel => channel >= 1 && channel <= 12)
                 .Distinct()
@@ -414,7 +460,7 @@ namespace MTEmbTest
             lock (Sync)
             {
                 var checkpoint = LoadUnsafe() ?? new UnattendedRunCheckpoint();
-                checkpoint.SchemaVersion = 3;
+                checkpoint.SchemaVersion = CurrentSchemaVersion;
                 checkpoint.Armed = true;
                 checkpoint.RestartPending = false;
                 checkpoint.InProcessRecoveryPending = false;
@@ -426,6 +472,7 @@ namespace MTEmbTest
                 checkpoint.ConfigurationSha256 = ComputeConfigurationHash(config);
                 checkpoint.ExecutableSha256 = ComputeFileHash(GetExecutablePath());
                 checkpoint.BuildVersion = Assembly.GetEntryAssembly()?.GetName().Version?.ToString() ?? "unknown";
+                checkpoint.RunId = runId.ToString("N");
                 checkpoint.AdaptiveProfilesSha256 = ComputeFileHash(Path.Combine(
                     ConfigLoader.GetProjectConfigDir(config.Test.StoreDir, config.Test.TestName),
                     "EpbAdaptiveProfiles.xml"));
@@ -459,10 +506,15 @@ namespace MTEmbTest
             lock (Sync)
             {
                 var current = LoadUnsafe();
-                if (current == null || current.SchemaVersion < 2 ||
+                if (current == null || current.SchemaVersion < CurrentSchemaVersion ||
                     !current.Armed || !current.GracefulPaused)
                 {
                     error = "没有正常暂停检查点。";
+                    return false;
+                }
+                if (!EpbManager.AreSameNonEmptyRunIds(current.RunId, current.RunId))
+                {
+                    error = "正常暂停检查点缺少有效RunId，必须完整学习。";
                     return false;
                 }
                 if (!current.MotorOffConfirmed || !current.PressureSafeConfirmed ||
@@ -734,7 +786,24 @@ namespace MTEmbTest
 
     internal static class UnattendedRecoveryCoordinator
     {
+        private sealed class RecoveryTaskLogger : Config.IAppLogger
+        {
+            public void Info(string message, string category = null)
+                => ProjectLogHub.Write(ProjectLogLevel.Info, message, category ?? "无人值守恢复");
+
+            public void Warn(string message, string category = null)
+                => ProjectLogHub.Write(ProjectLogLevel.Warning, message, category ?? "无人值守恢复");
+
+            public void Error(string message, string category = null, Exception ex = null)
+                => ProjectLogHub.Write(
+                    ProjectLogLevel.Error,
+                    ex == null ? message : message + Environment.NewLine + ex,
+                    category ?? "无人值守恢复");
+        }
+
         private static readonly object Sync = new object();
+        private static readonly TaskSupervisor RecoveryTasks =
+            new TaskSupervisor(new RecoveryTaskLogger());
         private static EpbManager _manager;
         private static GlobalConfig _config;
         private static Func<Task> _quiesceAndFlush;
@@ -761,9 +830,9 @@ namespace MTEmbTest
             }
         }
 
-        internal static void Arm(GlobalConfig config, IEnumerable<int> channels)
+        internal static void Arm(GlobalConfig config, IEnumerable<int> channels, Guid runId)
         {
-            UnattendedRunCheckpointStore.Arm(config, channels);
+            UnattendedRunCheckpointStore.Arm(config, channels, runId);
         }
 
         internal static void RegisterQuiesceAndFlush(Func<Task> callback)
@@ -807,7 +876,8 @@ namespace MTEmbTest
                 if (checkpoint?.RestartPending == true)
                     return;
             }
-            UnattendedRunCheckpointStore.Disarm(
+            UnattendedRunCheckpointStore.DisarmIfRunMatches(
+                context?.RunId,
                 $"{context?.Source}: {context?.Reason ?? "Run authorization revoked"}");
         }
 
@@ -815,13 +885,25 @@ namespace MTEmbTest
         {
             if (fault?.RecoveryPolicy == FaultRecoveryPolicy.UnattendedBatchRecycle)
             {
-                _ = Task.Run(() => RecoverInProcessOrRestartAsync(fault));
+                RecoveryTasks.Observe(
+                    Task.Run(() => RecoverInProcessOrRestartAsync(fault)),
+                    "UnattendedInProcessRecovery",
+                    fault.CorrelationId,
+                    fault.AffectedChannels?.FirstOrDefault() ?? 0);
                 return;
             }
-            _ = Task.Run(() => RestartAsync(
-                fault?.Reason ?? "SystemFault",
-                fault?.CorrelationId.ToString("N") ?? Guid.NewGuid().ToString("N")));
+            var correlationId = fault?.CorrelationId ?? Guid.NewGuid();
+            RecoveryTasks.Observe(
+                Task.Run(() => RestartAsync(
+                    fault?.Reason ?? "SystemFault",
+                    correlationId.ToString("N"))),
+                "UnattendedProcessRestart",
+                correlationId,
+                fault?.AffectedChannels?.FirstOrDefault() ?? 0);
         }
+
+        internal static Task<bool> DrainBackgroundTasksAsync(int timeoutMs)
+            => RecoveryTasks.DrainAsync(timeoutMs);
 
         private static void OnFormalCycleCompleted(int channel, int sessionRunCount)
         {
@@ -858,16 +940,27 @@ namespace MTEmbTest
                     !UnattendedRunCheckpointStore.TryRegisterInProcessRecovery(
                         config,
                         fingerprint,
+                        fault?.CorrelationId.ToString("N"),
                         out checkpoint,
                         out registrationError))
                 {
+                    if (string.Equals(registrationError, "RunIdMismatch", StringComparison.Ordinal))
+                    {
+                        ProjectLogHub.Write(
+                            ProjectLogLevel.Warning,
+                            $"忽略迟到旧运行的无人值守恢复请求。" +
+                            $"FaultRunId={fault?.CorrelationId:N}; Fault={reason}",
+                            "无人值守恢复");
+                        return;
+                    }
                     ProjectLogHub.Write(
                         ProjectLogLevel.Warning,
                         $"同进程自动恢复不可用，升级到进程自重启。" +
                         $"Reason={registrationError}; Fault={reason}",
                         "无人值守恢复");
                     Interlocked.Exchange(ref _inProcessRecoveryStarted, 0);
-                    await RestartAsync(reason, correlationId).ConfigureAwait(false);
+                    await RestartAsync(reason, correlationId, fault?.CorrelationId.ToString("N"))
+                        .ConfigureAwait(false);
                     return;
                 }
 
@@ -947,7 +1040,8 @@ namespace MTEmbTest
                     $"同进程无人值守恢复失败，升级到进程自重启：{ex}",
                     "无人值守恢复");
                 Interlocked.Exchange(ref _inProcessRecoveryStarted, 0);
-                await RestartAsync(reason, correlationId).ConfigureAwait(false);
+                await RestartAsync(reason, correlationId, fault?.CorrelationId.ToString("N"))
+                    .ConfigureAwait(false);
                 return;
             }
             finally
@@ -957,16 +1051,29 @@ namespace MTEmbTest
             }
         }
 
-        private static async Task RestartAsync(string reason, string correlationId)
+        private static async Task RestartAsync(
+            string reason,
+            string correlationId,
+            string expectedRunId = null)
         {
             if (Interlocked.CompareExchange(ref _restartStarted, 1, 0) != 0) return;
             try
             {
                 if (!UnattendedRunCheckpointStore.TryRegisterRestart(
                         correlationId,
+                        expectedRunId,
                         out var intent,
                         out var registrationError))
                 {
+                    if (string.Equals(registrationError, "RunIdMismatch", StringComparison.Ordinal))
+                    {
+                        ProjectLogHub.Write(
+                            ProjectLogLevel.Warning,
+                            $"忽略迟到旧运行的进程自重启请求。ExpectedRunId={expectedRunId}; " +
+                            $"CorrelationId={correlationId}; Reason={reason}",
+                            "无人值守恢复");
+                        return;
+                    }
                     ProjectLogHub.Write(
                         ProjectLogLevel.Error,
                         $"系统故障保持安全停机，不再自重启：{registrationError}; Reason={reason}",
@@ -995,6 +1102,19 @@ namespace MTEmbTest
                             },
                             stopTimeout.Token)
                         .ConfigureAwait(false);
+                // Do not quiesce/dispose acquisition or persistence before validating the
+                // StopAll durability and physical-safety result. A canceled restart must
+                // leave the original process able to continue retrying its accepted data.
+                if (safety == null || !safety.FullyConfirmed)
+                {
+                    UnattendedRunCheckpointStore.CancelPendingRestart("SafetyStopUnconfirmed");
+                    ProjectLogHub.Write(
+                        ProjectLogLevel.Error,
+                        "自重启已取消：电机DO、程控电源、安全压力或数据耐久边界未全部确认。",
+                        "无人值守恢复");
+                    ProjectLogHub.Flush(true);
+                    return;
+                }
                 Func<Task> quiesceAndFlush;
                 lock (Sync) quiesceAndFlush = _quiesceAndFlush;
                 if (quiesceAndFlush != null)
@@ -1003,17 +1123,6 @@ namespace MTEmbTest
                     throw new IOException("DAQ持久化队列未能在10秒内安全关闭。");
                 manager.ReleaseHardwareForRestart();
                 ProjectLogHub.Flush(true);
-
-                if (safety == null || !safety.FullyConfirmed)
-                {
-                    UnattendedRunCheckpointStore.CancelPendingRestart("SafetyStopUnconfirmed");
-                    ProjectLogHub.Write(
-                        ProjectLogLevel.Error,
-                        "自重启已取消：电机DO、程控电源或安全压力未全部确认。",
-                        "无人值守恢复");
-                    ProjectLogHub.Flush(true);
-                    return;
-                }
 
                 StartRecoveryProcess(intent);
                 Environment.Exit(86);

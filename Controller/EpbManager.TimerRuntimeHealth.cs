@@ -100,6 +100,7 @@ namespace Controller
                 return;
             try
             {
+                TryLogFieldRuntimeMetrics();
                 var nowUtc = DateTime.UtcNow;
                 foreach (var pair in _timers.ToArray())
                 {
@@ -282,6 +283,8 @@ namespace Controller
             if (!_timerRuntimeRecoveries.TryAdd(channel, 0)) return;
 
             var runId = _activeBatchId;
+            var runEpoch = Interlocked.Read(ref _runEpoch);
+            var sessionToken = _batchSessionCts?.Token ?? CancellationToken.None;
             PublishChannelRuntimeState(
                 channel,
                 ChannelRuntimeState.Recovering,
@@ -296,12 +299,14 @@ namespace Controller
             try { failedTimer?.Pause($"TimerSelfHealing:{reasonCode}"); } catch { }
             try { CancelCyclePauseCts(channel); } catch { }
             UnmarkHydraulicParticipant(channel);
-            DiscardCurrentCycleForSoftwareRecovery(
-                channel,
-                DateTime.UtcNow,
+            var cutoffUtc = DateTime.UtcNow;
+            var cutoffCycles = CaptureSoftwareRecoveryCycles(new[] { channel });
+            TrySealSoftwareRecoveryCycleWindows(
+                cutoffCycles,
+                cutoffUtc,
                 $"TimerRuntimeSelfHealing:{reasonCode}");
 
-            _ = Task.Run(async () =>
+            ObserveBackgroundTask(Task.Run(async () =>
             {
                 var attempt = 0;
                 try
@@ -324,6 +329,16 @@ namespace Controller
                             await HydraulicMarkReleaseAsync(channel).ConfigureAwait(false);
                             if (!CanContinueTimerRuntimeSelfHealing(channel, runId)) return;
 
+                            if (!await TryFinalizeSoftwareRecoveryCyclesAfterDurableCutoffAsync(
+                                    cutoffCycles,
+                                    cutoffUtc,
+                                    $"TimerRuntimeSelfHealing:{reasonCode}",
+                                    _daqPersistenceRecoveryTimeoutMs,
+                                    recoveryToken)
+                                .ConfigureAwait(false))
+                                throw new SoftwareSelfHealingRetryException(
+                                    "Timer异常圈 Raw/耐久边界尚未闭合；保持断能并继续重试。");
+
                             await EnsureDaqReadyBeforeStartAsync(
                                     new[] { channel },
                                     recoveryToken)
@@ -334,11 +349,7 @@ namespace Controller
                                 .ConfigureAwait(false);
                             if (!CanContinueTimerRuntimeSelfHealing(channel, runId)) return;
 
-                            var plan = _activeStaggerPlan ??
-                                       ElectricalStaggerPlanner.Build(
-                                           new[] { channel },
-                                           _cfg.Test.Groups,
-                                           PeriodMs);
+                            var plan = GetCompatibleStaggerPlan(new[] { channel });
                             await EnsureMotorReleasedBeforeFormalRejoinAsync(
                                     new[] { channel },
                                     plan,
@@ -368,18 +379,28 @@ namespace Controller
                         catch (Exception ex)
                         {
                             if (!CanContinueTimerRuntimeSelfHealing(channel, runId)) return;
+                            if (TryEscalateSoftwareRecoveryCircuitOpen(
+                                    "TimerRuntimeSelfHealing",
+                                    $"Code={reasonCode}; Error={ex.Message}",
+                                    new[] { channel },
+                                    runId,
+                                    runEpoch,
+                                    attempt))
+                                return;
                             PublishChannelRuntimeState(
                                 channel,
                                 ChannelRuntimeState.Recovering,
                                 "TimerRuntimeSelfHealingRetry",
-                                $"Timer自动重建第{attempt}次未完成，将持续重试：{ex.Message}",
+                                $"Timer自动重建第{attempt}次未完成；三次失败将整批重建：{ex.Message}",
                                 correlationId: runId);
                             _log?.Warn(
-                                $"EPB[{channel}] Timer自动重建第{attempt}次失败，将持续重试：{ex.Message}",
+                                $"EPB[{channel}] Timer自动重建第{attempt}次失败；三次失败将整批重建：{ex.Message}",
                                 "Timer");
                             ownership?.Dispose();
                             ownership = null;
-                            await Task.Delay(SelectTimerRecoveryRetryDelayMs(attempt))
+                            await Task.Delay(
+                                    SelectTimerRecoveryRetryDelayMs(attempt),
+                                    sessionToken)
                                 .ConfigureAwait(false);
                         }
                         finally
@@ -392,7 +413,7 @@ namespace Controller
                 {
                     _timerRuntimeRecoveries.TryRemove(channel, out _);
                 }
-            });
+            }), "TimerRuntimeSelfHealing", channel);
         }
 
         internal static int SelectTimerRecoveryRetryDelayMs(int attempt)

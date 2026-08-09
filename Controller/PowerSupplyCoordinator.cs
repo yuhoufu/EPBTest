@@ -72,6 +72,7 @@ namespace Controller
         private readonly PowerSupplyFleetConfig _config;
         private readonly IReadOnlyList<ElectricalGroup> _groups;
         private readonly Config.IAppLogger _log;
+        private readonly TaskSupervisor _tasks;
         private readonly Func<PowerSupplyDeviceConfig, IPswClient> _clientFactory;
         private readonly ConcurrentDictionary<int, IPswClient> _clients = new ConcurrentDictionary<int, IPswClient>();
         private readonly ConcurrentDictionary<int, PswSnapshot> _latest = new ConcurrentDictionary<int, PswSnapshot>();
@@ -107,6 +108,7 @@ namespace Controller
             PowerSupplyConfigLoader.Validate(config);
             _groups = (groups ?? throw new ArgumentNullException(nameof(groups))).ToArray();
             _log = log ?? NullLogger.Instance;
+            _tasks = new TaskSupervisor(_log);
             _clientFactory = clientFactory ?? CreateClient;
             ValidateGroupMapping();
         }
@@ -258,7 +260,10 @@ namespace Controller
             }
 
             if (owner != null)
-                _ = RunDisableOwnerAsync(electricalGroupId, reason, operation, owner);
+                _tasks.Observe(
+                    RunDisableOwnerAsync(electricalGroupId, reason, operation, owner),
+                    "PowerSupplyDisableOwner",
+                    Guid.Empty);
             else
                 _log.Info(
                     $"电源组 {electricalGroupId} 已有同方向 OFF 在执行，本次请求加入同一安全任务。" +
@@ -969,6 +974,11 @@ namespace Controller
                 .Select(StopMonitorAsync)
                 .ToArray();
             try { Task.WaitAll(stopTasks, TimeSpan.FromSeconds(3)); } catch { }
+            foreach (var operation in _operations.Values)
+            {
+                try { operation.ActiveOperation?.Cancel(); } catch { }
+            }
+            try { _tasks.DrainAsync(1000).GetAwaiter().GetResult(); } catch { }
             foreach (var client in _clients.Values)
             {
                 try { client.Dispose(); } catch { }
@@ -976,7 +986,6 @@ namespace Controller
             _clients.Clear();
             foreach (var operation in _operations.Values)
             {
-                try { operation.ActiveOperation?.Cancel(); } catch { }
                 try { operation.ActiveOperation?.Dispose(); } catch { }
                 operation.Gate.Dispose();
             }

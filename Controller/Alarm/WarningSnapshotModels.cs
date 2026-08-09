@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.Linq;
+using System.Threading;
 
 namespace Controller.Alarm
 {
@@ -10,6 +12,7 @@ namespace Controller.Alarm
         ForwardCurrentRiseStallWarning,
         PeakEvidenceMismatchWarning,
         PeakEvidenceLagWarning,
+        PeakEvidenceTimestampMissing,
         RecoverableControlFaultWarning
     }
 
@@ -21,6 +24,7 @@ namespace Controller.Alarm
         public double PeakCurrentA { get; set; }
         public double TargetCurrentA { get; set; }
         public double PeakErrorA { get; set; }
+        public double EvidenceLagMs { get; set; } = double.NaN;
         public double SlopeAperMs { get; set; }
         public int WindowSpanMs { get; set; }
         public int Streak { get; set; }
@@ -64,6 +68,99 @@ namespace Controller.Alarm
         public long FreeBytes { get; set; }
         public long EstimatedAdditionalCycles { get; set; }
         public bool IsBelowFreeSpaceWarning { get; set; }
+    }
+
+    /// <summary>
+    /// 完整软预警证据的单 worker 准入门：限制一个运行任务和配置数量的等待任务，
+    /// 同时处理幂等键与类别限频。文件导出不在此门内执行。
+    /// </summary>
+    internal sealed class WarningSnapshotWorkGate
+    {
+        private readonly ConcurrentDictionary<string, byte> _jobs = new();
+        private readonly ConcurrentDictionary<string, DateTime> _lastAcceptedUtc =
+            new(StringComparer.OrdinalIgnoreCase);
+        private int _pendingCount;
+        private int _runningCount;
+
+        internal int PendingCount => Math.Max(0, Volatile.Read(ref _pendingCount));
+        internal int RunningCount => Math.Max(0, Volatile.Read(ref _runningCount));
+        internal int ActiveJobCount => _jobs.Count;
+
+        internal bool TryQueue(
+            string idempotencyKey,
+            string categoryKey,
+            DateTime nowUtc,
+            int minimumIntervalSeconds,
+            int pendingCapacity)
+        {
+            if (string.IsNullOrWhiteSpace(idempotencyKey)) return false;
+            if (!_jobs.TryAdd(idempotencyKey, 0)) return false;
+
+            var pending = Interlocked.Increment(ref _pendingCount);
+            if (pending > Math.Max(1, pendingCapacity))
+            {
+                Interlocked.Decrement(ref _pendingCount);
+                _jobs.TryRemove(idempotencyKey, out _);
+                return false;
+            }
+
+            if (TryReserveInterval(
+                    categoryKey ?? "Unknown",
+                    nowUtc,
+                    minimumIntervalSeconds))
+                return true;
+
+            Interlocked.Decrement(ref _pendingCount);
+            _jobs.TryRemove(idempotencyKey, out _);
+            return false;
+        }
+
+        internal bool TryStart(string idempotencyKey)
+        {
+            if (string.IsNullOrWhiteSpace(idempotencyKey) ||
+                !_jobs.ContainsKey(idempotencyKey))
+                return false;
+            if (Interlocked.CompareExchange(ref _runningCount, 1, 0) != 0)
+                return false;
+            Interlocked.Decrement(ref _pendingCount);
+            return true;
+        }
+
+        internal void Complete(string idempotencyKey)
+        {
+            Interlocked.Exchange(ref _runningCount, 0);
+            if (!string.IsNullOrWhiteSpace(idempotencyKey))
+                _jobs.TryRemove(idempotencyKey, out _);
+        }
+
+        internal static bool IsIntervalElapsed(
+            DateTime previousUtc,
+            DateTime nowUtc,
+            int minimumIntervalSeconds)
+        {
+            if (previousUtc == DateTime.MinValue) return true;
+            return nowUtc >= previousUtc &&
+                   nowUtc - previousUtc >=
+                   TimeSpan.FromSeconds(Math.Max(0, minimumIntervalSeconds));
+        }
+
+        private bool TryReserveInterval(
+            string categoryKey,
+            DateTime nowUtc,
+            int minimumIntervalSeconds)
+        {
+            while (true)
+            {
+                if (!_lastAcceptedUtc.TryGetValue(categoryKey, out var previous))
+                {
+                    if (_lastAcceptedUtc.TryAdd(categoryKey, nowUtc)) return true;
+                    continue;
+                }
+                if (!IsIntervalElapsed(previous, nowUtc, minimumIntervalSeconds))
+                    return false;
+                if (_lastAcceptedUtc.TryUpdate(categoryKey, nowUtc, previous)) return true;
+            }
+        }
     }
 
     public enum FaultConfirmationDisposition

@@ -24,18 +24,51 @@ namespace Controller
         public event Action<WarningSnapshotStorageStatus> WarningSnapshotStorageChanged;
 
         private readonly ConcurrentDictionary<string, WarningSnapshotRequest> _pendingWarningSnapshots = new();
-        private readonly ConcurrentDictionary<string, byte> _warningSnapshotJobs = new();
+        private readonly ConcurrentQueue<WarningSnapshotRequest> _warningSnapshotQueue = new();
+        private readonly WarningSnapshotWorkGate _warningSnapshotWorkGate = new();
         private readonly ConcurrentDictionary<string, ConcurrentQueue<WarningSnapshotLink>> _warningChains = new();
         private readonly ConcurrentDictionary<string, object> _warningSnapshotCategoryGates =
             new(StringComparer.OrdinalIgnoreCase);
+        private readonly ConcurrentQueue<WarningScalarEvidence> _warningScalarQueue = new();
         private readonly ConcurrentDictionary<Guid, string> _daqIncidentDirectories = new();
         private readonly ConcurrentDictionary<int, int> _formalPersistenceRecoveryAttempts = new();
         private readonly ConcurrentDictionary<int, int> _formalControlRecoveryAttempts = new();
+        private readonly ConcurrentDictionary<int, int> _formalPersistenceRecoveryPendingCycles = new();
         private readonly SemaphoreSlim _daqIncidentSnapshotGate = new(1, 1);
         private int _warningSnapshotFreeSpaceWarningActive;
+        private int _warningSnapshotWorkerRunning;
+        private int _warningScalarWorkerRunning;
+        private int _warningScalarQueueCount;
+        private int _warningScalarDropped;
+        private RuntimeBuildIdentity _warningScalarBuildIdentity;
+        private readonly object _warningSnapshotStorageCacheGate = new();
+        private WarningSnapshotStorageStatus _warningSnapshotStorageCache;
+        private DateTime _warningSnapshotStorageCacheUtc = DateTime.MinValue;
+        private string _warningSnapshotTrackedRoot = string.Empty;
+        private long _warningSnapshotTrackedUsedBytes;
+        private long _warningSnapshotTrackedCount;
+        private bool _warningSnapshotStorageCounterInitialized;
         private static readonly Regex WarningEventDirectoryPattern = new(
             @"^\d{8}_\d{9}-Cycle-?\d+-Streak\d+of\d+$",
             RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+        internal sealed class WarningScalarEvidence
+        {
+            public Guid RunId;
+            public int Channel;
+            public int CycleNumber;
+            public long AttemptId;
+            public DateTime OccurredUtc;
+            public string Code;
+            public double EvidenceLagMs;
+            public int PersistenceQueueDepth;
+            public double PeakCurrentA;
+            public double TargetCurrentA;
+            public double PeakErrorA;
+            public int Streak;
+            public int ConfirmThreshold;
+            public string Reason;
+        }
 
         /// <summary>
         /// 软件自愈只能在本通道输出已可靠关闭后继续。若高优先级关闭命令失败，
@@ -79,7 +112,13 @@ namespace Controller
             var cfg = AlarmConfig?.WarningSnapshots ?? new WarningSnapshotConfig();
             if (!cfg.Enabled) return;
             // 正式圈为正数，学习圈为负数；只有 0/不存在才表示尚未进入任何圈。
-            if (!_currentCycleNumberByChannel.TryGetValue(warning.Channel, out var cycleNumber) || cycleNumber == 0)
+            var hasCycle = _currentCycleNumberByChannel.TryGetValue(
+                warning.Channel,
+                out var cycleNumber) && cycleNumber != 0;
+            QueueWarningScalarEvidence(warning, hasCycle ? cycleNumber : 0, cfg);
+            if (!cfg.FullEvidenceEnabled) return;
+
+            if (!hasCycle)
             {
                 ReportSnapshotFailure($"EPB[{warning.Channel}] 预警发生时没有有效圈号，未保存软预警快照。");
                 return;
@@ -135,12 +174,10 @@ namespace Controller
             }
             catch (Exception ex)
             {
-                AbortFormalCycleWithoutPersistenceBarrier(
-                    recorder,
+                PreserveFormalCycleForPersistenceRecovery(
                     channel,
                     cycleNumber,
-                    endUtc,
-                    finalSampleCount,
+                    "CompleteCycle",
                     ex);
                 return false;
             }
@@ -177,6 +214,178 @@ namespace Controller
             }
         }
 
+        private void QueueWarningScalarEvidence(
+            AdaptiveWarningEvent warning,
+            int cycleNumber,
+            WarningSnapshotConfig cfg)
+        {
+            var capacity = Math.Max(128, cfg?.ScalarEvidenceQueueCapacity ?? 4096);
+            var count = Interlocked.Increment(ref _warningScalarQueueCount);
+            if (count > capacity)
+            {
+                Interlocked.Decrement(ref _warningScalarQueueCount);
+                if (Interlocked.Increment(ref _warningScalarDropped) == 1)
+                    _log.Warn(
+                        $"WarningScalarQueueDropped=1 Capacity={capacity}；" +
+                        "软预警标量证据队列达到硬容量；" +
+                        "已锁存聚合丢弃计数，不在控制线程执行文件IO。",
+                        "落盘");
+                return;
+            }
+
+            var queueDepth = 0;
+            try
+            {
+                var device = _acq.GetDeviceForEpbChannel(warning.Channel);
+                queueDepth = _persistence?.GetSnapshot(device)?.QueueDepth ?? 0;
+            }
+            catch { }
+            _warningScalarQueue.Enqueue(new WarningScalarEvidence
+            {
+                RunId = _activeBatchId,
+                Channel = warning.Channel,
+                CycleNumber = cycleNumber,
+                AttemptId = warning.AttemptId,
+                OccurredUtc = warning.OccurredUtc,
+                Code = warning.NormalizedCode,
+                EvidenceLagMs = warning.EvidenceLagMs,
+                PersistenceQueueDepth = queueDepth,
+                PeakCurrentA = warning.PeakCurrentA,
+                TargetCurrentA = warning.TargetCurrentA,
+                PeakErrorA = warning.PeakErrorA,
+                Streak = warning.Streak,
+                ConfirmThreshold = warning.ConfirmThreshold,
+                Reason = warning.Reason ?? string.Empty
+            });
+            StartWarningScalarWorker();
+        }
+
+        private void StartWarningScalarWorker()
+        {
+            if (Interlocked.CompareExchange(ref _warningScalarWorkerRunning, 1, 0) != 0)
+                return;
+            var worker = Task.Factory.StartNew(
+                ProcessWarningScalarQueue,
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default);
+            ObserveBackgroundTask(worker, "WarningScalarJournal");
+        }
+
+        private void ProcessWarningScalarQueue()
+        {
+            var failureAttempt = 0;
+            try
+            {
+                while (!_warningScalarQueue.IsEmpty)
+                {
+                    try
+                    {
+                        var batch = _warningScalarQueue.ToArray().Take(128).ToArray();
+                        if (batch.Length == 0) break;
+                        var cfg = AlarmConfig?.WarningSnapshots ?? new WarningSnapshotConfig();
+                        var root = Path.Combine(
+                            _cfg.Test.StoreDir,
+                            _cfg.Test.TestName,
+                            string.IsNullOrWhiteSpace(cfg.RootDirectory)
+                                ? "WarningSnapshots"
+                                : cfg.RootDirectory.Trim());
+                        EnsureWarningSnapshotStorageCounter(root);
+                        Directory.CreateDirectory(root);
+                        var identity = _warningScalarBuildIdentity ??
+                                       (_warningScalarBuildIdentity = RuntimeBuildIdentity.Capture());
+                        var path = Path.Combine(
+                            root,
+                            $"warning-events-{batch[0].OccurredUtc:yyyyMMdd}.jsonl");
+                        var previousBytes = File.Exists(path) ? new FileInfo(path).Length : 0L;
+                        File.AppendAllLines(
+                            path,
+                            batch.Select(item => BuildWarningScalarJson(item, identity)),
+                            new UTF8Encoding(false));
+                        for (var i = 0; i < batch.Length; i++)
+                        {
+                            if (!_warningScalarQueue.TryDequeue(out _)) break;
+                            Interlocked.Decrement(ref _warningScalarQueueCount);
+                        }
+                        var dropped = Interlocked.Exchange(ref _warningScalarDropped, 0);
+                        if (dropped > 0)
+                            File.AppendAllText(
+                                path,
+                                BuildWarningScalarDropJson(dropped, identity) + Environment.NewLine,
+                                new UTF8Encoding(false));
+                        var currentBytes = File.Exists(path) ? new FileInfo(path).Length : previousBytes;
+                        TrackWarningSnapshotBytes(Math.Max(0L, currentBytes - previousBytes), 0);
+                        if (failureAttempt > 0)
+                            _log.Info(
+                                $"软预警标量证据写入已恢复，重试次数={failureAttempt}。",
+                                "落盘");
+                        failureAttempt = 0;
+                    }
+                    catch (Exception ex)
+                    {
+                        failureAttempt++;
+                        if (failureAttempt == 1 || failureAttempt % 10 == 0)
+                            _log.Warn(
+                                $"软预警标量证据批量写入失败，保留队列并退避重试。" +
+                                $"Attempt={failureAttempt} Error={ex.Message}",
+                                "落盘");
+                        Thread.Sleep(Math.Min(30000, 1000 * failureAttempt));
+                    }
+                }
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _warningScalarWorkerRunning, 0);
+                if (!_warningScalarQueue.IsEmpty) StartWarningScalarWorker();
+            }
+        }
+
+        internal static string BuildWarningScalarJson(
+            WarningScalarEvidence item,
+            RuntimeBuildIdentity identity)
+        {
+            return "{" +
+                   $"\"occurredUtc\":\"{item.OccurredUtc:O}\"," +
+                   $"\"runId\":\"{item.RunId:N}\"," +
+                   $"\"channel\":{item.Channel},\"cycle\":{item.CycleNumber}," +
+                   $"\"attemptId\":{item.AttemptId},\"code\":\"{JsonEscape(item.Code)}\"," +
+                   $"\"lagMs\":{JsonNumberOrNull(item.EvidenceLagMs)}," +
+                   $"\"persistenceQueueDepth\":{item.PersistenceQueueDepth}," +
+                   $"\"peakA\":{JsonNumberOrNull(item.PeakCurrentA)}," +
+                   $"\"targetA\":{JsonNumberOrNull(item.TargetCurrentA)}," +
+                   $"\"errorA\":{JsonNumberOrNull(item.PeakErrorA)}," +
+                   $"\"streak\":{item.Streak},\"confirmThreshold\":{item.ConfirmThreshold}," +
+                   $"\"reason\":\"{JsonEscape(item.Reason)}\"," +
+                   $"\"productVersion\":\"{JsonEscape(identity.ProductVersion)}\"," +
+                   $"\"processId\":{identity.ProcessId}," +
+                   $"\"executablePath\":\"{JsonEscape(identity.ExecutablePath)}\"," +
+                   $"\"executableSha256\":\"{JsonEscape(identity.ExecutableSha256)}\"," +
+                   $"\"gitCommit\":\"{JsonEscape(identity.GitCommit)}\"," +
+                   $"\"buildUtc\":\"{JsonEscape(identity.BuildUtc)}\"," +
+                   $"\"releaseConfigSha256\":\"{JsonEscape(identity.ReleaseConfigSha256)}\"" +
+                   "}";
+        }
+
+        private static string BuildWarningScalarDropJson(
+            int dropped,
+            RuntimeBuildIdentity identity)
+        {
+            return "{" +
+                   $"\"occurredUtc\":\"{DateTime.UtcNow:O}\"," +
+                   "\"code\":\"WarningScalarQueueDropped\"," +
+                   $"\"dropped\":{Math.Max(0, dropped)}," +
+                   $"\"productVersion\":\"{JsonEscape(identity.ProductVersion)}\"," +
+                   $"\"processId\":{identity.ProcessId}" +
+                   "}";
+        }
+
+        private static string JsonNumberOrNull(double value)
+        {
+            return double.IsNaN(value) || double.IsInfinity(value)
+                ? "null"
+                : value.ToString("R", CultureInfo.InvariantCulture);
+        }
+
         private int FinalizeCyclePersistence(
             IEpbCycleRecorder recorder,
             int channel,
@@ -185,39 +394,21 @@ namespace Controller
             int fallbackCount)
         {
             if (recorder == null) return fallbackCount;
-            if (recorder is IBatchedEpbCycleRecorder batched)
-                batched.SealCycleWindow(channel, cycleNumber, endUtc);
-            var device = _acq.GetDeviceForEpbChannel(channel);
-            if (!string.IsNullOrWhiteSpace(device))
+            var cycles = new System.Collections.Generic.Dictionary<int, int>
             {
-                var boundary = _acq.GetLastProducedSequence(device);
-                var deadline = Stopwatch.GetTimestamp() +
-                               (long)(_daqPersistenceRecoveryTimeoutMs / 1000.0 * Stopwatch.Frequency);
-                while (_acq.GetLastDiskPublishedSequence(device) < boundary &&
-                       Stopwatch.GetTimestamp() < deadline)
-                    Thread.Sleep(2);
-                if (_acq.GetLastDiskPublishedSequence(device) < boundary)
-                    throw new TimeoutException(
-                        $"Raw发布未越过圈边界。Device={device} Boundary={boundary} " +
-                        $"Published={_acq.GetLastDiskPublishedSequence(device)}");
-                var remainingMs = (int)Math.Max(
-                    1,
-                    (deadline - Stopwatch.GetTimestamp()) * 1000.0 / Stopwatch.Frequency);
-                var persisted = _persistence.WaitForPersistedAsync(
-                        device,
-                        boundary,
-                        remainingMs,
-                        CancellationToken.None)
-                    .GetAwaiter()
-                    .GetResult();
-                if (!persisted)
-                {
-                    var snapshot = _persistence.GetSnapshot(device);
-                    throw new TimeoutException(
-                        $"Raw持久化未越过圈边界。Device={device} Boundary={boundary} " +
-                        $"Persisted={snapshot.Sequence} QueueDepth={snapshot.QueueDepth}");
-                }
-            }
+                [channel] = cycleNumber
+            };
+            var durable = TryWaitForCycleDurableCutoffAsync(
+                    cycles,
+                    endUtc,
+                    $"CycleFinalize:{cycleNumber}",
+                    _daqPersistenceRecoveryTimeoutMs,
+                    CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+            if (!durable)
+                throw new TimeoutException(
+                    $"圈收尾 Raw/耐久前缀未闭合。EPB={channel} Cycle={cycleNumber}");
             return recorder.GetCurrentCycleSampleCount(channel);
         }
 
@@ -230,22 +421,12 @@ namespace Controller
         {
             if (recorder == null) return;
             var finalN = recorder.GetCurrentCycleSampleCount(channel);
-            try
-            {
-                finalN = FinalizeCyclePersistence(
-                    recorder,
-                    channel,
-                    cycleNumber,
-                    endUtc,
-                    finalN);
-            }
-            catch (Exception ex)
-            {
-                _log.Warn(
-                    $"EPB[{channel}] 作废圈封存屏障未确认，仍优先提交作废终态。" +
-                    $"Cycle={cycleNumber} Status={status} Error={ex.Message}",
-                    "落盘");
-            }
+            finalN = FinalizeCyclePersistence(
+                recorder,
+                channel,
+                cycleNumber,
+                endUtc,
+                finalN);
             recorder.AbortCycle(channel, cycleNumber, finalN, endUtc, status);
             QueuePendingWarningSnapshotsForCycle(channel, cycleNumber);
         }
@@ -269,46 +450,20 @@ namespace Controller
             }
             catch (Exception ex)
             {
-                try
-                {
-                    recorder.AbortCycle(
-                        channel,
-                        cycleNumber,
-                        Math.Max(0, recorder.GetCurrentCycleSampleCount(channel)),
-                        DateTime.UtcNow,
-                        "AbortedBySoftwareRecovery");
-                }
-                catch { }
+                _currentCycleNumberByChannel.TryAdd(channel, cycleNumber);
                 ReportFormalPersistenceRecovery(channel, cycleNumber, "BeginCycle", ex);
                 return false;
             }
         }
 
-        private void AbortFormalCycleWithoutPersistenceBarrier(
-            IEpbCycleRecorder recorder,
+        private void PreserveFormalCycleForPersistenceRecovery(
             int channel,
             int cycleNumber,
-            DateTime endUtc,
-            int fallbackSampleCount,
+            string stage,
             Exception cause)
         {
-            try
-            {
-                recorder.AbortCycle(
-                    channel,
-                    cycleNumber,
-                    Math.Max(0, fallbackSampleCount),
-                    endUtc,
-                    "AbortedBySoftwareRecovery");
-            }
-            catch (Exception abortEx)
-            {
-                _log.Warn(
-                    $"EPB[{channel}] 正式圈落盘失败后的作废终态也未确认。" +
-                    $"Cycle={cycleNumber} Error={abortEx.Message}",
-                    "落盘");
-            }
-            ReportFormalPersistenceRecovery(channel, cycleNumber, "CompleteCycle", cause);
+            _currentCycleNumberByChannel.TryAdd(channel, cycleNumber);
+            ReportFormalPersistenceRecovery(channel, cycleNumber, stage, cause);
         }
 
         private void ReportFormalPersistenceRecovery(
@@ -318,11 +473,18 @@ namespace Controller
             Exception cause)
         {
             var attempt = _formalPersistenceRecoveryAttempts.AddOrUpdate(channel, 1, (_, old) => old + 1);
-            _currentCycleNumberByChannel.TryRemove(channel, out _);
+            _formalPersistenceRecoveryPendingCycles[channel] = cycleNumber;
+            _currentCycleNumberByChannel.TryAdd(channel, cycleNumber);
             if (!TryEnsureSoftwareRecoveryOutputOff(channel, "FormalPersistenceSelfHealing"))
             {
                 return;
             }
+            if (_timers.TryGetValue(channel, out var timer))
+            {
+                try { timer.Pause("FormalPersistenceSelfHealing"); } catch { }
+            }
+            try { CancelCyclePauseCts(channel); } catch { }
+            UnmarkHydraulicParticipant(channel);
             try { ObserveSafetyTask(HydraulicMarkReleaseAsync(channel), "FormalPersistenceRecovery", channel); }
             catch { }
             PublishChannelRuntimeState(
@@ -334,9 +496,13 @@ namespace Controller
                 correlationId: _activeBatchId,
                 allowTerminalReset: false);
             _log.Warn(
-                $"EPB[{channel}] 正式圈落盘软件异常已作废，不停止健康通道。" +
+                $"EPB[{channel}] 正式圈落盘软件异常；保留圈事务并等待真实耐久收口。" +
                 $"Cycle={cycleNumber} Stage={stage} Attempt={attempt} Error={cause?.Message}",
                 "落盘");
+            ScheduleIsolatedInfrastructureRecovery(
+                new[] { channel },
+                $"FormalPersistence:{stage}:Cycle={cycleNumber}",
+                _activeBatchId);
         }
 
         private void ReportFormalControlSoftwareRecovery(
@@ -370,6 +536,7 @@ namespace Controller
             var hadPersistence = _formalPersistenceRecoveryAttempts.TryRemove(
                 channel,
                 out var persistenceAttempts);
+            _formalPersistenceRecoveryPendingCycles.TryRemove(channel, out _);
             var hadControl = _formalControlRecoveryAttempts.TryRemove(
                 channel,
                 out var controlAttempts);
@@ -420,6 +587,10 @@ namespace Controller
             var capturedUtc = DateTime.UtcNow;
             var includeFullEvidence = ShouldIncludeFullDaqIncidentEvidence(result);
             var includeTimingEvidence = ShouldIncludeDaqTimingEvidence(result);
+            // 恢复终态默认只保留紧凑诊断。完整单圈数据已经由正式圈文件保存，
+            // 再复制每通道最近 10 圈会把一次恢复放大到数百 MB，并直接拖慢试验。
+            var includeRecentCycleCopies = includeFullEvidence &&
+                                           ReadBooleanAppSetting("DaqIncidentCopyRecentCycles", false);
             var queue = _persistence.GetSnapshot(context.Device);
             var runEpoch = context.RunEpoch;
             var recoveryEpoch = context.RecoveryEpoch;
@@ -535,6 +706,7 @@ namespace Controller
                         $"  \"validationPhase\": \"{JsonEscape(context.ValidationPhase)}\",\n" +
                         $"  \"timingEvidenceIncluded\": {includeTimingEvidence.ToString().ToLowerInvariant()},\n" +
                         $"  \"fullEvidenceIncluded\": {includeFullEvidence.ToString().ToLowerInvariant()},\n" +
+                        $"  \"recentCycleCopiesIncluded\": {includeRecentCycleCopies.ToString().ToLowerInvariant()},\n" +
                         "  \"validBatchesDroppedByClockModel\": 0,\n" +
                         $"  \"result\": \"{JsonEscape(result)}\",\n" +
                         $"  \"capturedUtc\": \"{capturedUtc:O}\"\n" +
@@ -547,7 +719,7 @@ namespace Controller
                     using (var writer = new StreamWriter(stream, new UTF8Encoding(false)))
                         writer.Write(incidentJson);
                     diagnostics?.WriteTo(phaseDirectory);
-                    var recorder = includeFullEvidence ? Recorder : null;
+                    var recorder = includeRecentCycleCopies ? Recorder : null;
                     if (recorder != null)
                     {
                         foreach (var channel in affectedChannels)
@@ -726,6 +898,8 @@ namespace Controller
                                FileShare.Read))
                     using (var writer = new StreamWriter(stream, new UTF8Encoding(false)))
                         writer.Write(failureJson);
+                    RuntimeBuildIdentity.Capture().WriteJson(
+                        Path.Combine(directory, "build-identity.json"));
                     return directory;
                 }
                 catch { }
@@ -735,8 +909,62 @@ namespace Controller
 
         private void QueueWarningSnapshot(WarningSnapshotRequest request)
         {
-            if (request == null || !_warningSnapshotJobs.TryAdd(request.IdempotencyKey, 0)) return;
-            _ = Task.Run(() => ExportWarningSnapshot(request));
+            if (request == null) return;
+            var cfg = AlarmConfig?.WarningSnapshots ?? new WarningSnapshotConfig();
+            var categoryKey = GetWarningChainKey(
+                request.Channel,
+                request.Warning?.NormalizedCode ?? "Unknown");
+            if (!_warningSnapshotWorkGate.TryQueue(
+                    request.IdempotencyKey,
+                    categoryKey,
+                    DateTime.UtcNow,
+                    cfg.FullEvidenceMinimumIntervalSeconds,
+                    cfg.FullEvidenceQueueCapacity))
+                return;
+
+            _warningSnapshotQueue.Enqueue(request);
+            StartWarningSnapshotWorker();
+        }
+
+        internal static bool IsWarningSnapshotIntervalElapsed(
+            DateTime previousUtc,
+            DateTime nowUtc,
+            int minimumIntervalSeconds)
+        {
+            return WarningSnapshotWorkGate.IsIntervalElapsed(
+                previousUtc,
+                nowUtc,
+                minimumIntervalSeconds);
+        }
+
+        private void StartWarningSnapshotWorker()
+        {
+            if (Interlocked.CompareExchange(ref _warningSnapshotWorkerRunning, 1, 0) != 0) return;
+            var worker = Task.Factory.StartNew(
+                ProcessWarningSnapshotQueue,
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default);
+            ObserveBackgroundTask(worker, "WarningSnapshotWorker");
+        }
+
+        private void ProcessWarningSnapshotQueue()
+        {
+            try
+            {
+                while (_warningSnapshotQueue.TryDequeue(out var request))
+                {
+                    if (!_warningSnapshotWorkGate.TryStart(request.IdempotencyKey))
+                        continue;
+                    try { ExportWarningSnapshot(request); }
+                    finally { _warningSnapshotWorkGate.Complete(request.IdempotencyKey); }
+                }
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _warningSnapshotWorkerRunning, 0);
+                if (!_warningSnapshotQueue.IsEmpty) StartWarningSnapshotWorker();
+            }
         }
 
         private void ExportWarningSnapshot(WarningSnapshotRequest request)
@@ -747,23 +975,24 @@ namespace Controller
                 var warning = request.Warning;
                 var directory = GetWarningSnapshotDirectory(request, cfg);
                 var categoryDirectory = Path.GetDirectoryName(directory);
+                EnsureWarningSnapshotStorageCounter(GetWarningSnapshotRoot(cfg));
                 var categoryGate = _warningSnapshotCategoryGates.GetOrAdd(
                     GetWarningChainKey(request.Channel, warning.NormalizedCode),
                     _ => new object());
                 lock (categoryGate)
                 {
                 Directory.CreateDirectory(directory);
+                InvalidateWarningSnapshotStorageCache();
                 PublishWarningSnapshotStorageStatus();
 
                 CycleSnapshotEvidence evidence;
                 if (Recorder is ICycleAttemptEvidenceExporter attemptExporter)
                 {
-                    evidence = attemptExporter.ExportCycleAttemptTo(
-                        request.Channel,
-                        request.CycleNumber,
+                    evidence = ExportWarningCycleAfterFinalization(
+                        attemptExporter,
+                        request,
                         directory,
-                        cfg.SaveCsv,
-                        cfg.SaveBin);
+                        cfg);
                 }
                 else if (Recorder is ICycleEvidenceExporter completedExporter)
                 {
@@ -798,14 +1027,16 @@ namespace Controller
                     Path.Combine(directory, "checksums.sha256"),
                     hashes.OrderBy(x => x.Key).Select(x => $"{x.Value}  {x.Key}"),
                     new UTF8Encoding(false));
+                TrackWarningSnapshotCreated(directory);
 
                 _log.Info($"软预警完整单圈快照已保存：{directory}", "落盘");
                 try
                 {
-                    EnforceSoftWarningCountRetention(
+                    EnforceSoftWarningCountRetentionCore(
                         categoryDirectory,
                         cfg,
-                        message => _log.Warn(message, "落盘"));
+                        message => _log.Warn(message, "落盘"),
+                        (ignored, bytes) => TrackWarningSnapshotDeleted(bytes, 1));
                 }
                 catch (Exception ex)
                 {
@@ -814,6 +1045,7 @@ namespace Controller
                         "落盘");
                 }
                 EnforceSoftWarningQuota(request.TestRunId, cfg);
+                InvalidateWarningSnapshotStorageCache();
                 PublishWarningSnapshotStorageStatus();
                 }
             }
@@ -825,10 +1057,61 @@ namespace Controller
             }
         }
 
+        private CycleSnapshotEvidence ExportWarningCycleAfterFinalization(
+            ICycleAttemptEvidenceExporter exporter,
+            WarningSnapshotRequest request,
+            string directory,
+            WarningSnapshotConfig cfg)
+        {
+            Exception last = null;
+            // 软预警在控制判定点发布，而正式圈/作废圈的数据库终态在 Runner 返回后
+            // 才提交。V2.12.0.2 的后台导出常常领先收尾 0.2~0.8s，因而误报“没有可
+            // 导出的样本”。只在独立长线程等待，绝不阻塞控制/DAQ；终态完成后再从
+            // 当前圈或历史 BIN 导出。
+            var delaysMs = new[] { 0, 100, 200, 400, 800, 1200 };
+            for (var attempt = 0; attempt < delaysMs.Length; attempt++)
+            {
+                if (delaysMs[attempt] > 0) Thread.Sleep(delaysMs[attempt]);
+                try
+                {
+                    return exporter.ExportCycleAttemptTo(
+                        request.Channel,
+                        request.CycleNumber,
+                        directory,
+                        cfg.SaveCsv,
+                        cfg.SaveBin);
+                }
+                catch (Exception ex) when (
+                    ex is InvalidDataException ||
+                    ex is InvalidOperationException ||
+                    ex is IOException)
+                {
+                    last = ex;
+                }
+            }
+
+            throw new InvalidDataException(
+                $"EPB[{request.Channel}] Cycle={request.CycleNumber} 等待圈终态后仍无法导出软预警证据。",
+                last);
+        }
+
         public static void EnforceSoftWarningCountRetention(
             string categoryDirectory,
             WarningSnapshotConfig cfg,
             Action<string> warningSink = null)
+        {
+            EnforceSoftWarningCountRetentionCore(
+                categoryDirectory,
+                cfg,
+                warningSink,
+                null);
+        }
+
+        private static void EnforceSoftWarningCountRetentionCore(
+            string categoryDirectory,
+            WarningSnapshotConfig cfg,
+            Action<string> warningSink,
+            Action<string, long> deleted)
         {
             if (cfg == null ||
                 cfg.SoftWarningRetentionMode == StorageRetentionMode.Unlimited ||
@@ -861,7 +1144,12 @@ namespace Controller
                          .Skip(keep)
                          .Reverse())
             {
-                try { directory.Delete(true); }
+                try
+                {
+                    var bytes = GetDirectoryBytes(directory.FullName);
+                    directory.Delete(true);
+                    deleted?.Invoke(directory.FullName, bytes);
+                }
                 catch (Exception ex)
                 {
                     warningSink?.Invoke(
@@ -885,7 +1173,7 @@ namespace Controller
         private void QueueRollingHistoricalSnapshot(int channel, int cycleNumber)
         {
             if (!(Recorder is ICycleEvidenceExporter exporter)) return;
-            _ = Task.Run(() =>
+            ObserveBackgroundTask(Task.Run(() =>
             {
                 try
                 {
@@ -912,7 +1200,7 @@ namespace Controller
                         $"HistoricalSnapshotExportFailed EPB={channel} Cycle={cycleNumber} Error={ex.Message}",
                         ex);
                 }
-            });
+            }), "RollingHistoricalSnapshot", channel);
         }
 
         private string GetWarningSnapshotDirectory(
@@ -1155,24 +1443,32 @@ namespace Controller
 
         public WarningSnapshotStorageStatus GetWarningSnapshotStorageStatus()
         {
+            return GetWarningSnapshotStorageStatus(false);
+        }
+
+        private WarningSnapshotStorageStatus GetWarningSnapshotStorageStatus(bool forceRefresh)
+        {
+            lock (_warningSnapshotStorageCacheGate)
+            {
+                if (!forceRefresh &&
+                    _warningSnapshotStorageCache != null &&
+                    DateTime.UtcNow - _warningSnapshotStorageCacheUtc < TimeSpan.FromSeconds(30))
+                    return _warningSnapshotStorageCache;
+            }
             var cfg = AlarmConfig?.WarningSnapshots ?? new WarningSnapshotConfig();
-            var root = Path.Combine(
-                _cfg.Test.StoreDir,
-                _cfg.Test.TestName,
-                string.IsNullOrWhiteSpace(cfg.RootDirectory) ? "WarningSnapshots" : cfg.RootDirectory.Trim());
-            var used = Directory.Exists(root)
-                ? Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
-                    .Where(x => x.IndexOf(Path.DirectorySeparatorChar + "Archive" + Path.DirectorySeparatorChar,
-                        StringComparison.OrdinalIgnoreCase) < 0)
-                    .Sum(x => { try { return new FileInfo(x).Length; } catch { return 0L; } })
-                : 0L;
+            var root = GetWarningSnapshotRoot(cfg);
+            EnsureWarningSnapshotStorageCounter(root);
+            long used;
+            long snapshots;
+            lock (_warningSnapshotStorageCacheGate)
+            {
+                used = Math.Max(0L, _warningSnapshotTrackedUsedBytes);
+                snapshots = Math.Max(0L, _warningSnapshotTrackedCount);
+            }
             long free = 0;
             try { free = new DriveInfo(Path.GetPathRoot(Path.GetFullPath(root))).AvailableFreeSpace; } catch { }
-            var snapshots = Directory.Exists(root)
-                ? Directory.EnumerateFiles(root, "warning-metadata.json", SearchOption.AllDirectories).Count()
-                : 0;
             var average = snapshots > 0 ? Math.Max(1L, used / snapshots) : 0L;
-            return new WarningSnapshotStorageStatus
+            var status = new WarningSnapshotStorageStatus
             {
                 RootDirectory = root,
                 UsedBytes = used,
@@ -1181,6 +1477,100 @@ namespace Controller
                 IsBelowFreeSpaceWarning = free > 0 &&
                     free < Math.Max(0L, cfg.DiskFreeWarningMb) * 1024L * 1024L
             };
+            lock (_warningSnapshotStorageCacheGate)
+            {
+                _warningSnapshotStorageCache = status;
+                _warningSnapshotStorageCacheUtc = DateTime.UtcNow;
+            }
+            return status;
+        }
+
+        private string GetWarningSnapshotRoot(WarningSnapshotConfig cfg)
+        {
+            return Path.Combine(
+                _cfg.Test.StoreDir,
+                _cfg.Test.TestName,
+                string.IsNullOrWhiteSpace(cfg?.RootDirectory)
+                    ? "WarningSnapshots"
+                    : cfg.RootDirectory.Trim());
+        }
+
+        private void EnsureWarningSnapshotStorageCounter(string root)
+        {
+            lock (_warningSnapshotStorageCacheGate)
+            {
+                if (_warningSnapshotStorageCounterInitialized &&
+                    string.Equals(
+                        _warningSnapshotTrackedRoot,
+                        root,
+                        StringComparison.OrdinalIgnoreCase))
+                    return;
+
+                long used = 0;
+                long snapshots = 0;
+                if (Directory.Exists(root))
+                {
+                    foreach (var path in Directory.EnumerateFiles(
+                                 root,
+                                 "*",
+                                 SearchOption.AllDirectories))
+                    {
+                        if (path.IndexOf(
+                                Path.DirectorySeparatorChar + "Archive" + Path.DirectorySeparatorChar,
+                                StringComparison.OrdinalIgnoreCase) >= 0)
+                            continue;
+                        try { used += new FileInfo(path).Length; } catch { }
+                        if (string.Equals(
+                                Path.GetFileName(path),
+                                "warning-metadata.json",
+                                StringComparison.OrdinalIgnoreCase))
+                            snapshots++;
+                    }
+                }
+                _warningSnapshotTrackedRoot = root;
+                _warningSnapshotTrackedUsedBytes = Math.Max(0L, used);
+                _warningSnapshotTrackedCount = Math.Max(0L, snapshots);
+                _warningSnapshotStorageCounterInitialized = true;
+            }
+        }
+
+        private void TrackWarningSnapshotCreated(string directory)
+        {
+            TrackWarningSnapshotBytes(GetDirectoryBytes(directory), 1);
+        }
+
+        private void TrackWarningSnapshotDeleted(long bytes, long snapshots)
+        {
+            TrackWarningSnapshotBytes(-Math.Max(0L, bytes), -Math.Max(0L, snapshots));
+        }
+
+        private void TrackWarningSnapshotBytes(long bytesDelta, long snapshotDelta)
+        {
+            lock (_warningSnapshotStorageCacheGate)
+            {
+                _warningSnapshotTrackedUsedBytes = Math.Max(
+                    0L,
+                    _warningSnapshotTrackedUsedBytes + bytesDelta);
+                _warningSnapshotTrackedCount = Math.Max(
+                    0L,
+                    _warningSnapshotTrackedCount + snapshotDelta);
+                _warningSnapshotStorageCacheUtc = DateTime.MinValue;
+            }
+        }
+
+        private static long GetDirectoryBytes(string directory)
+        {
+            if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory)) return 0L;
+            long bytes = 0;
+            foreach (var path in Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories))
+                try { bytes += new FileInfo(path).Length; } catch { }
+            return Math.Max(0L, bytes);
+        }
+
+        private void InvalidateWarningSnapshotStorageCache()
+        {
+            lock (_warningSnapshotStorageCacheGate)
+                _warningSnapshotStorageCacheUtc = DateTime.MinValue;
         }
 
         private void PublishWarningSnapshotStorageStatus()
@@ -1235,13 +1625,14 @@ namespace Controller
 
             foreach (var directory in candidates)
             {
-                if (GetWarningSnapshotStorageStatus().UsedBytes <= quotaBytes) break;
+                if (GetWarningSnapshotStorageStatus(true).UsedBytes <= quotaBytes) break;
                 ArchiveVerifiedSoftWarning(directory, root);
             }
         }
 
         private void ArchiveVerifiedSoftWarning(string directory, string root)
         {
+            var sourceBytes = GetDirectoryBytes(directory);
             var archiveRoot = Path.Combine(root, "Archive");
             Directory.CreateDirectory(archiveRoot);
             var baseName = Path.GetFileName(directory) + "-" + Guid.NewGuid().ToString("N");
@@ -1256,6 +1647,7 @@ namespace Controller
             File.Move(temporary, completed);
             File.WriteAllText(completed + ".sha256", ComputeSha256(completed), new UTF8Encoding(false));
             Directory.Delete(directory, true);
+            TrackWarningSnapshotDeleted(sourceBytes, 1);
             _log.Info($"旧批次软预警已校验归档：{completed}", "落盘");
         }
 

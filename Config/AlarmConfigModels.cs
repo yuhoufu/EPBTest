@@ -17,6 +17,9 @@ namespace Config
     {
         public bool Enabled { get; set; } = true;
         public string RootDirectory { get; set; } = "WarningSnapshots";
+        // 普通软预警默认只写轻量 JSONL；完整 CSV/BIN 必须显式开启，并继续受
+        // 单 worker、单等待和类别限频门禁保护。
+        public bool FullEvidenceEnabled { get; set; }
         public bool SaveCsv { get; set; } = true;
         public bool SaveBin { get; set; } = true;
         public int HardAlarmLastNCycles { get; set; } = 10;
@@ -26,6 +29,10 @@ namespace Config
         public int SoftWarningRetainCountPerChannelCode { get; set; } = 30;
         public long SoftWarningQuotaMb { get; set; }
         public long DiskFreeWarningMb { get; set; } = 10240;
+        public int FullEvidenceMinimumIntervalSeconds { get; set; } = 600;
+        // 单 worker 之外最多只允许一个完整证据任务等待。
+        public int FullEvidenceQueueCapacity { get; set; } = 1;
+        public int ScalarEvidenceQueueCapacity { get; set; } = 4096;
     }
 
     public sealed class AlarmSerialConfig

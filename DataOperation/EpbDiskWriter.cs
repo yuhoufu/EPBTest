@@ -160,6 +160,8 @@ public sealed class EpbDiskWriter : IDisposable
         public int CurrentSampleIndex; // 当前圈内样本序号（0..）
         public DateTime CurrentCycleStartUtc;
         public DateTime? CurrentCycleEndUtc;
+        public DateTime LastProgressCheckpointUtc = DateTime.MinValue;
+        public bool ActiveCycleLimitLatched;
         public bool FreeRunOn; // 是否开启 Free-Run
         public int FreeRunSampleIndex; // Free-Run 下的“伪圈”样本序号
         public string StopAction = "archive";
@@ -170,12 +172,21 @@ public sealed class EpbDiskWriter : IDisposable
         public long TotalWritten; // 已写入总条数（单调递增）
     }
 
+    private struct StateWriteSnapshot
+    {
+        public long TotalWritten;
+        public int CurrentSampleIndex;
+        public int FreeRunSampleIndex;
+        public DateTime LastProgressCheckpointUtc;
+    }
+
     #endregion
 
     #region 字段
 
     private readonly string _rootDir;
     private readonly string _indexDir;  // 索引与导出用的根目录（index.db、Archive、Latest）
+    private readonly string _mappingScope;
     private readonly long _fileBytes;
     private readonly DataRetentionPolicy _policy;
 
@@ -187,26 +198,29 @@ public sealed class EpbDiskWriter : IDisposable
     private readonly long[] _viewBaseOffsets = new long[EPB_COUNT + 1];
     private readonly long[] _viewLengths = new long[EPB_COUNT + 1];
 
-    // 视图窗口大小与对齐（可按需调整）
-    private const long VIEW_BYTES = 64L * 1024 * 1024; // 64MB
+    // x86 进程的虚拟地址空间很有限：禁止为 12 通道预先常驻 64MB 视图。
+    // 8MB 足以覆盖多个 2kHz/15s 圈，并大幅降低重映射时的地址空间压力。
+    private const long VIEW_BYTES = 8L * 1024 * 1024;
     private const long VIEW_ALIGN = 64L * 1024; // 64KB（Windows allocation granularity）
 
     private readonly SQLiteConnection _conn;
     private readonly object _dbGate = new();
     private SQLiteTransaction _activeBatchTransaction;
+    private long _progressCheckpointTransactionCount;
     private readonly object[] _latestExportGates = Enumerable.Range(0, EPB_COUNT + 1)
         .Select(_ => new object())
         .ToArray();
     private long _latestExportSequence;
     private readonly int[] _latestCleanupRequested = new int[EPB_COUNT + 1];
     private readonly int[] _latestCleanupRunning = new int[EPB_COUNT + 1];
+    private readonly Thread[] _latestCleanupThreads = new Thread[EPB_COUNT + 1];
     private readonly ConcurrentDictionary<string, object> _exportTargetGates =
         new(StringComparer.OrdinalIgnoreCase);
     private static readonly Regex LatestPackageNamePattern = new(
         @"^\d{8}_\d{6}_\d{3}-\d{6}$",
         RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
-    private bool _disposed;
+    private int _disposed;
 
     /// <summary>
     /// 设置单个活动圈允许接收的最大样本数。0 表示不限制。
@@ -235,6 +249,7 @@ public sealed class EpbDiskWriter : IDisposable
         // —— 1) .dat 环形文件所在根目录 —— //
         _rootDir = Path.GetFullPath(_policy.DataStorePath ?? "DataStore");
         Directory.CreateDirectory(_rootDir);
+        _mappingScope = BuildMappingScope(_rootDir);
 
         // —— 2) 索引 + 导出（index.db、Archive、Latest）所在根目录 —— //
         if (string.IsNullOrWhiteSpace(_policy.IndexAndExportPath))
@@ -252,11 +267,11 @@ public sealed class EpbDiskWriter : IDisposable
 
         // SQLite 连接：index.db 放在 _indexDir 下
         var dbPath = Path.Combine(_indexDir, _policy.IndexDbFile ?? "index.db");
-        var needInit = !File.Exists(dbPath);
         _conn = new SQLiteConnection(
             $"Data Source={dbPath};Pooling=True;Journal Mode=WAL;Synchronous=Normal");
         _conn.Open();
-        if (needInit) InitSchema();
+        InitSchema();
+        RecoverInterruptedCyclesOnStartup();
 
         // 12 路映射 + 状态
         for (var ch = 1; ch <= EPB_COUNT; ch++)
@@ -266,20 +281,50 @@ public sealed class EpbDiskWriter : IDisposable
             var path = GetDatPath(ch);
             EnsureFixedSizeFile(path, _fileBytes);
 
-            _mmfs[ch] = MemoryMappedFile.CreateFromFile(path, FileMode.Open, $"EPB{ch}_MMF", _fileBytes);
+            // 保留同一数据根目录的跨进程互斥，同时避免不同项目/测试目录共享
+            // EPB1_MMF...EPB12_MMF 而互相阻塞。
+            _mmfs[ch] = MemoryMappedFile.CreateFromFile(
+                path,
+                FileMode.Open,
+                $"EPB_{_mappingScope}_{ch}_MMF",
+                _fileBytes);
 
-            // —— 仅映射“首块窗口”，避免整文件映射占用巨大虚拟地址空间 —— //
-            long firstBase = 0;
-            var firstLen = Math.Min(_fileBytes, AlignUp(VIEW_BYTES, VIEW_ALIGN));
-            _views[ch] = _mmfs[ch].CreateViewAccessor(firstBase, firstLen, MemoryMappedFileAccess.ReadWrite);
-            _viewBaseOffsets[ch] = firstBase;
-            _viewLengths[ch] = firstLen;
+            // 视图延迟到通道第一次真正读/写时才创建。未启用通道不占用视图地址空间。
+            _views[ch] = null;
+            _viewBaseOffsets[ch] = 0;
+            _viewLengths[ch] = 0;
 
             _states[ch].CapacityRecords = _fileBytes / SampleRecord.Size;
             _states[ch].TotalWritten = RestoreNextWritePosition(
                 ch,
                 _states[ch].CapacityRecords);
         }
+    }
+
+    private static string BuildMappingScope(string rootDirectory)
+    {
+        var normalized = Path.GetFullPath(rootDirectory)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            .ToUpperInvariant();
+        if (normalized.EndsWith(":", StringComparison.Ordinal))
+            normalized += Path.DirectorySeparatorChar;
+
+        // 稳定 FNV-1a 64-bit：相同目录跨进程得到相同名字，不依赖运行时随机哈希。
+        const ulong offsetBasis = 14695981039346656037UL;
+        const ulong prime = 1099511628211UL;
+        var hash = offsetBasis;
+        unchecked
+        {
+            foreach (var character in normalized)
+            {
+                hash ^= (byte)character;
+                hash *= prime;
+                hash ^= (byte)(character >> 8);
+                hash *= prime;
+            }
+        }
+
+        return hash.ToString("X16", CultureInfo.InvariantCulture);
     }
 
     /// <summary>
@@ -294,32 +339,55 @@ public sealed class EpbDiskWriter : IDisposable
     /// </summary>
     public void Dispose()
     {
-        if (_disposed) return;
-        _disposed = true;
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+
+        // Latest保留清理由专用线程执行；关闭前停止接收并观察线程终态，
+        // 禁止关闭SQLite/MMF后仍有裸后台任务访问同一项目目录。
+        for (var ch = 1; ch <= EPB_COUNT; ch++)
+        {
+            Interlocked.Exchange(ref _latestCleanupRequested[ch], 0);
+            var cleanupThread = Volatile.Read(ref _latestCleanupThreads[ch]);
+            if (cleanupThread == null || cleanupThread == Thread.CurrentThread) continue;
+            try
+            {
+                if (!cleanupThread.Join(5000))
+                    WarnRetention($"Latest EPB{ch} 清理线程在关闭门禁5秒内未退出。LatestCleanupDrainTimeout=1");
+            }
+            catch (Exception ex)
+            {
+                WarnRetention($"Latest EPB{ch} 清理线程关闭异常：{ex.Message}");
+            }
+        }
 
         // 1) 关闭 12 路内存映射视图和文件
         for (var ch = 1; ch <= EPB_COUNT; ch++)
         {
-            try
+            var state = _states[ch];
+            lock (state.Gate)
             {
-                _views[ch]?.Dispose();
-            }
-            catch
-            {
-                // 关闭阶段忽略单个通道失败
-            }
+                try
+                {
+                    _views[ch]?.Dispose();
+                }
+                catch
+                {
+                    // 关闭阶段忽略单个通道失败
+                }
 
-            try
-            {
-                _mmfs[ch]?.Dispose();
-            }
-            catch
-            {
-                // 关闭阶段忽略单个通道失败
-            }
+                try
+                {
+                    _mmfs[ch]?.Dispose();
+                }
+                catch
+                {
+                    // 关闭阶段忽略单个通道失败
+                }
 
-            _views[ch] = null;
-            _mmfs[ch] = null;
+                _views[ch] = null;
+                _mmfs[ch] = null;
+                _viewBaseOffsets[ch] = 0;
+                _viewLengths[ch] = 0;
+            }
         }
 
         // 2) 关闭并释放 SQLite 连接
@@ -422,7 +490,71 @@ public sealed class EpbDiskWriter : IDisposable
             s.CurrentSampleIndex = 0;
             s.CurrentCycleStartUtc = startUtc.ToUniversalTime();
             s.CurrentCycleEndUtc = null;
+            s.LastProgressCheckpointUtc = DateTime.MinValue;
+            s.ActiveCycleLimitLatched = false;
         }
+    }
+
+    /// <summary>
+    /// 释放所有通道的短视图，保留 MMF 和圈索引；下一批数据将按需重建视图。
+    /// 该操作只对地址空间/访问器生命周期故障开放，真实 I/O 故障仍走安全暂停。
+    /// </summary>
+    public bool TryRecoverStorageMappings(Exception cause, out string detail)
+    {
+        detail = string.Empty;
+        if (Volatile.Read(ref _disposed) != 0 || !IsRecoverableMappingFailure(cause))
+            return false;
+
+        var acquired = 0;
+        try
+        {
+            for (var ch = 1; ch <= EPB_COUNT; ch++)
+            {
+                Monitor.Enter(_states[ch].Gate);
+                acquired++;
+            }
+            if (Volatile.Read(ref _disposed) != 0) return false;
+
+            var released = 0;
+            for (var ch = 1; ch <= EPB_COUNT; ch++)
+            {
+                var view = _views[ch];
+                _views[ch] = null;
+                _viewBaseOffsets[ch] = 0;
+                _viewLengths[ch] = 0;
+                if (view == null) continue;
+                try { view.Dispose(); }
+                catch { /* 旧视图已失效不影响后续延迟重建 */ }
+                released++;
+            }
+            detail = $"已释放{released}个短视图；下一次写入将按需重建8MB视图";
+            return true;
+        }
+        finally
+        {
+            for (var ch = acquired; ch >= 1; ch--)
+                Monitor.Exit(_states[ch].Gate);
+        }
+    }
+
+    private static bool IsRecoverableMappingFailure(Exception cause)
+    {
+        for (var ex = cause; ex != null; ex = ex.InnerException)
+        {
+            if (ex is OutOfMemoryException) return true;
+            if (ex is ObjectDisposedException disposed &&
+                ((disposed.ObjectName ?? string.Empty).IndexOf("MemoryAccessor", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                 disposed.Message.IndexOf("访问器", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                 disposed.Message.IndexOf("accessor", StringComparison.OrdinalIgnoreCase) >= 0))
+                return true;
+
+            // ERROR_NOT_ENOUGH_MEMORY(8), ERROR_OUTOFMEMORY(14),
+            // ERROR_COMMITMENT_LIMIT(1455) 可被 IOException/Win32Exception 包装。
+            var win32Code = ex.HResult & 0xFFFF;
+            if (win32Code == 8 || win32Code == 14 || win32Code == 1455)
+                return true;
+        }
+        return false;
     }
 
     /// <summary>
@@ -446,6 +578,8 @@ public sealed class EpbDiskWriter : IDisposable
             s.CurrentSampleIndex = 0;
             s.CurrentCycleStartUtc = startUtc.ToUniversalTime();
             s.CurrentCycleEndUtc = null;
+            s.LastProgressCheckpointUtc = DateTime.MinValue;
+            s.ActiveCycleLimitLatched = false;
             return cycleNumber;
         }
     }
@@ -458,10 +592,13 @@ public sealed class EpbDiskWriter : IDisposable
         var s = GetState(epbId);
         lock (s.Gate)
         {
+            EnsureCurrentCycleIdentity(s, epbId, cycleNumber, "CompleteCycle");
             MarkCycleCompleted(epbId, cycleNumber, finalSampleCount, endUtc);
             s.CurrentCycle = null;
             s.CurrentSampleIndex = 0;
             s.CurrentCycleEndUtc = null;
+            s.LastProgressCheckpointUtc = DateTime.MinValue;
+            s.ActiveCycleLimitLatched = false;
 
             // 注释掉，不去处理旧的记录
             // 处理 StopTrigger=EndOfCurrentCycle 或 AfterKMoreCycles
@@ -494,10 +631,13 @@ public sealed class EpbDiskWriter : IDisposable
         var s = GetState(epbId);
         lock (s.Gate)
         {
+            EnsureCurrentCycleIdentity(s, epbId, cycleNumber, "AlarmCycle");
             MarkCycleAlarm(epbId, cycleNumber, finalSampleCount, endUtc);
             s.CurrentCycle = null;
             s.CurrentSampleIndex = 0;
             s.CurrentCycleEndUtc = null;
+            s.LastProgressCheckpointUtc = DateTime.MinValue;
+            s.ActiveCycleLimitLatched = false;
         }
     }
 
@@ -542,6 +682,8 @@ public sealed class EpbDiskWriter : IDisposable
             FinalStatus = normalizedStatus
         };
         var s = GetState(epbId);
+        Exception terminalCommitFailure = null;
+        var terminalCommitted = false;
         lock (s.Gate)
         {
             var finalSampleCount = Math.Max(0, s.CurrentSampleIndex);
@@ -609,6 +751,7 @@ public sealed class EpbDiskWriter : IDisposable
                     evidence.SampleCount,
                     evidence.LastSampleUtc ?? endUtc,
                     normalizedStatus);
+                terminalCommitted = true;
             }
             catch (Exception ex)
             {
@@ -629,19 +772,32 @@ public sealed class EpbDiskWriter : IDisposable
                             : normalizedStatus.StartsWith("qualification_", StringComparison.Ordinal)
                                 ? "qualification_failed"
                             : "failed");
+                    terminalCommitted = true;
                 }
                 catch (Exception dbEx)
                 {
                     evidence.ValidationError += " | DBFinalizeFailed: " + dbEx.Message;
+                    terminalCommitFailure = dbEx;
                 }
             }
             finally
             {
-                s.CurrentCycle = null;
-                s.CurrentSampleIndex = 0;
-                s.CurrentCycleEndUtc = null;
+                if (terminalCommitted)
+                {
+                    s.CurrentCycle = null;
+                    s.CurrentSampleIndex = 0;
+                    s.CurrentCycleEndUtc = null;
+                    s.LastProgressCheckpointUtc = DateTime.MinValue;
+                    s.ActiveCycleLimitLatched = false;
+                }
             }
         }
+
+        if (terminalCommitFailure != null)
+            throw new InvalidOperationException(
+                $"EPB[{epbId}] Cycle={cycleNumber} 文件封存失败后的数据库终态也未提交；" +
+                "保留活动圈等待重试。",
+                terminalCommitFailure);
 
         return evidence;
     }
@@ -795,11 +951,26 @@ public sealed class EpbDiskWriter : IDisposable
         var s = GetState(epbId);
         lock (s.Gate)
         {
+            EnsureCurrentCycleIdentity(s, epbId, cycleNumber, "AbortCycle");
             MarkCycleAborted(epbId, cycleNumber, finalSampleCount, endUtc, normalized);
             s.CurrentCycle = null;
             s.CurrentSampleIndex = 0;
             s.CurrentCycleEndUtc = null;
+            s.LastProgressCheckpointUtc = DateTime.MinValue;
+            s.ActiveCycleLimitLatched = false;
         }
+    }
+
+    private static void EnsureCurrentCycleIdentity(
+        EpbState state,
+        int epbId,
+        int expectedCycle,
+        string operation)
+    {
+        if (state.CurrentCycle == expectedCycle) return;
+        throw new InvalidOperationException(
+            $"EPB[{epbId}] {operation} 拒绝修改非当前圈。" +
+            $"Expected={expectedCycle} Current={state.CurrentCycle?.ToString() ?? "null"}。");
     }
 
     /// <summary>
@@ -817,12 +988,16 @@ public sealed class EpbDiskWriter : IDisposable
             if (s.CurrentCycle.HasValue)
             {
                 cycle = s.CurrentCycle.Value;
+                if (s.ActiveCycleLimitLatched) return;
                 if (_policy.MaxActiveCycleRecords > 0 &&
                     s.CurrentSampleIndex >= _policy.MaxActiveCycleRecords)
+                {
+                    s.ActiveCycleLimitLatched = true;
                     throw new ActiveCycleDataLimitExceededException(
                         epbId,
                         cycle,
                         _policy.MaxActiveCycleRecords);
+                }
                 sampleIndex = s.CurrentSampleIndex++;
             }
             else if (s.FreeRunOn)
@@ -854,7 +1029,8 @@ public sealed class EpbDiskWriter : IDisposable
             s.TotalWritten++;
 
             // 正式圈期间，顺带更新进度（减少 DB 交互可按批处理优化）
-            if (cycle > 0) UpdateCycleProgress(epbId, cycle, sampleIndex + 1, tsUtc);
+            if (cycle != 0 && ShouldCheckpointCycleProgress(s, tsUtc, commit: true))
+                UpdateCycleProgress(epbId, cycle, sampleIndex + 1, tsUtc);
         }
     }
 
@@ -891,12 +1067,19 @@ public sealed class EpbDiskWriter : IDisposable
             if (accepted <= 0) return;
 
             if (state.CurrentCycle.HasValue &&
+                state.ActiveCycleLimitLatched)
+                return;
+
+            if (state.CurrentCycle.HasValue &&
                 _policy.MaxActiveCycleRecords > 0 &&
                 state.CurrentSampleIndex + accepted > _policy.MaxActiveCycleRecords)
+            {
+                state.ActiveCycleLimitLatched = true;
                 throw new ActiveCycleDataLimitExceededException(
                     epbId,
                     state.CurrentCycle.Value,
                     _policy.MaxActiveCycleRecords);
+            }
 
             var cycle = state.CurrentCycle ?? (state.FreeRunOn ? 0 : int.MinValue);
             if (cycle == int.MinValue) return;
@@ -924,8 +1107,10 @@ public sealed class EpbDiskWriter : IDisposable
                 else state.CurrentSampleIndex += accepted;
                 state.TotalWritten += accepted;
 
-                // 每通道每批最多一次 SQLite 进度更新。
-                if (cycle != 0)
+                // 原始样本每批写 MMF；SQLite 仅每秒做一次进度检查点。
+                // 封圈仍会同步写最终样本数，因此不会影响完成圈的索引准确性。
+                if (cycle != 0 &&
+                    ShouldCheckpointCycleProgress(state, tsUtc[to - 1], commit: true))
                     UpdateCycleProgress(epbId, cycle, state.CurrentSampleIndex, tsUtc[to - 1]);
             }
             finally
@@ -982,6 +1167,7 @@ public sealed class EpbDiskWriter : IDisposable
         }
 
         var lockedStates = ArrayPool<EpbState>.Shared.Rent(channelCount);
+        var snapshots = ArrayPool<StateWriteSnapshot>.Shared.Rent(channelCount);
         var acquired = 0;
         try
         {
@@ -989,32 +1175,75 @@ public sealed class EpbDiskWriter : IDisposable
             {
                 var state = GetState(channels[i].EpbId);
                 Monitor.Enter(state.Gate);
+                snapshots[acquired] = new StateWriteSnapshot
+                {
+                    TotalWritten = state.TotalWritten,
+                    CurrentSampleIndex = state.CurrentSampleIndex,
+                    FreeRunSampleIndex = state.FreeRunSampleIndex,
+                    LastProgressCheckpointUtc = state.LastProgressCheckpointUtc
+                };
                 lockedStates[acquired++] = state;
             }
 
-            lock (_dbGate)
+            var needsProgressTransaction = false;
+            var lastTimestampUtc = sampleCount > 0
+                ? timestampsUtc[Math.Min(sampleCount, timestampsUtc.Length) - 1]
+                : DateTime.UtcNow;
+            for (var i = 0; i < acquired; i++)
             {
-                using var transaction = _conn.BeginTransaction();
-                _activeBatchTransaction = transaction;
-                try
+                if (lockedStates[i].CurrentCycle.HasValue &&
+                    !lockedStates[i].ActiveCycleLimitLatched &&
+                    ShouldCheckpointCycleProgress(lockedStates[i], lastTimestampUtc, commit: false))
                 {
-                    for (var i = 0; i < channelCount; i++)
-                    {
-                        var channel = channels[i];
-                        WriteBatch(
-                            channel.EpbId,
-                            timestampsUtc,
-                            channel.Currents,
-                            channel.Pressures,
-                            sampleCount);
-                    }
-                    transaction.Commit();
-                }
-                finally
-                {
-                    _activeBatchTransaction = null;
+                    needsProgressTransaction = true;
+                    break;
                 }
             }
+
+            if (needsProgressTransaction)
+            {
+                lock (_dbGate)
+                {
+                    Interlocked.Increment(ref _progressCheckpointTransactionCount);
+                    using var transaction = _conn.BeginTransaction();
+                    _activeBatchTransaction = transaction;
+                    try
+                    {
+                        for (var i = 0; i < channelCount; i++)
+                        {
+                            var channel = channels[i];
+                            WriteBatch(channel.EpbId, timestampsUtc, channel.Currents, channel.Pressures, sampleCount);
+                        }
+                        transaction.Commit();
+                    }
+                    finally
+                    {
+                        _activeBatchTransaction = null;
+                    }
+                }
+            }
+            else
+            {
+                for (var i = 0; i < channelCount; i++)
+                {
+                    var channel = channels[i];
+                    WriteBatch(channel.EpbId, timestampsUtc, channel.Currents, channel.Pressures, sampleCount);
+                }
+            }
+        }
+        catch
+        {
+            // 批次可能已写了前面的通道后才在后续通道重映射失败。
+            // 回滚内存记账，使协调器重试时覆写同一组环形位置，避免重复样本。
+            // 如果本批启用了 SQLite 事务，异常离开 using 时同步回滚索引更新。
+            for (var i = 0; i < acquired; i++)
+            {
+                lockedStates[i].TotalWritten = snapshots[i].TotalWritten;
+                lockedStates[i].CurrentSampleIndex = snapshots[i].CurrentSampleIndex;
+                lockedStates[i].FreeRunSampleIndex = snapshots[i].FreeRunSampleIndex;
+                lockedStates[i].LastProgressCheckpointUtc = snapshots[i].LastProgressCheckpointUtc;
+            }
+            throw;
         }
         finally
         {
@@ -1024,7 +1253,20 @@ public sealed class EpbDiskWriter : IDisposable
                 lockedStates[i] = null;
             }
             ArrayPool<EpbState>.Shared.Return(lockedStates, clearArray: false);
+            ArrayPool<StateWriteSnapshot>.Shared.Return(snapshots, clearArray: false);
         }
+    }
+
+    private static bool ShouldCheckpointCycleProgress(
+        EpbState state,
+        DateTime sampleUtc,
+        bool commit)
+    {
+        var utc = sampleUtc.Kind == DateTimeKind.Utc ? sampleUtc : sampleUtc.ToUniversalTime();
+        var due = state.LastProgressCheckpointUtc == DateTime.MinValue ||
+                  utc - state.LastProgressCheckpointUtc >= TimeSpan.FromSeconds(1);
+        if (due && commit) state.LastProgressCheckpointUtc = utc;
+        return due;
     }
 
     public void SealCycleWindow(int epbId, int cycleNumber, DateTime endUtc)
@@ -1033,7 +1275,15 @@ public sealed class EpbDiskWriter : IDisposable
         lock (state.Gate)
         {
             if (state.CurrentCycle == cycleNumber)
-                state.CurrentCycleEndUtc = endUtc.ToUniversalTime();
+            {
+                var cutoffUtc = endUtc.ToUniversalTime();
+                // 多条恢复链可能并发观察到同一活动圈。截止时间窗只能收紧，不能被
+                // 较晚到达的液压/电源恢复请求重新扩大，否则已宣布截止后的 Raw
+                // 样本会重新获得圈归属并破坏耐久边界。
+                if (!state.CurrentCycleEndUtc.HasValue ||
+                    cutoffUtc < state.CurrentCycleEndUtc.Value)
+                    state.CurrentCycleEndUtc = cutoffUtc;
+            }
         }
     }
 
@@ -1136,15 +1386,16 @@ public sealed class EpbDiskWriter : IDisposable
 
     private void QueueLatestPackageRetention(int epbId)
     {
-        if (_policy.RetainAllLatestStopPackages) return;
+        if (_policy.RetainAllLatestStopPackages || Volatile.Read(ref _disposed) != 0) return;
         Interlocked.Exchange(ref _latestCleanupRequested[epbId], 1);
         if (Interlocked.CompareExchange(ref _latestCleanupRunning[epbId], 1, 0) != 0) return;
 
-        _ = Task.Run(() =>
+        var thread = new Thread(() =>
         {
             try
             {
-                while (Interlocked.Exchange(ref _latestCleanupRequested[epbId], 0) == 1)
+                while (Volatile.Read(ref _disposed) == 0 &&
+                       Interlocked.Exchange(ref _latestCleanupRequested[epbId], 0) == 1)
                 {
                     lock (_latestExportGates[epbId])
                     {
@@ -1156,10 +1407,30 @@ public sealed class EpbDiskWriter : IDisposable
             finally
             {
                 Interlocked.Exchange(ref _latestCleanupRunning[epbId], 0);
-                if (Volatile.Read(ref _latestCleanupRequested[epbId]) == 1)
+                Interlocked.CompareExchange(
+                    ref _latestCleanupThreads[epbId],
+                    null,
+                    Thread.CurrentThread);
+                if (Volatile.Read(ref _disposed) == 0 &&
+                    Volatile.Read(ref _latestCleanupRequested[epbId]) == 1)
                     QueueLatestPackageRetention(epbId);
             }
-        });
+        })
+        {
+            IsBackground = true,
+            Name = $"EPB-LatestRetention-{epbId}"
+        };
+        Volatile.Write(ref _latestCleanupThreads[epbId], thread);
+        try
+        {
+            thread.Start();
+        }
+        catch
+        {
+            Interlocked.CompareExchange(ref _latestCleanupThreads[epbId], null, thread);
+            Interlocked.Exchange(ref _latestCleanupRunning[epbId], 0);
+            throw;
+        }
     }
 
     private void EnforceLatestPackageRetention(int epbId)
@@ -1883,30 +2154,29 @@ public sealed class EpbDiskWriter : IDisposable
         sampleCount = Math.Max(1, sampleCount);
         var s = GetState(epbId);
 
-        var capacity = s.CapacityRecords;
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(csvPath)) ?? ".");
-
-        if (capacity <= 0 || s.TotalWritten == 0)
+        List<SampleRecord> list;
+        lock (s.Gate)
         {
-            using var sw0 = new StreamWriter(csvPath, false, Encoding.UTF8);
-            sw0.WriteLine(CSV_HEADER);
-            return 0;
+            var capacity = s.CapacityRecords;
+            if (capacity <= 0 || s.TotalWritten == 0)
+                list = new List<SampleRecord>();
+            else
+            {
+                var written = s.TotalWritten;
+                var maxBack = Math.Min(written, capacity);
+                list = new List<SampleRecord>(Math.Min(sampleCount, (int)maxBack));
+                for (long back = 1; back <= maxBack && list.Count < sampleCount; back++)
+                {
+                    var raw = written - back;
+                    var idx = raw % capacity;
+                    if (idx < 0) idx += capacity;
+                    var rec = ReadRecord(epbId, idx * SampleRecord.Size);
+                    if (rec.CycleNumber == 0 && rec.TimestampBinary != 0) list.Add(rec);
+                }
+                list.Reverse();
+            }
         }
-
-        var written = s.TotalWritten; // 快照
-        var maxBack = Math.Min(written, capacity); // 最多回溯一圈容量
-        var list = new List<SampleRecord>(Math.Min(sampleCount, (int)maxBack));
-
-        for (long back = 1; back <= maxBack && list.Count < sampleCount; back++)
-        {
-            var raw = written - back;
-            var idx = raw % capacity;
-            if (idx < 0) idx += capacity; // 标准化
-            var rec = ReadRecord(epbId, idx * SampleRecord.Size);
-            if (rec.CycleNumber == 0 && rec.TimestampBinary != 0) list.Add(rec);
-        }
-
-        list.Reverse(); // 升序
 
         using var sw = new StreamWriter(csvPath, false, Encoding.UTF8);
         sw.WriteLine(CSV_HEADER);
@@ -2079,31 +2349,45 @@ SELECT COUNT(1)
 
     /// <summary>
     ///     确保指定通道的视图覆盖目标文件偏移（至少覆盖 <paramref name="minSpanBytes" /> 字节）。<br />
-    ///     若不在范围，释放旧视图并以目标点为中心重建窗口。
+    ///     若不在范围，先创建新视图，成功后再原子替换并释放旧视图。
     /// </summary>
     private void EnsureViewCovers(int ch, long targetOffset, long minSpanBytes)
     {
+        if (Volatile.Read(ref _disposed) != 0)
+            throw new ObjectDisposedException(nameof(EpbDiskWriter));
+        if (targetOffset < 0 || minSpanBytes < 1 || targetOffset > _fileBytes - minSpanBytes)
+            throw new ArgumentOutOfRangeException(nameof(targetOffset));
+
+        var current = _views[ch];
         var baseOff = _viewBaseOffsets[ch];
         var len = _viewLengths[ch];
         var endOff = baseOff + len;
 
         var needSpan = Math.Max(1, minSpanBytes);
-        if (targetOffset >= baseOff && targetOffset + needSpan - 1 < endOff)
+        if (current != null &&
+            !current.SafeMemoryMappedViewHandle.IsClosed &&
+            !current.SafeMemoryMappedViewHandle.IsInvalid &&
+            targetOffset >= baseOff && targetOffset + needSpan <= endOff)
             return;
 
-        var desiredBase = Math.Max(0, targetOffset - VIEW_BYTES / 2);
+        var windowBytes = Math.Min(_fileBytes, Math.Max(VIEW_BYTES, needSpan));
+        var desiredBase = Math.Max(0, targetOffset - Math.Max(0, windowBytes - needSpan) / 2);
         var newBase = AlignDown(desiredBase, VIEW_ALIGN);
+        if (newBase + windowBytes > _fileBytes)
+            newBase = AlignDown(Math.Max(0, _fileBytes - windowBytes), VIEW_ALIGN);
         var remain = Math.Max(0, _fileBytes - newBase);
-        var desiredLen = Math.Min(VIEW_BYTES, remain);
-        var newLen = AlignUp(Math.Max(1, desiredLen), VIEW_ALIGN);
+        var newLen = Math.Min(windowBytes, remain);
+        if (targetOffset + needSpan > newBase + newLen)
+            newLen = targetOffset + needSpan - newBase;
 
-        if (newBase + newLen > _fileBytes)
-            newLen = AlignUp(Math.Max(1, _fileBytes - newBase), VIEW_ALIGN);
-
-        _views[ch]?.Dispose();
-        _views[ch] = _mmfs[ch].CreateViewAccessor(newBase, newLen, MemoryMappedFileAccess.ReadWrite);
+        // 绝不先关旧视图。CreateViewAccessor 在 x86 地址空间紧张时可能失败；
+        // 只有新视图已成功后才交换，从而避免将通道永久留在“已关闭访问器”状态。
+        var replacement = _mmfs[ch].CreateViewAccessor(newBase, newLen, MemoryMappedFileAccess.ReadWrite);
+        var previous = _views[ch];
+        _views[ch] = replacement;
         _viewBaseOffsets[ch] = newBase;
         _viewLengths[ch] = newLen;
+        previous?.Dispose();
     }
 
     /// <summary>
@@ -2195,6 +2479,8 @@ SELECT COUNT(1)
 
     private EpbState GetState(int epbId)
     {
+        if (Volatile.Read(ref _disposed) != 0)
+            throw new ObjectDisposedException(nameof(EpbDiskWriter));
         if (epbId < 1 || epbId > EPB_COUNT) throw new ArgumentOutOfRangeException(nameof(epbId));
         return _states[epbId] ??= new EpbState();
     }
@@ -2246,6 +2532,28 @@ CREATE TABLE IF NOT EXISTS {TABLE_CYCLES}(
 );
 CREATE INDEX IF NOT EXISTS idx_cycles_epb ON {TABLE_CYCLES}(epb_id, cycle_number);";
         cmd.ExecuteNonQuery();
+        }
+    }
+
+    /// <summary>
+    /// 上一进程崩溃、断电或被强制结束时，SQLite 中可能留下 running 圈。
+    /// 仅收口超过宽限期的孤儿圈：短时间重启仍须保留原始 running 证据和既有导出兼容性，
+    /// 但跨班次历史残留不能永久污染数据库状态。
+    /// </summary>
+    private void RecoverInterruptedCyclesOnStartup()
+    {
+        lock (_dbGate)
+        {
+            using var cmd = _conn.CreateCommand();
+            cmd.CommandText = $@"
+UPDATE {TABLE_CYCLES}
+   SET status='aborted_on_startup',
+       end_time=COALESCE(end_time, @now)
+ WHERE status='running'
+   AND julianday(start_time) <= julianday(@staleBefore);";
+            cmd.Parameters.AddWithValue("@now", DateTime.Now.ToString("o"));
+            cmd.Parameters.AddWithValue("@staleBefore", DateTime.Now.AddHours(-2).ToString("o"));
+            cmd.ExecuteNonQuery();
         }
     }
 
@@ -2304,7 +2612,11 @@ UPDATE {TABLE_CYCLES}
             cmd.Parameters.AddWithValue("@status", status);
             cmd.Parameters.AddWithValue("@e", epbId);
             cmd.Parameters.AddWithValue("@c", cycleNumber);
-            cmd.ExecuteNonQuery();
+            var affected = cmd.ExecuteNonQuery();
+            if (affected != 1)
+                throw new InvalidOperationException(
+                    $"圈终态更新未命中唯一记录。EPB={epbId} Cycle={cycleNumber} " +
+                    $"Status={status} Affected={affected}。");
         }
     }
 
@@ -2641,15 +2953,79 @@ public interface ICycleAttemptEvidenceExporter
         bool saveBin);
 }
 
+/// <summary>
+/// 报警触发圈已经被正式圈收尾先行封存时，从不可变的圈级索引回读 CSV/BIN。
+/// 该路径只处理“未取得当前圈封存权”的竞态；真正的原子封存失败不得被回读掩盖。
+/// </summary>
+public static class AlarmCycleSnapshotRecovery
+{
+    public static AlarmCycleSnapshotEvidence TryExportFinalizedCycle(
+        IEpbCycleRecorder recorder,
+        int epbId,
+        int cycleNumber,
+        string exportDir,
+        AlarmCycleSnapshotEvidence originalEvidence)
+    {
+        if (originalEvidence?.IsValid == true || originalEvidence?.WasClaimed == true)
+            return originalEvidence;
+        if (!(recorder is ICycleAttemptEvidenceExporter exporter))
+            return originalEvidence;
+
+        try
+        {
+            var persisted = exporter.ExportCycleAttemptTo(
+                epbId,
+                cycleNumber,
+                exportDir,
+                true,
+                true);
+            var recovered = EpbDiskWriter.ValidateAlarmCycleSnapshotPair(
+                persisted.CsvPath,
+                persisted.BinPath,
+                epbId,
+                cycleNumber);
+            recovered.WasClaimed = false;
+            recovered.FinalStatus = persisted.IsCompleteCycle
+                ? "CompletedTriggerCycle"
+                : "FinalizedAttempt";
+            if (!recovered.IsValid && originalEvidence != null &&
+                !string.IsNullOrWhiteSpace(originalEvidence.ValidationError))
+            {
+                recovered.ValidationError = originalEvidence.ValidationError +
+                                            "；持久化回读校验失败：" +
+                                            recovered.ValidationError;
+            }
+            return recovered;
+        }
+        catch (Exception ex)
+        {
+            var evidence = originalEvidence ?? new AlarmCycleSnapshotEvidence();
+            var prefix = string.IsNullOrWhiteSpace(evidence.ValidationError)
+                ? string.Empty
+                : evidence.ValidationError + "；";
+            evidence.ValidationError = prefix + "持久化终态圈回读失败：" + ex.Message;
+            return evidence;
+        }
+    }
+}
+
 public interface IActiveCycleLimitConfigurator
 {
     void SetMaxActiveCycleRecords(int maxRecords);
 }
 
 /// <summary>
+/// 写盘器的可选进程内自愈契约。仅用于重建可恢复的存储视图，不得吞掉数据或真实磁盘故障。
+/// </summary>
+public interface IRecoverableCycleRecorder
+{
+    bool TryRecoverStorage(Exception cause, out string detail);
+}
+
+/// <summary>
 ///     将 EpbDiskWriter 适配为 IEpbCycleRecorder，避免 EpbManager 直接依赖具体类。
 /// </summary>
-public sealed class DiskWriterRecorderAdapter : IEpbCycleRecorder, ICountedBatchedEpbCycleRecorder, ICycleEvidenceExporter, ICycleAttemptEvidenceExporter, IActiveCycleLimitConfigurator
+public sealed class DiskWriterRecorderAdapter : IEpbCycleRecorder, ICountedBatchedEpbCycleRecorder, ICycleEvidenceExporter, ICycleAttemptEvidenceExporter, IActiveCycleLimitConfigurator, IRecoverableCycleRecorder
 {
     private readonly EpbDiskWriter _writer;
 
@@ -2662,6 +3038,9 @@ public sealed class DiskWriterRecorderAdapter : IEpbCycleRecorder, ICountedBatch
     {
         _writer.BeginCycle(epbId, cycleNumber, startUtc);
     }
+
+    public bool TryRecoverStorage(Exception cause, out string detail)
+        => _writer.TryRecoverStorageMappings(cause, out detail);
 
     public int BeginLearningCycle(int epbId, DateTime startUtc)
     {

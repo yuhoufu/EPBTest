@@ -176,8 +176,7 @@ namespace Controller
                 EnsureAdaptiveProfilesReady(channels);
                 await EnsurePowerSupplyReadyBeforeStartAsync(channels, resumeToken).ConfigureAwait(false);
 
-                var plan = _activeStaggerPlan ??
-                           ElectricalStaggerPlanner.Build(channels, _cfg.Test.Groups, PeriodMs);
+                var plan = GetCompatibleStaggerPlan(channels);
                 RejoinFormalChannelsAtSharedFutureSlot(
                     channels,
                     plan,
@@ -302,8 +301,7 @@ namespace Controller
                 await EnsurePowerSupplyReadyBeforeStartAsync(new[] { channel }, resumeToken)
                     .ConfigureAwait(false);
 
-                var plan = _activeStaggerPlan ??
-                           ElectricalStaggerPlanner.Build(new[] { channel }, _cfg.Test.Groups, PeriodMs);
+                var plan = GetCompatibleStaggerPlan(new[] { channel });
                 RejoinFormalChannelsAtSharedFutureSlot(
                     new[] { channel },
                     plan,
@@ -449,8 +447,7 @@ namespace Controller
             var selected = channels.Distinct().OrderBy(x => x).ToArray();
             EnsureAdaptiveProfilesReady(selected);
             var groups = GroupByPressure(selected);
-            var staggerPlan = _activeStaggerPlan ??
-                              ElectricalStaggerPlanner.Build(selected, _cfg.Test.Groups, PeriodMs);
+            var staggerPlan = GetCompatibleStaggerPlan(selected);
             var quarantined = new ConcurrentDictionary<int, string>();
 
             for (var ordinal = 1; ordinal <= cycles; ordinal++)
@@ -630,6 +627,18 @@ namespace Controller
                         }
                         catch (SoftwareSelfHealingRetryException)
                         {
+                            // 软件瞬态也必须把本次负圈封成明确终态。V2.12.0.2 在这里
+                            // 直接把局部圈号清零，Recorder.CurrentCycle 仍保持 running，
+                            // 后续每次资格重试都会永久失败于“上一圈尚未封存”。
+                            if (!IsAlarmStopRequested(channel))
+                                await SealLearningCycleAsync(
+                                        channel,
+                                        cycleNumber,
+                                        runId,
+                                        qualificationOrdinal,
+                                        "qualification_failed",
+                                        softwareAttempt: attempt)
+                                    .ConfigureAwait(false);
                             cycleNumber = 0;
                             throw;
                         }
@@ -893,8 +902,7 @@ namespace Controller
                         resumeToken)
                     .ConfigureAwait(false);
 
-                var plan = _activeStaggerPlan ??
-                           ElectricalStaggerPlanner.Build(new[] { channel }, _cfg.Test.Groups, PeriodMs);
+                var plan = GetCompatibleStaggerPlan(new[] { channel });
                 // 人工确认后开启新的报警代次；资格复核期间若再次触发故障，必须重新锁存并停机。
                 _alarmStopLatch.BeginRun(channel);
                 StartupPositioningResult[] positioningFailures = null;
@@ -1008,7 +1016,7 @@ namespace Controller
             var alarm = Alarm;
             if (alarm == null) return;
             var expectedRunId = _activeBatchId;
-            _ = Task.Run(async () =>
+            ObserveBackgroundTask(Task.Run(async () =>
             {
                 var attempt = 0;
                 while (true)
@@ -1064,7 +1072,7 @@ namespace Controller
                         await Task.Delay(delayMs).ConfigureAwait(false);
                     }
                 }
-            });
+            }), "ClearAlarmIndicatorAfterRecovery", channel);
         }
 
         internal static bool CanRetryAlarmIndicatorClear(
@@ -1291,7 +1299,7 @@ namespace Controller
             var baseCycle = Recorder?.GetLastCycleNumber(channel) ?? 0;
             var successfulCycles = 0;
             EpbTestCycle[channel] = remainingRuns;
-            _ = timer.StartAsync(null, initialDelay, async (cycleIndex, timerToken) =>
+            ObserveBackgroundTask(timer.StartAsync(null, initialDelay, async (cycleIndex, timerToken) =>
             {
                 var cyclePauseCts = RenewCyclePauseCts(channel);
                 using var linked = CancellationTokenSource.CreateLinkedTokenSource(
@@ -1415,19 +1423,11 @@ namespace Controller
                     }
                     catch (Exception ex)
                     {
-                        if (controlSucceeded)
-                            AbortFormalCycleWithoutPersistenceBarrier(
-                                recorder,
-                                channel,
-                                cycleNumber,
-                                DateTime.UtcNow,
-                                0,
-                                ex);
-                        else
-                            _log.Warn(
-                                $"EPB[{channel}] 报警恢复后的失败圈封存异常 " +
-                                $"Cycle={cycleNumber}: {ex.Message}",
-                                "落盘");
+                        PreserveFormalCycleForPersistenceRecovery(
+                            channel,
+                            cycleNumber,
+                            "CycleFinalizer",
+                            ex);
                     }
                 }
                 if (IsFormalCycleCountable(
@@ -1450,7 +1450,7 @@ namespace Controller
                 if (!IsAlarmStopRequested(channel)) ClearCurrentCycleNumber(channel);
                 ReleaseCyclePauseCts(channel, cyclePauseCts);
                 return controlSucceeded && persistenceCommitted;
-            });
+            }), "RejoinedChannelTimer", channel);
 
             if (publishRuntimeStateAndObserver)
             {

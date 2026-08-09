@@ -6,6 +6,8 @@ using System.Linq;
 using System.Data.SQLite;
 using System.Threading.Tasks;
 using System.Threading;
+using System.Security.Cryptography;
+using System.Text;
 using DataOperation;
 
 namespace EpbDiskWriterTests
@@ -21,6 +23,17 @@ namespace EpbDiskWriterTests
                 if (args.Length == 4 &&
                     args[0].Equals("--recover", StringComparison.OrdinalIgnoreCase))
                     return RecoverCycles(args[1], int.Parse(args[2], CultureInfo.InvariantCulture), args[3]);
+                if (args.Length == 6 &&
+                    args[0].Equals("--recover-alarm-bins", StringComparison.OrdinalIgnoreCase))
+                    return RecoverAlarmBins(
+                        args[1],
+                        int.Parse(args[2], CultureInfo.InvariantCulture),
+                        int.Parse(args[3], CultureInfo.InvariantCulture),
+                        int.Parse(args[4], CultureInfo.InvariantCulture),
+                        args[5]);
+                if (args.Length == 2 &&
+                    args[0].Equals("--inspect-index", StringComparison.OrdinalIgnoreCase))
+                    return InspectIndex(args[1]);
 
                 Run("重启后写指针连续", RestartRestoresWritePosition);
                 Run("running 圈重启后不覆盖", RestartAfterRunningCycle);
@@ -34,12 +47,14 @@ namespace EpbDiskWriterTests
                 Run("报警圈原子封存与数据库边界一致", AlarmSealMatchesDatabaseBoundary);
                 Run("DAQ时钟恢复圈状态独立封存", DaqClockRecoveryAbortStatusIsDurable);
                 Run("软件自愈作废圈状态独立封存", SoftwareRecoveryAbortStatusIsDurable);
+                Run("圈终态操作拒绝修改非当前圈", TerminalMutationRejectsWrongCycle);
                 Run("软件自愈作废圈可导出警告证据", SoftwareRecoveryAbortCanExportEvidence);
                 Run("学习负圈索引样本数竞态可从封存BIN恢复", LearningSnapshotRecoversWhenIndexCountIsZero);
                 Run("报警CSV和BIN不一致时校验失败", AlarmPairValidatorRejectsMismatch);
                 Run("学习与资格圈终态均落盘且不改变正式计数", LearningOutcomesDoNotAffectFormalCounters);
                 Run("学习负圈号跨重启连续且唯一", LearningCycleNumbersSurviveRestart);
                 Run("报警与学习收尾并发只封存一次", ConcurrentSealClaimsOnce);
+                Run("已完成报警触发圈可回读并导出最近10圈", CompletedAlarmTriggerCycleCanBeRecovered);
                 Run("正式圈保留策略不删除学习索引", FormalRetentionKeepsLearningRows);
                 Run("按通道圈号精确导出完整证据", ExactCompletedCycleExport);
                 Run("活动圈样本硬上限阻止覆盖", ActiveCycleSampleLimitStopsWrites);
@@ -48,6 +63,7 @@ namespace EpbDiskWriterTests
                 Run("设备多通道批次事务写入", DeviceBatchWritesMultipleChannels);
                 Run("Latest并发导出原子且无临时残留", ConcurrentLatestExportsAreAtomic);
                 Run("Latest每通道计数收敛且Unlimited不删除", LatestPackageRetentionModes);
+                Run("不同数据根目录的写盘器可同时映射且保持隔离", DifferentRootsUseIndependentMappingScopes);
                 Console.WriteLine($"PASS {_passed}/{_passed}");
                 return 0;
             }
@@ -56,6 +72,66 @@ namespace EpbDiskWriterTests
                 Console.Error.WriteLine("FAIL " + ex);
                 return 1;
             }
+        }
+
+        private static int InspectIndex(string databasePath)
+        {
+            var builder = new SQLiteConnectionStringBuilder
+            {
+                DataSource = Path.GetFullPath(databasePath),
+                ReadOnly = true,
+                FailIfMissing = true
+            };
+            using (var connection = new SQLiteConnection(builder.ConnectionString))
+            {
+                connection.Open();
+                using (var command = connection.CreateCommand())
+                {
+                    command.CommandText = "PRAGMA integrity_check;";
+                    using (var reader = command.ExecuteReader())
+                        while (reader.Read())
+                            Console.WriteLine("INTEGRITY " + reader.GetString(0));
+                }
+                using (var command = connection.CreateCommand())
+                {
+                    command.CommandText =
+                        "SELECT status, COUNT(*) FROM epb_cycles GROUP BY status ORDER BY COUNT(*) DESC;";
+                    using (var reader = command.ExecuteReader())
+                        while (reader.Read())
+                            Console.WriteLine($"STATUS {reader.GetString(0)} {reader.GetInt64(1)}");
+                }
+                using (var command = connection.CreateCommand())
+                {
+                    command.CommandText =
+                        "SELECT epb_id,cycle_number,status,sample_count,start_time,end_time " +
+                        "FROM epb_cycles WHERE lower(status) IN ('running','started','active') " +
+                        "ORDER BY epb_id,cycle_number;";
+                    using (var reader = command.ExecuteReader())
+                        while (reader.Read())
+                            Console.WriteLine(
+                                $"UNFINISHED EPB={reader.GetInt32(0)} Cycle={reader.GetInt32(1)} " +
+                                $"Status={reader.GetString(2)} Samples={reader.GetInt32(3)} " +
+                                $"Start={reader[4]} End={reader[5]}");
+                }
+                foreach (var channel in new[] { 4, 5, 9, 10, 11 })
+                {
+                    using (var command = connection.CreateCommand())
+                    {
+                        command.CommandText =
+                            "SELECT epb_id,cycle_number,status,sample_count,start_time,end_time " +
+                            "FROM epb_cycles WHERE epb_id=@epb AND cycle_number<0 " +
+                            "ORDER BY id DESC LIMIT 8;";
+                        command.Parameters.AddWithValue("@epb", channel);
+                        using (var reader = command.ExecuteReader())
+                            while (reader.Read())
+                                Console.WriteLine(
+                                    $"NEGATIVE EPB={reader.GetInt32(0)} Cycle={reader.GetInt32(1)} " +
+                                    $"Status={reader.GetString(2)} Samples={reader.GetInt32(3)} " +
+                                    $"Start={reader[4]} End={reader[5]}");
+                    }
+                }
+            }
+            return 0;
         }
 
         private static int RecoverCycles(string indexRoot, int epbId, string outputDir)
@@ -113,6 +189,121 @@ namespace EpbDiskWriterTests
                     // 临时环形文件不影响恢复结果。
                 }
             }
+        }
+
+        private static int RecoverAlarmBins(
+            string projectRoot,
+            int epbId,
+            int alarmCycle,
+            int requestedCycles,
+            string outputDir)
+        {
+            if (epbId < 1 || epbId > 12) throw new ArgumentOutOfRangeException(nameof(epbId));
+            if (alarmCycle < 1) throw new ArgumentOutOfRangeException(nameof(alarmCycle));
+            requestedCycles = Math.Max(1, requestedCycles);
+            var history = Path.Combine(
+                projectRoot,
+                "HistoricalSnapshots",
+                $"EPB{epbId:D2}");
+            if (!Directory.Exists(history))
+                throw new DirectoryNotFoundException(history);
+            var selected = Directory.EnumerateFiles(history, $"EPB{epbId}_Cycle_*.bin", SearchOption.AllDirectories)
+                .Select(path => new
+                {
+                    Path = path,
+                    Cycle = ParseCycleNumber(path)
+                })
+                .Where(item => item.Cycle > 0 && item.Cycle <= alarmCycle)
+                .GroupBy(item => item.Cycle)
+                .Select(group => group.OrderByDescending(item => File.GetLastWriteTimeUtc(item.Path)).First())
+                .OrderByDescending(item => item.Cycle)
+                .Take(requestedCycles)
+                .OrderBy(item => item.Cycle)
+                .ToArray();
+            if (selected.Length != requestedCycles)
+                throw new InvalidDataException(
+                    $"历史BIN不足：EPB={epbId}, AlarmCycle={alarmCycle}, " +
+                    $"Requested={requestedCycles}, Found={selected.Length}");
+            if (Directory.Exists(outputDir))
+                throw new IOException("恢复目标已存在，拒绝覆盖：" + outputDir);
+
+            var fullOutput = Path.GetFullPath(outputDir);
+            var parent = Path.GetDirectoryName(fullOutput) ?? throw new InvalidDataException("恢复目标无父目录");
+            Directory.CreateDirectory(parent);
+            var staging = Path.Combine(parent, "." + Path.GetFileName(fullOutput) + ".tmp-" + Guid.NewGuid().ToString("N"));
+            var scratch = Path.Combine(Path.GetTempPath(), "EpbAlarmBinRecovery", Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(staging);
+            Directory.CreateDirectory(scratch);
+            try
+            {
+                var policy = NewPolicy(scratch);
+                using (var writer = new EpbDiskWriter(policy))
+                {
+                    foreach (var item in selected)
+                    {
+                        var stem = $"EPB{epbId}_Cycle_{item.Cycle:D6}";
+                        var bin = Path.Combine(staging, stem + ".bin");
+                        var csv = Path.Combine(staging, stem + ".csv");
+                        File.Copy(item.Path, bin, true);
+                        writer.ImportBinToCsv(bin, csv);
+                        var evidence = EpbDiskWriter.ValidateAlarmCycleSnapshotPair(
+                            csv,
+                            bin,
+                            epbId,
+                            item.Cycle);
+                        if (!evidence.IsValid)
+                            throw new InvalidDataException(evidence.ValidationError);
+                    }
+                }
+
+                var checksums = Directory.EnumerateFiles(staging, "*.*", SearchOption.TopDirectoryOnly)
+                    .OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase)
+                    .Select(path => $"{Sha256(path)}  {Path.GetFileName(path)}")
+                    .ToArray();
+                File.WriteAllLines(Path.Combine(staging, "SHA256SUMS.txt"), checksums, Encoding.ASCII);
+                File.WriteAllLines(
+                    Path.Combine(staging, "RECOVERY.txt"),
+                    new[]
+                    {
+                        "Purpose=Recover missing hard-alarm latest-cycle evidence from immutable HistoricalSnapshots BIN files",
+                        $"SourceProject={Path.GetFullPath(projectRoot)}",
+                        $"EpbId={epbId}",
+                        $"AlarmCycle={alarmCycle}",
+                        $"RequestedCycles={requestedCycles}",
+                        $"RecoveredCycles={string.Join(",", selected.Select(item => item.Cycle))}",
+                        $"RecoveredUtc={DateTime.UtcNow:O}",
+                        "OriginalAlarmSnapshotModified=false"
+                    },
+                    new UTF8Encoding(false));
+                Directory.Move(staging, fullOutput);
+                Console.WriteLine($"RECOVERED ALARM EPB[{epbId}] CYCLES={string.Join(",", selected.Select(item => item.Cycle))} -> {fullOutput}");
+                return 0;
+            }
+            finally
+            {
+                try { if (Directory.Exists(staging)) Directory.Delete(staging, true); } catch { }
+                try { if (Directory.Exists(scratch)) Directory.Delete(scratch, true); } catch { }
+            }
+        }
+
+        private static int ParseCycleNumber(string path)
+        {
+            var stem = Path.GetFileNameWithoutExtension(path);
+            var marker = stem.LastIndexOf("_Cycle_", StringComparison.OrdinalIgnoreCase);
+            return marker >= 0 && int.TryParse(
+                stem.Substring(marker + 7),
+                NumberStyles.Integer,
+                CultureInfo.InvariantCulture,
+                out var cycle)
+                ? cycle
+                : 0;
+        }
+
+        private static string Sha256(string path)
+        {
+            using var algorithm = SHA256.Create();
+            using var stream = File.OpenRead(path);
+            return string.Concat(algorithm.ComputeHash(stream).Select(value => value.ToString("x2")));
         }
 
         private static void RestartRestoresWritePosition()
@@ -474,6 +665,70 @@ namespace EpbDiskWriterTests
             };
         }
 
+        private static void DifferentRootsUseIndependentMappingScopes()
+        {
+            WithRoot(root =>
+            {
+                var firstRoot = Path.Combine(root, "first");
+                var secondRoot = Path.Combine(root, "second");
+                var started = DateTime.UtcNow;
+
+                using var first = new EpbDiskWriter(NewPolicy(firstRoot));
+                using var second = new EpbDiskWriter(NewPolicy(secondRoot));
+                first.BeginCycle(1, 1, started);
+                second.BeginCycle(1, 1, started);
+                WriteSamples(first, 1, 3, started);
+                WriteSamples(second, 1, 5, started);
+                Assert(first.GetCurrentCycleSampleCount(1) == 3,
+                    "第一数据根目录的映射样本数错误");
+                Assert(second.GetCurrentCycleSampleCount(1) == 5,
+                    "第二数据根目录的映射样本数错误");
+                first.CompleteCycle(1, 1, 3, started.AddMilliseconds(3));
+                second.CompleteCycle(1, 1, 5, started.AddMilliseconds(5));
+            });
+        }
+
+        private static void CompletedAlarmTriggerCycleCanBeRecovered()
+        {
+            WithRoot(root =>
+            {
+                var policy = NewPolicy(root);
+                var start = DateTime.UtcNow;
+                var exportDir = Path.Combine(root, "alarm");
+                using var writer = new EpbDiskWriter(policy);
+                var recorder = new DiskWriterRecorderAdapter(writer);
+                for (var cycle = 1; cycle <= 10; cycle++)
+                    WriteCompletedCycle(writer, 8, cycle, 4, start.AddSeconds(cycle));
+
+                var first = recorder.SealAndExportAlarmCycle(
+                    8,
+                    10,
+                    exportDir,
+                    start.AddSeconds(11));
+                Assert(!first.IsValid && !first.WasClaimed,
+                    "已完成圈不应再次取得当前圈封存权");
+
+                var recovered = AlarmCycleSnapshotRecovery.TryExportFinalizedCycle(
+                    recorder,
+                    8,
+                    10,
+                    exportDir,
+                    first);
+                Assert(recovered.IsValid,
+                    "已完成报警触发圈未能从持久化索引回读：" + recovered.ValidationError);
+                Assert(!recovered.WasClaimed && recovered.FinalStatus == "CompletedTriggerCycle",
+                    "回读证据未保留‘已完成触发圈’语义");
+
+                recorder.FlushRecentTo(8, 10, exportDir, false);
+                var csv = Directory.GetFiles(exportDir, "*.csv", SearchOption.TopDirectoryOnly);
+                var bin = Directory.GetFiles(exportDir, "*.bin", SearchOption.TopDirectoryOnly);
+                Assert(csv.Length == 10 && bin.Length == 10,
+                    $"报警最近10圈不完整：CSV={csv.Length}, BIN={bin.Length}");
+                for (var cycle = 1; cycle <= 10; cycle++)
+                    AssertCsvCycle(exportDir, 8, cycle, 4);
+            });
+        }
+
         private static void AlarmSealMatchesDatabaseBoundary()
         {
             WithRoot(root =>
@@ -612,6 +867,42 @@ namespace EpbDiskWriterTests
                     Assert(reader.GetString(1) == "AbortedBySoftwareRecovery",
                         "软件自愈作废圈状态被降级为普通failed");
                 }
+            });
+        }
+
+        private static void TerminalMutationRejectsWrongCycle()
+        {
+            WithRoot(root =>
+            {
+                var start = DateTime.UtcNow;
+                using var writer = new EpbDiskWriter(NewPolicy(root));
+                writer.BeginCycle(4, 152, start);
+                WriteSamples(writer, 4, 3, start);
+
+                var rejected = false;
+                try
+                {
+                    writer.AbortCycle(
+                        4,
+                        151,
+                        3,
+                        start.AddSeconds(1),
+                        "AbortedBySoftwareRecovery");
+                }
+                catch (InvalidOperationException)
+                {
+                    rejected = true;
+                }
+
+                Assert(rejected, "非当前圈终态修改未被拒绝");
+                Assert(writer.GetCurrentCycleSampleCount(4) == 3,
+                    "拒绝错误圈后破坏了真实活动圈");
+                writer.AbortCycle(
+                    4,
+                    152,
+                    3,
+                    start.AddSeconds(1),
+                    "AbortedBySoftwareRecovery");
             });
         }
 
@@ -881,6 +1172,7 @@ namespace EpbDiskWriterTests
                 {
                     writer.BeginCycle(1, 1, start);
                     writer.SealCycleWindow(1, 1, start.AddMilliseconds(1));
+                    writer.SealCycleWindow(1, 1, start.AddMilliseconds(10));
                     writer.WriteBatch(
                         1,
                         new[] { start.AddMilliseconds(-1), start, start.AddMilliseconds(1), start.AddMilliseconds(2) },
@@ -894,7 +1186,7 @@ namespace EpbDiskWriterTests
                         new[] { 10d, 10d },
                         2);
                     var final = writer.GetCurrentCycleSampleCount(1);
-                    Assert(final == 3, "开始/结束时间窗未正确截取批次");
+                    Assert(final == 3, "开始/结束时间窗被迟到恢复请求扩大或未正确截取批次");
                     writer.CompleteCycle(1, 1, final, start.AddMilliseconds(1));
                 }
                 using (var writer = new EpbDiskWriter(policy))

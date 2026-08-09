@@ -489,9 +489,17 @@ namespace Controller
                     return false;
                 }
 
+                if (EpbManager.ShouldEscalateSoftwareRecovery(startupAttempt))
+                    throw new SoftwareSelfHealingExhaustedException(
+                        "LegacyLearningStartupPositioning",
+                        startupAttempt,
+                        new SoftwareSelfHealingRetryException(
+                            $"EPB[{_channel}] 学习启动定位连续{startupAttempt}次软件瞬态未通过。" +
+                            $"Code={startup.Code} Reason={startup.Reason}"));
+
                 var delayMs = EpbManager.GetDaqSelfMaintenanceDelayMs(startupAttempt);
                 _log.Warn(
-                    $"EPB[{_channel}] 启动定位软件瞬态未通过，保持断电并自愈重试。" +
+                    $"EPB[{_channel}] 启动定位软件瞬态未通过，保持断电并有界自愈重试。" +
                     $"Attempt={startupAttempt} DelayMs={delayMs} Code={startup.Code} Reason={startup.Reason}",
                     "EPB");
                 await Task.Delay(delayMs, token).ConfigureAwait(false);
@@ -822,8 +830,8 @@ namespace Controller
                 // —— 达到夹紧判据 → 断电前，安排异步封口（延时 1000ms），完成后回调日志 —— //
                 if (_acq != null)
                 {
-                    // fire-and-forget：不 await，不阻塞当前 async；回调里写日志
-                    var _ = _acq.EndEpbCurrentPeakAsync(
+                    // 不阻塞当前控制段，但统一纳入任务监督，避免封口异常成为未观察故障。
+                    ObserveAdaptiveBackground(_acq.EndEpbCurrentPeakAsync(
                         _channel,
                         1000, // 延时 1s：通常 ≥ 一批长度，保障后台管线 flush
                         cutoffAfterDelay: true,
@@ -976,7 +984,7 @@ namespace Controller
                             {
                                 // ignore
                             }
-                        });
+                        }), "LegacyPeakFinalize");
                 }
 
                 _log?.Info($"EPB[{_channel}] 达到夹紧阈值 {_posThrA:F2}A，已断电并标记释放。", "EPB");
@@ -1010,16 +1018,8 @@ namespace Controller
                 {
                     token.ThrowIfCancellationRequested();
 
-                    var now = Stopwatch.GetTimestamp();
-                    if (now < nextDue)
-                    {
-                        var ms = (int)Math.Max(0, (nextDue - now) / tickPerMs - 1);
-                        if (ms > 0) await Task.Delay(ms, token).ConfigureAwait(false);
-                        while ((now = Stopwatch.GetTimestamp()) < nextDue)
-                        {
-                            /* busy wait to align */
-                        }
-                    }
+                    var now = await DelayUntilMonotonicAsync(nextDue, token)
+                        .ConfigureAwait(false);
 
                     nextDue += (long)(Math.Max(1, _sampleMs) * tickPerMs);
 
@@ -1167,6 +1167,46 @@ namespace Controller
         private static long ElapsedMs(long startTick)
         {
             return (long)((Stopwatch.GetTimestamp() - startTick) * 1000.0 / Stopwatch.Frequency);
+        }
+
+        private const double MaximumAlignmentSpinMs = 0.2;
+
+        /// <summary>
+        ///     Waits for a monotonic deadline without burning the final 1-2 ms of every
+        ///     sample interval. Task.Delay performs the coarse wait; only the last 0.2 ms
+        ///     may spin for learning/compatibility timing precision.
+        /// </summary>
+        internal static async Task<long> DelayUntilMonotonicAsync(
+            long dueTimestamp,
+            CancellationToken token)
+        {
+            while (true)
+            {
+                token.ThrowIfCancellationRequested();
+                var now = Stopwatch.GetTimestamp();
+                var remainingTicks = dueTimestamp - now;
+                if (remainingTicks <= 0) return now;
+
+                var remainingMs = remainingTicks * 1000.0 / Stopwatch.Frequency;
+                if (remainingMs > MaximumAlignmentSpinMs)
+                {
+                    var delayMs = (int)Math.Floor(remainingMs - MaximumAlignmentSpinMs);
+                    if (delayMs > 0)
+                        await Task.Delay(delayMs, token).ConfigureAwait(false);
+                    else
+                        await Task.Yield();
+                    continue;
+                }
+
+                var spinner = new SpinWait();
+                do
+                {
+                    token.ThrowIfCancellationRequested();
+                    spinner.SpinOnce();
+                    now = Stopwatch.GetTimestamp();
+                } while (now < dueTimestamp);
+                return now;
+            }
         }
 
 
@@ -1411,15 +1451,7 @@ namespace Controller
 
                 // 对齐采样节拍
                 {
-                    var now = Stopwatch.GetTimestamp();
-                    if (now < nextDue)
-                    {
-                        var ms = (int)Math.Max(0, (nextDue - now) / tickPerMs - 1);
-                        if (ms > 0) await Task.Delay(ms, token);
-                        while ((now = Stopwatch.GetTimestamp()) < nextDue)
-                        {
-                        }
-                    }
+                    await DelayUntilMonotonicAsync(nextDue, token).ConfigureAwait(false);
                 }
                 nextDue += _sampleMs * tickPerMs;
 
@@ -1500,8 +1532,7 @@ namespace Controller
         /// <summary>
         /// （异步，方案C：高速轮询）等待通道电流达到阈值 ——
         /// 仅依据安全裕量 <paramref name="safetyMarginA"/> 提前判定，
-        /// 不进行斜率预测，且不再对齐采样节拍；
-        /// 采用“轻量自旋 + 主动让出时间片”的高速轮询策略以降低触发延迟。
+        /// 不进行斜率预测，也不主动轮询；由 2 kHz 快速采样事件直接完成等待器。
         /// </summary>
         /// <param name="thrA">
         /// 触发阈值电流（A）。当 <c>current + safetyMarginA ≥ thrA</c> 时立即返回 true。
@@ -1527,9 +1558,8 @@ namespace Controller
         /// 否则返回 <c>false</c>。
         /// </returns>
         /// <remarks>
-        /// • 与“对齐采样节拍”的版本相比，本方法优先“反应速度”，触发时机不再受 `_sampleMs` 量化；
-        /// • 使用轻量自旋（<see cref="System.Threading.SpinWait"/>）+ 周期性 <c>Thread.Sleep(0)</c> 让出时间片，
-        ///   以减少 CPU 占用同时保持低延迟；
+        /// • 与“对齐采样节拍”的版本相比，本方法由 DAQ 快速样本事件驱动，触发时机不受 `_sampleMs` 量化；
+        /// • 等待线程只挂起在 <see cref="TaskCompletionSource{TResult}"/>，不消耗轮询 CPU；
         /// • 平台检测（环形缓冲、空载电流阈值）逻辑与原方法保持一致；
         /// • 依赖字段/方法：<c>_readCurrent</c>、<c>_channel</c>、<c>PlateauWindowMs</c>、<c>_sampleMs</c>、
         ///   <c>PlateauFlatRangeA</c>、<c>_iEmptyFwdA</c>、<c>PlateauAboveEmptyMarginA</c>、<c>ElapsedMs(long)</c>、<c>_log</c>。
@@ -1664,16 +1694,7 @@ namespace Controller
 
                 // —— 与 WaitCurrentAboveAsync 一致的对齐节拍 —— //
                 // （避免 Task.Delay 抖动，让采样/判断更稳定）
-                var now = Stopwatch.GetTimestamp();
-                if (now < nextDue)
-                {
-                    var ms = (int)Math.Max(0, (nextDue - now) / tickPerMs - 1);
-                    if (ms > 0) await Task.Delay(ms, token);
-                    while ((now = Stopwatch.GetTimestamp()) < nextDue)
-                    {
-                        /* 自旋对齐 */
-                    }
-                }
+                await DelayUntilMonotonicAsync(nextDue, token).ConfigureAwait(false);
 
                 nextDue += _sampleMs * tickPerMs; // 与 _sampleMs 对齐的节拍
                 var current = _readCurrent(_channel);

@@ -270,8 +270,8 @@ namespace Controller
                         break;
                     }
 
-                    // 高电流候选在形成三点确认前不送入正式曲线机，避免其按
-                    // ThresholdBeforeLoadRise 提前硬故障；该例外仅限启动定位。
+                    // 高电流候选在形成三点确认前不送入正式曲线机，避免启动定位把
+                    // 尚未确认的单点高值提前当成夹紧完成；正式循环另由FastRiseCandidate封口归因。
                     if (forwardClassifier.HasHighCurrentCandidate) continue;
                     var decision = forwardDetector.OnSample(Stopwatch.GetTimestamp(), currentA);
                     if (decision.HardFault)

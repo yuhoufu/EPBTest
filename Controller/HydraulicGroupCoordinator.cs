@@ -324,6 +324,7 @@ namespace Controller
 
         private readonly ConcurrentDictionary<int, Latch> _latches = new();
         private readonly IAppLogger _log;
+        private readonly TaskSupervisor _tasks;
         private readonly Func<int, double> _readPressure;
         private readonly Func<int, PressureSample> _readPressureSample;
         private readonly Func<int, Task> _testReleaseAction;
@@ -340,6 +341,11 @@ namespace Controller
         private readonly ConcurrentDictionary<HydraulicChannelLeaseScope, byte> _activeLeaseScopes = new();
 
         public event Action<ControlFault> FaultRaised;
+
+        internal Task<bool> DrainBackgroundTasksAsync(int timeoutMs)
+        {
+            return _tasks.DrainAsync(timeoutMs);
+        }
 
         public HydraulicGroupCoordinator(TestConfig test,
             DoConfig dO,
@@ -359,6 +365,7 @@ namespace Controller
                 : id => new PressureSample(id, readPressure(id), DateTime.UtcNow, Stopwatch.GetTimestamp());
             _hydCtl = hydCtl; // 可空：无专用控制器则走 Fallback
             _log = log ?? NullLogger.Instance;
+            _tasks = new TaskSupervisor(_log);
 
             // 1) 先用 TestConfig.Hydraulics[*].Members 做映射
             foreach (var h in _test.Hydraulics)
@@ -410,6 +417,7 @@ namespace Controller
                 : id => new PressureSample(id, readPressure(id), DateTime.UtcNow, Stopwatch.GetTimestamp());
             _testReleaseAction = releaseAction ?? throw new ArgumentNullException(nameof(releaseAction));
             _log = log ?? NullLogger.Instance;
+            _tasks = new TaskSupervisor(_log);
 
             foreach (var h in _test.Hydraulics)
             {
@@ -442,6 +450,7 @@ namespace Controller
             _testReleaseAction = releaseAction;
             _hydCtl = hydCtl;
             _log = log ?? NullLogger.Instance;
+            _tasks = new TaskSupervisor(_log);
             foreach (var h in _test.Hydraulics)
             {
                 if (h?.Enabled != true || h.Members == null) continue;
@@ -539,7 +548,10 @@ namespace Controller
             }
 
             if (releaseNow)
-                _ = CompleteGenerationReleaseAsync(state);
+                _tasks.Observe(
+                    CompleteGenerationReleaseAsync(state),
+                    "HydraulicGenerationRelease",
+                    state.Key.TestRunId);
 
             var item = GetHydraulicItem(lease.Key.HydraulicId);
             var timeoutMs = item.BarrierTimeoutMs > 0
@@ -1196,7 +1208,10 @@ namespace Controller
                     };
 
                     // 异步起保持任务（不阻塞 EPB 的电控流程）
-                    _ = Task.Run(() => _hydCtl.BuildAndHoldAsync(hydId, token), token);
+                    _tasks.Observe(
+                        Task.Run(() => _hydCtl.BuildAndHoldAsync(hydId, token), token),
+                        "HydraulicBuildAndHold",
+                        Guid.Empty);
 
                     _log.Info($"液压[{hydId}] 进入保持（HydraulicController.BuildAndHoldAsync）。", "液压协调");
 
@@ -1224,7 +1239,12 @@ namespace Controller
                     }
 
                     latch.Cts = new CancellationTokenSource();
-                    _ = Task.Run(() => FallbackHoldLoopAsync(hydId, latch.Cts.Token), latch.Cts.Token);
+                    _tasks.Observe(
+                        Task.Run(
+                            () => FallbackHoldLoopAsync(hydId, latch.Cts.Token),
+                            latch.Cts.Token),
+                        "HydraulicFallbackHold",
+                        Guid.Empty);
                     latch.ReleaseActionAsync = async () =>
                     {
                         try

@@ -367,7 +367,7 @@ namespace Controller
                     };
                     _doControlTrace.Add(traceEvent);
                     var loggedResult = result;
-                    _ = System.Threading.Tasks.Task.Run(() =>
+                    ObserveBackgroundTask(System.Threading.Tasks.Task.Run(() =>
                     {
                         var currentText = double.IsNaN(current)
                             ? "NaN"
@@ -384,7 +384,7 @@ namespace Controller
                             _log.Info(message, "EPB-DO");
                         else
                             _log.Warn(message, "EPB-DO");
-                    });
+                    }), "DoControlTraceLog", channel);
                 }
                 catch
                 {

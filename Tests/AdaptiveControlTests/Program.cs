@@ -35,12 +35,50 @@ namespace AdaptiveControlTests
                     return 0;
                 }
                 if (args.Length == 1 &&
+                    args[0].Equals("--daq-realtime", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += DaqRealtimeControlTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
+                    args[0].Equals("--field-clock", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += DaqRealtimeControlTests.RunFieldClockRegression();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
+                    args[0].Equals("--persistence-load", StringComparison.OrdinalIgnoreCase))
+                {
+                    Run(
+                        "六通道2kHz双DAQ真实写盘实时负载",
+                        DaqPersistenceCoordinatorTests.SixChannelRealtimePersistenceStaysAhead);
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 2 &&
+                    args[0].Equals("--persistence-soak", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!int.TryParse(args[1], NumberStyles.Integer, CultureInfo.InvariantCulture,
+                            out var soakSeconds))
+                        throw new ArgumentException("--persistence-soak 需要整数秒数。");
+                    Run(
+                        $"六通道2kHz双DAQ真实写盘持续{soakSeconds}秒",
+                        () => DaqPersistenceCoordinatorTests
+                            .SixChannelRealtimePersistenceStaysAhead(soakSeconds));
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
                     args[0].Equals("--incident-10358-029", StringComparison.OrdinalIgnoreCase))
                 {
                     _passed += RecoveryCoordinationTests.RunAll();
                     _passed += ProjectLogStoreTests.RunRealtimeIsolationRegression();
                     _passed += HydraulicGroupCoordinatorTests.RunRecoveryEvidenceRegression();
                     Run("峰值偏差只比较同一证据时间窗", PeakEvidenceMismatchRequiresComparableWindow);
+                    Run("不可比较时间窗不冒充后台处理滞后", NonComparablePeakWindowIsNotProcessingLag);
+                    Run("软预警完整证据按通道类别执行600秒限频", WarningSnapshotFullEvidenceIntervalIsEnforced);
                     Run("峰值排空墙钟等待不计入证据尾差", PeakDrainDelayDoesNotInvalidateEvidence);
                     Run("六通道并发封口不产生墙钟峰值误判", SixChannelPeakDrainIsConsistent);
                     Run("软件自愈连续三次无进展后熔断", SoftwareSelfHealingStopsAfterThreeAttempts);
@@ -55,7 +93,8 @@ namespace AdaptiveControlTests
                 Run("正常夹紧", NormalClamp);
                 Run("学习尾部提前量后预测夹紧", LearnedTailLeadPredictsClamp);
                 Run("低斜率不提前误触发", LowSlopeDoesNotPredictEarly);
-                Run("未识别负载上升前到阈值立即停机", ThresholdBeforeLoadRiseFaults);
+                Run("未识别负载上升前到阈值立即断电但不误报硬故障", ThresholdBeforeLoadRiseBecomesFastRiseCandidate);
+                Run("完整速率证据确认快速夹紧不误报曲线顺序故障", FullRateRapidClampBeforeLoadRiseIsAccepted);
                 Run("夹紧阈值必须连续三样本确认", ClampNeedsThreeSamples);
                 Run("稳定模型后连续50圈仍记录正向空行程", StableProfileKeepsLearningForFiftyCycles);
                 Run("正式控制仍按程序级期限拦截无负载上升", ForwardLoadRiseDeadlineFaults);
@@ -103,6 +142,9 @@ namespace AdaptiveControlTests
                 Run("程序安全配置快照包含值与来源", ProgramSafetySnapshotIsAuditable);
                 Run("报警配置加载不可恢复连续阈值", AlarmConfigLoadsForwardStallConfirmation);
                 Run("软预警按通道类别保留30次且Unlimited不删除", WarningSnapshotRetentionModes);
+                Run("软预警完整证据按通道类别执行600秒限频", WarningSnapshotFullEvidenceIntervalIsEnforced);
+                Run("软预警默认轻量JSONL且包含完整运行身份", WarningScalarEvidenceIsDefaultAndAuditable);
+                Run("软预警千次风暴仅允许一个运行一个等待并合并重复", WarningSnapshotFloodIsStrictlyBounded);
                 Run("普通故障按尝试圈连续3次确认且单圈去重", GenericFaultConfirmationUsesAttemptCycles);
                 Run("普通故障成功圈清零且通道故障码隔离", GenericFaultConfirmationResetsAndIsolates);
                 Run("电流硬故障与已确认专用策略不二次计数", ImmediateAndPreconfirmedFaultClassification);
@@ -122,6 +164,8 @@ namespace AdaptiveControlTests
                 Run("液压建压超时提示按失败方向区分", HydraulicBuildTimeoutGuidance);
                 Run("液压启动仅软件代次异常进入自愈", HydraulicStartupRecoveryClassification);
                 Run("模型原子保存与重载", ProfilePersistence);
+                Run("DO完成延迟分布进入控流模型且单圈更新限幅", DoCompletionLatencyFeedsCutoffModel);
+                Run("后台任务监督记录身份异常并可限时收口", TaskSupervisorTracksFaultsAndDrains);
                 Run("控流模型五圈收敛到目标带", CutoffModelConvergesWithinFiveCycles);
                 Run("峰值系统偏差用于提前断电补偿", PeakBiasCorrectionIsLearned);
                 Run("峰值超过目标2A连续8圈才达到确认值", OvershootStreakRequiresConsecutiveCycles);
@@ -139,7 +183,7 @@ namespace AdaptiveControlTests
                 Run("正式圈必须控制与落盘均成功才计数", FormalCycleRequiresPersistenceCommitToCount);
                 Run("正向低平台连续8圈确认且正常圈清零", ForwardStallStreakRequiresFiveCycles);
                 _passed += NonRecoverableAlarmPolicyTests.RunAll();
-                Run("版本1模型无损升级到版本3", VersionOneProfileMigrates);
+                Run("旧控制策略模型留档失效并按版本5重新学习", VersionOneProfileMigrates);
                 Run("损坏模型回退", CorruptProfileFallback);
                 Run("周期超限不追赶且圈号连续", TimerDoesNotCatchUp);
                 Run("优雅暂停等待当前圈结束且阻止下一圈", TimerGracefulPauseWaitsForCurrentCycle);
@@ -147,10 +191,10 @@ namespace AdaptiveControlTests
                 Run("Timer暂停事件立即纠正运行态", TimerPauseStateCorrectsRunningStatus);
                 Run("Timer失活看门狗识别停止和陈旧心跳", TimerRuntimeWatchdogDetectsStoppedAndStale);
                 Run("非人工Timer异常允许自动重建续测", TimerAnomalyRecoveryEligibility);
-                Run("Timer自恢复持续退避且不停止重试", TimerRecoveryRetryBackoff);
+                Run("Timer和组恢复三次失败后只熔断一次并整批重建", TimerRecoveryRetryAndCircuitBreaker);
                 Run("只有卡钳通道硬件故障允许锁存停机", ExternalEquipmentFaultsRemainRecoverable);
                 Run("外部设备恢复不得拉起报警禁用或人工暂停通道", InfrastructureRecoveryFiltersStoppedChannels);
-                Run("可恢复卡钳故障持续自启且硬件锁存禁止自启", RecoverableChannelRestartPolicy);
+                Run("可恢复卡钳故障允许三次自启且硬件锁存禁止自启", RecoverableChannelRestartPolicy);
                 Run("同进程暂停不因时长增加资格门禁", PauseResumeFiveMinutePolicy);
                 Run("单通道恢复按当前公共正式槽重入", PausedChannelRejoinsCurrentSharedFormalSlot);
                 Run("批次暂停和恢复预检期间DAQ自愈不得越权恢复定时器", DaqRecoveryRespectsBatchPausePolicy);
@@ -185,7 +229,12 @@ namespace AdaptiveControlTests
                 Run("非运行终态禁止继续加电", TerminalRuntimeStatesRejectEnergization);
                 Run("启动受阻提交要求执行资源全部清场", TerminalStateRequiresExecutionQuiescence);
                 Run("状态版本阻止迟到报警覆盖新运行状态", RuntimeStateRevisionRejectsLateUiDelivery);
-                Run("安全退出仅允许压力证据单项缺失", StopSafetyExitPolicy);
+                Run("安全退出区分物理安全、持久化边界和可重启条件", StopSafetyExitPolicy);
+                Run("停止持久化边界要求Raw发布、写盘和队列同时闭合", StopPersistenceBoundaryPolicy);
+                Run("活动圈与终态重试未收口时禁止同进程重启", ActiveCycleBlocksInProcessRestart);
+                Run("会话闭合必须同时清空活动表和缓存表", SessionClosureRequiresAllRuntimeStoresIdle);
+                Run("迟到旧运行撤销不得清除新运行授权", RunAuthorizationRevocationIsRunBounded);
+                Run("迟到旧运行不得登记新运行自动恢复", AutomaticRecoveryRequiresExactRunIdentity);
                 Run("Dev1与Dev2有界队列容量互不影响", DaqBoundedQueuesAreIndependent);
                 Run("12通道并发首次创建运行对象", TwelveChannelsCreateRuntimesConcurrently);
                 Run("12通道错过锚点仍保留800ms相位", OverdueTwelveChannelReleaseCreatesSafely);
@@ -209,10 +258,18 @@ namespace AdaptiveControlTests
                 Run("EPB勾选仅按设置到电源到曲线单向传播", EpbSelectionPropagatesOneWay);
                 Run("DHMS运行时间格式", DhmsFormatting);
                 Run("固定随机种子10万圈耐久仿真", HundredThousandCycleDurabilitySimulation);
+                Run("UI十万条日志生产保持512有界且50行批量消费", UiLogFloodStaysBoundedAndBatched);
                 Run("持久化积压低水位后自动恢复", DaqPersistenceCoordinatorTests.PauseAndRecoverAfterLowWater);
                 Run("持久化硬容量使用独立故障码", DaqPersistenceCoordinatorTests.HardCapacityKeepsRealFaultCode);
+                Run("磁盘50至1500ms暂停均不反压生产且单次暂停后恢复", DaqPersistenceCoordinatorTests.DiskPauseMatrixRemainsBoundedAndRecovers);
+                Run("写盘超时保留原批次且存储恢复后按序补写", DaqPersistenceCoordinatorTests.RecoveryTimeoutRetainsBatchUntilStorageReturns);
+                Run("通道级耐久前缀不阻塞同设备健康后续流量", DaqPersistenceCoordinatorTests.DurablePrefixAllowsHealthyLaterTrafficButRejectsSuppression);
                 Run("活动圈上限事件携带EPB圈号和限制", DaqPersistenceCoordinatorTests.ActiveCycleLimitPublishesLifecycleIdentity);
                 Run("持久化诊断观察者异常不重复写盘", DaqPersistenceCoordinatorTests.DiagnosticObserverFailureDoesNotRetryWrite);
+                Run("映射故障进程内自愈不触发DAQ停机", DaqPersistenceCoordinatorTests.MappingFailureRecoversBeforeSafetyPause);
+                Run("写盘短视图延迟映射与事务切换", DaqPersistenceCoordinatorTests.DiskWriterUsesLazyTransactionalViewsAndCanResetThem);
+                Run("新进程收口历史running圈", DaqPersistenceCoordinatorTests.DiskWriterClosesInterruptedRunningCyclesOnStartup);
+                Run("六通道2kHz双DAQ真实写盘实时负载", DaqPersistenceCoordinatorTests.SixChannelRealtimePersistenceStaysAhead);
                 _passed += DaqRealtimeControlTests.RunAll();
                 _passed += CalibrationMathTests.RunAll();
                 _passed += HydraulicGroupCoordinatorTests.RunAll();
@@ -365,15 +422,17 @@ namespace AdaptiveControlTests
             Assert(!decision.ClampReached && !decision.HardFault, "低斜率波形被预测算法提前误触发");
         }
 
-        private static void ThresholdBeforeLoadRiseFaults()
+        private static void ThresholdBeforeLoadRiseBecomesFastRiseCandidate()
         {
             var machine = NewMachine();
             machine.ArmForward(Tick(0), 100, 6000, 15, 1, 3);
             Feed(machine, 0, 90, 10, _ => 1.0);
-            var fault = machine.OnSample(Tick(100), 15.0);
+            var candidate = machine.OnSample(Tick(100), 15.0);
             Assert(
-                fault.HardFault && fault.Reason.Contains("ThresholdBeforeLoadRise"),
-                "未形成完整负载上升曲线时到达阈值没有立即停机");
+                candidate.ClampReached && !candidate.HardFault && candidate.SoftWarning &&
+                candidate.CutoffReason == "FastRiseCandidate" &&
+                candidate.Reason.Contains("AwaitingFullRateEvidence"),
+                "未形成负载上升曲线时到达阈值未立即断电，或仍被状态顺序误报为硬故障");
         }
 
         private static void ClampNeedsThreeSamples()
@@ -658,6 +717,18 @@ namespace AdaptiveControlTests
             }
 
             Assert(!learningStarted, "预释放失败后仍进入学习阶段");
+        }
+
+        private static void FullRateRapidClampBeforeLoadRiseIsAccepted()
+        {
+            var machine = NewMachine();
+            machine.ArmForward(Tick(0), 100, 6000, 15, 1, 3);
+            Feed(machine, 0, 90, 10, _ => 1.0);
+            var decision = machine.OnSample(Tick(100), 15.0, 15.2);
+            Assert(
+                decision.ClampReached && !decision.HardFault && decision.SoftWarning &&
+                decision.CutoffReason == "FullRateRapidClamp",
+                "2kHz完整速率证据已确认达标时仍被误报为ThresholdBeforeLoadRise硬故障");
         }
 
         private static void StartupPositioningRequiresIndependentHardwareEvidence()
@@ -1392,6 +1463,7 @@ namespace AdaptiveControlTests
                 loaded.Behavior.PeakEvidenceMismatchConfirmCycles == 3 &&
                 loaded.Behavior.GenericFaultConfirmCycles == 3 &&
                 loaded.WarningSnapshots.Enabled &&
+                !loaded.WarningSnapshots.FullEvidenceEnabled &&
                 loaded.WarningSnapshots.SaveCsv &&
                 loaded.WarningSnapshots.SaveBin &&
                 loaded.WarningSnapshots.HardAlarmLastNCycles == 10 &&
@@ -1400,7 +1472,9 @@ namespace AdaptiveControlTests
                 loaded.WarningSnapshots.SoftWarningRetentionMode == StorageRetentionMode.Count &&
                 loaded.WarningSnapshots.SoftWarningRetainCountPerChannelCode == 30 &&
                 loaded.WarningSnapshots.SoftWarningQuotaMb == 0 &&
-                loaded.WarningSnapshots.DiskFreeWarningMb == 10240,
+                loaded.WarningSnapshots.DiskFreeWarningMb == 10240 &&
+                loaded.WarningSnapshots.FullEvidenceQueueCapacity == 1 &&
+                loaded.WarningSnapshots.ScalarEvidenceQueueCapacity == 4096,
                 "AlarmConfig.xml 未加载连续阈值或预警快照安全默认值");
 
             var directory = CreateTempDir();
@@ -1848,7 +1922,7 @@ namespace AdaptiveControlTests
                 var profile = store.GetOrCreate(10);
                 for (var i = 0; i < 5; i++)
                     profile.AddSuccessfulCycle(1.0 + i * 0.01, 0.8 + i * 0.01, 3000 + i * 10, 1200 + i * 5);
-                profile.TryAddCutoffObservation(15.0, 14.5, 0.05, 15.0, out _);
+                profile.TryAddCutoffObservation(15.0, 14.5, 0.05, 15.0, 3.0, out _);
                 profile.UpdateForwardStallStreak(true);
                 profile.UpdateForwardStallStreak(true);
                 store.Save(profile);
@@ -1856,11 +1930,13 @@ namespace AdaptiveControlTests
                 var loaded = new EpbAdaptiveProfileStore(dir).GetOrCreate(10);
                 Assert(loaded.ValidSampleCount == 5, "模型样本数未持久化");
                 Assert(loaded.IsStable, "五圈后模型未进入稳定状态");
-                Assert(loaded.ModelVersion == 3, "控流模型未保存为版本3");
+                Assert(loaded.ModelVersion == 5, "控流模型未保存为版本5");
                 Assert(loaded.ValidCutoffSampleCount == 1, "控流样本数未持久化");
                 Assert(loaded.ConsecutiveForwardStallCount == 2, "正向低平台连续计数未持久化");
                 Assert(Math.Abs(loaded.ForwardCutoffLeadMedianMs - 10.0) < 0.01,
                     "控流提前时间未持久化");
+                Assert(Math.Abs(loaded.ForwardDoCompletionMedianMs - 3.0) < 0.01,
+                    "DO完成延迟未持久化");
                 Assert(File.Exists(Path.Combine(dir, "EpbAdaptiveProfiles.xml")), "模型文件不存在");
             }
             finally
@@ -1922,6 +1998,104 @@ namespace AdaptiveControlTests
                     $"永久过冲第{cycle}圈计数错误");
             Assert(profile.UpdateForwardPermanentOvershootStreak(false) == 0,
                 "峰值回到目标+2A以内后连续计数未清零");
+        }
+
+        private static void DoCompletionLatencyFeedsCutoffModel()
+        {
+            var fastDo = StableProfile();
+            var slowDo = StableProfile();
+            const double targetA = 15.0;
+            const double cutoffA = 14.0;
+            const double slope = 0.05;
+            const double physicalTailMs = 7.0;
+            for (var i = 0; i < 5; i++)
+            {
+                Assert(
+                    fastDo.TryAddCutoffObservation(
+                        targetA,
+                        cutoffA,
+                        slope,
+                        cutoffA + slope * (physicalTailMs + 2.0),
+                        2.0,
+                        out _),
+                    "快速DO延迟样本被拒绝");
+                Assert(
+                    slowDo.TryAddCutoffObservation(
+                        targetA,
+                        cutoffA,
+                        slope,
+                        cutoffA + slope * (physicalTailMs + 8.0),
+                        8.0,
+                        out _),
+                    "慢速DO延迟样本被拒绝");
+            }
+
+            Assert(Math.Abs(fastDo.ForwardPhysicalTailMedianMs - physicalTailMs) < 0.01,
+                "快速DO模型未分离物理尾升");
+            Assert(Math.Abs(slowDo.ForwardPhysicalTailMedianMs - physicalTailMs) < 0.01,
+                "慢速DO模型未分离物理尾升");
+            Assert(Math.Abs(fastDo.ForwardCutoffLeadMedianMs - 9.0) < 0.01,
+                "快速DO的预测提前量不正确");
+            Assert(Math.Abs(slowDo.ForwardCutoffLeadMedianMs - 15.0) < 0.01,
+                "慢速DO的预测提前量未包含实测延迟");
+
+            fastDo.TryAddCutoffObservation(
+                targetA,
+                cutoffA,
+                slope,
+                cutoffA + slope * (physicalTailMs + 80.0),
+                80.0,
+                out _);
+            Assert(fastDo.ForwardDoCompletionHistoryMs.Last() <= 7.001,
+                "单圈DO调度尖峰未被鲁棒步长限幅");
+            Assert(fastDo.ModelVersion == 5, "DO延迟模型未升级到版本5");
+        }
+
+        private static void TaskSupervisorTracksFaultsAndDrains()
+        {
+            var logger = new CollectingLogger();
+            var supervisor = new TaskSupervisor(logger);
+            var runId = Guid.NewGuid();
+            supervisor.Observe(
+                Task.Run((Action)(() => throw new InvalidOperationException("supervised-boom"))),
+                "FaultingEvidenceExport",
+                runId,
+                5);
+            Assert(SpinWait.SpinUntil(() => supervisor.ActiveCount == 0, 2000),
+                "故障后台任务未从活动清单收口");
+            Assert(SpinWait.SpinUntil(() => logger.Errors.Count > 0, 2000),
+                "故障后台任务未记录异常");
+            Assert(logger.Errors.Any(message =>
+                    message.Contains("FaultingEvidenceExport") &&
+                    message.Contains(runId.ToString("N")) &&
+                    message.Contains("EPB=5") &&
+                    message.Contains("supervised-boom")),
+                "后台任务异常缺少任务名、RunId、通道或根异常");
+
+            var completion = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            supervisor.Observe(completion.Task, "DrainProbe", runId, 4);
+            Assert(supervisor.Snapshot().Any(item =>
+                    item.Operation == "DrainProbe" && item.RunId == runId && item.Channel == 4),
+                "活动任务快照缺少身份元数据");
+            supervisor.Observe(
+                Task.Run(async () =>
+                {
+                    await Task.Delay(30).ConfigureAwait(false);
+                    completion.TrySetResult(true);
+                }),
+                "DrainCompleter",
+                runId,
+                4);
+            Assert(supervisor.DrainAsync(1000).GetAwaiter().GetResult(),
+                "后台任务未在限时内排空");
+            Assert(supervisor.ActiveCount == 0, "排空后仍残留后台任务");
+
+            for (var i = 0; i < 1000; i++)
+                supervisor.Observe(Task.CompletedTask, "AlreadyCompleted", runId, 4);
+            Assert(supervisor.DrainAsync(1000).GetAwaiter().GetResult() &&
+                   supervisor.ActiveCount == 0,
+                "已完成任务的观察延续未在排空门禁内严格收口");
         }
 
         private static void RestartClearsOnlyTransientStreaks()
@@ -2168,6 +2342,14 @@ namespace AdaptiveControlTests
                         2,
                         "TelemetryOutputDisabled")),
                 "电源许可缺失仍被当作卡钳硬件故障累计");
+            Assert(EpbCycleRunner.ShouldReclassifyOpenCircuit(
+                    "OpenCircuitOrOutputFault I=0.016A",
+                    infrastructureTransition: true),
+                "设备恢复窗口内近零电流未改判为软件恢复圈");
+            Assert(!EpbCycleRunner.ShouldReclassifyOpenCircuit(
+                    "OpenCircuitOrOutputFault I=0.016A",
+                    infrastructureTransition: false),
+                "正常供电下真实开路被软件恢复吞掉");
             Assert(EpbCycleRunner.IsSoftwareRecoveryException(
                     new HydraulicBuildTimeoutException(
                         1, 70, 10, 55, 5000, "BelowToleranceWindow", 2, 3)),
@@ -2348,6 +2530,136 @@ namespace AdaptiveControlTests
                 "缺少快速证据截止时间时仍参与偏差硬故障计数");
         }
 
+        private static void NonComparablePeakWindowIsNotProcessingLag()
+        {
+            var evidenceThrough = new DateTime(
+                2026, 8, 8, 0, 12, 49, 100, DateTimeKind.Utc);
+            Assert(
+                !EpbCycleRunner.IsPeakEvidenceLagExceeded(double.NaN, 100),
+                "缺少可量化尾差时被错误判为处理滞后");
+            Assert(
+                !EpbCycleRunner.IsPeakEvidenceLagExceeded(97.5, 100),
+                "阈值内尾差被错误判为处理滞后");
+            Assert(
+                EpbCycleRunner.IsPeakEvidenceLagExceeded(100.1, 100),
+                "真实超过阈值的尾差未触发处理滞后");
+            Assert(
+                EpbCycleRunner.ClassifyPeakEvidenceDiagnostic(
+                    evidenceThrough,
+                    evidenceThrough.AddMilliseconds(25),
+                    25,
+                    100) == null,
+                "capture有效、25ms且完整峰值较晚时错误产生处理滞后诊断");
+            Assert(
+                EpbCycleRunner.ClassifyPeakEvidenceDiagnostic(
+                    evidenceThrough,
+                    evidenceThrough.AddMilliseconds(101),
+                    101,
+                    100) == AdaptiveWarningCode.PeakEvidenceLagWarning,
+                "101ms真实尾差未产生唯一峰值处理滞后代码");
+            Assert(
+                EpbCycleRunner.ClassifyPeakEvidenceDiagnostic(
+                    DateTime.MinValue,
+                    evidenceThrough,
+                    double.NaN,
+                    100) == AdaptiveWarningCode.PeakEvidenceTimestampMissing,
+                "时间戳缺失未产生独立诊断代码");
+        }
+
+        private static void WarningSnapshotFullEvidenceIntervalIsEnforced()
+        {
+            var first = new DateTime(2026, 8, 8, 1, 0, 0, DateTimeKind.Utc);
+            Assert(
+                !EpbManager.IsWarningSnapshotIntervalElapsed(first, first.AddSeconds(599.9), 600),
+                "600秒内重复软预警仍被允许导出完整证据");
+            Assert(
+                EpbManager.IsWarningSnapshotIntervalElapsed(first, first.AddSeconds(600), 600),
+                "达到600秒后未重新允许完整证据");
+            Assert(
+                !EpbManager.IsWarningSnapshotIntervalElapsed(first, first.AddSeconds(-1), 600),
+                "系统时钟回退时错误放开了重复完整证据");
+        }
+
+        private static void WarningScalarEvidenceIsDefaultAndAuditable()
+        {
+            var cfg = new WarningSnapshotConfig();
+            Assert(cfg.Enabled && !cfg.FullEvidenceEnabled &&
+                   cfg.ScalarEvidenceQueueCapacity == 4096,
+                "软预警未默认采用轻量标量证据，可能重新复制大量整圈文件");
+
+            var identity = RuntimeBuildIdentity.Capture();
+            var json = EpbManager.BuildWarningScalarJson(
+                new EpbManager.WarningScalarEvidence
+                {
+                    RunId = Guid.NewGuid(),
+                    Channel = 8,
+                    CycleNumber = 123,
+                    AttemptId = 456,
+                    OccurredUtc = DateTime.UtcNow,
+                    Code = "PeakEvidenceLagWarning",
+                    EvidenceLagMs = 101.25,
+                    PersistenceQueueDepth = 7,
+                    PeakCurrentA = 15.5,
+                    TargetCurrentA = 15,
+                    PeakErrorA = 0.5,
+                    Streak = 1,
+                    ConfirmThreshold = 3,
+                    Reason = "test"
+                },
+                identity);
+            Assert(json.Contains("\"lagMs\":101.25") &&
+                   json.Contains("\"persistenceQueueDepth\":7") &&
+                   json.Contains("\"productVersion\"") &&
+                   json.Contains("\"processId\"") &&
+                   json.Contains("\"executablePath\"") &&
+                   json.Contains("\"executableSha256\"") &&
+                   json.Contains("\"gitCommit\"") &&
+                   json.Contains("\"buildUtc\"") &&
+                   json.Contains("\"releaseConfigSha256\""),
+                "软预警JSONL缺少lag、队列深度或可审计运行身份");
+        }
+
+        private static void WarningSnapshotFloodIsStrictlyBounded()
+        {
+            var gate = new WarningSnapshotWorkGate();
+            var now = new DateTime(2026, 8, 8, 1, 0, 0, DateTimeKind.Utc);
+            Assert(gate.TryQueue("run:4:1:PeakLag", "4:PeakLag", now, 600, 1),
+                "首个完整证据任务未准入");
+            Assert(gate.TryStart("run:4:1:PeakLag"), "首个完整证据任务未进入运行态");
+            Assert(!gate.TryQueue("run:4:1:PeakLag", "4:PeakLag", now, 600, 1),
+                "同一幂等键被重复准入");
+            Assert(gate.TryQueue("run:5:1:Other", "5:Other", now, 600, 1),
+                "唯一等待位未准入");
+
+            var accepted = 0;
+            Parallel.For(0, 1000, index =>
+            {
+                if (gate.TryQueue(
+                        $"run:{index}:2:storm",
+                        $"{index}:storm",
+                        now,
+                        600,
+                        1))
+                    Interlocked.Increment(ref accepted);
+            });
+            Assert(accepted == 0, $"预警风暴越过唯一等待位：Accepted={accepted}");
+            Assert(gate.RunningCount == 1 && gate.PendingCount == 1 && gate.ActiveJobCount == 2,
+                $"预警任务门控不满足1运行+1等待：Running={gate.RunningCount} " +
+                $"Pending={gate.PendingCount} Active={gate.ActiveJobCount}");
+
+            gate.Complete("run:4:1:PeakLag");
+            Assert(gate.TryStart("run:5:1:Other"), "等待任务未能接替运行");
+            gate.Complete("run:5:1:Other");
+            Assert(!gate.TryQueue("run:4:2:PeakLag", "4:PeakLag", now.AddSeconds(599), 600, 1),
+                "600秒内同类别完整证据未合并");
+            Assert(gate.TryQueue("run:4:3:PeakLag", "4:PeakLag", now.AddSeconds(600), 600, 1),
+                "达到600秒后完整证据仍被拒绝");
+            Assert(gate.TryStart("run:4:3:PeakLag"), "限频到期任务未进入运行态");
+            gate.Complete("run:4:3:PeakLag");
+            Assert(gate.ActiveJobCount == 0 && gate.PendingCount == 0 && gate.RunningCount == 0,
+                "预警任务全部结束后仍有活动/等待残留");
+        }
+
         private static void PeakDrainDelayDoesNotInvalidateEvidence()
         {
             var cutoffUtc = DateTime.UtcNow;
@@ -2475,6 +2787,12 @@ namespace AdaptiveControlTests
                    nearTargetPlateau.Contains("确认时长=220ms") &&
                    !nearTargetPlateau.Contains("系统检测到异常"),
                 "近目标平台预警未转换为可操作的中文提示");
+
+            var fastRise = AlarmMessageLocalizer.ToUserMessage(
+                "FastRiseCandidate Peak=15.100A AwaitingFullRateEvidence");
+            Assert(fastRise.Contains("快速夹紧候选已断开正向供电") &&
+                   !fastRise.Contains("FastRiseCandidate"),
+                "快速夹紧候选仍暴露英文码，或未明确已经执行安全断电");
         }
 
         private static void ConcurrentUiConfigSaveIsAtomic()
@@ -2512,15 +2830,27 @@ namespace AdaptiveControlTests
             try
             {
                 var cfg = new UiConfig();
-                for (var i = 0; i < 20; i++)
+                for (var i = 0; i < 1000; i++)
                     ConfigLoader.UpdateUIChecked(
                         path, cfg, "Main", "CheckEpbA1", (i & 1) == 1);
+                var debouncersField = typeof(ConfigLoader).GetField(
+                    "UiSaveDebouncers",
+                    System.Reflection.BindingFlags.Static |
+                    System.Reflection.BindingFlags.NonPublic);
+                var debouncers = debouncersField?.GetValue(null);
+                var countProperty = debouncers?.GetType().GetProperty("Count");
+                var activeDebouncers = (int)(countProperty?.GetValue(debouncers) ?? -1);
+                Assert(activeDebouncers == 1,
+                    $"1000次UI更新未合并为单一计时器：Active={activeDebouncers}");
                 Thread.Sleep(800);
                 var loaded = ConfigLoader.LoadUI(path);
                 Assert(loaded.GetOrAddForm("Main").GetOrAdd("CheckEpbA1").Checked,
                     "防抖保存未保留最后一次勾选状态");
                 Assert(Directory.GetFiles(directory, "*.tmp").Length == 0,
                     "防抖保存遗留临时文件");
+                activeDebouncers = (int)(countProperty?.GetValue(debouncers) ?? -1);
+                Assert(activeDebouncers == 0,
+                    $"UI防抖保存完成后仍残留计时器：Active={activeDebouncers}");
             }
             finally
             {
@@ -2585,18 +2915,23 @@ namespace AdaptiveControlTests
 
                 var store = new EpbAdaptiveProfileStore(dir);
                 var loaded = store.GetOrCreate(10);
-                Assert(loaded.IsStable && loaded.ValidSampleCount == 5, "版本1有效样本未保留");
-                Assert(Math.Abs(loaded.ForwardEmptyCurrentA - 1.1) < 0.001,
-                    "版本1空行程基线未保留");
+                Assert(!loaded.IsStable && loaded.ValidSampleCount == 0,
+                    "旧控制策略模型未失效，可能继续复用污染基线");
+                Assert(Math.Abs(loaded.ForwardEmptyCurrentA) < 0.001,
+                    "旧控制策略空行程基线未清除");
                 Assert(loaded.ValidCutoffSampleCount == 0 && !loaded.HasCutoffPrediction,
                     "版本1模型错误地产生控流学习数据");
+                Assert(Directory.GetFiles(dir, "*.pre-v5.*").Length == 1,
+                    "旧控制策略模型失效前未保留审计副本");
 
+                for (var i = 0; i < 5; i++)
+                    loaded.AddSuccessfulCycle(1.0, 0.8, 3000, 1200);
                 loaded.TryAddCutoffObservation(15.0, 14.5, 0.05, 15.0, out _);
                 store.Save(loaded);
                 var migrated = new EpbAdaptiveProfileStore(dir).GetOrCreate(10);
-                Assert(migrated.ModelVersion == 3, "版本1模型首次控流保存后未升级");
+                Assert(migrated.ModelVersion == 5, "旧模型重新学习后未升级为版本5");
                 Assert(migrated.ValidSampleCount == 5 && migrated.ValidCutoffSampleCount == 1,
-                    "模型升级破坏原有样本或新增控流样本");
+                    "模型升级后的重新学习样本或控流样本错误");
                 Assert(migrated.ConsecutiveForwardStallCount == 0,
                     "旧模型迁移时错误产生正向低平台连续计数");
             }
@@ -2737,10 +3072,15 @@ namespace AdaptiveControlTests
                 "当前圈结束后Timer未公开Paused状态");
             Assert(timer.IsPaused && timer.PauseReason == "ChannelGracefulPause" && timer.PauseUtc.HasValue,
                 "Timer暂停健康字段不完整");
-            lock (states)
-                Assert(states.Contains(HighPrecisionTimerRuntimeState.PausePending) &&
-                       states.Contains(HighPrecisionTimerRuntimeState.Paused),
-                    "Timer未发布完整暂停状态事件");
+            Assert(SpinWait.SpinUntil(
+                    () =>
+                    {
+                        lock (states)
+                            return states.Contains(HighPrecisionTimerRuntimeState.PausePending) &&
+                                   states.Contains(HighPrecisionTimerRuntimeState.Paused);
+                    },
+                    1000),
+                "Timer未发布完整暂停状态事件");
 
             var decision = EpbManager.EvaluateTimerRuntimeHealth(
                 ChannelRuntimeState.Running,
@@ -2857,7 +3197,7 @@ namespace AdaptiveControlTests
                 "项目已禁用卡钳被错误自动拉起");
         }
 
-        private static void TimerRecoveryRetryBackoff()
+        private static void TimerRecoveryRetryAndCircuitBreaker()
         {
             Assert(EpbManager.SelectTimerRecoveryRetryDelayMs(1) == 1000,
                 "Timer自恢复首次退避错误");
@@ -2869,7 +3209,38 @@ namespace AdaptiveControlTests
                 "Timer自恢复第四次退避错误");
             Assert(EpbManager.SelectTimerRecoveryRetryDelayMs(5) == 30000 &&
                    EpbManager.SelectTimerRecoveryRetryDelayMs(500) == 30000,
-                "Timer自恢复长期重试未限制为30秒且存在停止门槛");
+                "通用恢复退避上限未限制为30秒");
+            Assert(!EpbManager.ShouldEscalateSoftwareRecovery(1) &&
+                   !EpbManager.ShouldEscalateSoftwareRecovery(2),
+                "软件自愈在阈值前被过早熔断");
+            Assert(EpbManager.ShouldEscalateSoftwareRecovery(3) &&
+                   EpbManager.ShouldEscalateSoftwareRecovery(100),
+                "软件自愈达到三次后仍会无限停留在自维护");
+
+            var runId = Guid.NewGuid();
+            var gate = new SoftwareRecoveryEscalationGate();
+            var opened = 0;
+            Parallel.For(0, 1000, _ =>
+            {
+                if (gate.TryOpen(runId)) Interlocked.Increment(ref opened);
+            });
+            Assert(opened == 1 && gate.IsOpen(runId),
+                $"同一运行的并发恢复熔断不是single-flight：Opened={opened}");
+            gate.Reset();
+            Assert(gate.TryOpen(runId) && !gate.TryOpen(runId),
+                "新运行复位后恢复熔断器未重新允许一次整批重建");
+
+            var fault = EpbManager.CreateSoftwareRecoveryCircuitFault(
+                runId,
+                new[] { 5, 4, 5, 99 },
+                "Injected");
+            Assert(fault.Code == "SoftwareRecoveryCircuitOpen" &&
+                   fault.CorrelationId == runId &&
+                   fault.Scope == FaultScope.Global &&
+                   fault.Classification == FaultClassification.SystemFault &&
+                   fault.RecoveryPolicy == FaultRecoveryPolicy.UnattendedBatchRecycle &&
+                   fault.AffectedChannels.SequenceEqual(new[] { 4, 5 }),
+                "软件恢复熔断未携带原 RunId 或未路由到无人值守整批重建");
         }
 
         private static void ExternalEquipmentFaultsRemainRecoverable()
@@ -2915,6 +3286,9 @@ namespace AdaptiveControlTests
                 "人工停止通道被错误允许自动启动");
             Assert(!EpbManager.CanContinueRecoverableChannelRestart(true, false, true),
                 "明确卡钳硬件锁存被错误允许自动启动");
+            Assert(!EpbManager.ShouldEscalateSoftwareRecovery(2) &&
+                   EpbManager.ShouldEscalateSoftwareRecovery(3),
+                "可恢复卡钳资格复核没有在三次失败后切换为整批软件重建");
         }
 
         private static void PauseResumeFiveMinutePolicy()
@@ -3546,6 +3920,22 @@ namespace AdaptiveControlTests
             };
             Assert(pressureOnly.CanReleaseAcquisition && !pressureOnly.FullyConfirmed,
                 "仅压力证据缺失时应允许释放DAQ但不得标记完全确认");
+            Assert(!pressureOnly.CanCloseApplication,
+                "持久化边界未确认时错误允许结束进程");
+            Assert(!EpbManager.ShouldShutdownPersistenceForStop(
+                       StopSource.ApplicationClosing,
+                       persistenceBoundaryConfirmed: false),
+                "窗口关闭的耐久边界未确认时错误释放写盘器");
+            Assert(EpbManager.ShouldShutdownPersistenceForStop(
+                       StopSource.ApplicationClosing,
+                       persistenceBoundaryConfirmed: true) &&
+                   EpbManager.ShouldShutdownPersistenceForStop(
+                       StopSource.ProgramExit,
+                       persistenceBoundaryConfirmed: true) &&
+                   !EpbManager.ShouldShutdownPersistenceForStop(
+                       StopSource.ManualUi,
+                       persistenceBoundaryConfirmed: true),
+                "写盘器关闭策略没有区分退出和普通停止");
 
             var powerMissing = new StopSafetyResult
             {
@@ -3564,6 +3954,68 @@ namespace AdaptiveControlTests
             };
             Assert(!motorMissing.CanReleaseAcquisition,
                 "电机DO关闭未确认时不应允许释放DAQ");
+
+            var restartable = new StopSafetyResult
+            {
+                MotorOffCommandSucceeded = true,
+                PowerOffConfirmed = true,
+                PressureSafeConfirmed = true,
+                PersistenceBoundaryConfirmed = true,
+                LogicalQuiescenceConfirmed = true
+            };
+            Assert(restartable.CanRestartInProcess,
+                "物理安全、持久化边界和逻辑清场全部确认后仍不可重启");
+            Assert(restartable.CanCloseApplication,
+                "电机/电源和持久化边界均确认后仍禁止正常退出");
+            restartable.PersistenceBoundaryConfirmed = false;
+            Assert(restartable.PhysicalSafetyConfirmed &&
+                   !restartable.FullyConfirmed &&
+                   !restartable.CanRestartInProcess &&
+                   !restartable.CanCloseApplication,
+                "Raw/持久化边界未闭合时错误允许同进程重启");
+        }
+
+        private static void StopPersistenceBoundaryPolicy()
+        {
+            Assert(EpbManager.IsStopPersistenceBoundaryClosed(100, 100, 100, 0),
+                "边界、Raw发布、持久化和队列均闭合时被误拒绝");
+            Assert(!EpbManager.IsStopPersistenceBoundaryClosed(100, 99, 100, 0),
+                "Raw发布尚未越过停止边界时错误放行");
+            Assert(!EpbManager.IsStopPersistenceBoundaryClosed(100, 100, 99, 0),
+                "持久化尚未越过停止边界时错误放行");
+            Assert(!EpbManager.IsStopPersistenceBoundaryClosed(100, 100, 100, 1),
+                "持久化队列仍有批次时错误放行");
+            Assert(!EpbManager.IsStopPersistenceBoundaryClosed(
+                    100, 100, 100, 0, DaqPersistenceState.Failed),
+                "持久化失败状态错误放行同进程重启");
+        }
+
+        private static void ActiveCycleBlocksInProcessRestart()
+        {
+            var activeCyclePending = new LogicalQuiescenceSnapshot
+            {
+                SoftwareRecoveryCount = 1
+            };
+            Assert(!activeCyclePending.IsQuiescent,
+                "仍有活动圈或圈终态重试时错误判定逻辑清场完成");
+
+            var result = new StopSafetyResult
+            {
+                MotorOffCommandSucceeded = true,
+                PowerOffConfirmed = true,
+                PressureSafeConfirmed = true,
+                PersistenceBoundaryConfirmed = true,
+                LogicalQuiescenceConfirmed = activeCyclePending.IsQuiescent,
+                LogicalState = activeCyclePending
+            };
+            Assert(result.PhysicalSafetyConfirmed && result.FullyConfirmed &&
+                   !result.CanRestartInProcess,
+                "活动圈尚未提交唯一终态时错误允许同进程重启");
+
+            activeCyclePending.SoftwareRecoveryCount = 0;
+            result.LogicalQuiescenceConfirmed = activeCyclePending.IsQuiescent;
+            Assert(activeCyclePending.IsQuiescent && result.CanRestartInProcess,
+                "所有圈终态与恢复任务清场后仍拒绝同进程重启");
         }
 
         private static void DaqBoundedQueuesAreIndependent()
@@ -3726,6 +4178,56 @@ namespace AdaptiveControlTests
                 Assert(store.Active.IsEmpty && store.Cache.IsEmpty,
                     $"第{cycle + 1}轮停止后仍有运行对象残留");
             }
+        }
+
+        private static void SessionClosureRequiresAllRuntimeStoresIdle()
+        {
+            Assert(EpbManager.AreSessionRuntimesIdle(0, 0, 0, 0),
+                "全部运行对象清空后仍拒绝会话收尾");
+            Assert(!EpbManager.AreSessionRuntimesIdle(1, 0, 0, 0),
+                "活动Timer存在时错误允许会话收尾");
+            Assert(!EpbManager.AreSessionRuntimesIdle(0, 1, 0, 0),
+                "缓存Timer存在时错误允许会话收尾");
+            Assert(!EpbManager.AreSessionRuntimesIdle(0, 0, 1, 0),
+                "活动Runner存在时错误允许会话收尾");
+            Assert(!EpbManager.AreSessionRuntimesIdle(0, 0, 0, 1),
+                "缓存Runner存在时错误允许会话收尾");
+        }
+
+        private static void RunAuthorizationRevocationIsRunBounded()
+        {
+            var oldRun = Guid.NewGuid();
+            var newRun = Guid.NewGuid();
+            Assert(EpbManager.ShouldApplyRunAuthorizationRevocation(
+                    newRun.ToString("N"),
+                    newRun.ToString("D")),
+                "同一运行不同GUID格式未允许撤销");
+            Assert(!EpbManager.ShouldApplyRunAuthorizationRevocation(
+                    newRun.ToString("N"),
+                    oldRun.ToString("N")),
+                "迟到旧运行撤销仍会清除新运行授权");
+            Assert(EpbManager.ShouldApplyRunAuthorizationRevocation(string.Empty, oldRun.ToString("N")),
+                "旧格式无RunId检查点没有保持失效安全撤销");
+            Assert(EpbManager.ShouldApplyRunAuthorizationRevocation(newRun.ToString("N"), null),
+                "旧格式无RunId事件没有保持失效安全撤销");
+        }
+
+        private static void AutomaticRecoveryRequiresExactRunIdentity()
+        {
+            var oldRun = Guid.NewGuid();
+            var newRun = Guid.NewGuid();
+            Assert(EpbManager.AreSameNonEmptyRunIds(
+                    newRun.ToString("N"),
+                    newRun.ToString("D").ToUpperInvariant()),
+                "同一RunId不同格式未允许登记自动恢复");
+            Assert(!EpbManager.AreSameNonEmptyRunIds(
+                    newRun.ToString("N"),
+                    oldRun.ToString("N")),
+                "迟到旧运行仍可登记到新运行检查点");
+            Assert(!EpbManager.AreSameNonEmptyRunIds(string.Empty, newRun.ToString("N")) &&
+                   !EpbManager.AreSameNonEmptyRunIds(newRun.ToString("N"), null) &&
+                   !EpbManager.AreSameNonEmptyRunIds("not-a-guid", newRun.ToString("N")),
+                "主动自动恢复错误接受了空或非法RunId");
         }
 
         private static void FreshRestartJoinsOldStartupCleanup()
@@ -4659,6 +5161,47 @@ namespace AdaptiveControlTests
             records[8].Status = records[9].Status = EpbTestStatus.Completed;
             Assert(EpbProjectPolicies.FindSummaryChannelAfterCompletion(records, 10) == 10,
                 "全部完成后应保留最后显示项");
+        }
+
+        private static void UiLogFloodStaysBoundedAndBatched()
+        {
+            const int capacity = 512;
+            const int producerCount = 8;
+            const int linesPerProducer = 12500;
+            var queue = new BoundedConcurrentQueue<string>(capacity);
+            var clock = Stopwatch.StartNew();
+            var producers = Enumerable.Range(0, producerCount)
+                .Select(producer => Task.Run(() =>
+                {
+                    for (var line = 0; line < linesPerProducer; line++)
+                        queue.Enqueue($"P{producer:D2}-{line:D5}");
+                }))
+                .ToArray();
+            Assert(Task.WaitAll(producers, 10000), "十万条UI日志生产在10秒内未完成");
+            clock.Stop();
+
+            var totalProduced = producerCount * linesPerProducer;
+            var retainedBeforeDrain = queue.Count;
+            Assert(retainedBeforeDrain <= capacity,
+                $"UI日志队列超过容量：Count={retainedBeforeDrain} Capacity={capacity}");
+            Assert(queue.DroppedCount == totalProduced - retainedBeforeDrain,
+                $"UI日志丢弃计数不一致：Produced={totalProduced} " +
+                $"Retained={retainedBeforeDrain} Dropped={queue.DroppedCount}");
+
+            var drained = 0;
+            var maxBatch = 0;
+            while (queue.Count > 0)
+            {
+                var batch = 0;
+                while (batch < 50 && queue.TryDequeue(out _)) batch++;
+                maxBatch = Math.Max(maxBatch, batch);
+                drained += batch;
+            }
+            Assert(drained == retainedBeforeDrain, "UI日志批量消费发生静默丢失");
+            Assert(maxBatch <= 50, $"UI单次日志消费超过50行：{maxBatch}");
+            Console.WriteLine(
+                $"METRIC UiLogFlood Produced={totalProduced} Retained={retainedBeforeDrain} " +
+                $"Dropped={queue.DroppedCount} ProducerMs={clock.Elapsed.TotalMilliseconds:F1}");
         }
 
         private static void DhmsFormatting()

@@ -271,11 +271,23 @@ namespace MTEmbTest
         private void SaveGracefulPauseCheckpoint()
         {
             var pausedUtc = _epb?.BatchPausedUtc ?? DateTime.UtcNow;
-            var channels = _epb?.GetChannelRuntimeStates()
+            var pausedStates = _epb?.GetChannelRuntimeStates()
                 .Where(state => state.State == ChannelRuntimeState.Paused)
-                .Select(state => state.Channel)
-                .ToArray() ?? Array.Empty<int>();
-            UnattendedRunCheckpointStore.SaveGracefulPause(_cfg, channels, pausedUtc);
+                .ToArray() ?? Array.Empty<ChannelRuntimeStateChangedEvent>();
+            var channels = pausedStates.Select(state => state.Channel).ToArray();
+            var runIds = pausedStates
+                .Select(state => state.RunId)
+                .Where(runId => runId != Guid.Empty)
+                .Distinct()
+                .ToArray();
+            if (runIds.Length != 1)
+                throw new InvalidOperationException(
+                    $"正常暂停状态未收敛到唯一RunId，拒绝生成自动恢复检查点。RunIds={runIds.Length}");
+            UnattendedRunCheckpointStore.SaveGracefulPause(
+                _cfg,
+                channels,
+                pausedUtc,
+                runIds[0]);
         }
 
         private void ClearGracefulPauseCheckpoint(string reason)

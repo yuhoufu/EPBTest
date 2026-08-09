@@ -563,7 +563,11 @@ namespace IO.NI
                 ? ClockState.Locked
                 : ClockState.Adjusting;
 
-            if (_state == ClockState.Locked && _residualMs > _options.ResidualHardLimitMs)
+            // residual 的正负只表示采样时间轴相对回调到达时刻是超前还是滞后。
+            // 两个方向都会使“当前控制/完整峰值证据”失去实时性。V2.12.0.2 只检查
+            // 正值，现场两个设备持续落后约 1.16s 时因此没有进入 DAQ 恢复。
+            if (_state == ClockState.Locked &&
+                Math.Abs(_residualMs) > _options.ResidualHardLimitMs)
             {
                 if (++_residualViolationFits >= _options.InvalidConfirmations)
                     _state = ClockState.Invalid;
