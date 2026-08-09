@@ -80,6 +80,18 @@ namespace AdaptiveControlTests
                     return 0;
                 }
                 if (args.Length == 1 &&
+                    args[0].Equals("--do-timing-model", StringComparison.OrdinalIgnoreCase))
+                {
+                    Run("DO四时刻序列化与P95重载", ProfilePersistence);
+                    Run("DO完成延迟分布进入控流模型且单圈更新限幅", DoCompletionLatencyFeedsCutoffModel);
+                    Run("DO四时刻模型克隆保持深拷贝", DoTimingProfileCloneIsDeep);
+                    Run("版本5模型原位兼容升级且保留学习历史", VersionFiveProfileMigratesWithoutReset);
+                    Run("旧控制策略模型留档失效并按版本6重新学习", VersionOneProfileMigrates);
+                    Run("DO四时刻进入报警重建证据", AlarmControlEvidenceIsReconstructable);
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
                     args[0].Equals("--incident-10358-029", StringComparison.OrdinalIgnoreCase))
                 {
                     _passed += RecoveryCoordinationTests.RunAll();
@@ -175,6 +187,8 @@ namespace AdaptiveControlTests
                 Run("液压启动仅软件代次异常进入自愈", HydraulicStartupRecoveryClassification);
                 Run("模型原子保存与重载", ProfilePersistence);
                 Run("DO完成延迟分布进入控流模型且单圈更新限幅", DoCompletionLatencyFeedsCutoffModel);
+                Run("DO四时刻模型克隆保持深拷贝", DoTimingProfileCloneIsDeep);
+                Run("版本5模型原位兼容升级且保留学习历史", VersionFiveProfileMigratesWithoutReset);
                 Run("后台任务监督记录身份异常并可限时收口", TaskSupervisorTracksFaultsAndDrains);
                 Run("控流模型五圈收敛到目标带", CutoffModelConvergesWithinFiveCycles);
                 Run("峰值系统偏差用于提前断电补偿", PeakBiasCorrectionIsLearned);
@@ -193,7 +207,7 @@ namespace AdaptiveControlTests
                 Run("正式圈必须控制与落盘均成功才计数", FormalCycleRequiresPersistenceCommitToCount);
                 Run("正向低平台连续8圈确认且正常圈清零", ForwardStallStreakRequiresFiveCycles);
                 _passed += NonRecoverableAlarmPolicyTests.RunAll();
-                Run("旧控制策略模型留档失效并按版本5重新学习", VersionOneProfileMigrates);
+                Run("旧控制策略模型留档失效并按版本6重新学习", VersionOneProfileMigrates);
                 Run("损坏模型回退", CorruptProfileFallback);
                 Run("周期超限不追赶且圈号连续", TimerDoesNotCatchUp);
                 Run("优雅暂停等待当前圈结束且阻止下一圈", TimerGracefulPauseWaitsForCurrentCycle);
@@ -1934,7 +1948,20 @@ namespace AdaptiveControlTests
                 var profile = store.GetOrCreate(10);
                 for (var i = 0; i < 5; i++)
                     profile.AddSuccessfulCycle(1.0 + i * 0.01, 0.8 + i * 0.01, 3000 + i * 10, 1200 + i * 5);
-                profile.TryAddCutoffObservation(15.0, 14.5, 0.05, 15.0, 3.0, out _);
+                var decisionUtc = new DateTime(2026, 8, 10, 1, 2, 3, DateTimeKind.Utc);
+                profile.TryAddCutoffObservation(
+                    15.0,
+                    14.5,
+                    0.05,
+                    15.0,
+                    new EpbDoTimingObservation
+                    {
+                        DecisionUtc = decisionUtc,
+                        DoWriteStartedUtc = decisionUtc.AddMilliseconds(1),
+                        DoWriteCompletedUtc = decisionUtc.AddMilliseconds(3),
+                        CurrentClearedUtc = decisionUtc.AddMilliseconds(8)
+                    },
+                    out _);
                 profile.UpdateForwardStallStreak(true);
                 profile.UpdateForwardStallStreak(true);
                 store.Save(profile);
@@ -1942,13 +1969,23 @@ namespace AdaptiveControlTests
                 var loaded = new EpbAdaptiveProfileStore(dir).GetOrCreate(10);
                 Assert(loaded.ValidSampleCount == 5, "模型样本数未持久化");
                 Assert(loaded.IsStable, "五圈后模型未进入稳定状态");
-                Assert(loaded.ModelVersion == 5, "控流模型未保存为版本5");
+                Assert(loaded.ModelVersion == 6, "控流模型未保存为版本6");
                 Assert(loaded.ValidCutoffSampleCount == 1, "控流样本数未持久化");
                 Assert(loaded.ConsecutiveForwardStallCount == 2, "正向低平台连续计数未持久化");
                 Assert(Math.Abs(loaded.ForwardCutoffLeadMedianMs - 10.0) < 0.01,
                     "控流提前时间未持久化");
                 Assert(Math.Abs(loaded.ForwardDoCompletionMedianMs - 3.0) < 0.01,
                     "DO完成延迟未持久化");
+                Assert(Math.Abs(loaded.ForwardDoCompletionP95Ms - 3.0) < 0.01 &&
+                       Math.Abs(loaded.ForwardDoStartDelayP95Ms - 1.0) < 0.01 &&
+                       Math.Abs(loaded.ForwardDoWriteP95Ms - 2.0) < 0.01 &&
+                       Math.Abs(loaded.ForwardCurrentClearP95Ms - 5.0) < 0.01,
+                    "DO四时刻分布或P95未持久化");
+                Assert(loaded.ValidDoTimingSampleCount == 1 &&
+                       loaded.ValidCurrentClearSampleCount == 1 &&
+                       loaded.LastForwardDoTiming?.DecisionUtc == decisionUtc &&
+                       loaded.LastForwardDoTiming?.CurrentClearedUtc == decisionUtc.AddMilliseconds(8),
+                    "DO四时刻样本计数或最后因果时间线未重载");
                 Assert(File.Exists(Path.Combine(dir, "EpbAdaptiveProfiles.xml")), "模型文件不存在");
             }
             finally
@@ -2016,10 +2053,25 @@ namespace AdaptiveControlTests
         {
             var fastDo = StableProfile();
             var slowDo = StableProfile();
+            var baseUtc = new DateTime(2026, 8, 10, 2, 0, 0, DateTimeKind.Utc);
             const double targetA = 15.0;
             const double cutoffA = 14.0;
             const double slope = 0.05;
             const double physicalTailMs = 7.0;
+            var coarseClockTiming = EpbCycleRunner.BuildAdaptiveDoTimingObservation(
+                baseUtc,
+                baseUtc,
+                3.0,
+                1.0);
+            Assert(coarseClockTiming.TryGetDurations(
+                       out var coarseStartMs,
+                       out var coarseWriteMs,
+                       out var coarseTotalMs,
+                       out _) &&
+                   Math.Abs(coarseStartMs - 2.0) < 0.01 &&
+                   Math.Abs(coarseWriteMs - 1.0) < 0.01 &&
+                   Math.Abs(coarseTotalMs - 3.0) < 0.01,
+                "物理完成UTC在粗粒度墙钟下未能结合单调遥测重建DO四时刻");
             for (var i = 0; i < 5; i++)
             {
                 Assert(
@@ -2028,7 +2080,7 @@ namespace AdaptiveControlTests
                         cutoffA,
                         slope,
                         cutoffA + slope * (physicalTailMs + 2.0),
-                        2.0,
+                        NewDoTiming(baseUtc.AddSeconds(i), 1.0, 2.0, 6.0),
                         out _),
                     "快速DO延迟样本被拒绝");
                 Assert(
@@ -2037,7 +2089,7 @@ namespace AdaptiveControlTests
                         cutoffA,
                         slope,
                         cutoffA + slope * (physicalTailMs + 8.0),
-                        8.0,
+                        NewDoTiming(baseUtc.AddSeconds(i), 6.0, 8.0, 16.0),
                         out _),
                     "慢速DO延迟样本被拒绝");
             }
@@ -2050,17 +2102,93 @@ namespace AdaptiveControlTests
                 "快速DO的预测提前量不正确");
             Assert(Math.Abs(slowDo.ForwardCutoffLeadMedianMs - 15.0) < 0.01,
                 "慢速DO的预测提前量未包含实测延迟");
+            Assert(Math.Abs(fastDo.ForwardDoCompletionP95Ms - 2.0) < 0.01 &&
+                   Math.Abs(fastDo.ForwardDoStartDelayP95Ms - 1.0) < 0.01 &&
+                   Math.Abs(fastDo.ForwardDoWriteP95Ms - 1.0) < 0.01 &&
+                   Math.Abs(fastDo.ForwardCurrentClearP95Ms - 4.0) < 0.01,
+                $"每通道DO四时刻P95未按独立分量学习：" +
+                $"Total={fastDo.ForwardDoCompletionP95Ms:F3} " +
+                $"Start={fastDo.ForwardDoStartDelayP95Ms:F3} " +
+                $"Write={fastDo.ForwardDoWriteP95Ms:F3} " +
+                $"Clear={fastDo.ForwardCurrentClearP95Ms:F3}");
+            Assert(fastDo.ValidDoTimingSampleCount == 5 &&
+                   fastDo.ValidCurrentClearSampleCount == 5,
+                "DO四时刻或电流清零有效样本数错误");
 
             fastDo.TryAddCutoffObservation(
                 targetA,
                 cutoffA,
                 slope,
                 cutoffA + slope * (physicalTailMs + 80.0),
-                80.0,
+                NewDoTiming(baseUtc.AddSeconds(6), 70.0, 80.0, 580.0),
                 out _);
             Assert(fastDo.ForwardDoCompletionHistoryMs.Last() <= 7.001,
                 "单圈DO调度尖峰未被鲁棒步长限幅");
-            Assert(fastDo.ModelVersion == 5, "DO延迟模型未升级到版本5");
+            Assert(fastDo.ForwardDoStartDelayHistoryMs.Last() <= 6.001 &&
+                   fastDo.ForwardDoWriteHistoryMs.Last() <= 6.001 &&
+                   fastDo.ForwardCurrentClearHistoryMs.Last() <= 9.001 &&
+                   fastDo.ForwardDoCompletionP95Ms <= 7.001,
+                "DO分量或P95被单圈尖峰无界污染");
+
+            var validTimingCount = fastDo.ValidDoTimingSampleCount;
+            fastDo.TryAddCutoffObservation(
+                targetA,
+                cutoffA,
+                slope,
+                cutoffA + slope * physicalTailMs,
+                new EpbDoTimingObservation
+                {
+                    DecisionUtc = baseUtc.AddSeconds(7),
+                    DoWriteStartedUtc = baseUtc.AddSeconds(7).AddMilliseconds(-1),
+                    DoWriteCompletedUtc = baseUtc.AddSeconds(7).AddMilliseconds(2)
+                },
+                out _);
+            Assert(fastDo.ValidDoTimingSampleCount == validTimingCount,
+                "时序倒置的四时刻证据错误进入DO延迟模型");
+            Assert(fastDo.ModelVersion == 6, "DO延迟模型未升级到版本6");
+        }
+
+        private static EpbDoTimingObservation NewDoTiming(
+            DateTime decisionUtc,
+            double writeStartedMs,
+            double writeCompletedMs,
+            double currentClearedMs)
+        {
+            return new EpbDoTimingObservation
+            {
+                DecisionUtc = decisionUtc,
+                DoWriteStartedUtc = decisionUtc.AddMilliseconds(writeStartedMs),
+                DoWriteCompletedUtc = decisionUtc.AddMilliseconds(writeCompletedMs),
+                CurrentClearedUtc = decisionUtc.AddMilliseconds(currentClearedMs)
+            };
+        }
+
+        private static void DoTimingProfileCloneIsDeep()
+        {
+            var profile = StableProfile();
+            var decisionUtc = new DateTime(2026, 8, 10, 2, 30, 0, DateTimeKind.Utc);
+            profile.TryAddCutoffObservation(
+                15.0,
+                14.0,
+                0.05,
+                14.5,
+                NewDoTiming(decisionUtc, 1, 3, 9),
+                out _);
+            var clone = profile.Clone();
+
+            profile.ForwardDoCompletionHistoryMs[0] = 99;
+            profile.ForwardDoStartDelayHistoryMs[0] = 98;
+            profile.ForwardDoWriteHistoryMs[0] = 97;
+            profile.ForwardCurrentClearHistoryMs[0] = 96;
+            profile.LastForwardDoTiming.CurrentClearedUtc = decisionUtc.AddSeconds(10);
+
+            Assert(Math.Abs(clone.ForwardDoCompletionHistoryMs[0] - 3) < 0.01 &&
+                   Math.Abs(clone.ForwardDoStartDelayHistoryMs[0] - 1) < 0.01 &&
+                   Math.Abs(clone.ForwardDoWriteHistoryMs[0] - 2) < 0.01 &&
+                   Math.Abs(clone.ForwardCurrentClearHistoryMs[0] - 6) < 0.01,
+                "DO分量历史在Clone后仍共享可变列表");
+            Assert(clone.LastForwardDoTiming.CurrentClearedUtc == decisionUtc.AddMilliseconds(9),
+                "最后DO四时刻证据在Clone后仍共享可变对象");
         }
 
         private static void TaskSupervisorTracksFaultsAndDrains()
@@ -2914,6 +3042,57 @@ namespace AdaptiveControlTests
                 "清零后的下一次低平台未从1重新计数");
         }
 
+        private static void VersionFiveProfileMigratesWithoutReset()
+        {
+            var dir = CreateTempDir();
+            try
+            {
+                var path = Path.Combine(dir, "EpbAdaptiveProfiles.xml");
+                File.WriteAllText(
+                    path,
+                    "<EpbAdaptiveProfiles ModelVersion=\"5\">" +
+                    "<Profile Channel=\"10\" ModelVersion=\"5\">" +
+                    "<ForwardEmptyCurrentA>1.1</ForwardEmptyCurrentA>" +
+                    "<ReverseEmptyCurrentA>0.9</ReverseEmptyCurrentA>" +
+                    "<ForwardClampMedianMs>3000</ForwardClampMedianMs>" +
+                    "<ReverseReleaseMedianMs>1200</ReverseReleaseMedianMs>" +
+                    "<ValidSampleCount>5</ValidSampleCount>" +
+                    "<ValidCutoffSampleCount>3</ValidCutoffSampleCount>" +
+                    "<ValidDoCompletionSampleCount>3</ValidDoCompletionSampleCount>" +
+                    "<ForwardDoCompletionHistoryMs>" +
+                    "<Value>2</Value><Value>4</Value><Value>6</Value>" +
+                    "</ForwardDoCompletionHistoryMs>" +
+                    "</Profile></EpbAdaptiveProfiles>");
+
+                var store = new EpbAdaptiveProfileStore(dir);
+                var loaded = store.GetOrCreate(10);
+                Assert(loaded.ModelVersion == 6 && loaded.IsStable &&
+                       loaded.ValidSampleCount == 5 && loaded.ValidCutoffSampleCount == 3,
+                    "兼容的版本5模型在升级到版本6时被错误清空");
+                Assert(loaded.ValidDoCompletionSampleCount == 3 &&
+                       loaded.ForwardDoCompletionHistoryMs.SequenceEqual(new[] { 2.0, 4.0, 6.0 }) &&
+                       Math.Abs(loaded.ForwardDoCompletionMedianMs - 4.0) < 0.01 &&
+                       Math.Abs(loaded.ForwardDoCompletionP95Ms - 6.0) < 0.01,
+                    "版本5 DO历史未迁移为median/P95");
+                Assert(loaded.ForwardDoStartDelayHistoryMs.Count == 0 &&
+                       loaded.ForwardDoWriteHistoryMs.Count == 0 &&
+                       loaded.ForwardCurrentClearHistoryMs.Count == 0,
+                    "版本5缺失的分量历史被迁移逻辑伪造");
+                Assert(Directory.GetFiles(dir, "*.pre-v6.*").Length == 0,
+                    "兼容版本5模型被错误按不兼容策略留档失效");
+
+                store.Save(loaded);
+                var reloaded = new EpbAdaptiveProfileStore(dir).GetOrCreate(10);
+                Assert(reloaded.ModelVersion == 6 && reloaded.ValidSampleCount == 5 &&
+                       Math.Abs(reloaded.ForwardDoCompletionP95Ms - 6.0) < 0.01,
+                    "版本5兼容升级结果未能按版本6稳定重载");
+            }
+            finally
+            {
+                Directory.Delete(dir, true);
+            }
+        }
+
         private static void VersionOneProfileMigrates()
         {
             var dir = CreateTempDir();
@@ -2943,7 +3122,7 @@ namespace AdaptiveControlTests
                     "旧控制策略空行程基线未清除");
                 Assert(loaded.ValidCutoffSampleCount == 0 && !loaded.HasCutoffPrediction,
                     "版本1模型错误地产生控流学习数据");
-                Assert(Directory.GetFiles(dir, "*.pre-v5.*").Length == 1,
+                Assert(Directory.GetFiles(dir, "*.pre-v6.*").Length == 1,
                     "旧控制策略模型失效前未保留审计副本");
 
                 for (var i = 0; i < 5; i++)
@@ -2951,7 +3130,7 @@ namespace AdaptiveControlTests
                 loaded.TryAddCutoffObservation(15.0, 14.5, 0.05, 15.0, out _);
                 store.Save(loaded);
                 var migrated = new EpbAdaptiveProfileStore(dir).GetOrCreate(10);
-                Assert(migrated.ModelVersion == 5, "旧模型重新学习后未升级为版本5");
+                Assert(migrated.ModelVersion == 6, "旧模型重新学习后未升级为版本6");
                 Assert(migrated.ValidSampleCount == 5 && migrated.ValidCutoffSampleCount == 1,
                     "模型升级后的重新学习样本或控流样本错误");
                 Assert(migrated.ConsecutiveForwardStallCount == 0,
@@ -4509,6 +4688,10 @@ namespace AdaptiveControlTests
                     new TerminalOffSafetyEvidence
                     {
                         CommandUtc = utc,
+                        DecisionUtc = utc.AddMilliseconds(-10),
+                        DoWriteStartedUtc = utc.AddMilliseconds(-8),
+                        DoWriteCompletedUtc = utc.AddMilliseconds(-7),
+                        CurrentClearedUtc = utc.AddMilliseconds(100),
                         Reason = "ForwardCurrentRiseStalled",
                         CommandSucceeded = true,
                         CommandElapsedMs = 1.25,
@@ -4569,9 +4752,14 @@ namespace AdaptiveControlTests
                 var adaptiveTimeline = File.ReadAllText(
                     Path.Combine(directory, "adaptive-decision-timeline.csv"));
 
-                Assert(metadata.Contains("\"schemaVersion\": 4") &&
+                Assert(metadata.Contains("\"schemaVersion\": 5") &&
                        metadata.Contains("\"terminalOffSafety\":"),
-                    "报警元数据未升级到包含终态断电证据的schema 4");
+                    "报警元数据未升级到包含DO四时刻证据的schema 5");
+                Assert(metadata.Contains("\"decisionUtc\":") &&
+                       metadata.Contains("\"doWriteStartedUtc\":") &&
+                       metadata.Contains("\"doWriteCompletedUtc\":") &&
+                       metadata.Contains("\"currentClearedUtc\":"),
+                    "报警元数据未显式区分decision/write-start/write-complete/current-clear");
                 Assert(metadata.Contains("\"electricalCurrentCleared\": true") &&
                        metadata.Contains("\"physicalOffStatus\": \"NotMeasured\""),
                     "报警元数据未正确区分电流代理确认与物理触点状态");

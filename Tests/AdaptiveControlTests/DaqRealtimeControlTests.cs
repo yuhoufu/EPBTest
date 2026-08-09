@@ -52,6 +52,7 @@ namespace AdaptiveControlTests
             Run("UI日志原位裁剪与滚动限频保持有界无分配", UiLogDisplayPolicyIsBoundedAndAllocationFree, ref passed);
             Run("DAQ陈旧根因区分回调与控制消费", DaqStaleRootClassification, ref passed);
             Run("DAQ批次和兼容队列包装不再持续分配", DaqBatchObjectsAreReusableValueBacked, ref passed);
+            Run("后台工程与Raw预分配SPSC环容量并发零分配", PreallocatedSpscRingTests.RunAll, ref passed);
             Run("旧原始二进制写入池化后格式保持不变", LegacyRawWriterKeepsBinaryFormat, ref passed);
             Run("标定前原始数据复制后不被原地标定污染", OwnedRawBatchPreservesPreCalibrationValues, ref passed);
             Run("Stat流式中值保留跨批次尾部", StreamingStatMedianCarriesTailAcrossBatches, ref passed);
@@ -254,11 +255,13 @@ namespace AdaptiveControlTests
             Assert(il != null && il.Length > 0, "EnqueueForProcessing没有可审计IL");
             var latchOffsets = FindMetadataTokenOffsets(il, latch.MetadataToken);
             var publishOffsets = FindMetadataTokenOffsets(il, publish.MetadataToken);
-            Assert(latchOffsets.Count == 2 && publishOffsets.Count == 2,
-                "Dev1/Dev2入口拒绝分支没有各自锁存空洞并发布故障");
-            Assert(latchOffsets[0] < publishOffsets[0] &&
-                   latchOffsets[1] < publishOffsets[1],
-                "入口拒绝先发布故障后锁存空洞，同步停止可能冻结错误边界");
+            Assert(latchOffsets.Count >= 2 && latchOffsets.Count == publishOffsets.Count,
+                "处理入口的准入满或环不变量拒绝分支没有成对锁存空洞并发布故障");
+            for (var i = 0; i < latchOffsets.Count; i++)
+            {
+                Assert(latchOffsets[i] < publishOffsets[i],
+                    "入口拒绝先发布故障后锁存空洞，同步停止可能冻结错误边界");
+            }
         }
 
         private static void InvalidatedGenerationStillArchivesAcceptedBatch()
@@ -805,17 +808,46 @@ namespace AdaptiveControlTests
             var order = new List<string>();
             EpbManager.ExecuteDaqCutoffBeforeOwnershipWait(
                 () => order.Add("Watchdog"),
-                () => order.Add("PublishPauseAll"),
+                () => order.Add("PauseAll"),
                 () => order.Add("FreezeSuppress"),
-                () => order.Add("CancelSubmitOffAll"));
+                () => order.Add("CancelSubmitOffAll"),
+                () => order.Add("StartPowerDisable"),
+                () => order.Add("StartRejectedOffFallbacks"),
+                () => order.Add("PublishObservers"));
             Assert(order.SequenceEqual(new[]
                 {
                     "Watchdog",
-                    "PublishPauseAll",
+                    "PauseAll",
                     "FreezeSuppress",
-                    "CancelSubmitOffAll"
+                    "CancelSubmitOffAll",
+                    "StartPowerDisable",
+                    "StartRejectedOffFallbacks",
+                    "PublishObservers"
                 }),
-                "DAQ截止仍可能在暂停/冻结前取消圈，或在OFF之后才关闭持久化尾段");
+                "DAQ截止仍可能在暂停/冻结前取消圈，或在整组断能前调用日志/UI观察者");
+
+            using var observerEntered = new ManualResetEventSlim(false);
+            using var releaseObserver = new ManualResetEventSlim(false);
+            var paused = false;
+            var offSubmitted = false;
+            var powerStarted = false;
+            var blocked = Task.Run(() => EpbManager.ExecuteDaqCutoffBeforeOwnershipWait(
+                () => { },
+                () => paused = true,
+                () => { },
+                () => offSubmitted = true,
+                () => powerStarted = true,
+                () => { },
+                () =>
+                {
+                    observerEntered.Set();
+                    releaseObserver.Wait(2000);
+                }));
+            Assert(observerEntered.Wait(1000), "DAQ截止观察者阻塞测试未进入观察者");
+            Assert(paused && offSubmitted && powerStarted,
+                "DAQ截止观察者阻塞时仍有兄弟通道未暂停/OFF或电源Disable未启动");
+            releaseObserver.Set();
+            Assert(blocked.Wait(1000), "DAQ截止观察者释放后顺序助手未退出");
         }
 
         private static void StopPreRecoveryWaitSafetyOrder()
@@ -830,16 +862,44 @@ namespace AdaptiveControlTests
                     order.Add("StartPowerDisable");
                     return "PowerDisableStarted";
                 },
-                () => order.Add("StartRejectedOffFallbacks"));
+                () => order.Add("StartRejectedOffFallbacks"),
+                () => order.Add("SealAndPublish"));
             Assert(powerTask == "PowerDisableStarted" && order.SequenceEqual(new[]
                 {
                     "RevokeBatch",
                     "PauseFreezeAll",
                     "CancelSubmitOffAll",
                     "StartPowerDisable",
-                    "StartRejectedOffFallbacks"
+                    "StartRejectedOffFallbacks",
+                    "SealAndPublish"
                 }),
-                "Stop仍可能先等待恢复所有权，或拒绝项兜底早于总电源Disable");
+                "Stop仍可能先等待恢复所有权，或在总电源Disable前封圈/发布观察者");
+
+            using var sealEntered = new ManualResetEventSlim(false);
+            using var releaseSeal = new ManualResetEventSlim(false);
+            var allOffSubmitted = false;
+            var disableStarted = false;
+            var blockedSeal = Task.Run(() => EpbManager.ExecuteStopSafetyBeforeRecoveryWait(
+                () => { },
+                () => { },
+                () => allOffSubmitted = true,
+                () =>
+                {
+                    disableStarted = true;
+                    return true;
+                },
+                () => { },
+                () =>
+                {
+                    sealEntered.Set();
+                    releaseSeal.Wait(2000);
+                }));
+            Assert(sealEntered.Wait(1000), "Stop阻塞封圈测试未进入证据阶段");
+            Assert(allOffSubmitted && disableStarted,
+                "Stop封圈阻塞时整组OFF或电源Disable尚未启动");
+            releaseSeal.Set();
+            Assert(blockedSeal.Wait(1000) && blockedSeal.Result,
+                "Stop封圈释放后顺序助手未正常返回");
         }
 
         private static void StopPowerDisableIgnoresCallerCancellation()

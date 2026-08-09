@@ -51,6 +51,7 @@
     <Compile Include="DaqRealtimeControlTests.cs" />
     <Compile Include="HydraulicGroupCoordinatorTests.cs" />
     <Compile Include="PowerSupplyCoordinatorTests.cs" />
+    <Compile Include="PreallocatedSpscRingTests.cs" />
     <Compile Include="ProjectLogStoreTests.cs" />
     <Compile Include="PswTcpClientTimeoutTests.cs" />
     <Compile Include="RecoveryCoordinationTests.cs" />
