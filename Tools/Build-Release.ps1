@@ -8,8 +8,8 @@ $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 Set-Location -LiteralPath $repo
 
-$expectedProductVersion = '2.12.0.25'
-$expectedProductLabel = 'V2.12.0.25'
+$expectedProductVersion = '2.12.0.26'
+$expectedProductLabel = 'V2.12.0.26'
 $expectedPublishedConfigs = @(
     'Config/AIConfig.xml',
     'Config/AlarmConfig.xml',
