@@ -399,6 +399,7 @@ FodyWeavers.xsd
 # Runtime logs and test data
 运行日志/
 DataStore/
+/tmp/
 *.csv
 ErrorLog_*.txt
 RunLog_*.txt
