@@ -47,7 +47,7 @@ function Resolve-PythonExecutable {
 }
 
 if ([string]::IsNullOrWhiteSpace($ReleaseDirectory)) {
-    $ReleaseDirectory = Join-Path $repo 'MTTfTest\bin\Release'
+    throw '必须通过 -ReleaseDirectory 指定独立、已校验的版本发布目录；bin\Release 是 VS 暂存区，禁止用于现场验收。'
 }
 $release = [IO.Path]::GetFullPath($ReleaseDirectory)
 $data = [IO.Path]::GetFullPath($DataDirectory)

@@ -62,7 +62,10 @@ namespace Controller
                 $"ExeSha256={MetricToken(identity.ExecutableSha256)} " +
                 $"ConfigSha256={MetricToken(identity.ReleaseConfigSha256)} " +
                 $"GitCommit={MetricToken(identity.GitCommit)} GitDirty={MetricToken(identity.GitDirty)} " +
-                $"BuildUtc={MetricToken(identity.BuildUtc)}",
+                $"BuildUtc={MetricToken(identity.BuildUtc)} " +
+                $"PackageVerified={identity.ReleasePackageVerified} " +
+                $"PackageCode={MetricToken(identity.ReleasePackageCode)} " +
+                $"PackageFiles={identity.ReleasePackageFileCount}",
                 "FIELD");
         }
 

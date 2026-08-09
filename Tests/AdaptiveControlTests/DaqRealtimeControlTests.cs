@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 using Config;
@@ -71,6 +72,7 @@ namespace AdaptiveControlTests
             Run("普通轨迹25Hz且动作轨迹不降采样", AdaptiveTraceRateAndActionRetention, ref passed);
             Run("控制诊断记录真实64批容量", ControlDiagnosticsUseRealCapacity, ref passed);
             Run("构建身份包含版本哈希位数与Git状态", BuildIdentityIsAuditable, ref passed);
+            Run("正式包逐文件哈希阻止VS覆盖后继续试验", ReleasePackageVerificationRejectsMixedBuild, ref passed);
             Run("1Hz主机探针包含CPU内存句柄线程与磁盘余量", HostRuntimeProbeCapturesAuditableState, ref passed);
             Run("最后项目跨版本恢复且不可用时保留选择", LastProjectSelectionSurvivesUpgradeAndUnavailableStorage, ref passed);
             Run("DAQ生产区拒绝重叠回调", ProducerGateRejectsOverlap, ref passed);
@@ -609,22 +611,100 @@ namespace AdaptiveControlTests
                 "四段现场补丁版本被截断，事故身份无法区分候选");
             Assert(json.Contains("\"gitCommit\"") && json.Contains("\"gitDirty\"") &&
                    json.Contains("\"processId\"") && json.Contains("\"buildUtc\"") &&
-                   json.Contains("\"releaseConfigSha256\""),
-                "Git/PID/构建时间/发布配置身份字段缺失");
+                   json.Contains("\"releaseConfigSha256\"") &&
+                   json.Contains("\"releasePackageVerified\"") &&
+                   json.Contains("\"releasePackageCode\""),
+                "Git/PID/构建时间/发布配置/包校验身份字段缺失");
             var startupLine = identity.ToStartupLogLine();
             Assert(startupLine.Contains("AssemblyVersion=") &&
                    startupLine.Contains("PID=") &&
                    startupLine.Contains("ExecutablePath=\"") &&
                    startupLine.Contains("ExeSha256=") &&
-                   startupLine.Contains("GitCommit="),
-                "启动日志没有完整输出程序集/PID/路径/EXE哈希/Git身份");
+                   startupLine.Contains("GitCommit=") &&
+                   startupLine.Contains("PackageVerified="),
+                "启动日志没有完整输出程序集/PID/路径/EXE哈希/Git/包校验身份");
             var display = identity.ToDisplayText();
             Assert(display.Contains("程序集版本：") &&
                    display.Contains("PID ") &&
                    display.Contains("EXE 路径：") &&
                    display.Contains("EXE SHA-256：") &&
-                   display.Contains("Git SHA："),
-                "运行身份界面文本缺少程序集/PID/路径/EXE哈希/Git身份");
+                   display.Contains("Git SHA：") &&
+                   display.Contains("发布包校验："),
+                "运行身份界面文本缺少程序集/PID/路径/EXE哈希/Git/包校验身份");
+        }
+
+        private static void ReleasePackageVerificationRejectsMixedBuild()
+        {
+            var root = Path.Combine(
+                Path.GetTempPath(),
+                "EPBTest-ReleasePackage-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            try
+            {
+                const string version = "V2.12.0.25";
+                const string commit = "0123456789abcdef0123456789abcdef01234567";
+                const string buildUtc = "2026-08-09T13:00:00.0000000Z";
+                const string configSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+                File.WriteAllText(Path.Combine(root, "MTTFTest.exe"), "formal-exe");
+                File.WriteAllText(Path.Combine(root, "Config.dll"), "formal-config-dll");
+                File.WriteAllText(
+                    Path.Combine(root, "build-identity.json"),
+                    "{\n" +
+                    $"  \"productVersion\": \"{version}\",\n" +
+                    "  \"releaseStatus\": \"FORMAL_RELEASE_CANDIDATE\",\n" +
+                    "  \"deploymentApproved\": true,\n" +
+                    $"  \"gitCommit\": \"{commit}\",\n" +
+                    "  \"gitDirty\": false,\n" +
+                    $"  \"buildUtc\": \"{buildUtc}\",\n" +
+                    $"  \"configSha256\": \"{configSha}\"\n" +
+                    "}\n");
+                WriteReleaseChecksums(root);
+
+                var valid = ReleasePackageVerifier.VerifyDirectory(
+                    root, version, commit, "false", buildUtc, configSha);
+                Assert(valid.Verified && valid.VerifiedFileCount == 3,
+                    "完整正式包未通过校验：" + valid);
+
+                File.WriteAllText(Path.Combine(root, "Config.dll"), "vs-overwrite");
+                var mixed = ReleasePackageVerifier.VerifyDirectory(
+                    root, version, commit, "false", buildUtc, configSha);
+                Assert(!mixed.Verified && mixed.Code == "PackageFileHashMismatch",
+                    "VS覆盖DLL后仍被误认为正式包：" + mixed);
+
+                File.WriteAllText(Path.Combine(root, "Config.dll"), "formal-config-dll");
+                File.WriteAllText(Path.Combine(root, "unexpected.tmp"), "extra");
+                var extra = ReleasePackageVerifier.VerifyDirectory(
+                    root, version, commit, "false", buildUtc, configSha);
+                Assert(!extra.Verified && extra.Code == "PackageFileSetMismatch",
+                    "发布目录出现清单外文件后仍被放行：" + extra);
+            }
+            finally
+            {
+                try { Directory.Delete(root, true); } catch { }
+            }
+        }
+
+        private static void WriteReleaseChecksums(string root)
+        {
+            var lines = Directory.GetFiles(root, "*", SearchOption.AllDirectories)
+                .Where(path => !string.Equals(
+                    Path.GetFileName(path),
+                    "SHA256SUMS.txt",
+                    StringComparison.OrdinalIgnoreCase))
+                .OrderBy(path => path, StringComparer.Ordinal)
+                .Select(path =>
+                {
+                    using (var stream = File.OpenRead(path))
+                    using (var sha = SHA256.Create())
+                    {
+                        var hash = string.Concat(
+                            sha.ComputeHash(stream).Select(value => value.ToString("x2")));
+                        var relative = path.Substring(root.Length).TrimStart('\\', '/').Replace('\\', '/');
+                        return $"{hash}  {relative}";
+                    }
+                })
+                .ToArray();
+            File.WriteAllLines(Path.Combine(root, "SHA256SUMS.txt"), lines);
         }
 
         private static void LastProjectSelectionSurvivesUpgradeAndUnavailableStorage()

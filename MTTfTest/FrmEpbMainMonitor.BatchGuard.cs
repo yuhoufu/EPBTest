@@ -46,6 +46,16 @@ namespace MTEmbTest
                     return;
                 }
 
+                // 新试验或跨进程检查点恢复必须从完整正式包启动。bin\Release 可能被
+                // VS 普通生成覆盖而仍保留旧版本号；只看窗口标题无法识别混包。
+                var identity = Controller.RuntimeBuildIdentity.Capture();
+                var package = Controller.ReleasePackageVerifier.VerifyCurrent(identity, refresh: true);
+                if (!package.Verified)
+                    throw new InvalidOperationException(
+                        "当前程序目录不是完整、已批准的正式候选包，已拒绝开始试验。\r\n" +
+                        $"Code={package.Code}\r\n{package.Detail}\r\n" +
+                        "请从独立版本发布目录重新启动，禁止直接运行 bin\\Release。" );
+
                 if (await TryResumePendingGracefulPauseAsync().ConfigureAwait(true))
                     return;
 

@@ -82,6 +82,7 @@
     <Compile Include="DaqIncidentLatch.cs" />
     <Compile Include="DaqPersistenceCoordinator.cs" />
     <Compile Include="DaqRecoveryTerminalGate.cs" />
+    <Compile Include="ReleasePackageVerifier.cs" />
     <Compile Include="RuntimeBuildIdentity.cs" />
     <Compile Include="RecoveryCoordination.cs" />
     <Compile Include="SoftwareSelfHealingLoop.cs" />

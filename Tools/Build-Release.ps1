@@ -1,5 +1,6 @@
 ﻿param(
     [string]$MsBuild = 'D:\Microsoft Visual Studio\18\Professional\MSBuild\Current\Bin\MSBuild.exe',
+    [string]$PackageRoot = '',
     [switch]$AllowDirtyCandidate
 )
 
@@ -7,8 +8,8 @@ $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 Set-Location -LiteralPath $repo
 
-$expectedProductVersion = '2.12.0.24'
-$expectedProductLabel = 'V2.12.0.24'
+$expectedProductVersion = '2.12.0.25'
+$expectedProductLabel = 'V2.12.0.25'
 $expectedPublishedConfigs = @(
     'Config/AIConfig.xml',
     'Config/AlarmConfig.xml',
@@ -113,6 +114,7 @@ function Get-RecursivePackageFiles {
 Assert-LegacyCompileItems -ProjectRelativePath 'Controller\Controller.csproj' -RequiredItems @(
     'EpbManager.FieldMetrics.cs',
     'LatestPairMailbox.cs',
+    'ReleasePackageVerifier.cs',
     'UiCurveContinuityPolicy.cs',
     'UiLogDisplayPolicy.cs',
     'TaskSupervisor.cs'
@@ -225,8 +227,10 @@ $manifestFiles = foreach ($entry in $files.GetEnumerator()) {
 }
 $identity = [ordered]@{
     productVersion = $expectedProductLabel
-    releaseStatus = if ($isDirty) { 'DIRTY_CANDIDATE_NOT_FOR_PRODUCTION' } else { 'FORMAL_RELEASE_CANDIDATE' }
-    deploymentApproved = -not $isDirty
+    # bin\Release 只是 VS/MSBuild 暂存区，永远不得直接部署。正式批准状态只写入
+    # 后续独立版本目录，防止普通 VS 生成覆盖 DLL 后仍被当作正式候选启动。
+    releaseStatus = if ($isDirty) { 'DIRTY_CANDIDATE_NOT_FOR_PRODUCTION' } else { 'BUILD_STAGING_NOT_FOR_DEPLOYMENT' }
+    deploymentApproved = $false
     gitCommit = $commit
     gitBranch = $branch
     gitDirty = $isDirty
@@ -253,10 +257,78 @@ $checksumLines = @($checksumFiles |
     $checksumLines,
     (New-Object Text.UTF8Encoding($false)))
 
-if ($isDirty) {
-    Write-Warning "已生成 DIRTY CANDIDATE：仅用于当前代码现场验证，不得作为正式生产放行包。"
+if ([string]::IsNullOrWhiteSpace($PackageRoot)) {
+    $PackageRoot = Join-Path $repo 'artifacts\releases'
+}
+$packageRootFull = [IO.Path]::GetFullPath($PackageRoot)
+[void](New-Item -ItemType Directory -Path $packageRootFull -Force)
+$shortCommit = if ($commit.Length -ge 12) { $commit.Substring(0, 12) } else { $commit }
+$packageStamp = [DateTime]::UtcNow.ToString('yyyyMMdd_HHmmss')
+$packageName = if ($isDirty) {
+    "$expectedProductLabel-$shortCommit-$packageStamp-DIRTY"
 }
 else {
-    Write-Host "Release 正式候选包已生成：$output"
+    "$expectedProductLabel-$shortCommit-$packageStamp"
 }
-Write-Host "Output=$output Commit=$commit Branch=$branch Dirty=$isDirty ConfigSha256=$configHash BuildUtc=$buildUtc"
+$packageOutput = [IO.Path]::GetFullPath((Join-Path $packageRootFull $packageName))
+$stagingOutput = [IO.Path]::GetFullPath((Join-Path $packageRootFull ('.staging-' + [Guid]::NewGuid().ToString('N'))))
+$rootPrefix = $packageRootFull.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+if (-not $packageOutput.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase) -or
+    -not $stagingOutput.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "发布包路径越界：Package=$packageOutput Staging=$stagingOutput Root=$packageRootFull"
+}
+if (Test-Path -LiteralPath $packageOutput) {
+    throw "拒绝覆盖既有不可变发布包：$packageOutput"
+}
+
+try {
+    [void](New-Item -ItemType Directory -Path $stagingOutput)
+    Get-ChildItem -LiteralPath $output -Force |
+        Copy-Item -Destination $stagingOutput -Recurse -Force
+
+    $packageIdentityPath = Join-Path $stagingOutput 'build-identity.json'
+    $packageChecksumPath = Join-Path $stagingOutput 'SHA256SUMS.txt'
+    $identity.releaseStatus = if ($isDirty) {
+        'DIRTY_CANDIDATE_NOT_FOR_PRODUCTION'
+    }
+    else {
+        'FORMAL_RELEASE_CANDIDATE'
+    }
+    $identity.deploymentApproved = -not $isDirty
+    $identity | ConvertTo-Json -Depth 5 |
+        Set-Content -LiteralPath $packageIdentityPath -Encoding UTF8
+    $packageChecksumMap = Get-RecursivePackageFiles -Root $stagingOutput `
+        -ExcludedRelativePaths @('SHA256SUMS.txt')
+    $packageChecksumLines = @($packageChecksumMap.GetEnumerator() |
+        ForEach-Object {
+            $hash = (Get-FileHash -LiteralPath $_.Value -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($_.Key)"
+        })
+    [IO.File]::WriteAllLines(
+        $packageChecksumPath,
+        $packageChecksumLines,
+        (New-Object Text.UTF8Encoding($false)))
+
+    $verifyScript = Join-Path $PSScriptRoot 'Verify-Release.ps1'
+    if ($isDirty) {
+        & $verifyScript -ReleaseDirectory $stagingOutput | Out-Null
+    }
+    else {
+        & $verifyScript -ReleaseDirectory $stagingOutput -RequireDeploymentApproved | Out-Null
+    }
+    Move-Item -LiteralPath $stagingOutput -Destination $packageOutput
+}
+catch {
+    if (Test-Path -LiteralPath $stagingOutput -PathType Container) {
+        Remove-Item -LiteralPath $stagingOutput -Recurse -Force
+    }
+    throw
+}
+
+if ($isDirty) {
+    Write-Warning "已生成独立 DIRTY CANDIDATE：仅用于当前代码验证，不得作为正式生产放行包。"
+}
+else {
+    Write-Host "Release 正式候选包已生成并独立校验：$packageOutput"
+}
+Write-Host "ScratchOutput=$output PackageOutput=$packageOutput Commit=$commit Branch=$branch Dirty=$isDirty ConfigSha256=$configHash BuildUtc=$buildUtc"

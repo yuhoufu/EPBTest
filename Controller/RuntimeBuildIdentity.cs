@@ -21,6 +21,10 @@ namespace Controller
         public string GitCommit { get; private set; }
         public string GitDirty { get; private set; }
         public string BuildUtc { get; private set; }
+        public bool ReleasePackageVerified { get; private set; }
+        public string ReleasePackageCode { get; private set; }
+        public string ReleasePackageDetail { get; private set; }
+        public int ReleasePackageFileCount { get; private set; }
         public DateTime CapturedUtc { get; private set; }
 
         public static RuntimeBuildIdentity Capture()
@@ -37,7 +41,7 @@ namespace Controller
                 "EPB_CONFIG_SHA256");
             if (gitCommit == "unknown" || gitDirty == "unknown")
                 TryReadGitIdentity(executable, ref gitCommit, ref gitDirty);
-            return new RuntimeBuildIdentity
+            var identity = new RuntimeBuildIdentity
             {
                 // 现场补丁版本使用第四段 Revision；截成三段会把 2.12.0.3—.6
                 // 全部记录为同一个 V2.12.0，事故证据无法对应实际二进制。
@@ -55,6 +59,12 @@ namespace Controller
                 BuildUtc = buildUtc,
                 CapturedUtc = DateTime.UtcNow
             };
+            var package = ReleasePackageVerifier.VerifyCurrent(identity);
+            identity.ReleasePackageVerified = package.Verified;
+            identity.ReleasePackageCode = package.Code;
+            identity.ReleasePackageDetail = package.Detail;
+            identity.ReleasePackageFileCount = package.VerifiedFileCount;
+            return identity;
         }
 
         public void WriteJson(string path)
@@ -76,6 +86,10 @@ namespace Controller
                    $"  \"gitCommit\": \"{Escape(GitCommit)}\",\n" +
                    $"  \"gitDirty\": \"{Escape(GitDirty)}\",\n" +
                    $"  \"buildUtc\": \"{Escape(BuildUtc)}\",\n" +
+                   $"  \"releasePackageVerified\": {ReleasePackageVerified.ToString().ToLowerInvariant()},\n" +
+                   $"  \"releasePackageCode\": \"{Escape(ReleasePackageCode)}\",\n" +
+                   $"  \"releasePackageDetail\": \"{Escape(ReleasePackageDetail)}\",\n" +
+                   $"  \"releasePackageFileCount\": {ReleasePackageFileCount},\n" +
                    $"  \"capturedUtc\": \"{CapturedUtc:O}\"\n" +
                    "}\n";
         }
@@ -86,7 +100,9 @@ namespace Controller
                    $"PID={ProcessId} Bitness={ProcessBitness} " +
                    $"ExecutablePath=\"{ExecutablePath}\" ExeSha256={ExecutableSha256} " +
                    $"ConfigSha256={ConfigSha256} ReleaseConfigSha256={ReleaseConfigSha256} " +
-                   $"GitCommit={GitCommit} GitDirty={GitDirty} BuildUtc={BuildUtc}";
+                   $"GitCommit={GitCommit} GitDirty={GitDirty} BuildUtc={BuildUtc} " +
+                   $"PackageVerified={ReleasePackageVerified} PackageCode={ReleasePackageCode} " +
+                   $"PackageFiles={ReleasePackageFileCount}";
         }
 
         public string ToDisplayText()
@@ -99,7 +115,10 @@ namespace Controller
                    $"配置 SHA-256：{ReleaseConfigSha256}\r\n" +
                    $"Git SHA：{GitCommit}\r\n" +
                    $"Git Dirty：{GitDirty}\r\n" +
-                   $"构建时间：{BuildUtc}";
+                   $"构建时间：{BuildUtc}\r\n" +
+                   $"发布包校验：{ReleasePackageVerified} / {ReleasePackageCode}\r\n" +
+                   $"递归校验文件：{ReleasePackageFileCount}\r\n" +
+                   $"校验详情：{ReleasePackageDetail}";
         }
 
         internal static string FormatProductVersion(Version version)

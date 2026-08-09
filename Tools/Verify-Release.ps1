@@ -5,8 +5,8 @@
 
 $ErrorActionPreference = 'Stop'
 
-$expectedProductVersion = '2.12.0.24'
-$expectedProductLabel = 'V2.12.0.24'
+$expectedProductVersion = '2.12.0.25'
+$expectedProductLabel = 'V2.12.0.25'
 $expectedPublishedConfigs = @(
     'Config/AIConfig.xml',
     'Config/AlarmConfig.xml',
@@ -85,6 +85,9 @@ function Get-AggregateFileHash {
 
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 if ([string]::IsNullOrWhiteSpace($ReleaseDirectory)) {
+    if ($RequireDeploymentApproved) {
+        throw '正式候选校验必须通过 -ReleaseDirectory 指向独立版本目录；拒绝默认使用可被 VS 覆盖的 bin\Release。'
+    }
     $ReleaseDirectory = Join-Path $repo 'MTTfTest\bin\Release'
 }
 $release = [IO.Path]::GetFullPath($ReleaseDirectory)

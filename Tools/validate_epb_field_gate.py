@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate a sealed EPB project directory against V2.12.0.24 field red lines."""
+"""Validate a sealed EPB project directory against V2.12.0.25 field red lines."""
 
 from __future__ import annotations
 
@@ -963,7 +963,7 @@ def percentile(values: list[float], fraction: float) -> float | None:
 
 def markdown(result: dict) -> str:
     lines = [
-        f"# EPB V2.12.0.24 现场封存验收：{result['status']}",
+        f"# EPB V2.12.0.25 现场封存验收：{result['status']}",
         "",
         f"- 数据目录：`{result['data_directory']}`",
         f"- 生成时间：{result['generated_at']}",
@@ -998,7 +998,7 @@ def markdown(result: dict) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("data_directory", type=Path)
-    parser.add_argument("--expected-version", default="V2.12.0.24")
+    parser.add_argument("--expected-version", default="V2.12.0.25")
     parser.add_argument("--expected-exe-sha256")
     parser.add_argument("--expected-config-sha256")
     parser.add_argument("--expected-git-commit")
@@ -1152,6 +1152,18 @@ def main() -> int:
             f"config={identity.get('ConfigSha256')}, commit={identity.get('GitCommit')}, "
             f"dirty={identity.get('GitDirty')}, assembly={identity.get('AssemblyVersion')}, "
             f"pid={identity.get('ProcessId')}, path={identity.get('ExecutablePath')}",
+            required=performance_required,
+        ))
+        package_verified = (
+            boolean(identity.get("PackageVerified")) is True
+            and identity.get("PackageCode") == "Verified"
+            and positive_integer(identity.get("PackageFiles"))
+        )
+        checks.append(Check(
+            "正式会话从完整已批准发布包启动",
+            package_verified,
+            f"verified={identity.get('PackageVerified')}, "
+            f"code={identity.get('PackageCode')}, files={identity.get('PackageFiles')}",
             required=performance_required,
         ))
 
