@@ -1,5 +1,6 @@
 using System;
 using System.Buffers;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -39,6 +40,10 @@ namespace AdaptiveControlTests
             Run("DAQ软件恢复持续局部退避且仅双重硬件证据报警", DaqSelfMaintenancePolicy, ref passed);
             Run("恢复阶段只在终态导出完整重证据", IncidentSnapshotHeavyEvidencePolicy, ref passed);
             Run("DAQ恢复先恢复安全电源再做机械定位", DaqRecoveryPrerequisiteOrder, ref passed);
+            Run("DAQ截止在所有权等待前按暂停冻结抑制取消断电排序", DaqCutoffPreOwnershipSafetyOrder, ref passed);
+            Run("Stop在恢复等待前先撤权暂停断电并启动电源关闭", StopPreRecoveryWaitSafetyOrder, ref passed);
+            Run("Stop预取消调用令牌不能撤销物理电源关闭", StopPowerDisableIgnoresCallerCancellation, ref passed);
+            Run("故障隔离先整组异步断电和电源关闭再启动拒绝项兜底", NonBlockingSafetyIsolationOrder, ref passed);
             Run("学习和资格通道即使没有定时器也恢复供电", DaqRecoveryIncludesRunnerOnlyChannels, ref passed);
             Run("UI发布限频不影响首批和周期后批次", UiDispatchGateUsesMonotonicRateLimit, ref passed);
             Run("UI最新值唤醒在阻塞期间只保留一个待处理信号", UiLatestValueSignalCoalescesBacklog, ref passed);
@@ -73,6 +78,12 @@ namespace AdaptiveControlTests
             Run("DAQ恢复期间旧运行和软预警不能覆盖恢复状态", DaqRecoveryStateCannotRegress, ref passed);
             Run("高优先级DO超时不回退到调用线程无限等待", HighPriorityDoTimeoutIsBounded, ref passed);
             Run("同通道重复OFF合并且不再分配未释放等待句柄", HighPriorityDoCoalescesDuplicateOff, ref passed);
+            Run("异步OFF合并后每个提交者获得唯一完成", HighPriorityDoAsyncCoalescingCompletesEverySubmitter, ref passed);
+            Run("异步OFF完成槽有界且关闭竞态不丢回调", HighPriorityDoCompletionCapacityAndDisposeRace, ref passed);
+            Run("异步OFF准入与关闭线性化不丢已接纳回调", HighPriorityDoAdmissionAndStopAreLinearized, ref passed);
+            Run("异步OFF阻塞不拖累DAQ订阅与另一设备", AdaptiveTerminalOffSubmissionIsNonBlockingAndIsolated, ref passed);
+            Run("异步OFF硬截止一次联锁且迟到只补证据", AdaptiveTerminalOffDeadlineCommitsExactlyOnce, ref passed);
+            Run("异步OFF物理失败只触发一次组级升级", SubmittedTerminalOffFailureEscalatesExactlyOnce, ref passed);
             Run("DAQ后台同根任务合并并在退出前观察异常", DaqBackgroundTasksAreCoalescedAndDrained, ref passed);
             Run("DO报警时间线保留兼容列并追加命令耗时", DoTimelineAppendsCommandElapsed, ref passed);
             Run("电源组重复联锁复用关联且允许重发安全动作", EmergencyPowerGroupLatchKeepsCorrelation, ref passed);
@@ -458,6 +469,16 @@ namespace AdaptiveControlTests
                     context.EnqueueRawData(accepted);
                 }
 
+                // 只在队列已经填满后启用派生统计，证明失败准入不会在每次原序重试时
+                // 重复累计同一 Owned 批次。
+                context.eMBToDaqCurrentChannel = new SortedDictionary<string, int>
+                {
+                    ["EPB1_current"] = 0
+                };
+                context.paraNameToScale["EPB1_current"] = 1;
+                context.paraNameToOffset["EPB1_current"] = 0;
+                context.paraNameToZeroValue["EPB1_current"] = 0;
+
                 rejected = OwnedDaqRawBatch.CopyFrom(
                     "Dev1", new[,] { { 999.0 } }, now, now.AddMilliseconds(-1), 999);
                 var elapsed = Stopwatch.StartNew();
@@ -470,6 +491,20 @@ namespace AdaptiveControlTests
                     $"Raw末端准入没有有界返回：{elapsed.ElapsedMilliseconds}ms");
                 Assert(Math.Abs(rejected[0, 0] - 999.0) < 1e-12,
                     "准入超时后上游所有权已被错误Dispose/归还对象池");
+                var statCountsField = typeof(DaqAIContext).GetField(
+                    "statMedianCounts",
+                    BindingFlags.Instance | BindingFlags.NonPublic);
+                Assert(statCountsField != null, "未找到Raw派生统计计数器");
+                var countsAfterReject = (int[])statCountsField.GetValue(context);
+                Assert(countsAfterReject.Length == 0 || countsAfterReject[0] == 0,
+                    "Raw准入失败时已提前累计派生统计，原序重试会重复计数");
+
+                context.FlushRawToDiskAsync().GetAwaiter().GetResult();
+                context.EnqueueRawData(rejected);
+                rejected = null; // 所有权已转移给 context。
+                var countsAfterRetry = (int[])statCountsField.GetValue(context);
+                Assert(countsAfterRetry.Length == 1 && countsAfterRetry[0] == 1,
+                    "Raw解除背压后的唯一成功准入没有精确累计一次派生统计");
             }
             finally
             {
@@ -695,7 +730,8 @@ namespace AdaptiveControlTests
                    !EpbManager.RequiresDaqTaskRecreate("BackgroundWorkerFault") &&
                    !EpbManager.RequiresDaqTaskRecreate("BackgroundBatchTransferFault") &&
                    !EpbManager.RequiresDaqTaskRecreate("RawPersistenceTransferFault") &&
-                   !EpbManager.RequiresDaqTaskRecreate("RawPersistencePermanentFault"),
+                   !EpbManager.RequiresDaqTaskRecreate("RawPersistencePermanentFault") &&
+                   !EpbManager.RequiresDaqTaskRecreate("DaqPersistenceWriteStall"),
                 "后台消费者/所有权移交故障仍错误重建健康NI任务");
             Assert(!EpbManager.RequiresDaqTaskRecreate("DaqCallbackStale"),
                 "短暂回调停顿仍被强制Stop/Start，未先复核已自行恢复的新鲜回调");
@@ -762,6 +798,104 @@ namespace AdaptiveControlTests
             Assert(EpbManager.ShouldDeferIndependentRejoinForDaq(true) &&
                    !EpbManager.ShouldDeferIndependentRejoinForDaq(false),
                 "通道级恢复没有正确服从DAQ组恢复所有权");
+        }
+
+        private static void DaqCutoffPreOwnershipSafetyOrder()
+        {
+            var order = new List<string>();
+            EpbManager.ExecuteDaqCutoffBeforeOwnershipWait(
+                () => order.Add("Watchdog"),
+                () => order.Add("PublishPauseAll"),
+                () => order.Add("FreezeSuppress"),
+                () => order.Add("CancelSubmitOffAll"));
+            Assert(order.SequenceEqual(new[]
+                {
+                    "Watchdog",
+                    "PublishPauseAll",
+                    "FreezeSuppress",
+                    "CancelSubmitOffAll"
+                }),
+                "DAQ截止仍可能在暂停/冻结前取消圈，或在OFF之后才关闭持久化尾段");
+        }
+
+        private static void StopPreRecoveryWaitSafetyOrder()
+        {
+            var order = new List<string>();
+            var powerTask = EpbManager.ExecuteStopSafetyBeforeRecoveryWait(
+                () => order.Add("RevokeBatch"),
+                () => order.Add("PauseFreezeAll"),
+                () => order.Add("CancelSubmitOffAll"),
+                () =>
+                {
+                    order.Add("StartPowerDisable");
+                    return "PowerDisableStarted";
+                },
+                () => order.Add("StartRejectedOffFallbacks"));
+            Assert(powerTask == "PowerDisableStarted" && order.SequenceEqual(new[]
+                {
+                    "RevokeBatch",
+                    "PauseFreezeAll",
+                    "CancelSubmitOffAll",
+                    "StartPowerDisable",
+                    "StartRejectedOffFallbacks"
+                }),
+                "Stop仍可能先等待恢复所有权，或拒绝项兜底早于总电源Disable");
+        }
+
+        private static void StopPowerDisableIgnoresCallerCancellation()
+        {
+            using var caller = new CancellationTokenSource();
+            caller.Cancel();
+            var invoked = false;
+            var physicalToken = new CancellationToken(canceled: true);
+            var result = EpbManager.ExecuteStopPowerDisableSafetyAsync(
+                    token =>
+                    {
+                        invoked = true;
+                        physicalToken = token;
+                        return Task.CompletedTask;
+                    },
+                    caller.Token)
+                .GetAwaiter()
+                .GetResult();
+            Assert(invoked && result.ok && !physicalToken.CanBeCanceled,
+                "预取消调用方令牌仍传播到物理Disable，或导致物理关闭未启动");
+        }
+
+        private static void NonBlockingSafetyIsolationOrder()
+        {
+            var order = new List<string>();
+            EpbManager.ExecuteNonBlockingSafetyIsolationOrder(
+                () => order.Add("FreezeCancelAll"),
+                () => order.Add("SubmitOffAll"),
+                () => order.Add("StartPowerDisable"),
+                () => order.Add("PublishSchedule"),
+                () => order.Add("StartRejectedFallbacks"));
+            Assert(order.SequenceEqual(new[]
+                {
+                    "FreezeCancelAll",
+                    "SubmitOffAll",
+                    "StartPowerDisable",
+                    "PublishSchedule",
+                    "StartRejectedFallbacks"
+                }),
+                "单路同步OFF兜底仍可能阻塞兄弟通道、电源关闭或故障发布");
+
+            order.Clear();
+            EpbManager.ExecuteNonBlockingSafetyIsolationOrder(
+                () => order.Add("FreezeCancelAll"),
+                () => order.Add("SubmitOffAll"),
+                null,
+                () => order.Add("PublishSystemFault"),
+                () => order.Add("StartRejectedFallbacks"));
+            Assert(order.SequenceEqual(new[]
+                {
+                    "FreezeCancelAll",
+                    "SubmitOffAll",
+                    "PublishSystemFault",
+                    "StartRejectedFallbacks"
+                }),
+                "软件恢复熔断仍可能在SystemFault/回收发布前同步等待OFF兜底");
         }
 
         private static void DaqRecoveryIncludesRunnerOnlyChannels()
@@ -974,7 +1108,7 @@ namespace AdaptiveControlTests
             Directory.CreateDirectory(root);
             try
             {
-                const string version = "V2.12.0.26";
+                const string version = "V2.12.0.27";
                 const string commit = "0123456789abcdef0123456789abcdef01234567";
                 const string buildUtc = "2026-08-09T13:00:00.0000000Z";
                 const string configSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -1253,6 +1387,396 @@ namespace AdaptiveControlTests
                    workItemType.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
                        .All(field => field.FieldType != typeof(ManualResetEventSlim)),
                 "高频OFF仍持有必须显式释放的ManualResetEventSlim等待句柄");
+        }
+
+        private static void HighPriorityDoAsyncCoalescingCompletesEverySubmitter()
+        {
+            using var worker = new DoController.HighPriorityDoWorker("AsyncCoalescing");
+            using var entered = new ManualResetEventSlim(false);
+            using var release = new ManualResetEventSlim(false);
+            using var allCompleted = new CountdownEvent(17);
+            var batchCalls = 0;
+            var callbackCalls = 0;
+            var commandIds = new ConcurrentDictionary<Guid, byte>();
+            Func<IReadOnlyList<int>, DoWriteTiming, bool> work = (channels, timing) =>
+            {
+                Interlocked.Increment(ref batchCalls);
+                entered.Set();
+                return release.Wait(2000);
+            };
+            void Completed(HighPriorityDoTelemetry telemetry)
+            {
+                if (telemetry != null && commandIds.TryAdd(telemetry.CommandId, 0))
+                    Interlocked.Increment(ref callbackCalls);
+                allCompleted.Signal();
+            }
+
+            var firstClock = Stopwatch.StartNew();
+            Assert(worker.TryPostHi(4, work, Completed, out var firstId),
+                "首个异步OFF未被接纳");
+            firstClock.Stop();
+            Assert(firstClock.Elapsed.TotalMilliseconds < 20,
+                $"首个异步OFF提交阻塞 {firstClock.Elapsed.TotalMilliseconds:F3}ms");
+            Assert(entered.Wait(1000), "异步OFF未进入专用worker");
+
+            for (var index = 0; index < 16; index++)
+            {
+                var clock = Stopwatch.StartNew();
+                Assert(worker.TryPostHi(4, work, Completed, out var commandId),
+                    $"第{index + 1}个合并异步OFF未被接纳");
+                clock.Stop();
+                Assert(clock.Elapsed.TotalMilliseconds < 20,
+                    $"合并异步OFF提交阻塞 {clock.Elapsed.TotalMilliseconds:F3}ms");
+                Assert(commandId != Guid.Empty && commandId != firstId,
+                    "合并异步OFF未分配独立CommandId");
+            }
+
+            Assert(worker.PendingWorkItems == 1 && worker.CoalescedRequests >= 16,
+                $"异步同通道请求未合并：Pending={worker.PendingWorkItems} " +
+                $"Coalesced={worker.CoalescedRequests}");
+            Assert(allCompleted.CurrentCount == 17,
+                "物理写仍阻塞时异步提交者被提前报告完成");
+            release.Set();
+            Assert(allCompleted.Wait(2000), "合并异步OFF存在提交者未收到完成回调");
+            Assert(batchCalls == 1 && callbackCalls == 17 && commandIds.Count == 17,
+                $"异步合并完成语义错误：Batch={batchCalls} Callback={callbackCalls} " +
+                $"Ids={commandIds.Count}");
+        }
+
+        private static void AdaptiveTerminalOffSubmissionIsNonBlockingAndIsolated()
+        {
+            using (var dev1 = new DoController.HighPriorityDoWorker("AsyncDev1"))
+            using (var dev2 = new DoController.HighPriorityDoWorker("AsyncDev2"))
+            using (var dev1Entered = new ManualResetEventSlim(false))
+            using (var dev1Completed = new ManualResetEventSlim(false))
+            using (var dev2Completed = new ManualResetEventSlim(false))
+            {
+                Assert(dev1.TryPostHi(
+                        4,
+                        (channels, timing) =>
+                        {
+                            dev1Entered.Set();
+                            Thread.Sleep(80);
+                            return true;
+                        },
+                        _ => dev1Completed.Set(),
+                        out _),
+                    "Dev1阻塞OFF未获接纳");
+                Assert(dev1Entered.Wait(1000), "Dev1阻塞OFF未进入worker");
+
+                var otherDeviceClock = Stopwatch.StartNew();
+                Assert(dev2.TryPostHi(
+                        10,
+                        (channels, timing) => true,
+                        _ => dev2Completed.Set(),
+                        out _),
+                    "Dev2独立OFF未获接纳");
+                otherDeviceClock.Stop();
+                Assert(otherDeviceClock.Elapsed.TotalMilliseconds < 20 &&
+                       dev2Completed.Wait(50) && !dev1Completed.IsSet,
+                    $"Dev1阻塞错误拖累Dev2：Submit={otherDeviceClock.Elapsed.TotalMilliseconds:F3}ms");
+                Assert(dev1Completed.Wait(1000), "Dev1阻塞OFF未最终完成");
+            }
+
+            // 使用真实 FeedCurrentSample -> ProcessAdaptiveSample -> terminal OFF 提交链。
+            // 通过持有 DoController 初始化锁让专用 worker 内部阻塞，DAQ 调用线程不得等待该锁。
+            using var controller = new DoController(new DoConfig());
+            using var ao = new AoController(new AoConfig());
+            var hydraulic = new HydraulicController(
+                controller,
+                new TestConfig(),
+                _ => 0.0,
+                ao);
+            var runner = new EpbCycleRunner(
+                4,
+                1,
+                _ => 0.0,
+                controller,
+                null,
+                hydraulic,
+                15.0,
+                1000,
+                epbControlMode: EpbControlMode.AdaptiveCurrent,
+                adaptiveShadowMode: false,
+                programSafetySettings: new EpbProgramSafetySettings());
+            var begin = typeof(EpbCycleRunner).GetMethod(
+                "BeginAdaptiveForwardMonitoring",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert(begin != null, "未找到自适应正向监控入口");
+            // 先走一遍同一真实路径，排除首次 JIT 对 20ms 运行时门限的污染。
+            begin.Invoke(runner, new object[] { 1000 });
+            runner.FeedCurrentSample(new FastEpbCurrentSample(
+                4,
+                0,
+                0,
+                DateTime.UtcNow,
+                Stopwatch.GetTimestamp(),
+                1,
+                1,
+                FastSignalQualityFlags.ProducerReentry));
+            Assert(runner.GetTerminalOffCurrentVerificationTask().Wait(1000),
+                "自适应OFF预热路径未收口");
+            begin.Invoke(runner, new object[] { 1000 });
+            var forwardCompletionField = typeof(EpbCycleRunner).GetField(
+                "_adaptiveForwardCompletion",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert(forwardCompletionField != null, "未找到自适应正向完成门");
+            var forwardCompletion =
+                (TaskCompletionSource<EpbAdaptiveDecision>)forwardCompletionField.GetValue(runner);
+
+            var taskGateField = typeof(DoController).GetField(
+                "_doTaskLock",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert(taskGateField != null, "未找到DO初始化锁");
+            var taskGate = taskGateField.GetValue(controller);
+            using var lockEntered = new ManualResetEventSlim(false);
+            using var releaseDoLock = new ManualResetEventSlim(false);
+            var holder = new Thread(() =>
+            {
+                lock (taskGate)
+                {
+                    lockEntered.Set();
+                    releaseDoLock.Wait(2000);
+                }
+            }) { IsBackground = true };
+            holder.Start();
+            Assert(lockEntered.Wait(1000), "未能注入DO worker内部永久阻塞模拟");
+
+            var subscriberClock = Stopwatch.StartNew();
+            runner.FeedCurrentSample(new FastEpbCurrentSample(
+                4,
+                0,
+                0,
+                DateTime.UtcNow,
+                Stopwatch.GetTimestamp(),
+                2,
+                2,
+                FastSignalQualityFlags.ProducerReentry));
+            subscriberClock.Stop();
+            Assert(subscriberClock.Elapsed.TotalMilliseconds < 20,
+                $"真实adaptive subscriber仍同步等待DO：{subscriberClock.Elapsed.TotalMilliseconds:F3}ms");
+            Assert(!forwardCompletion.Task.IsCompleted,
+                "DO worker仍阻塞时正向阶段已提前完成，存在反向重上电风险");
+            Assert(forwardCompletion.Task.Wait(500) &&
+                   forwardCompletion.Task.Result.HardFault &&
+                   forwardCompletion.Task.Result.Reason.Contains("TerminalOffHardwareTimeout") &&
+                   holder.IsAlive,
+                "NI写永久阻塞时自适应阶段未在独立100ms硬截止内以硬故障收口");
+            var committedReason = forwardCompletion.Task.Result.Reason;
+            releaseDoLock.Set();
+            Assert(holder.Join(1000), "DO worker阻塞注入线程未退出");
+            Thread.Sleep(100);
+            Assert(forwardCompletion.Task.Result.Reason == committedReason,
+                "迟到物理回调二次迁移了已经超时提交的自适应状态");
+        }
+
+        private static void AdaptiveTerminalOffDeadlineCommitsExactlyOnce()
+        {
+            using var worker = new DoController.HighPriorityDoWorker("DeadlineGate");
+            using var hardwareEntered = new ManualResetEventSlim(false);
+            using var releaseHardware = new ManualResetEventSlim(false);
+            using var lateCallback = new ManualResetEventSlim(false);
+            var resolution = new AdaptiveTerminalOffResolutionGate();
+            var emergencyCount = 0;
+            var stateTransitionCount = 0;
+            var lateEvidenceCount = 0;
+
+            var submitClock = Stopwatch.StartNew();
+            Assert(worker.TryPostHi(
+                    4,
+                    (channels, timing) =>
+                    {
+                        hardwareEntered.Set();
+                        releaseHardware.Wait(2000);
+                        return true;
+                    },
+                    telemetry =>
+                    {
+                        if (resolution.TryCommitHardwareCompletion())
+                            Interlocked.Increment(ref stateTransitionCount);
+                        else
+                        {
+                            Interlocked.Increment(ref lateEvidenceCount);
+                            lateCallback.Set();
+                        }
+                    },
+                    out _),
+                "硬截止测试OFF未被接纳");
+            submitClock.Stop();
+            Assert(submitClock.Elapsed.TotalMilliseconds < 20,
+                $"NI永久阻塞模拟的caller提交耗时{submitClock.Elapsed.TotalMilliseconds:F3}ms");
+            Assert(hardwareEntered.Wait(1000), "硬截止测试未进入物理写");
+
+            var deadline = EpbCycleRunner.MonitorAcceptedTerminalOffDeadlineAsync(
+                resolution,
+                50,
+                _ =>
+                {
+                    Interlocked.Increment(ref emergencyCount);
+                    Interlocked.Increment(ref stateTransitionCount);
+                });
+            Assert(deadline.Wait(500) && deadline.Result,
+                "已接纳OFF在NI永久阻塞时未触发独立单调时钟截止");
+            Assert(emergencyCount == 1 && stateTransitionCount == 1 &&
+                   resolution.Resolution == AdaptiveTerminalOffResolution.HardwareTimedOut,
+                $"硬截止未唯一提交组联锁：Emergency={emergencyCount} " +
+                $"Transitions={stateTransitionCount} State={resolution.Resolution}");
+
+            releaseHardware.Set();
+            Assert(lateCallback.Wait(1000), "解除NI阻塞后未收到迟到物理证据");
+            Assert(emergencyCount == 1 && stateTransitionCount == 1 && lateEvidenceCount == 1,
+                $"迟到物理回调发生二次迁移：Emergency={emergencyCount} " +
+                $"Transitions={stateTransitionCount} Late={lateEvidenceCount}");
+        }
+
+        private static void HighPriorityDoCompletionCapacityAndDisposeRace()
+        {
+            var worker = new DoController.HighPriorityDoWorker("DisposeRace");
+            using var entered = new ManualResetEventSlim(false);
+            using var release = new ManualResetEventSlim(false);
+            using var completed = new CountdownEvent(64);
+            var ids = new ConcurrentDictionary<Guid, byte>();
+            Func<IReadOnlyList<int>, DoWriteTiming, bool> work = (channels, timing) =>
+            {
+                entered.Set();
+                return release.Wait(2000);
+            };
+            void OnCompleted(HighPriorityDoTelemetry telemetry)
+            {
+                if (telemetry != null) ids.TryAdd(telemetry.CommandId, 0);
+                completed.Signal();
+            }
+
+            try
+            {
+                Assert(worker.TryPostHi(4, work, OnCompleted, out _),
+                    "关闭竞态首个异步OFF未接纳");
+                Assert(entered.Wait(1000), "关闭竞态物理写未进入worker");
+                for (var index = 1; index < 64; index++)
+                    Assert(worker.TryPostHi(4, work, OnCompleted, out _),
+                        $"完成槽第{index + 1}个请求被提前拒绝");
+
+                var rejectionClock = Stopwatch.StartNew();
+                Assert(!worker.TryPostHi(4, work, OnCompleted, out _),
+                    "同一物理任务超过64个完成登记后仍无界接纳");
+                rejectionClock.Stop();
+                Assert(rejectionClock.Elapsed.TotalMilliseconds < 20,
+                    $"完成登记容量拒绝不够快：{rejectionClock.Elapsed.TotalMilliseconds:F3}ms");
+
+                var disposing = Task.Run(() => worker.Dispose());
+                Thread.Sleep(20);
+                release.Set();
+                Assert(disposing.Wait(2000), "worker关闭未在物理写解除后收口");
+                Assert(completed.Wait(2000) && ids.Count == 64,
+                    $"关闭竞态丢失已接纳完成：Callbacks={64 - completed.CurrentCount} " +
+                    $"UniqueIds={ids.Count}");
+            }
+            finally
+            {
+                release.Set();
+                worker.Dispose();
+            }
+        }
+
+        private static void HighPriorityDoAdmissionAndStopAreLinearized()
+        {
+            var worker = new DoController.HighPriorityDoWorker("AdmissionStopRace");
+            using var indexed = new ManualResetEventSlim(false);
+            using var releaseAdmission = new ManualResetEventSlim(false);
+            using var disposeStarted = new ManualResetEventSlim(false);
+            using var callbackArrived = new ManualResetEventSlim(false);
+            var callbackCount = 0;
+            var accepted = false;
+            Guid acceptedCommandId = Guid.Empty;
+
+            worker.AdmissionIndexedTestHook = () =>
+            {
+                indexed.Set();
+                releaseAdmission.Wait(2000);
+            };
+
+            try
+            {
+                var submitting = Task.Run(() =>
+                {
+                    accepted = worker.TryPostHi(
+                        4,
+                        (channels, timing) => true,
+                        telemetry =>
+                        {
+                            if (telemetry != null && telemetry.CommandId == acceptedCommandId)
+                                Interlocked.Increment(ref callbackCount);
+                            callbackArrived.Set();
+                        },
+                        out acceptedCommandId);
+                });
+                Assert(indexed.Wait(1000),
+                    "未进入pending索引登记与物理队列入队之间的确定性竞态窗口");
+
+                var contendedAdmissionClock = Stopwatch.StartNew();
+                Assert(!worker.TryPostHi(
+                        5,
+                        (channels, timing) => true,
+                        _ => { },
+                        out _),
+                    "准入门被占用时另一通道不应越过有界提交预算");
+                contendedAdmissionClock.Stop();
+                Assert(contendedAdmissionClock.Elapsed.TotalMilliseconds < 20,
+                    $"准入门竞争导致异步提交阻塞" +
+                    $"{contendedAdmissionClock.Elapsed.TotalMilliseconds:F3}ms");
+
+                var disposing = Task.Run(() =>
+                {
+                    disposeStarted.Set();
+                    worker.Dispose();
+                });
+                Assert(disposeStarted.Wait(1000), "关闭线程未启动");
+                Assert(!disposing.Wait(50),
+                    "Dispose越过尚未完成的准入窗口，可能排空后再接纳工作");
+
+                releaseAdmission.Set();
+                Assert(submitting.Wait(1000) && accepted && acceptedCommandId != Guid.Empty,
+                    "线性化窗口解除后提交未作为已接纳命令返回");
+                Assert(disposing.Wait(2000), "线性化关闭未在已接纳命令收口后完成");
+                Assert(callbackArrived.Wait(1000) && callbackCount == 1,
+                    $"关闭竞态丢失或重复完成回调：Callbacks={callbackCount}");
+            }
+            finally
+            {
+                releaseAdmission.Set();
+                worker.AdmissionIndexedTestHook = null;
+                worker.Dispose();
+            }
+        }
+
+        private static void SubmittedTerminalOffFailureEscalatesExactlyOnce()
+        {
+            var escalations = 0;
+            var failed = new HighPriorityDoTelemetry
+            {
+                CommandId = Guid.NewGuid(),
+                Channel = 4,
+                Result = false,
+                HardwareCompletedUtc = DateTime.UtcNow
+            };
+            Assert(!EpbCycleRunner.CompleteSubmittedTerminalOffWithEscalation(
+                       failed,
+                       () => Interlocked.Increment(ref escalations)) &&
+                   escalations == 1,
+                "异步OFF物理失败未从完成回调触发唯一组级升级");
+
+            var succeeded = new HighPriorityDoTelemetry
+            {
+                CommandId = Guid.NewGuid(),
+                Channel = 10,
+                Result = true,
+                HardwareCompletedUtc = DateTime.UtcNow
+            };
+            Assert(EpbCycleRunner.CompleteSubmittedTerminalOffWithEscalation(
+                       succeeded,
+                       () => Interlocked.Increment(ref escalations)) &&
+                   escalations == 1,
+                "异步OFF物理成功仍错误触发组级升级");
         }
 
         private static void DaqBackgroundTasksAreCoalescedAndDrained()

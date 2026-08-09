@@ -31,11 +31,15 @@ namespace AdaptiveControlTests
             coordinator.Enqueue(NewBatch("Dev1", 3));
             WaitUntil(() => states.Any(x => x.State == DaqPersistenceState.Paused), 2000,
                 "持久化积压未进入安全暂停");
-            var paused = states.First(x => x.State == DaqPersistenceState.Paused);
-            coordinator.SuppressAfter("Dev1", DateTime.UtcNow.AddSeconds(-1), paused.CorrelationId);
             WaitUntil(() => recorder.WriteCount >= 3, 3000,
                 "持久化队列未排空");
+            Assert(coordinator.WaitForDurableBoundaryAsync(
+                    "Dev1", 3, 2000, CancellationToken.None).GetAwaiter().GetResult(),
+                "前三批真实写入后持久化队列仍未到达稳定低水位");
             coordinator.Enqueue(NewBatch("Dev1", 4));
+            Assert(coordinator.WaitForPersistedAsync(
+                    "Dev1", 4, 2000, CancellationToken.None).GetAwaiter().GetResult(),
+                "第一批低水位新鲜样本未真实写入");
             coordinator.Enqueue(NewBatch("Dev1", 5));
             WaitUntil(() => states.Any(x => x.State == DaqPersistenceState.Recovered), 2000,
                 "低水位和连续新鲜批次满足后未自动恢复");
@@ -218,10 +222,14 @@ namespace AdaptiveControlTests
             coordinator.SuppressAfter(
                 "Dev1",
                 DateTime.UtcNow.AddSeconds(-1),
+                2,
                 timedOut.CorrelationId);
             Assert(coordinator.Enqueue(NewBatch("Dev1", 3)), "截止后抑制批次未被处理");
-            Assert(coordinator.GetSnapshot("Dev1").Sequence == 3,
-                "抑制批次没有模拟出处理序号先行场景");
+            var suppressed = coordinator.GetSnapshot("Dev1");
+            Assert(suppressed.Sequence == 0 &&
+                   suppressed.LastTerminallyHandledSequence >= 3 &&
+                   suppressed.SuppressedBatchCount == 1,
+                "抑制批次被错误伪装为物理持久化，或未留下显式排除审计");
             Assert(!coordinator.WaitForDurableBoundaryAsync(
                     "Dev1", 3, 50, CancellationToken.None).GetAwaiter().GetResult(),
                 "仅处理序号先行时错误允许截止圈封存");
@@ -233,8 +241,11 @@ namespace AdaptiveControlTests
                     .GetAwaiter().GetResult(),
                 "补写完成后持久化边界未推进到第二批");
             Assert(coordinator.WaitForDurableBoundaryAsync(
-                    "Dev1", 3, 2000, CancellationToken.None).GetAwaiter().GetResult(),
-                "原批次和排队批次未全部补写，不能进入封圈边界");
+                    "Dev1", 2, 2000, CancellationToken.None).GetAwaiter().GetResult(),
+                "冻结边界内的原批次和排队批次未全部补写");
+            Assert(!coordinator.WaitForDurableBoundaryAsync(
+                    "Dev1", 3, 50, CancellationToken.None).GetAwaiter().GetResult(),
+                "明确排除但未写盘的批次错误越过物理耐久边界");
             WaitUntil(
                 () => coordinator.GetSnapshot("Dev1").State == DaqPersistenceState.Recovered,
                 2000,
@@ -287,6 +298,57 @@ namespace AdaptiveControlTests
             RecorderAbsenceAndSupervisorFaultRetainOriginalOrder();
         }
 
+        internal static void WriteStallWatchdogPublishesOnceAndRetainsBatch()
+        {
+            var recorder = new BlockingUntilReleasedRecorder();
+            var coordinator = new DaqPersistenceCoordinator(
+                () => recorder,
+                Config.NullLogger.Instance,
+                8, 6, 4, 1000, 100, 1000, 1);
+            try
+            {
+                var states = new ConcurrentQueue<DaqPersistenceStateChanged>();
+                coordinator.StateChanged += states.Enqueue;
+
+                Assert(coordinator.Enqueue(NewBatch("Dev1", 881, 7)),
+                    "永久阻塞场景批次未进入持久化队列");
+                Assert(recorder.Started.Wait(2000), "永久阻塞记录器未进入同步写调用");
+                WaitUntil(
+                    () => states.Any(state =>
+                        state.State == DaqPersistenceState.Failed &&
+                        state.Code == "DaqPersistenceWriteStall"),
+                    2500,
+                    "同步写永久不返回时独立看门狗未在恢复阈值内发布故障");
+
+                var stalled = states.Single(state =>
+                    state.State == DaqPersistenceState.Failed &&
+                    state.Code == "DaqPersistenceWriteStall");
+                Assert(stalled.Device == "Dev1" && stalled.Generation == 7 && stalled.Sequence == 881,
+                    "写卡死事件没有冻结正确的设备/代次/批次身份");
+                Assert(coordinator.GetSnapshot("Dev1").Code == "DaqPersistenceWriteStall",
+                    "写卡死故障未进入结构化快照");
+                Assert(coordinator.GetSnapshot("Dev1").Sequence == 0,
+                    "永久阻塞批次被伪装成已持久化");
+
+                Thread.Sleep(1200);
+                Assert(states.Count(state => state.Code == "DaqPersistenceWriteStall") == 1,
+                    "同一次永久阻塞重复发布写卡死故障");
+
+                recorder.Release();
+                WaitUntil(() => Volatile.Read(ref recorder.SuccessCount) == 1, 2000,
+                    "解除同步写阻塞后原批次未完成");
+                Assert(coordinator.DrainAsync(2000).GetAwaiter().GetResult(),
+                    "解除同步写阻塞后持久化队列无法收口");
+                Assert(coordinator.GetSnapshot("Dev1").Sequence == 881,
+                    "解除阻塞后原批次未推进真实耐久边界");
+            }
+            finally
+            {
+                recorder.Release();
+                coordinator.Dispose();
+            }
+        }
+
         internal static void DurablePrefixAllowsHealthyLaterTrafficButRejectsSuppression()
         {
             var recorder = new PrefixGateRecorder(3);
@@ -313,13 +375,140 @@ namespace AdaptiveControlTests
                     "Dev1", 3, 2000, CancellationToken.None).GetAwaiter().GetResult(),
                 "第三批写入后耐久前缀未放行");
 
-            coordinator.SuppressAfter("Dev1", DateTime.UtcNow, Guid.NewGuid());
+            coordinator.SuppressAfter("Dev1", DateTime.UtcNow, 3, Guid.NewGuid());
             Assert(coordinator.WaitForDurablePrefixAsync(
                     "Dev1", 3, 50, CancellationToken.None).GetAwaiter().GetResult(),
                 "主动截止错误撤销了截止前已真实写入的耐久前缀");
 
             DequeuePublishesInFlightBeforeRemovingQueueHead();
             SuppressionCutoffUsesAtomicUtcTicks();
+        }
+
+        internal static void AdmissionCutoffLinearizesBeforeQueueCommit()
+        {
+            AssertCorrelationIdentityUsesAtomicReference();
+
+            var recorder = new OrderedRecorder();
+            var coordinator = new DaqPersistenceCoordinator(
+                () => recorder,
+                Config.NullLogger.Instance,
+                2, 1, 0, 1000, 100, 2000, 1);
+            using var reachedCommitBarrier = new ManualResetEventSlim(false);
+            using var releaseCommit = new ManualResetEventSlim(false);
+            var batch = NewBatch("Dev1", 761);
+            Task<bool> producer = null;
+            coordinator.AdmissionCommitBarrierForTest = (device, sequence) =>
+            {
+                if (device != "Dev1" || sequence != 761) return;
+                reachedCommitBarrier.Set();
+                if (!releaseCommit.Wait(3000))
+                    throw new TimeoutException("admission suppression barrier timeout");
+            };
+
+            try
+            {
+                producer = Task.Run(() => coordinator.Enqueue(batch));
+                Assert(reachedCommitBarrier.Wait(2000),
+                    "竞态批次未在初次观察准入开放并取得slot后到达提交屏障");
+
+                var slots = GetDeviceSlots(coordinator, "_dev1");
+                Assert(slots.CurrentCount == 1,
+                    $"提交屏障前未占用且仅占用一个slot：CurrentCount={slots.CurrentCount}");
+
+                var correlation = Guid.NewGuid();
+                coordinator.SuppressAfter(
+                    "Dev1",
+                    DateTime.UtcNow,
+                    760,
+                    correlation);
+                releaseCommit.Set();
+
+                Assert(producer.Wait(2000) && producer.Result,
+                    "截止安装后提交前批次未被协调器显式终结");
+                var suppressed = coordinator.GetSnapshot("Dev1");
+                Assert(suppressed.SuppressedBatchCount == 1 &&
+                       suppressed.CumulativeSuppressedBatchCount == 1 &&
+                       suppressed.LastTerminallyHandledSequence == 761,
+                    "提交前竞态批次未登记为Suppressed/TerminallyHandled");
+                Assert(suppressed.Sequence == 0 && recorder.Count == 0,
+                    "提交前竞态批次被物理写入或伪推进Persisted水位");
+                Assert(!coordinator.WaitForPersistedAsync(
+                        "Dev1", 761, 50, CancellationToken.None).GetAwaiter().GetResult(),
+                    "被抑制批次错误越过物理持久化等待边界");
+                Assert(suppressed.QueueDepth == 0 && slots.CurrentCount == 2,
+                    $"被抑制批次未归还队列slot：QueueDepth={suppressed.QueueDepth}, " +
+                    $"CurrentCount={slots.CurrentCount}");
+
+                // 容量为2；若竞态批次泄漏slot，这一行为验证和最终计数都会失败。
+                coordinator.AdmissionCommitBarrierForTest = null;
+                coordinator.ResumeAdmission("Dev1", 761);
+                Assert(coordinator.Enqueue(NewBatch("Dev1", 762)),
+                    "恢复后首个严格更新批次未被接纳，疑似存在slot泄漏");
+                Assert(coordinator.WaitForPersistedAsync(
+                        "Dev1", 762, 2000, CancellationToken.None).GetAwaiter().GetResult(),
+                    "恢复后首个严格更新批次未真实写入");
+                Assert(coordinator.DrainAsync(2000).GetAwaiter().GetResult(),
+                    "恢复后的验证批次未完成排空");
+                Assert(recorder.SequenceEqual(762) && slots.CurrentCount == 2,
+                    "截止竞态后物理写入序列错误或slot未完整归还");
+            }
+            finally
+            {
+                releaseCommit.Set();
+                if (producer != null && !producer.IsCompleted)
+                {
+                    try { producer.Wait(2000); }
+                    catch { }
+                }
+                if (producer == null ||
+                    producer.Status != TaskStatus.RanToCompletion ||
+                    !producer.Result)
+                    batch.Dispose();
+                coordinator.Dispose();
+            }
+        }
+
+        private static void AssertCorrelationIdentityUsesAtomicReference()
+        {
+            var queueType = typeof(DaqPersistenceCoordinator).GetNestedType(
+                "DeviceQueue", BindingFlags.NonPublic);
+            Assert(queueType != null, "无法反射检查DeviceQueue关联身份字段");
+            Assert(queueType.GetField(
+                       "CorrelationId",
+                       BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic) == null,
+                "DeviceQueue仍保存裸Guid CorrelationId，32位进程存在撕裂读取风险");
+
+            var correlationField = queueType.GetField(
+                "Correlation",
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            var identityType = typeof(DaqPersistenceCoordinator).GetNestedType(
+                "CorrelationIdentity", BindingFlags.NonPublic);
+            Assert(identityType != null &&
+                   correlationField != null &&
+                   correlationField.FieldType == identityType &&
+                   !correlationField.FieldType.IsValueType,
+                "DeviceQueue关联身份未使用不可变引用封装原子发布");
+            var valueProperty = identityType.GetProperty(
+                "Value",
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            Assert(valueProperty != null && valueProperty.PropertyType == typeof(Guid),
+                "CorrelationIdentity未封装完整Guid值");
+        }
+
+        private static SemaphoreSlim GetDeviceSlots(
+            DaqPersistenceCoordinator coordinator,
+            string fieldName)
+        {
+            var queueField = typeof(DaqPersistenceCoordinator).GetField(
+                fieldName,
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            var queue = queueField?.GetValue(coordinator);
+            var slotsField = queue?.GetType().GetField(
+                "Slots",
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            var slots = slotsField?.GetValue(queue) as SemaphoreSlim;
+            Assert(slots != null, $"无法反射检查{fieldName}持久化slot");
+            return slots;
         }
 
         private static void RejectedEnqueueAndDisposeTimeoutPreserveCallerOwnership()
@@ -545,6 +734,10 @@ namespace AdaptiveControlTests
             Assert(queueType?.GetField(
                        "SuppressAfterUtc", BindingFlags.Instance | BindingFlags.Public) == null,
                 "非原子 Nullable<DateTime> 截止字段仍然存在");
+            var sequenceField = queueType?.GetField(
+                "SuppressAfterSequence", BindingFlags.Instance | BindingFlags.Public);
+            Assert(sequenceField != null && sequenceField.FieldType == typeof(long),
+                "持久化抑制没有绑定冻结的原子sequence边界");
 
             var recorder = new OrderedRecorder();
             using var coordinator = new DaqPersistenceCoordinator(
@@ -552,25 +745,45 @@ namespace AdaptiveControlTests
                 Config.NullLogger.Instance,
                 8, 6, 4, 1000, 100, 2000, 1);
             var cutoff = DateTime.UtcNow.AddSeconds(1);
-            coordinator.SuppressAfter("Dev1", cutoff, Guid.NewGuid());
-            Assert(coordinator.Enqueue(NewBatchAt("Dev1", 751, cutoff.AddTicks(-1))),
+            coordinator.SuppressAfter("Dev1", cutoff, 751, Guid.NewGuid());
+            Assert(coordinator.Enqueue(NewBatchAt("Dev1", 751, cutoff.AddTicks(1))),
                 "截止前批次未被接纳");
-            Assert(coordinator.Enqueue(NewBatchAt("Dev1", 752, cutoff.AddTicks(1))),
-                "截止后批次未被明确抑制处理");
             WaitUntil(() => recorder.Count == 1, 2000,
                 "截止前批次未真实写入");
             Assert(recorder.SequenceEqual(751),
                 "截止后批次错误进入记录器");
-            Assert(coordinator.GetSnapshot("Dev1").SuppressedBatchCount == 1,
-                "原子截止没有准确统计被抑制批次");
 
-            coordinator.ResumeAdmission("Dev1");
+            // 恢复只把排除窗口收紧到当前已接收序号，不可立即清除。模拟旧尾批在
+            // Resume 之后才从 processing 到达：752 仍须排除，首个严格更新的 753
+            // 才关闭窗口并恢复真实写入。
+            coordinator.ResumeAdmission("Dev1", 752);
+            Assert(coordinator.Enqueue(NewBatchAt("Dev1", 752, cutoff.AddTicks(-1))),
+                "恢复后迟到旧尾批未被明确抑制处理");
+            var snapshot = coordinator.GetSnapshot("Dev1");
+            Assert(snapshot.Sequence == 751 &&
+                   snapshot.LastTerminallyHandledSequence >= 752 &&
+                   snapshot.SuppressAfterSequence == 751 &&
+                   snapshot.SuppressThroughSequence == 752 &&
+                   snapshot.SuppressedBatchCount == 1 &&
+                   snapshot.CumulativeSuppressedBatchCount == 1 &&
+                   snapshot.FirstSuppressedSequence == 752 &&
+                   snapshot.LastSuppressedSequence == 752 &&
+                   snapshot.SuppressedRangeCount == 1,
+                "sequence截止没有区分物理写入与显式排除，或累计审计不完整");
+
             Assert(coordinator.Enqueue(NewBatchAt("Dev1", 753, cutoff.AddTicks(2))),
                 "恢复准入后批次未入队");
             WaitUntil(() => recorder.Count == 2, 2000,
                 "恢复准入后批次未写入");
             Assert(recorder.SequenceEqual(751, 753),
                 "恢复准入后的真实写入顺序错误");
+            var resumed = coordinator.GetSnapshot("Dev1");
+            Assert(resumed.Sequence == 753 &&
+                   resumed.SuppressAfterSequence == 0 &&
+                   resumed.SuppressThroughSequence == 0 &&
+                   resumed.CumulativeSuppressedBatchCount == 1 &&
+                   resumed.SuppressedRangeCount == 1,
+                "新一轮真实写入清除了历史排除审计，或未推进物理写入水位");
         }
 
         internal static void DiskWriterUsesLazyTransactionalViewsAndCanResetThem()
@@ -716,7 +929,13 @@ namespace AdaptiveControlTests
             var states = new ConcurrentQueue<DaqPersistenceStateChanged>();
             coordinator.StateChanged += states.Enqueue;
 
-            coordinator.Enqueue(NewBatch("Dev2", 506));
+            coordinator.Enqueue(NewLoadBatch(
+                "Dev2",
+                506,
+                DateTime.UtcNow,
+                0,
+                1,
+                new[] { epbId, epbId + 1 }));
             WaitUntil(
                 () => states.Any(state =>
                     state.State == DaqPersistenceState.Failed &&
@@ -729,6 +948,16 @@ namespace AdaptiveControlTests
             Assert(failed.EpbId == epbId, "活动圈上限事件丢失EPB标识");
             Assert(failed.CycleNumber == cycle, "活动圈上限事件丢失圈号");
             Assert(failed.RecordLimit == limit, "活动圈上限事件丢失样本限制");
+            WaitUntil(() => Volatile.Read(ref recorder.SuccessCount) == 1, 2000,
+                "活动圈上限后未原序重试当前整设备批次");
+            Assert(Volatile.Read(ref recorder.WriteAttempts) == 2,
+                "活动圈上限后没有且仅有一次整批重试");
+            Assert(recorder.HealthyChannels.SequenceEqual(new[] { epbId + 1 }),
+                "故障通道阻止同DAQ健康通道真实写入");
+            Assert(coordinator.GetSnapshot("Dev2").Sequence == 506,
+                "健康通道真实写入前后耐久边界未正确推进");
+            Assert(states.Count(state => state.Code == "ActiveCycleDataLimitExceeded") == 1,
+                "同一活动圈上限重复发布生命周期故障");
         }
 
         internal static void SixChannelRealtimePersistenceStaysAhead()
@@ -1060,6 +1289,42 @@ namespace AdaptiveControlTests
             public void FlushRecentTo(int epbId, int lastNCycles, string exportDir, bool includeRunningCycle) { }
         }
 
+        private sealed class BlockingUntilReleasedRecorder : IEpbCycleRecorder, IBatchedEpbCycleRecorder
+        {
+            private readonly ManualResetEventSlim _release = new(false);
+            internal readonly ManualResetEventSlim Started = new(false);
+            internal int SuccessCount;
+
+            internal void Release() => _release.Set();
+
+            public void WriteDeviceBatch(
+                DateTime[] timestampsUtc,
+                IReadOnlyList<EpbChannelDiskBatch> channels,
+                int count)
+            {
+                Started.Set();
+                _release.Wait();
+                Interlocked.Increment(ref SuccessCount);
+            }
+
+            public void WriteBatch(int epbId, DateTime[] timestampsUtc, double[] currents, double[] pressures, int count)
+                => WriteDeviceBatch(timestampsUtc, Array.Empty<EpbChannelDiskBatch>(), count);
+            public void WriteBatch(int epbId, DateTime[] tsUtc, double[] currents, double[] groupPressures)
+                => WriteDeviceBatch(tsUtc, Array.Empty<EpbChannelDiskBatch>(), tsUtc?.Length ?? 0);
+            public void SealCycleWindow(int epbId, int cycleNumber, DateTime endUtc) { }
+            public void BeginCycle(int epbId, int cycleNumber, DateTime utcNow) { }
+            public int BeginLearningCycle(int epbId, DateTime utcNow) => -1;
+            public int GetCurrentCycleSampleCount(int epbId) => 0;
+            public void CompleteCycle(int epbId, int cycleNumber, int finalN, DateTime utcNow) { }
+            public void AlarmCycle(int epbId, int cycleNumber, int finalN, DateTime utcNow) { }
+            public AlarmCycleSnapshotEvidence SealAndExportAlarmCycle(int epbId, int cycleNumber, string exportDir, DateTime fallbackEndUtc) => new();
+            public AlarmCycleSnapshotEvidence SealAndExportCycle(int epbId, int cycleNumber, string exportDir, DateTime fallbackEndUtc, string status) => new();
+            public void AbortCycle(int epbId, int cycleNumber, int finalN, DateTime utcNow, string status) { }
+            public void FlushRecent(int epbId, int lastNCycles) { }
+            public int GetLastCycleNumber(int ch) => 0;
+            public void FlushRecentTo(int epbId, int lastNCycles, string exportDir, bool includeRunningCycle) { }
+        }
+
         private sealed class RecoverableMappingRecorder : IEpbCycleRecorder, IBatchedEpbCycleRecorder, IRecoverableCycleRecorder
         {
             internal int WriteAttempts;
@@ -1253,6 +1518,11 @@ namespace AdaptiveControlTests
             private readonly int _epbId;
             private readonly int _cycle;
             private readonly int _limit;
+            private readonly ConcurrentQueue<int> _healthyChannels = new();
+            internal int WriteAttempts;
+            internal int SuccessCount;
+
+            internal IReadOnlyList<int> HealthyChannels => _healthyChannels.ToArray();
 
             internal ActiveCycleLimitRecorder(int epbId, int cycle, int limit)
             {
@@ -1265,7 +1535,13 @@ namespace AdaptiveControlTests
                 DateTime[] timestampsUtc,
                 IReadOnlyList<EpbChannelDiskBatch> channels,
                 int count)
-                => throw new ActiveCycleDataLimitExceededException(_epbId, _cycle, _limit);
+            {
+                if (Interlocked.Increment(ref WriteAttempts) == 1)
+                    throw new ActiveCycleDataLimitExceededException(_epbId, _cycle, _limit);
+                foreach (var channel in channels.Where(channel => channel.EpbId != _epbId))
+                    _healthyChannels.Enqueue(channel.EpbId);
+                Interlocked.Increment(ref SuccessCount);
+            }
 
             public void WriteBatch(
                 int epbId,
@@ -1273,10 +1549,13 @@ namespace AdaptiveControlTests
                 double[] currents,
                 double[] pressures,
                 int count)
-                => throw new ActiveCycleDataLimitExceededException(_epbId, _cycle, _limit);
+                => WriteDeviceBatch(
+                    timestampsUtc,
+                    new[] { new EpbChannelDiskBatch(epbId, currents, pressures) },
+                    count);
 
             public void WriteBatch(int epbId, DateTime[] tsUtc, double[] currents, double[] groupPressures)
-                => throw new ActiveCycleDataLimitExceededException(_epbId, _cycle, _limit);
+                => WriteBatch(epbId, tsUtc, currents, groupPressures, tsUtc?.Length ?? 0);
             public void SealCycleWindow(int epbId, int cycleNumber, DateTime endUtc) { }
             public void BeginCycle(int epbId, int cycleNumber, DateTime utcNow) { }
             public int BeginLearningCycle(int epbId, DateTime utcNow) => -1;

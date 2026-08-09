@@ -57,6 +57,15 @@ namespace AdaptiveControlTests
                     Console.WriteLine($"PASS {_passed}/{_passed}");
                     return 0;
                 }
+                if (args.Length == 1 &&
+                    args[0].Equals("--persistence-cutoff", StringComparison.OrdinalIgnoreCase))
+                {
+                    Run(
+                        "持久化准入与主动截止在线性化提交点闭合",
+                        DaqPersistenceCoordinatorTests.AdmissionCutoffLinearizesBeforeQueueCommit);
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
                 if (args.Length == 2 &&
                     args[0].Equals("--persistence-soak", StringComparison.OrdinalIgnoreCase))
                 {
@@ -264,6 +273,7 @@ namespace AdaptiveControlTests
                 Run("DAQ代次切换不丢弃已接收持久化FIFO", DaqPersistenceCoordinatorTests.GenerationChangePreservesAcceptedFifo);
                 Run("磁盘50至1500ms暂停均不反压生产且单次暂停后恢复", DaqPersistenceCoordinatorTests.DiskPauseMatrixRemainsBoundedAndRecovers);
                 Run("写盘超时保留原批次且存储恢复后按序补写", DaqPersistenceCoordinatorTests.RecoveryTimeoutRetainsBatchUntilStorageReturns);
+                Run("同步写永久阻塞由独立看门狗单次升级且解除后收口", DaqPersistenceCoordinatorTests.WriteStallWatchdogPublishesOnceAndRetainsBatch);
                 Run("主动截止不撤销已写入耐久前缀且不阻塞健康后续流量", DaqPersistenceCoordinatorTests.DurablePrefixAllowsHealthyLaterTrafficButRejectsSuppression);
                 Run("活动圈上限事件携带EPB圈号和限制", DaqPersistenceCoordinatorTests.ActiveCycleLimitPublishesLifecycleIdentity);
                 Run("持久化诊断观察者异常不重复写盘", DaqPersistenceCoordinatorTests.DiagnosticObserverFailureDoesNotRetryWrite);

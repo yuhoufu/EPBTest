@@ -267,6 +267,7 @@ namespace AdaptiveControlTests
             Assert(EpbManager.IsDeterministicProcessingGap("BackgroundWorkerFault") &&
                    EpbManager.IsDeterministicProcessingGap("BackgroundQueueFull") &&
                    EpbManager.IsDeterministicProcessingGap("RawPersistencePermanentFault") &&
+                   EpbManager.IsDeterministicProcessingGap("DaqPersistenceWriteStall") &&
                    !EpbManager.IsDeterministicProcessingGap("BackgroundProcessingStale") &&
                    !EpbManager.IsDeterministicProcessingGap("BackgroundBatchTransferFault") &&
                    !EpbManager.IsDeterministicProcessingGap("RawPersistenceTransferFault"),
@@ -306,6 +307,17 @@ namespace AdaptiveControlTests
                        "IsolatedInfrastructureRecovery",
                        "DaqCallbackStale"),
                 "可恢复DAQ采样抖动被错误升级为进程回收");
+
+            Assert(EpbManager.RequiresImmediateProcessRecycle("DaqPersistenceWriteStall") &&
+                   EpbManager.ShouldPublishUnattendedBatchRecycle(
+                       1,
+                       "DaqSelfMaintenance",
+                       "DaqPersistenceWriteStall") &&
+                   EpbManager.ShouldEnterSoftwareRecoveryCircuitOpen(
+                       1,
+                       "DaqSelfMaintenance",
+                       "DaqPersistenceWriteStall"),
+                "同步持久化写卡死仍需等待三轮局部恢复，无法有界交接进程");
 
             var runId = Guid.NewGuid();
             var fault = EpbManager.CreateSoftwareRecoveryCircuitFault(

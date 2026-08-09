@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -1436,11 +1437,28 @@ namespace EpbDiskWriterTests
                 for (var i = 0; i < context.RawQueueCapacity; i++)
                     context.EnqueueRawData(new[,] { { (double)i } }, now.AddMilliseconds(i + 1), now.AddMilliseconds(i));
 
-                var blockedProducer = Task.Run(() =>
-                    context.EnqueueRawData(new[,] { { 999.0 } }, now.AddSeconds(1), now.AddSeconds(1).AddMilliseconds(-1)));
-                Assert(!blockedProducer.Wait(100), "Raw容量满时生产者未形成有界背压");
+                var admissionStarted = Stopwatch.StartNew();
+                var rejected = false;
+                try
+                {
+                    context.EnqueueRawData(
+                        new[,] { { 999.0 } },
+                        now.AddSeconds(1),
+                        now.AddSeconds(1).AddMilliseconds(-1));
+                }
+                catch (TimeoutException)
+                {
+                    rejected = true;
+                }
+                admissionStarted.Stop();
+                Assert(rejected && admissionStarted.ElapsedMilliseconds < 2000,
+                    $"Raw容量满时没有在有界时间拒绝并保留上游重试权：{admissionStarted.ElapsedMilliseconds}ms");
                 context.FlushRawToDiskAsync().GetAwaiter().GetResult();
-                Assert(blockedProducer.Wait(3000), "Raw刷新成功后生产者未解除背压");
+                // 生产实现会保留同一 Owned 批并按原序重试；这里复现同一语义。
+                context.EnqueueRawData(
+                    new[,] { { 999.0 } },
+                    now.AddSeconds(1),
+                    now.AddSeconds(1).AddMilliseconds(-1));
                 context.FlushRawToDiskAsync().GetAwaiter().GetResult();
 
                 var path = Path.Combine(root, "DAQ_Dev1_Raw_1.bin");

@@ -7,6 +7,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Diagnostics;
 using Config;
+using Controller;
+using Controller.Alarm;
 
 namespace AdaptiveControlTests
 {
@@ -16,6 +18,11 @@ namespace AdaptiveControlTests
         {
             var passed = 0;
             Run("项目日志后台队列不反压控制线程", AsyncQueueDoesNotBackpressureCaller, ref passed);
+            Run("后台约1秒合并普通Flush", BackgroundSoftFlushIsPeriodicAndCoalesced, ref passed);
+            Run("Flush版本水位不吞并发刷新请求", FlushWatermarkPreservesConcurrentRequest, ref passed);
+            Run("Shutdown准入屏障保全已接受日志", ShutdownAdmissionBarrierPreservesAcceptedRecords, ref passed);
+            Run("Shutdown耐久失败保留旧Store并禁止换代", ShutdownFlushFailureKeepsOldStore, ref passed);
+            Run("十万日志与刷新风暴保持有界且合并", AsyncLogAndFlushStormIsBounded, ref passed);
             return passed;
         }
 
@@ -33,6 +40,12 @@ namespace AdaptiveControlTests
             Run("清空项目隔离数据轮转日志并删除学习模型", ProjectRestartCleanupIsIsolated, ref passed);
             Run("项目日志显式Flush", ExplicitFlush, ref passed);
             Run("项目日志后台队列不反压控制线程", AsyncQueueDoesNotBackpressureCaller, ref passed);
+            Run("后台约1秒合并普通Flush", BackgroundSoftFlushIsPeriodicAndCoalesced, ref passed);
+            Run("Flush版本水位不吞并发刷新请求", FlushWatermarkPreservesConcurrentRequest, ref passed);
+            Run("Shutdown准入屏障保全已接受日志", ShutdownAdmissionBarrierPreservesAcceptedRecords, ref passed);
+            Run("Shutdown耐久失败保留旧Store并禁止换代", ShutdownFlushFailureKeepsOldStore, ref passed);
+            Run("十万日志与刷新风暴保持有界且合并", AsyncLogAndFlushStormIsBounded, ref passed);
+            Run("软预警完整证据限频按Run隔离", WarningSnapshotRateLimitIsRunScoped, ref passed);
             Run("项目日志写盘失败后降级并重试", WriteFailureRetriesInOrder, ref passed);
             Run("项目日志轮转失败后降级并重试", RotationFailureRetriesInOrder, ref passed);
             return passed;
@@ -84,9 +97,11 @@ namespace AdaptiveControlTests
                 ProjectLogHub.Flush(true);
                 ProjectLogHub.Shutdown();
                 var lines = File.ReadAllLines(Path.Combine(dir, "log", "run.log"), Encoding.UTF8);
-                Assert(lines.Length == 2, "多个调用方产生了重复持久化副本");
+                Assert(lines.Length == 3, "多个调用方产生了重复持久化副本或缺少退出审计");
                 Assert(lines.Count(x => x.EndsWith("\tcaller-a")) == 1, "caller-a 未单写入");
                 Assert(lines.Count(x => x.EndsWith("\tcaller-b")) == 1, "caller-b 未单写入");
+                Assert(lines.Last().Contains("ProjectLogShutdown AsyncLogDroppedTotal="),
+                    "退出前最后记录未包含日志丢弃累计审计");
             }
             finally
             {
@@ -451,6 +466,384 @@ namespace AdaptiveControlTests
             }
         }
 
+        private static void AsyncLogAndFlushStormIsBounded()
+        {
+            var dir = CreateTempDir();
+            try
+            {
+                ProjectLogHub.Shutdown();
+                Assert(ProjectLogHub.Configure(dir), "日志风暴测试配置失败");
+                var droppedBefore = ProjectLogHub.DroppedAsyncRecords;
+                var coalescedBefore = ProjectLogHub.CoalescedFlushRequestCount;
+                var durableFlushBefore = ProjectLogHub.DurableFlushExecutionCount;
+                var storeField = typeof(ProjectLogHub).GetField(
+                    "_store",
+                    BindingFlags.Static | BindingFlags.NonPublic);
+                var gateField = typeof(ProjectLogStore).GetField(
+                    "_gate",
+                    BindingFlags.Instance | BindingFlags.NonPublic);
+                Assert(storeField != null && gateField != null, "无法建立日志风暴写盘阻塞门禁");
+                var gate = gateField.GetValue(storeField.GetValue(null));
+                using (var entered = new ManualResetEventSlim(false))
+                using (var release = new ManualResetEventSlim(false))
+                {
+                    var holder = new Thread(() =>
+                    {
+                        lock (gate)
+                        {
+                            entered.Set();
+                            release.Wait();
+                        }
+                    });
+                    holder.Start();
+                    Assert(entered.Wait(1000), "日志风暴写盘阻塞门禁未就绪");
+
+                    long elapsedMs;
+                    int queueDepth;
+                    int pendingKinds;
+                    int durableSignals;
+                    long coalescedDelta;
+                    long droppedDelta;
+                    try
+                    {
+                        var clock = Stopwatch.StartNew();
+                        for (var i = 0; i < 100000; i++)
+                        {
+                            ProjectLogHub.Enqueue(
+                                ProjectLogLevel.Info,
+                                "ordinary-log-" + i,
+                                "压力测试");
+                            Assert(ProjectLogHub.RequestFlush(false), "普通刷新请求登记失败");
+                            Assert(ProjectLogHub.RequestFlush(true), "耐久刷新请求登记失败");
+                        }
+                        clock.Stop();
+                        elapsedMs = clock.ElapsedMilliseconds;
+                        queueDepth = ProjectLogHub.PendingAsyncRecords;
+                        pendingKinds = ProjectLogHub.PendingFlushRequestKinds;
+                        durableSignals = ProjectLogHub.PendingDurableFlushSignals;
+                        coalescedDelta = ProjectLogHub.CoalescedFlushRequestCount - coalescedBefore;
+                        droppedDelta = ProjectLogHub.DroppedAsyncRecords - droppedBefore;
+                    }
+                    finally
+                    {
+                        release.Set();
+                    }
+
+                    Assert(holder.Join(2000), "日志风暴写盘阻塞门禁未退出");
+                    Assert(elapsedMs < 15000,
+                        $"十万日志/刷新请求耗时异常 {elapsedMs}ms（平均应低于0.15ms/组）");
+                    Assert(queueDepth <= ProjectLogHub.MaximumPendingAsyncRecords,
+                        $"日志后台队列越界：Depth={queueDepth} " +
+                        $"Capacity={ProjectLogHub.MaximumPendingAsyncRecords}");
+                    Assert(pendingKinds <= 2,
+                        $"刷新风暴产生多个独立请求类别：PendingKinds=" +
+                        pendingKinds);
+                    Assert(durableSignals <= 1,
+                        "耐久刷新风暴生成了多个独立队列信号");
+                    Assert(coalescedDelta >= 99990,
+                        "刷新请求未被充分合并");
+                    Assert(droppedDelta > 0,
+                        "阻塞写盘下十万日志未触发有界队列丢弃审计");
+                }
+
+                Assert(ProjectLogHub.Flush(true), "日志风暴解除后后台队列未排空");
+                Assert(ProjectLogHub.DurableFlushExecutionCount - durableFlushBefore <= 4,
+                    $"十万耐久请求执行了过多物理 Flush(true)：" +
+                    (ProjectLogHub.DurableFlushExecutionCount - durableFlushBefore));
+                var droppedAfterDrain = ProjectLogHub.DroppedAsyncRecords;
+                ProjectLogHub.Shutdown();
+                Assert(ProjectLogHub.DroppedAsyncRecords == droppedAfterDrain,
+                    "Shutdown 静默清零了累计 DroppedAsyncRecords");
+                var runPath = Path.Combine(dir, "log", "run.log");
+                var lastLine = File.ReadLines(runPath, Encoding.UTF8).Last();
+                Assert(lastLine.Contains(
+                        "ProjectLogShutdown AsyncLogDroppedTotal=" + droppedAfterDrain),
+                    "Shutdown 前最后一条日志未审计累计丢弃数");
+            }
+            finally
+            {
+                ProjectLogHub.Shutdown();
+                DeleteTempDir(dir);
+            }
+        }
+
+        private static void BackgroundSoftFlushIsPeriodicAndCoalesced()
+        {
+            var dir = CreateTempDir();
+            try
+            {
+                ProjectLogHub.Shutdown();
+                Assert(ProjectLogHub.Configure(dir), "后台普通刷新测试配置失败");
+                var softBefore = ProjectLogHub.SoftFlushExecutionCount;
+                var coalescedBefore = ProjectLogHub.CoalescedFlushRequestCount;
+                Assert(ProjectLogHub.Enqueue(
+                        ProjectLogLevel.Info,
+                        "periodic-soft-flush",
+                        "合并刷新"),
+                    "后台普通刷新测试日志未入队");
+                for (var i = 0; i < 10000; i++)
+                    Assert(ProjectLogHub.RequestFlush(false), "普通刷新合并请求失败");
+
+                var runPath = Path.Combine(dir, "log", "run.log");
+                var becameVisible = SpinWait.SpinUntil(() =>
+                {
+                    try
+                    {
+                        return File.Exists(runPath) &&
+                               ReadSharedText(runPath)
+                                   .Contains("periodic-soft-flush");
+                    }
+                    catch
+                    {
+                        return false;
+                    }
+                }, 3000);
+                if (!becameVisible)
+                {
+                    var length = File.Exists(runPath) ? new FileInfo(runPath).Length : -1;
+                    var content = File.Exists(runPath)
+                        ? ReadSharedText(runPath)
+                            .Replace("\r", "\\r")
+                            .Replace("\n", "\\n")
+                        : "missing";
+                    var failure = ProjectLogHub.LastFailure?.ToString() ?? "none";
+                    throw new InvalidOperationException(
+                        "后台未在约1秒内执行 Flush(false)：" +
+                        $"SoftFlushes={ProjectLogHub.SoftFlushExecutionCount - softBefore} " +
+                        $"QueueDepth={ProjectLogHub.PendingAsyncRecords} " +
+                        $"PendingKinds={ProjectLogHub.PendingFlushRequestKinds} " +
+                        $"FileLength={length} Content={content} Failure={failure}");
+                }
+                var softExecutions = ProjectLogHub.SoftFlushExecutionCount - softBefore;
+                Assert(softExecutions >= 1 && softExecutions <= 3,
+                    $"一万普通刷新请求未合并：PhysicalFlushes={softExecutions}");
+                Assert(ProjectLogHub.CoalescedFlushRequestCount - coalescedBefore >= 9990,
+                    "一万普通刷新请求未记录合并审计");
+            }
+            finally
+            {
+                ProjectLogHub.Shutdown();
+                DeleteTempDir(dir);
+            }
+        }
+
+        private static void FlushWatermarkPreservesConcurrentRequest()
+        {
+            var dir = CreateTempDir();
+            var flushGate = new FlushWatermarkGate();
+            try
+            {
+                ProjectLogHub.Shutdown();
+                Assert(SpinWait.SpinUntil(
+                        () => ProjectLogHub.PendingAsyncRecords == 0 &&
+                              ProjectLogHub.PendingDurableFlushSignals == 0,
+                        3000),
+                    "安装竞态 Store 前日志后台队列未清空");
+                InstallHubStoreForTest(new ProjectLogStore(new ProjectLogOptions
+                {
+                    BeforeFlush = flushGate.BeforeFlush
+                }));
+                Assert(ProjectLogHub.Configure(dir), "Flush版本水位测试配置失败");
+                Assert(ProjectLogHub.Write(ProjectLogLevel.Info, "watermark-seed", "Flush竞态"),
+                    "Flush版本水位测试首条日志未进入单写者");
+
+                var firstFlush = Task.Run(() => ProjectLogHub.Flush(true));
+                Assert(flushGate.FirstEntered.Wait(3000), "未进入第一轮受控 Flush");
+
+                // 该请求发生在物理 Flush 已观察旧版本、但尚未返回的窗口。旧 bool 实现
+                // 会在 Flush 返回后把这里设置的 dirty 标记清零，之后再也没有物理刷新。
+                Assert(ProjectLogHub.RequestFlush(false), "并发普通刷新请求未被接受");
+                Assert(ProjectLogHub.PendingFlushRequestKinds >= 1,
+                    "并发请求登记后版本水位未保持待刷新");
+                flushGate.ReleaseFirst.Set();
+                Assert(firstFlush.Wait(3000) && firstFlush.Result, "第一轮受控 Flush 未完成");
+
+                Assert(flushGate.SecondEntered.Wait(3000),
+                    "第一轮 Flush 错误吞掉并发请求，后台未执行第二轮 Flush");
+                Assert(ProjectLogHub.PendingFlushRequestKinds >= 1,
+                    "第二轮 Flush 尚未完成却提前确认了并发请求版本");
+                flushGate.ReleaseSecond.Set();
+                Assert(SpinWait.SpinUntil(() => ProjectLogHub.PendingFlushRequestKinds == 0, 3000),
+                    "第二轮 Flush 返回后请求版本未被确认");
+            }
+            finally
+            {
+                flushGate.ReleaseFirst.Set();
+                flushGate.ReleaseSecond.Set();
+                ProjectLogHub.Shutdown();
+                DeleteTempDir(dir);
+            }
+        }
+
+        private static void ShutdownAdmissionBarrierPreservesAcceptedRecords()
+        {
+            var oldDir = CreateTempDir();
+            var newDir = CreateTempDir();
+            try
+            {
+                ProjectLogHub.Shutdown();
+                Assert(ProjectLogHub.Configure(oldDir), "Shutdown屏障旧目录配置失败");
+                var store = GetHubStore();
+                var storeGate = GetStoreGate(store);
+                using (var holderEntered = new ManualResetEventSlim(false))
+                using (var holderRelease = new ManualResetEventSlim(false))
+                {
+                    var holder = new Thread(() =>
+                    {
+                        lock (storeGate)
+                        {
+                            holderEntered.Set();
+                            holderRelease.Wait();
+                        }
+                    });
+                    holder.Start();
+                    Assert(holderEntered.Wait(1000), "Shutdown屏障写盘阻塞门禁未就绪");
+                    Assert(ProjectLogHub.Enqueue(
+                            ProjectLogLevel.Info,
+                            "accepted-before-shutdown",
+                            "Shutdown竞态"),
+                        "关闭前记录未被接受");
+
+                    var shutdown = Task.Run(() => ProjectLogHub.Shutdown());
+                    Assert(SpinWait.SpinUntil(IsHubShutdownClosing, 3000),
+                        "Shutdown未关闭日志准入");
+                    Assert(!ProjectLogHub.Enqueue(
+                            ProjectLogLevel.Info,
+                            "rejected-during-shutdown",
+                            "Shutdown竞态"),
+                        "关闭屏障之后仍错误接受新记录");
+                    Assert(!ProjectLogHub.Write(
+                            ProjectLogLevel.Info,
+                            "sync-rejected-during-shutdown",
+                            "Shutdown竞态"),
+                        "关闭屏障之后同步写仍落入旧/未配置 Store");
+                    holderRelease.Set();
+                    Assert(shutdown.Wait(5000), "Shutdown屏障未在解除写盘阻塞后完成");
+                    Assert(holder.Join(2000), "Shutdown屏障写盘阻塞线程未退出");
+                }
+
+                var oldRunPath = Path.Combine(oldDir, "log", "run.log");
+                var oldText = ReadSharedText(oldRunPath);
+                Assert(oldText.Contains("accepted-before-shutdown"),
+                    "Shutdown屏障丢失了关闭前已接受记录");
+                Assert(oldText.Contains("ProjectLogShutdown AsyncLogDroppedTotal="),
+                    "Shutdown最终耐久屏障缺少退出审计");
+                Assert(!oldText.Contains("rejected-during-shutdown"),
+                    "关闭后拒绝记录错误写入旧 Store");
+
+                Assert(!ProjectLogHub.Enqueue(
+                        ProjectLogLevel.Info,
+                        "rejected-before-reconfigure",
+                        "Shutdown竞态"),
+                    "Shutdown完成后、重新配置前错误开放了未配置 Store");
+                Assert(ProjectLogHub.Configure(newDir), "Shutdown屏障新目录配置失败");
+                Assert(ProjectLogHub.Write(
+                        ProjectLogLevel.Info,
+                        "accepted-after-reconfigure",
+                        "Shutdown竞态"),
+                    "重新配置后未恢复日志准入");
+                Assert(ProjectLogHub.Flush(true), "重新配置后的日志未耐久刷新");
+
+                var newText = ReadSharedText(Path.Combine(newDir, "log", "run.log"));
+                Assert(newText.Contains("accepted-after-reconfigure"),
+                    "新一代 Store 缺少重新配置后记录");
+                Assert(!newText.Contains("accepted-before-shutdown") &&
+                       !newText.Contains("rejected-during-shutdown") &&
+                       !newText.Contains("rejected-before-reconfigure"),
+                    "Shutdown边界两侧记录发生跨 Store 串写");
+            }
+            finally
+            {
+                ProjectLogHub.Shutdown();
+                DeleteTempDir(oldDir);
+                DeleteTempDir(newDir);
+            }
+        }
+
+        private static void ShutdownFlushFailureKeepsOldStore()
+        {
+            var oldDir = CreateTempDir();
+            var newDir = CreateTempDir();
+            var failDurableFlush = 0;
+            try
+            {
+                ProjectLogHub.Shutdown();
+                Assert(SpinWait.SpinUntil(
+                        () => ProjectLogHub.PendingAsyncRecords == 0 &&
+                              ProjectLogHub.PendingDurableFlushSignals == 0,
+                        3000),
+                    "安装Shutdown失败Store前后台队列未清空");
+                InstallHubStoreForTest(new ProjectLogStore(new ProjectLogOptions
+                {
+                    BeforeFlush = durable =>
+                    {
+                        if (durable && Volatile.Read(ref failDurableFlush) != 0)
+                            throw new IOException("simulated durable shutdown failure");
+                    }
+                }));
+                Assert(ProjectLogHub.Configure(oldDir), "Shutdown失败测试旧目录配置失败");
+                Assert(ProjectLogHub.Write(
+                        ProjectLogLevel.Info,
+                        "accepted-before-failed-shutdown",
+                        "Shutdown失败"),
+                    "Shutdown失败测试记录未进入单写者");
+                var oldStore = GetHubStore();
+
+                Volatile.Write(ref failDurableFlush, 1);
+                ProjectLogHub.Shutdown();
+                Assert(ReferenceEquals(oldStore, GetHubStore()),
+                    "耐久Flush失败后仍交换了Store，已接受记录可能丢失");
+                Assert(!ProjectLogHub.Configure(newDir),
+                    "关闭屏障失败后仍允许切换目录，可能跨项目写入旧记录");
+
+                Volatile.Write(ref failDurableFlush, 0);
+                ProjectLogHub.Shutdown();
+                Assert(!ReferenceEquals(oldStore, GetHubStore()),
+                    "耐久Flush恢复后未完成安全Store换代");
+                var oldText = ReadSharedText(Path.Combine(oldDir, "log", "run.log"));
+                Assert(oldText.Contains("accepted-before-failed-shutdown"),
+                    "关闭屏障重试成功后仍丢失了原已接受记录");
+
+                Assert(ProjectLogHub.Configure(newDir), "关闭屏障恢复后新目录配置失败");
+            }
+            finally
+            {
+                Volatile.Write(ref failDurableFlush, 0);
+                ProjectLogHub.Shutdown();
+                DeleteTempDir(oldDir);
+                DeleteTempDir(newDir);
+            }
+        }
+
+        private static void WarningSnapshotRateLimitIsRunScoped()
+        {
+            var gate = new WarningSnapshotWorkGate();
+            var now = new DateTime(2026, 8, 10, 1, 2, 3, DateTimeKind.Utc);
+            var firstRun = Guid.NewGuid();
+            var secondRun = Guid.NewGuid();
+            var firstKey = EpbManager.GetWarningSnapshotRateLimitKey(
+                firstRun,
+                4,
+                "PeakEvidenceLagWarning");
+            var secondKey = EpbManager.GetWarningSnapshotRateLimitKey(
+                secondRun,
+                4,
+                "PeakEvidenceLagWarning");
+            Assert(!string.Equals(firstKey, secondKey, StringComparison.OrdinalIgnoreCase),
+                "不同 Run 生成了相同的完整证据限频键");
+
+            Assert(gate.TryQueue("run-a:first", firstKey, now, 600, 1),
+                "首个 Run 的首次事故未准入");
+            Assert(gate.TryStart("run-a:first"), "首个 Run 的任务未启动");
+            gate.Complete("run-a:first");
+            Assert(!gate.TryQueue("run-a:second", firstKey, now.AddSeconds(1), 600, 1),
+                "同一 Run 的 10 分钟限频失效");
+            Assert(gate.TryQueue("run-b:first", secondKey, now.AddSeconds(1), 600, 1),
+                "新 Run 的首次事故被上一 Run 的限频窗口吞掉");
+            Assert(gate.TryStart("run-b:first"), "新 Run 的首次事故任务未启动");
+            gate.Complete("run-b:first");
+        }
+
         private static void WriteFailureRetriesInOrder()
         {
             var dir = CreateTempDir();
@@ -539,11 +932,83 @@ namespace AdaptiveControlTests
             }
         }
 
+        private static ProjectLogStore GetHubStore()
+        {
+            var field = typeof(ProjectLogHub).GetField(
+                "_store",
+                BindingFlags.Static | BindingFlags.NonPublic);
+            Assert(field != null, "未找到项目日志中心 Store 字段");
+            return (ProjectLogStore)field.GetValue(null);
+        }
+
+        private static object GetStoreGate(ProjectLogStore store)
+        {
+            var field = typeof(ProjectLogStore).GetField(
+                "_gate",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert(field != null, "未找到项目日志 Store 锁");
+            return field.GetValue(store);
+        }
+
+        private static void InstallHubStoreForTest(ProjectLogStore store)
+        {
+            var field = typeof(ProjectLogHub).GetField(
+                "_store",
+                BindingFlags.Static | BindingFlags.NonPublic);
+            Assert(field != null, "未找到项目日志中心 Store 字段");
+            field.SetValue(null, store);
+        }
+
+        private static bool IsHubShutdownClosing()
+        {
+            var field = typeof(ProjectLogHub).GetField(
+                "_shutdownClosing",
+                BindingFlags.Static | BindingFlags.NonPublic);
+            Assert(field != null, "未找到项目日志关闭准入状态");
+            return (bool)field.GetValue(null);
+        }
+
+        private sealed class FlushWatermarkGate
+        {
+            private int _durableFlushBlocked;
+            private int _softFlushBlocked;
+            public readonly ManualResetEventSlim FirstEntered = new ManualResetEventSlim(false);
+            public readonly ManualResetEventSlim ReleaseFirst = new ManualResetEventSlim(false);
+            public readonly ManualResetEventSlim SecondEntered = new ManualResetEventSlim(false);
+            public readonly ManualResetEventSlim ReleaseSecond = new ManualResetEventSlim(false);
+
+            public void BeforeFlush(bool durable)
+            {
+                if (durable && Interlocked.CompareExchange(ref _durableFlushBlocked, 1, 0) == 0)
+                {
+                    FirstEntered.Set();
+                    ReleaseFirst.Wait();
+                }
+                else if (!durable && Volatile.Read(ref _durableFlushBlocked) != 0 &&
+                         Interlocked.CompareExchange(ref _softFlushBlocked, 1, 0) == 0)
+                {
+                    SecondEntered.Set();
+                    ReleaseSecond.Wait();
+                }
+            }
+        }
+
         private static string CreateTempDir()
         {
             var path = Path.Combine(Path.GetTempPath(), "EPBProjectLogTests", Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(path);
             return path;
+        }
+
+        private static string ReadSharedText(string path)
+        {
+            using (var stream = new FileStream(
+                       path,
+                       FileMode.Open,
+                       FileAccess.Read,
+                       FileShare.ReadWrite | FileShare.Delete))
+            using (var reader = new StreamReader(stream, Encoding.UTF8, true))
+                return reader.ReadToEnd();
         }
 
         private static void DeleteTempDir(string path)
