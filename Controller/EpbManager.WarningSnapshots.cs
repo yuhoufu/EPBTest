@@ -41,6 +41,7 @@ namespace Controller
         private int _warningScalarQueueCount;
         private int _warningScalarDropped;
         private RuntimeBuildIdentity _warningScalarBuildIdentity;
+        private RuntimeBuildIdentity _daqIncidentBuildIdentity;
         private readonly object _warningSnapshotStorageCacheGate = new();
         private WarningSnapshotStorageStatus _warningSnapshotStorageCache;
         private DateTime _warningSnapshotStorageCacheUtc = DateTime.MinValue;
@@ -725,6 +726,9 @@ namespace Controller
                                FileShare.Read))
                     using (var writer = new StreamWriter(stream, new UTF8Encoding(false)))
                         writer.Write(incidentJson);
+                    var buildIdentity = _daqIncidentBuildIdentity ??
+                                        (_daqIncidentBuildIdentity = RuntimeBuildIdentity.Capture());
+                    buildIdentity.WriteJson(Path.Combine(phaseDirectory, "build-identity.json"));
                     diagnostics?.WriteTo(phaseDirectory);
                     var recorder = includeRecentCycleCopies ? Recorder : null;
                     if (recorder != null)
