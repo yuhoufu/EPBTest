@@ -36,7 +36,7 @@ class FieldGateValidatorTests(unittest.TestCase):
             "2026-08-08 10:00:10.000\tINFO\tFIELD\tFieldMetric UI DelayP95Ms=5 DelayMaxMs=10 FlushP95Ms=2 FlushMaxMs=3 AppendMaxMs=1 TrimMaxMs=1 ScrollMaxMs=1 RenderedBatches=2 RenderedLines=4 Pending=0 Dropped=0 FilePending=0 FileDropped=0\n"
             "2026-08-08 10:00:10.100\tINFO\tFIELD\tFieldMetric CYCLE RunId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa Channel=4 Cycle=1 Phase=Formal Peak=15.1 Target=15.0 Floor=14.2 Ceiling=15.8 Qualified=True Result=Success\n"
             "2026-08-08 10:00:10.200\tINFO\tFIELD\tFieldMetric CYCLE RunId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa Channel=9 Cycle=1 Phase=Formal Peak=15.2 Target=15.0 Floor=14.2 Ceiling=15.8 Qualified=True Result=Success\n"
-            "2026-08-08 10:00:11.000\tINFO\tHOST\tHostRuntime PID=1 Bitness=32 ProcessCpu=8.0% SystemCpu=30.0% OtherCpu=22.0% WorkingSet=200MiB\n"
+            "2026-08-08 10:00:11.000\tINFO\tHOST\tHostRuntime PID=1234 Bitness=32 ProcessCpu=8.0% SystemCpu=30.0% OtherCpu=22.0% WorkingSet=200MiB Private=180MiB Virtual=500MiB Handles=400 Threads=40 AvailableMemory=8192MiB ProgramDriveFree=100GiB DiskQueue=0.10 DiskRead=1.00MiB/s DiskWrite=2.00MiB/s\n"
             "2026-08-08 10:59:58.000\tINFO\tFIELD\tFieldMetric STATE RunId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa Device=Dev1 Channel=4 State=ManualStopped Reason=StopAll Revision=2 CorrelationId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa RunEpoch=1 Enabled=True Formal=False Timer=False Runner=False Energized=False\n"
             "2026-08-08 10:59:58.000\tINFO\tFIELD\tFieldMetric STATE RunId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa Device=Dev2 Channel=9 State=ManualStopped Reason=StopAll Revision=2 CorrelationId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa RunEpoch=1 Enabled=True Formal=False Timer=False Runner=False Energized=False\n"
             "2026-08-08 10:59:59.000\tINFO\tFIELD\tFieldMetric STOP_PERSISTENCE Device=Dev1 RawDrained=True Boundary=100 FinalBoundary=100 BoundaryStable=True Published=100 Persisted=100 Depth=0 State=Recovered RequireRecovered=True DurabilityBlocked=False Discarded=0 OverCapacityDropped=0 Closed=True\n"
@@ -83,9 +83,12 @@ class FieldGateValidatorTests(unittest.TestCase):
         for second in (value for value in range(1, 3600) if value != 11):
             timestamp = (started + timedelta(seconds=second)).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
             heartbeat_lines.append(
-                f"{timestamp}\tINFO\tHOST\tHostRuntime PID=1 Bitness=32 "
+                f"{timestamp}\tINFO\tHOST\tHostRuntime PID=1234 Bitness=32 "
                 "ProcessCpu=8.0% SystemCpu=30.0% OtherCpu=22.0% "
-                "WorkingSet=200MiB Evidence=FixtureHeartbeat\n"
+                "WorkingSet=200MiB Private=180MiB Virtual=500MiB "
+                "Handles=400 Threads=40 AvailableMemory=8192MiB "
+                "ProgramDriveFree=100GiB DiskQueue=0.10 DiskRead=1.00MiB/s "
+                "DiskWrite=2.00MiB/s Evidence=FixtureHeartbeat\n"
             )
         with (log / "run.log").open("a", encoding="utf-8") as stream:
             stream.writelines(heartbeat_lines)
@@ -215,6 +218,119 @@ class FieldGateValidatorTests(unittest.TestCase):
         report = (self.root / "gate.md").read_text(encoding="utf-8-sig")
         self.assertIn("阶段性现场验证：PASS", report)
         self.assertIn("阶段性结果不得作为最终生产放行", report)
+        checks = {item["name"]: item for item in result["checks"]}
+        for name in (
+            "HostRuntime字段完整、有限且非负",
+            "HostRuntime PID与位数在会话内一致",
+            "进程CPU P95<80%",
+            "WorkingSet/Private/Virtual增长趋势有界",
+            "Handles/Threads增长趋势有界",
+            "系统可用内存下限达标",
+            "程序盘自由空间下限达标",
+            "程序盘自由空间下降趋势有界",
+        ):
+            self.assertEqual("PASS", checks[name]["status"], name)
+        for name in (
+            "项目数据盘自由空间与下降趋势达标",
+            "液压无stale pending且作废后1秒内屏障收敛",
+            "RecoveryEpoch仅在根context成功准入后连续分配",
+            "EPB8学习稳定后无交替超调欠调",
+        ):
+            self.assertEqual("NOT_EVALUABLE", checks[name]["status"], name)
+            self.assertFalse(checks[name]["required"], name)
+        self.assertIn("NOT_EVALUABLE", report)
+
+    def test_host_runtime_missing_or_nonfinite_field_fails(self) -> None:
+        run_log = self.root / "log" / "run.log"
+        text = run_log.read_text(encoding="utf-8")
+        text = text.replace("Private=180MiB ", "", 1)
+        text = text.replace("DiskQueue=0.10", "DiskQueue=NaN", 1)
+        run_log.write_text(text, encoding="utf-8")
+        process, result = self.run_gate()
+        self.assertEqual(2, process.returncode)
+        checks = {item["name"]: item for item in result["checks"]}
+        self.assertEqual("FAIL", checks["HostRuntime字段完整、有限且非负"]["status"])
+
+    def test_host_runtime_cpu_memory_and_space_thresholds_fail(self) -> None:
+        run_log = self.root / "log" / "run.log"
+        text = run_log.read_text(encoding="utf-8")
+        text = text.replace("ProcessCpu=8.0%", "ProcessCpu=90.0%")
+        text = text.replace("AvailableMemory=8192MiB", "AvailableMemory=512MiB")
+        text = text.replace("ProgramDriveFree=100GiB", "ProgramDriveFree=5GiB")
+        run_log.write_text(text, encoding="utf-8")
+        process, result = self.run_gate()
+        self.assertEqual(2, process.returncode)
+        failures = {item["name"] for item in result["checks"] if item["status"] == "FAIL"}
+        self.assertIn("进程CPU P95<80%", failures)
+        self.assertIn("系统可用内存下限达标", failures)
+        self.assertIn("程序盘自由空间下限达标", failures)
+
+    def test_host_runtime_resource_growth_and_drive_decline_fail(self) -> None:
+        run_log = self.root / "log" / "run.log"
+        lines = run_log.read_text(encoding="utf-8").splitlines(keepends=True)
+        for index, line in enumerate(lines):
+            if "HostRuntime " not in line or not line.startswith("2026-08-08 10:5"):
+                continue
+            lines[index] = (
+                line.replace("WorkingSet=200MiB", "WorkingSet=400MiB")
+                .replace("Private=180MiB", "Private=380MiB")
+                .replace("Virtual=500MiB", "Virtual=700MiB")
+                .replace("Handles=400", "Handles=500")
+                .replace("Threads=40", "Threads=60")
+                .replace("ProgramDriveFree=100GiB", "ProgramDriveFree=90GiB")
+            )
+        run_log.write_text("".join(lines), encoding="utf-8")
+        process, result = self.run_gate()
+        self.assertEqual(2, process.returncode)
+        failures = {item["name"] for item in result["checks"] if item["status"] == "FAIL"}
+        self.assertIn("WorkingSet/Private/Virtual增长趋势有界", failures)
+        self.assertIn("Handles/Threads增长趋势有界", failures)
+        self.assertIn("程序盘自由空间下降趋势有界", failures)
+
+    def test_final_production_rejects_all_not_evaluable_section11_gates(self) -> None:
+        process, result = self.run_gate([
+            "--acceptance-stage", "FinalProduction",
+            "--minimum-hours", "72",
+            "--minimum-formal-cycles-per-channel", "100000",
+        ])
+        self.assertEqual(2, process.returncode)
+        self.assertFalse(result["production_release_approved"])
+        checks = {item["name"]: item for item in result["checks"]}
+        for name in (
+            "项目数据盘自由空间与下降趋势达标",
+            "液压无stale pending且作废后1秒内屏障收敛",
+            "RecoveryEpoch仅在根context成功准入后连续分配",
+            "EPB8学习稳定后无交替超调欠调",
+        ):
+            self.assertEqual("NOT_EVALUABLE", checks[name]["status"], name)
+            self.assertTrue(checks[name]["required"], name)
+
+    def test_final_production_threshold_arguments_cannot_be_relaxed(self) -> None:
+        relaxations = (
+            ("--process-cpu-p95-max-percent", "81"),
+            ("--memory-growth-max-mib-per-hour", "17"),
+            ("--system-available-memory-min-mib", "512"),
+            ("--program-drive-free-min-gib", "5"),
+            ("--max-recovery-correlations-per-10m", "4"),
+        )
+        for option, value in relaxations:
+            with self.subTest(option=option):
+                process = subprocess.run(
+                    [
+                        sys.executable,
+                        str(SCRIPT),
+                        str(self.root),
+                        "--acceptance-stage", "FinalProduction",
+                        "--minimum-hours", "72",
+                        "--minimum-formal-cycles-per-channel", "100000",
+                        option, value,
+                    ],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(2, process.returncode)
+                self.assertIn("FinalProduction参数只能收紧不能放宽", process.stderr)
 
     def test_final_production_stage_rejects_smoke_thresholds_before_validation(self) -> None:
         process = subprocess.run(

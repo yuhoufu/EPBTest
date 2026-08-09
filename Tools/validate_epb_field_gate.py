@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import sqlite3
+import statistics
 import sys
 import tempfile
 import uuid
@@ -25,6 +26,23 @@ LOG_TIMESTAMP = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})")
 PEAK_LAG = re.compile(r"峰值完整数据处理滞后.*?滞后=([0-9.]+)ms", re.IGNORECASE)
 VERSION = re.compile(r"V?\d+\.\d+\.\d+\.\d+", re.IGNORECASE)
 
+FINAL_PROCESS_CPU_P95_MAX_PERCENT = 80.0
+FINAL_WORKING_SET_MAX_MIB = 1024.0
+FINAL_PRIVATE_MEMORY_MAX_MIB = 1024.0
+FINAL_VIRTUAL_MEMORY_MAX_MIB = 1800.0
+FINAL_MEMORY_GROWTH_MAX_MIB_PER_HOUR = 16.0
+FINAL_HANDLE_COUNT_MAX = 4096
+FINAL_HANDLE_GROWTH_MAX_PER_HOUR = 5.0
+FINAL_THREAD_COUNT_MAX = 512
+FINAL_THREAD_GROWTH_MAX_PER_HOUR = 2.0
+FINAL_SYSTEM_AVAILABLE_MEMORY_MIN_MIB = 1024.0
+FINAL_PROGRAM_DRIVE_FREE_MIN_GIB = 10.0
+FINAL_PROGRAM_DRIVE_FREE_DECLINE_MAX_GIB_PER_HOUR = 1.0
+FINAL_PROJECT_DATA_DRIVE_FREE_MIN_GIB = 10.0
+FINAL_PROJECT_DATA_DRIVE_FREE_DECLINE_MAX_GIB_PER_HOUR = 4.0
+FINAL_EPB8_ALTERNATING_OUT_OF_BAND_MAX_CYCLES = 3
+FINAL_RECOVERY_CORRELATIONS_PER_TEN_MINUTES_MAX = 3
+
 
 @dataclass
 class Check:
@@ -32,6 +50,25 @@ class Check:
     passed: bool
     evidence: str
     required: bool = True
+    evaluable: bool = True
+
+
+@dataclass(frozen=True)
+class HostResourceThresholds:
+    process_cpu_p95_max_percent: float
+    working_set_max_mib: float
+    private_memory_max_mib: float
+    virtual_memory_max_mib: float
+    memory_growth_max_mib_per_hour: float
+    handle_count_max: int
+    handle_growth_max_per_hour: float
+    thread_count_max: int
+    thread_growth_max_per_hour: float
+    system_available_memory_min_mib: float
+    program_drive_free_min_gib: float
+    program_drive_free_decline_max_gib_per_hour: float
+    project_data_drive_free_min_gib: float
+    project_data_drive_free_decline_max_gib_per_hour: float
 
 
 @dataclass
@@ -346,6 +383,26 @@ def bounded_positive_float_argument(value: str, hard_maximum: float) -> float:
     return parsed
 
 
+def bounded_nonnegative_float_argument(value: str, hard_maximum: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError("必须是非负数") from exc
+    if not math.isfinite(parsed) or parsed < 0 or parsed > hard_maximum:
+        raise argparse.ArgumentTypeError(f"必须位于[0,{hard_maximum}]")
+    return parsed
+
+
+def positive_integer_argument(value: str) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError("必须是正整数") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("必须是正整数")
+    return parsed
+
+
 def coverage_argument(value: str) -> float:
     try:
         parsed = float(value)
@@ -369,6 +426,84 @@ def finite_float_value(record: dict[str, str], key: str) -> float | None:
         return value if math.isfinite(value) else None
     except (KeyError, TypeError, ValueError):
         return None
+
+
+def finite_quantity_value(
+    record: dict[str, str],
+    key: str,
+    suffix: str = "",
+) -> float | None:
+    try:
+        text = str(record[key]).strip()
+    except (KeyError, TypeError):
+        return None
+    if suffix:
+        if not text.lower().endswith(suffix.lower()):
+            return None
+        text = text[:-len(suffix)].strip()
+    try:
+        value = float(text)
+    except ValueError:
+        return None
+    return value if math.isfinite(value) else None
+
+
+def add_not_evaluable_check(
+    checks: list[Check],
+    name: str,
+    evidence: str,
+    final_production: bool,
+) -> None:
+    checks.append(Check(
+        name,
+        False,
+        "NOT_EVALUABLE: " + evidence,
+        required=final_production,
+        evaluable=False,
+    ))
+
+
+def endpoint_trend_per_hour(
+    records: list[dict[str, str]],
+    key: str,
+    suffix: str = "",
+) -> dict[str, float | int | None]:
+    samples = sorted(
+        (
+            (timestamp, value)
+            for record in records
+            if (timestamp := record_timestamp(record)) is not None
+            and (value := finite_quantity_value(record, key, suffix)) is not None
+        ),
+        key=lambda pair: pair[0],
+    )
+    if len(samples) < 10:
+        return {
+            "samples": len(samples),
+            "duration_hours": None,
+            "first_window_median": None,
+            "last_window_median": None,
+            "change_per_hour": None,
+        }
+    duration_hours = (samples[-1][0] - samples[0][0]).total_seconds() / 3600.0
+    if duration_hours < 0.25:
+        return {
+            "samples": len(samples),
+            "duration_hours": duration_hours,
+            "first_window_median": None,
+            "last_window_median": None,
+            "change_per_hour": None,
+        }
+    window = min(600, max(5, len(samples) // 10))
+    first = statistics.median(value for _, value in samples[:window])
+    last = statistics.median(value for _, value in samples[-window:])
+    return {
+        "samples": len(samples),
+        "duration_hours": duration_hours,
+        "first_window_median": first,
+        "last_window_median": last,
+        "change_per_hour": (last - first) / duration_hours,
+    }
 
 
 def session_channels(session: ValidationSession | None) -> set[str]:
@@ -431,6 +566,300 @@ def add_limit_check(
     ))
 
 
+def validate_host_runtime_metrics(
+    root: Path,
+    host: list[dict[str, str]],
+    checks: list[Check],
+    metrics: dict,
+    required: bool,
+    final_production: bool,
+    session: ValidationSession | None,
+    thresholds: HostResourceThresholds,
+) -> None:
+    quantity_specs = {
+        "ProcessCpu": "%",
+        "SystemCpu": "%",
+        "OtherCpu": "%",
+        "WorkingSet": "MiB",
+        "Private": "MiB",
+        "Virtual": "MiB",
+        "AvailableMemory": "MiB",
+        "ProgramDriveFree": "GiB",
+        # 这些计数器来自 PhysicalDisk(_Total)，只用于整机活动证据；
+        # 绝不能用于证明项目数据盘身份或项目盘剩余空间。
+        "DiskQueue": "",
+        "DiskRead": "MiB/s",
+        "DiskWrite": "MiB/s",
+    }
+    required_fields = ("PID", "Bitness", "Handles", "Threads", *quantity_specs)
+    missing_records: list[str] = []
+    invalid_records: list[str] = []
+    relationship_violations: list[str] = []
+    values: dict[str, list[float]] = {key: [] for key in quantity_specs}
+    handles: list[int] = []
+    threads: list[int] = []
+    pids: list[int] = []
+    bitness_values: list[int] = []
+
+    for item in host:
+        label = item.get("_Timestamp", "unknown")
+        missing = [key for key in required_fields if key not in item]
+        if missing:
+            missing_records.append(f"{label}:{','.join(missing)}")
+        pid = integer_value(item, "PID")
+        bitness = integer_value(item, "Bitness")
+        handle_count = integer_value(item, "Handles")
+        thread_count = integer_value(item, "Threads")
+        parsed = {
+            key: finite_quantity_value(item, key, suffix)
+            for key, suffix in quantity_specs.items()
+        }
+        invalid = [key for key, value in parsed.items() if value is None or value < 0]
+        if pid is None or pid <= 0:
+            invalid.append("PID")
+        if bitness not in {32, 64}:
+            invalid.append("Bitness")
+        if handle_count is None or handle_count <= 0:
+            invalid.append("Handles")
+        if thread_count is None or thread_count <= 0:
+            invalid.append("Threads")
+        for key in ("ProcessCpu", "SystemCpu", "OtherCpu"):
+            if parsed[key] is not None and not 0 <= parsed[key] <= 100:
+                invalid.append(key + "Range")
+        if invalid:
+            invalid_records.append(f"{label}:{','.join(sorted(set(invalid)))}")
+        else:
+            pids.append(pid)
+            bitness_values.append(bitness)
+            handles.append(handle_count)
+            threads.append(thread_count)
+            for key, value in parsed.items():
+                values[key].append(value)
+            if parsed["WorkingSet"] > parsed["Virtual"]:
+                relationship_violations.append(f"{label}:WorkingSet>Virtual")
+            if parsed["Private"] > parsed["Virtual"]:
+                relationship_violations.append(f"{label}:Private>Virtual")
+
+    expected_pid = integer_value(session.start_record, "ProcessId") if session else None
+    identity_valid = (
+        bool(host)
+        and len(pids) == len(host)
+        and len(set(pids)) == 1
+        and len(set(bitness_values)) == 1
+        and (expected_pid is None or pids[0] == expected_pid)
+    )
+    complete = bool(host) and not missing_records and not invalid_records
+    metrics["host_runtime_validation"] = {
+        "records": len(host),
+        "required_fields": list(required_fields),
+        "missing_record_count": len(missing_records),
+        "invalid_record_count": len(invalid_records),
+        "relationship_violation_count": len(relationship_violations),
+        "pids": sorted(set(pids)),
+        "bitness": sorted(set(bitness_values)),
+        "physical_disk_total_fields_are_project_drive_evidence": False,
+        "thresholds": asdict(thresholds),
+    }
+    checks.append(Check(
+        "HostRuntime字段完整、有限且非负",
+        complete and not relationship_violations,
+        f"records={len(host)}, missing={missing_records[:10]}, "
+        f"invalid={invalid_records[:10]}, relationships={relationship_violations[:10]}",
+        required=required,
+    ))
+    checks.append(Check(
+        "HostRuntime PID与位数在会话内一致",
+        identity_valid,
+        f"expectedPid={expected_pid}, observedPids={sorted(set(pids))}, "
+        f"bitness={sorted(set(bitness_values))}, records={len(pids)}/{len(host)}",
+        required=required,
+    ))
+
+    process_cpu = values["ProcessCpu"]
+    process_cpu_p95 = percentile(process_cpu, 0.95)
+    metrics["process_cpu_p95_percent"] = process_cpu_p95
+    metrics["process_cpu_max_percent"] = max(process_cpu) if process_cpu else None
+    checks.append(Check(
+        f"进程CPU P95<{thresholds.process_cpu_p95_max_percent:g}%",
+        len(process_cpu) == len(host) and bool(process_cpu) and
+        process_cpu_p95 < thresholds.process_cpu_p95_max_percent,
+        f"samples={len(process_cpu)}/{len(host)}, p95={process_cpu_p95}, "
+        f"max={max(process_cpu) if process_cpu else None}",
+        required=required,
+    ))
+
+    memory_limits = {
+        "WorkingSet": thresholds.working_set_max_mib,
+        "Private": thresholds.private_memory_max_mib,
+        "Virtual": thresholds.virtual_memory_max_mib,
+    }
+    memory_maxima = {
+        key: max(values[key]) if values[key] else None
+        for key in memory_limits
+    }
+    checks.append(Check(
+        "WorkingSet/Private/Virtual绝对值有界",
+        all(
+            len(values[key]) == len(host) and bool(values[key]) and
+            max(values[key]) <= limit
+            for key, limit in memory_limits.items()
+        ),
+        f"maxMiB={memory_maxima}, limitsMiB={memory_limits}",
+        required=required,
+    ))
+    memory_trends = {
+        key: endpoint_trend_per_hour(host, key, "MiB")
+        for key in memory_limits
+    }
+    metrics["host_memory_trends"] = memory_trends
+    if any(item["change_per_hour"] is None for item in memory_trends.values()):
+        add_not_evaluable_check(
+            checks,
+            "WorkingSet/Private/Virtual增长趋势有界",
+            f"至少需要15分钟且每项至少10个有效样本；trends={memory_trends}",
+            final_production,
+        )
+    else:
+        checks.append(Check(
+            "WorkingSet/Private/Virtual增长趋势有界",
+            all(
+                item["change_per_hour"] <= thresholds.memory_growth_max_mib_per_hour
+                for item in memory_trends.values()
+            ),
+            f"maxGrowthMiBPerHour={thresholds.memory_growth_max_mib_per_hour}, "
+            f"trends={memory_trends}",
+            required=required,
+        ))
+
+    handle_trend = endpoint_trend_per_hour(host, "Handles")
+    thread_trend = endpoint_trend_per_hour(host, "Threads")
+    metrics["host_handle_trend"] = handle_trend
+    metrics["host_thread_trend"] = thread_trend
+    checks.append(Check(
+        "Handles/Threads绝对值有界",
+        len(handles) == len(host) and len(threads) == len(host) and bool(handles) and
+        max(handles) <= thresholds.handle_count_max and
+        max(threads) <= thresholds.thread_count_max,
+        f"samples={len(handles)}/{len(host)}, handlesMax="
+        f"{max(handles) if handles else None}/{thresholds.handle_count_max}, "
+        f"threadsMax={max(threads) if threads else None}/{thresholds.thread_count_max}",
+        required=required,
+    ))
+    if handle_trend["change_per_hour"] is None or thread_trend["change_per_hour"] is None:
+        add_not_evaluable_check(
+            checks,
+            "Handles/Threads增长趋势有界",
+            f"至少需要15分钟且每项至少10个有效样本；handles={handle_trend}, "
+            f"threads={thread_trend}",
+            final_production,
+        )
+    else:
+        checks.append(Check(
+            "Handles/Threads增长趋势有界",
+            handle_trend["change_per_hour"] <= thresholds.handle_growth_max_per_hour and
+            thread_trend["change_per_hour"] <= thresholds.thread_growth_max_per_hour,
+            f"handlesPerHour={handle_trend['change_per_hour']}/"
+            f"{thresholds.handle_growth_max_per_hour}, threadsPerHour="
+            f"{thread_trend['change_per_hour']}/{thresholds.thread_growth_max_per_hour}",
+            required=required,
+        ))
+
+    available_memory = values["AvailableMemory"]
+    program_free = values["ProgramDriveFree"]
+    checks.append(Check(
+        "系统可用内存下限达标",
+        len(available_memory) == len(host) and bool(available_memory) and
+        min(available_memory) >= thresholds.system_available_memory_min_mib,
+        f"minimumMiB={min(available_memory) if available_memory else None}/"
+        f"{thresholds.system_available_memory_min_mib}",
+        required=required,
+    ))
+    checks.append(Check(
+        "程序盘自由空间下限达标",
+        len(program_free) == len(host) and bool(program_free) and
+        min(program_free) >= thresholds.program_drive_free_min_gib,
+        f"minimumGiB={min(program_free) if program_free else None}/"
+        f"{thresholds.program_drive_free_min_gib}",
+        required=required,
+    ))
+    program_free_trend = endpoint_trend_per_hour(host, "ProgramDriveFree", "GiB")
+    metrics["program_drive_free_trend"] = program_free_trend
+    if program_free_trend["change_per_hour"] is None:
+        add_not_evaluable_check(
+            checks,
+            "程序盘自由空间下降趋势有界",
+            f"至少需要15分钟且至少10个有效样本；trend={program_free_trend}",
+            final_production,
+        )
+    else:
+        decline = max(0.0, -program_free_trend["change_per_hour"])
+        checks.append(Check(
+            "程序盘自由空间下降趋势有界",
+            decline <= thresholds.program_drive_free_decline_max_gib_per_hour,
+            f"declineGiBPerHour={decline}/"
+            f"{thresholds.program_drive_free_decline_max_gib_per_hour}, "
+            f"trend={program_free_trend}",
+            required=required,
+        ))
+
+    try:
+        metrics["project_data_drive_live_free_gib"] = (
+            shutil.disk_usage(root).free / (1024.0 ** 3)
+        )
+    except OSError:
+        metrics["project_data_drive_live_free_gib"] = None
+    project_fields = ("ProjectDataDrive", "ProjectDataDriveFree")
+    project_field_count = sum(
+        1 for item in host if all(key in item for key in project_fields)
+    )
+    metrics["project_data_drive_structured_records"] = project_field_count
+    if project_field_count == 0:
+        add_not_evaluable_check(
+            checks,
+            "项目数据盘自由空间与下降趋势达标",
+            "HostRuntime没有ProjectDataDrive/ProjectDataDriveFree结构字段；"
+            "校验时刻的live free不能代替会话内1Hz趋势，PhysicalDisk(_Total)也不是项目盘身份",
+            final_production,
+        )
+    elif project_field_count != len(host):
+        checks.append(Check(
+            "项目数据盘自由空间与下降趋势达标",
+            False,
+            f"结构字段覆盖不完整：records={project_field_count}/{len(host)}；"
+            "拒绝使用PhysicalDisk(_Total)补齐",
+            required=required,
+        ))
+    else:
+        expected_drive = (root.drive or root.anchor).rstrip("\\/").upper()
+        observed_drives = {
+            item.get("ProjectDataDrive", "").rstrip("\\/").upper()
+            for item in host
+        }
+        project_free = [
+            finite_quantity_value(item, "ProjectDataDriveFree", "GiB")
+            for item in host
+        ]
+        project_trend = endpoint_trend_per_hour(host, "ProjectDataDriveFree", "GiB")
+        metrics["project_data_drive_free_trend"] = project_trend
+        project_decline = (
+            max(0.0, -project_trend["change_per_hour"])
+            if project_trend["change_per_hour"] is not None else None
+        )
+        checks.append(Check(
+            "项目数据盘自由空间与下降趋势达标",
+            observed_drives == {expected_drive} and
+            all(value is not None and value >= thresholds.project_data_drive_free_min_gib
+                for value in project_free) and
+            project_decline is not None and
+            project_decline <= thresholds.project_data_drive_free_decline_max_gib_per_hour,
+            f"expectedDrive={expected_drive}, observed={sorted(observed_drives)}, "
+            f"minimumGiB={min((value for value in project_free if value is not None), default=None)}/"
+            f"{thresholds.project_data_drive_free_min_gib}, declineGiBPerHour={project_decline}/"
+            f"{thresholds.project_data_drive_free_decline_max_gib_per_hour}",
+            required=required,
+        ))
+
+
 def validate_performance_metrics(
     logs: dict[str, str],
     checks: list[Check],
@@ -442,6 +871,9 @@ def validate_performance_metrics(
     daq_heartbeat_max_gap_seconds: float,
     ui_heartbeat_max_gap_seconds: float,
     host_heartbeat_max_gap_seconds: float,
+    root: Path,
+    final_production: bool,
+    host_thresholds: HostResourceThresholds,
 ) -> None:
     expected_run_id = session.run_id if session else None
     expected_channels = session_channels(session)
@@ -465,6 +897,16 @@ def validate_performance_metrics(
         if normalized_guid(item.get("RunId")) == expected_run_id
     ]
     host = parse_key_value_records(logs, "HostRuntime ")
+    validate_host_runtime_metrics(
+        root,
+        host,
+        checks,
+        metrics,
+        required,
+        final_production,
+        session,
+        host_thresholds,
+    )
 
     devices = sorted({item.get("Device", "") for item in daq if item.get("Device")})
     metrics["field_metric_counts"] = {
@@ -1195,6 +1637,62 @@ def validate_recovery_stability(
     ))
 
 
+def validate_section11_evaluability(
+    logs: dict[str, str],
+    checks: list[Check],
+    metrics: dict,
+    final_production: bool,
+) -> None:
+    field = parse_key_value_records(logs, "FieldMetric ")
+    hydraulic_records = [
+        item for item in field
+        if item.get("Kind") == "HYDRAULIC"
+        and "StalePending" in item
+        and "BarrierConvergenceMs" in item
+    ]
+    recovery_epoch_records = [
+        item for item in field
+        if item.get("Kind") == "RECOVERY"
+        and "RecoveryEpoch" in item
+        and "ContextAccepted" in item
+    ]
+    epb8_cycles = [
+        item for item in field
+        if item.get("Kind") == "CYCLE" and item.get("Channel") == "8"
+    ]
+    epb8_stable_cycles = [
+        item for item in epb8_cycles
+        if "ModelStable" in item and "ControlErrorClass" in item
+    ]
+    metrics["section11_evaluability"] = {
+        "hydraulic_stale_and_convergence_records": len(hydraulic_records),
+        "recovery_epoch_allocation_records": len(recovery_epoch_records),
+        "epb8_formal_cycle_records": len(epb8_cycles),
+        "epb8_stable_oscillation_records": len(epb8_stable_cycles),
+    }
+    add_not_evaluable_check(
+        checks,
+        "液压无stale pending且作废后1秒内屏障收敛",
+        "现有FieldMetric不含HYDRAULIC StalePending/BarrierConvergenceMs结构记录；"
+        "错误文本或最终STATE不能证明作废时刻到屏障收敛时刻",
+        final_production,
+    )
+    add_not_evaluable_check(
+        checks,
+        "RecoveryEpoch仅在根context成功准入后连续分配",
+        "现有FieldMetric STATE只有RunEpoch，未记录RECOVERY ContextAccepted/RecoveryEpoch；"
+        "incident.json只覆盖已落盘事故阶段，不能证明所有被合并或拒绝的恢复请求未消耗epoch",
+        final_production,
+    )
+    add_not_evaluable_check(
+        checks,
+        "EPB8学习稳定后无交替超调欠调",
+        f"CYCLE记录={len(epb8_cycles)}，但没有ModelStable/ControlErrorClass结构字段；"
+        "仅凭Peak/Target无法确定学习稳定边界及控制方向反转，拒绝猜测",
+        final_production,
+    )
+
+
 def validate_database(
     root: Path,
     checks: list[Check],
@@ -1585,7 +2083,10 @@ def markdown(result: dict) -> str:
         "|---|---|---|",
     ]
     for check in result["checks"]:
-        label = "PASS" if check["passed"] else ("FAIL" if check["required"] else "WARN")
+        label = check.get("status") or (
+            "NOT_EVALUABLE" if not check.get("evaluable", True) else
+            ("PASS" if check["passed"] else ("FAIL" if check["required"] else "WARN"))
+        )
         lines.append(
             f"| {check['name']} | {label} | "
             f"{check['evidence'].replace('|', '/')} |"
@@ -1603,6 +2104,15 @@ def markdown(result: dict) -> str:
         "",
     ])
     return "\n".join(lines)
+
+
+def serialized_check(check: Check) -> dict:
+    result = asdict(check)
+    result["status"] = (
+        "NOT_EVALUABLE" if not check.evaluable else
+        ("PASS" if check.passed else ("FAIL" if check.required else "WARN"))
+    )
+    return result
 
 
 def main() -> int:
@@ -1648,6 +2158,76 @@ def main() -> int:
         default=5.0,
     )
     parser.add_argument(
+        "--process-cpu-p95-max-percent",
+        type=lambda value: bounded_positive_float_argument(value, 100.0),
+        default=FINAL_PROCESS_CPU_P95_MAX_PERCENT,
+    )
+    parser.add_argument(
+        "--working-set-max-mib",
+        type=lambda value: bounded_positive_float_argument(value, 4096.0),
+        default=FINAL_WORKING_SET_MAX_MIB,
+    )
+    parser.add_argument(
+        "--private-memory-max-mib",
+        type=lambda value: bounded_positive_float_argument(value, 4096.0),
+        default=FINAL_PRIVATE_MEMORY_MAX_MIB,
+    )
+    parser.add_argument(
+        "--virtual-memory-max-mib",
+        type=lambda value: bounded_positive_float_argument(value, 4096.0),
+        default=FINAL_VIRTUAL_MEMORY_MAX_MIB,
+    )
+    parser.add_argument(
+        "--memory-growth-max-mib-per-hour",
+        type=lambda value: bounded_nonnegative_float_argument(value, 1024.0),
+        default=FINAL_MEMORY_GROWTH_MAX_MIB_PER_HOUR,
+    )
+    parser.add_argument(
+        "--handle-count-max",
+        type=positive_integer_argument,
+        default=FINAL_HANDLE_COUNT_MAX,
+    )
+    parser.add_argument(
+        "--handle-growth-max-per-hour",
+        type=lambda value: bounded_nonnegative_float_argument(value, 1000.0),
+        default=FINAL_HANDLE_GROWTH_MAX_PER_HOUR,
+    )
+    parser.add_argument(
+        "--thread-count-max",
+        type=positive_integer_argument,
+        default=FINAL_THREAD_COUNT_MAX,
+    )
+    parser.add_argument(
+        "--thread-growth-max-per-hour",
+        type=lambda value: bounded_nonnegative_float_argument(value, 1000.0),
+        default=FINAL_THREAD_GROWTH_MAX_PER_HOUR,
+    )
+    parser.add_argument(
+        "--system-available-memory-min-mib",
+        type=lambda value: bounded_nonnegative_float_argument(value, 1048576.0),
+        default=FINAL_SYSTEM_AVAILABLE_MEMORY_MIN_MIB,
+    )
+    parser.add_argument(
+        "--program-drive-free-min-gib",
+        type=lambda value: bounded_nonnegative_float_argument(value, 1048576.0),
+        default=FINAL_PROGRAM_DRIVE_FREE_MIN_GIB,
+    )
+    parser.add_argument(
+        "--program-drive-free-decline-max-gib-per-hour",
+        type=lambda value: bounded_nonnegative_float_argument(value, 1024.0),
+        default=FINAL_PROGRAM_DRIVE_FREE_DECLINE_MAX_GIB_PER_HOUR,
+    )
+    parser.add_argument(
+        "--project-data-drive-free-min-gib",
+        type=lambda value: bounded_nonnegative_float_argument(value, 1048576.0),
+        default=FINAL_PROJECT_DATA_DRIVE_FREE_MIN_GIB,
+    )
+    parser.add_argument(
+        "--project-data-drive-free-decline-max-gib-per-hour",
+        type=lambda value: bounded_nonnegative_float_argument(value, 1024.0),
+        default=FINAL_PROJECT_DATA_DRIVE_FREE_DECLINE_MAX_GIB_PER_HOUR,
+    )
+    parser.add_argument(
         "--artifact-scan",
         choices=("full", "none"),
         default="full",
@@ -1673,8 +2253,8 @@ def main() -> int:
     )
     parser.add_argument(
         "--max-recovery-correlations-per-10m",
-        type=int,
-        default=3,
+        type=nonnegative_integer_argument,
+        default=FINAL_RECOVERY_CORRELATIONS_PER_TEN_MINUTES_MAX,
         help="同一物理DAQ设备10分钟内允许的最大独立自维护根事故数",
     )
     parser.add_argument("--output-md", type=Path)
@@ -1696,6 +2276,75 @@ def main() -> int:
             args.database_scan != "full"
         ):
             parser.error("FinalProduction要求log/artifact/database全部使用full扫描")
+        formal_relaxations: list[str] = []
+        ceiling_limits = (
+            ("process-cpu-p95-max-percent", args.process_cpu_p95_max_percent,
+             FINAL_PROCESS_CPU_P95_MAX_PERCENT),
+            ("working-set-max-mib", args.working_set_max_mib,
+             FINAL_WORKING_SET_MAX_MIB),
+            ("private-memory-max-mib", args.private_memory_max_mib,
+             FINAL_PRIVATE_MEMORY_MAX_MIB),
+            ("virtual-memory-max-mib", args.virtual_memory_max_mib,
+             FINAL_VIRTUAL_MEMORY_MAX_MIB),
+            ("memory-growth-max-mib-per-hour", args.memory_growth_max_mib_per_hour,
+             FINAL_MEMORY_GROWTH_MAX_MIB_PER_HOUR),
+            ("handle-count-max", args.handle_count_max, FINAL_HANDLE_COUNT_MAX),
+            ("handle-growth-max-per-hour", args.handle_growth_max_per_hour,
+             FINAL_HANDLE_GROWTH_MAX_PER_HOUR),
+            ("thread-count-max", args.thread_count_max, FINAL_THREAD_COUNT_MAX),
+            ("thread-growth-max-per-hour", args.thread_growth_max_per_hour,
+             FINAL_THREAD_GROWTH_MAX_PER_HOUR),
+            ("program-drive-free-decline-max-gib-per-hour",
+             args.program_drive_free_decline_max_gib_per_hour,
+             FINAL_PROGRAM_DRIVE_FREE_DECLINE_MAX_GIB_PER_HOUR),
+            ("project-data-drive-free-decline-max-gib-per-hour",
+             args.project_data_drive_free_decline_max_gib_per_hour,
+             FINAL_PROJECT_DATA_DRIVE_FREE_DECLINE_MAX_GIB_PER_HOUR),
+            ("max-recovery-correlations-per-10m",
+             args.max_recovery_correlations_per_10m,
+             FINAL_RECOVERY_CORRELATIONS_PER_TEN_MINUTES_MAX),
+        )
+        floor_limits = (
+            ("system-available-memory-min-mib", args.system_available_memory_min_mib,
+             FINAL_SYSTEM_AVAILABLE_MEMORY_MIN_MIB),
+            ("program-drive-free-min-gib", args.program_drive_free_min_gib,
+             FINAL_PROGRAM_DRIVE_FREE_MIN_GIB),
+            ("project-data-drive-free-min-gib", args.project_data_drive_free_min_gib,
+             FINAL_PROJECT_DATA_DRIVE_FREE_MIN_GIB),
+        )
+        formal_relaxations.extend(
+            f"--{name}={actual}>{limit}"
+            for name, actual, limit in ceiling_limits if actual > limit
+        )
+        formal_relaxations.extend(
+            f"--{name}={actual}<{limit}"
+            for name, actual, limit in floor_limits if actual < limit
+        )
+        if formal_relaxations:
+            parser.error(
+                "FinalProduction参数只能收紧不能放宽：" + ", ".join(formal_relaxations)
+            )
+
+    host_thresholds = HostResourceThresholds(
+        process_cpu_p95_max_percent=args.process_cpu_p95_max_percent,
+        working_set_max_mib=args.working_set_max_mib,
+        private_memory_max_mib=args.private_memory_max_mib,
+        virtual_memory_max_mib=args.virtual_memory_max_mib,
+        memory_growth_max_mib_per_hour=args.memory_growth_max_mib_per_hour,
+        handle_count_max=args.handle_count_max,
+        handle_growth_max_per_hour=args.handle_growth_max_per_hour,
+        thread_count_max=args.thread_count_max,
+        thread_growth_max_per_hour=args.thread_growth_max_per_hour,
+        system_available_memory_min_mib=args.system_available_memory_min_mib,
+        program_drive_free_min_gib=args.program_drive_free_min_gib,
+        program_drive_free_decline_max_gib_per_hour=(
+            args.program_drive_free_decline_max_gib_per_hour
+        ),
+        project_data_drive_free_min_gib=args.project_data_drive_free_min_gib,
+        project_data_drive_free_decline_max_gib_per_hour=(
+            args.project_data_drive_free_decline_max_gib_per_hour
+        ),
+    )
 
     root = args.data_directory.resolve()
     if not root.is_dir():
@@ -1942,6 +2591,9 @@ def main() -> int:
         args.daq_heartbeat_max_gap_seconds,
         args.ui_heartbeat_max_gap_seconds,
         args.host_heartbeat_max_gap_seconds,
+        root,
+        args.acceptance_stage == "FinalProduction",
+        host_thresholds,
     )
     validate_recovery_stability(
         scoped_logs,
@@ -1949,6 +2601,12 @@ def main() -> int:
         metrics,
         performance_required,
         max(0, args.max_recovery_correlations_per_10m),
+    )
+    validate_section11_evaluability(
+        scoped_logs,
+        checks,
+        metrics,
+        args.acceptance_stage == "FinalProduction",
     )
 
     if args.database_scan == "full":
@@ -1968,7 +2626,10 @@ def main() -> int:
             "已显式跳过；仅允许历史UNC快速诊断，不可用于正式放行",
             required=False,
         ))
-    required_failures = [check for check in checks if check.required and not check.passed]
+    required_failures = [
+        check for check in checks
+        if check.required and (not check.evaluable or not check.passed)
+    ]
     result = {
         "status": "PASS" if not required_failures else "FAIL",
         "acceptance_stage": args.acceptance_stage,
@@ -1978,7 +2639,7 @@ def main() -> int:
         "expected_version": args.expected_version,
         "data_directory": str(root),
         "generated_at": datetime.now().isoformat(timespec="seconds"),
-        "checks": [asdict(check) for check in checks],
+        "checks": [serialized_check(check) for check in checks],
         "metrics": metrics,
     }
     default_output = Path.cwd() / "FieldGateReports"
