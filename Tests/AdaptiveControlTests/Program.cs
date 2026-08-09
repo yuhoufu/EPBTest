@@ -160,6 +160,7 @@ namespace AdaptiveControlTests
                 Run("定时器自身取消不记录ERROR", TimerOwnedCancellationIsNotError);
                 Run("峰值证据连续3圈且有效圈清零", PeakEvidenceMismatchRequiresThreeCycles);
                 Run("峰值偏差只比较同一证据时间窗", PeakEvidenceMismatchRequiresComparableWindow);
+                Run("不可比较时间窗不冒充后台处理滞后", NonComparablePeakWindowIsNotProcessingLag);
                 Run("峰值排空墙钟等待不计入证据尾差", PeakDrainDelayDoesNotInvalidateEvidence);
                 Run("六通道并发封口不产生墙钟峰值误判", SixChannelPeakDrainIsConsistent);
                 Run("软件自愈连续三次无进展后熔断", SoftwareSelfHealingStopsAfterThreeAttempts);
@@ -2554,20 +2555,30 @@ namespace AdaptiveControlTests
             Assert(
                 EpbCycleRunner.IsPeakEvidenceLagExceeded(100.1, 100),
                 "真实超过阈值的尾差未触发处理滞后");
+            var diagnostics = new List<AdaptiveWarningCode>();
+            var diagnostic = EpbCycleRunner.EvaluateCompletedPeakEvidence(
+                evidenceThrough,
+                evidenceThrough.AddMilliseconds(150),
+                25,
+                100,
+                out var comparableWindow);
+            Assert(!comparableWindow,
+                "完整峰值晚150ms时错误参与快速/完整峰值偏差比较");
+            if (diagnostic.HasValue) diagnostics.Add(diagnostic.Value);
+            Assert(!diagnostic.HasValue,
+                "真实处理滞后仅25ms时被150ms物理峰值时差误报为后台卡顿");
+
+            diagnostic = EpbCycleRunner.EvaluateCompletedPeakEvidence(
+                evidenceThrough,
+                evidenceThrough.AddMilliseconds(150),
+                101,
+                100,
+                out comparableWindow);
+            if (diagnostic.HasValue) diagnostics.Add(diagnostic.Value);
             Assert(
-                EpbCycleRunner.ClassifyPeakEvidenceDiagnostic(
-                    evidenceThrough,
-                    evidenceThrough.AddMilliseconds(25),
-                    25,
-                    100) == null,
-                "capture有效、25ms且完整峰值较晚时错误产生处理滞后诊断");
-            Assert(
-                EpbCycleRunner.ClassifyPeakEvidenceDiagnostic(
-                    evidenceThrough,
-                    evidenceThrough.AddMilliseconds(101),
-                    101,
-                    100) == AdaptiveWarningCode.PeakEvidenceLagWarning,
-                "101ms真实尾差未产生唯一峰值处理滞后代码");
+                diagnostics.Count == 1 &&
+                diagnostics[0] == AdaptiveWarningCode.PeakEvidenceLagWarning,
+                "101ms真实处理滞后未产生唯一且独立的峰值滞后诊断");
             Assert(
                 EpbCycleRunner.ClassifyPeakEvidenceDiagnostic(
                     DateTime.MinValue,

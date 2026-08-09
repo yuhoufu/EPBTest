@@ -150,6 +150,25 @@ namespace Controller
                 : (AdaptiveWarningCode?)null;
         }
 
+        internal static AdaptiveWarningCode? EvaluateCompletedPeakEvidence(
+            DateTime decisionEvidenceThroughUtc,
+            DateTime finalPeakAt,
+            double decisionEvidenceLagMs,
+            double maximumLagMs,
+            out bool comparableWindow)
+        {
+            comparableWindow = IsPeakEvidenceWindowComparable(
+                decisionEvidenceThroughUtc,
+                finalPeakAt);
+            // 完整峰值晚于快速判定窗口只影响“是否可比较”，不能改写由采集回调
+            // 量化出的处理/证据滞后，否则会把正常的物理峰值演进误报为后台卡顿。
+            return ClassifyPeakEvidenceDiagnostic(
+                decisionEvidenceThroughUtc,
+                finalPeakAt,
+                decisionEvidenceLagMs,
+                maximumLagMs);
+        }
+
         internal static bool IsFullRatePeakCaptureValid(
             PeakCaptureResult capture,
             double maximumTailLagMs,
@@ -1602,27 +1621,12 @@ namespace Controller
                             if (peakCaptureValid &&
                                 !double.IsNaN(quickPeak) && !double.IsInfinity(quickPeak) && quickPeak > 0)
                             {
-                                var comparableWindow = IsPeakEvidenceWindowComparable(
-                                    decisionEvidenceThroughUtc,
-                                    peak.MaxAt);
-                                if (!comparableWindow &&
-                                    decisionEvidenceThroughUtc != DateTime.MinValue &&
-                                    peak.MaxAt != DateTime.MinValue)
-                                {
-                                    var finalPeakUtc = peak.MaxAt.Kind == DateTimeKind.Utc
-                                        ? peak.MaxAt
-                                        : peak.MaxAt.ToUniversalTime();
-                                    decisionEvidenceLagMs = Math.Max(
-                                        double.IsNaN(decisionEvidenceLagMs)
-                                            ? 0
-                                            : decisionEvidenceLagMs,
-                                        (finalPeakUtc - decisionEvidenceThroughUtc).TotalMilliseconds);
-                                }
-                                var peakDiagnostic = ClassifyPeakEvidenceDiagnostic(
+                                var peakDiagnostic = EvaluateCompletedPeakEvidence(
                                     decisionEvidenceThroughUtc,
                                     peak.MaxAt,
                                     decisionEvidenceLagMs,
-                                    _programSafetySettings.PeakEvidenceMaximumLagMs);
+                                    _programSafetySettings.PeakEvidenceMaximumLagMs,
+                                    out var comparableWindow);
                                 peakEvidenceLag =
                                     peakDiagnostic == AdaptiveWarningCode.PeakEvidenceLagWarning;
                                 peakEvidenceTimestampMissing =
