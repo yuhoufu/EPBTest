@@ -18,6 +18,8 @@ namespace AdaptiveControlTests
             var passed = 0;
             Run("AO多点校正拟合新线性公式", AoCalibrationFitsLinearFormula, ref passed);
             Run("AO线性拟合拒绝无电压跨度数据", AoCalibrationRejectsZeroVoltageSpan, ref passed);
+            Run("同命令压力更新旧点且不生成重复点", MatchingCommandPressureUpdatesExistingPoint, ref passed);
+            Run("部分更新校正点识别新旧数据混用风险", MixedCalibrationDetectsStaleHistoricalPoints, ref passed);
             Run("压力校正气缸映射与120bar限幅", PressureCalibrationMappingAndLimit, ref passed);
             Run("压力校正按复位DO后AO顺序输出", PressureCalibrationOutputOrdering, ref passed);
             Run("压力校正采样过期立即回零", PressureCalibrationStaleSampleTrips, ref passed);
@@ -54,6 +56,49 @@ namespace AdaptiveControlTests
                     new[] { (Voltage: 2.0, Pressure: 40.0), (Voltage: 2.0, Pressure: 70.0) },
                     out _, out _, out _, out var error) && error.Contains("电压"),
                 "相同AO电压仍被接受用于线性拟合");
+        }
+
+        private static void MatchingCommandPressureUpdatesExistingPoint()
+        {
+            var existingCommands = new[] { 20.0, 100.0, 100.008, 120.0 };
+            Assert(CalibrationMath.FindMatchingCommandIndex(existingCommands, 100.006, 0.01) == 2,
+                "未优先更新容差内最接近的命令压力点");
+            Assert(CalibrationMath.FindMatchingCommandIndex(existingCommands, 100.02, 0.01) == -1,
+                "容差外命令压力被错误当作已有点更新");
+            Assert(CalibrationMath.FindMatchingCommandIndex(existingCommands, 120.0, 0.01) == 3,
+                "完全相同的命令压力未命中已有点");
+        }
+
+        private static void MixedCalibrationDetectsStaleHistoricalPoints()
+        {
+            var oneChanged = CalibrationMath.AnalyzeMixedCalibration(new[]
+            {
+                (Voltage: 1.0, Pressure: 30.0, IsChanged: true, IsHistorical: true),
+                (Voltage: 2.0, Pressure: 60.0, IsChanged: false, IsHistorical: true),
+                (Voltage: 3.0, Pressure: 90.0, IsChanged: false, IsHistorical: true)
+            });
+            Assert(oneChanged.HasMixedData && oneChanged.HasMaterialImpact &&
+                   !oneChanged.CanEvaluateChangedTrend,
+                "只更新一个历史点时未提示无法独立评估新趋势");
+
+            var stalePoint = CalibrationMath.AnalyzeMixedCalibration(new[]
+            {
+                (Voltage: 1.0, Pressure: 32.0, IsChanged: true, IsHistorical: true),
+                (Voltage: 2.0, Pressure: 72.0, IsChanged: true, IsHistorical: true),
+                (Voltage: 3.0, Pressure: 90.0, IsChanged: false, IsHistorical: true)
+            });
+            Assert(stalePoint.HasMixedData && stalePoint.CanEvaluateChangedTrend &&
+                   stalePoint.MaxUnchangedDeviationBar > stalePoint.EvaluationToleranceBar &&
+                   stalePoint.HasMaterialImpact,
+                "未识别出旧点明显偏离本次更新趋势");
+
+            var allChanged = CalibrationMath.AnalyzeMixedCalibration(new[]
+            {
+                (Voltage: 1.0, Pressure: 32.0, IsChanged: true, IsHistorical: true),
+                (Voltage: 2.0, Pressure: 72.0, IsChanged: true, IsHistorical: true)
+            });
+            Assert(!allChanged.HasMixedData && !allChanged.HasMaterialImpact,
+                "全部历史点均已更新时仍误报新旧数据混用");
         }
 
         private static void PressureCalibrationMappingAndLimit()
