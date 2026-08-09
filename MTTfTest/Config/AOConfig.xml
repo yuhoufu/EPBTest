@@ -11,36 +11,50 @@
 			<Name>Cylinder1</Name>
 			<PhysicalChannel>Dev1/ao0</PhysicalChannel>
 			<!-- 运行时线性换算：压力 = AO 电压 * ScaleK + Offset -->
-			<ScaleK>39.101</ScaleK>
-			<Offset>-7.886</Offset>
+			<ScaleK>37.541187135135146</ScaleK>
+			<Offset>-5.0349260540540683</Offset>
 			<!-- 新增：可选校准表，用于“电压→压力(Bar)”估算（若 DAQ 有闭环则可不配）-->
 			<!-- 历史校正点，仅用于多点线性拟合和审计，不直接参与运行时插值 -->
 			<VoltageToPressureTable>
 				<Point>
-					<Voltage>0</Voltage>
-					<Pressure>0.0</Pressure>
+					<Voltage>0.96892662591749579</Voltage>
+					<Pressure>31.609999999999999</Pressure>
+					<CommandPressure>30</CommandPressure>
 				</Point>
 				<Point>
-					<Voltage>100</Voltage>
-					<Pressure>6</Pressure>
+					<Voltage>1.7361704304237742</Voltage>
+					<Pressure>59.670000000000002</Pressure>
+					<CommandPressure>60</CommandPressure>
+				</Point>
+				<Point>
+					<Voltage>2.7591621697654789</Voltage>
+					<Pressure>98.75</Pressure>
+					<CommandPressure>100</CommandPressure>
 				</Point>
 			</VoltageToPressureTable>
 		</Device>
 		<Device>
 			<Name>Cylinder2</Name>
 			<PhysicalChannel>Dev2/ao0</PhysicalChannel>
-			<ScaleK>38.292</ScaleK>
-			<Offset>-10.817</Offset>
+			<ScaleK>39.456283783783782</ScaleK>
+			<Offset>-6.0015709459459288</Offset>
 			<!-- 新增：可选校准表，用于“电压→压力(Bar)”估算（若 DAQ 有闭环则可不配）-->
 			<!-- 历史校正点，仅用于多点线性拟合和审计，不直接参与运行时插值 -->
 			<VoltageToPressureTable>
 				<Point>
-					<Voltage>0</Voltage>
-					<Pressure>0.0</Pressure>
+					<Voltage>1.0659406664577458</Voltage>
+					<Pressure>35.890000000000001</Pressure>
+					<CommandPressure>30</CommandPressure>
 				</Point>
 				<Point>
-					<Voltage>100</Voltage>
-					<Pressure>6</Pressure>
+					<Voltage>1.8493941293220517</Voltage>
+					<Pressure>67.260000000000005</Pressure>
+					<CommandPressure>60</CommandPressure>
+				</Point>
+				<Point>
+					<Voltage>2.8939987464744594</Voltage>
+					<Pressure>108.06</Pressure>
+					<CommandPressure>100</CommandPressure>
 				</Point>
 			</VoltageToPressureTable>
 		</Device>

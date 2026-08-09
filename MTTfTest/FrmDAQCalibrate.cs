@@ -63,6 +63,9 @@ namespace MTEmbTest
         private double DaqTimeSpanMilSeconds = 10.0;
 
         private bool IsRunning = false;
+        private readonly CancellationTokenSource _dev1ReconnectCts = new CancellationTokenSource();
+        private System.Threading.Tasks.Task _dev1ReconnectTask;
+        private int _dev1ReconnectStarted;
         private double DaqCurrentTimeOffset = 0.0;
 
         private ConcurrentDictionary<string, double> ParaNameToScale = new ConcurrentDictionary<string, double>();
@@ -588,52 +591,62 @@ namespace MTEmbTest
             {
                 Dev1StopTask();
                 SafeLogError($"DAQ Dev1 读取数据出错: {ex.Message}");
+                StartDev1ReconnectLoop();
+            }
+        }
 
-                System.Threading.Tasks.Task.Run(() =>
+        private void StartDev1ReconnectLoop()
+        {
+            if (Interlocked.CompareExchange(ref _dev1ReconnectStarted, 1, 0) != 0) return;
+            var token = _dev1ReconnectCts.Token;
+            _dev1ReconnectTask = System.Threading.Tasks.Task.Run(() =>
+            {
+                const int maxRetries = 30;
+                var retryCount = 0;
+                var success = false;
+                try
                 {
-                    const int maxRetries = 30;
-                    int retryCount = 0;
-                    bool success = false;
-
-                    while (retryCount < maxRetries && !success)
+                    while (retryCount < maxRetries && !success && !token.IsCancellationRequested)
                     {
                         retryCount++;
                         try
                         {
-                            if (this.InvokeRequired)
+                            var result = new TaskCompletionSource<bool>(
+                                TaskCreationOptions.RunContinuationsAsynchronously);
+                            if (IsDisposed || Disposing || !IsHandleCreated) break;
+                            BeginInvoke(new Action(() =>
                             {
-                                this.Invoke(new Action(() =>
+                                try
                                 {
-                                    try
-                                    {
-                                        success = Dev1StartDaqAITask();
-                                        if (success)
-                                        {
-                                            SafeLogError($"第 {retryCount} 次重连成功");
-                                        }
-                                    }
-                                    catch (Exception invokeEx)
-                                    {
-                                        SafeLogError($"第 {retryCount} 次重试失败: {invokeEx.Message}");
-                                    }
-                                }));
-                            }
-
-                            if (success) break;
-                            Thread.Sleep(1000);
+                                    var started = Dev1StartDaqAITask();
+                                    if (started) SafeLogError($"第 {retryCount} 次重连成功");
+                                    result.TrySetResult(started);
+                                }
+                                catch (Exception invokeEx)
+                                {
+                                    SafeLogError($"第 {retryCount} 次重试失败: {invokeEx.Message}");
+                                    result.TrySetResult(false);
+                                }
+                            }));
+                            if (!result.Task.Wait(1000) || token.IsCancellationRequested) break;
+                            success = result.Task.Result;
+                            if (!success && token.WaitHandle.WaitOne(1000)) break;
                         }
                         catch (Exception retryEx)
                         {
-                            SafeLogError($"重试过程异常: {retryEx.Message}");
+                            if (!token.IsCancellationRequested)
+                                SafeLogError($"重试过程异常: {retryEx.Message}");
                         }
                     }
 
-                    if (!success)
-                    {
+                    if (!success && !token.IsCancellationRequested)
                         SafeLogError($"采集卡重连失败（共尝试 {maxRetries} 次），请检查硬件连接");
-                    }
-                });
-            }
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref _dev1ReconnectStarted, 0);
+                }
+            }, token);
         }
 
         private void AddToDaqAiDispCache(int maxLens, double[] Data, ref ConcurrentQueue<double[]> daqAiDispData)
@@ -1121,7 +1134,13 @@ namespace MTEmbTest
             {
                 MessageBox.Show("请停止校准！");
                 e.Cancel = true;
+                return;
             }
+
+            _dev1ReconnectCts.Cancel();
+            try { _dev1ReconnectTask?.Wait(1500); }
+            catch (AggregateException) { /* 重连循环已记录具体失败。 */ }
+            _dev1ReconnectCts.Dispose();
         }
     }
 }
