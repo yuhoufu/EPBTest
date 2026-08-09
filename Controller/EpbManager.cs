@@ -2844,27 +2844,34 @@ namespace Controller
 
         /// <summary>
         /// 固化 DAQ 恢复进入任何所有权等待前的安全顺序。调用方可以把每一步拆成
-        /// 整组操作，因此能够证明“全部暂停”早于“冻结边界”，且“冻结+抑制”早于
-        /// 当前圈取消和最高优先级 OFF 提交。
+        /// 整组操作，因此能够证明“全部暂停”早于“冻结边界”，“冻结+抑制”早于
+        /// 当前圈取消和最高优先级 OFF 提交，而且电源 Disable/拒绝项兜底已经启动后
+        /// 才允许日志、UI 或其它观察者运行。
         /// </summary>
         internal static void ExecuteDaqCutoffBeforeOwnershipWait(
             Action startWatchdogs,
-            Action publishRecoveringAndPauseAll,
+            Action pauseAll,
             Action freezeCutoffAndSuppressTail,
-            Action cancelCyclesAndSubmitOffAll)
+            Action cancelCyclesAndSubmitOffAll,
+            Action startPowerDisable = null,
+            Action startRejectedOffFallbacks = null,
+            Action publishRecoveringAndDiagnostics = null)
         {
             if (startWatchdogs == null) throw new ArgumentNullException(nameof(startWatchdogs));
-            if (publishRecoveringAndPauseAll == null)
-                throw new ArgumentNullException(nameof(publishRecoveringAndPauseAll));
+            if (pauseAll == null)
+                throw new ArgumentNullException(nameof(pauseAll));
             if (freezeCutoffAndSuppressTail == null)
                 throw new ArgumentNullException(nameof(freezeCutoffAndSuppressTail));
             if (cancelCyclesAndSubmitOffAll == null)
                 throw new ArgumentNullException(nameof(cancelCyclesAndSubmitOffAll));
 
             startWatchdogs();
-            publishRecoveringAndPauseAll();
+            pauseAll();
             freezeCutoffAndSuppressTail();
             cancelCyclesAndSubmitOffAll();
+            startPowerDisable?.Invoke();
+            startRejectedOffFallbacks?.Invoke();
+            publishRecoveringAndDiagnostics?.Invoke();
         }
 
         private async Task<bool> TryFinalizeDaqCutoffCyclesAfterPersistenceAsync(
@@ -3045,7 +3052,8 @@ namespace Controller
             }
             try
             {
-                var cutoffOffFallbacks = new Dictionary<int, string>();
+                var cutoffSafetyDiagnostics = new List<string>();
+                Dictionary<int, string> cutoffOffFallbacks = null;
                 ExecuteDaqCutoffBeforeOwnershipWait(
                     () =>
                     {
@@ -3054,32 +3062,11 @@ namespace Controller
                     },
                     () =>
                     {
-                        // 必须先让整组都进入 Recovering 并暂停，不能在第一个通道上
-                        // 取消/断电后才轮到最后一个通道暂停。
+                        // 安全扫面只做整组 Pause；状态发布、日志和外部观察者必须等到
+                        // 全组 OFF 以及共享电源 Disable 均已启动后，避免首通道观察者
+                        // 阻塞时漏停后续兄弟通道。
                         foreach (var channel in affected)
                         {
-                            try
-                            {
-                                PublishChannelRuntimeState(
-                                    channel,
-                                    ChannelRuntimeState.Recovering,
-                                    context.TriggerCode,
-                                    reason,
-                                    affectedChannels: affected,
-                                    correlationId: context.CorrelationId);
-                            }
-                            catch (Exception ex)
-                            {
-                                _log.Warn(
-                                    $"DAQ截止发布Recovering失败 EPB={channel}: {ex.Message}",
-                                    "AI");
-                            }
-                            NonCriticalObserver.Invoke(
-                                ChannelPaused,
-                                channel,
-                                ex => _log?.Warn(
-                                    $"DAQ自愈暂停观察者异常，已隔离：{ex.Message}",
-                                    "AI"));
                             try
                             {
                                 if (_timers.TryGetValue(channel, out var timer))
@@ -3087,7 +3074,8 @@ namespace Controller
                             }
                             catch (Exception ex)
                             {
-                                _log.Warn($"DAQ截止暂停Timer失败 EPB={channel}: {ex.Message}", "AI");
+                                cutoffSafetyDiagnostics.Add(
+                                    $"DAQ截止暂停Timer失败 EPB={channel}: {ex.Message}");
                             }
                         }
                     },
@@ -3122,47 +3110,54 @@ namespace Controller
                             try { CancelCyclePauseCts(channel); }
                             catch (Exception ex)
                             {
-                                _log.Warn($"DAQ截止取消当前圈失败 EPB={channel}: {ex.Message}", "AI");
+                                cutoffSafetyDiagnostics.Add(
+                                    $"DAQ截止取消当前圈失败 EPB={channel}: {ex.Message}");
                             }
+                        }
+                        cutoffOffFallbacks = SubmitEpbOffHighPriorityBatch(
+                            affected,
+                            "DaqCutoffAdmissionRejected",
+                            "DaqCutoffSubmissionException");
+                    },
+                    () => StartElectricalGroupSafetyDisables(
+                        affected,
+                        $"DAQ截止安全断电 Device={device} CorrelationId={context.CorrelationId:N}",
+                        "DaqCutoffPowerDisable"),
+                    () => ScheduleRejectedOffFallbacks(
+                        cutoffOffFallbacks,
+                        "DaqCutoffImmediateOffFallback"),
+                    () => ObserveBackgroundTask(Task.Run(() =>
+                    {
+                        if (!IsCurrentRecovery(context)) return;
+                        foreach (var diagnostic in cutoffSafetyDiagnostics)
+                            _log.Warn(diagnostic, "AI");
+                        foreach (var channel in affected)
+                        {
+                            if (!IsCurrentRecovery(context)) break;
                             try
                             {
-                                if (!TrySubmitEpbOffHighPriority(channel, null, out _))
-                                    cutoffOffFallbacks[channel] =
-                                        "DaqCutoffAdmissionRejected";
+                                PublishChannelRuntimeState(
+                                    channel,
+                                    ChannelRuntimeState.Recovering,
+                                    context.TriggerCode,
+                                    reason,
+                                    affectedChannels: affected,
+                                    correlationId: context.CorrelationId);
                             }
                             catch (Exception ex)
                             {
-                                _log.Error($"DAQ截止最高优先级OFF提交失败 EPB={channel}: {ex.Message}", "AI", ex);
-                                cutoffOffFallbacks[channel] =
-                                    "DaqCutoffSubmissionException";
+                                _log.Warn(
+                                    $"DAQ截止发布Recovering失败 EPB={channel}: {ex.Message}",
+                                    "AI");
                             }
+                            NonCriticalObserver.Invoke(
+                                ChannelPaused,
+                                channel,
+                                ex => _log?.Warn(
+                                    $"DAQ自愈暂停观察者异常，已隔离：{ex.Message}",
+                                    "AI"));
                         }
-                    });
-
-                // 先完成整组异步提交，再让每个拒绝通道在独立受监督任务中执行其
-                // 100ms 高优先级同步兜底。任一驱动调用异常阻塞都不能拖住兄弟通道。
-                foreach (var fallback in cutoffOffFallbacks)
-                {
-                    var fallbackChannel = fallback.Key;
-                    var fallbackStage = fallback.Value;
-                    try
-                    {
-                        ObserveBackgroundTask(
-                            Task.Run(() => TryExecuteImmediateOffFallback(
-                                fallbackChannel,
-                                fallbackStage,
-                                out _)),
-                            "DaqCutoffImmediateOffFallback",
-                            fallbackChannel);
-                    }
-                    catch (Exception ex)
-                    {
-                        _log.Error(
-                            $"DAQ截止无法调度独立OFF安全兜底 EPB={fallbackChannel}: {ex.Message}",
-                            "AI",
-                            ex);
-                    }
-                }
+                    }), "DaqCutoffStatePublication"));
 
                 if (TryEscalatePermanentDataContinuityGap(
                         "BeginDaqAutoRecovery",
@@ -6130,7 +6125,8 @@ namespace Controller
             Action pauseAllAndFreezeCycles,
             Action cancelAllAndSubmitOff,
             Func<T> startPowerDisable,
-            Action startRejectedOffFallbacks = null)
+            Action startRejectedOffFallbacks = null,
+            Action postSafetyEvidence = null)
         {
             if (revokeBatch == null) throw new ArgumentNullException(nameof(revokeBatch));
             if (pauseAllAndFreezeCycles == null)
@@ -6145,6 +6141,7 @@ namespace Controller
             cancelAllAndSubmitOff();
             var powerDisable = startPowerDisable();
             startRejectedOffFallbacks?.Invoke();
+            postSafetyEvidence?.Invoke();
             return powerDisable;
         }
 
@@ -6158,10 +6155,11 @@ namespace Controller
             // 必须在撤销批次 CTS 前先冻结首份活动圈身份；Runner 收到取消后可能立即
             // 清除内存登记，若随后才首次 Capture，会留下 SQLite running 圈。
             var stopCycles = CaptureSoftwareRecoveryCycles(Enumerable.Range(1, 12));
-            var stopCycleWindowsSealed = TrySealSoftwareRecoveryCycleWindows(
-                stopCycles,
-                startedUtc,
-                $"StopAll:{context.Source}:BeforeBatchRevocation");
+            // 这里只冻结内存身份。SealCycleWindow 可能等待正持有 recorder Gate 的同步
+            // MMF/SQLite 写；必须等整组 OFF 和电源 Disable 已启动后再执行。
+            var stopCycleWindowsSealed = true;
+            var stopSafetyDiagnostics = new List<string>();
+            var stopSafetyErrors = new List<string>();
             var processingDataGaps = new List<string>();
             var stopPersistenceBoundaries = new Dictionary<string, long>();
             var channels = _timers.Keys
@@ -6188,10 +6186,6 @@ namespace Controller
             {
                 foreach (var channel in Enumerable.Range(1, 12))
                     _manualStopRequestedChannels[channel] = 0;
-                foreach (var recovery in _recoverableChannelRestartJobs.Values)
-                {
-                    try { recovery.Cancel(); } catch { }
-                }
             }
             if (context.Source != StopSource.SystemFault)
                 NotifyRunAuthorizationRevoking(
@@ -6202,17 +6196,15 @@ namespace Controller
                         ? requestedCorrelation
                         : Guid.NewGuid(),
                     context.FaultScope);
-            _log.Info(
-                $"收到停止全部 EPB 请求：{context.ToLogText()}; SafetyActionStartedUtc={startedUtc:O}",
-                "EPB");
-
             // 1. 在等待任何恢复所有权前先撤销批次、暂停/取消全部活动通道、并行提交
             // 最高优先级 OFF，随后立即启动全电源 Disable。这样即使恢复所有者或同步
             // 驱动永久阻塞，物理安全动作也已经独立发出。
             var powerTask = ExecuteStopSafetyBeforeRecoveryWait(
                 () =>
                 {
-                    EndBatchSession(cancel: true);
+                    // 撤权本身只做内存/令牌变更；BatchPauseState 日志和观察者延后到
+                    // 整组 OFF 与电源 Disable 已启动之后。
+                    EndBatchSession(cancel: true, publishIdleState: false);
                     // EndBatchSession 取消 Runner，但既有 DAQ 恢复上下文只认 run epoch。
                     // 先使其提交资格失效；CancelAll 随后负责终态清理和完成通知。
                     Interlocked.Increment(ref _runEpoch);
@@ -6228,7 +6220,8 @@ namespace Controller
                         }
                         catch (Exception ex)
                         {
-                            _log.Warn($"StopAll暂停Timer失败 EPB={channel}: {ex.Message}", "EPB");
+                            stopSafetyDiagnostics.Add(
+                                $"StopAll暂停Timer失败 EPB={channel}: {ex.Message}");
                         }
                     }
 
@@ -6241,17 +6234,11 @@ namespace Controller
                         else if (frozenCycle != pair.Value)
                         {
                             stopCycleWindowsSealed = false;
-                            _log.Error(
+                            stopSafetyErrors.Add(
                                 $"StopAll暂停前后圈身份变化 EPB={pair.Key} " +
-                                $"Frozen={frozenCycle} Observed={pair.Value}；禁止同进程重启。",
-                                "落盘");
+                                $"Frozen={frozenCycle} Observed={pair.Value}；禁止同进程重启。");
                         }
                     }
-                    stopCycleWindowsSealed = TrySealSoftwareRecoveryCycleWindows(
-                                                 stopCycles,
-                                                 startedUtc,
-                                                 $"StopAll:{context.Source}:AfterAllPaused") &&
-                                             stopCycleWindowsSealed;
                 },
                 () =>
                 {
@@ -6287,10 +6274,8 @@ namespace Controller
                         }
                         catch (Exception ex)
                         {
-                            _log.Error(
-                                $"StopAll最高优先级OFF提交异常 EPB={channel}: {ex.Message}",
-                                "EPB",
-                                ex);
+                            stopSafetyErrors.Add(
+                                $"StopAll最高优先级OFF提交异常 EPB={channel}: {ex.Message}");
                             stopOffFallbackStages[channel] =
                                 "StopAllSubmissionException";
                         }
@@ -6328,8 +6313,29 @@ namespace Controller
                                 ex);
                         }
                     }
-
+                },
+                () =>
+                {
                     // 电源 Disable 与所有拒绝项兜底均已启动后再发布 UI/状态诊断；
+                    // SealCycleWindow 也只能从这里开始，避免持久化锁长尾阻止断能。
+                    _log.Info(
+                        $"收到停止全部 EPB 请求：{context.ToLogText()}; SafetyActionStartedUtc={startedUtc:O}",
+                        "EPB");
+                    foreach (var recovery in _recoverableChannelRestartJobs.Values)
+                    {
+                        try { recovery.Cancel(); } catch { }
+                    }
+                    stopCycleWindowsSealed = TrySealSoftwareRecoveryCycleWindows(
+                                                 stopCycles,
+                                                 startedUtc,
+                                                 $"StopAll:{context.Source}:AfterSafetyActionsStarted") &&
+                                             stopCycleWindowsSealed;
+                    foreach (var diagnostic in stopSafetyDiagnostics)
+                        _log.Warn(diagnostic, "EPB");
+                    foreach (var error in stopSafetyErrors)
+                        _log.Error(error, "EPB");
+                    MarkBatchIdle("批次已取消");
+
                     // 任何观察者延迟都不能占用物理安全动作的时间预算。
                     foreach (var channel in channels)
                     {
@@ -6949,20 +6955,11 @@ namespace Controller
                 daqDerived ? daqIncident.CorrelationId : Guid.NewGuid(),
                 DateTime.UtcNow,
                 nonDaqFault: !daqDerived);
-            if (daqDerived && registration.IsFirst)
-                ObserveDaqIncident(
-                    sourceDevice,
-                    "OffCurrentUnverifiableDaqStale",
-                    reason,
-                    DateTime.UtcNow,
-                    GetAllDaqDeviceChannels(sourceDevice));
-
             var cutoffUtc = DateTime.UtcNow;
             var cutoffCycles = CaptureSoftwareRecoveryCycles(members);
-            var cutoffCyclesSealed = TrySealSoftwareRecoveryCycleWindows(
-                cutoffCycles,
-                cutoffUtc,
-                $"ElectricalGroupEmergency:{reason}");
+            // 先只冻结内存身份；recorder 封圈可能等待同步存储锁，必须后移到
+            // 整组 OFF 和共享电源 Disable 均已启动之后。
+            var cutoffCyclesSealed = true;
             var correlationId = registration.CorrelationId;
             Dictionary<int, string> rejectedOff = null;
             Dictionary<int, Task<(bool ok, string error)>> powerDisableTasks = null;
@@ -6988,11 +6985,6 @@ namespace Controller
                         else if (cutoffCycles[pair.Key] != pair.Value)
                             cutoffCyclesSealed = false;
                     }
-                    cutoffCyclesSealed = TrySealSoftwareRecoveryCycleWindows(
-                                             cutoffCycles,
-                                             cutoffUtc,
-                                             $"ElectricalGroupEmergency:{reason}:AfterPause") &&
-                                         cutoffCyclesSealed;
                     foreach (var member in members)
                     {
                         try { CancelCyclePauseCts(member); } catch { }
@@ -7008,6 +7000,18 @@ namespace Controller
                     "ElectricalGroupEmergencyPowerDisable"),
                 () => ObserveBackgroundTask(Task.Run(async () =>
                 {
+                if (daqDerived && registration.IsFirst)
+                    ObserveDaqIncident(
+                        sourceDevice,
+                        "OffCurrentUnverifiableDaqStale",
+                        reason,
+                        DateTime.UtcNow,
+                        GetAllDaqDeviceChannels(sourceDevice));
+                cutoffCyclesSealed = TrySealSoftwareRecoveryCycleWindows(
+                                         cutoffCycles,
+                                         cutoffUtc,
+                                         $"ElectricalGroupEmergency:{reason}:AfterSafetyActionsStarted") &&
+                                     cutoffCyclesSealed;
                 foreach (var member in members)
                 {
                     try { UnmarkHydraulicParticipant(member); } catch { }

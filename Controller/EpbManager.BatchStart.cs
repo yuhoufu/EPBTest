@@ -843,7 +843,7 @@ namespace Controller
             }
         }
 
-        private void EndBatchSession(bool cancel)
+        private void EndBatchSession(bool cancel, bool publishIdleState = true)
         {
             var cts = Interlocked.Exchange(ref _batchSessionCts, null);
             if (cts != null)
@@ -863,7 +863,8 @@ namespace Controller
             _activeStaggerPlan = null;
             _activeFormalT0ByPressureGroup.Clear();
             _activeBatchId = Guid.Empty;
-            MarkBatchIdle(cancel ? "批次已取消" : "批次已结束");
+            if (publishIdleState)
+                MarkBatchIdle(cancel ? "批次已取消" : "批次已结束");
         }
 
         private void LogStaggerPlan(Guid batchId, ElectricalStaggerPlan plan)
