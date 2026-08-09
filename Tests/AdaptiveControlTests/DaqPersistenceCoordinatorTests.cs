@@ -493,6 +493,15 @@ namespace AdaptiveControlTests
                 BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
             Assert(valueProperty != null && valueProperty.PropertyType == typeof(Guid),
                 "CorrelationIdentity未封装完整Guid值");
+            var runIdProperty = identityType.GetProperty(
+                "RunId",
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            var runEpochProperty = identityType.GetProperty(
+                "RunEpoch",
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            Assert(runIdProperty?.PropertyType == typeof(Guid) &&
+                   runEpochProperty?.PropertyType == typeof(long),
+                "持久化关联身份没有以同一不可变引用绑定RunId/RunEpoch");
         }
 
         private static SemaphoreSlim GetDeviceSlots(
@@ -745,7 +754,16 @@ namespace AdaptiveControlTests
                 Config.NullLogger.Instance,
                 8, 6, 4, 1000, 100, 2000, 1);
             var cutoff = DateTime.UtcNow.AddSeconds(1);
-            coordinator.SuppressAfter("Dev1", cutoff, 751, Guid.NewGuid());
+            var correlationId = Guid.NewGuid();
+            var runId = Guid.NewGuid();
+            const long runEpoch = 42;
+            coordinator.SuppressAfter(
+                "Dev1",
+                cutoff,
+                751,
+                correlationId,
+                runId,
+                runEpoch);
             Assert(coordinator.Enqueue(NewBatchAt("Dev1", 751, cutoff.AddTicks(1))),
                 "截止前批次未被接纳");
             WaitUntil(() => recorder.Count == 1, 2000,
@@ -757,6 +775,12 @@ namespace AdaptiveControlTests
             // Resume 之后才从 processing 到达：752 仍须排除，首个严格更新的 753
             // 才关闭窗口并恢复真实写入。
             coordinator.ResumeAdmission("Dev1", 752);
+            var resumedWindow = coordinator.GetSnapshot("Dev1");
+            Assert(resumedWindow.SuppressThroughSequence == 752 &&
+                   resumedWindow.CorrelationId == correlationId &&
+                   resumedWindow.RunId == runId &&
+                   resumedWindow.RunEpoch == runEpoch,
+                "ResumeAdmission在有限迟到窗口真正关闭前清除了事故/运行身份");
             Assert(coordinator.Enqueue(NewBatchAt("Dev1", 752, cutoff.AddTicks(-1))),
                 "恢复后迟到旧尾批未被明确抑制处理");
             var snapshot = coordinator.GetSnapshot("Dev1");
@@ -768,11 +792,44 @@ namespace AdaptiveControlTests
                    snapshot.CumulativeSuppressedBatchCount == 1 &&
                    snapshot.FirstSuppressedSequence == 752 &&
                    snapshot.LastSuppressedSequence == 752 &&
-                   snapshot.SuppressedRangeCount == 1,
+                   snapshot.SuppressedRangeCount == 1 &&
+                   snapshot.CorrelationId == correlationId &&
+                   snapshot.RunId == runId &&
+                   snapshot.RunEpoch == runEpoch,
                 "sequence截止没有区分物理写入与显式排除，或累计审计不完整");
 
-            Assert(coordinator.Enqueue(NewBatchAt("Dev1", 753, cutoff.AddTicks(2))),
+            using var stopSnapshotReader = new ManualResetEventSlim(false);
+            var activeIdentityReads = 0;
+            var inconsistentIdentityReads = 0;
+            var snapshotReader = Task.Factory.StartNew(
+                () =>
+                {
+                    while (!stopSnapshotReader.IsSet)
+                    {
+                        var current = coordinator.GetSnapshot("Dev1");
+                        if (current.SuppressThroughSequence == 0) continue;
+                        Interlocked.Increment(ref activeIdentityReads);
+                        if (current.CorrelationId != correlationId ||
+                            current.RunId != runId ||
+                            current.RunEpoch != runEpoch)
+                            Interlocked.Increment(ref inconsistentIdentityReads);
+                    }
+                },
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default);
+            Assert(SpinWait.SpinUntil(
+                    () => Volatile.Read(ref activeIdentityReads) >= 10,
+                    1000),
+                "并发快照读取未覆盖有限抑制窗口关闭前状态");
+            var closingProducer = Task.Run(() =>
+                coordinator.Enqueue(NewBatchAt("Dev1", 753, cutoff.AddTicks(2))));
+            Assert(closingProducer.Wait(2000) && closingProducer.Result,
                 "恢复准入后批次未入队");
+            stopSnapshotReader.Set();
+            Assert(snapshotReader.Wait(2000), "并发抑制身份快照读取未退出");
+            Assert(Volatile.Read(ref inconsistentIdentityReads) == 0,
+                "并发关闭有限抑制窗口时暴露了无Correlation/Run身份的活动窗口");
             WaitUntil(() => recorder.Count == 2, 2000,
                 "恢复准入后批次未写入");
             Assert(recorder.SequenceEqual(751, 753),
@@ -781,6 +838,9 @@ namespace AdaptiveControlTests
             Assert(resumed.Sequence == 753 &&
                    resumed.SuppressAfterSequence == 0 &&
                    resumed.SuppressThroughSequence == 0 &&
+                   resumed.CorrelationId == Guid.Empty &&
+                   resumed.RunId == Guid.Empty &&
+                   resumed.RunEpoch == 0 &&
                    resumed.CumulativeSuppressedBatchCount == 1 &&
                    resumed.SuppressedRangeCount == 1,
                 "新一轮真实写入清除了历史排除审计，或未推进物理写入水位");

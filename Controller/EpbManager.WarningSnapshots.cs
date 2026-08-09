@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
@@ -17,6 +18,306 @@ using IO.NI;
 
 namespace Controller
 {
+    internal sealed class DaqIncidentEvidenceSubmission
+    {
+        internal string ContextKey;
+        internal Guid RunId;
+        internal Guid CorrelationId;
+        internal string Device;
+        internal DateTime StartedUtc;
+        internal string PhaseKey;
+        internal string PhaseDirectoryName;
+        internal string IncidentJson;
+        internal bool IsTrigger;
+        internal bool IsTerminal;
+        internal Action<string> WriteHeavyEvidence;
+    }
+
+    internal sealed class DaqIncidentEvidenceBatch
+    {
+        internal DaqIncidentEvidenceSubmission Trigger;
+        internal DaqIncidentEvidenceSubmission[] Derived = Array.Empty<DaqIncidentEvidenceSubmission>();
+        internal DaqIncidentEvidenceSubmission Terminal;
+
+        internal DaqIncidentEvidenceSubmission[] OrderedSubmissions()
+        {
+            return (Trigger == null
+                    ? Enumerable.Empty<DaqIncidentEvidenceSubmission>()
+                    : new[] { Trigger })
+                .Concat(Derived ?? Array.Empty<DaqIncidentEvidenceSubmission>())
+                .Concat(Terminal == null
+                    ? Enumerable.Empty<DaqIncidentEvidenceSubmission>()
+                    : new[] { Terminal })
+                .ToArray();
+        }
+    }
+
+    /// <summary>
+    /// DAQ 事故取证的根上下文聚合队列。容量核复用 WarningSnapshotWorkGate：
+    /// 全局最多一个运行任务和一个等待任务；同一根事故的派生症状只合并状态，
+    /// 不为每个 phase 创建 Task。trigger/terminal 各自至多导出一次。
+    /// </summary>
+    internal sealed class DaqIncidentEvidenceQueue
+    {
+        private sealed class RootState
+        {
+            private readonly object _gate = new();
+            private readonly HashSet<string> _phases = new(StringComparer.OrdinalIgnoreCase);
+            private readonly List<DaqIncidentEvidenceSubmission> _derived = new();
+            private int _exportedDerivedCount;
+            private DaqIncidentEvidenceSubmission _trigger;
+            private DaqIncidentEvidenceSubmission _terminal;
+            private bool _triggerExported;
+            private bool _terminalExported;
+
+            internal RootState(string key) { Key = key; }
+            internal string Key { get; }
+            internal int QueuedOrRunning;
+
+            internal bool Merge(DaqIncidentEvidenceSubmission submission)
+            {
+                lock (_gate)
+                {
+                    if (_terminalExported) return false;
+                    var phase = (submission.PhaseKey ?? string.Empty).Trim();
+                    if (phase.Length == 0) return false;
+                    if (_phases.Contains(phase)) return true;
+                    // terminal 注册后根事故已经冻结；迟到派生症状不得写在终态之后。
+                    if (_terminal != null && !submission.IsTerminal) return false;
+
+                    if (submission.IsTrigger)
+                    {
+                        if (_trigger != null) return true;
+                        _trigger = submission;
+                    }
+                    else if (submission.IsTerminal)
+                    {
+                        if (_terminal != null) return true;
+                        _terminal = submission;
+                    }
+                    else
+                    {
+                        _derived.Add(submission);
+                    }
+                    _phases.Add(phase);
+                    return true;
+                }
+            }
+
+            internal bool HasQueueableWork
+            {
+                get
+                {
+                    lock (_gate)
+                        return (!_triggerExported && _trigger != null) ||
+                               (!_terminalExported && _terminal != null);
+                }
+            }
+
+            internal bool IsComplete
+            {
+                get { lock (_gate) return _terminalExported; }
+            }
+
+            internal DaqIncidentEvidenceBatch Snapshot()
+            {
+                lock (_gate)
+                {
+                    var trigger = _triggerExported ? null : _trigger;
+                    var terminal = _terminalExported ? null : _terminal;
+                    var derived = _derived.Skip(_exportedDerivedCount).ToArray();
+                    if (trigger == null && terminal == null && derived.Length == 0) return null;
+                    return new DaqIncidentEvidenceBatch
+                    {
+                        Trigger = trigger,
+                        Derived = derived,
+                        Terminal = terminal
+                    };
+                }
+            }
+
+            internal void Commit(DaqIncidentEvidenceBatch batch)
+            {
+                if (batch == null) return;
+                lock (_gate)
+                {
+                    if (batch.Trigger != null && ReferenceEquals(batch.Trigger, _trigger))
+                        _triggerExported = true;
+                    _exportedDerivedCount = Math.Min(
+                        _derived.Count,
+                        _exportedDerivedCount + (batch.Derived?.Length ?? 0));
+                    if (batch.Terminal != null && ReferenceEquals(batch.Terminal, _terminal))
+                        _terminalExported = true;
+                }
+            }
+        }
+
+        private readonly WarningSnapshotWorkGate _capacity = new();
+        private readonly ConcurrentDictionary<string, RootState> _contexts =
+            new(StringComparer.OrdinalIgnoreCase);
+        private readonly ConcurrentQueue<RootState> _queue = new();
+        private readonly Action<DaqIncidentEvidenceBatch> _export;
+        private readonly Action<Task> _observeWorker;
+        private readonly Action<Exception> _reportFailure;
+        private int _workerRunning;
+        private int _workerStartCount;
+
+        internal DaqIncidentEvidenceQueue(
+            Action<DaqIncidentEvidenceBatch> export,
+            Action<Task> observeWorker = null,
+            Action<Exception> reportFailure = null)
+        {
+            _export = export ?? throw new ArgumentNullException(nameof(export));
+            _observeWorker = observeWorker;
+            _reportFailure = reportFailure;
+        }
+
+        internal int RunningCount => _capacity.RunningCount;
+        internal int PendingCount => _capacity.PendingCount;
+        internal int ActiveJobCount => _capacity.ActiveJobCount;
+        internal int ContextCount => _contexts.Count;
+        internal int WorkerStartCount => Volatile.Read(ref _workerStartCount);
+
+        internal bool Submit(DaqIncidentEvidenceSubmission submission)
+        {
+            if (submission == null || string.IsNullOrWhiteSpace(submission.ContextKey)) return false;
+            var created = false;
+            RootState state;
+            while (!_contexts.TryGetValue(submission.ContextKey, out state))
+            {
+                if (!submission.IsTrigger) return false;
+                var candidate = new RootState(submission.ContextKey);
+                if (!_contexts.TryAdd(submission.ContextKey, candidate)) continue;
+                state = candidate;
+                created = true;
+                break;
+            }
+
+            if (!state.Merge(submission))
+            {
+                if (created) _contexts.TryRemove(submission.ContextKey, out _);
+                return false;
+            }
+            if (!submission.IsTrigger && !submission.IsTerminal) return true;
+            if (EnsureQueued(state)) return true;
+            if (created)
+            {
+                _contexts.TryRemove(submission.ContextKey, out _);
+                return false;
+            }
+            // 已获准的根事故绝不能因全局 pending 槽短暂占满而丢 terminal；
+            // 唯一 worker 在当前工作完成后会扫描并补排，不创建额外 Task。
+            return true;
+        }
+
+        internal async Task<bool> DrainAsync(int timeoutMs)
+        {
+            var deadline = Stopwatch.GetTimestamp() +
+                           (long)(Math.Max(1, timeoutMs) / 1000d * Stopwatch.Frequency);
+            while (true)
+            {
+                // 未提交 terminal 的根事故也属于未收口状态；关闭 drain 必须在时限内
+                // 明确返回 false，不能把仍仅含 trigger/derived 的 manifest 当作已完成。
+                if (_contexts.IsEmpty && _queue.IsEmpty &&
+                    Volatile.Read(ref _workerRunning) == 0 &&
+                    _capacity.ActiveJobCount == 0)
+                    return true;
+                var remainingMs = (deadline - Stopwatch.GetTimestamp()) * 1000d /
+                                  Stopwatch.Frequency;
+                if (remainingMs <= 0) return false;
+                await Task.Delay((int)Math.Min(10d, Math.Max(1d, remainingMs)))
+                    .ConfigureAwait(false);
+            }
+        }
+
+        private bool EnsureQueued(RootState state)
+        {
+            if (state == null || !state.HasQueueableWork) return true;
+            if (Interlocked.CompareExchange(ref state.QueuedOrRunning, 1, 0) != 0) return true;
+            if (!_capacity.TryQueue(
+                    state.Key,
+                    state.Key,
+                    DateTime.UtcNow,
+                    minimumIntervalSeconds: 0,
+                    pendingCapacity: 1))
+            {
+                Interlocked.Exchange(ref state.QueuedOrRunning, 0);
+                return false;
+            }
+            _queue.Enqueue(state);
+            StartWorker();
+            return true;
+        }
+
+        private void StartWorker()
+        {
+            if (Interlocked.CompareExchange(ref _workerRunning, 1, 0) != 0) return;
+            Interlocked.Increment(ref _workerStartCount);
+            var worker = Task.Factory.StartNew(
+                ProcessQueue,
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default);
+            try { _observeWorker?.Invoke(worker); }
+            catch { /* 观察增强不得破坏有界 worker。 */ }
+        }
+
+        private void ProcessQueue()
+        {
+            try
+            {
+                while (_queue.TryDequeue(out var state))
+                {
+                    if (!_capacity.TryStart(state.Key))
+                    {
+                        _queue.Enqueue(state);
+                        Thread.Yield();
+                        continue;
+                    }
+
+                    var exported = false;
+                    try
+                    {
+                        var batch = state.Snapshot();
+                        if (batch != null) _export(batch);
+                        state.Commit(batch);
+                        exported = true;
+                    }
+                    catch (Exception ex)
+                    {
+                        try { _reportFailure?.Invoke(ex); } catch { }
+                    }
+                    finally
+                    {
+                        _capacity.Complete(state.Key);
+                        Interlocked.Exchange(ref state.QueuedOrRunning, 0);
+                    }
+
+                    if (state.IsComplete)
+                        _contexts.TryRemove(state.Key, out _);
+                    else if (exported && state.HasQueueableWork)
+                        EnsureQueued(state);
+                    ScheduleWaitingContexts(exported ? null : state);
+                }
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _workerRunning, 0);
+                if (!_queue.IsEmpty) StartWorker();
+            }
+        }
+
+        private void ScheduleWaitingContexts(RootState excluded)
+        {
+            foreach (var state in _contexts.Values)
+            {
+                if (_capacity.PendingCount >= 1) return;
+                if (ReferenceEquals(state, excluded)) continue;
+                if (state.HasQueueableWork) EnsureQueued(state);
+            }
+        }
+    }
+
     public sealed partial class EpbManager
     {
         public event Action<AdaptiveWarningEvent> ChannelWarningEvidenceRaised;
@@ -34,7 +335,8 @@ namespace Controller
         private readonly ConcurrentDictionary<int, int> _formalPersistenceRecoveryAttempts = new();
         private readonly ConcurrentDictionary<int, int> _formalControlRecoveryAttempts = new();
         private readonly ConcurrentDictionary<int, int> _formalPersistenceRecoveryPendingCycles = new();
-        private readonly SemaphoreSlim _daqIncidentSnapshotGate = new(1, 1);
+        private readonly object _daqIncidentEvidenceQueueInitGate = new();
+        private DaqIncidentEvidenceQueue _daqIncidentEvidenceQueue;
         private int _warningSnapshotFreeSpaceWarningActive;
         private int _warningSnapshotWorkerRunning;
         private int _warningScalarWorkerRunning;
@@ -574,7 +876,26 @@ namespace Controller
             return workReturnedSuccess && currentOutcomeSucceeded;
         }
 
-        private async Task ExportDaqIncidentSnapshotAsync(
+        private void SubmitDaqIncidentSnapshot(
+            DaqAutoRecoveryContext context,
+            string reason,
+            string result)
+        {
+            try
+            {
+                SubmitDaqIncidentSnapshotCore(context, reason, result);
+            }
+            catch (Exception ex)
+            {
+                _log.Error(
+                    $"DAQ事故取证提交失败：Phase={result} Device={context?.Device} " +
+                    $"CorrelationId={context?.CorrelationId:N} Error={ex.Message}",
+                    "落盘",
+                    ex);
+            }
+        }
+
+        private void SubmitDaqIncidentSnapshotCore(
             DaqAutoRecoveryContext context,
             string reason,
             string result)
@@ -583,8 +904,7 @@ namespace Controller
             var phaseKey = string.IsNullOrWhiteSpace(result) ? "phase" : result.Trim();
             if (!context.SnapshotPhases.TryAdd(phaseKey, 0)) return;
             // Only cheap scalar state is frozen on the caller. Full diagnostic/cycle evidence
-            // is captured once at a terminal phase and serialized on a background gate; taking
-            // four full snapshots during recovery caused an allocation storm in the field.
+            // is captured by the bounded incident worker; recovery only submits immutable data.
             var capturedUtc = DateTime.UtcNow;
             var includeFullEvidence = ShouldIncludeFullDaqIncidentEvidence(result);
             var includeTimingEvidence = ShouldIncludeDaqTimingEvidence(result);
@@ -595,7 +915,7 @@ namespace Controller
             var queue = _persistence.GetSnapshot(context.Device);
             var runEpoch = context.RunEpoch;
             var recoveryEpoch = context.RecoveryEpoch;
-            var runId = _activeBatchId;
+            var runId = context.RunId == Guid.Empty ? _activeBatchId : context.RunId;
             var beforeClock = context.BeforeClock ?? new DaqFreshnessSnapshot();
             var afterClock = context.AfterClock ?? _acq.GetDaqFreshnessSnapshot(context.Device, 100);
             var generation = _acq.GetCurrentGeneration(context.Device);
@@ -621,116 +941,95 @@ namespace Controller
                 $"\"protection\":{state.ProtectionTripped.ToString().ToLowerInvariant()}," +
                 $"\"telemetryUtc\":\"{state.TelemetryUtc:O}\"" + "}"));
             var sequence = Interlocked.Increment(ref context.SnapshotSequence);
-            await Task.Run(() =>
+            var requiredFresh = string.Equals(
+                context.TriggerCode,
+                "DaqClockModelInvalid",
+                StringComparison.OrdinalIgnoreCase)
+                ? _daqClockRecoveryFreshBatches
+                : _daqPersistenceRequiredFreshBatches;
+            var incidentJson =
+                "{\n" +
+                $"  \"device\": \"{JsonEscape(context.Device)}\",\n" +
+                $"  \"correlationId\": \"{context.CorrelationId:N}\",\n" +
+                $"  \"runId\": \"{runId:N}\",\n" +
+                $"  \"runEpoch\": {runEpoch},\n" +
+                $"  \"recoveryEpoch\": {recoveryEpoch},\n" +
+                $"  \"faultCode\": \"{JsonEscape(context.TriggerCode)}\",\n" +
+                $"  \"reason\": \"{JsonEscape(reason)}\",\n" +
+                $"  \"generation\": {generation},\n" +
+                $"  \"previousGeneration\": {previousGeneration},\n" +
+                $"  \"recoveredGeneration\": {recoveredGeneration},\n" +
+                $"  \"firstVerifiedSequence\": {firstVerifiedSequence},\n" +
+                $"  \"lastVerifiedSequence\": {lastVerifiedSequence},\n" +
+                $"  \"recoveryAttempt\": {recoveryAttempt},\n" +
+                $"  \"clockRecoveryMaxAttempts\": {_daqClockRecoveryMaxAttempts},\n" +
+                $"  \"clockRecoveryWindowMinutes\": {_daqClockRecoveryWindowMinutes},\n" +
+                $"  \"beforeClockState\": \"{beforeClock.ClockState}\",\n" +
+                $"  \"beforeSampleRateHz\": {beforeClock.EffectiveSampleRateHz.ToString("F6", CultureInfo.InvariantCulture)},\n" +
+                $"  \"beforeSkewPpm\": {beforeClock.EstimatedSkewPpm.ToString("F3", CultureInfo.InvariantCulture)},\n" +
+                $"  \"beforeResidualMs\": {beforeClock.ClockResidualMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
+                $"  \"beforeCallbackAgeMs\": {beforeClock.CallbackAgeMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
+                $"  \"beforeControlEnqueueAgeMs\": {beforeClock.ControlEnqueueAgeMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
+                $"  \"beforeControlProcessedAgeMs\": {beforeClock.ControlProcessedAgeMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
+                $"  \"beforeSampleAgeMs\": {beforeClock.AgeMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
+                $"  \"beforeProcessedSampleUtc\": \"{beforeClock.ProcessedSampleUtc:O}\",\n" +
+                $"  \"afterClockState\": \"{afterClock.ClockState}\",\n" +
+                $"  \"afterSampleRateHz\": {afterClock.EffectiveSampleRateHz.ToString("F6", CultureInfo.InvariantCulture)},\n" +
+                $"  \"afterSkewPpm\": {afterClock.EstimatedSkewPpm.ToString("F3", CultureInfo.InvariantCulture)},\n" +
+                $"  \"afterResidualMs\": {afterClock.ClockResidualMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
+                $"  \"afterCallbackAgeMs\": {afterClock.CallbackAgeMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
+                $"  \"afterControlEnqueueAgeMs\": {afterClock.ControlEnqueueAgeMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
+                $"  \"afterControlProcessedAgeMs\": {afterClock.ControlProcessedAgeMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
+                $"  \"afterSampleAgeMs\": {afterClock.AgeMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
+                $"  \"afterProcessedSampleUtc\": \"{afterClock.ProcessedSampleUtc:O}\",\n" +
+                $"  \"queueDepth\": {queue.QueueDepth},\n" +
+                $"  \"oldestBatchAgeMs\": {queue.OldestBatchAgeMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
+                $"  \"affectedChannels\": [{string.Join(",", affectedChannels)}],\n" +
+                $"  \"powerStates\": [{powerStatesJson}],\n" +
+                $"  \"processingQueueCapacity\": {_acq.ProcessingQueueCapacity},\n" +
+                $"  \"persistenceQueueCapacity\": {_daqPersistenceQueueCapacity},\n" +
+                $"  \"pauseDepth\": {_daqPersistencePauseDepth},\n" +
+                $"  \"resumeDepth\": {_daqPersistenceResumeDepth},\n" +
+                $"  \"pauseAgeMs\": {_daqPersistencePauseAgeMs.ToString("F0", CultureInfo.InvariantCulture)},\n" +
+                $"  \"resumeAgeMs\": {_daqPersistenceResumeAgeMs.ToString("F0", CultureInfo.InvariantCulture)},\n" +
+                $"  \"recoveryTimeoutMs\": {_daqPersistenceRecoveryTimeoutMs},\n" +
+                $"  \"requiredFreshBatches\": {requiredFresh},\n" +
+                $"  \"suppressedBatches\": {queue.SuppressedBatchCount},\n" +
+                $"  \"cumulativeSuppressedBatches\": {queue.CumulativeSuppressedBatchCount},\n" +
+                $"  \"lastTerminallyHandledSequence\": {queue.LastTerminallyHandledSequence},\n" +
+                $"  \"suppressAfterSequence\": {queue.SuppressAfterSequence},\n" +
+                $"  \"suppressThroughSequence\": {queue.SuppressThroughSequence},\n" +
+                $"  \"firstSuppressedSequence\": {queue.FirstSuppressedSequence},\n" +
+                $"  \"lastSuppressedSequence\": {queue.LastSuppressedSequence},\n" +
+                $"  \"suppressedRangeCount\": {queue.SuppressedRangeCount},\n" +
+                $"  \"discardedGenerationBatches\": {queue.DiscardedGenerationBatchCount},\n" +
+                $"  \"validationPhase\": \"{JsonEscape(context.ValidationPhase)}\",\n" +
+                $"  \"timingEvidenceIncluded\": {includeTimingEvidence.ToString().ToLowerInvariant()},\n" +
+                $"  \"fullEvidenceIncluded\": {includeFullEvidence.ToString().ToLowerInvariant()},\n" +
+                $"  \"recentCycleCopiesIncluded\": {includeRecentCycleCopies.ToString().ToLowerInvariant()},\n" +
+                "  \"validBatchesDroppedByClockModel\": 0,\n" +
+                $"  \"result\": \"{JsonEscape(result)}\",\n" +
+                $"  \"capturedUtc\": \"{capturedUtc:O}\"\n" +
+                "}\n";
+            var isTrigger = phaseKey.StartsWith("00-trigger", StringComparison.OrdinalIgnoreCase);
+            var isTerminal = phaseKey.StartsWith("90-", StringComparison.OrdinalIgnoreCase);
+            var safePhase = string.Concat(phaseKey
+                .Select(ch => char.IsLetterOrDigit(ch) || ch == '-' ? ch : '_'));
+            var recorder = includeRecentCycleCopies ? Recorder : null;
+            // CaptureDiagnostics 只做有界 ring 的内存快照，不触碰文件。必须在 Submit
+            // 时冻结，否则前一份证据写盘稍慢就会让 trigger 前 10 秒记录被 ring 覆盖。
+            var frozenDiagnostics = includeTimingEvidence
+                ? _acq.CaptureDiagnostics(
+                    new[] { context.Device },
+                    includeFullEvidence ? TimeSpan.FromSeconds(60) : TimeSpan.FromSeconds(10))
+                : null;
+            Action<string> writeHeavyEvidence = null;
+            if (includeTimingEvidence)
             {
-                _daqIncidentSnapshotGate.Wait();
-                try
+                writeHeavyEvidence = phaseDirectory =>
                 {
-                    var diagnostics = includeTimingEvidence
-                        ? _acq.CaptureDiagnostics(
-                            new[] { context.Device },
-                            includeFullEvidence ? TimeSpan.FromSeconds(60) : TimeSpan.FromSeconds(10))
-                        : null;
-                    var root = Path.Combine(
-                        _cfg.Test.StoreDir,
-                        _cfg.Test.TestName,
-                        "IncidentSnapshots");
-                    Directory.CreateDirectory(root);
-                    var directory = _daqIncidentDirectories.GetOrAdd(
-                        context.CorrelationId,
-                        _ => Path.Combine(
-                            root,
-                            $"{context.StartedUtc.ToLocalTime():yyyyMMdd_HHmmss_fff}-" +
-                            $"{context.Device}-{context.CorrelationId:N}"));
-                    Directory.CreateDirectory(directory);
-                    var safePhase = string.Concat((result ?? "phase")
-                        .Select(ch => char.IsLetterOrDigit(ch) || ch == '-' ? ch : '_'));
-                    var phaseDirectory = Path.Combine(
-                        directory,
-                        $"{safePhase}-{sequence:D3}-{capturedUtc:HHmmss_fff}");
-                    Directory.CreateDirectory(phaseDirectory);
-                    var requiredFresh = string.Equals(
-                        context.TriggerCode,
-                        "DaqClockModelInvalid",
-                        StringComparison.OrdinalIgnoreCase)
-                        ? _daqClockRecoveryFreshBatches
-                        : _daqPersistenceRequiredFreshBatches;
-                    var incidentJson =
-                        "{\n" +
-                        $"  \"device\": \"{JsonEscape(context.Device)}\",\n" +
-                        $"  \"correlationId\": \"{context.CorrelationId:N}\",\n" +
-                        $"  \"runId\": \"{runId:N}\",\n" +
-                        $"  \"runEpoch\": {runEpoch},\n" +
-                        $"  \"recoveryEpoch\": {recoveryEpoch},\n" +
-                        $"  \"faultCode\": \"{JsonEscape(context.TriggerCode)}\",\n" +
-                        $"  \"reason\": \"{JsonEscape(reason)}\",\n" +
-                        $"  \"generation\": {generation},\n" +
-                        $"  \"previousGeneration\": {previousGeneration},\n" +
-                        $"  \"recoveredGeneration\": {recoveredGeneration},\n" +
-                        $"  \"firstVerifiedSequence\": {firstVerifiedSequence},\n" +
-                        $"  \"lastVerifiedSequence\": {lastVerifiedSequence},\n" +
-                        $"  \"recoveryAttempt\": {recoveryAttempt},\n" +
-                        $"  \"clockRecoveryMaxAttempts\": {_daqClockRecoveryMaxAttempts},\n" +
-                        $"  \"clockRecoveryWindowMinutes\": {_daqClockRecoveryWindowMinutes},\n" +
-                        $"  \"beforeClockState\": \"{beforeClock.ClockState}\",\n" +
-                        $"  \"beforeSampleRateHz\": {beforeClock.EffectiveSampleRateHz.ToString("F6", CultureInfo.InvariantCulture)},\n" +
-                        $"  \"beforeSkewPpm\": {beforeClock.EstimatedSkewPpm.ToString("F3", CultureInfo.InvariantCulture)},\n" +
-                        $"  \"beforeResidualMs\": {beforeClock.ClockResidualMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
-                        $"  \"beforeCallbackAgeMs\": {beforeClock.CallbackAgeMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
-                        $"  \"beforeControlEnqueueAgeMs\": {beforeClock.ControlEnqueueAgeMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
-                        $"  \"beforeControlProcessedAgeMs\": {beforeClock.ControlProcessedAgeMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
-                        $"  \"beforeSampleAgeMs\": {beforeClock.AgeMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
-                        $"  \"beforeProcessedSampleUtc\": \"{beforeClock.ProcessedSampleUtc:O}\",\n" +
-                        $"  \"afterClockState\": \"{afterClock.ClockState}\",\n" +
-                        $"  \"afterSampleRateHz\": {afterClock.EffectiveSampleRateHz.ToString("F6", CultureInfo.InvariantCulture)},\n" +
-                        $"  \"afterSkewPpm\": {afterClock.EstimatedSkewPpm.ToString("F3", CultureInfo.InvariantCulture)},\n" +
-                        $"  \"afterResidualMs\": {afterClock.ClockResidualMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
-                        $"  \"afterCallbackAgeMs\": {afterClock.CallbackAgeMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
-                        $"  \"afterControlEnqueueAgeMs\": {afterClock.ControlEnqueueAgeMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
-                        $"  \"afterControlProcessedAgeMs\": {afterClock.ControlProcessedAgeMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
-                        $"  \"afterSampleAgeMs\": {afterClock.AgeMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
-                        $"  \"afterProcessedSampleUtc\": \"{afterClock.ProcessedSampleUtc:O}\",\n" +
-                        $"  \"queueDepth\": {queue.QueueDepth},\n" +
-                        $"  \"oldestBatchAgeMs\": {queue.OldestBatchAgeMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
-                        $"  \"affectedChannels\": [{string.Join(",", affectedChannels)}],\n" +
-                        $"  \"powerStates\": [{powerStatesJson}],\n" +
-                        $"  \"processingQueueCapacity\": {_acq.ProcessingQueueCapacity},\n" +
-                        $"  \"persistenceQueueCapacity\": {_daqPersistenceQueueCapacity},\n" +
-                        $"  \"pauseDepth\": {_daqPersistencePauseDepth},\n" +
-                        $"  \"resumeDepth\": {_daqPersistenceResumeDepth},\n" +
-                        $"  \"pauseAgeMs\": {_daqPersistencePauseAgeMs.ToString("F0", CultureInfo.InvariantCulture)},\n" +
-                        $"  \"resumeAgeMs\": {_daqPersistenceResumeAgeMs.ToString("F0", CultureInfo.InvariantCulture)},\n" +
-                        $"  \"recoveryTimeoutMs\": {_daqPersistenceRecoveryTimeoutMs},\n" +
-                        $"  \"requiredFreshBatches\": {requiredFresh},\n" +
-                        $"  \"suppressedBatches\": {queue.SuppressedBatchCount},\n" +
-                        $"  \"cumulativeSuppressedBatches\": {queue.CumulativeSuppressedBatchCount},\n" +
-                        $"  \"lastTerminallyHandledSequence\": {queue.LastTerminallyHandledSequence},\n" +
-                        $"  \"suppressAfterSequence\": {queue.SuppressAfterSequence},\n" +
-                        $"  \"suppressThroughSequence\": {queue.SuppressThroughSequence},\n" +
-                        $"  \"firstSuppressedSequence\": {queue.FirstSuppressedSequence},\n" +
-                        $"  \"lastSuppressedSequence\": {queue.LastSuppressedSequence},\n" +
-                        $"  \"suppressedRangeCount\": {queue.SuppressedRangeCount},\n" +
-                        $"  \"discardedGenerationBatches\": {queue.DiscardedGenerationBatchCount},\n" +
-                        $"  \"validationPhase\": \"{JsonEscape(context.ValidationPhase)}\",\n" +
-                        $"  \"timingEvidenceIncluded\": {includeTimingEvidence.ToString().ToLowerInvariant()},\n" +
-                        $"  \"fullEvidenceIncluded\": {includeFullEvidence.ToString().ToLowerInvariant()},\n" +
-                        $"  \"recentCycleCopiesIncluded\": {includeRecentCycleCopies.ToString().ToLowerInvariant()},\n" +
-                        "  \"validBatchesDroppedByClockModel\": 0,\n" +
-                        $"  \"result\": \"{JsonEscape(result)}\",\n" +
-                        $"  \"capturedUtc\": \"{capturedUtc:O}\"\n" +
-                        "}\n";
-                    using (var stream = new FileStream(
-                               Path.Combine(phaseDirectory, "incident.json"),
-                               FileMode.CreateNew,
-                               FileAccess.Write,
-                               FileShare.Read))
-                    using (var writer = new StreamWriter(stream, new UTF8Encoding(false)))
-                        writer.Write(incidentJson);
-                    var buildIdentity = _daqIncidentBuildIdentity ??
-                                        (_daqIncidentBuildIdentity = RuntimeBuildIdentity.Capture());
-                    buildIdentity.WriteJson(Path.Combine(phaseDirectory, "build-identity.json"));
-                    diagnostics?.WriteTo(phaseDirectory);
-                    var recorder = includeRecentCycleCopies ? Recorder : null;
+                    // worker 只序列化已经冻结的证据，绝不重新读取实时 ring。
+                    frozenDiagnostics?.WriteTo(phaseDirectory);
                     if (recorder != null)
                     {
                         foreach (var channel in affectedChannels)
@@ -741,16 +1040,30 @@ namespace Controller
                             catch (Exception ex) { _log.Warn($"Incident EPB[{channel}] 证据导出失败：{ex.Message}", "落盘"); }
                         }
                     }
-                }
-                catch (Exception ex)
-                {
-                    _log.Error($"DAQ IncidentSnapshot 导出失败：{ex.Message}", "落盘", ex);
-                }
-                finally
-                {
-                    _daqIncidentSnapshotGate.Release();
-                }
-            }).ConfigureAwait(false);
+                };
+            }
+
+            var submission = new DaqIncidentEvidenceSubmission
+            {
+                ContextKey = DaqIncidentEvidenceContextKey(runId, context.CorrelationId),
+                RunId = runId,
+                CorrelationId = context.CorrelationId,
+                Device = context.Device,
+                StartedUtc = context.StartedUtc,
+                PhaseKey = phaseKey,
+                PhaseDirectoryName = isTrigger || isTerminal
+                    ? $"{safePhase}-{sequence:D3}-{capturedUtc:HHmmss_fff}"
+                    : null,
+                IncidentJson = incidentJson,
+                IsTrigger = isTrigger,
+                IsTerminal = isTerminal,
+                WriteHeavyEvidence = writeHeavyEvidence
+            };
+            if (!GetDaqIncidentEvidenceQueue().Submit(submission))
+                _log.Error(
+                    $"DAQ事故取证有界门拒绝提交：Phase={phaseKey} Device={context.Device} " +
+                    $"RunId={runId:N} CorrelationId={context.CorrelationId:N}",
+                    "落盘");
         }
 
         internal static bool ShouldIncludeFullDaqIncidentEvidence(string phase)
@@ -765,12 +1078,30 @@ namespace Controller
                    value.StartsWith("90-", StringComparison.OrdinalIgnoreCase);
         }
 
-        private async Task ExportDaqHardFaultIncidentSnapshotAsync(
+        private void SubmitDaqHardFaultIncidentSnapshot(
+            DaqIncidentContext initialContext,
+            DaqDeviceFault evidence)
+        {
+            try
+            {
+                SubmitDaqHardFaultIncidentSnapshotCore(initialContext, evidence);
+            }
+            catch (Exception ex)
+            {
+                _log.Error(
+                    $"DAQ硬故障事故取证提交失败：Device={initialContext?.Device} " +
+                    $"CorrelationId={initialContext?.CorrelationId:N} Error={ex.Message}",
+                    "落盘",
+                    ex);
+            }
+        }
+
+        private void SubmitDaqHardFaultIncidentSnapshotCore(
             DaqIncidentContext initialContext,
             DaqDeviceFault evidence)
         {
             if (initialContext == null) return;
-            // 触发线程立即冻结所有可变证据；后台只消费冻结副本。
+            // 触发线程只冻结标量；硬件确认的 trigger/terminal 和重证据同样经过全局门。
             var context = initialContext.Clone();
             var capturedUtc = DateTime.UtcNow;
             var control = _acq.GetControlSnapshot(context.Device);
@@ -788,85 +1119,292 @@ namespace Controller
                 $"\"planned\":{state.PlannedTransition.ToString().ToLowerInvariant()}," +
                 $"\"telemetryOn\":{state.TelemetryOutputEnabled.ToString().ToLowerInvariant()}," +
                 $"\"protection\":{state.ProtectionTripped.ToString().ToLowerInvariant()}" + "}"));
-            var diagnostics = _acq.CaptureDiagnostics(
+            var affectedChannels = context.AffectedChannels ?? Array.Empty<int>();
+            var derivedCodes = context.DerivedCodes
+                .OrderBy(code => code, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var derivedCodesJson = derivedCodes.Select(code => $"\"{JsonEscape(code)}\"");
+            var contextKey = DaqIncidentEvidenceContextKey(context.RunId, context.CorrelationId);
+            var triggerJson = "{\n" +
+                $"  \"runId\": \"{context.RunId:N}\",\n" +
+                $"  \"device\": \"{JsonEscape(context.Device)}\",\n" +
+                $"  \"generation\": {context.Generation},\n" +
+                $"  \"correlationId\": \"{context.CorrelationId:N}\",\n" +
+                $"  \"runEpoch\": {runEpoch},\n" +
+                $"  \"faultCode\": \"{JsonEscape(context.PrimaryCode)}\",\n" +
+                $"  \"reason\": \"{JsonEscape(context.PrimaryReason)}\",\n" +
+                $"  \"affectedChannels\": [{string.Join(",", affectedChannels)}],\n" +
+                $"  \"timingEvidenceIncluded\": true,\n" +
+                $"  \"fullEvidenceIncluded\": false,\n" +
+                $"  \"recentCycleCopiesIncluded\": false,\n" +
+                $"  \"result\": \"00-trigger\",\n" +
+                $"  \"capturedUtc\": \"{capturedUtc:O}\"\n" +
+                "}\n";
+            var terminalJson = "{\n" +
+                $"  \"runId\": \"{context.RunId:N}\",\n" +
+                $"  \"device\": \"{JsonEscape(context.Device)}\",\n" +
+                $"  \"generation\": {context.Generation},\n" +
+                $"  \"correlationId\": \"{context.CorrelationId:N}\",\n" +
+                $"  \"runEpoch\": {runEpoch},\n" +
+                $"  \"primaryFault\": \"{JsonEscape(context.PrimaryCode)}\",\n" +
+                $"  \"primaryReason\": \"{JsonEscape(context.PrimaryReason)}\",\n" +
+                $"  \"primaryChannel\": {context.PrimaryChannel},\n" +
+                $"  \"affectedChannels\": [{string.Join(",", affectedChannels)}],\n" +
+                $"  \"powerStates\": [{powerStatesJson}],\n" +
+                $"  \"derivedActions\": [{string.Join(",", derivedCodesJson)}],\n" +
+                $"  \"firstSeenUtc\": \"{context.FirstSeenUtc:O}\",\n" +
+                $"  \"lastSeenUtc\": \"{context.LastSeenUtc:O}\",\n" +
+                $"  \"controlQueueType\": \"{JsonEscape(control?.QueueType ?? evidence?.QueueType ?? "PreallocatedSpscRing")}\",\n" +
+                $"  \"controlQueueCapacity\": {control?.QueueCapacity ?? evidence?.QueueCapacity ?? 0},\n" +
+                $"  \"controlQueueDepth\": {control?.QueueDepth ?? evidence?.QueueDepth ?? 0},\n" +
+                $"  \"oldestControlBatchAgeMs\": {(control?.OldestBatchAgeMs ?? evidence?.OldestBatchAgeMs ?? 0).ToString("F3", CultureInfo.InvariantCulture)},\n" +
+                $"  \"lastControlProcessingMs\": {(control?.LastBatchProcessMs ?? 0).ToString("F3", CultureInfo.InvariantCulture)},\n" +
+                $"  \"subscriberMaxMs\": {(control?.SubscriberMaxMs ?? 0).ToString("F3", CultureInfo.InvariantCulture)},\n" +
+                $"  \"lastProcessedSampleUtc\": \"{(control?.ProcessedSampleUtc ?? evidence?.LastProcessedSampleUtc ?? default):O}\",\n" +
+                $"  \"capturedUtc\": \"{capturedUtc:O}\"\n" +
+                "}\n";
+
+            var incidentQueue = GetDaqIncidentEvidenceQueue();
+            var frozenTriggerDiagnostics = _acq.CaptureDiagnostics(
+                new[] { context.Device },
+                TimeSpan.FromSeconds(10));
+            var triggerAccepted = incidentQueue.Submit(new DaqIncidentEvidenceSubmission
+            {
+                ContextKey = contextKey,
+                RunId = context.RunId,
+                CorrelationId = context.CorrelationId,
+                Device = context.Device,
+                StartedUtc = context.FirstSeenUtc,
+                PhaseKey = "00-trigger",
+                PhaseDirectoryName = $"00-trigger-001-{capturedUtc:HHmmss_fff}",
+                IncidentJson = triggerJson,
+                IsTrigger = true,
+                WriteHeavyEvidence = phaseDirectory =>
+                    frozenTriggerDiagnostics?.WriteTo(phaseDirectory)
+            });
+            if (!triggerAccepted)
+            {
+                _log.Error(
+                    $"DAQ硬故障事故取证有界门拒绝 trigger：Device={context.Device} " +
+                    $"RunId={context.RunId:N} CorrelationId={context.CorrelationId:N}",
+                    "落盘");
+                return;
+            }
+
+            foreach (var code in derivedCodes)
+            {
+                var symptomJson = "{" +
+                    $"\"runId\":\"{context.RunId:N}\"," +
+                    $"\"device\":\"{JsonEscape(context.Device)}\"," +
+                    $"\"correlationId\":\"{context.CorrelationId:N}\"," +
+                    $"\"symptomCode\":\"{JsonEscape(code)}\"," +
+                    $"\"capturedUtc\":\"{capturedUtc:O}\"" +
+                    "}\n";
+                incidentQueue.Submit(new DaqIncidentEvidenceSubmission
+                {
+                    ContextKey = contextKey,
+                    RunId = context.RunId,
+                    CorrelationId = context.CorrelationId,
+                    Device = context.Device,
+                    StartedUtc = context.FirstSeenUtc,
+                    PhaseKey = "symptom-" + code,
+                    IncidentJson = symptomJson
+                });
+            }
+
+            var frozenTerminalDiagnostics = _acq.CaptureDiagnostics(
                 new[] { context.Device },
                 TimeSpan.FromSeconds(60));
-            await Task.Run(() =>
+            if (!incidentQueue.Submit(new DaqIncidentEvidenceSubmission
+                {
+                    ContextKey = contextKey,
+                    RunId = context.RunId,
+                    CorrelationId = context.CorrelationId,
+                    Device = context.Device,
+                    StartedUtc = context.FirstSeenUtc,
+                    PhaseKey = "90-hardware-confirmed",
+                    PhaseDirectoryName = $"90-terminal-{capturedUtc:HHmmss_fff}-{Guid.NewGuid():N}",
+                    IncidentJson = terminalJson,
+                    IsTerminal = true,
+                    WriteHeavyEvidence = phaseDirectory =>
+                        frozenTerminalDiagnostics?.WriteTo(phaseDirectory)
+                }))
+                _log.Error(
+                    $"DAQ硬故障事故取证终态提交失败：Device={context.Device} " +
+                    $"RunId={context.RunId:N} CorrelationId={context.CorrelationId:N}",
+                    "落盘");
+        }
+
+        private static string DaqIncidentEvidenceContextKey(Guid runId, Guid correlationId)
+        {
+            return $"{runId:N}:{correlationId:N}";
+        }
+
+        private DaqIncidentEvidenceQueue GetDaqIncidentEvidenceQueue()
+        {
+            var current = Volatile.Read(ref _daqIncidentEvidenceQueue);
+            if (current != null) return current;
+            lock (_daqIncidentEvidenceQueueInitGate)
             {
-                string intendedDirectory = null;
+                return _daqIncidentEvidenceQueue ??=
+                    new DaqIncidentEvidenceQueue(
+                        ExportDaqIncidentEvidenceBatch,
+                        worker => ObserveBackgroundTask(worker, "DaqIncidentEvidenceWorker"),
+                        ex => _log.Error(
+                            $"DAQ事故取证worker失败：{ex.Message}",
+                            "落盘",
+                            ex));
+            }
+        }
+
+        internal Task<bool> DrainDaqIncidentEvidenceAsync(int timeoutMs)
+        {
+            var queue = Volatile.Read(ref _daqIncidentEvidenceQueue);
+            return queue == null
+                ? Task.FromResult(true)
+                : queue.DrainAsync(Math.Max(1, timeoutMs));
+        }
+
+        private void ExportDaqIncidentEvidenceBatch(DaqIncidentEvidenceBatch batch)
+        {
+            var submissions = batch?.OrderedSubmissions() ??
+                              Array.Empty<DaqIncidentEvidenceSubmission>();
+            if (submissions.Length == 0) return;
+            var anchor = submissions[0];
+            var root = Path.Combine(
+                _cfg.Test.StoreDir,
+                _cfg.Test.TestName,
+                "IncidentSnapshots");
+            Directory.CreateDirectory(root);
+            var incidentDirectory = _daqIncidentDirectories.GetOrAdd(
+                anchor.CorrelationId,
+                _ => Path.Combine(
+                    root,
+                    $"{anchor.StartedUtc.ToLocalTime():yyyyMMdd_HHmmss_fff}-" +
+                    $"{anchor.Device}-{anchor.CorrelationId:N}"));
+            Directory.CreateDirectory(incidentDirectory);
+            var buildIdentity = _daqIncidentBuildIdentity ??
+                                (_daqIncidentBuildIdentity = RuntimeBuildIdentity.Capture());
+            var rootIdentityPath = Path.Combine(incidentDirectory, "build-identity.json");
+            if (!File.Exists(rootIdentityPath)) buildIdentity.WriteJson(rootIdentityPath);
+
+            foreach (var submission in submissions)
+            {
+                if (submission == null) continue;
+                if (!string.IsNullOrWhiteSpace(submission.PhaseDirectoryName))
+                {
+                    var phaseDirectory = Path.Combine(
+                        incidentDirectory,
+                        submission.PhaseDirectoryName);
+                    try
+                    {
+                        Directory.CreateDirectory(phaseDirectory);
+                        var incidentPath = Path.Combine(phaseDirectory, "incident.json");
+                        if (!File.Exists(incidentPath))
+                        {
+                            using var stream = new FileStream(
+                                incidentPath,
+                                FileMode.CreateNew,
+                                FileAccess.Write,
+                                FileShare.Read);
+                            using var writer = new StreamWriter(stream, new UTF8Encoding(false));
+                            writer.Write(submission.IncidentJson ?? "{}\n");
+                        }
+                        var identityPath = Path.Combine(phaseDirectory, "build-identity.json");
+                        if (!File.Exists(identityPath)) buildIdentity.WriteJson(identityPath);
+                        try
+                        {
+                            submission.WriteHeavyEvidence?.Invoke(phaseDirectory);
+                        }
+                        catch (Exception ex)
+                        {
+                            _log.Error(
+                                $"DAQ事故重证据导出失败：Phase={submission.PhaseKey} " +
+                                $"Directory={phaseDirectory} Error={ex.Message}",
+                                "落盘",
+                                ex);
+                            TryWriteIncidentEvidenceError(phaseDirectory, submission, ex);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _log.Error(
+                            $"DAQ事故phase导出失败：Phase={submission.PhaseKey} " +
+                            $"Directory={phaseDirectory} Error={ex.Message}",
+                            "落盘",
+                            ex);
+                    }
+                }
+
                 try
                 {
-                    var root = Path.Combine(
-                        _cfg.Test.StoreDir,
-                        _cfg.Test.TestName,
-                        "IncidentSnapshots");
-                    Directory.CreateDirectory(root);
-                    intendedDirectory = _daqIncidentDirectories.GetOrAdd(
-                        context.CorrelationId,
-                        _ => Path.Combine(
-                            root,
-                            $"{context.FirstSeenUtc.ToLocalTime():yyyyMMdd_HHmmss_fff}-" +
-                            $"{context.Device}-{context.CorrelationId:N}"));
-                    Directory.CreateDirectory(intendedDirectory);
-                    var phaseDirectory = Path.Combine(
-                        intendedDirectory,
-                        $"90-terminal-{capturedUtc:HHmmss_fff}-{Guid.NewGuid():N}");
-                    Directory.CreateDirectory(phaseDirectory);
-
-                    var derivedCodes = context.DerivedCodes
-                        .OrderBy(code => code, StringComparer.OrdinalIgnoreCase)
-                        .Select(code => $"\"{JsonEscape(code)}\"");
-                    var incidentJson = "{\n" +
-                        $"  \"runId\": \"{context.RunId:N}\",\n" +
-                        $"  \"device\": \"{JsonEscape(context.Device)}\",\n" +
-                        $"  \"generation\": {context.Generation},\n" +
-                        $"  \"correlationId\": \"{context.CorrelationId:N}\",\n" +
-                        $"  \"runEpoch\": {runEpoch},\n" +
-                        $"  \"primaryFault\": \"{JsonEscape(context.PrimaryCode)}\",\n" +
-                        $"  \"primaryReason\": \"{JsonEscape(context.PrimaryReason)}\",\n" +
-                        $"  \"primaryChannel\": {context.PrimaryChannel},\n" +
-                        $"  \"affectedChannels\": [{string.Join(",", context.AffectedChannels ?? Array.Empty<int>())}],\n" +
-                        $"  \"powerStates\": [{powerStatesJson}],\n" +
-                        $"  \"derivedActions\": [{string.Join(",", derivedCodes)}],\n" +
-                        $"  \"firstSeenUtc\": \"{context.FirstSeenUtc:O}\",\n" +
-                        $"  \"lastSeenUtc\": \"{context.LastSeenUtc:O}\",\n" +
-                        $"  \"controlQueueType\": \"{JsonEscape(control?.QueueType ?? evidence?.QueueType ?? "PreallocatedSpscRing")}\",\n" +
-                        $"  \"controlQueueCapacity\": {control?.QueueCapacity ?? evidence?.QueueCapacity ?? 0},\n" +
-                        $"  \"controlQueueDepth\": {control?.QueueDepth ?? evidence?.QueueDepth ?? 0},\n" +
-                        $"  \"oldestControlBatchAgeMs\": {(control?.OldestBatchAgeMs ?? evidence?.OldestBatchAgeMs ?? 0).ToString("F3", CultureInfo.InvariantCulture)},\n" +
-                        $"  \"lastControlProcessingMs\": {(control?.LastBatchProcessMs ?? 0).ToString("F3", CultureInfo.InvariantCulture)},\n" +
-                        $"  \"subscriberMaxMs\": {(control?.SubscriberMaxMs ?? 0).ToString("F3", CultureInfo.InvariantCulture)},\n" +
-                        $"  \"lastProcessedSampleUtc\": \"{(control?.ProcessedSampleUtc ?? evidence?.LastProcessedSampleUtc ?? default):O}\",\n" +
-                        $"  \"capturedUtc\": \"{capturedUtc:O}\"\n" +
-                        "}\n";
-                    using (var stream = new FileStream(
-                               Path.Combine(phaseDirectory, "incident.json"),
-                               FileMode.CreateNew,
-                               FileAccess.Write,
-                               FileShare.Read))
-                    using (var writer = new StreamWriter(stream, new UTF8Encoding(false)))
-                        writer.Write(incidentJson);
-                    diagnostics.WriteTo(phaseDirectory);
-                    RuntimeBuildIdentity.Capture().WriteJson(
-                        Path.Combine(phaseDirectory, "build-identity.json"));
-                    _log.Info(
-                        $"DAQ硬故障事故快照已保存：{phaseDirectory} " +
-                        $"CorrelationId={context.CorrelationId:N}",
-                        "落盘");
+                    AppendDaqIncidentManifest(incidentDirectory, submission);
                 }
                 catch (Exception ex)
                 {
-                    var fallbackDirectory = TryWriteDaqSnapshotFailure(
-                        initialContext,
-                        intendedDirectory,
-                        ex);
                     _log.Error(
-                        $"DAQ硬故障事故快照导出失败。Target={intendedDirectory ?? "unknown"} " +
-                        $"Fallback={fallbackDirectory} Error={ex.Message}",
+                        $"DAQ事故manifest追加失败：Phase={submission.PhaseKey} " +
+                        $"Directory={incidentDirectory} Error={ex.Message}",
                         "落盘",
                         ex);
                 }
-            }).ConfigureAwait(false);
+            }
+
+            if (batch.Terminal != null)
+            {
+                _daqIncidentDirectories.TryRemove(anchor.CorrelationId, out _);
+                _log.Info(
+                    $"DAQ事故取证已收口：{incidentDirectory} " +
+                    $"CorrelationId={anchor.CorrelationId:N}",
+                    "落盘");
+            }
+        }
+
+        private static void AppendDaqIncidentManifest(
+            string incidentDirectory,
+            DaqIncidentEvidenceSubmission submission)
+        {
+            var kind = submission.IsTrigger
+                ? "trigger"
+                : submission.IsTerminal ? "terminal" : "symptom";
+            var payload = (submission.IncidentJson ?? "{}")
+                .Replace("\r", string.Empty)
+                .Replace("\n", string.Empty)
+                .Trim();
+            if (payload.Length == 0) payload = "{}";
+            var line = "{" +
+                       $"\"phase\":\"{JsonEscape(submission.PhaseKey)}\"," +
+                       $"\"kind\":\"{kind}\"," +
+                       $"\"payload\":{payload}" +
+                       "}";
+            using var stream = new FileStream(
+                Path.Combine(incidentDirectory, "manifest.jsonl"),
+                FileMode.Append,
+                FileAccess.Write,
+                FileShare.Read);
+            using var writer = new StreamWriter(stream, new UTF8Encoding(false));
+            writer.WriteLine(line);
+        }
+
+        private static void TryWriteIncidentEvidenceError(
+            string phaseDirectory,
+            DaqIncidentEvidenceSubmission submission,
+            Exception error)
+        {
+            try
+            {
+                var path = Path.Combine(phaseDirectory, "evidence-error.txt");
+                File.WriteAllText(
+                    path,
+                    $"Phase={submission?.PhaseKey}\r\n" +
+                    $"CapturedUtc={DateTime.UtcNow:O}\r\n" +
+                    $"Error={error}\r\n",
+                    new UTF8Encoding(false));
+            }
+            catch
+            {
+                // 错误旁证是尽力而为，主 manifest 仍必须继续追加。
+            }
         }
 
         private string TryWriteDaqSnapshotFailure(

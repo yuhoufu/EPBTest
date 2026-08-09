@@ -850,7 +850,8 @@ namespace Controller
         private bool TryUnmarkHydraulicParticipant(
             int channel,
             long expectedVersion,
-            string reason)
+            string reason,
+            bool logRejected = true)
         {
             lock (GetHydraulicParticipantGate(channel))
             {
@@ -861,11 +862,12 @@ namespace Controller
                         expectedVersion,
                         currentVersion))
                 {
-                    _log?.Warn(
-                        $"EPB[{channel}] 拒绝迟到的液压参与状态清理。" +
-                        $"ExpectedVersion={expectedVersion} CurrentVersion={currentVersion} " +
-                        $"Reason={reason}",
-                        "液压协调");
+                    if (logRejected)
+                        _log?.Warn(
+                            $"EPB[{channel}] 拒绝迟到的液压参与状态清理。" +
+                            $"ExpectedVersion={expectedVersion} CurrentVersion={currentVersion} " +
+                            $"Reason={reason}",
+                            "液压协调");
                     return false;
                 }
 
@@ -1509,9 +1511,14 @@ namespace Controller
             return _taskSupervisor.Snapshot();
         }
 
-        internal Task<bool> DrainBackgroundTasksAsync(int timeoutMs)
+        internal async Task<bool> DrainBackgroundTasksAsync(int timeoutMs)
         {
-            return _taskSupervisor.DrainAsync(timeoutMs);
+            var boundedTimeoutMs = Math.Max(1, timeoutMs);
+            var results = await Task.WhenAll(
+                    _taskSupervisor.DrainAsync(boundedTimeoutMs),
+                    DrainDaqIncidentEvidenceAsync(boundedTimeoutMs))
+                .ConfigureAwait(false);
+            return results.All(value => value);
         }
 
         // （保留你已有的 StartChannelAsync / Pause/Resume/Stop 等实现，不改对外签名）
@@ -2845,8 +2852,9 @@ namespace Controller
         /// <summary>
         /// 固化 DAQ 恢复进入任何所有权等待前的安全顺序。调用方可以把每一步拆成
         /// 整组操作，因此能够证明“全部暂停”早于“冻结边界”，“冻结+抑制”早于
-        /// 当前圈取消和最高优先级 OFF 提交，而且电源 Disable/拒绝项兜底已经启动后
-        /// 才允许日志、UI 或其它观察者运行。
+        /// 当前圈取消和最高优先级 OFF 提交，而且电源 Disable/拒绝项兜底已经启动后，
+        /// 必须在任何所有权 await 前撤销液压参与权并投递 lease release；最后才允许
+        /// 日志、UI 或其它观察者运行。
         /// </summary>
         internal static void ExecuteDaqCutoffBeforeOwnershipWait(
             Action startWatchdogs,
@@ -2855,6 +2863,7 @@ namespace Controller
             Action cancelCyclesAndSubmitOffAll,
             Action startPowerDisable = null,
             Action startRejectedOffFallbacks = null,
+            Action revokeHydraulicAndStartRelease = null,
             Action publishRecoveringAndDiagnostics = null)
         {
             if (startWatchdogs == null) throw new ArgumentNullException(nameof(startWatchdogs));
@@ -2871,6 +2880,7 @@ namespace Controller
             cancelCyclesAndSubmitOffAll();
             startPowerDisable?.Invoke();
             startRejectedOffFallbacks?.Invoke();
+            revokeHydraulicAndStartRelease?.Invoke();
             publishRecoveringAndDiagnostics?.Invoke();
         }
 
@@ -3054,6 +3064,7 @@ namespace Controller
             {
                 var cutoffSafetyDiagnostics = new List<string>();
                 Dictionary<int, string> cutoffOffFallbacks = null;
+                var hydraulicReleaseTasks = new List<Task>(affected.Length);
                 ExecuteDaqCutoffBeforeOwnershipWait(
                     () =>
                     {
@@ -3083,6 +3094,9 @@ namespace Controller
                     {
                         // 仅在全组暂停后冻结一次圈身份和 LastAccepted。SuppressAfter
                         // 与该同一边界配对，后续任何重试都不得扩大正式耐久前缀。
+                        context.CutoffParticipantVersions = affected.ToDictionary(
+                            channel => channel,
+                            CaptureHydraulicParticipantVersion);
                         context.CutoffCycles = affected.ToDictionary(
                             channel => channel,
                             channel => _currentCycleNumberByChannel.TryGetValue(
@@ -3098,7 +3112,9 @@ namespace Controller
                             device,
                             context.CutoffUtc,
                             frozenBoundary,
-                            context.CorrelationId);
+                            context.CorrelationId,
+                            context.RunId,
+                            context.RunEpoch);
                     },
                     () =>
                     {
@@ -3126,6 +3142,52 @@ namespace Controller
                     () => ScheduleRejectedOffFallbacks(
                         cutoffOffFallbacks,
                         "DaqCutoffImmediateOffFallback"),
+                    () =>
+                    {
+                        // 撤销液压参与身份必须与 Pause/OFF 同属截止提交，不能等待恢复
+                        // ownership。lease release 每路独立投递，首路协调器阻塞不能挡住
+                        // 兄弟通道退出当前液压代次。
+                        foreach (var channel in affected)
+                        {
+                            context.CutoffParticipantVersions.TryGetValue(
+                                channel,
+                                out var expectedParticipantVersion);
+                            if (!TryUnmarkHydraulicParticipant(
+                                    channel,
+                                    expectedParticipantVersion,
+                                    $"DaqCutoff:{context.Device}:RecoveryEpoch={context.RecoveryEpoch}",
+                                    logRejected: false))
+                                cutoffSafetyDiagnostics.Add(
+                                    $"DAQ截止拒绝迟到液压撤权 EPB={channel} " +
+                                    $"ExpectedVersion={expectedParticipantVersion}");
+                        }
+
+                        var scheduledReleases = new List<KeyValuePair<int, Task>>(affected.Length);
+                        foreach (var channel in affected)
+                        {
+                            var capturedChannel = channel;
+                            try
+                            {
+                                scheduledReleases.Add(
+                                    new KeyValuePair<int, Task>(
+                                        capturedChannel,
+                                        Task.Run(() => HydraulicMarkReleaseAsync(capturedChannel))));
+                            }
+                            catch (Exception ex)
+                            {
+                                cutoffSafetyDiagnostics.Add(
+                                    $"DAQ截止无法投递液压释放 EPB={capturedChannel}: {ex.Message}");
+                            }
+                        }
+                        foreach (var release in scheduledReleases)
+                        {
+                            hydraulicReleaseTasks.Add(release.Value);
+                            ObserveSafetyTask(
+                                release.Value,
+                                "DaqCutoffHydraulicReleaseSubmitted",
+                                release.Key);
+                        }
+                    },
                     () => ObserveBackgroundTask(Task.Run(() =>
                     {
                         if (!IsCurrentRecovery(context)) return;
@@ -3169,35 +3231,15 @@ namespace Controller
                     return;
 
                 await AcquireDaqRecoveryOwnershipsAsync(context).ConfigureAwait(false);
-                ObserveBackgroundTask(
-                    ExportDaqIncidentSnapshotAsync(context, reason, "00-trigger"),
-                    "ExportDaqIncidentTriggerSnapshot");
+                SubmitDaqIncidentSnapshot(context, reason, "00-trigger");
                 if (!IsCurrentRecovery(context))
                 {
                     CompleteCancelledRecovery(context, "RunEpochChangedBeforeCutoff");
                     return;
                 }
 
-                var hydraulicReleaseTasks = new List<Task>(affected.Length);
-                foreach (var channel in affected)
-                {
-                    // 所有权等待后只接管液压参与者并释放；运行状态、Timer、圈身份、
-                    // 数据边界和 OFF 均已在等待前冻结/提交，禁止在这里重复扩大或补发。
-                    context.CutoffParticipantVersions.TryGetValue(
-                        channel,
-                        out var expectedParticipantVersion);
-                    TryUnmarkHydraulicParticipant(
-                        channel,
-                        expectedParticipantVersion,
-                        $"DaqCutoff:{context.Device}:RecoveryEpoch={context.RecoveryEpoch}");
-                    try { hydraulicReleaseTasks.Add(HydraulicMarkReleaseAsync(channel)); }
-                    catch (Exception ex)
-                    {
-                        _log.Warn(
-                            $"DAQ截止液压释放请求失败 EPB={channel}: {ex.Message}",
-                            "液压协调");
-                    }
-                }
+                // participant 撤权和每路 release 已在第一个 await 前投递；取得恢复
+                // ownership 后只等待这些既有任务完成，禁止重新提交或扩大截止身份。
                 await RecoveryStageDeadline.RunAsync(
                         "DaqCutoffHydraulicRelease",
                         RecoveryStageTimeoutMs,
@@ -3310,9 +3352,7 @@ namespace Controller
                     $"FastResyncDiscarded={fastResyncDiscarded} CutoffCompleted=true。",
                     "AI");
                 PublishRecoveryProgress(context, "安全断电已完成，正在恢复数据链。");
-                ObserveBackgroundTask(
-                    ExportDaqIncidentSnapshotAsync(context, reason, "10-cutoff"),
-                    "ExportDaqIncidentCutoffSnapshot");
+                SubmitDaqIncidentSnapshot(context, reason, "10-cutoff");
 
                 if (restartDaq)
                 {
@@ -3359,9 +3399,7 @@ namespace Controller
                     context.FirstVerifiedSequence = result.FirstVerifiedSequence;
                     context.LastVerifiedSequence = result.LastVerifiedSequence;
                     context.AfterClock = _acq.GetDaqFreshnessSnapshot(device, _daqPersistenceResumeAgeMs);
-                    ObserveBackgroundTask(
-                        ExportDaqIncidentSnapshotAsync(context, result.FailureReason, "20-rebuild"),
-                        "ExportDaqIncidentRebuildSnapshot");
+                    SubmitDaqIncidentSnapshot(context, result.FailureReason, "20-rebuild");
                     if (!result.Recovered)
                     {
                         await EscalateDaqAutoRecoveryAsync(
@@ -3471,12 +3509,10 @@ namespace Controller
                         context))
                     return;
                 context.AfterClock = _acq.GetDaqFreshnessSnapshot(device, _daqPersistenceResumeAgeMs);
-                ObserveBackgroundTask(
-                    ExportDaqIncidentSnapshotAsync(
-                        context,
-                        "DAQ与持久化新鲜度验证通过",
-                        "30-validate"),
-                    "ExportDaqIncidentValidationSnapshot");
+                SubmitDaqIncidentSnapshot(
+                    context,
+                    "DAQ与持久化新鲜度验证通过",
+                    "30-validate");
                 context.ValidationPhase = "TerminalOffCurrentVerification";
                 var terminalOffTasks = context.AffectedChannels
                     .Select(channel => _runners.TryGetValue(channel, out var runner)
@@ -3720,9 +3756,7 @@ namespace Controller
                 context.Cancellation.Cancel();
                 // Recovered 已在提交锁内完成并释放恢复所有权；终态重证据只受监督异步
                 // 导出，禁止再次延长恢复状态机或阻止卡钳按公共节拍重入。
-                ObserveBackgroundTask(
-                    ExportDaqIncidentSnapshotAsync(context, "自动恢复成功", "90-recovered"),
-                    "ExportDaqIncidentRecoveredSnapshot");
+                SubmitDaqIncidentSnapshot(context, "自动恢复成功", "90-recovered");
             }
             catch (Exception ex)
             {
@@ -3814,10 +3848,6 @@ namespace Controller
                 result.FailureKind = "DaqHardwareConfirmed";
                 context.Completion.TrySetResult(result);
                 ReleaseDaqRecoveryOwnerships(context);
-                NonCriticalObserver.Invoke(
-                    DaqRecoveryStateChanged,
-                    result,
-                    ex => _log?.Warn($"DAQ恢复状态观察者异常，已隔离：{ex.Message}", "AI"));
                 try { context.Cancellation.Cancel(); } catch { }
                 LatchDaqGroupHardFault(
                     primary,
@@ -3827,9 +3857,13 @@ namespace Controller
                     reason,
                     context.CorrelationId,
                     classification: FaultClassification.HardwareConfirmed);
-                ObserveBackgroundTask(
-                    ExportDaqIncidentSnapshotAsync(context, reason, "90-hardware-confirmed"),
-                    "ExportDaqIncidentHardwareTerminalSnapshot");
+                // 硬件终态的整组异步OFF、共享电源Disable和故障发布均已启动后，才
+                // 允许外部恢复状态观察者运行；观察者阻塞不能吞掉冗余安全动作。
+                NonCriticalObserver.Invoke(
+                    DaqRecoveryStateChanged,
+                    result,
+                    ex => _log?.Warn($"DAQ恢复状态观察者异常，已隔离：{ex.Message}", "AI"));
+                SubmitDaqIncidentSnapshot(context, reason, "90-hardware-confirmed");
                 return;
             }
 
@@ -3888,9 +3922,7 @@ namespace Controller
                 "健康DAQ组继续运行。",
                 "AI");
             PublishRecoveryProgress(context, $"软件自维护等待 {delayMs}ms 后重试。");
-            ObserveBackgroundTask(
-                ExportDaqIncidentSnapshotAsync(context, reason, "40-self-maintenance"),
-                "ExportDaqIncidentMaintenanceSnapshot");
+            SubmitDaqIncidentSnapshot(context, reason, "40-self-maintenance");
 
             ObserveBackgroundTask(Task.Run(async () =>
             {
@@ -3941,12 +3973,10 @@ namespace Controller
                     context.AfterClock = _acq.GetDaqFreshnessSnapshot(
                         context.Device,
                         _daqPersistenceResumeAgeMs);
-                    ObserveBackgroundTask(
-                        ExportDaqIncidentSnapshotAsync(
-                            context,
-                            result.FailureReason,
-                            "50-self-maintenance-rebuild"),
-                        "ExportDaqIncidentMaintenanceRebuildSnapshot");
+                    SubmitDaqIncidentSnapshot(
+                        context,
+                        result.FailureReason,
+                        "50-self-maintenance-rebuild");
 
                     if (!result.Recovered)
                     {
@@ -4190,25 +4220,70 @@ namespace Controller
             string operation)
         {
             if (rejected == null || rejected.Count == 0) return;
-            foreach (var pair in rejected.OrderBy(item => item.Key))
+            // 先把所有拒绝项各自投递到线程池，再逐个登记监督。首个同步 NI 写即使
+            // 永久不返回，也不能阻止后续兄弟通道取得自己的兜底执行机会。
+            var fallbackTasks = StartIndependentSafetyFallbackTasks(
+                rejected,
+                (channel, stage) => TryExecuteImmediateOffFallback(
+                    channel,
+                    stage,
+                    out _));
+            ObserveIndependentSafetyFallbackTasks(fallbackTasks, operation);
+        }
+
+        private void ObserveIndependentSafetyFallbackTasks(
+            IReadOnlyDictionary<int, Task<bool>> fallbackTasks,
+            string operation)
+        {
+            if (fallbackTasks == null || fallbackTasks.Count == 0) return;
+            foreach (var pair in fallbackTasks.OrderBy(item => item.Key))
             {
                 var channel = pair.Key;
-                var stage = pair.Value;
                 try
                 {
                     ObserveBackgroundTask(
-                        Task.Run(() => TryExecuteImmediateOffFallback(channel, stage, out _)),
+                        pair.Value,
                         operation ?? "SafetyImmediateOffFallback",
                         channel);
                 }
                 catch (Exception ex)
                 {
                     _log.Error(
-                        $"EPB[{channel}] 无法调度独立同步OFF兜底。Stage={stage} Error={ex.Message}",
+                        $"EPB[{channel}] 无法监督独立同步OFF兜底。Error={ex.Message}",
                         "DO性能",
                         ex);
                 }
             }
+        }
+
+        internal static IReadOnlyDictionary<int, Task<bool>> StartIndependentSafetyFallbackTasks(
+            IReadOnlyDictionary<int, string> rejected,
+            Func<int, string, bool> fallback)
+        {
+            var tasks = new Dictionary<int, Task<bool>>();
+            if (rejected == null || rejected.Count == 0) return tasks;
+            if (fallback == null) throw new ArgumentNullException(nameof(fallback));
+            foreach (var pair in rejected.OrderBy(item => item.Key))
+            {
+                var channel = pair.Key;
+                var stage = pair.Value;
+                try
+                {
+                    tasks[channel] = Task.Factory.StartNew(
+                        () => fallback(channel, stage),
+                        CancellationToken.None,
+                        TaskCreationOptions.LongRunning,
+                        TaskScheduler.Default);
+                }
+                catch (Exception ex)
+                {
+                    var failed = new TaskCompletionSource<bool>(
+                        TaskCreationOptions.RunContinuationsAsynchronously);
+                    failed.TrySetException(ex);
+                    tasks[channel] = failed.Task;
+                }
+            }
+            return tasks;
         }
 
         private Dictionary<int, Task<(bool ok, string error)>> StartElectricalGroupSafetyDisables(
@@ -4321,33 +4396,17 @@ namespace Controller
             if (!orderedChannels.Contains(triggeringChannel))
                 triggeringChannel = orderedChannels.FirstOrDefault();
 
-            if (classification == FaultClassification.HardwareConfirmed)
-                NotifyRunAuthorizationRevoking(
-                    StopSource.AlarmInterlock,
-                    $"DAQ硬件故障已确认 Device={device}; {reason}",
-                    nameof(LatchDaqGroupHardFault),
-                    correlationId,
-                    FaultScope.DaqGroup);
-
-            // 失效安全顺序：先在当前线程锁存、取消运行并逐通道高优先级断电；
-            // 任何日志、UI、数据库封圈、蜂鸣或快照都必须发生在这之后。
-            if (!safetyAlreadyApplied)
-                ExecuteDaqFaultSafetyFirst(
-                    orderedChannels,
-                    affectedChannel =>
-                    {
-                        _alarmStopLatch.TryRequestStop(affectedChannel);
-                        try { CancelStopCts(affectedChannel); } catch { }
-                    },
-                    affectedChannel =>
-                    {
-                        try { CommandEpbOffSafetyImmediate(affectedChannel); } catch { }
-                    });
-
             var primaryChannel = triggeringChannel;
             var faultCorrelationId = correlationId == Guid.Empty ? Guid.NewGuid() : correlationId;
-            ObserveBackgroundTask(Task.Run(async () =>
+            async Task PublishHardFaultAsync()
             {
+                if (classification == FaultClassification.HardwareConfirmed)
+                    NotifyRunAuthorizationRevoking(
+                        StopSource.AlarmInterlock,
+                        $"DAQ硬件故障已确认 Device={device}; {reason}",
+                        nameof(LatchDaqGroupHardFault),
+                        faultCorrelationId,
+                        FaultScope.DaqGroup);
                 var fault = new ControlFault(
                     string.IsNullOrWhiteSpace(code) ? "DaqSampleStale" : code,
                     $"Device={device} {reason}",
@@ -4393,9 +4452,7 @@ namespace Controller
                         incidentContext.RunId,
                         device,
                         out var snapshotContext))
-                    ObserveBackgroundTask(
-                        ExportDaqHardFaultIncidentSnapshotAsync(snapshotContext, deviceFault),
-                        "ExportDaqHardFaultSnapshot");
+                    SubmitDaqHardFaultIncidentSnapshot(snapshotContext, deviceFault);
 
                 try
                 {
@@ -4420,20 +4477,80 @@ namespace Controller
                     if (primaryChannel > 0)
                         TryFinalizeCurrentCycleAfterSnapshot(primaryChannel, false);
                 }
-            }), "DaqHardFaultHandling", primaryChannel);
+            }
+
+            Task hardFaultPublication = null;
+            void StartFaultPublication()
+            {
+                hardFaultPublication = Task.Factory.StartNew(
+                        PublishHardFaultAsync,
+                        CancellationToken.None,
+                        TaskCreationOptions.LongRunning,
+                        TaskScheduler.Default)
+                    .Unwrap();
+            }
+
+            if (safetyAlreadyApplied)
+            {
+                StartFaultPublication();
+                ObserveBackgroundTask(
+                    hardFaultPublication,
+                    "DaqHardFaultHandling",
+                    primaryChannel);
+                return;
+            }
+
+            Dictionary<int, string> rejectedOff = null;
+            IReadOnlyDictionary<int, Task<bool>> rejectedFallbackTasks = null;
+            ExecuteDaqFaultSafetyFirst(
+                () =>
+                {
+                    foreach (var affectedChannel in orderedChannels)
+                        _alarmStopLatch.TryRequestStop(affectedChannel);
+                    FreezeAndCancelSafetyChannels(
+                        orderedChannels,
+                        $"DaqHardFault:{device}",
+                        cancelStopTokens: true);
+                },
+                () => rejectedOff = SubmitEpbOffHighPriorityBatch(
+                    orderedChannels,
+                    "DaqHardFaultOffAdmissionRejected",
+                    "DaqHardFaultOffSubmissionException"),
+                () => StartElectricalGroupSafetyDisables(
+                    orderedChannels,
+                    $"DAQ硬件故障断电 Device={device} CorrelationId={faultCorrelationId:N}",
+                    "DaqHardFaultPowerDisable"),
+                StartFaultPublication,
+                () => rejectedFallbackTasks = StartIndependentSafetyFallbackTasks(
+                    rejectedOff,
+                    (channel, stage) => TryExecuteImmediateOffFallback(
+                        channel,
+                        stage,
+                        out _)));
+            // 到这里故障发布任务和全部拒绝项兜底均已真正启动；随后登记监督，即使
+            // 某个监督器/日志实现异常缓慢，也不会再阻止兄弟通道取得执行机会。
+            ObserveBackgroundTask(
+                hardFaultPublication,
+                "DaqHardFaultHandling",
+                primaryChannel);
+            ObserveIndependentSafetyFallbackTasks(
+                rejectedFallbackTasks,
+                "DaqHardFaultImmediateOffFallback");
         }
 
         internal static void ExecuteDaqFaultSafetyFirst(
-            IReadOnlyList<int> affectedChannels,
-            Action<int> latchAndCancel,
-            Action<int> immediateOff)
+            Action freezeAndCancelAll,
+            Action submitOffAll,
+            Action startPowerDisable,
+            Action publishFault,
+            Action startRejectedOffFallbacks)
         {
-            if (affectedChannels == null) return;
-            for (var i = 0; i < affectedChannels.Count; i++)
-            {
-                latchAndCancel?.Invoke(affectedChannels[i]);
-                immediateOff?.Invoke(affectedChannels[i]);
-            }
+            ExecuteNonBlockingSafetyIsolationOrder(
+                freezeAndCancelAll,
+                submitOffAll,
+                startPowerDisable,
+                publishFault,
+                startRejectedOffFallbacks);
         }
 
         private void ExecuteDaqDeviceFaultSafetyFirst(string device, bool backgroundQueue)
@@ -6085,7 +6202,7 @@ namespace Controller
         {
             try
             {
-                if (!_taskSupervisor.DrainAsync(2000).GetAwaiter().GetResult())
+                if (!DrainBackgroundTasksAsync(2000).GetAwaiter().GetResult())
                 {
                     var pending = string.Join(",", _taskSupervisor.Snapshot()
                         .Select(x => $"{x.Operation}(EPB{x.Channel},RunId={x.RunId:N})"));
@@ -6149,6 +6266,7 @@ namespace Controller
         {
             var startedUtc = DateTime.UtcNow;
             var runId = _activeBatchId;
+            var runEpoch = Interlocked.Read(ref _runEpoch);
             var stopCorrelation = Guid.TryParse(context.CorrelationId, out var parsedStopCorrelation)
                 ? parsedStopCorrelation
                 : Guid.NewGuid();
@@ -6503,7 +6621,9 @@ namespace Controller
                         device,
                         startedUtc,
                         stopPersistenceBoundaries[device],
-                        stopCorrelation);
+                        stopCorrelation,
+                        runId,
+                        runEpoch);
                 }
             }
             if (processingDataGaps.Count > 0)

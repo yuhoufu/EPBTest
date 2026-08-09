@@ -33,6 +33,8 @@ namespace Controller
         public long Sequence { get; set; }
         public DateTime TimestampUtc { get; set; }
         public Guid CorrelationId { get; set; }
+        public Guid RunId { get; set; }
+        public long RunEpoch { get; set; }
         public long SuppressedBatchCount { get; set; }
         public long CumulativeSuppressedBatchCount { get; set; }
         public long LastTerminallyHandledSequence { get; set; }
@@ -105,8 +107,16 @@ namespace Controller
 
         private sealed class CorrelationIdentity
         {
-            internal CorrelationIdentity(Guid value) { Value = value; }
+            internal CorrelationIdentity(Guid value, Guid runId = default, long runEpoch = 0)
+            {
+                Value = value;
+                RunId = runId;
+                RunEpoch = runEpoch;
+            }
+
             internal Guid Value { get; }
+            internal Guid RunId { get; }
+            internal long RunEpoch { get; }
         }
 
         private readonly Func<IEpbCycleRecorder> _recorder;
@@ -222,7 +232,10 @@ namespace Controller
                 // a slot is obtained; this early check alone is not the linearization point.
                 lock (q.SuppressionGate)
                 {
-                    if (TryHandleSuppressionUnderGate(q, batch.Sequence))
+                    if (TryHandleSuppressionUnderGate(
+                            q,
+                            batch.Sequence,
+                            closeFiniteWindow: false))
                     {
                         batch.Dispose();
                         return true;
@@ -287,7 +300,10 @@ namespace Controller
                     // SuppressAfter uses this same gate. A batch that observed admission-open,
                     // then waited for a slot or a test seam while cutoff was installed, must be
                     // reclassified as an explicit excluded tail before FIFO publication.
-                    suppressedAtCommit = TryHandleSuppressionUnderGate(q, batch.Sequence);
+                    suppressedAtCommit = TryHandleSuppressionUnderGate(
+                        q,
+                        batch.Sequence,
+                        closeFiniteWindow: true);
                     if (!suppressedAtCommit)
                     {
                         // Admission linearizes when the accepted batch becomes part of the
@@ -316,7 +332,9 @@ namespace Controller
             string device,
             DateTime cutoffUtc,
             long lastSequenceThatMustBePhysicallyPersisted,
-            Guid correlationId)
+            Guid correlationId,
+            Guid runId = default,
+            long runEpoch = 0)
         {
             var q = GetQueue(device);
             lock (q.SuppressionGate)
@@ -329,7 +347,21 @@ namespace Controller
                     ref q.SuppressAfterUtcTicks,
                     cutoffUtc.ToUniversalTime().Ticks);
                 Interlocked.Exchange(ref q.SuppressedBatchCount, 0);
-                if (correlationId != Guid.Empty) SetCorrelation(q, correlationId);
+                var previous = GetCorrelationIdentity(q);
+                var effectiveCorrelation = correlationId != Guid.Empty
+                    ? correlationId
+                    : previous?.Value ?? Guid.NewGuid();
+                var effectiveRunId = runId != Guid.Empty
+                    ? runId
+                    : previous?.RunId ?? Guid.Empty;
+                var effectiveRunEpoch = runEpoch > 0
+                    ? runEpoch
+                    : previous?.RunEpoch ?? 0;
+                SetCorrelation(
+                    q,
+                    effectiveCorrelation,
+                    effectiveRunId,
+                    effectiveRunEpoch);
             }
         }
 
@@ -349,8 +381,8 @@ namespace Controller
                 {
                     Interlocked.Exchange(ref q.SuppressAfterSequence, 0);
                     Interlocked.Exchange(ref q.SuppressThroughSequence, 0);
+                    SetCorrelation(q, Guid.Empty);
                 }
-                SetCorrelation(q, Guid.Empty);
             }
             Interlocked.Exchange(ref q.FreshAfterLowWater, 0);
             Interlocked.Exchange(ref q.PendingFreshWhileWrite, 0);
@@ -369,6 +401,29 @@ namespace Controller
         internal DaqPersistenceStateChanged GetSnapshot(string device)
         {
             var q = GetQueue(device);
+            CorrelationIdentity identity;
+            long suppressedBatchCount;
+            long cumulativeSuppressedBatchCount;
+            long lastTerminallyHandledSequence;
+            long suppressAfterSequence;
+            long suppressThroughSequence;
+            long firstSuppressedSequence;
+            long lastSuppressedSequence;
+            long suppressedRangeCount;
+            lock (q.SuppressionGate)
+            {
+                identity = GetCorrelationIdentity(q);
+                suppressedBatchCount = Interlocked.Read(ref q.SuppressedBatchCount);
+                cumulativeSuppressedBatchCount = Interlocked.Read(
+                    ref q.CumulativeSuppressedBatchCount);
+                lastTerminallyHandledSequence = Interlocked.Read(
+                    ref q.LastTerminallyHandledSequence);
+                suppressAfterSequence = Interlocked.Read(ref q.SuppressAfterSequence);
+                suppressThroughSequence = Interlocked.Read(ref q.SuppressThroughSequence);
+                firstSuppressedSequence = Interlocked.Read(ref q.FirstSuppressedSequence);
+                lastSuppressedSequence = Interlocked.Read(ref q.LastSuppressedSequence);
+                suppressedRangeCount = Interlocked.Read(ref q.SuppressedRangeCount);
+            }
             return new DaqPersistenceStateChanged
             {
                 Device = NormalizeDevice(device),
@@ -392,17 +447,17 @@ namespace Controller
                 Generation = Interlocked.Read(ref q.AcceptedGeneration),
                 Sequence = Interlocked.Read(ref q.LastPersistedSequence),
                 TimestampUtc = DateTime.UtcNow,
-                CorrelationId = GetCorrelation(q),
-                SuppressedBatchCount = Interlocked.Read(ref q.SuppressedBatchCount),
-                CumulativeSuppressedBatchCount = Interlocked.Read(
-                    ref q.CumulativeSuppressedBatchCount),
-                LastTerminallyHandledSequence = Interlocked.Read(
-                    ref q.LastTerminallyHandledSequence),
-                SuppressAfterSequence = Interlocked.Read(ref q.SuppressAfterSequence),
-                SuppressThroughSequence = Interlocked.Read(ref q.SuppressThroughSequence),
-                FirstSuppressedSequence = Interlocked.Read(ref q.FirstSuppressedSequence),
-                LastSuppressedSequence = Interlocked.Read(ref q.LastSuppressedSequence),
-                SuppressedRangeCount = Interlocked.Read(ref q.SuppressedRangeCount),
+                CorrelationId = identity?.Value ?? Guid.Empty,
+                RunId = identity?.RunId ?? Guid.Empty,
+                RunEpoch = identity?.RunEpoch ?? 0,
+                SuppressedBatchCount = suppressedBatchCount,
+                CumulativeSuppressedBatchCount = cumulativeSuppressedBatchCount,
+                LastTerminallyHandledSequence = lastTerminallyHandledSequence,
+                SuppressAfterSequence = suppressAfterSequence,
+                SuppressThroughSequence = suppressThroughSequence,
+                FirstSuppressedSequence = firstSuppressedSequence,
+                LastSuppressedSequence = lastSuppressedSequence,
+                SuppressedRangeCount = suppressedRangeCount,
                 DiscardedGenerationBatchCount = Interlocked.Read(ref q.DiscardedGenerationBatchCount),
                 OverCapacityDroppedBatchCount = Interlocked.Read(ref q.OverCapacityDroppedBatchCount),
                 DurabilityBlocked = Volatile.Read(ref q.UnresolvedWriteFailure) != 0 ||
@@ -942,6 +997,10 @@ namespace Controller
             long? generationOverride = null,
             long? sequenceOverride = null)
         {
+            var identity = GetCorrelationIdentity(q);
+            var matchingIdentity = identity != null && identity.Value == correlationId
+                ? identity
+                : null;
             var update = new DaqPersistenceStateChanged
             {
                 Device = batch?.Device ?? (ReferenceEquals(q, _dev1) ? "Dev1" : "Dev2"),
@@ -958,6 +1017,8 @@ namespace Controller
                            Interlocked.Read(ref q.LastPersistedSequence),
                 TimestampUtc = DateTime.UtcNow,
                 CorrelationId = correlationId,
+                RunId = matchingIdentity?.RunId ?? Guid.Empty,
+                RunEpoch = matchingIdentity?.RunEpoch ?? 0,
                 SuppressedBatchCount = Interlocked.Read(ref q.SuppressedBatchCount),
                 CumulativeSuppressedBatchCount = Interlocked.Read(
                     ref q.CumulativeSuppressedBatchCount),
@@ -1019,7 +1080,8 @@ namespace Controller
                     Generation = update.Generation,
                     QueueDepth = update.QueueDepth,
                     QueueAgeMs = update.OldestBatchAgeMs,
-                    Detail = $"Code={code}; CorrelationId={correlationId:N}; {reason}"
+                    Detail = $"Code={code}; CorrelationId={correlationId:N}; " +
+                             $"RunId={update.RunId:N}; RunEpoch={update.RunEpoch}; {reason}"
                 });
             }
             catch (Exception ex)
@@ -1056,7 +1118,10 @@ namespace Controller
         }
 
         // Caller holds q.SuppressionGate.
-        private static bool TryHandleSuppressionUnderGate(DeviceQueue q, long sequence)
+        private static bool TryHandleSuppressionUnderGate(
+            DeviceQueue q,
+            long sequence,
+            bool closeFiniteWindow)
         {
             var suppressAfterTicks = Interlocked.Read(ref q.SuppressAfterUtcTicks);
             if (suppressAfterTicks <= 0) return false;
@@ -1073,7 +1138,8 @@ namespace Controller
                 return true;
             }
 
-            if (suppressThroughSequence != long.MaxValue &&
+            if (closeFiniteWindow &&
+                suppressThroughSequence != long.MaxValue &&
                 sequence > suppressThroughSequence)
             {
                 // Per-device processing is FIFO. The first sequence beyond the finite resume
@@ -1081,6 +1147,7 @@ namespace Controller
                 Interlocked.Exchange(ref q.SuppressAfterUtcTicks, 0);
                 Interlocked.Exchange(ref q.SuppressAfterSequence, 0);
                 Interlocked.Exchange(ref q.SuppressThroughSequence, 0);
+                SetCorrelation(q, Guid.Empty);
             }
             return false;
         }
@@ -1121,10 +1188,19 @@ namespace Controller
         private static Guid GetCorrelation(DeviceQueue q)
             => Volatile.Read(ref q.Correlation)?.Value ?? Guid.Empty;
 
-        private static void SetCorrelation(DeviceQueue q, Guid correlationId)
+        private static CorrelationIdentity GetCorrelationIdentity(DeviceQueue q)
+            => Volatile.Read(ref q.Correlation);
+
+        private static void SetCorrelation(
+            DeviceQueue q,
+            Guid correlationId,
+            Guid runId = default,
+            long runEpoch = 0)
             => Volatile.Write(
                 ref q.Correlation,
-                correlationId == Guid.Empty ? null : new CorrelationIdentity(correlationId));
+                correlationId == Guid.Empty
+                    ? null
+                    : new CorrelationIdentity(correlationId, runId, runEpoch));
 
         private static double GetOldestAge(DeviceQueue q)
         {
