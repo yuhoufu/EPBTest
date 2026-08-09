@@ -36,10 +36,6 @@
             this.TsmCharacterPlayBack = new System.Windows.Forms.ToolStripMenuItem();
             this.TsmRawPlayBack = new System.Windows.Forms.ToolStripMenuItem();
             this.TsmSetting = new System.Windows.Forms.ToolStripMenuItem();
-            this.TsmWindows = new System.Windows.Forms.ToolStripMenuItem();
-            this.TsmHorizon = new System.Windows.Forms.ToolStripMenuItem();
-            this.TsmVertical = new System.Windows.Forms.ToolStripMenuItem();
-            this.TsmLayout = new System.Windows.Forms.ToolStripMenuItem();
             this.关于ToolStripMenuItem1 = new System.Windows.Forms.ToolStripMenuItem();
             this.menuStripMain.SuspendLayout();
             this.SuspendLayout();
@@ -53,7 +49,6 @@
             this.TsmDAQ,
             this.TsmPlayBack,
             this.TsmSetting,
-            this.TsmWindows,
             this.关于ToolStripMenuItem1});
             this.menuStripMain.LayoutStyle = System.Windows.Forms.ToolStripLayoutStyle.HorizontalStackWithOverflow;
             this.menuStripMain.Location = new System.Drawing.Point(0, 0);
@@ -112,37 +107,6 @@
             this.TsmSetting.Text = "设置";
             this.TsmSetting.Click += new System.EventHandler(this.TsmSetting_Click);
             // 
-            // TsmWindows
-            // 
-            this.TsmWindows.DropDownItems.AddRange(new System.Windows.Forms.ToolStripItem[] {
-            this.TsmHorizon,
-            this.TsmVertical,
-            this.TsmLayout});
-            this.TsmWindows.Name = "TsmWindows";
-            this.TsmWindows.Size = new System.Drawing.Size(186, 35);
-            this.TsmWindows.Text = "窗口管理（&W)";
-            // 
-            // TsmHorizon
-            // 
-            this.TsmHorizon.Name = "TsmHorizon";
-            this.TsmHorizon.Size = new System.Drawing.Size(278, 44);
-            this.TsmHorizon.Text = "水平平铺(&H)";
-            this.TsmHorizon.Click += new System.EventHandler(this.TsmHorizon_Click);
-            // 
-            // TsmVertical
-            // 
-            this.TsmVertical.Name = "TsmVertical";
-            this.TsmVertical.Size = new System.Drawing.Size(278, 44);
-            this.TsmVertical.Text = "垂直平铺(&V)";
-            this.TsmVertical.Click += new System.EventHandler(this.TsmVertical_Click);
-            // 
-            // TsmLayout
-            // 
-            this.TsmLayout.Name = "TsmLayout";
-            this.TsmLayout.Size = new System.Drawing.Size(278, 44);
-            this.TsmLayout.Text = "层    叠(&L）";
-            this.TsmLayout.Click += new System.EventHandler(this.TsmLayout_Click);
-            // 
             // 关于ToolStripMenuItem1
             // 
             this.关于ToolStripMenuItem1.Name = "关于ToolStripMenuItem1";
@@ -178,10 +142,6 @@
         private System.Windows.Forms.MenuStrip menuStripMain;
         private System.Windows.Forms.ToolStripMenuItem TsmDAQ;
         private System.Windows.Forms.ToolStripMenuItem TsmPlayBack;
-        private System.Windows.Forms.ToolStripMenuItem TsmWindows;
-        private System.Windows.Forms.ToolStripMenuItem TsmHorizon;
-        private System.Windows.Forms.ToolStripMenuItem TsmVertical;
-        private System.Windows.Forms.ToolStripMenuItem TsmLayout;
         private System.Windows.Forms.ToolStripMenuItem 关于ToolStripMenuItem1;
         private System.Windows.Forms.ToolStripMenuItem TsmSetting;
         private System.Windows.Forms.ToolStripMenuItem TsmCharacterPlayBack;

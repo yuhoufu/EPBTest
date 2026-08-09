@@ -5,7 +5,7 @@
     <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
     <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
     <ProjectGuid>{B921A6BD-A621-4FD4-9A47-840865FC82C9}</ProjectGuid>
-    <OutputType>Exe</OutputType>
+    <OutputType>WinExe</OutputType>
     <RootNamespace>MTEmbTest</RootNamespace>
     <AssemblyName>MTTFTest</AssemblyName>
     <ApplicationIcon>..\image\epb-icon-candidates\epb-icon-08.ico</ApplicationIcon>

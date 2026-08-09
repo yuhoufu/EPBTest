@@ -56,50 +56,6 @@ namespace MtEmbTest
                 : $"{productName} V{version}";
         }
 
-
-        /// <summary>
-        ///     水平平铺所有子窗口
-        /// </summary>
-        /// <param name="sender">界面菜单输入</param>
-        /// <param name="e">输入事件</param>
-        /// <returns>void</returns>
-        private void TsmHorizon_Click(object sender, EventArgs e)
-        {
-            LayoutMdi(MdiLayout.TileHorizontal);
-            TsmHorizon.Checked = true;
-            TsmLayout.Checked = false;
-            TsmVertical.Checked = false;
-        }
-
-        /// <summary>
-        ///     垂直平铺所有子窗口
-        /// </summary>
-        /// <param name="sender">界面菜单输入</param>
-        /// <param name="e">输入事件</param>
-        /// <returns>void</returns>
-        private void TsmVertical_Click(object sender, EventArgs e)
-        {
-            LayoutMdi(MdiLayout.TileVertical);
-            TsmHorizon.Checked = false;
-            TsmLayout.Checked = false;
-            TsmVertical.Checked = true;
-        }
-
-        /// <summary>
-        ///     层叠所有子窗口
-        /// </summary>
-        /// <param name="sender">界面菜单输入</param>
-        /// <param name="e">输入事件</param>
-        /// <returns>void</returns>
-        private void TsmLayout_Click(object sender, EventArgs e)
-        {
-            LayoutMdi(MdiLayout.Cascade);
-            TsmHorizon.Checked = false;
-            TsmLayout.Checked = true;
-            TsmVertical.Checked = false;
-        }
-
-
         private void Main_Frm_FormClosing(object sender, FormClosingEventArgs e)
         {
             if (MdiChildren.Length > 0)
@@ -326,14 +282,24 @@ namespace MtEmbTest
 
 
             var Setting = new FrmTestSetting(Cfg);
-            var ScrHeight = Screen.PrimaryScreen.Bounds.Height;
-            var ScrWidth = Screen.PrimaryScreen.Bounds.Width;
-            Setting.Height = ScrHeight * 7 / 10;
-            Setting.Width = ScrWidth * 7 / 10;
-
-            var x = (ScrWidth - Setting.Width) / 2;
-            var y = (ScrHeight - Setting.Height) / 2;
-            Setting.Location = new Point(x, y);
+            var screen = Screen.FromControl(this);
+            var workingArea = screen.WorkingArea;
+            float dpiScale;
+            using (var graphics = CreateGraphics())
+                dpiScale = Math.Max(1F, graphics.DpiX / 96F);
+            var margin = Math.Max(16, (int)Math.Round(16 * dpiScale));
+            var width = Math.Min(
+                (int)Math.Round(1415 * dpiScale),
+                Math.Max(800, workingArea.Width - margin * 2));
+            var height = Math.Min(
+                (int)Math.Round(780 * dpiScale),
+                Math.Max(600, workingArea.Height - margin * 2));
+            Setting.StartPosition = FormStartPosition.Manual;
+            Setting.Bounds = new Rectangle(
+                workingArea.Left + (workingArea.Width - width) / 2,
+                workingArea.Top + (workingArea.Height - height) / 2,
+                width,
+                height);
 
 
             Setting.ShowDialog(this);

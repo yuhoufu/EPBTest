@@ -18,7 +18,15 @@ namespace MtEmbTest
         private readonly Dictionary<string, BindingList<PressureCalibrationRow>> _pressureCalibrationRows =
             new Dictionary<string, BindingList<PressureCalibrationRow>>(StringComparer.OrdinalIgnoreCase);
 
+        private const double PressureCalibrationCommandMatchToleranceBar = 0.01;
+        private static readonly Color PressureCalibrationPrimaryColor = Color.FromArgb(80, 160, 255);
+        private static readonly Color PressureCalibrationPrimaryHoverColor = Color.FromArgb(64, 145, 240);
+        private static readonly Color PressureCalibrationPrimaryPressColor = Color.FromArgb(48, 128, 220);
+        private static readonly Color PressureCalibrationSelectionColor = Color.FromArgb(204, 226, 255);
+        private static readonly Color PressureCalibrationChangedColor = Color.FromArgb(230, 242, 255);
+
         private TabPage tabPagePressureCalibration;
+        private UserControl _pressureCalibrationScaleHost;
         private UIComboBox CmbPressureCalibrationCylinder;
         private UITextBox TxtPressureCalibrationCommand;
         private UITextBox TxtPressureCalibrationMeasured;
@@ -40,6 +48,7 @@ namespace MtEmbTest
         private PressureCalibrationCoordinator _pressureCalibrationCoordinator;
         private bool _updatingMeasuredPressure;
         private bool _measuredPressureEdited;
+        private bool _bindingPressureCalibrationGrid;
         private double _latestPressureBar = double.NaN;
 
         private void InitializePressureCalibrationPage()
@@ -48,13 +57,24 @@ namespace MtEmbTest
             {
                 Name = "tabPagePressureCalibration",
                 Text = "气缸压力输出校正",
-                UseVisualStyleBackColor = true
+                UseVisualStyleBackColor = false,
+                BackColor = Color.FromArgb(243, 249, 255)
+            };
+
+            // 主窗体历史页面使用 AutoScaleMode.None。动态控件的字体会随系统 DPI 放大，
+            // 但 TableLayoutPanel 的绝对行列尺寸不会自动同比放大，因此在页面组装完成后
+            // 再按实际 DPI 显式缩放整个布局树，避免 200% 开发机上文字被裁切。
+            _pressureCalibrationScaleHost = new UserControl
+            {
+                Dock = DockStyle.Fill,
+                BackColor = Color.FromArgb(243, 249, 255),
+                AutoScaleMode = AutoScaleMode.None
             };
 
             var root = new UITableLayoutPanel
             {
                 Dock = DockStyle.Fill,
-                BackColor = Color.FromArgb(248, 250, 252),
+                BackColor = Color.FromArgb(243, 249, 255),
                 ColumnCount = 3,
                 RowCount = 3,
                 Font = new Font("Microsoft YaHei UI", 10F)
@@ -139,6 +159,7 @@ namespace MtEmbTest
             content.Controls.Add(liveBar, 0, 1);
 
             DgvPressureCalibration = NewPressureCalibrationGrid();
+            DgvPressureCalibration.SelectionChanged += PressureCalibrationGridSelectionChanged;
             content.Controls.Add(DgvPressureCalibration, 0, 2);
 
             var footer = new TableLayoutPanel
@@ -157,6 +178,9 @@ namespace MtEmbTest
                 "保存校正", 127, CalibrationButtonStyle.Primary);
             BtnPressureCalibrationClear = NewCalibrationButton(
                 "清空", 87, CalibrationButtonStyle.Secondary);
+            // “清空”所在列较窄，使用与短文本匹配的最小宽度，避免最小宽度
+            // 挤占单元格边距后与右侧“保存校正”按钮贴在一起。
+            BtnPressureCalibrationClear.MinimumSize = new Size(80, 40);
             BtnPressureCalibrationDelete = NewCalibrationButton(
                 "删除选中点", 147, CalibrationButtonStyle.Danger);
             BtnPressureCalibrationRecord = NewCalibrationButton(
@@ -185,7 +209,14 @@ namespace MtEmbTest
             footer.Controls.Add(LblPressureCalibrationStatus, 0, 2);
             content.Controls.Add(footer, 0, 3);
 
-            tabPagePressureCalibration.Controls.Add(root);
+            using (var graphics = CreateGraphics())
+            {
+                var layoutScale = Math.Max(1F, graphics.DpiX / 96F);
+                if (layoutScale > 1.01F)
+                    root.Scale(new SizeF(layoutScale, layoutScale));
+            }
+            _pressureCalibrationScaleHost.Controls.Add(root);
+            tabPagePressureCalibration.Controls.Add(_pressureCalibrationScaleHost);
             TabSetting.TabPages.Insert(Math.Min(2, TabSetting.TabPages.Count), tabPagePressureCalibration);
             TabSetting.SelectedIndexChanged += PressureCalibrationTabChanged;
             FormClosing += FrmTestSettingPressureCalibrationFormClosing;
@@ -227,7 +258,8 @@ namespace MtEmbTest
                                 ? commandPressure
                                 : point.Pressure,
                             MeasuredPressure = point.Pressure,
-                            Voltage = point.Voltage
+                            Voltage = point.Voltage,
+                            IsHistorical = true
                         });
                     }
 
@@ -393,15 +425,30 @@ namespace MtEmbTest
                 return;
             }
 
-            rows.Add(new PressureCalibrationRow
+            var command = _pressureCalibrationCoordinator.ActiveCommandPressureBar;
+            var matchingIndex = CalibrationMath.FindMatchingCommandIndex(
+                rows.Select(x => x.CommandPressure),
+                command,
+                PressureCalibrationCommandMatchToleranceBar);
+            var row = matchingIndex >= 0 ? rows[matchingIndex] : null;
+            var updatedExisting = row != null;
+            if (row == null)
             {
-                CommandPressure = _pressureCalibrationCoordinator.ActiveCommandPressureBar,
-                MeasuredPressure = measured,
-                Voltage = _pressureCalibrationCoordinator.ActiveVoltage
-            });
-            SortPressureCalibrationRows(device);
+                row = new PressureCalibrationRow
+                {
+                    CommandPressure = command,
+                    IsChanged = true
+                };
+                rows.Add(row);
+            }
+
+            row.CommandPressure = command;
+            row.MeasuredPressure = measured;
+            row.Voltage = _pressureCalibrationCoordinator.ActiveVoltage;
+            row.IsChanged = true;
+            SortPressureCalibrationRows(device, row);
             SetPressureCalibrationStatus(
-                $"已记录：命令 {_pressureCalibrationCoordinator.ActiveCommandPressureBar:F2} bar，" +
+                $"已{(updatedExisting ? "更新" : "新增")}第 {row.Sequence} 行：命令 {command:F2} bar，" +
                 $"实测 {measured:F2} bar，AO {_pressureCalibrationCoordinator.ActiveVoltage:F4} V；尚未保存。",
                 false);
         }
@@ -412,9 +459,19 @@ namespace MtEmbTest
             if (device == null || !_pressureCalibrationRows.TryGetValue(device, out var rows) ||
                 !(DgvPressureCalibration.CurrentRow?.DataBoundItem is PressureCalibrationRow row))
                 return;
+            if (MessageBox.Show(
+                    this,
+                    $"确定删除第 {row.Sequence} 行校正点吗？\r\n" +
+                    $"命令 {row.CommandPressure:F2} bar，实测 {row.MeasuredPressure:F2} bar，" +
+                    $"AO {row.Voltage:F4} V\r\n\r\n删除后需点击“保存校正”才会写入配置。",
+                    "确认删除校正点",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning) != DialogResult.Yes)
+                return;
             rows.Remove(row);
             RenumberPressureCalibrationRows(rows);
             BindPressureCalibrationGrid();
+            SetPressureCalibrationStatus("已删除选中校正点；尚未保存。", false);
         }
 
         private void PressureCalibrationClearClick(object sender, EventArgs e)
@@ -430,6 +487,7 @@ namespace MtEmbTest
             {
                 rows.Clear();
                 BindPressureCalibrationGrid();
+                SetPressureCalibrationStatus("当前页面的校正点已清空；尚未保存。", false);
             }
         }
 
@@ -461,6 +519,9 @@ namespace MtEmbTest
                 ShowPressureCalibrationWarning(fitError);
                 return;
             }
+
+            if (!ConfirmMixedPressureCalibrationSave(rows, scaleK, offset, rSquared))
+                return;
 
             try
             {
@@ -497,6 +558,40 @@ namespace MtEmbTest
                 SetPressureCalibrationStatus("保存失败：" + ex.Message, true);
                 MessageBox.Show(this, ex.Message, "保存失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
+        }
+
+        private bool ConfirmMixedPressureCalibrationSave(
+            IEnumerable<PressureCalibrationRow> rows,
+            double mixedScaleK,
+            double mixedOffset,
+            double mixedRSquared)
+        {
+            var analysis = CalibrationMath.AnalyzeMixedCalibration(rows.Select(x =>
+                (x.Voltage, x.MeasuredPressure, x.IsChanged, x.IsHistorical)));
+            if (!analysis.HasMixedData) return true;
+
+            var impact = analysis.CanEvaluateChangedTrend
+                ? $"仅按本次更新点拟合：P = V × {analysis.ChangedScaleK:G7} + " +
+                  $"{analysis.ChangedOffset:G7}\r\n" +
+                  $"未更新旧点偏离本次趋势的最大值：{analysis.MaxUnchangedDeviationBar:F2} bar" +
+                  $"（参考阈值 {analysis.EvaluationToleranceBar:F2} bar）"
+                : "本次有效更新点不足两个，无法独立判断新的压力关系；旧点会直接影响拟合结果。";
+            var risk = analysis.HasMaterialImpact ? "较高" : "可见";
+            var message =
+                $"检测到新旧校正点混合，影响风险：{risk}。\r\n\r\n" +
+                $"本次新增/更新：{analysis.ChangedPointCount} 点\r\n" +
+                $"未更新历史点：{analysis.UnchangedHistoricalPointCount} 点\r\n" +
+                $"混合拟合：P = V × {mixedScaleK:G7} + {mixedOffset:G7}，" +
+                $"R²={mixedRSquared:F5}\r\n{impact}\r\n\r\n" +
+                "建议先更新全部计划压力点，或删除已不适用的旧点，再保存。\r\n" +
+                "是否仍要保存当前混合数据？";
+            return MessageBox.Show(
+                       this,
+                       message,
+                       "新旧校正点混用确认",
+                       MessageBoxButtons.YesNo,
+                       MessageBoxIcon.Warning,
+                       MessageBoxDefaultButton.Button2) == DialogResult.Yes;
         }
 
         private void PressureCalibrationTimerTick(object sender, EventArgs e)
@@ -627,19 +722,40 @@ namespace MtEmbTest
             }
         }
 
-        private void BindPressureCalibrationGrid()
+        private void BindPressureCalibrationGrid(PressureCalibrationRow rowToSelect = null)
         {
             var device = CmbPressureCalibrationCylinder.SelectedItem?.ToString();
             if (device == null || !_pressureCalibrationRows.TryGetValue(device, out var rows))
             {
                 DgvPressureCalibration.DataSource = null;
                 LblPressureCalibrationFormula.Text = string.Empty;
+                UpdatePressureCalibrationActionStates();
                 return;
             }
 
-            DgvPressureCalibration.DataSource = rows;
-            DgvPressureCalibration.CurrentCell = null;
-            DgvPressureCalibration.ClearSelection();
+            _bindingPressureCalibrationGrid = true;
+            try
+            {
+                DgvPressureCalibration.DataSource = rows;
+                DgvPressureCalibration.CurrentCell = null;
+                DgvPressureCalibration.ClearSelection();
+                RefreshPressureCalibrationRowStyles();
+                if (rowToSelect != null)
+                {
+                    foreach (DataGridViewRow gridRow in DgvPressureCalibration.Rows)
+                    {
+                        if (!ReferenceEquals(gridRow.DataBoundItem, rowToSelect)) continue;
+                        gridRow.Selected = true;
+                        DgvPressureCalibration.CurrentCell = gridRow.Cells[0];
+                        break;
+                    }
+                }
+            }
+            finally
+            {
+                _bindingPressureCalibrationGrid = false;
+            }
+
             if (_cfg.AO.Devices.TryGetValue(device, out var config))
             {
                 var current = $"当前公式：P = V × {config.ScaleK:G7} + {config.Offset:G7}";
@@ -654,12 +770,49 @@ namespace MtEmbTest
                 else
                     LblPressureCalibrationFormula.Text = current + "    至少记录两个点后显示拟合预览。";
             }
+            UpdatePressureCalibrationActionStates();
         }
 
-        private void SortPressureCalibrationRows(string device)
+        private void PressureCalibrationGridSelectionChanged(object sender, EventArgs e)
+        {
+            if (_bindingPressureCalibrationGrid) return;
+            UpdatePressureCalibrationActionStates();
+            if (!(DgvPressureCalibration.CurrentRow?.DataBoundItem is PressureCalibrationRow row)) return;
+            if (_pressureCalibrationCoordinator?.IsOutputActive == true)
+            {
+                SetPressureCalibrationStatus("当前仍在输出压力；请先停止输出，再选择其他校正点。", true);
+                return;
+            }
+
+            TxtPressureCalibrationCommand.Text =
+                row.CommandPressure.ToString("F2", CultureInfo.CurrentCulture);
+            SetPressureCalibrationStatus(
+                $"已选择第 {row.Sequence} 行，命令压力已同步为 {row.CommandPressure:F2} bar。",
+                false);
+        }
+
+        private void RefreshPressureCalibrationRowStyles()
+        {
+            foreach (DataGridViewRow gridRow in DgvPressureCalibration.Rows)
+            {
+                var changed = gridRow.DataBoundItem is PressureCalibrationRow row && row.IsChanged;
+                gridRow.DefaultCellStyle.BackColor = changed
+                    ? PressureCalibrationChangedColor
+                    : gridRow.Index % 2 == 0
+                        ? Color.White
+                        : Color.FromArgb(243, 249, 255);
+                gridRow.DefaultCellStyle.ForeColor = changed
+                    ? Color.FromArgb(32, 96, 170)
+                    : Color.FromArgb(48, 48, 48);
+                gridRow.Cells[0].ToolTipText = changed ? "本次校正中已新增或更新，尚未保存" : string.Empty;
+            }
+        }
+
+        private void SortPressureCalibrationRows(string device, PressureCalibrationRow rowToSelect = null)
         {
             var sorted = _pressureCalibrationRows[device]
-                .OrderBy(x => x.MeasuredPressure)
+                .OrderBy(x => x.CommandPressure)
+                .ThenBy(x => x.MeasuredPressure)
                 .ThenBy(x => x.Voltage)
                 .ToArray();
             var rows = new BindingList<PressureCalibrationRow>();
@@ -669,8 +822,7 @@ namespace MtEmbTest
                 rows.Add(sorted[i]);
             }
             _pressureCalibrationRows[device] = rows;
-            DgvPressureCalibration.DataSource = rows;
-            BindPressureCalibrationGrid();
+            BindPressureCalibrationGrid(rowToSelect);
         }
 
         private static void RenumberPressureCalibrationRows(BindingList<PressureCalibrationRow> rows)
@@ -737,8 +889,27 @@ namespace MtEmbTest
             BtnPressureCalibrationOutput.Enabled = sessionStarted && !outputActive;
             BtnPressureCalibrationStop.Enabled = sessionStarted;
             BtnPressureCalibrationRecord.Enabled = sessionStarted && outputActive;
+            BtnPressureCalibrationUseLive.Enabled = sessionStarted && outputActive;
             CmbPressureCalibrationCylinder.Enabled = !outputActive;
             TxtPressureCalibrationCommand.Enabled = !outputActive;
+            TxtPressureCalibrationMeasured.Enabled = sessionStarted && outputActive;
+            DgvPressureCalibration.Enabled = !outputActive;
+            UpdatePressureCalibrationActionStates();
+        }
+
+        private void UpdatePressureCalibrationActionStates()
+        {
+            if (BtnPressureCalibrationDelete == null) return;
+            var outputActive = _pressureCalibrationCoordinator?.IsOutputActive == true;
+            var device = CmbPressureCalibrationCylinder?.SelectedItem?.ToString();
+            BindingList<PressureCalibrationRow> rows = null;
+            var hasRows = device != null &&
+                          _pressureCalibrationRows.TryGetValue(device, out rows) &&
+                          rows.Count > 0;
+            var hasSelection = DgvPressureCalibration?.CurrentRow?.DataBoundItem is PressureCalibrationRow;
+            BtnPressureCalibrationDelete.Enabled = !outputActive && hasSelection;
+            BtnPressureCalibrationClear.Enabled = !outputActive && hasRows;
+            BtnPressureCalibrationSave.Enabled = !outputActive && rows?.Count >= 2;
         }
 
         private void SetPressureCalibrationStatus(string text, bool error)
@@ -831,18 +1002,35 @@ namespace MtEmbTest
             Margin = Padding.Empty
         };
 
-        private static UITextBox NewCalibrationTextBox(string text, int width) => new UITextBox
+        private static UITextBox NewCalibrationTextBox(string text, int width)
         {
-            Text = text,
-            Width = width,
-            Height = 42,
-            MinimumSize = new Size(105, 40),
-            Padding = new Padding(5),
-            Font = new Font("Microsoft YaHei UI", 10F),
-            TextAlignment = ContentAlignment.MiddleCenter,
-            ShowText = false,
-            Margin = Padding.Empty
-        };
+            var textBox = new UITextBox
+            {
+                Text = text,
+                Width = width,
+                Height = 42,
+                MinimumSize = new Size(105, 40),
+                Padding = new Padding(5),
+                Font = new Font("Microsoft YaHei UI", 10F),
+                TextAlignment = ContentAlignment.MiddleCenter,
+                ShowText = false,
+                Margin = Padding.Empty
+            };
+
+            // Sunny.UI 的内部 TextBox 默认会填满放大后的控件高度，单行文字因此靠上。
+            // 让内部文本框保持首选单行高度，再在每次 DPI/布局改变后垂直居中。
+            textBox.TextBox.AutoSize = true;
+            void CenterInnerTextBox(object sender, EventArgs e)
+            {
+                var inner = textBox.TextBox;
+                inner.Width = Math.Max(1, textBox.ClientSize.Width - inner.Left * 2);
+                inner.Top = Math.Max(0, (textBox.ClientSize.Height - inner.Height) / 2);
+            }
+            textBox.SizeChanged += CenterInnerTextBox;
+            textBox.HandleCreated += CenterInnerTextBox;
+            CenterInnerTextBox(textBox, EventArgs.Empty);
+            return textBox;
+        }
 
         private enum CalibrationButtonStyle
         {
@@ -856,9 +1044,9 @@ namespace MtEmbTest
             int width,
             CalibrationButtonStyle style)
         {
-            var primary = Color.FromArgb(3, 105, 161);
-            var primaryHover = Color.FromArgb(2, 132, 199);
-            var primaryPress = Color.FromArgb(7, 89, 133);
+            var primary = PressureCalibrationPrimaryColor;
+            var primaryHover = PressureCalibrationPrimaryHoverColor;
+            var primaryPress = PressureCalibrationPrimaryPressColor;
             var danger = Color.FromArgb(220, 38, 38);
             var button = new UIButton
             {
@@ -927,14 +1115,16 @@ namespace MtEmbTest
                 RowTemplate = { Height = 44 },
                 CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal,
                 GridColor = Color.FromArgb(203, 213, 225),
-                StripeOddColor = Color.FromArgb(248, 250, 252),
+                StripeOddColor = Color.FromArgb(243, 249, 255),
                 Font = new Font("Microsoft YaHei UI", 10F)
             };
             grid.ColumnHeadersDefaultCellStyle = new DataGridViewCellStyle
             {
                 Alignment = DataGridViewContentAlignment.MiddleCenter,
-                BackColor = Color.FromArgb(3, 105, 161),
+                BackColor = PressureCalibrationPrimaryColor,
                 ForeColor = Color.White,
+                SelectionBackColor = PressureCalibrationPrimaryColor,
+                SelectionForeColor = Color.White,
                 Font = new Font("Microsoft YaHei UI", 10F, FontStyle.Bold),
                 WrapMode = DataGridViewTriState.True
             };
@@ -943,15 +1133,15 @@ namespace MtEmbTest
                 Alignment = DataGridViewContentAlignment.MiddleCenter,
                 BackColor = Color.White,
                 ForeColor = Color.FromArgb(30, 41, 59),
-                SelectionBackColor = Color.FromArgb(219, 234, 254),
+                SelectionBackColor = PressureCalibrationSelectionColor,
                 SelectionForeColor = Color.FromArgb(15, 23, 42)
             };
             grid.AlternatingRowsDefaultCellStyle = new DataGridViewCellStyle
             {
                 Alignment = DataGridViewContentAlignment.MiddleCenter,
-                BackColor = Color.FromArgb(248, 250, 252),
+                BackColor = Color.FromArgb(243, 249, 255),
                 ForeColor = Color.FromArgb(30, 41, 59),
-                SelectionBackColor = Color.FromArgb(219, 234, 254),
+                SelectionBackColor = PressureCalibrationSelectionColor,
                 SelectionForeColor = Color.FromArgb(15, 23, 42)
             };
             grid.Columns.Add(new DataGridViewTextBoxColumn
@@ -990,6 +1180,8 @@ namespace MtEmbTest
             public double CommandPressure { get; set; }
             public double MeasuredPressure { get; set; }
             public double Voltage { get; set; }
+            public bool IsHistorical { get; set; }
+            public bool IsChanged { get; set; }
         }
     }
 }
