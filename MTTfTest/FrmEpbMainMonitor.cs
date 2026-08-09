@@ -158,6 +158,8 @@ namespace MTEmbTest
 
         /// <summary>防止 OnFormClosing 重入执行。</summary>
         private int _closingReentry = 0;
+        private int _closeSafetyWarningShown;
+        private int _closePersistenceWarningShown;
 
         private string _currentDev = "EMB1"; // 添加私有字段
 
@@ -2510,11 +2512,15 @@ namespace MTEmbTest
                         items.Add("电机DO关闭未确认：" + (safety.MotorError ?? "无详细信息"));
                     if (!safety.PowerOffConfirmed)
                         items.Add("程控电源关闭回读未确认：" + (safety.PowerError ?? "无详细信息"));
-                    MessageBox.Show(
-                        string.Join("\r\n", items) + "\r\n\r\n窗口保持打开，请检查后重试关闭。",
-                        "安全关闭未确认",
-                        MessageBoxButtons.OK,
-                        MessageBoxIcon.Error);
+                    if (Interlocked.Exchange(ref _closeSafetyWarningShown, 1) == 0)
+                        MessageBox.Show(
+                            string.Join("\r\n", items) +
+                            "\r\n\r\n窗口保持打开，请检查后重试关闭；后续重试只更新日志，不再重复弹框。",
+                            "安全关闭未确认",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Error);
+                    else
+                        LogInfo("[安全关闭重试] " + string.Join("; ", items));
                     _isClosing = false;
                     Interlocked.Exchange(ref _closingReentry, 0);
                     return;
@@ -2522,16 +2528,22 @@ namespace MTEmbTest
 
                 if (!safety.CanCloseApplication)
                 {
-                    MessageBox.Show(
+                    var persistenceMessage =
                         "电机和程控电源已经安全关闭，但最后一批 Raw/SQLite 数据尚未完成落盘。\r\n" +
                         (string.IsNullOrWhiteSpace(safety.PersistenceError)
                             ? "写盘恢复链仍在后台重试。"
                             : safety.PersistenceError) +
                         "\r\n\r\n窗口保持打开，禁止结束进程。请恢复磁盘/网络存储后再次关闭，" +
-                        "避免丢失最后圈或报警证据。",
-                        "数据耐久边界未确认",
-                        MessageBoxButtons.OK,
-                        MessageBoxIcon.Error);
+                        "避免丢失最后圈或报警证据。后续重试只更新日志，不再重复弹框。";
+                    if (Interlocked.Exchange(ref _closePersistenceWarningShown, 1) == 0)
+                        MessageBox.Show(
+                            persistenceMessage,
+                            "数据耐久边界未确认",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Error);
+                    else
+                        LogInfo("[关闭重试] 数据耐久边界仍未确认：" +
+                                (safety.PersistenceError ?? "无详细信息"));
                     _isClosing = false;
                     Interlocked.Exchange(ref _closingReentry, 0);
                     return;

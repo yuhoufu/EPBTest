@@ -51,6 +51,7 @@ namespace AdaptiveControlTests
             Run("Stat流式中值保留跨批次尾部", StreamingStatMedianCarriesTailAcrossBatches, ref passed);
             Run("恢复后定时器只在未来完整周期锚点执行", TimerResumesAtFutureCompleteBoundary, ref passed);
             Run("暂停数据链必须越过捕获边界且无在途Raw", PauseDrainRequiresAllPipelineBoundaries, ref passed);
+            Run("停止边界排除已编号但未被后台接收的末批", RejectedFinalBatchDoesNotPoisonStopBoundary, ref passed);
             Run("恢复成功超时停止硬件确认并发只提交一个终态", RecoveryTerminalGateCommitsExactlyOnce, ref passed);
             Run("DAQ探测能力缺失不能误确认为硬件拔除", ProbeCapabilityMissingIsNotHardwareEvidence, ref passed);
             Run("DAQ事故关联去重优先级与新运行复位", IncidentCorrelationAndPriority, ref passed);
@@ -182,6 +183,22 @@ namespace AdaptiveControlTests
             Assert(!TwoDeviceAiAcquirer.IsBackgroundPipelineDrained(
                     100, 100, 200, 200, 100, 199),
                 "Dev2 Raw尚未移交到写盘队列时错误完成暂停排空");
+        }
+
+        private static void RejectedFinalBatchDoesNotPoisonStopBoundary()
+        {
+            var sequence = new DaqPipelineSequenceState();
+            var accepted = sequence.Allocate();
+            sequence.Accept(accepted);
+            var rejected = sequence.Allocate();
+
+            Assert(sequence.LastAllocated == rejected && rejected == accepted + 1,
+                "拒绝批次没有保留诊断序号");
+            Assert(sequence.LastAccepted == accepted,
+                "未入后台队列的末批错误扩大了停止耐久边界");
+            Assert(TwoDeviceAiAcquirer.IsBackgroundPipelineDrained(
+                    accepted, sequence.LastAccepted, 0, 0, accepted, 0),
+                "已接收前缀全部发布后仍被不存在的拒绝末批永久阻塞");
         }
 
         private static void RingOrderCapacityResetAndIsolation()

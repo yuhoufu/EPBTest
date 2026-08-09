@@ -24,8 +24,8 @@ class FieldGateValidatorTests(unittest.TestCase):
         sha = "a" * 64
         commit = "b" * 40
         (log / "run.log").write_text(
-            "2026-08-08 10:00:00.000\tINFO\t启动\tProductVersion=V2.12.0.22\n"
-            f"2026-08-08 10:00:00.000\tINFO\tFIELD\tFieldMetric SESSION Phase=Start RunId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa Channels=4,9 Closed=False Detail=BatchFormal ProductVersion=V2.12.0.22 AssemblyVersion=2.12.0.22 ProcessId=1234 ExecutablePath=D:\\EPBTest\\MTTFTest.exe ExeSha256={sha} ConfigSha256={sha} GitCommit={commit} GitDirty=False BuildUtc=2026-08-08T00:00:00Z\n"
+            "2026-08-08 10:00:00.000\tINFO\t启动\tProductVersion=V2.12.0.23\n"
+            f"2026-08-08 10:00:00.000\tINFO\tFIELD\tFieldMetric SESSION Phase=Start RunId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa Channels=4,9 Closed=False Detail=BatchFormal ProductVersion=V2.12.0.23 AssemblyVersion=2.12.0.23 ProcessId=1234 ExecutablePath=D:\\EPBTest\\MTTFTest.exe ExeSha256={sha} ConfigSha256={sha} GitCommit={commit} GitDirty=False BuildUtc=2026-08-08T00:00:00Z\n"
             "2026-08-08 10:00:00.100\tINFO\tFIELD\tFieldMetric STATE RunId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa Device=Dev1 Channel=4 State=Running Reason=Running Revision=1 CorrelationId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa RunEpoch=1 Enabled=True Formal=True Timer=True Runner=True Energized=False\n"
             "2026-08-08 10:00:00.100\tINFO\tFIELD\tFieldMetric STATE RunId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa Device=Dev2 Channel=9 State=Running Reason=Running Revision=1 CorrelationId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa RunEpoch=1 Enabled=True Formal=True Timer=True Runner=True Energized=False\n"
             "2026-08-08 10:00:01.000\tINFO\tFIELD\tFieldMetric DAQ Phase=Running Device=Dev1 ControlDepth=0 ControlOldestMs=0.0 ControlProcessMs=1.0 SubscriberMaxMs=1.0 PersistenceState=Recovered PersistenceDepth=1 PersistenceOldestMs=5.0 CallbackAgeMs=10.0 ControlProcessedAgeMs=10.0 Produced=100 Processed=100 Published=100 Persisted=99 Discontinuities=0 DurabilityBlocked=False Suppressed=0 Discarded=0 OverCapacityDropped=0\n"
@@ -40,7 +40,7 @@ class FieldGateValidatorTests(unittest.TestCase):
             "2026-08-08 10:59:58.000\tINFO\tFIELD\tFieldMetric STATE RunId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa Device=Dev2 Channel=9 State=ManualStopped Reason=StopAll Revision=2 CorrelationId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa RunEpoch=1 Enabled=True Formal=False Timer=False Runner=False Energized=False\n"
             "2026-08-08 10:59:59.000\tINFO\tFIELD\tFieldMetric STOP_PERSISTENCE Device=Dev1 RawDrained=True Boundary=100 Published=100 Persisted=100 Depth=0 State=Recovered Closed=True\n"
             "2026-08-08 10:59:59.000\tINFO\tFIELD\tFieldMetric STOP_PERSISTENCE Device=Dev2 RawDrained=True Boundary=100 Published=100 Persisted=100 Depth=0 State=Recovered Closed=True\n"
-            "2026-08-08 11:00:00.000\tINFO\tFIELD\tFieldMetric SESSION Phase=Stop RunId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa Channels=4,9 Closed=True Detail=ManualUi ProductVersion=V2.12.0.22 ExeSha256=unused ConfigSha256=unused GitCommit=unused GitDirty=False BuildUtc=unused\n"
+            "2026-08-08 11:00:00.000\tINFO\tFIELD\tFieldMetric SESSION Phase=Stop RunId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa Channels=4,9 Closed=True Detail=ManualUi ProductVersion=V2.12.0.23 ExeSha256=unused ConfigSha256=unused GitCommit=unused GitDirty=False BuildUtc=unused\n"
             "2026-08-08 11:00:00.001\tINFO\t停止\tNormal Stop\n",
             encoding="utf-8",
         )
@@ -59,22 +59,37 @@ class FieldGateValidatorTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
-    def run_gate(self) -> tuple[subprocess.CompletedProcess[str], dict]:
+    def run_gate(
+        self,
+        extra_arguments: list[str] | None = None,
+    ) -> tuple[subprocess.CompletedProcess[str], dict]:
         output_json = self.root / "gate.json"
+        arguments = [
+            sys.executable,
+            str(SCRIPT),
+            str(self.root),
+            "--minimum-hours",
+            "1",
+            "--performance-gates",
+            "required",
+            "--expected-exe-sha256",
+            "a" * 64,
+            "--expected-config-sha256",
+            "a" * 64,
+            "--expected-git-commit",
+            "b" * 40,
+            "--expected-build-utc",
+            "2026-08-08T00:00:00Z",
+        ]
+        arguments.extend(extra_arguments or [])
+        arguments.extend([
+            "--output-md",
+            str(self.root / "gate.md"),
+            "--output-json",
+            str(output_json),
+        ])
         process = subprocess.run(
-            [
-                sys.executable,
-                str(SCRIPT),
-                str(self.root),
-                "--minimum-hours",
-                "1",
-                "--performance-gates",
-                "required",
-                "--output-md",
-                str(self.root / "gate.md"),
-                "--output-json",
-                str(output_json),
-            ],
+            arguments,
             text=True,
             capture_output=True,
             check=False,
@@ -85,6 +100,28 @@ class FieldGateValidatorTests(unittest.TestCase):
         process, result = self.run_gate()
         self.assertEqual(0, process.returncode, process.stderr + process.stdout)
         self.assertEqual("PASS", result["status"])
+
+    def test_formal_release_identity_mismatch_fails(self) -> None:
+        run_log = self.root / "log" / "run.log"
+        text = run_log.read_text(encoding="utf-8")
+        text = text.replace("ExeSha256=" + "a" * 64, "ExeSha256=" + "c" * 64, 1)
+        run_log.write_text(text, encoding="utf-8")
+        process, result = self.run_gate()
+        self.assertEqual(2, process.returncode)
+        failures = {item["name"] for item in result["checks"] if not item["passed"]}
+        self.assertIn("运行身份与已校验正式候选完全一致", failures)
+
+    def test_formal_gate_rejects_partial_scan_modes(self) -> None:
+        process, result = self.run_gate([
+            "--log-scan", "quick",
+            "--artifact-scan", "none",
+            "--database-scan", "none",
+        ])
+        self.assertEqual(2, process.returncode)
+        failures = {item["name"] for item in result["checks"] if not item["passed"]}
+        self.assertIn("正式放行使用完整日志扫描", failures)
+        self.assertIn("正式放行使用完整事故证据扫描", failures)
+        self.assertIn("正式放行使用完整数据库扫描", failures)
 
     def test_ui_single_flush_over_200ms_fails(self) -> None:
         run_log = self.root / "log" / "run.log"
@@ -120,8 +157,8 @@ class FieldGateValidatorTests(unittest.TestCase):
 
     def test_incident_phases_with_complete_build_identity_pass(self) -> None:
         identity = {
-            "productVersion": "V2.12.0.22",
-            "assemblyVersion": "2.12.0.22",
+            "productVersion": "V2.12.0.23",
+            "assemblyVersion": "2.12.0.23",
             "executablePath": r"D:\EPBTest\MTTFTest.exe",
             "executableSha256": "a" * 64,
             "configSha256": "a" * 64,
@@ -225,7 +262,7 @@ class FieldGateValidatorTests(unittest.TestCase):
         second = (
             "2026-08-08 10:30:00.000\tINFO\tFIELD\t"
             "FieldMetric SESSION Phase=Start RunId=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb Channels=4,9 Closed=False "
-            "Detail=BatchFormal ProductVersion=V2.12.0.22 ExeSha256=" + "a" * 64 +
+            "Detail=BatchFormal ProductVersion=V2.12.0.23 ExeSha256=" + "a" * 64 +
             " ConfigSha256=" + "a" * 64 + " GitCommit=" + "b" * 40 +
             " GitDirty=False BuildUtc=2026-08-08T00:30:00Z\n"
         )
@@ -246,7 +283,7 @@ class FieldGateValidatorTests(unittest.TestCase):
         latest = (
             "2026-08-08 11:30:00.000\tINFO\tFIELD\t"
             "FieldMetric SESSION Phase=Start RunId=latest-unsealed Channels=4,9 Closed=False "
-            "Detail=BatchFormal ProductVersion=V2.12.0.22 ExeSha256=" + "a" * 64 +
+            "Detail=BatchFormal ProductVersion=V2.12.0.23 ExeSha256=" + "a" * 64 +
             " ConfigSha256=" + "a" * 64 + " GitCommit=" + "b" * 40 +
             " GitDirty=False BuildUtc=2026-08-08T01:30:00Z\n"
         )
@@ -263,7 +300,7 @@ class FieldGateValidatorTests(unittest.TestCase):
         duplicate = (
             "2026-08-08 11:00:00.500\tINFO\tFIELD\t"
             "FieldMetric SESSION Phase=Complete RunId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa Channels=4,9 Closed=True "
-            "Detail=Duplicate ProductVersion=V2.12.0.22 ExeSha256=unused "
+            "Detail=Duplicate ProductVersion=V2.12.0.23 ExeSha256=unused "
             "ConfigSha256=unused GitCommit=unused GitDirty=False BuildUtc=unused\n"
         )
         run_log.write_text(text + duplicate, encoding="utf-8")

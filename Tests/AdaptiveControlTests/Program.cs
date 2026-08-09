@@ -3936,6 +3936,13 @@ namespace AdaptiveControlTests
                        StopSource.ManualUi,
                        persistenceBoundaryConfirmed: true),
                 "写盘器关闭策略没有区分退出和普通停止");
+            Assert(EpbManager.ShouldStopAcquisitionBeforeFinalPersistence(
+                       StopSource.ApplicationClosing) &&
+                   EpbManager.ShouldStopAcquisitionBeforeFinalPersistence(
+                       StopSource.ProgramExit) &&
+                   !EpbManager.ShouldStopAcquisitionBeforeFinalPersistence(
+                       StopSource.ManualUi),
+                "退出前停止DAQ的最终边界策略没有区分进程退出和普通停止");
 
             var powerMissing = new StopSafetyResult
             {

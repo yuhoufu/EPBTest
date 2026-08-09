@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate a sealed EPB project directory against V2.12.0.22 field red lines."""
+"""Validate a sealed EPB project directory against V2.12.0.23 field red lines."""
 
 from __future__ import annotations
 
@@ -963,7 +963,7 @@ def percentile(values: list[float], fraction: float) -> float | None:
 
 def markdown(result: dict) -> str:
     lines = [
-        f"# EPB V2.12.0.22 现场封存验收：{result['status']}",
+        f"# EPB V2.12.0.23 现场封存验收：{result['status']}",
         "",
         f"- 数据目录：`{result['data_directory']}`",
         f"- 生成时间：{result['generated_at']}",
@@ -998,7 +998,11 @@ def markdown(result: dict) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("data_directory", type=Path)
-    parser.add_argument("--expected-version", default="V2.12.0.22")
+    parser.add_argument("--expected-version", default="V2.12.0.23")
+    parser.add_argument("--expected-exe-sha256")
+    parser.add_argument("--expected-config-sha256")
+    parser.add_argument("--expected-git-commit")
+    parser.add_argument("--expected-build-utc")
     parser.add_argument("--minimum-hours", type=float, default=0.0)
     parser.add_argument(
         "--artifact-scan",
@@ -1070,13 +1074,24 @@ def main() -> int:
     }
     checks: list[Check] = []
     checks.append(Check("日志存在", bool(logs), f"files={len(logs)}"))
-    if args.log_scan == "quick":
-        checks.append(Check(
-            "完整日志扫描",
-            True,
-            "已显式使用quick；仅允许历史UNC快速诊断，不可用于正式放行",
-            required=False,
-        ))
+    checks.append(Check(
+        "正式放行使用完整日志扫描",
+        args.log_scan == "full",
+        f"mode={args.log_scan}; quick仅允许历史UNC快速诊断",
+        required=performance_required,
+    ))
+    checks.append(Check(
+        "正式放行使用完整事故证据扫描",
+        args.artifact_scan == "full",
+        f"mode={args.artifact_scan}; none仅允许历史UNC快速诊断",
+        required=performance_required,
+    ))
+    checks.append(Check(
+        "正式放行使用完整数据库扫描",
+        args.database_scan == "full",
+        f"mode={args.database_scan}; none仅允许历史UNC快速诊断",
+        required=performance_required,
+    ))
     checks.append(Check(
         "运行时长达到门槛",
         duration_hours >= max(0.0, args.minimum_hours),
@@ -1140,9 +1155,60 @@ def main() -> int:
             required=performance_required,
         ))
 
+    expected_identity_values = {
+        "ExeSha256": args.expected_exe_sha256,
+        "ConfigSha256": args.expected_config_sha256,
+        "GitCommit": args.expected_git_commit,
+        "BuildUtc": args.expected_build_utc,
+    }
+    identity_binding_requested = any(expected_identity_values.values())
+    expected_hash = re.compile(r"^[0-9a-fA-F]{64}$")
+    expected_commit = re.compile(r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
+    identity_binding_complete = (
+        expected_hash.fullmatch(args.expected_exe_sha256 or "") is not None
+        and expected_hash.fullmatch(args.expected_config_sha256 or "") is not None
+        and expected_commit.fullmatch(args.expected_git_commit or "") is not None
+        and bool((args.expected_build_utc or "").strip())
+    )
+    observed_identity = session.start_record if session else {}
+    identity_binding_matches = (
+        identity_binding_complete
+        and (observed_identity.get("ExeSha256") or "").lower()
+        == (args.expected_exe_sha256 or "").lower()
+        and (observed_identity.get("ConfigSha256") or "").lower()
+        == (args.expected_config_sha256 or "").lower()
+        and (observed_identity.get("GitCommit") or "").lower()
+        == (args.expected_git_commit or "").lower()
+        and (observed_identity.get("BuildUtc") or "")
+        == (args.expected_build_utc or "")
+        and boolean(observed_identity.get("GitDirty")) is False
+    )
+    binding_required = performance_required or identity_binding_requested
+    checks.append(Check(
+        "运行身份与已校验正式候选完全一致",
+        identity_binding_matches if binding_required else True,
+        "expected=" + json.dumps(expected_identity_values, ensure_ascii=False) +
+        "; observed=" + json.dumps({
+            key: observed_identity.get(key) for key in expected_identity_values
+        }, ensure_ascii=False),
+        required=binding_required,
+    ))
+    metrics["formal_release_identity_binding_required"] = binding_required
+    metrics["formal_release_identity_binding_complete"] = identity_binding_complete
+    metrics["formal_release_identity_binding_matches"] = identity_binding_matches
+
     versions = sorted(set(VERSION.findall(combined)))
     identities = validate_incidents(root, checks, metrics, args.artifact_scan)
-    validate_alarm_snapshots(root, checks, metrics)
+    if args.artifact_scan == "full":
+        validate_alarm_snapshots(root, checks, metrics)
+    else:
+        metrics["alarm_snapshot_scan_mode"] = "none"
+        checks.append(Check(
+            "硬报警快照深度审计",
+            True,
+            "已显式跳过；仅允许历史UNC快速诊断，不可用于正式放行",
+            required=False,
+        ))
     identity_versions = sorted({str(item.get("productVersion")) for item in identities if item.get("productVersion")})
     version_evidence = set(value.upper().lstrip("V") for value in versions)
     if session:

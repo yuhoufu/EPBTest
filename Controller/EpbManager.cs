@@ -3036,7 +3036,7 @@ namespace Controller
                         : 0);
                 Interlocked.Exchange(
                     ref context.CutoffPersistenceBoundary,
-                    _acq.GetLastProducedSequence(device));
+                    _acq.GetLastAcceptedSequence(device));
                 await RecoveryStageDeadline.RunAsync(
                         "DaqCutoffHydraulicRelease",
                         RecoveryStageTimeoutMs,
@@ -5640,8 +5640,8 @@ namespace Controller
                 $"StopAll:{context.Source}");
             var stopPersistenceBoundaries = new Dictionary<string, long>
             {
-                ["Dev1"] = _acq.GetLastProducedSequence("Dev1"),
-                ["Dev2"] = _acq.GetLastProducedSequence("Dev2")
+                ["Dev1"] = _acq.GetLastAcceptedSequence("Dev1"),
+                ["Dev2"] = _acq.GetLastAcceptedSequence("Dev2")
             };
             if (context.Source == StopSource.ManualUi ||
                 context.Source == StopSource.ApplicationClosing ||
@@ -5751,6 +5751,16 @@ namespace Controller
             var powerTask = ConfirmPowerOffForStopAsync(context, token);
             var pressure = await pressureTask.ConfigureAwait(false);
             var power = await powerTask.ConfigureAwait(false);
+            // 退出进程前必须先停止新回调，再确定最终耐久边界；否则 DAQ 在边界检查
+            // 与 Dispose 之间仍可接收新批次，最后一批可能没有机会完成 Raw/SQLite 落盘。
+            if (ShouldStopAcquisitionBeforeFinalPersistence(context.Source))
+            {
+                try { _acq.Stop(); }
+                catch (Exception ex)
+                {
+                    _log.Warn($"退出前停止DAQ失败，将继续按已接收边界排空：{ex.Message}", "AI");
+                }
+            }
             var persistenceBoundaries = await WaitForStopPersistenceBoundariesAsync(
                     stopPersistenceBoundaries,
                     10000)

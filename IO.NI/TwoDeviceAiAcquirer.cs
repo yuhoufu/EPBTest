@@ -21,6 +21,32 @@ using System.Threading.Tasks;
 
 namespace IO.NI
 {
+    /// <summary>
+    ///     分离“回调已经分配的序号”和“后台 Raw/SQLite 流水线已经接收的序号”。
+    ///     队列拒绝最后一批时，已分配序号不能作为停止耐久边界，否则进程会永久等待一个
+    ///     从未进入流水线、也不可能落盘的批次。
+    /// </summary>
+    internal sealed class DaqPipelineSequenceState
+    {
+        private long _lastAllocated;
+        private long _lastAccepted;
+
+        internal long Allocate() => Interlocked.Increment(ref _lastAllocated);
+
+        internal void Accept(long sequence)
+        {
+            long observed;
+            do
+            {
+                observed = Interlocked.Read(ref _lastAccepted);
+                if (sequence <= observed) return;
+            } while (Interlocked.CompareExchange(ref _lastAccepted, sequence, observed) != observed);
+        }
+
+        internal long LastAllocated => Interlocked.Read(ref _lastAllocated);
+        internal long LastAccepted => Interlocked.Read(ref _lastAccepted);
+    }
+
     public sealed class DaqDiagnosticsCapture
     {
         internal DaqTimingValue[] Records { get; set; } = Array.Empty<DaqTimingValue>();
@@ -649,8 +675,8 @@ namespace IO.NI
         private readonly object _taskGateDev2 = new();
         private long _generationDev1;
         private long _generationDev2;
-        private long _batchSequenceDev1;
-        private long _batchSequenceDev2;
+        private readonly DaqPipelineSequenceState _sequenceDev1 = new();
+        private readonly DaqPipelineSequenceState _sequenceDev2 = new();
         private long _diskPublishedSequenceDev1;
         private long _diskPublishedSequenceDev2;
         private long _rawTransferredSequenceDev1;
@@ -1718,8 +1744,17 @@ namespace IO.NI
 
         public long GetLastProducedSequence(string device)
             => string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase)
-                ? Interlocked.Read(ref _batchSequenceDev1)
-                : Interlocked.Read(ref _batchSequenceDev2);
+                ? _sequenceDev1.LastAllocated
+                : _sequenceDev2.LastAllocated;
+
+        /// <summary>
+        ///     返回已成功进入后台工程处理/Raw 发布流水线的最后序号。
+        ///     停止、恢复和持久化截止只能使用此边界，不能使用仅分配但可能被队列拒绝的序号。
+        /// </summary>
+        public long GetLastAcceptedSequence(string device)
+            => string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase)
+                ? _sequenceDev1.LastAccepted
+                : _sequenceDev2.LastAccepted;
 
         public long GetLastDiskPublishedSequence(string device)
             => string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase)
@@ -2224,8 +2259,8 @@ namespace IO.NI
         public async Task<bool> StopAndDrainAsync(int timeoutMs)
         {
             Stop();
-            var dev1Boundary = GetLastProducedSequence("Dev1");
-            var dev2Boundary = GetLastProducedSequence("Dev2");
+            var dev1Boundary = GetLastAcceptedSequence("Dev1");
+            var dev2Boundary = GetLastAcceptedSequence("Dev2");
             return await WaitForBackgroundPipelinesAsync(
                     dev1Boundary,
                     dev2Boundary,
@@ -2242,8 +2277,8 @@ namespace IO.NI
             int timeoutMs,
             CancellationToken token = default)
         {
-            var dev1Boundary = GetLastProducedSequence("Dev1");
-            var dev2Boundary = GetLastProducedSequence("Dev2");
+            var dev1Boundary = GetLastAcceptedSequence("Dev1");
+            var dev2Boundary = GetLastAcceptedSequence("Dev2");
             return WaitForBackgroundPipelinesAsync(dev1Boundary, dev2Boundary, timeoutMs, token);
         }
 
@@ -2361,8 +2396,8 @@ namespace IO.NI
                     last = timeline.PreviousBatchEndUtc;
                     driftMs = timeline.ArrivalDelayMs;
                     sequence = string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase)
-                        ? Interlocked.Increment(ref _batchSequenceDev1)
-                        : Interlocked.Increment(ref _batchSequenceDev2);
+                        ? _sequenceDev1.Allocate()
+                        : _sequenceDev2.Allocate();
                     if (_callbackTimingDiag.TryGetValue(device, out var sequenceDiag))
                     {
                         Interlocked.Exchange(ref sequenceDiag.LastBatchSequence, sequence);
@@ -3793,6 +3828,9 @@ namespace IO.NI
                         oldestAgeMs);
                     return false;
                 }
+                // TryEnter 成功后 ConcurrentQueue.Enqueue 不会按容量拒绝。先公布接收边界，
+                // 再使 Item 对消费者可见，避免停止线程在两步之间漏掉真实在途批次。
+                _sequenceDev1.Accept(item.Sequence);
                 _queueDev1.Enqueue(item);
                 TrySignal(_queueSignalDev1);
             }
@@ -3814,6 +3852,7 @@ namespace IO.NI
                         oldestAgeMs);
                     return false;
                 }
+                _sequenceDev2.Accept(item.Sequence);
                 _queueDev2.Enqueue(item);
                 TrySignal(_queueSignalDev2);
             }

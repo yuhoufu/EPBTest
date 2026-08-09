@@ -150,6 +150,9 @@ namespace Controller
             => boundary >= 0 && published >= boundary && persisted >= boundary && queueDepth == 0 &&
                state == DaqPersistenceState.Recovered;
 
+        internal static bool ShouldStopAcquisitionBeforeFinalPersistence(StopSource source)
+            => source == StopSource.ApplicationClosing || source == StopSource.ProgramExit;
+
         private async Task<StopPersistenceBoundaryResult[]> WaitForStopPersistenceBoundariesAsync(
             IReadOnlyDictionary<string, long> boundaries,
             int timeoutMs)
