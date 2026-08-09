@@ -5,8 +5,8 @@
 
 $ErrorActionPreference = 'Stop'
 
-$expectedProductVersion = '2.12.0.27'
-$expectedProductLabel = 'V2.12.0.27'
+$expectedProductVersion = '2.12.0.28'
+$expectedProductLabel = 'V2.12.0.28'
 $expectedAssemblyName = 'MTTFTest'
 $expectedPublishedConfigs = @(
     'Config/AIConfig.xml',

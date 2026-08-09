@@ -1416,7 +1416,7 @@ namespace AdaptiveControlTests
             Directory.CreateDirectory(root);
             try
             {
-                const string version = "V2.12.0.27";
+                const string version = "V2.12.0.28";
                 const string commit = "0123456789abcdef0123456789abcdef01234567";
                 const string buildUtc = "2026-08-09T13:00:00.0000000Z";
                 const string configSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate a sealed EPB project directory against V2.12.0.27 field red lines."""
+"""Validate a sealed EPB project directory against V2.12.0.28 field red lines."""
 
 from __future__ import annotations
 
@@ -2118,7 +2118,7 @@ def serialized_check(check: Check) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("data_directory", type=Path)
-    parser.add_argument("--expected-version", default="V2.12.0.27")
+    parser.add_argument("--expected-version", default="V2.12.0.28")
     parser.add_argument("--expected-exe-sha256")
     parser.add_argument("--expected-config-sha256")
     parser.add_argument("--expected-git-commit")
