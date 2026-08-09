@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Validate a sealed EPB project directory against V2.12.0.26 field red lines."""
+"""Validate a sealed EPB project directory against V2.12.0.27 field red lines."""
 
 from __future__ import annotations
 
 import argparse
 import csv
 import json
+import math
 import os
 import re
 import shutil
@@ -258,6 +259,95 @@ def positive_integer(value: object) -> bool:
         return False
 
 
+def nonnegative_integer_argument(value: str) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError("必须是非负整数") from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("必须是非负整数")
+    return parsed
+
+
+def bounded_positive_float_argument(value: str, hard_maximum: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError("必须是大于0的数") from exc
+    if not math.isfinite(parsed) or parsed <= 0 or parsed > hard_maximum:
+        raise argparse.ArgumentTypeError(f"必须位于(0,{hard_maximum}]")
+    return parsed
+
+
+def coverage_argument(value: str) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError("覆盖率必须位于[0.95,1]") from exc
+    if not math.isfinite(parsed) or parsed < 0.95 or parsed > 1:
+        raise argparse.ArgumentTypeError("覆盖率必须位于[0.95,1]")
+    return parsed
+
+
+def integer_value(record: dict[str, str], key: str) -> int | None:
+    try:
+        return int(str(record[key]).strip())
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def finite_float_value(record: dict[str, str], key: str) -> float | None:
+    try:
+        value = float(str(record[key]).strip().rstrip("%"))
+        return value if math.isfinite(value) else None
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def session_channels(session: ValidationSession | None) -> set[str]:
+    if session is None:
+        return set()
+    return {
+        value
+        for value in session.start_record.get("Channels", "").split(",")
+        if value.isdigit()
+    }
+
+
+def heartbeat_summary(
+    records: list[dict[str, str]],
+    started: datetime,
+    ended: datetime,
+    expected_interval_seconds: float,
+) -> dict[str, float | int | None]:
+    timestamps = sorted({
+        timestamp
+        for record in records
+        if (timestamp := record_timestamp(record)) is not None
+        and started <= timestamp <= ended
+    })
+    duration_seconds = max(0.0, (ended - started).total_seconds())
+    expected_samples = max(1, int(math.ceil(duration_seconds / expected_interval_seconds)))
+    coverage = min(1.0, len(timestamps) / expected_samples)
+    gaps = [duration_seconds]
+    if timestamps:
+        gaps = [
+            max(0.0, (timestamps[0] - started).total_seconds()),
+            max(0.0, (ended - timestamps[-1]).total_seconds()),
+        ]
+        gaps.extend(
+            max(0.0, (current - previous).total_seconds())
+            for previous, current in zip(timestamps, timestamps[1:])
+        )
+    return {
+        "samples": len(timestamps),
+        "records": len(records),
+        "expected_samples": expected_samples,
+        "coverage": coverage,
+        "maximum_gap_seconds": max(gaps),
+    }
+
+
 def add_limit_check(
     checks: list[Check],
     name: str,
@@ -279,8 +369,15 @@ def validate_performance_metrics(
     checks: list[Check],
     metrics: dict,
     required: bool,
-    expected_run_id: str | None,
+    session: ValidationSession | None,
+    minimum_formal_cycles_per_channel: int,
+    minimum_heartbeat_coverage: float,
+    daq_heartbeat_max_gap_seconds: float,
+    ui_heartbeat_max_gap_seconds: float,
+    host_heartbeat_max_gap_seconds: float,
 ) -> None:
+    expected_run_id = session.run_id if session else None
+    expected_channels = session_channels(session)
     field = parse_key_value_records(logs, "FieldMetric ")
     daq = [item for item in field if item.get("Kind") == "DAQ" and item.get("Phase") == "Running"]
     do_off = [item for item in field if item.get("Kind") == "DO_OFF"]
@@ -289,7 +386,7 @@ def validate_performance_metrics(
     cycle_candidates = [
         item for item in field
         if item.get("Kind") == "CYCLE" and item.get("Phase") == "Formal"
-        and item.get("Result", "").lower() == "success"
+        and item.get("Result", "").lower() in {"success", "successwithwarning"}
     ]
     foreign_cycle_run_ids = sorted({
         normalized_guid(item.get("RunId")) or f"invalid:{item.get('RunId', '')}"
@@ -323,6 +420,264 @@ def validate_performance_metrics(
         expected_run_id is not None and bool(cycle_candidates) and not foreign_cycle_run_ids,
         f"expectedRunId={expected_run_id}, candidates={len(cycle_candidates)}, "
         f"foreign={foreign_cycle_run_ids}",
+        required=required,
+    ))
+
+    if session:
+        heartbeat_specs = (
+            (
+                "DAQ",
+                {device: [item for item in daq if item.get("Device") == device]
+                 for device in ("Dev1", "Dev2")},
+                2.0,
+                daq_heartbeat_max_gap_seconds,
+            ),
+            ("UI", {"UI": ui}, 10.0, ui_heartbeat_max_gap_seconds),
+            ("HostRuntime", {"Host": host}, 1.0, host_heartbeat_max_gap_seconds),
+        )
+        heartbeat_metrics: dict[str, dict[str, dict[str, float | int | None]]] = {}
+        for kind, streams, interval_seconds, maximum_gap_seconds in heartbeat_specs:
+            summaries = {
+                stream: heartbeat_summary(
+                    records,
+                    session.started,
+                    session.ended,
+                    interval_seconds,
+                )
+                for stream, records in streams.items()
+            }
+            heartbeat_metrics[kind] = summaries
+            failing = {
+                stream: summary
+                for stream, summary in summaries.items()
+                if summary["coverage"] < minimum_heartbeat_coverage
+                or summary["maximum_gap_seconds"] > maximum_gap_seconds
+                or summary["samples"] != summary["records"]
+            }
+            checks.append(Check(
+                f"{kind}心跳覆盖率与最大缺口达标",
+                bool(summaries) and not failing,
+                f"interval={interval_seconds:.1f}s, minimumCoverage="
+                f"{minimum_heartbeat_coverage:.3f}, maxGap={maximum_gap_seconds:.1f}s, "
+                f"streams={json.dumps(summaries, ensure_ascii=False, sort_keys=True)}, "
+                f"failed={sorted(failing)}",
+                required=required,
+            ))
+        metrics["heartbeat_evidence"] = heartbeat_metrics
+        metrics["heartbeat_thresholds"] = {
+            "minimum_coverage": minimum_heartbeat_coverage,
+            "daq_expected_interval_seconds": 2.0,
+            "daq_maximum_gap_seconds": daq_heartbeat_max_gap_seconds,
+            "ui_expected_interval_seconds": 10.0,
+            "ui_maximum_gap_seconds": ui_heartbeat_max_gap_seconds,
+            "host_expected_interval_seconds": 1.0,
+            "host_maximum_gap_seconds": host_heartbeat_max_gap_seconds,
+        }
+    else:
+        for kind in ("DAQ", "UI", "HostRuntime"):
+            checks.append(Check(
+                f"{kind}心跳覆盖率与最大缺口达标",
+                False,
+                "缺少可闭合的正式SESSION，无法计算覆盖率",
+                required=required,
+            ))
+
+    pipeline_required_fields = (
+        "ProcessingDepth", "ProcessingCapacity", "ProcessingOldestMs",
+        "ProcessingInFlight", "RawDepth", "RawCapacity", "RawInFlight",
+        "Allocated", "Accepted", "Observed", "Published", "RawTransferred",
+        "Persisted", "TerminallyHandled", "SuppressBoundary", "SuppressThrough", "Suppressed",
+        "SuppressedCumulative", "SuppressedFirst", "SuppressedLast",
+        "SuppressedRanges", "FirstPermanentGap", "PendingProcessingGap",
+        "PendingRawGap", "AsyncLogDropped",
+    )
+    pipeline_integer_fields = tuple(
+        key for key in pipeline_required_fields if key != "ProcessingOldestMs"
+    )
+    sequence_watermarks = (
+        "Allocated", "Accepted", "Observed", "Published", "RawTransferred", "Persisted",
+        "TerminallyHandled", "SuppressedCumulative", "SuppressedFirst",
+        "SuppressedLast", "SuppressedRanges",
+    )
+    missing_pipeline_fields: list[str] = []
+    invalid_pipeline_values: list[str] = []
+    invalid_depths: list[str] = []
+    observed_violations: list[str] = []
+    suppression_ledger_violations: list[str] = []
+    permanent_gaps: list[str] = []
+    monotonicity_violations: list[str] = []
+    by_device: dict[str, list[dict[str, str]]] = defaultdict(list)
+    for item in daq:
+        label = f"{item.get('_Timestamp', 'unknown')}/{item.get('Device', 'missing')}"
+        missing = [key for key in pipeline_required_fields if key not in item]
+        if missing:
+            missing_pipeline_fields.append(f"{label}:{','.join(missing)}")
+        integers = {key: integer_value(item, key) for key in pipeline_integer_fields}
+        invalid_integers = [key for key, value in integers.items() if value is None or value < 0]
+        oldest = finite_float_value(item, "ProcessingOldestMs")
+        if invalid_integers or oldest is None or oldest < 0:
+            invalid_pipeline_values.append(
+                f"{label}:integer={invalid_integers},ProcessingOldestMs="
+                f"{item.get('ProcessingOldestMs', 'missing')}"
+            )
+        processing_depth = integers["ProcessingDepth"]
+        processing_capacity = integers["ProcessingCapacity"]
+        raw_depth = integers["RawDepth"]
+        raw_capacity = integers["RawCapacity"]
+        if (
+            processing_depth is None or processing_capacity is None or
+            processing_capacity <= 0 or processing_depth < 0 or
+            processing_depth >= processing_capacity or
+            raw_depth is None or raw_capacity is None or
+            raw_capacity <= 0 or raw_depth < 0 or raw_depth >= raw_capacity
+        ):
+            invalid_depths.append(
+                f"{label}:processing={processing_depth}/{processing_capacity},"
+                f"raw={raw_depth}/{raw_capacity}"
+            )
+        allocated = integers["Allocated"]
+        accepted = integers["Accepted"]
+        observed = integers["Observed"]
+        if (
+            allocated is None or accepted is None or observed is None or
+            observed < allocated or observed < accepted
+        ):
+            observed_violations.append(
+                f"{label}:Observed={observed},Allocated={allocated},Accepted={accepted}"
+            )
+        persisted = integers["Persisted"]
+        handled = integers["TerminallyHandled"]
+        suppressed = integers["Suppressed"]
+        cumulative = integers["SuppressedCumulative"]
+        suppress_boundary = integers["SuppressBoundary"]
+        suppress_through = integers["SuppressThrough"]
+        first_suppressed = integers["SuppressedFirst"]
+        last_suppressed = integers["SuppressedLast"]
+        suppressed_ranges = integers["SuppressedRanges"]
+        suppression_ledger_valid = (
+            persisted is not None and handled is not None and handled >= persisted and
+            suppress_boundary is not None and suppress_through is not None and
+            ((suppress_boundary == 0 and suppress_through == 0) or
+             suppress_through >= suppress_boundary) and
+            suppressed is not None and cumulative is not None and cumulative >= suppressed and
+            first_suppressed is not None and last_suppressed is not None and
+            suppressed_ranges is not None and
+            (
+                (cumulative == 0 and first_suppressed == 0 and
+                 last_suppressed == 0 and suppressed_ranges == 0) or
+                (cumulative > 0 and first_suppressed > 0 and
+                 last_suppressed >= first_suppressed and
+                 suppressed_ranges > 0 and cumulative >= suppressed_ranges)
+            )
+        )
+        if not suppression_ledger_valid:
+            suppression_ledger_violations.append(
+                f"{label}:Persisted={persisted},Handled={handled},"
+                f"Window={suppress_boundary}-{suppress_through},"
+                f"Suppressed={suppressed}/{cumulative},"
+                f"Range={first_suppressed}-{last_suppressed},Count={suppressed_ranges}"
+            )
+        first_gap = integers["FirstPermanentGap"]
+        if first_gap != 0:
+            permanent_gaps.append(f"{label}:FirstPermanentGap={first_gap}")
+        device = item.get("Device")
+        if device:
+            by_device[device].append(item)
+
+    final_pending: dict[str, dict[str, int | None]] = {}
+    for device, records in by_device.items():
+        ordered = sorted(records, key=lambda value: record_timestamp(value) or datetime.min)
+        previous: dict[str, int] = {}
+        for item in ordered:
+            for key in sequence_watermarks:
+                current = integer_value(item, key)
+                if current is None:
+                    continue
+                if key in previous and current < previous[key]:
+                    monotonicity_violations.append(
+                        f"{item.get('_Timestamp', 'unknown')}/{device}/{key}:"
+                        f"{current}<{previous[key]}"
+                    )
+                previous[key] = current
+        if ordered:
+            final = ordered[-1]
+            final_pending[device] = {
+                "PendingProcessingGap": integer_value(final, "PendingProcessingGap"),
+                "PendingRawGap": integer_value(final, "PendingRawGap"),
+            }
+
+    expected_pipeline_devices = {"Dev1", "Dev2"}
+    pending_failures = {
+        device: values
+        for device, values in final_pending.items()
+        if values["PendingProcessingGap"] != 0 or values["PendingRawGap"] != 0
+    }
+    metrics["daq_pipeline_validation"] = {
+        "required_fields": list(pipeline_required_fields),
+        "missing_field_records": len(missing_pipeline_fields),
+        "invalid_value_records": len(invalid_pipeline_values),
+        "invalid_depth_records": len(invalid_depths),
+        "monotonicity_violations": len(monotonicity_violations),
+        "observed_invariant_violations": len(observed_violations),
+        "suppression_ledger_violations": len(suppression_ledger_violations),
+        "permanent_gap_records": len(permanent_gaps),
+        "final_pending": final_pending,
+    }
+    checks.append(Check(
+        "DAQ管线指标字段完整且数值合法",
+        bool(daq) and not missing_pipeline_fields and not invalid_pipeline_values,
+        f"records={len(daq)}, missing={missing_pipeline_fields[:10]}, "
+        f"invalid={invalid_pipeline_values[:10]}",
+        required=required,
+    ))
+    checks.append(Check(
+        "DAQ处理与Raw队列深度严格低于容量",
+        bool(daq) and not invalid_depths,
+        f"records={len(daq)}, invalid={invalid_depths[:10]}",
+        required=required,
+    ))
+    checks.append(Check(
+        "DAQ耐久水位按设备非递减",
+        set(by_device) == expected_pipeline_devices and not monotonicity_violations,
+        f"devices={sorted(by_device)}, violations={monotonicity_violations[:10]}",
+        required=required,
+    ))
+    checks.append(Check(
+        "DAQ Observed始终覆盖Allocated和Accepted",
+        bool(daq) and not observed_violations,
+        f"violations={observed_violations[:10]}",
+        required=required,
+    ))
+    checks.append(Check(
+        "DAQ显式排除账本与物理持久化水位一致",
+        bool(daq) and not suppression_ledger_violations,
+        f"violations={suppression_ledger_violations[:10]}",
+        required=required,
+    ))
+    checks.append(Check(
+        "DAQ无永久空洞且终态无待决gap",
+        set(final_pending) == expected_pipeline_devices and
+        not permanent_gaps and not pending_failures,
+        f"permanent={permanent_gaps[:10]}, finalPending={final_pending}, "
+        f"failed={pending_failures}",
+        required=required,
+    ))
+
+    session_metrics = [item for item in field if item.get("Kind") == "SESSION"]
+    async_log_records = session_metrics + daq
+    invalid_async_log_dropped = [
+        f"{item.get('Kind', 'unknown')}/{item.get('_Timestamp', 'unknown')}:"
+        f"{item.get('AsyncLogDropped', 'missing')}"
+        for item in async_log_records
+        if integer_value(item, "AsyncLogDropped") != 0
+    ]
+    metrics["async_log_dropped_evidence_count"] = len(async_log_records)
+    metrics["async_log_dropped_violation_count"] = len(invalid_async_log_dropped)
+    checks.append(Check(
+        "SESSION与DAQ异步项目日志丢弃始终为0",
+        bool(session_metrics) and bool(daq) and not invalid_async_log_dropped,
+        f"sessionRecords={len(session_metrics)}, daqRecords={len(daq)}, "
+        f"violations={invalid_async_log_dropped[:10]}",
         required=required,
     ))
 
@@ -494,30 +849,72 @@ def validate_performance_metrics(
         required=required,
     ))
 
-    stop_devices = {
-        item.get("Device") for item in stop
-        if boolean(item.get("Closed")) is True and boolean(item.get("RawDrained")) is True
-    }
-    stop_failures = [
-        item for item in stop
-        if boolean(item.get("Closed")) is not True or
-        boolean(item.get("RawDrained")) is not True or
-        item.get("State", "").lower() != "recovered"
-    ]
+    def stop_boundary_failure(item: dict[str, str]) -> str | None:
+        device = item.get("Device", "missing")
+        boundary = integer_value(item, "Boundary")
+        final_boundary = integer_value(item, "FinalBoundary")
+        published = integer_value(item, "Published")
+        persisted = integer_value(item, "Persisted")
+        depth = integer_value(item, "Depth")
+        discarded = integer_value(item, "Discarded")
+        over_capacity = integer_value(item, "OverCapacityDropped")
+        require_recovered = boolean(item.get("RequireRecovered"))
+        reasons: list[str] = []
+        if boolean(item.get("Closed")) is not True:
+            reasons.append("Closed!=True")
+        if boolean(item.get("RawDrained")) is not True:
+            reasons.append("RawDrained!=True")
+        if boundary is None or boundary < 0:
+            reasons.append("Boundary缺失或<0")
+        if final_boundary is None or final_boundary != boundary:
+            reasons.append("FinalBoundary!=Boundary")
+        if boolean(item.get("BoundaryStable")) is not True:
+            reasons.append("BoundaryStable!=True")
+        if published is None or boundary is None or published < boundary:
+            reasons.append("Published<Boundary或缺失")
+        if persisted is None or boundary is None or persisted < boundary:
+            reasons.append("Persisted<Boundary或缺失")
+        if depth != 0:
+            reasons.append("Depth!=0或缺失")
+        if require_recovered is None:
+            reasons.append("RequireRecovered缺失")
+        elif require_recovered and item.get("State", "").lower() != "recovered":
+            reasons.append("要求Recovered但State不符")
+        if boolean(item.get("DurabilityBlocked")) is not False:
+            reasons.append("DurabilityBlocked!=False")
+        if discarded != 0:
+            reasons.append("Discarded!=0或缺失")
+        if over_capacity != 0:
+            reasons.append("OverCapacityDropped!=0或缺失")
+        return f"{device}:" + ",".join(reasons) if reasons else None
+
+    stop_devices = {item.get("Device") for item in stop if item.get("Device")}
+    stop_failures = [failure for item in stop if (failure := stop_boundary_failure(item))]
     checks.append(Check(
         "停止Raw发布与持久化边界闭合",
         stop_devices == {"Dev1", "Dev2"} and not stop_failures,
-        f"closedDevices={sorted(value for value in stop_devices if value)}, failures={len(stop_failures)}",
+        f"devices={sorted(stop_devices)}, records={len(stop)}, failures={stop_failures}",
         required=required,
     ))
 
     cycle_channels: dict[str, dict[str, float]] = {}
+    invalid_cycle_records: list[str] = []
+    duplicate_cycle_numbers: dict[str, list[int]] = {}
     for channel in sorted({item.get("Channel", "") for item in cycles if item.get("Channel")}):
         items = [item for item in cycles if item.get("Channel") == channel]
         qualified = sum(1 for item in items if boolean(item.get("Qualified")) is True)
         peaks = numeric(items, "Peak")
+        numbers = [integer_value(item, "Cycle") for item in items]
+        invalid = [value for value in numbers if value is None or value <= 0]
+        counts = Counter(value for value in numbers if value is not None and value > 0)
+        duplicates = sorted(value for value, count in counts.items() if count > 1)
+        if invalid:
+            invalid_cycle_records.append(channel)
+        if duplicates:
+            duplicate_cycle_numbers[channel] = duplicates
         cycle_channels[channel] = {
-            "count": len(items),
+            "count": len(counts),
+            "records": len(items),
             "qualified": qualified,
             "qualified_ratio": qualified / len(items) if items else 0.0,
             "maximum_peak_a": max(peaks) if peaks else 0.0,
@@ -532,6 +929,27 @@ def validate_performance_metrics(
         bool(cycle_channels) and not insufficient_quality,
         f"channels={len(cycle_channels)}, formalCycles={len(cycles)}, "
         f"failedChannels={sorted(insufficient_quality)}",
+        required=required,
+    ))
+    insufficient_cycle_count = {
+        channel: int(cycle_channels.get(channel, {}).get("count", 0))
+        for channel in sorted(expected_channels)
+        if int(cycle_channels.get(channel, {}).get("count", 0))
+        < minimum_formal_cycles_per_channel
+    }
+    metrics["minimum_formal_cycles_per_channel"] = minimum_formal_cycles_per_channel
+    checks.append(Check(
+        "正式耐久完成圈数达到每通道门槛",
+        bool(expected_channels) and
+        set(cycle_channels) == expected_channels and
+        not insufficient_cycle_count and
+        not invalid_cycle_records and
+        not duplicate_cycle_numbers,
+        f"required={minimum_formal_cycles_per_channel}, expectedChannels="
+        f"{sorted(expected_channels)}, counts="
+        f"{json.dumps({key: int(value['count']) for key, value in cycle_channels.items()}, sort_keys=True)}, "
+        f"insufficient={insufficient_cycle_count}, invalid={invalid_cycle_records}, "
+        f"duplicates={duplicate_cycle_numbers}",
         required=required,
     ))
 
@@ -614,6 +1032,35 @@ def validate_recovery_stability(
         f"stateSamples={len(states)}, unresolvedChannels={unresolved}",
         required=required,
     ))
+    terminal_allowed_states = {"manualstopped", "completed"}
+    invalid_terminal_states = {
+        channel: item.get("State", "missing")
+        for channel, item in last_by_channel.items()
+        if item.get("State", "").lower() not in terminal_allowed_states
+    }
+    non_quiescent_terminal = {
+        channel: {
+            "Formal": item.get("Formal"),
+            "Timer": item.get("Timer"),
+            "Runner": item.get("Runner"),
+            "Energized": item.get("Energized"),
+        }
+        for channel, item in last_by_channel.items()
+        if any(boolean(item.get(key)) is not False for key in (
+            "Formal", "Timer", "Runner", "Energized"
+        ))
+    }
+    checks.append(Check(
+        "会话终态通道严格闭合",
+        bool(expected_channels) and
+        set(last_by_channel) == expected_channels and
+        not invalid_terminal_states and
+        not non_quiescent_terminal,
+        f"allowed={sorted(terminal_allowed_states)}, expected={sorted(expected_channels)}, "
+        f"observed={sorted(last_by_channel)}, invalidStates={invalid_terminal_states}, "
+        f"nonQuiescent={non_quiescent_terminal}",
+        required=required,
+    ))
 
     correlation_events: dict[tuple[str, str], datetime] = {}
     correlation_entries: Counter[tuple[str, str]] = Counter()
@@ -681,7 +1128,14 @@ def validate_recovery_stability(
     ))
 
 
-def validate_database(root: Path, checks: list[Check], metrics: dict) -> None:
+def validate_database(
+    root: Path,
+    checks: list[Check],
+    metrics: dict,
+    expected_channels: set[str],
+    minimum_formal_cycles_per_channel: int,
+    required: bool,
+) -> None:
     database = root / "index.db"
     if not database.is_file():
         checks.append(Check("SQLite数据库存在", False, str(database)))
@@ -714,6 +1168,28 @@ def validate_database(root: Path, checks: list[Check], metrics: dict) -> None:
             metrics["cycle_status_counts"] = dict(statuses)
             metrics["running_cycle_count"] = running
             checks.append(Check("停止后无running圈", running == 0, f"running={running}"))
+            completed_by_channel = {
+                str(row[0]): int(row[1])
+                for row in connection.execute(
+                    "SELECT epb_id, COUNT(DISTINCT cycle_number) "
+                    "FROM epb_cycles WHERE cycle_number > 0 AND status='completed' "
+                    "GROUP BY epb_id"
+                )
+            }
+            insufficient = {
+                channel: completed_by_channel.get(channel, 0)
+                for channel in sorted(expected_channels)
+                if completed_by_channel.get(channel, 0) < minimum_formal_cycles_per_channel
+            }
+            metrics["sqlite_completed_cycles_by_channel"] = completed_by_channel
+            checks.append(Check(
+                "SQLite正式完成圈数达到每通道门槛",
+                bool(expected_channels) and not insufficient,
+                f"required={minimum_formal_cycles_per_channel}, expected="
+                f"{sorted(expected_channels)}, completed={completed_by_channel}, "
+                f"insufficient={insufficient}",
+                required=required,
+            ))
         finally:
             connection.close()
     except Exception as exc:  # noqa: BLE001 - report exact field failure
@@ -731,11 +1207,17 @@ def validate_incidents(
     checks: list[Check],
     metrics: dict,
     scan_mode: str,
+    selected_session_identity: dict[str, str] | None,
 ) -> list[dict]:
     incident_root = root / "IncidentSnapshots"
     if not incident_root.is_dir():
         metrics["incident_count"] = 0
         checks.append(Check("事故目录可审计", True, "无事故目录（0事故）", required=False))
+        checks.append(Check(
+            "事故身份与所选正式会话一致",
+            True,
+            "无事故身份（0事故）",
+        ))
         return []
     metrics["artifact_scan_mode"] = scan_mode
     if scan_mode == "none":
@@ -846,6 +1328,8 @@ def validate_incidents(
             or not str(identity.get("assemblyVersion") or "").strip()
             or str(identity.get("executablePath") or "").strip().lower() in {"", "unknown"}
             or hash_pattern.fullmatch(str(identity.get("executableSha256") or "")) is None
+            or hash_pattern.fullmatch(str(identity.get("configSha256") or "")) is None
+            or hash_pattern.fullmatch(str(identity.get("releaseConfigSha256") or "")) is None
             or not positive_integer(identity.get("processId"))
             or commit_pattern.fullmatch(str(identity.get("gitCommit") or "")) is None
             or boolean(identity.get("gitDirty")) is not False
@@ -861,6 +1345,48 @@ def validate_incidents(
         not missing_identity_directories and not invalid_identities,
         f"incidentPhases={len(incident_directories)}, identities={len(identities)}, "
         f"missing={missing_identity_directories}, invalid={len(invalid_identities)}",
+    ))
+
+    def identity_mismatch(identity: dict) -> list[str]:
+        expected = selected_session_identity or {}
+        mismatches: list[str] = []
+        comparisons = (
+            (
+                "productVersion",
+                normalized_version(identity.get("productVersion")),
+                normalized_version(expected.get("ProductVersion")),
+            ),
+            ("assemblyVersion", str(identity.get("assemblyVersion") or ""),
+             str(expected.get("AssemblyVersion") or "")),
+            ("executableSha256", str(identity.get("executableSha256") or "").lower(),
+             str(expected.get("ExeSha256") or "").lower()),
+            ("releaseConfigSha256", str(identity.get("releaseConfigSha256") or "").lower(),
+             str(expected.get("ConfigSha256") or "").lower()),
+            ("gitCommit", str(identity.get("gitCommit") or "").lower(),
+             str(expected.get("GitCommit") or "").lower()),
+            ("buildUtc", str(identity.get("buildUtc") or ""),
+             str(expected.get("BuildUtc") or "")),
+            ("processId", str(identity.get("processId") or ""),
+             str(expected.get("ProcessId") or "")),
+        )
+        for name, actual, wanted in comparisons:
+            if not wanted or actual != wanted:
+                mismatches.append(f"{name}:{actual or 'missing'}!={wanted or 'missing'}")
+        if boolean(str(identity.get("gitDirty") or "")) is not False:
+            mismatches.append("gitDirty!=False")
+        return mismatches
+
+    mismatched_identity_directories = {
+        str(directory.relative_to(incident_root)): identity_mismatch(identity)
+        for directory, identity in identity_records
+        if directory in incident_directories and identity_mismatch(identity)
+    }
+    metrics["incident_identity_mismatch_count"] = len(mismatched_identity_directories)
+    checks.append(Check(
+        "事故身份与所选正式会话一致",
+        selected_session_identity is not None and not mismatched_identity_directories,
+        f"identities={len(identity_records)}, mismatches="
+        f"{json.dumps(mismatched_identity_directories, ensure_ascii=False, sort_keys=True)}",
     ))
 
     max_size = max(root_sizes.values(), default=0)
@@ -962,9 +1488,16 @@ def percentile(values: list[float], fraction: float) -> float | None:
 
 
 def markdown(result: dict) -> str:
+    stage = result.get("acceptance_stage", "Staged")
+    stage_title = "最终生产验收" if stage == "FinalProduction" else "阶段性现场验证"
     lines = [
-        f"# EPB V2.12.0.26 现场封存验收：{result['status']}",
+        f"# EPB V{result.get('expected_version', 'Unknown')} {stage_title}：{result['status']}",
         "",
+        f"- 验收阶段：`{stage}`",
+        "- 生产放行结论：" + (
+            "通过" if result.get("production_release_approved") else
+            "不通过/不适用（阶段性结果不得作为最终生产放行）"
+        ),
         f"- 数据目录：`{result['data_directory']}`",
         f"- 生成时间：{result['generated_at']}",
         f"- 日志运行时长：{result['metrics'].get('duration_hours', 0):.3f} h",
@@ -998,12 +1531,45 @@ def markdown(result: dict) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("data_directory", type=Path)
-    parser.add_argument("--expected-version", default="V2.12.0.26")
+    parser.add_argument("--expected-version", default="V2.12.0.27")
     parser.add_argument("--expected-exe-sha256")
     parser.add_argument("--expected-config-sha256")
     parser.add_argument("--expected-git-commit")
     parser.add_argument("--expected-build-utc")
     parser.add_argument("--minimum-hours", type=float, default=0.0)
+    parser.add_argument(
+        "--acceptance-stage",
+        choices=("Staged", "FinalProduction"),
+        default="Staged",
+        help="默认仅为阶段性验证；最终生产验收还要求>=72h且每通道>=100000正式完成圈",
+    )
+    parser.add_argument(
+        "--minimum-formal-cycles-per-channel",
+        type=nonnegative_integer_argument,
+        default=1,
+        help="所选连续SESSION内每个配置通道至少完成的正式圈数；最终耐久放行显式设为100000",
+    )
+    parser.add_argument(
+        "--minimum-heartbeat-coverage",
+        type=coverage_argument,
+        default=0.95,
+        help="DAQ(2s)、UI(10s)、HostRuntime(1s)相对SESSION时长的最小唯一时间戳覆盖率",
+    )
+    parser.add_argument(
+        "--daq-heartbeat-max-gap-seconds",
+        type=lambda value: bounded_positive_float_argument(value, 10.0),
+        default=10.0,
+    )
+    parser.add_argument(
+        "--ui-heartbeat-max-gap-seconds",
+        type=lambda value: bounded_positive_float_argument(value, 30.0),
+        default=30.0,
+    )
+    parser.add_argument(
+        "--host-heartbeat-max-gap-seconds",
+        type=lambda value: bounded_positive_float_argument(value, 5.0),
+        default=5.0,
+    )
     parser.add_argument(
         "--artifact-scan",
         choices=("full", "none"),
@@ -1038,6 +1604,22 @@ def main() -> int:
     parser.add_argument("--output-json", type=Path)
     args = parser.parse_args()
 
+    if args.acceptance_stage == "FinalProduction":
+        if args.minimum_hours < 72.0:
+            parser.error("FinalProduction要求--minimum-hours>=72")
+        if args.minimum_formal_cycles_per_channel < 100000:
+            parser.error(
+                "FinalProduction要求--minimum-formal-cycles-per-channel>=100000"
+            )
+        if args.performance_gates == "optional":
+            parser.error("FinalProduction禁止--performance-gates=optional")
+        if (
+            args.log_scan != "full" or
+            args.artifact_scan != "full" or
+            args.database_scan != "full"
+        ):
+            parser.error("FinalProduction要求log/artifact/database全部使用full扫描")
+
     root = args.data_directory.resolve()
     if not root.is_dir():
         print(f"数据目录不存在：{root}", file=sys.stderr)
@@ -1071,6 +1653,9 @@ def main() -> int:
         "selected_run_id": session.run_id if session else None,
         "selected_session_started": session.started.isoformat(sep=" ") if session else None,
         "selected_session_ended": session.ended.isoformat(sep=" ") if session else None,
+        "minimum_formal_cycles_per_channel": args.minimum_formal_cycles_per_channel,
+        "minimum_heartbeat_coverage": args.minimum_heartbeat_coverage,
+        "acceptance_stage": args.acceptance_stage,
     }
     checks: list[Check] = []
     checks.append(Check("日志存在", bool(logs), f"files={len(logs)}"))
@@ -1210,7 +1795,13 @@ def main() -> int:
     metrics["formal_release_identity_binding_matches"] = identity_binding_matches
 
     versions = sorted(set(VERSION.findall(combined)))
-    identities = validate_incidents(root, checks, metrics, args.artifact_scan)
+    identities = validate_incidents(
+        root,
+        checks,
+        metrics,
+        args.artifact_scan,
+        session.start_record if session else None,
+    )
     if args.artifact_scan == "full":
         validate_alarm_snapshots(root, checks, metrics)
     else:
@@ -1238,6 +1829,7 @@ def main() -> int:
         "内存资源不足": r"内存资源不足|not enough (memory|storage)",
         "已关闭访问器": r"已关闭的访问器|closed accessor|UnmanagedMemoryAccessor.*closed",
         "任一实时队列硬上限": r"DaqPersistenceQueueFull|ControlQueueFull|BackgroundQueueFull|RawPersistenceQueueFull",
+        "永久数据连续性缺口": r"DaqDataContinuityGap|DaqRecoveryDataContinuityGap|BackgroundWorkerFault|RawPersistencePermanentFault|DaqPersistenceWriteStall",
         "软预警标量证据丢弃": r"WarningScalarQueueDropped(?:=[1-9]\d*|\b)",
         "DAQ时钟模型无效": r"DaqClockModelInvalid|Kind=ClockInvalid|DAQ时钟模型.*失效",
         "持久化暂停或失败": r"DaqPersistencePaused|DaqPersistenceFailed",
@@ -1267,7 +1859,12 @@ def main() -> int:
         checks,
         metrics,
         performance_required,
-        session.run_id if session else None,
+        session,
+        args.minimum_formal_cycles_per_channel,
+        args.minimum_heartbeat_coverage,
+        args.daq_heartbeat_max_gap_seconds,
+        args.ui_heartbeat_max_gap_seconds,
+        args.host_heartbeat_max_gap_seconds,
     )
     validate_recovery_stability(
         scoped_logs,
@@ -1278,7 +1875,14 @@ def main() -> int:
     )
 
     if args.database_scan == "full":
-        validate_database(root, checks, metrics)
+        validate_database(
+            root,
+            checks,
+            metrics,
+            session_channels(session),
+            args.minimum_formal_cycles_per_channel,
+            performance_required,
+        )
     else:
         metrics["database_scan_mode"] = "none"
         checks.append(Check(
@@ -1290,6 +1894,11 @@ def main() -> int:
     required_failures = [check for check in checks if check.required and not check.passed]
     result = {
         "status": "PASS" if not required_failures else "FAIL",
+        "acceptance_stage": args.acceptance_stage,
+        "production_release_approved": (
+            args.acceptance_stage == "FinalProduction" and not required_failures
+        ),
+        "expected_version": args.expected_version,
         "data_directory": str(root),
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "checks": [asdict(check) for check in checks],

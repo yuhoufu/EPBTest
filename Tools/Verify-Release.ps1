@@ -5,8 +5,9 @@
 
 $ErrorActionPreference = 'Stop'
 
-$expectedProductVersion = '2.12.0.26'
-$expectedProductLabel = 'V2.12.0.26'
+$expectedProductVersion = '2.12.0.27'
+$expectedProductLabel = 'V2.12.0.27'
+$expectedAssemblyName = 'MTTFTest'
 $expectedPublishedConfigs = @(
     'Config/AIConfig.xml',
     'Config/AlarmConfig.xml',
@@ -83,6 +84,83 @@ function Get-AggregateFileHash {
     }
 }
 
+function Get-RequiredJsonProperty {
+    param(
+        [Parameter(Mandatory = $true)]$Object,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Scope
+    )
+
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property) {
+        throw "$Scope 缺少必要字段：$Name"
+    }
+    return $property.Value
+}
+
+function Assert-CompletePassSummary {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)]$Value
+    )
+
+    if ($Value -isnot [string] -or
+        $Value -notmatch '^PASS\s+([1-9]\d*)/([1-9]\d*)$') {
+        throw "verification.$Name 不是完整通过摘要：$Value"
+    }
+    if ([long]$Matches[1] -ne [long]$Matches[2]) {
+        throw "verification.$Name 存在未通过用例：$Value"
+    }
+}
+
+function Assert-VerificationEvidence {
+    param(
+        [Parameter(Mandatory = $true)]$Verification,
+        [Parameter(Mandatory = $true)][bool]$FormalCandidate
+    )
+
+    if ($null -eq $Verification -or $Verification -isnot [pscustomobject]) {
+        throw 'identity.verification 缺失或类型错误。'
+    }
+
+    $solutionRebuild = Get-RequiredJsonProperty $Verification 'solutionRebuild' 'identity.verification'
+    if ($solutionRebuild -ne 'PASS') {
+        throw "verification.solutionRebuild 未通过：$solutionRebuild"
+    }
+
+    Assert-CompletePassSummary 'adaptiveControlTests' (
+        Get-RequiredJsonProperty $Verification 'adaptiveControlTests' 'identity.verification')
+    Assert-CompletePassSummary 'epbDiskWriterTests' (
+        Get-RequiredJsonProperty $Verification 'epbDiskWriterTests' 'identity.verification')
+
+    $persistenceSoak = Get-RequiredJsonProperty $Verification 'persistenceSoak' 'identity.verification'
+    if ($persistenceSoak -isnot [string] -or $persistenceSoak -ne 'PASS 1/1') {
+        throw "verification.persistenceSoak 未通过：$persistenceSoak"
+    }
+    $soakSeconds = Get-RequiredJsonProperty $Verification 'persistenceSoakSeconds' 'identity.verification'
+    if (($soakSeconds -isnot [int] -and $soakSeconds -isnot [long]) -or
+        [long]$soakSeconds -lt 1 -or [long]$soakSeconds -gt 3600) {
+        throw "verification.persistenceSoakSeconds 非法：$soakSeconds"
+    }
+    if ($FormalCandidate -and [long]$soakSeconds -lt 600) {
+        throw "正式候选持久化浸泡不足 600 秒：$soakSeconds"
+    }
+
+    $powerSummary = Get-RequiredJsonProperty $Verification 'powerSupplyDebuggerTests' 'identity.verification'
+    $powerPassed = $powerSummary -is [string] -and (
+        $powerSummary -match '(?i)Failed\s*:\s*0\b.*Passed\s*:\s*[1-9]\d*\b' -or
+        $powerSummary -match '失败\s*:\s*0\b.*通过\s*:\s*[1-9]\d*\b')
+    if (-not $powerPassed) {
+        throw "verification.powerSupplyDebuggerTests 未证明零失败：$powerSummary"
+    }
+
+    $fieldGateSummary = Get-RequiredJsonProperty $Verification 'fieldGateTests' 'identity.verification'
+    if ($fieldGateSummary -isnot [string] -or
+        $fieldGateSummary -notmatch '^Ran\s+[1-9]\d*\s+tests?\s+in\s+\d+(?:\.\d+)?s$') {
+        throw "verification.fieldGateTests 不是完整通过摘要：$fieldGateSummary"
+    }
+}
+
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 if ([string]::IsNullOrWhiteSpace($ReleaseDirectory)) {
     if ($RequireDeploymentApproved) {
@@ -104,23 +182,99 @@ foreach ($required in @($identityPath, $checksumPath, $exePath)) {
     }
 }
 
-$identity = Get-Content -LiteralPath $identityPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$identityJson = Get-Content -LiteralPath $identityPath -Raw -Encoding UTF8
+$identity = $identityJson | ConvertFrom-Json
 if ($identity.productVersion -ne $expectedProductLabel) {
     throw "identity 产品版本错误：$($identity.productVersion)"
 }
-$actualProductVersion = (Get-Item -LiteralPath $exePath).VersionInfo.ProductVersion
-if ($actualProductVersion -ne $expectedProductVersion) {
-    throw "EXE 产品版本错误：$actualProductVersion"
+$identityFileVersion = Get-RequiredJsonProperty $identity 'fileVersion' 'identity'
+$identityAssemblyName = Get-RequiredJsonProperty $identity 'assemblyName' 'identity'
+if ($identityFileVersion -ne $expectedProductVersion) {
+    throw "identity 文件版本错误：$identityFileVersion"
+}
+if ($identityAssemblyName -ne $expectedAssemblyName) {
+    throw "identity 程序集名称错误：$identityAssemblyName"
+}
+
+$versionInfo = (Get-Item -LiteralPath $exePath).VersionInfo
+$actualProductVersion = $versionInfo.ProductVersion
+$actualFileVersion = $versionInfo.FileVersion
+$actualAssemblyName = [Reflection.AssemblyName]::GetAssemblyName($exePath).Name
+if ($actualProductVersion -ne $expectedProductVersion -or
+    $actualProductVersion -ne $identity.productVersion.Substring(1)) {
+    throw "EXE 产品版本错误：Actual=$actualProductVersion Identity=$($identity.productVersion)"
+}
+if ($actualFileVersion -ne $expectedProductVersion -or
+    $actualFileVersion -ne $identityFileVersion) {
+    throw "EXE 文件版本错误：Actual=$actualFileVersion Identity=$identityFileVersion"
+}
+if ($actualAssemblyName -ne $expectedAssemblyName -or
+    $actualAssemblyName -ne $identityAssemblyName) {
+    throw "EXE 程序集名称错误：Actual=$actualAssemblyName Identity=$identityAssemblyName"
 }
 if ($identity.platform -ne 'x86') {
     throw "identity 平台不是 x86：$($identity.platform)"
 }
-if ($RequireDeploymentApproved -and
-    ($identity.deploymentApproved -ne $true -or $identity.gitDirty -ne $false -or
-     $identity.releaseStatus -ne 'FORMAL_RELEASE_CANDIDATE')) {
+
+$gitCommit = Get-RequiredJsonProperty $identity 'gitCommit' 'identity'
+if ($gitCommit -isnot [string] -or $gitCommit -notmatch '^[0-9a-fA-F]{40}$') {
+    throw "identity.gitCommit 不是完整 40 位提交 SHA：$gitCommit"
+}
+$buildUtcMatches = [Text.RegularExpressions.Regex]::Matches(
+    $identityJson,
+    '"buildUtc"\s*:\s*"([^"\\]*)"',
+    [Text.RegularExpressions.RegexOptions]::CultureInvariant)
+if ($buildUtcMatches.Count -ne 1) {
+    throw "identity.buildUtc 必须且只能出现一次：Count=$($buildUtcMatches.Count)"
+}
+$buildUtcText = $buildUtcMatches[0].Groups[1].Value
+$parsedBuildUtc = [DateTimeOffset]::MinValue
+$buildUtcValid = $buildUtcText -is [string] -and
+    $buildUtcText.EndsWith('Z', [StringComparison]::Ordinal) -and
+    [DateTimeOffset]::TryParseExact(
+        $buildUtcText,
+        'O',
+        [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::RoundtripKind,
+        [ref]$parsedBuildUtc) -and
+    $parsedBuildUtc.Offset -eq [TimeSpan]::Zero
+if (-not $buildUtcValid) {
+    throw "identity.buildUtc 不是 UTC Round-trip 时间：$buildUtcText"
+}
+if ($identity.gitDirty -isnot [bool]) {
+    throw "identity.gitDirty 必须是 JSON 布尔值：$($identity.gitDirty)"
+}
+if ($identity.deploymentApproved -isnot [bool]) {
+    throw "identity.deploymentApproved 必须是 JSON 布尔值：$($identity.deploymentApproved)"
+}
+
+$isFormalCandidate = $identity.releaseStatus -eq 'FORMAL_RELEASE_CANDIDATE'
+$stateIsCoherent = switch ([string]$identity.releaseStatus) {
+    'FORMAL_RELEASE_CANDIDATE' {
+        $identity.deploymentApproved -eq $true -and $identity.gitDirty -eq $false
+        break
+    }
+    'BUILD_STAGING_NOT_FOR_DEPLOYMENT' {
+        $identity.deploymentApproved -eq $false -and $identity.gitDirty -eq $false
+        break
+    }
+    'DIRTY_CANDIDATE_NOT_FOR_PRODUCTION' {
+        $identity.deploymentApproved -eq $false -and $identity.gitDirty -eq $true
+        break
+    }
+    default { $false }
+}
+if (-not $stateIsCoherent) {
+    throw "identity 放行状态组合非法：Status=$($identity.releaseStatus) " +
+          "Approved=$($identity.deploymentApproved) Dirty=$($identity.gitDirty)"
+}
+if ($RequireDeploymentApproved -and -not $isFormalCandidate) {
     throw "该包不是可部署正式候选：Status=$($identity.releaseStatus) " +
           "Approved=$($identity.deploymentApproved) Dirty=$($identity.gitDirty)"
 }
+
+$verification = Get-RequiredJsonProperty $identity 'verification' 'identity'
+Assert-VerificationEvidence -Verification $verification -FormalCandidate $isFormalCandidate
 
 $manifestNames = New-Object 'System.Collections.Generic.HashSet[string]' `
     ([StringComparer]::OrdinalIgnoreCase)
@@ -200,12 +354,15 @@ foreach ($name in $checksums.Keys) {
 $result = [ordered]@{
     verified = $true
     productVersion = $identity.productVersion
+    fileVersion = $actualFileVersion
+    assemblyName = $actualAssemblyName
     releaseStatus = $identity.releaseStatus
     deploymentApproved = [bool]$identity.deploymentApproved
     gitCommit = $identity.gitCommit
     gitDirty = [bool]$identity.gitDirty
-    buildUtc = $identity.buildUtc
+    buildUtc = $buildUtcText
     configSha256 = $identity.configSha256
+    verification = 'PASS'
     identityFileCount = @($identity.files).Count
     checksumFileCount = $checksums.Count
     exeSha256 = (Get-FileHash -LiteralPath $exePath -Algorithm SHA256).Hash.ToLowerInvariant()

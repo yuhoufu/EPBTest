@@ -1,6 +1,8 @@
 ﻿param(
     [string]$MsBuild = 'D:\Microsoft Visual Studio\18\Professional\MSBuild\Current\Bin\MSBuild.exe',
     [string]$PackageRoot = '',
+    [ValidateRange(1, 3600)]
+    [int]$PersistenceSoakSeconds = 600,
     [switch]$AllowDirtyCandidate
 )
 
@@ -8,8 +10,9 @@ $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 Set-Location -LiteralPath $repo
 
-$expectedProductVersion = '2.12.0.26'
-$expectedProductLabel = 'V2.12.0.26'
+$expectedProductVersion = '2.12.0.27'
+$expectedProductLabel = 'V2.12.0.27'
+$expectedAssemblyName = 'MTTFTest'
 $expectedPublishedConfigs = @(
     'Config/AIConfig.xml',
     'Config/AlarmConfig.xml',
@@ -27,13 +30,45 @@ if ($isDirty -and -not $AllowDirtyCandidate) {
     throw "拒绝生成现场包：源码树不是干净状态。`n$($dirty -join "`n")"
 }
 
-$commit = (git rev-parse HEAD).Trim()
+$commitOutput = @(git rev-parse --verify HEAD 2>&1)
+if ($LASTEXITCODE -ne 0) { throw '无法读取 Git HEAD。' }
+$commit = ((@($commitOutput) -join [Environment]::NewLine)).Trim()
+if ($commit -notmatch '^[0-9a-fA-F]{40}$') {
+    throw "Git HEAD 不是完整 40 位提交 SHA：$commit"
+}
 $branchOutput = git branch --show-current
 if ($LASTEXITCODE -ne 0) { throw '无法读取 Git 分支。' }
 $branch = ((@($branchOutput) -join [Environment]::NewLine)).Trim()
 if ([string]::IsNullOrWhiteSpace($branch)) { $branch = 'detached' }
 $buildUtc = [DateTime]::UtcNow.ToString('O')
 $gitDirtyText = $isDirty.ToString().ToLowerInvariant()
+
+function Assert-SourceSnapshot {
+    param(
+        [Parameter(Mandatory = $true)][string]$ExpectedCommit,
+        [Parameter(Mandatory = $true)][string]$Stage
+    )
+
+    $headOutput = @(git rev-parse --verify HEAD 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Stage：无法复核 Git HEAD。"
+    }
+    $currentCommit = ((@($headOutput) -join [Environment]::NewLine)).Trim()
+    if (-not [string]::Equals(
+            $currentCommit,
+            $ExpectedCommit,
+            [StringComparison]::OrdinalIgnoreCase)) {
+        throw "$Stage：源码 HEAD 已变化，Start=$ExpectedCommit Current=$currentCommit"
+    }
+
+    $currentDirty = @(git status --porcelain 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Stage：无法复核 Git 状态。"
+    }
+    if ($currentDirty.Count -ne 0) {
+        throw "$Stage：源码树不是干净状态，拒绝继续生成正式候选。`n$($currentDirty -join "`n")"
+    }
+}
 
 function Assert-LegacyCompileItems {
     param(
@@ -111,6 +146,29 @@ function Get-RecursivePackageFiles {
     return ,$map
 }
 
+function Invoke-CandidateTest {
+    param(
+        [Parameter(Mandatory = $true)][string]$Label,
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [string[]]$ArgumentList = @(),
+        [Parameter(Mandatory = $true)][string]$SuccessPattern
+    )
+
+    Write-Host "[$Label] $FilePath $($ArgumentList -join ' ')"
+    $captured = @(& $FilePath @ArgumentList 2>&1)
+    $exitCode = $LASTEXITCODE
+    foreach ($line in $captured) { Write-Host ([string]$line) }
+    if ($exitCode -ne 0) {
+        throw "$Label 失败，ExitCode=$exitCode"
+    }
+    $summary = @($captured | ForEach-Object { [string]$_ } |
+        Where-Object { $_ -match $SuccessPattern } | Select-Object -Last 1)
+    if ($summary.Count -eq 0) {
+        throw "$Label 未输出预期通过摘要：$SuccessPattern"
+    }
+    return $summary[0].Trim()
+}
+
 # 这些安全、持续运行和背压类位于旧式非 SDK 项目中。目录里存在 .cs 并不代表会参与
 # 编译；在正式构建前显式检查，避免 VS 缓存或手工编辑再次生成“类型不存在”的假版本。
 Assert-LegacyCompileItems -ProjectRelativePath 'Controller\Controller.csproj' -RequiredItems @(
@@ -167,6 +225,12 @@ if (-not (Test-Path -LiteralPath $MsBuild -PathType Leaf)) {
     throw "MSBuild 不存在：$MsBuild"
 }
 
+$solutionPath = Join-Path $repo 'TfTest.sln'
+& $MsBuild $solutionPath /t:Restore /m `
+    /p:Configuration=Release '/p:Platform=Any CPU' `
+    /p:RestorePackagesConfig=true
+if ($LASTEXITCODE -ne 0) { throw "依赖还原失败：$LASTEXITCODE" }
+
 # 现场包只由主程序及其项目依赖组成。解决方案还包含独立的
 # PowerSupplyDebugger 工具，其 RuntimeIdentifier 不属于现场 x86 主程序包。
 # 必须从空目录构建：MSBuild Rebuild 只清理仍在项目清单内的输出，已经取消的
@@ -185,8 +249,8 @@ else {
 $identityPath = Join-Path $output 'build-identity.json'
 $checksumPath = Join-Path $output 'SHA256SUMS.txt'
 
-& $MsBuild (Join-Path $repo 'MTTfTest\MTTfTest.csproj') /t:Rebuild /m `
-    /p:Configuration=Release /p:Platform=AnyCPU `
+& $MsBuild $solutionPath /t:Rebuild /m `
+    /p:Configuration=Release '/p:Platform=Any CPU' `
     "/p:GitCommit=$commit" "/p:GitBranch=$branch" "/p:GitDirty=$gitDirtyText" `
     "/p:BuildUtc=$buildUtc" "/p:ReleaseConfigSha256=$configHash"
 if ($LASTEXITCODE -ne 0) { throw "Release 构建失败：$LASTEXITCODE" }
@@ -195,6 +259,83 @@ $exePath = Join-Path $output 'MTTFTest.exe'
 $actualProductVersion = (Get-Item -LiteralPath $exePath).VersionInfo.ProductVersion
 if ($actualProductVersion -ne $expectedProductVersion) {
     throw "版本身份不一致：期望 $expectedProductVersion，实际 $actualProductVersion"
+}
+$actualFileVersion = (Get-Item -LiteralPath $exePath).VersionInfo.FileVersion
+if ($actualFileVersion -ne $expectedProductVersion) {
+    throw "EXE 文件版本身份不一致：期望 $expectedProductVersion，实际 $actualFileVersion"
+}
+$actualAssemblyName = [Reflection.AssemblyName]::GetAssemblyName($exePath).Name
+if ($actualAssemblyName -ne $expectedAssemblyName) {
+    throw "EXE 程序集名称不一致：期望 $expectedAssemblyName，实际 $actualAssemblyName"
+}
+
+# 编译/还原可能持续较久。进入更长的回归前重新读取 Git，而不是沿用脚本启动时
+# 的结论，避免构建期间切换提交或编辑源码后仍把旧 commit 写进正式身份。
+Assert-SourceSnapshot -ExpectedCommit $commit -Stage '回归测试前源码快照校验'
+
+# 正式候选不能只证明主程序“能编译”。以下回归全部成功后才允许写入
+# FORMAL_RELEASE_CANDIDATE；任何一项失败都在复制发布目录之前终止。
+$adaptiveTestExe = Join-Path $repo 'Tests\AdaptiveControlTests\bin\Release\AdaptiveControlTests.exe'
+$diskWriterTestExe = Join-Path $repo 'Tests\EpbDiskWriterTests\bin\Release\EpbDiskWriterTests.exe'
+if (-not (Test-Path -LiteralPath $adaptiveTestExe -PathType Leaf)) {
+    throw "AdaptiveControlTests 未生成：$adaptiveTestExe"
+}
+if (-not (Test-Path -LiteralPath $diskWriterTestExe -PathType Leaf)) {
+    throw "EpbDiskWriterTests 未生成：$diskWriterTestExe"
+}
+
+$adaptiveSummary = Invoke-CandidateTest `
+    -Label 'AdaptiveControlTests' `
+    -FilePath $adaptiveTestExe `
+    -SuccessPattern '^PASS\s+\d+/\d+$'
+$diskWriterSummary = Invoke-CandidateTest `
+    -Label 'EpbDiskWriterTests' `
+    -FilePath $diskWriterTestExe `
+    -SuccessPattern '^PASS\s+\d+/\d+$'
+$soakSummary = Invoke-CandidateTest `
+    -Label "PersistenceSoak(${PersistenceSoakSeconds}s)" `
+    -FilePath $adaptiveTestExe `
+    -ArgumentList @('--persistence-soak', [string]$PersistenceSoakSeconds) `
+    -SuccessPattern '^PASS\s+1/1$'
+
+$powerSupplyProject = Join-Path $repo 'Tests\PowerSupplyDebugger.Tests\PowerSupplyDebugger.Tests.csproj'
+$powerSupplyOutput = @(& dotnet test $powerSupplyProject `
+    --configuration Release --no-restore --no-build --verbosity minimal 2>&1)
+$powerSupplyExitCode = $LASTEXITCODE
+foreach ($line in $powerSupplyOutput) { Write-Host ([string]$line) }
+if ($powerSupplyExitCode -ne 0) {
+    throw "PowerSupplyDebugger.Tests 失败，ExitCode=$powerSupplyExitCode"
+}
+$powerSupplySummary = @($powerSupplyOutput | ForEach-Object { [string]$_ } |
+    Where-Object { $_ -match '(Passed|通过).*[1-9]\d*' } | Select-Object -Last 1)
+if ($powerSupplySummary.Count -eq 0) {
+    throw 'PowerSupplyDebugger.Tests 未输出通过摘要。'
+}
+
+$fieldGateOutput = @(& py -3 -m unittest -v Tools.test_validate_epb_field_gate 2>&1)
+$fieldGateExitCode = $LASTEXITCODE
+foreach ($line in $fieldGateOutput) { Write-Host ([string]$line) }
+if ($fieldGateExitCode -ne 0) {
+    throw "现场门禁测试失败，ExitCode=$fieldGateExitCode"
+}
+$fieldGateSummary = @($fieldGateOutput | ForEach-Object { [string]$_ } |
+    Where-Object { $_ -match '^Ran\s+\d+\s+tests?' } | Select-Object -Last 1)
+if ($fieldGateSummary.Count -eq 0) {
+    throw '现场门禁测试未输出 unittest 数量摘要。'
+}
+
+# 回归期间也可能发生源码切换或编辑；identity 只能在第二次快照仍与开头一致且
+# 工作树完全干净时写入。该门禁有意不受 -AllowDirtyCandidate 绕过。
+Assert-SourceSnapshot -ExpectedCommit $commit -Stage '写入构建身份前源码快照校验'
+
+$verification = [ordered]@{
+    solutionRebuild = 'PASS'
+    adaptiveControlTests = $adaptiveSummary
+    epbDiskWriterTests = $diskWriterSummary
+    persistenceSoak = $soakSummary
+    persistenceSoakSeconds = $PersistenceSoakSeconds
+    powerSupplyDebuggerTests = $powerSupplySummary[0].Trim()
+    fieldGateTests = $fieldGateSummary[0].Trim()
 }
 
 $publishedConfigs = New-OrdinalPathMap
@@ -229,6 +370,8 @@ $manifestFiles = foreach ($entry in $files.GetEnumerator()) {
 }
 $identity = [ordered]@{
     productVersion = $expectedProductLabel
+    fileVersion = $actualFileVersion
+    assemblyName = $actualAssemblyName
     # bin\Release 只是 VS/MSBuild 暂存区，永远不得直接部署。正式批准状态只写入
     # 后续独立版本目录，防止普通 VS 生成覆盖 DLL 后仍被当作正式候选启动。
     releaseStatus = if ($isDirty) { 'DIRTY_CANDIDATE_NOT_FOR_PRODUCTION' } else { 'BUILD_STAGING_NOT_FOR_DEPLOYMENT' }
@@ -239,6 +382,7 @@ $identity = [ordered]@{
     buildUtc = $buildUtc
     configSha256 = $configHash
     platform = 'x86'
+    verification = $verification
     files = @($manifestFiles)
 }
 $identity | ConvertTo-Json -Depth 5 |

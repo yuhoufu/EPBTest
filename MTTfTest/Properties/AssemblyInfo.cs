@@ -29,6 +29,6 @@ using System.Runtime.InteropServices;
 //      生成号
 //      修订号
 //
-[assembly: AssemblyVersion("2.12.0.26")]
-[assembly: AssemblyFileVersion("2.12.0.26")]
-[assembly: AssemblyInformationalVersion("2.12.0.26")]
+[assembly: AssemblyVersion("2.12.0.27")]
+[assembly: AssemblyFileVersion("2.12.0.27")]
+[assembly: AssemblyInformationalVersion("2.12.0.27")]

@@ -1,8 +1,14 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$DataDirectory,
     [string]$ReleaseDirectory = '',
     [ValidateRange(0, 100000)][double]$MinimumHours = 2,
+    [ValidateRange(0, 1000000)][int]$MinimumFormalCyclesPerChannel = 1,
+    [ValidateRange(0.95, 1.0)][double]$MinimumHeartbeatCoverage = 0.95,
+    [ValidateRange(0.1, 10.0)][double]$DaqHeartbeatMaxGapSeconds = 10,
+    [ValidateRange(0.1, 30.0)][double]$UiHeartbeatMaxGapSeconds = 30,
+    [ValidateRange(0.1, 5.0)][double]$HostRuntimeHeartbeatMaxGapSeconds = 5,
+    [switch]$FinalProductionAcceptance,
     [ValidateSet('full', 'quick')][string]$LogScan = 'full',
     [ValidateSet('full', 'none')][string]$ArtifactScan = 'full',
     [ValidateSet('full', 'none')][string]$DatabaseScan = 'full',
@@ -12,6 +18,17 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+$acceptanceStage = if ($FinalProductionAcceptance) { 'FinalProduction' } else { 'Staged' }
+if ($FinalProductionAcceptance -and $MinimumHours -lt 72) {
+    throw '最终生产验收要求 -MinimumHours 至少为 72。'
+}
+if ($FinalProductionAcceptance -and $MinimumFormalCyclesPerChannel -lt 100000) {
+    throw '最终生产验收要求 -MinimumFormalCyclesPerChannel 至少为 100000。'
+}
+if ($FinalProductionAcceptance -and
+    ($LogScan -ne 'full' -or $ArtifactScan -ne 'full' -or $DatabaseScan -ne 'full')) {
+    throw '最终生产验收要求日志、事故证据和数据库全部使用 full 扫描。'
+}
 
 function Resolve-PythonExecutable {
     param([string]$ExplicitPath)
@@ -67,7 +84,8 @@ if ($releaseIdentity.verified -ne $true -or
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
     $safeName = ([IO.Path]::GetFileName($data.TrimEnd('\', '/')) -replace '[^0-9A-Za-z._-]', '_')
     $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
-    $OutputDirectory = Join-Path $repo "artifacts\field-acceptance\$safeName-$stamp"
+    $stageSlug = if ($FinalProductionAcceptance) { 'final-production' } else { 'staged' }
+    $OutputDirectory = Join-Path $repo "artifacts\field-acceptance\$safeName-$stageSlug-$stamp"
 }
 $output = [IO.Path]::GetFullPath($OutputDirectory)
 [void](New-Item -ItemType Directory -Path $output -Force)
@@ -90,7 +108,13 @@ $arguments = @(
     '--expected-config-sha256', [string]$releaseIdentity.configSha256,
     '--expected-git-commit', [string]$releaseIdentity.gitCommit,
     '--expected-build-utc', $expectedBuildUtc,
+    '--acceptance-stage', $acceptanceStage,
     '--minimum-hours', $MinimumHours.ToString([Globalization.CultureInfo]::InvariantCulture),
+    '--minimum-formal-cycles-per-channel', $MinimumFormalCyclesPerChannel.ToString([Globalization.CultureInfo]::InvariantCulture),
+    '--minimum-heartbeat-coverage', $MinimumHeartbeatCoverage.ToString([Globalization.CultureInfo]::InvariantCulture),
+    '--daq-heartbeat-max-gap-seconds', $DaqHeartbeatMaxGapSeconds.ToString([Globalization.CultureInfo]::InvariantCulture),
+    '--ui-heartbeat-max-gap-seconds', $UiHeartbeatMaxGapSeconds.ToString([Globalization.CultureInfo]::InvariantCulture),
+    '--host-heartbeat-max-gap-seconds', $HostRuntimeHeartbeatMaxGapSeconds.ToString([Globalization.CultureInfo]::InvariantCulture),
     '--performance-gates', 'required',
     '--log-scan', $LogScan,
     '--artifact-scan', $ArtifactScan,
@@ -115,11 +139,18 @@ finally {
 }
 [pscustomobject]@{
     passed = ($validatorExitCode -eq 0)
+    acceptanceStage = $acceptanceStage
+    productionReleaseApproved = ($FinalProductionAcceptance -and $validatorExitCode -eq 0)
     exitCode = $validatorExitCode
     productVersion = $releaseIdentity.productVersion
     exeSha256 = $releaseIdentity.exeSha256
     gitCommit = $releaseIdentity.gitCommit
     minimumHours = $MinimumHours
+    minimumFormalCyclesPerChannel = $MinimumFormalCyclesPerChannel
+    minimumHeartbeatCoverage = $MinimumHeartbeatCoverage
+    daqHeartbeatMaxGapSeconds = $DaqHeartbeatMaxGapSeconds
+    uiHeartbeatMaxGapSeconds = $UiHeartbeatMaxGapSeconds
+    hostRuntimeHeartbeatMaxGapSeconds = $HostRuntimeHeartbeatMaxGapSeconds
     dataDirectory = $data
     releaseDirectory = $release
     pythonExecutable = $python
