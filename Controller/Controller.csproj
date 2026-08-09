@@ -108,6 +108,7 @@
     <!-- Explicit include is required because this is a legacy non-SDK project. -->
     <Compile Include="LatestPairMailbox.cs" />
     <Compile Include="UiCurveContinuityPolicy.cs" />
+    <Compile Include="UiLogDisplayPolicy.cs" />
     <Compile Include="PowerSupplyCoordinator.cs" />
     <Compile Include="PowerSupplyTelemetryCsvRecorder.cs" />
     <Compile Include="PressureCalibrationCoordinator.cs" />

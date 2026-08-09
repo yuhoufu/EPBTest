@@ -291,16 +291,25 @@ namespace MTEmbTest
         private const int UiInfoTrimWatermark = 1800;
         private const int UiInfoPendingLineLimit = 512;
         private const int UiInfoBatchMaxLines = 50;
+        private const int UiInfoAutoScrollMinIntervalMs = 500;
         private UiInfoLogStore _uiInfoLogStore;
         private bool _suppressRtbInfoTextChanged;
         private readonly BoundedConcurrentQueue<string> _pendingUiInfoLines =
             new BoundedConcurrentQueue<string>(UiInfoPendingLineLimit);
+        private readonly List<string> _uiInfoBatch = new List<string>(UiInfoBatchMaxLines);
         private System.Windows.Forms.Timer _uiInfoFlushTimer;
         private int _uiInfoVisibleLineCount;
+        private bool _uiInfoAutoScrollPending;
+        private long _uiInfoLastAutoScrollTick;
         private readonly List<double> _uiHeartbeatDelayMs = new List<double>(96);
         private readonly List<double> _uiHeartbeatFlushMs = new List<double>(96);
         private long _uiHeartbeatLastTick;
         private long _uiHeartbeatWindowStartedTick;
+        private double _uiInfoAppendMaxMs;
+        private double _uiInfoTrimMaxMs;
+        private double _uiInfoScrollMaxMs;
+        private long _uiInfoRenderedBatches;
+        private long _uiInfoRenderedLines;
 
 
         /// <summary>内存中的 12 路 EPB 记录，来源于 TestConfig.xml 的 &lt;EpbRecords&gt;。</summary>
@@ -2251,15 +2260,15 @@ namespace MTEmbTest
                     await _epb.StartChannelsSynchronizedPowerAwareAsync(selected, cts.Token, abortAllIfAnyLearnFailed: false);
 
 
-                    RtbInfo?.AppendText($"已按电源保护策略：学习错峰 + 组间同步起跑（同组首周期错峰）\n");
+                    LogInfo("已按电源保护策略：学习错峰 + 组间同步起跑（同组首周期错峰）");
                 }
                 catch (OperationCanceledException)
                 {
-                    RtbInfo?.AppendText($"操作已取消\n");
+                    LogInfo("操作已取消");
                 }
                 catch (Exception ex)
                 {
-                    RtbInfo?.AppendText($"启动失败：{ex.Message}\n");
+                    LogInfo($"启动失败：{ex.Message}");
                 }
                 finally
                 {
@@ -2273,7 +2282,7 @@ namespace MTEmbTest
 
 
                 // UI 提示
-                RtbInfo?.AppendText($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  > 卡钳1测试已启动\n");
+                LogInfo("卡钳1测试已启动");
             }
             catch (Exception ex)
             {
@@ -2428,11 +2437,11 @@ namespace MTEmbTest
                 // _epb.StopChannel(5);
 
                 _epb.StopAll(); // 停止所有通道
-                RtbInfo?.AppendText($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  > 停止试验\n");
+                LogInfo("停止试验");
             }
             catch (Exception ex)
             {
-                RtbInfo?.AppendText($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  > 停止卡钳2测试失败\n");
+                LogInfo("停止卡钳2测试失败");
             }*/
 
             #endregion
@@ -4818,48 +4827,99 @@ namespace MTEmbTest
         private void UiInfoFlushTimer_Tick(object sender, EventArgs e)
         {
             var enteredTick = Stopwatch.GetTimestamp();
+            var appendMs = 0.0;
+            var trimMs = 0.0;
+            var scrollMs = 0.0;
             try
             {
                 if (_isClosing || RtbInfo == null || RtbInfo.IsDisposed)
                     return;
 
-                var batch = new List<string>(UiInfoBatchMaxLines);
-                while (batch.Count < UiInfoBatchMaxLines && _pendingUiInfoLines.TryDequeue(out var line))
+                _uiInfoBatch.Clear();
+                while (_uiInfoBatch.Count < UiInfoBatchMaxLines &&
+                       _pendingUiInfoLines.TryDequeue(out var line))
                 {
-                    batch.Add(line);
+                    _uiInfoBatch.Add(line);
                 }
-                if (batch.Count == 0)
-                    return;
-
-                _suppressRtbInfoTextChanged = true;
-                try
+                if (_uiInfoBatch.Count > 0)
                 {
-                    RtbInfo.AppendText(string.Join(Environment.NewLine, batch) + Environment.NewLine);
-                    _uiInfoVisibleLineCount += batch.Count;
-
-                    // 只有跨越水位线时才扫描 Lines；避免每条日志都复制整个 RichTextBox。
-                    if (_uiInfoVisibleLineCount > UiInfoRecentLineLimit)
+                    _suppressRtbInfoTextChanged = true;
+                    try
                     {
-                        var lines = RtbInfo.Lines;
-                        var retained = lines.Skip(Math.Max(0, lines.Length - UiInfoTrimWatermark)).ToArray();
-                        RtbInfo.Lines = retained;
-                        _uiInfoVisibleLineCount = retained.Length;
+                        var phaseStarted = Stopwatch.GetTimestamp();
+                        RtbInfo.AppendText(
+                            string.Join(Environment.NewLine, _uiInfoBatch) + Environment.NewLine);
+                        appendMs = UiElapsedMilliseconds(phaseStarted, Stopwatch.GetTimestamp());
+                        _uiInfoVisibleLineCount += _uiInfoBatch.Count;
+                        _uiInfoRenderedBatches++;
+                        _uiInfoRenderedLines += _uiInfoBatch.Count;
+
+                        // 不再读取/赋值 RichTextBox.Lines 重建全部文本；只用原生行索引
+                        // 原位删除头部越界段，持久日志仍由 UiInfoLogStore 完整保存。
+                        if (_uiInfoVisibleLineCount > UiInfoRecentLineLimit)
+                        {
+                            phaseStarted = Stopwatch.GetTimestamp();
+                            var actualLineCount = RtbInfo.TextLength == 0
+                                ? 0
+                                : RtbInfo.GetLineFromCharIndex(RtbInfo.TextLength - 1) + 1;
+                            var removeLines = UiLogDisplayPolicy.CalculateLinesToRemove(
+                                actualLineCount,
+                                UiInfoRecentLineLimit,
+                                UiInfoTrimWatermark);
+                            if (removeLines > 0)
+                            {
+                                var removeChars = RtbInfo.GetFirstCharIndexFromLine(removeLines);
+                                if (removeChars > 0)
+                                {
+                                    RtbInfo.Select(0, removeChars);
+                                    RtbInfo.SelectedText = string.Empty;
+                                    _uiInfoVisibleLineCount = actualLineCount - removeLines;
+                                }
+                            }
+                            trimMs = UiElapsedMilliseconds(phaseStarted, Stopwatch.GetTimestamp());
+                        }
+                        _uiInfoAutoScrollPending = true;
                     }
+                    finally
+                    {
+                        _suppressRtbInfoTextChanged = false;
+                    }
+                }
+
+                var nowTick = Stopwatch.GetTimestamp();
+                if (_uiInfoAutoScrollPending &&
+                    UiLogDisplayPolicy.ShouldAutoScroll(
+                        nowTick,
+                        _uiInfoLastAutoScrollTick,
+                        Stopwatch.Frequency,
+                        UiInfoAutoScrollMinIntervalMs))
+                {
+                    var phaseStarted = Stopwatch.GetTimestamp();
                     RtbInfo.SelectionStart = RtbInfo.TextLength;
                     RtbInfo.ScrollToCaret();
-                }
-                finally
-                {
-                    _suppressRtbInfoTextChanged = false;
+                    var completed = Stopwatch.GetTimestamp();
+                    scrollMs = UiElapsedMilliseconds(phaseStarted, completed);
+                    _uiInfoLastAutoScrollTick = completed;
+                    _uiInfoAutoScrollPending = false;
                 }
             }
             finally
             {
-                RecordUiHeartbeat(enteredTick, Stopwatch.GetTimestamp());
+                RecordUiHeartbeat(
+                    enteredTick,
+                    Stopwatch.GetTimestamp(),
+                    appendMs,
+                    trimMs,
+                    scrollMs);
             }
         }
 
-        private void RecordUiHeartbeat(long enteredTick, long completedTick)
+        private void RecordUiHeartbeat(
+            long enteredTick,
+            long completedTick,
+            double appendMs,
+            double trimMs,
+            double scrollMs)
         {
             var previous = _uiHeartbeatLastTick;
             _uiHeartbeatLastTick = enteredTick;
@@ -4871,6 +4931,9 @@ namespace MTEmbTest
             if (completedTick >= enteredTick)
                 _uiHeartbeatFlushMs.Add(
                     (completedTick - enteredTick) * 1000.0 / Stopwatch.Frequency);
+            _uiInfoAppendMaxMs = Math.Max(_uiInfoAppendMaxMs, appendMs);
+            _uiInfoTrimMaxMs = Math.Max(_uiInfoTrimMaxMs, trimMs);
+            _uiInfoScrollMaxMs = Math.Max(_uiInfoScrollMaxMs, scrollMs);
 
             var windowStarted = _uiHeartbeatWindowStartedTick;
             if (windowStarted <= 0)
@@ -4890,11 +4953,19 @@ namespace MTEmbTest
             logger?.Info(
                 $"FieldMetric UI DelayP95Ms={delayP95:F3} DelayMaxMs={delayMax:F3} " +
                 $"FlushP95Ms={flushP95:F3} FlushMaxMs={flushMax:F3} " +
+                $"AppendMaxMs={_uiInfoAppendMaxMs:F3} TrimMaxMs={_uiInfoTrimMaxMs:F3} " +
+                $"ScrollMaxMs={_uiInfoScrollMaxMs:F3} RenderedBatches={_uiInfoRenderedBatches} " +
+                $"RenderedLines={_uiInfoRenderedLines} " +
                 $"Pending={_pendingUiInfoLines.Count} Dropped={_pendingUiInfoLines.DroppedCount} " +
                 $"FilePending={filePending} FileDropped={fileDropped}",
                 "FIELD");
             _uiHeartbeatDelayMs.Clear();
             _uiHeartbeatFlushMs.Clear();
+            _uiInfoAppendMaxMs = 0;
+            _uiInfoTrimMaxMs = 0;
+            _uiInfoScrollMaxMs = 0;
+            _uiInfoRenderedBatches = 0;
+            _uiInfoRenderedLines = 0;
             _uiHeartbeatWindowStartedTick = completedTick;
         }
 
@@ -4909,6 +4980,11 @@ namespace MTEmbTest
                     MidpointRounding.AwayFromZero)));
             return ordered[index];
         }
+
+        private static double UiElapsedMilliseconds(long startedTick, long completedTick) =>
+            completedTick >= startedTick
+                ? (completedTick - startedTick) * 1000.0 / Stopwatch.Frequency
+                : 0.0;
 
         private async void RtbInfo_TextChanged(object sender, EventArgs e)
         {

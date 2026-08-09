@@ -18,8 +18,6 @@ namespace MTEmbTest
         private int _powerSupplyUiInitialized;
         private int _ownedRawPipelineAttached;
         private int _warningSnapshotStorageWarningShown;
-        private bool _trimmingSafetyInfoDisplay;
-        private bool _formattingInfoDisplaySpacing;
         private ToolTip _powerSupplyToolTip;
         private ToolTip _channelRuntimeToolTip;
         private readonly Dictionary<int, Label> _channelRuntimeLabels = new Dictionary<int, Label>();
@@ -29,8 +27,6 @@ namespace MTEmbTest
         private readonly object _powerSupplyTelemetryGate = new object();
         private readonly Dictionary<int, PowerSupplyTelemetry> _latestPowerSupplyTelemetry =
             new Dictionary<int, PowerSupplyTelemetry>();
-        private const int SafetyInfoMaxDisplayLines = 2000;
-        private const int SafetyInfoTrimmedDisplayLines = 1500;
 
         protected override void OnShown(EventArgs e)
         {
@@ -38,7 +34,6 @@ namespace MTEmbTest
             AttachSafetyUiEvents();
             AttachPauseResumeUi();
             if (Interlocked.Exchange(ref _powerSupplyUiInitialized, 1) != 0) return;
-            InitializeBoundedSafetyInfoDisplay();
             InitializeChannelRuntimeStatusUi();
             AttachOwnedRawPipeline();
             AttachUnattendedRecovery();
@@ -503,45 +498,6 @@ namespace MTEmbTest
                 true);
         }
 
-        private void InitializeBoundedSafetyInfoDisplay()
-        {
-            if (RtbInfo == null || RtbInfo.IsDisposed) return;
-            FormatInfoDisplaySpacing();
-            TrimSafetyInfoDisplay();
-            RtbInfo.TextChanged += (sender, args) =>
-            {
-                FormatInfoDisplaySpacing();
-                TrimSafetyInfoDisplay();
-            };
-        }
-
-        private void FormatInfoDisplaySpacing()
-        {
-            if (_formattingInfoDisplaySpacing || RtbInfo == null || RtbInfo.IsDisposed) return;
-            var contentLines = RtbInfo.Lines
-                .Where(line => !string.IsNullOrWhiteSpace(line))
-                .ToArray();
-            var formatted = contentLines.Length == 0
-                ? string.Empty
-                : string.Join(Environment.NewLine + Environment.NewLine, contentLines) +
-                  Environment.NewLine;
-            if (string.Equals(RtbInfo.Text, formatted, StringComparison.Ordinal)) return;
-
-            _formattingInfoDisplaySpacing = true;
-            _suppressRtbInfoTextChanged = true;
-            try
-            {
-                RtbInfo.Text = formatted;
-                RtbInfo.SelectionStart = RtbInfo.TextLength;
-                RtbInfo.ScrollToCaret();
-            }
-            finally
-            {
-                _suppressRtbInfoTextChanged = false;
-                _formattingInfoDisplaySpacing = false;
-            }
-        }
-
         private void PersistRuntimeChannelSelection(int channelIndex)
         {
             if (_cfg?.Test == null || channelIndex < 0 || channelIndex >= EpbGroup.Length) return;
@@ -615,27 +571,6 @@ namespace MTEmbTest
                     MessageBoxIcon.Error);
             }
             catch { }
-        }
-
-        private void TrimSafetyInfoDisplay()
-        {
-            if (_trimmingSafetyInfoDisplay || RtbInfo == null || RtbInfo.IsDisposed) return;
-            var lines = RtbInfo.Lines;
-            if (lines.Length <= SafetyInfoMaxDisplayLines) return;
-
-            _trimmingSafetyInfoDisplay = true;
-            try
-            {
-                RtbInfo.Lines = lines
-                    .Skip(Math.Max(0, lines.Length - SafetyInfoTrimmedDisplayLines))
-                    .ToArray();
-                RtbInfo.SelectionStart = RtbInfo.TextLength;
-                RtbInfo.ScrollToCaret();
-            }
-            finally
-            {
-                _trimmingSafetyInfoDisplay = false;
-            }
         }
 
         private void PostSafetyStatus(string message, bool important)

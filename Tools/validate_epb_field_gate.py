@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate a sealed EPB project directory against V2.12.0.21 field red lines."""
+"""Validate a sealed EPB project directory against V2.12.0.22 field red lines."""
 
 from __future__ import annotations
 
@@ -436,10 +436,18 @@ def validate_performance_metrics(
     ))
 
     ui_delay_p95 = numeric(ui, "DelayP95Ms")
+    ui_flush_max = numeric(ui, "FlushMaxMs")
+    ui_append_max = numeric(ui, "AppendMaxMs")
+    ui_trim_max = numeric(ui, "TrimMaxMs")
+    ui_scroll_max = numeric(ui, "ScrollMaxMs")
     ui_dropped = numeric(ui, "Dropped")
     ui_file_dropped = numeric(ui, "FileDropped")
     metrics.update(
         ui_window_p95_delay_max_ms=max(ui_delay_p95) if ui_delay_p95 else None,
+        ui_flush_absolute_max_ms=max(ui_flush_max) if ui_flush_max else None,
+        ui_append_absolute_max_ms=max(ui_append_max) if ui_append_max else None,
+        ui_trim_absolute_max_ms=max(ui_trim_max) if ui_trim_max else None,
+        ui_scroll_absolute_max_ms=max(ui_scroll_max) if ui_scroll_max else None,
         ui_dropped_max=max(ui_dropped) if ui_dropped else None,
         ui_file_dropped_max=max(ui_file_dropped) if ui_file_dropped else None,
     )
@@ -451,6 +459,26 @@ def validate_performance_metrics(
         lambda values: max(values) < 200.0,
         f"maximumWindowP95={max(ui_delay_p95) if ui_delay_p95 else None}",
     )
+    checks.append(Check(
+        "UI单次刷新及分阶段操作均<200ms",
+        len(ui_flush_max) == len(ui) and
+        len(ui_append_max) == len(ui) and
+        len(ui_trim_max) == len(ui) and
+        len(ui_scroll_max) == len(ui) and
+        bool(ui_flush_max) and
+        max(ui_flush_max) < 200.0 and
+        max(ui_append_max) < 200.0 and
+        max(ui_trim_max) < 200.0 and
+        max(ui_scroll_max) < 200.0,
+        f"samples=flush:{len(ui_flush_max)}/{len(ui)}, "
+        f"append:{len(ui_append_max)}/{len(ui)}, trim:{len(ui_trim_max)}/{len(ui)}, "
+        f"scroll:{len(ui_scroll_max)}/{len(ui)}; "
+        f"max=flush:{max(ui_flush_max) if ui_flush_max else None}, "
+        f"append:{max(ui_append_max) if ui_append_max else None}, "
+        f"trim:{max(ui_trim_max) if ui_trim_max else None}, "
+        f"scroll:{max(ui_scroll_max) if ui_scroll_max else None}",
+        required=required,
+    ))
     checks.append(Check(
         "UI显示队列Dropped=0",
         bool(ui_dropped) and max(ui_dropped) == 0,
@@ -935,7 +963,7 @@ def percentile(values: list[float], fraction: float) -> float | None:
 
 def markdown(result: dict) -> str:
     lines = [
-        f"# EPB V2.12.0.21 现场封存验收：{result['status']}",
+        f"# EPB V2.12.0.22 现场封存验收：{result['status']}",
         "",
         f"- 数据目录：`{result['data_directory']}`",
         f"- 生成时间：{result['generated_at']}",
@@ -970,7 +998,7 @@ def markdown(result: dict) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("data_directory", type=Path)
-    parser.add_argument("--expected-version", default="V2.12.0.21")
+    parser.add_argument("--expected-version", default="V2.12.0.22")
     parser.add_argument("--minimum-hours", type=float, default=0.0)
     parser.add_argument(
         "--artifact-scan",

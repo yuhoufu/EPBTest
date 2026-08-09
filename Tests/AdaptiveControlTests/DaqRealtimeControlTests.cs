@@ -43,6 +43,7 @@ namespace AdaptiveControlTests
             Run("UI最新值唤醒在阻塞期间只保留一个待处理信号", UiLatestValueSignalCoalescesBacklog, ref passed);
             Run("UI双设备邮箱十万批阻塞后每设备只保留最新一批", UiLatestPairMailboxStaysBounded, ref passed);
             Run("UI跳过显示批次保持连线而真实DAQ断点仍断笔", UiCurveBreakUsesAcquisitionTimeline, ref passed);
+            Run("UI日志原位裁剪与滚动限频保持有界无分配", UiLogDisplayPolicyIsBoundedAndAllocationFree, ref passed);
             Run("DAQ陈旧根因区分回调与控制消费", DaqStaleRootClassification, ref passed);
             Run("DAQ批次和兼容队列包装不再持续分配", DaqBatchObjectsAreReusableValueBacked, ref passed);
             Run("旧原始二进制写入池化后格式保持不变", LegacyRawWriterKeepsBinaryFormat, ref passed);
@@ -575,8 +576,8 @@ namespace AdaptiveControlTests
                    !string.IsNullOrWhiteSpace(identity.ConfigSha256), "版本或哈希字段缺失");
             Assert(identity.ProductVersion.Split('.').Length == 4,
                 "产品版本未保留补丁Revision，无法区分2.12.0.x候选");
-            Assert(RuntimeBuildIdentity.FormatProductVersion(new Version(2, 12, 0, 21)) ==
-                   "V2.12.0.21",
+            Assert(RuntimeBuildIdentity.FormatProductVersion(new Version(2, 12, 0, 22)) ==
+                   "V2.12.0.22",
                 "四段现场补丁版本被截断，事故身份无法区分候选");
             Assert(json.Contains("\"gitCommit\"") && json.Contains("\"gitDirty\"") &&
                    json.Contains("\"processId\"") && json.Contains("\"buildUtc\"") &&
@@ -1158,6 +1159,39 @@ namespace AdaptiveControlTests
             var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
             Assert(breaks == 0, "连续批次压力测试出现误断笔");
             Assert(allocated <= 256, $"曲线连续性判定十万次持续分配 {allocated} bytes");
+        }
+
+        private static void UiLogDisplayPolicyIsBoundedAndAllocationFree()
+        {
+            Assert(UiLogDisplayPolicy.CalculateLinesToRemove(2000, 2000, 1800) == 0,
+                "达到显示上限时不应提前裁剪");
+            Assert(UiLogDisplayPolicy.CalculateLinesToRemove(2001, 2000, 1800) == 201,
+                "越过水位线后未一次裁剪到保留线数");
+
+            var frequency = Stopwatch.Frequency;
+            var started = frequency;
+            Assert(UiLogDisplayPolicy.ShouldAutoScroll(started, 0, frequency, 500),
+                "首次日志批次未允许自动滚动");
+            Assert(!UiLogDisplayPolicy.ShouldAutoScroll(
+                    started + frequency * 499 / 1000, started, frequency, 500),
+                "500ms限频窗口内重复滚动");
+            Assert(UiLogDisplayPolicy.ShouldAutoScroll(
+                    started + frequency / 2, started, frequency, 500),
+                "达到500ms后未允许滚动");
+
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            var before = GC.GetAllocatedBytesForCurrentThread();
+            var removals = 0;
+            for (var i = 0; i < 100000; i++)
+            {
+                removals += UiLogDisplayPolicy.CalculateLinesToRemove(2001, 2000, 1800);
+                UiLogDisplayPolicy.ShouldAutoScroll(started + i, started, frequency, 500);
+            }
+            var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+            Assert(removals == 20100000, "日志裁剪压力测试结果不稳定");
+            Assert(allocated <= 256, $"日志显示策略十万次持续分配 {allocated} bytes");
         }
 
         private static void DaqStaleRootClassification()

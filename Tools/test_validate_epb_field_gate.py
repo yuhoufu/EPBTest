@@ -24,15 +24,15 @@ class FieldGateValidatorTests(unittest.TestCase):
         sha = "a" * 64
         commit = "b" * 40
         (log / "run.log").write_text(
-            "2026-08-08 10:00:00.000\tINFO\t启动\tProductVersion=V2.12.0.21\n"
-            f"2026-08-08 10:00:00.000\tINFO\tFIELD\tFieldMetric SESSION Phase=Start RunId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa Channels=4,9 Closed=False Detail=BatchFormal ProductVersion=V2.12.0.21 AssemblyVersion=2.12.0.21 ProcessId=1234 ExecutablePath=D:\\EPBTest\\MTTFTest.exe ExeSha256={sha} ConfigSha256={sha} GitCommit={commit} GitDirty=False BuildUtc=2026-08-08T00:00:00Z\n"
+            "2026-08-08 10:00:00.000\tINFO\t启动\tProductVersion=V2.12.0.22\n"
+            f"2026-08-08 10:00:00.000\tINFO\tFIELD\tFieldMetric SESSION Phase=Start RunId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa Channels=4,9 Closed=False Detail=BatchFormal ProductVersion=V2.12.0.22 AssemblyVersion=2.12.0.22 ProcessId=1234 ExecutablePath=D:\\EPBTest\\MTTFTest.exe ExeSha256={sha} ConfigSha256={sha} GitCommit={commit} GitDirty=False BuildUtc=2026-08-08T00:00:00Z\n"
             "2026-08-08 10:00:00.100\tINFO\tFIELD\tFieldMetric STATE RunId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa Device=Dev1 Channel=4 State=Running Reason=Running Revision=1 CorrelationId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa RunEpoch=1 Enabled=True Formal=True Timer=True Runner=True Energized=False\n"
             "2026-08-08 10:00:00.100\tINFO\tFIELD\tFieldMetric STATE RunId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa Device=Dev2 Channel=9 State=Running Reason=Running Revision=1 CorrelationId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa RunEpoch=1 Enabled=True Formal=True Timer=True Runner=True Energized=False\n"
             "2026-08-08 10:00:01.000\tINFO\tFIELD\tFieldMetric DAQ Phase=Running Device=Dev1 ControlDepth=0 ControlOldestMs=0.0 ControlProcessMs=1.0 SubscriberMaxMs=1.0 PersistenceState=Recovered PersistenceDepth=1 PersistenceOldestMs=5.0 CallbackAgeMs=10.0 ControlProcessedAgeMs=10.0 Produced=100 Processed=100 Published=100 Persisted=99 Discontinuities=0 DurabilityBlocked=False Suppressed=0 Discarded=0 OverCapacityDropped=0\n"
             "2026-08-08 10:00:01.000\tINFO\tFIELD\tFieldMetric DAQ Phase=Running Device=Dev2 ControlDepth=0 ControlOldestMs=0.0 ControlProcessMs=1.0 SubscriberMaxMs=1.0 PersistenceState=Recovered PersistenceDepth=1 PersistenceOldestMs=5.0 CallbackAgeMs=10.0 ControlProcessedAgeMs=10.0 Produced=100 Processed=100 Published=100 Persisted=99 Discontinuities=0 DurabilityBlocked=False Suppressed=0 Discarded=0 OverCapacityDropped=0\n"
             "2026-08-08 10:00:02.000\tINFO\tFIELD\tFieldMetric DO_OFF Device=Dev1 Channel=4 CommandId=a Result=True Late=False QueueWaitMs=1 NIWriteMs=5 WorkerMs=6 TotalMs=7\n"
             "2026-08-08 10:00:02.000\tINFO\tFIELD\tFieldMetric DO_OFF Device=Dev2 Channel=9 CommandId=b Result=True Late=False QueueWaitMs=1 NIWriteMs=5 WorkerMs=6 TotalMs=7\n"
-            "2026-08-08 10:00:10.000\tINFO\tFIELD\tFieldMetric UI DelayP95Ms=5 DelayMaxMs=10 FlushP95Ms=2 FlushMaxMs=3 Pending=0 Dropped=0 FilePending=0 FileDropped=0\n"
+            "2026-08-08 10:00:10.000\tINFO\tFIELD\tFieldMetric UI DelayP95Ms=5 DelayMaxMs=10 FlushP95Ms=2 FlushMaxMs=3 AppendMaxMs=1 TrimMaxMs=1 ScrollMaxMs=1 RenderedBatches=2 RenderedLines=4 Pending=0 Dropped=0 FilePending=0 FileDropped=0\n"
             "2026-08-08 10:00:10.100\tINFO\tFIELD\tFieldMetric CYCLE RunId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa Channel=4 Cycle=1 Phase=Formal Peak=15.1 Target=15.0 Floor=14.2 Ceiling=15.8 Qualified=True Result=Success\n"
             "2026-08-08 10:00:10.200\tINFO\tFIELD\tFieldMetric CYCLE RunId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa Channel=9 Cycle=1 Phase=Formal Peak=15.2 Target=15.0 Floor=14.2 Ceiling=15.8 Qualified=True Result=Success\n"
             "2026-08-08 10:00:11.000\tINFO\tHOST\tHostRuntime PID=1 Bitness=32 ProcessCpu=8.0% SystemCpu=30.0% OtherCpu=22.0% WorkingSet=200MiB\n"
@@ -40,7 +40,7 @@ class FieldGateValidatorTests(unittest.TestCase):
             "2026-08-08 10:59:58.000\tINFO\tFIELD\tFieldMetric STATE RunId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa Device=Dev2 Channel=9 State=ManualStopped Reason=StopAll Revision=2 CorrelationId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa RunEpoch=1 Enabled=True Formal=False Timer=False Runner=False Energized=False\n"
             "2026-08-08 10:59:59.000\tINFO\tFIELD\tFieldMetric STOP_PERSISTENCE Device=Dev1 RawDrained=True Boundary=100 Published=100 Persisted=100 Depth=0 State=Recovered Closed=True\n"
             "2026-08-08 10:59:59.000\tINFO\tFIELD\tFieldMetric STOP_PERSISTENCE Device=Dev2 RawDrained=True Boundary=100 Published=100 Persisted=100 Depth=0 State=Recovered Closed=True\n"
-            "2026-08-08 11:00:00.000\tINFO\tFIELD\tFieldMetric SESSION Phase=Stop RunId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa Channels=4,9 Closed=True Detail=ManualUi ProductVersion=V2.12.0.21 ExeSha256=unused ConfigSha256=unused GitCommit=unused GitDirty=False BuildUtc=unused\n"
+            "2026-08-08 11:00:00.000\tINFO\tFIELD\tFieldMetric SESSION Phase=Stop RunId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa Channels=4,9 Closed=True Detail=ManualUi ProductVersion=V2.12.0.22 ExeSha256=unused ConfigSha256=unused GitCommit=unused GitDirty=False BuildUtc=unused\n"
             "2026-08-08 11:00:00.001\tINFO\t停止\tNormal Stop\n",
             encoding="utf-8",
         )
@@ -86,6 +86,16 @@ class FieldGateValidatorTests(unittest.TestCase):
         self.assertEqual(0, process.returncode, process.stderr + process.stdout)
         self.assertEqual("PASS", result["status"])
 
+    def test_ui_single_flush_over_200ms_fails(self) -> None:
+        run_log = self.root / "log" / "run.log"
+        text = run_log.read_text(encoding="utf-8")
+        text = text.replace("FlushMaxMs=3", "FlushMaxMs=250", 1)
+        run_log.write_text(text, encoding="utf-8")
+        process, result = self.run_gate()
+        self.assertEqual(2, process.returncode)
+        failures = {item["name"] for item in result["checks"] if not item["passed"]}
+        self.assertIn("UI单次刷新及分阶段操作均<200ms", failures)
+
     def test_formal_session_missing_process_identity_fails(self) -> None:
         run_log = self.root / "log" / "run.log"
         text = run_log.read_text(encoding="utf-8")
@@ -110,8 +120,8 @@ class FieldGateValidatorTests(unittest.TestCase):
 
     def test_incident_phases_with_complete_build_identity_pass(self) -> None:
         identity = {
-            "productVersion": "V2.12.0.21",
-            "assemblyVersion": "2.12.0.21",
+            "productVersion": "V2.12.0.22",
+            "assemblyVersion": "2.12.0.22",
             "executablePath": r"D:\EPBTest\MTTFTest.exe",
             "executableSha256": "a" * 64,
             "configSha256": "a" * 64,
@@ -215,7 +225,7 @@ class FieldGateValidatorTests(unittest.TestCase):
         second = (
             "2026-08-08 10:30:00.000\tINFO\tFIELD\t"
             "FieldMetric SESSION Phase=Start RunId=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb Channels=4,9 Closed=False "
-            "Detail=BatchFormal ProductVersion=V2.12.0.21 ExeSha256=" + "a" * 64 +
+            "Detail=BatchFormal ProductVersion=V2.12.0.22 ExeSha256=" + "a" * 64 +
             " ConfigSha256=" + "a" * 64 + " GitCommit=" + "b" * 40 +
             " GitDirty=False BuildUtc=2026-08-08T00:30:00Z\n"
         )
@@ -236,7 +246,7 @@ class FieldGateValidatorTests(unittest.TestCase):
         latest = (
             "2026-08-08 11:30:00.000\tINFO\tFIELD\t"
             "FieldMetric SESSION Phase=Start RunId=latest-unsealed Channels=4,9 Closed=False "
-            "Detail=BatchFormal ProductVersion=V2.12.0.21 ExeSha256=" + "a" * 64 +
+            "Detail=BatchFormal ProductVersion=V2.12.0.22 ExeSha256=" + "a" * 64 +
             " ConfigSha256=" + "a" * 64 + " GitCommit=" + "b" * 40 +
             " GitDirty=False BuildUtc=2026-08-08T01:30:00Z\n"
         )
@@ -253,7 +263,7 @@ class FieldGateValidatorTests(unittest.TestCase):
         duplicate = (
             "2026-08-08 11:00:00.500\tINFO\tFIELD\t"
             "FieldMetric SESSION Phase=Complete RunId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa Channels=4,9 Closed=True "
-            "Detail=Duplicate ProductVersion=V2.12.0.21 ExeSha256=unused "
+            "Detail=Duplicate ProductVersion=V2.12.0.22 ExeSha256=unused "
             "ConfigSha256=unused GitCommit=unused GitDirty=False BuildUtc=unused\n"
         )
         run_log.write_text(text + duplicate, encoding="utf-8")

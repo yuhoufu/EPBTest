@@ -7,8 +7,8 @@ $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 Set-Location -LiteralPath $repo
 
-$expectedProductVersion = '2.12.0.21'
-$expectedProductLabel = 'V2.12.0.21'
+$expectedProductVersion = '2.12.0.22'
+$expectedProductLabel = 'V2.12.0.22'
 $expectedPublishedConfigs = @(
     'Config/AIConfig.xml',
     'Config/AlarmConfig.xml',
@@ -114,6 +114,7 @@ Assert-LegacyCompileItems -ProjectRelativePath 'Controller\Controller.csproj' -R
     'EpbManager.FieldMetrics.cs',
     'LatestPairMailbox.cs',
     'UiCurveContinuityPolicy.cs',
+    'UiLogDisplayPolicy.cs',
     'TaskSupervisor.cs'
 )
 Assert-LegacyCompileItems -ProjectRelativePath 'IO.NI\IO.NI.csproj' -RequiredItems @(
