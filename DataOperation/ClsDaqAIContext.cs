@@ -164,10 +164,6 @@ public class DaqAIContext
     public void EnqueueRawData(OwnedDaqRawBatch batch)
     {
         if (batch == null) return;
-        // 统计是派生数据，异常不能撤销 Raw 所有权。Raw 成功进入无丢弃队列后，
-        // 上游即可安全结束所有权转移。
-        try { AccumulateStat(batch); }
-        catch { }
         EnqueueRawCore(new DaqAIData(batch));
     }
 
@@ -198,6 +194,14 @@ public class DaqAIContext
                 throw new TimeoutException(
                     $"{DaqCardName} Raw末端准入门在{RawAdmissionTimeoutMs}ms内未释放。");
             gateAcquired = true;
+            // Owned 批次只有在容量槽与准入门都已取得、即将真实转移所有权时才累计统计。
+            // 若在队列满时先累计再抛超时，上游对同一批原序重试会把派生统计重复累计
+            // 数十至数百次。统计异常不能撤销 Raw 的权威所有权转移。
+            if (data.Owned != null)
+            {
+                try { AccumulateStat(data.Owned); }
+                catch { }
+            }
             DaqRawData.Enqueue(data);
             Interlocked.Increment(ref rawQueueCount);
             // 队列现在拥有批次及容量槽；失败清理不得再释放该槽。

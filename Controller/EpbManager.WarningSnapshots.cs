@@ -693,7 +693,7 @@ namespace Controller
                         $"  \"oldestBatchAgeMs\": {queue.OldestBatchAgeMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
                         $"  \"affectedChannels\": [{string.Join(",", affectedChannels)}],\n" +
                         $"  \"powerStates\": [{powerStatesJson}],\n" +
-                        "  \"processingQueueCapacity\": 64,\n" +
+                        $"  \"processingQueueCapacity\": {_acq.ProcessingQueueCapacity},\n" +
                         $"  \"persistenceQueueCapacity\": {_daqPersistenceQueueCapacity},\n" +
                         $"  \"pauseDepth\": {_daqPersistencePauseDepth},\n" +
                         $"  \"resumeDepth\": {_daqPersistenceResumeDepth},\n" +
@@ -702,6 +702,13 @@ namespace Controller
                         $"  \"recoveryTimeoutMs\": {_daqPersistenceRecoveryTimeoutMs},\n" +
                         $"  \"requiredFreshBatches\": {requiredFresh},\n" +
                         $"  \"suppressedBatches\": {queue.SuppressedBatchCount},\n" +
+                        $"  \"cumulativeSuppressedBatches\": {queue.CumulativeSuppressedBatchCount},\n" +
+                        $"  \"lastTerminallyHandledSequence\": {queue.LastTerminallyHandledSequence},\n" +
+                        $"  \"suppressAfterSequence\": {queue.SuppressAfterSequence},\n" +
+                        $"  \"suppressThroughSequence\": {queue.SuppressThroughSequence},\n" +
+                        $"  \"firstSuppressedSequence\": {queue.FirstSuppressedSequence},\n" +
+                        $"  \"lastSuppressedSequence\": {queue.LastSuppressedSequence},\n" +
+                        $"  \"suppressedRangeCount\": {queue.SuppressedRangeCount},\n" +
                         $"  \"discardedGenerationBatches\": {queue.DiscardedGenerationBatchCount},\n" +
                         $"  \"validationPhase\": \"{JsonEscape(context.ValidationPhase)}\",\n" +
                         $"  \"timingEvidenceIncluded\": {includeTimingEvidence.ToString().ToLowerInvariant()},\n" +
@@ -911,7 +918,8 @@ namespace Controller
         {
             if (request == null) return;
             var cfg = AlarmConfig?.WarningSnapshots ?? new WarningSnapshotConfig();
-            var categoryKey = GetWarningChainKey(
+            var categoryKey = GetWarningSnapshotRateLimitKey(
+                request.TestRunId,
                 request.Channel,
                 request.Warning?.NormalizedCode ?? "Unknown");
             if (!_warningSnapshotWorkGate.TryQueue(
@@ -1662,6 +1670,17 @@ namespace Controller
             GetWarningChainKey(channel, code.ToString());
 
         private static string GetWarningChainKey(int channel, string code) => $"{channel}:{code}";
+
+        internal static string GetWarningSnapshotRateLimitKey(
+            Guid runId,
+            int channel,
+            string code)
+        {
+            // 完整证据的 10 分钟限频只能在同一次运行内合并。同一进程开始新 Run 后，
+            // 即使 EPB 与告警类别相同，首个事故也必须获得独立的完整证据。
+            var runKey = runId == Guid.Empty ? "NoRun" : runId.ToString("N");
+            return $"{runKey}:{GetWarningChainKey(channel, code ?? "Unknown")}";
+        }
         private static string JsonEscape(string value) => (value ?? string.Empty)
             .Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "\\r").Replace("\n", "\\n");
         private static string MakeRelativePath(string root, string path)

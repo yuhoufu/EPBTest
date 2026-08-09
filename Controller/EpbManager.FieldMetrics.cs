@@ -65,6 +65,7 @@ namespace Controller
                 $"ConfigSha256={MetricToken(identity.ReleaseConfigSha256)} " +
                 $"GitCommit={MetricToken(identity.GitCommit)} GitDirty={MetricToken(identity.GitDirty)} " +
                 $"BuildUtc={MetricToken(identity.BuildUtc)} " +
+                $"AsyncLogDropped={Config.ProjectLogHub.DroppedAsyncRecords} " +
                 $"PackageVerified={identity.ReleasePackageVerified} " +
                 $"PackageCode={MetricToken(identity.ReleasePackageCode)} " +
                 $"PackageFiles={identity.ReleasePackageFileCount}",
@@ -102,6 +103,7 @@ namespace Controller
                 try
                 {
                     var control = _acq.GetControlSnapshot(device);
+                    var pipeline = _acq.GetPipelineSnapshot(device);
                     var freshness = _acq.GetDaqFreshnessSnapshot(device, 100);
                     var persistence = _persistence.GetSnapshot(device);
                     var published = _acq.GetLastDiskPublishedSequence(device);
@@ -111,6 +113,13 @@ namespace Controller
                         $"ControlOldestMs={Metric(control.OldestBatchAgeMs)} " +
                         $"ControlProcessMs={Metric(control.LastBatchProcessMs)} " +
                         $"SubscriberMaxMs={Metric(control.SubscriberMaxMs)} " +
+                        $"ProcessingDepth={pipeline.ProcessingQueueDepth} " +
+                        $"ProcessingCapacity={pipeline.ProcessingQueueCapacity} " +
+                        $"ProcessingOldestMs={Metric(pipeline.ProcessingOldestBatchAgeMs)} " +
+                        $"ProcessingInFlight={pipeline.ProcessingInFlightSequence} " +
+                        $"RawDepth={pipeline.RawQueueDepth} " +
+                        $"RawCapacity={pipeline.RawQueueCapacity} " +
+                        $"RawInFlight={pipeline.RawInFlightCount} " +
                         $"PersistenceState={persistence.State} " +
                         $"PersistenceDepth={persistence.QueueDepth} " +
                         $"PersistenceOldestMs={Metric(persistence.OldestBatchAgeMs)} " +
@@ -118,12 +127,27 @@ namespace Controller
                         $"ControlProcessedAgeMs={Metric(freshness.ControlProcessedAgeMs)} " +
                         $"Produced={freshness.LastProducedSequence} " +
                         $"Processed={freshness.LastProcessedSequence} " +
-                        $"Published={published} Persisted={persistence.Sequence} " +
+                        $"Allocated={pipeline.LastAllocatedSequence} " +
+                        $"Accepted={pipeline.LastAcceptedSequence} " +
+                        $"Observed={pipeline.LastObservedSequence} " +
+                        $"Published={published} RawTransferred={pipeline.LastRawTransferredSequence} " +
+                        $"Persisted={persistence.Sequence} " +
+                        $"TerminallyHandled={persistence.LastTerminallyHandledSequence} " +
+                        $"SuppressBoundary={persistence.SuppressAfterSequence} " +
+                        $"SuppressThrough={persistence.SuppressThroughSequence} " +
+                        $"FirstPermanentGap={pipeline.FirstPermanentGapSequence} " +
+                        $"PendingProcessingGap={pipeline.PendingProcessingGapSequence} " +
+                        $"PendingRawGap={pipeline.PendingRawGapSequence} " +
                         $"Discontinuities={freshness.ControlDiscontinuityCount} " +
                         $"DurabilityBlocked={persistence.DurabilityBlocked} " +
                         $"Suppressed={persistence.SuppressedBatchCount} " +
+                        $"SuppressedCumulative={persistence.CumulativeSuppressedBatchCount} " +
+                        $"SuppressedFirst={persistence.FirstSuppressedSequence} " +
+                        $"SuppressedLast={persistence.LastSuppressedSequence} " +
+                        $"SuppressedRanges={persistence.SuppressedRangeCount} " +
                         $"Discarded={persistence.DiscardedGenerationBatchCount} " +
-                        $"OverCapacityDropped={persistence.OverCapacityDroppedBatchCount}",
+                        $"OverCapacityDropped={persistence.OverCapacityDroppedBatchCount} " +
+                        $"AsyncLogDropped={Config.ProjectLogHub.DroppedAsyncRecords}",
                         "FIELD");
                 }
                 catch (Exception ex)

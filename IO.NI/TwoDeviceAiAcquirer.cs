@@ -175,6 +175,31 @@ namespace IO.NI
         public DateTime ObservedUtc { get; set; }
     }
 
+    /// <summary>
+    /// 工程处理与 Raw 所有权链的可审计快照。该快照只读取原子计数/队头时间，
+    /// 不加采集关键锁，也不触发磁盘、PDH 或日志 I/O。
+    /// </summary>
+    public sealed class DaqPipelineSnapshot
+    {
+        public string Device { get; set; } = string.Empty;
+        public int ProcessingQueueDepth { get; set; }
+        public int ProcessingQueueCapacity { get; set; }
+        public double ProcessingOldestBatchAgeMs { get; set; }
+        public long ProcessingInFlightSequence { get; set; }
+        public int RawQueueDepth { get; set; }
+        public int RawQueueCapacity { get; set; }
+        public int RawInFlightCount { get; set; }
+        public long LastAllocatedSequence { get; set; }
+        public long LastAcceptedSequence { get; set; }
+        public long LastObservedSequence { get; set; }
+        public long LastDiskPublishedSequence { get; set; }
+        public long LastRawTransferredSequence { get; set; }
+        public long FirstPermanentGapSequence { get; set; }
+        public long PendingProcessingGapSequence { get; set; }
+        public long PendingRawGapSequence { get; set; }
+        public DateTime ObservedUtc { get; set; }
+    }
+
     public sealed class DaqControlSnapshot
     {
         internal DaqControlSnapshot(
@@ -2054,6 +2079,61 @@ namespace IO.NI
                 DateTime.UtcNow);
         }
 
+        public DaqPipelineSnapshot GetPipelineSnapshot(string device)
+        {
+            var isDev1 = string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase);
+            var queue = isDev1 ? _queueDev1 : _queueDev2;
+            var nowTicks = Stopwatch.GetTimestamp();
+            var queuedTicks = queue.TryPeek(out var queued)
+                ? queued.EnqueuedMonotonicTicks
+                : 0;
+            var inFlightTicks = Interlocked.Read(
+                ref isDev1
+                    ? ref _processingInFlightEnqueuedTicksDev1
+                    : ref _processingInFlightEnqueuedTicksDev2);
+            var sequences = isDev1 ? _sequenceDev1 : _sequenceDev2;
+            return new DaqPipelineSnapshot
+            {
+                Device = isDev1 ? "Dev1" : "Dev2",
+                ProcessingQueueDepth = Volatile.Read(
+                    ref isDev1 ? ref _queueCountDev1 : ref _queueCountDev2),
+                ProcessingQueueCapacity = _processingQueueCapacity,
+                ProcessingOldestBatchAgeMs = GetOldestProcessingAgeMs(
+                    queuedTicks,
+                    inFlightTicks,
+                    nowTicks),
+                ProcessingInFlightSequence = Interlocked.Read(
+                    ref isDev1
+                        ? ref _processingInFlightSequenceDev1
+                        : ref _processingInFlightSequenceDev2),
+                RawQueueDepth = Volatile.Read(
+                    ref isDev1 ? ref _rawPublicationCountDev1 : ref _rawPublicationCountDev2),
+                RawQueueCapacity = RawPublicationCapacity,
+                RawInFlightCount = Volatile.Read(
+                    ref isDev1
+                        ? ref _rawPublicationInFlightDev1
+                        : ref _rawPublicationInFlightDev2),
+                LastAllocatedSequence = sequences.LastAllocated,
+                LastAcceptedSequence = sequences.LastAccepted,
+                LastObservedSequence = sequences.LastObserved,
+                LastDiskPublishedSequence = GetLastDiskPublishedSequence(isDev1 ? "Dev1" : "Dev2"),
+                LastRawTransferredSequence = Interlocked.Read(
+                    ref isDev1
+                        ? ref _rawTransferredSequenceDev1
+                        : ref _rawTransferredSequenceDev2),
+                FirstPermanentGapSequence = GetFirstPermanentContinuityGap(isDev1, includeRaw: true),
+                PendingProcessingGapSequence = Interlocked.Read(
+                    ref isDev1
+                        ? ref _pendingProcessingGapSequenceDev1
+                        : ref _pendingProcessingGapSequenceDev2),
+                PendingRawGapSequence = Interlocked.Read(
+                    ref isDev1
+                        ? ref _pendingRawGapSequenceDev1
+                        : ref _pendingRawGapSequenceDev2),
+                ObservedUtc = DateTime.UtcNow
+            };
+        }
+
         private static double AgeMs(long tick, long nowTick)
         {
             return tick <= 0 || nowTick < tick
@@ -2065,6 +2145,12 @@ namespace IO.NI
             => string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase)
                 ? Interlocked.Read(ref _generationDev1)
                 : Interlocked.Read(ref _generationDev2);
+
+        /// <summary>
+        /// 当前实例实际采用的后台工程处理队列容量。事故证据必须记录运行时值，
+        /// 不能沿用历史默认值，否则会把处理队列与持久化队列的容量混为一谈。
+        /// </summary>
+        public int ProcessingQueueCapacity => _processingQueueCapacity;
 
         public long GetLastProducedSequence(string device)
             => string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase)

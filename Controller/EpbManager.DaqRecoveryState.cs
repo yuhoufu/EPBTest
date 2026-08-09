@@ -35,7 +35,7 @@ namespace Controller
                 if (!context.Terminal.TryCommit(DaqRecoveryTerminal.Cancelled)) return;
                 context.Phase.MarkTerminal();
                 MarkDaqRecoveryTerminal(context.CorrelationId, context.Device);
-                _daqAutoRecovery.TryRemove(context.Device, out _);
+                TryRemoveExactDaqRecoveryContext(context);
             }
             ReleaseDaqRecoveryOwnerships(context);
             try { context.Cancellation.Cancel(); } catch { }
@@ -62,6 +62,18 @@ namespace Controller
                 DaqRecoveryStateChanged,
                 result,
                 ex => _log?.Warn($"DAQ取消恢复观察者异常，已隔离：{ex.Message}", "AI"));
+        }
+
+        private bool TryRemoveExactDaqRecoveryContext(DaqAutoRecoveryContext context)
+        {
+            if (context == null || string.IsNullOrWhiteSpace(context.Device)) return false;
+            // ConcurrentDictionary.TryRemove(key) can remove a newer context if an old terminal
+            // cleanup races with remove+replace. ICollection.Remove(KeyValuePair) compares both
+            // key and reference value atomically, so a late old Run cannot delete a new Run.
+            return ((ICollection<KeyValuePair<string, DaqAutoRecoveryContext>>)_daqAutoRecovery)
+                .Remove(new KeyValuePair<string, DaqAutoRecoveryContext>(
+                    context.Device,
+                    context));
         }
 
         private void MarkDaqRecoveryTerminal(Guid correlationId, string device)
@@ -193,29 +205,50 @@ namespace Controller
                 DateTime.UtcNow,
                 correlationId == Guid.Empty ? Guid.NewGuid() : correlationId,
                 FaultClassification.SystemFault);
-            foreach (var channel in channels)
-            {
-                try { CommandEpbOffSafetyImmediate(channel); } catch { }
-                PublishChannelRuntimeState(
-                    channel,
-                    ChannelRuntimeState.Recovering,
-                    code,
-                    reason,
-                    affectedChannels: channels,
-                    correlationId: fault.CorrelationId);
-            }
-            _log.Error(
-                $"隔离软件故障（健康设备继续运行，不触发硬件报警/全局重启） [{code}]：{reason}",
-                "AI");
-            NonCriticalObserver.Invoke(
-                ControlFaultRaised,
-                fault,
-                ex => _log?.Warn($"DAQ隔离故障观察者异常，已隔离：{ex.Message}", "AI"));
-            ScheduleIsolatedInfrastructureRecovery(
-                channels,
-                code,
-                fault.CorrelationId,
-                code);
+            Dictionary<int, string> rejectedOff = null;
+            ExecuteNonBlockingSafetyIsolationOrder(
+                () => FreezeAndCancelSafetyChannels(
+                    channels,
+                    $"IsolatedSoftwareFault:{code}",
+                    cancelStopTokens: false),
+                () => rejectedOff = SubmitEpbOffHighPriorityBatch(
+                    channels,
+                    "IsolatedSoftwareFaultOffAdmissionRejected",
+                    "IsolatedSoftwareFaultOffSubmissionException"),
+                () => StartElectricalGroupSafetyDisables(
+                    channels,
+                    $"隔离软件故障安全断电 Code={code} CorrelationId={fault.CorrelationId:N}",
+                    "IsolatedSoftwareFaultPowerDisable"),
+                () =>
+                {
+                    // 先登记局部恢复任务，再发布逐通道/UI诊断；慢观察者不能阻止
+                    // 受影响组进入有界恢复协调。
+                    ScheduleIsolatedInfrastructureRecovery(
+                        channels,
+                        code,
+                        fault.CorrelationId,
+                        code);
+                    foreach (var channel in channels)
+                        PublishChannelRuntimeState(
+                            channel,
+                            ChannelRuntimeState.Recovering,
+                            code,
+                            reason,
+                            affectedChannels: channels,
+                            correlationId: fault.CorrelationId);
+                    _log.Error(
+                        $"隔离软件故障（健康设备继续运行，不触发硬件报警/全局重启） [{code}]：{reason}",
+                        "AI");
+                    NonCriticalObserver.Invoke(
+                        ControlFaultRaised,
+                        fault,
+                        ex => _log?.Warn(
+                            $"DAQ隔离故障观察者异常，已隔离：{ex.Message}",
+                            "AI"));
+                },
+                () => ScheduleRejectedOffFallbacks(
+                    rejectedOff,
+                    "IsolatedSoftwareFaultImmediateOffFallback"));
         }
     }
 }

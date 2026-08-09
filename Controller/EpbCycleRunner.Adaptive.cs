@@ -10,8 +10,46 @@ using IO.NI;
 
 namespace Controller
 {
+    internal enum AdaptiveTerminalOffResolution
+    {
+        Pending = 0,
+        HardwareCompleted = 1,
+        HardwareTimedOut = 2
+    }
+
+    /// <summary>
+    /// 终态 OFF 的单一终态提交门。物理完成与独立截止只允许一个获胜；
+    /// 迟到硬件回调只能补证据，不能再次迁移 Runner 状态。
+    /// </summary>
+    internal sealed class AdaptiveTerminalOffResolutionGate
+    {
+        private int _resolution;
+
+        internal AdaptiveTerminalOffResolution Resolution =>
+            (AdaptiveTerminalOffResolution)Volatile.Read(ref _resolution);
+
+        internal bool TryCommitHardwareCompletion()
+        {
+            return Interlocked.CompareExchange(
+                       ref _resolution,
+                       (int)AdaptiveTerminalOffResolution.HardwareCompleted,
+                       (int)AdaptiveTerminalOffResolution.Pending) ==
+                   (int)AdaptiveTerminalOffResolution.Pending;
+        }
+
+        internal bool TryCommitHardwareTimeout()
+        {
+            return Interlocked.CompareExchange(
+                       ref _resolution,
+                       (int)AdaptiveTerminalOffResolution.HardwareTimedOut,
+                       (int)AdaptiveTerminalOffResolution.Pending) ==
+                   (int)AdaptiveTerminalOffResolution.Pending;
+        }
+    }
+
     public sealed partial class EpbCycleRunner
     {
+        internal const int AdaptiveTerminalOffHardwareDeadlineMs = 100;
         private readonly EpbControlMode _epbControlMode = EpbControlMode.LegacyFixedTiming;
         private readonly bool _adaptiveShadowMode;
         private readonly EpbAdaptiveCurrentStateMachine _adaptiveStateMachine;
@@ -625,18 +663,24 @@ namespace Controller
                 _adaptiveForwardElapsedMs = decision.ElapsedMs;
                 if (_acq == null)
                     _adaptiveForwardPeakA = Math.Max(_adaptiveForwardPeakA, decision.CurrentA);
-                TaskCompletionSource<EpbAdaptiveDecision> completion;
-                lock (_adaptiveGate) completion = _adaptiveForwardCompletion;
-                completion?.TrySetResult(decision.Copy());
+                if (_epbControlMode != EpbControlMode.AdaptiveCurrent)
+                {
+                    TaskCompletionSource<EpbAdaptiveDecision> completion;
+                    lock (_adaptiveGate) completion = _adaptiveForwardCompletion;
+                    completion?.TrySetResult(decision.Copy());
+                }
             }
 
             if (decision.ReleaseCompleted)
             {
                 _adaptiveReverseElapsedMs = decision.ElapsedMs;
                 _adaptiveReverseEmptyA = _adaptiveStateMachine.ObservedReverseEmptyA;
-                TaskCompletionSource<EpbAdaptiveDecision> completion;
-                lock (_adaptiveGate) completion = _adaptiveReverseCompletion;
-                completion?.TrySetResult(decision.Copy());
+                if (_epbControlMode != EpbControlMode.AdaptiveCurrent)
+                {
+                    TaskCompletionSource<EpbAdaptiveDecision> completion;
+                    lock (_adaptiveGate) completion = _adaptiveReverseCompletion;
+                    completion?.TrySetResult(decision.Copy());
+                }
             }
 
             if (!decision.HardFault) return;
@@ -649,18 +693,6 @@ namespace Controller
             }
 
             if (Interlocked.Exchange(ref _adaptiveFaultLatched, 1) != 0) return;
-
-            TaskCompletionSource<EpbAdaptiveDecision> forward;
-            TaskCompletionSource<EpbAdaptiveDecision> reverse;
-            lock (_adaptiveGate)
-            {
-                forward = _adaptiveForwardCompletion;
-                reverse = _adaptiveReverseCompletion;
-            }
-
-            var terminalDecision = decision.Copy();
-            forward?.TrySetResult(terminalDecision);
-            reverse?.TrySetResult(terminalDecision);
 
             if (infrastructureOpenCircuit)
             {
@@ -692,31 +724,205 @@ namespace Controller
                 return;
             if (Interlocked.Exchange(ref _adaptiveTerminalOffLatched, 1) != 0) return;
 
+            // 状态机在下一批会复用 scratch decision；异步完成链只能持有冻结副本。
+            var terminalDecision = decision.Copy();
             var reason = string.IsNullOrWhiteSpace(decision.Reason)
                 ? decision.Stage.ToString()
                 : decision.Reason;
-            var commandElapsedMs = 0.0;
-            var commandSucceeded = ExecuteTerminalOffWithEscalation(
-                () =>
-                {
-                    var commandStarted = Stopwatch.GetTimestamp();
-                    try { return CommandOffHighPriority(); }
-                    finally
+            var direction = _adaptiveDirection;
+            var resolution = new AdaptiveTerminalOffResolutionGate();
+            var lifecycle = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            Interlocked.Exchange(ref _terminalOffCurrentVerificationTask, lifecycle.Task);
+
+            var submitStarted = Stopwatch.GetTimestamp();
+            Guid commandId;
+            var accepted = false;
+            try
+            {
+                accepted = TrySubmitCommandOffHighPriority(
+                    telemetry =>
                     {
-                        commandElapsedMs =
-                            (Stopwatch.GetTimestamp() - commandStarted) * 1000.0 /
-                            Stopwatch.Frequency;
-                    }
-                },
-                () => _manager?.RequestElectricalGroupEmergencyShutdown(
+                        if (!resolution.TryCommitHardwareCompletion())
+                        {
+                            RecordLateAdaptiveTerminalOffCompletion(
+                                telemetry,
+                                reason,
+                                resolution.Resolution);
+                            return;
+                        }
+                        HandleAdaptiveTerminalOffCompletion(
+                            telemetry,
+                            reason,
+                            direction,
+                            terminalDecision,
+                            lifecycle);
+                    },
+                    out commandId);
+            }
+            catch
+            {
+                commandId = Guid.Empty;
+                accepted = false;
+            }
+
+            var submissionElapsedMs =
+                (Stopwatch.GetTimestamp() - submitStarted) * 1000.0 / Stopwatch.Frequency;
+            if (accepted)
+            {
+                var deadlineTask = MonitorAcceptedTerminalOffDeadlineAsync(
+                    resolution,
+                    AdaptiveTerminalOffHardwareDeadlineMs,
+                    elapsedMs => HandleAdaptiveTerminalOffTimeout(
+                        terminalDecision,
+                        reason,
+                        commandId,
+                        elapsedMs,
+                        lifecycle));
+                ObserveAdaptiveBackground(deadlineTask, "AdaptiveTerminalOffHardwareDeadline");
+                return;
+            }
+
+            _manager?.RecordTerminalOffCommand(
+                _channel,
+                reason,
+                false,
+                submissionElapsedMs);
+            _manager?.QueueElectricalGroupEmergencyShutdownFromDaqControl(
+                _channel,
+                $"TerminalOffAdmissionRejected CommandId={commandId:N} Reason={reason}");
+            CompleteAdaptiveDecisionAfterTerminalOff(
+                terminalDecision,
+                $"TerminalOffAdmissionRejected CommandId={commandId:N} Reason={reason}");
+            lifecycle.TrySetResult(false);
+            ObserveAdaptiveBackground(Task.Run(() =>
+            {
+                _log?.Error(
+                    $"EPB[{_channel}] 终态高优先级断电未获有界队列接纳，已立即提交电源组联锁。" +
+                    $"CommandId={commandId:N} Reason={reason} SubmissionElapsed={submissionElapsedMs:F3}ms",
+                    "EPB");
+                NotifyAlarmSafely(
+                    $"AdaptiveHardFault TerminalOffAdmissionRejected {reason}");
+            }), "TerminalOffAdmissionFailureNotification");
+        }
+
+        internal static async Task<bool> MonitorAcceptedTerminalOffDeadlineAsync(
+            AdaptiveTerminalOffResolutionGate resolution,
+            int deadlineMs,
+            Action<double> onTimeout)
+        {
+            if (resolution == null) throw new ArgumentNullException(nameof(resolution));
+            var boundedDeadlineMs = Math.Max(1, deadlineMs);
+            var started = Stopwatch.GetTimestamp();
+            while (resolution.Resolution == AdaptiveTerminalOffResolution.Pending)
+            {
+                var elapsedMs =
+                    (Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency;
+                if (elapsedMs >= boundedDeadlineMs) break;
+                await Task.Delay(Math.Max(
+                        1,
+                        Math.Min(10, (int)Math.Ceiling(boundedDeadlineMs - elapsedMs))))
+                    .ConfigureAwait(false);
+            }
+
+            if (!resolution.TryCommitHardwareTimeout()) return false;
+            var finalElapsedMs =
+                (Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency;
+            try { onTimeout?.Invoke(finalElapsedMs); }
+            catch
+            {
+                // resolution 已进入不可逆超时终态；上层实际处理函数逐项隔离，
+                // 测试/诊断观察者异常也不得重新开放物理完成迁移。
+            }
+            return true;
+        }
+
+        private void HandleAdaptiveTerminalOffTimeout(
+            EpbAdaptiveDecision terminalDecision,
+            string reason,
+            Guid commandId,
+            double elapsedMs,
+            TaskCompletionSource<bool> lifecycle)
+        {
+            var timeoutReason =
+                $"TerminalOffHardwareTimeout CommandId={commandId:N} " +
+                $"Deadline={AdaptiveTerminalOffHardwareDeadlineMs}ms Elapsed={elapsedMs:F3}ms " +
+                $"Reason={reason}";
+            try
+            {
+                _manager?.RecordTerminalOffCommand(
                     _channel,
-                    $"TerminalOffCommandFailed {reason}"));
+                    reason,
+                    false,
+                    elapsedMs);
+            }
+            catch { }
+            try
+            {
+                _manager?.QueueElectricalGroupEmergencyShutdownFromDaqControl(
+                    _channel,
+                    timeoutReason);
+            }
+            catch { }
+            CompleteAdaptiveDecisionAfterTerminalOff(terminalDecision, timeoutReason);
+            lifecycle?.TrySetResult(false);
+            try
+            {
+                _log?.Error(
+                    $"EPB[{_channel}] 已接纳终态OFF在硬截止内无物理完成，" +
+                    $"已触发电源组断能并以硬故障完成等待。{timeoutReason}",
+                    "EPB");
+            }
+            catch { }
+            try
+            {
+                NotifyAlarmSafely("AdaptiveHardFault " + timeoutReason);
+            }
+            catch { }
+        }
+
+        private void RecordLateAdaptiveTerminalOffCompletion(
+            HighPriorityDoTelemetry telemetry,
+            string reason,
+            AdaptiveTerminalOffResolution committedResolution)
+        {
+            // DoController 的全局 HighPriorityOffCompleted 仍会保存硬件完成时间、结果及
+            // LateHardwareSuccess 证据；Runner 这里只写补充诊断，禁止 RecordTerminalOffCommand、
+            // BeginTerminalOffCurrentVerification 或任何 forward/reverse TCS 再提交。
+            try { _manager?.RecordAdaptiveTerminalOffLateEvidence(telemetry, reason); }
+            catch { }
+            try
+            {
+                _log?.Warn(
+                    $"EPB[{_channel}] 收到终态OFF迟到物理回调，仅补证据，不再迁移状态。" +
+                    $"CommandId={telemetry?.CommandId:N} Result={telemetry?.Result} " +
+                    $"Committed={committedResolution} Total={telemetry?.TotalMs ?? 0:F3}ms " +
+                    $"Reason={reason}",
+                    "DO性能");
+            }
+            catch { }
+        }
+
+        private void HandleAdaptiveTerminalOffCompletion(
+            HighPriorityDoTelemetry telemetry,
+            string reason,
+            string direction,
+            EpbAdaptiveDecision terminalDecision,
+            TaskCompletionSource<bool> lifecycle)
+        {
+            var commandElapsedMs = telemetry?.TotalMs ?? 0;
+            var commandSucceeded = CompleteSubmittedTerminalOffWithEscalation(
+                telemetry,
+                () => _manager?.QueueElectricalGroupEmergencyShutdownFromDaqControl(
+                    _channel,
+                    $"TerminalOffHardwareFailed CommandId={telemetry?.CommandId:N} Reason={reason}"));
             _manager?.RecordTerminalOffCommand(
                 _channel,
                 reason,
                 commandSucceeded,
                 commandElapsedMs);
-            if (string.Equals(_adaptiveDirection, "Forward", StringComparison.Ordinal) &&
+
+            if (string.Equals(direction, "Forward", StringComparison.Ordinal) &&
                 commandSucceeded)
             {
                 lock (_adaptiveGate)
@@ -725,29 +931,98 @@ namespace Controller
 
             if (!commandSucceeded)
             {
-                var elapsed = commandElapsedMs;
-                ObserveAdaptiveBackground(Task.Run(() =>
-                {
-                    _log?.Error(
-                        $"EPB[{_channel}] 终态高优先级断电失败，立即触发电源组联锁。" +
-                        $"Reason={reason} CommandElapsed={elapsed:F3}ms",
-                        "EPB");
-                    NotifyAlarmSafely(
-                        $"AdaptiveHardFault TerminalOffCommandFailed {reason}");
-                }), "TerminalOffFailureNotification");
+                CompleteAdaptiveDecisionAfterTerminalOff(
+                    terminalDecision,
+                    $"TerminalOffHardwareFailed CommandId={telemetry?.CommandId:N} Reason={reason}");
+                lifecycle?.TrySetResult(false);
+                _log?.Error(
+                    $"EPB[{_channel}] 终态高优先级断电物理执行失败，已触发电源组联锁。" +
+                    $"CommandId={telemetry?.CommandId:N} Reason={reason} " +
+                    $"QueueWait={telemetry?.QueueWaitMs ?? 0:F3}ms " +
+                    $"NIWrite={telemetry?.NiWriteMs ?? 0:F3}ms Total={commandElapsedMs:F3}ms",
+                    "EPB");
+                NotifyAlarmSafely(
+                    $"AdaptiveHardFault TerminalOffHardwareFailed {reason}");
                 return;
             }
 
-            var successfulElapsed = commandElapsedMs;
-            ObserveAdaptiveBackground(Task.Run(() => _log?.Info(
-                $"EPB[{_channel}] 终态断电命令已优先执行。" +
-                $"Reason={reason} CommandElapsed={successfulElapsed:F3}ms " +
-                "PhysicalOffStatus=NotMeasured",
-                "EPB")), "TerminalOffEvidenceLog");
-            BeginTerminalOffCurrentVerification(reason);
+            _log?.Info(
+                $"EPB[{_channel}] 终态断电物理写入已完成。" +
+                $"CommandId={telemetry.CommandId:N} Reason={reason} " +
+                $"QueueWait={telemetry.QueueWaitMs:F3}ms NIWrite={telemetry.NiWriteMs:F3}ms " +
+                $"Total={commandElapsedMs:F3}ms PhysicalOffStatus=NotMeasured",
+                "EPB");
+            var verificationTask = BeginTerminalOffCurrentVerification(reason);
+            verificationTask.ContinueWith(
+                completed =>
+                {
+                    var verified = completed.Status == TaskStatus.RanToCompletion &&
+                                   completed.Result;
+                    CompleteAdaptiveDecisionAfterTerminalOff(
+                        terminalDecision,
+                        verified
+                            ? null
+                            : $"TerminalOffCurrentNotCleared CommandId={telemetry.CommandId:N} " +
+                              $"Reason={reason}");
+                    lifecycle?.TrySetResult(verified);
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
         }
 
-        private void BeginTerminalOffCurrentVerification(string reason)
+        private void CompleteAdaptiveDecisionAfterTerminalOff(
+            EpbAdaptiveDecision decision,
+            string terminalFailure)
+        {
+            if (decision == null) return;
+            var completed = decision.Copy();
+            if (!string.IsNullOrWhiteSpace(terminalFailure))
+            {
+                completed.ClampReached = false;
+                completed.ReleaseCompleted = false;
+                completed.SoftWarning = false;
+                completed.HardFault = true;
+                completed.StateChanged = true;
+                completed.Stage = EpbCurrentStage.Faulted;
+                completed.Reason = terminalFailure;
+            }
+
+            TaskCompletionSource<EpbAdaptiveDecision> forward;
+            TaskCompletionSource<EpbAdaptiveDecision> reverse;
+            lock (_adaptiveGate)
+            {
+                forward = _adaptiveForwardCompletion;
+                reverse = _adaptiveReverseCompletion;
+            }
+
+            if (completed.HardFault)
+            {
+                forward?.TrySetResult(completed);
+                reverse?.TrySetResult(completed);
+                return;
+            }
+            if (completed.ClampReached) forward?.TrySetResult(completed);
+            if (completed.ReleaseCompleted) reverse?.TrySetResult(completed);
+        }
+
+        internal static bool CompleteSubmittedTerminalOffWithEscalation(
+            HighPriorityDoTelemetry telemetry,
+            Action emergencyShutdown)
+        {
+            var succeeded = telemetry?.Result == true;
+            if (!succeeded)
+            {
+                try { emergencyShutdown?.Invoke(); }
+                catch
+                {
+                    // 联锁路径本身不得反向污染物理命令结果。
+                }
+            }
+            return succeeded;
+        }
+
+        private Task<bool> BeginTerminalOffCurrentVerification(string reason)
         {
             var configuredThresholdA = _adaptiveSafetyLimits.OffCurrentClearThresholdA;
             var baselineA = _adaptivePreEnergizationCurrentA;
@@ -795,7 +1070,7 @@ namespace Controller
                             $"Reason={reason} PhysicalOffStatus=NotMeasured",
                             "EPB");
                         NotifyAlarmSafely("AdaptiveHardFault " + staleReason);
-                        return;
+                        return false;
                     }
                     var cleared = VerifyOffCurrentOrEscalate(
                         currentA,
@@ -819,7 +1094,7 @@ namespace Controller
                             $"EffectiveThreshold={thresholdA:F3}A Wait={verification.ElapsedMs}ms " +
                             "PhysicalOffStatus=NotMeasured",
                             "EPB");
-                        return;
+                        return true;
                     }
 
                     _log?.Error(
@@ -836,6 +1111,7 @@ namespace Controller
                         $"ConfiguredThreshold={configuredThresholdA:F3}A " +
                         $"PreEnergizationBaseline={baselineA:F3}A " +
                         $"EffectiveThreshold={thresholdA:F3}A");
+                    return false;
                 }
                 catch (Exception ex)
                 {
@@ -854,10 +1130,11 @@ namespace Controller
                         "OffCurrentVerificationFailed " + ex.Message);
                     NotifyAlarmSafely(
                         "AdaptiveHardFault OffCurrentVerificationFailed " + ex.Message);
+                    return false;
                 }
             });
-            Interlocked.Exchange(ref _terminalOffCurrentVerificationTask, verificationTask);
             ObserveAdaptiveBackground(verificationTask, "TerminalOffCurrentVerification");
+            return verificationTask;
         }
 
         internal static bool ShouldReclassifyOpenCircuit(
@@ -1213,6 +1490,8 @@ namespace Controller
                             DateTime.UtcNow,
                             watchdog),
                         () => HandleAdaptiveDecision(watchdog));
+                    if (_epbControlMode == EpbControlMode.AdaptiveCurrent)
+                        return await completion.Task.ConfigureAwait(false);
                     return watchdog;
                 }
             }

@@ -108,8 +108,18 @@ namespace Controller
                    string.Equals(
                        faultCode,
                        "RawPersistencePermanentFault",
+                       StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(
+                       faultCode,
+                       "DaqPersistenceWriteStall",
                        StringComparison.OrdinalIgnoreCase);
         }
+
+        internal static bool RequiresImmediateProcessRecycle(string faultCode)
+            => string.Equals(
+                faultCode,
+                "DaqPersistenceWriteStall",
+                StringComparison.OrdinalIgnoreCase);
 
         internal static bool ShouldKeepSoftwareRecoveryLocal(
             string stage,
@@ -129,9 +139,19 @@ namespace Controller
             string stage,
             string faultCode)
         {
-            return ShouldEscalateSoftwareRecovery(attempt) &&
+            // 同步存储调用已超过看门狗时限时，本进程无法取消该内核I/O，也不能在
+            // 同一批次上并行重写。第一次确认 stall 就请求安全整批/进程交接；
+            // 交接仍须满足断能与耐久边界，未满足时保持安全停止。
+            return (RequiresImmediateProcessRecycle(faultCode) ||
+                    ShouldEscalateSoftwareRecovery(attempt)) &&
                    !ShouldKeepSoftwareRecoveryLocal(stage, faultCode);
         }
+
+        internal static bool ShouldEnterSoftwareRecoveryCircuitOpen(
+            int attempt,
+            string stage,
+            string faultCode)
+            => ShouldPublishUnattendedBatchRecycle(attempt, stage, faultCode);
 
         internal static bool MustBlockDaqRecoveryCommitForContinuityGap(bool hasPermanentGap)
         {
@@ -224,8 +244,7 @@ namespace Controller
             int attempt,
             string faultCode = null)
         {
-            if (!ShouldEscalateSoftwareRecovery(attempt) ||
-                runId == Guid.Empty ||
+            if (runId == Guid.Empty ||
                 runId != _activeBatchId ||
                 runEpoch != Interlocked.Read(ref _runEpoch))
                 return false;
@@ -233,7 +252,11 @@ namespace Controller
             // 可重放的DAQ/外部基础设施抖动不是“所有卡钳都坏”的证据，继续对受影响组
             // 断能并按30秒封顶退避；但已形成不可重放序号空洞的 QueueFull/Worker/
             // RawPermanent 必须在第3次转整批/进程回收，禁止在同进程伪装成无限抖动。
-            if (!ShouldPublishUnattendedBatchRecycle(attempt, stage, faultCode))
+            // DaqPersistenceWriteStall is already a confirmed, non-cancellable synchronous
+            // storage stall.  It must reach the same real circuit-opening branch on attempt 1;
+            // gating this method with the generic three-attempt threshold would make the
+            // immediate policy helper dead code in production.
+            if (!ShouldEnterSoftwareRecoveryCircuitOpen(attempt, stage, faultCode))
             {
                 if (attempt == SoftwareRecoveryEscalationAttempts || attempt % 10 == 0)
                     _log.Warn(
@@ -261,31 +284,51 @@ namespace Controller
                 $"FaultCode={faultCode ?? "Unknown"} " +
                 $"Channels=[{string.Join(",", channels)}] Error={reason ?? "Unknown"}";
 
-            foreach (var channel in channels)
-            {
-                try { CommandEpbOffSafetyImmediate(channel); } catch { }
-                PublishChannelRuntimeState(
-                    channel,
-                    ChannelRuntimeState.SystemFault,
-                    "SoftwareRecoveryCircuitOpen",
-                    "局部软件自愈连续失败，已停止重复自维护并转入整批安全重建。" + detail,
-                    affectedChannels: channels,
-                    correlationId: runId,
-                    runIdOverride: runId);
-            }
-
             var fault = CreateSoftwareRecoveryCircuitFault(runId, channels, detail);
-            _log.Error(
-                "局部软件自愈达到有界阈值，停止重复自维护并升级为一次整批安全重建。" + detail,
-                "EPB");
-            NonCriticalObserver.Invoke(
-                ControlFaultRaised,
-                fault,
-                ex => _log?.Warn($"软件恢复熔断观察者异常，已隔离：{ex.Message}", "EPB"));
-            NonCriticalObserver.Invoke(
-                SystemFaultRaised,
-                fault,
-                ex => _log?.Warn($"无人值守整批重建观察者异常，已隔离：{ex.Message}", "EPB"));
+            Dictionary<int, string> rejectedOff = null;
+            ExecuteNonBlockingSafetyIsolationOrder(
+                () => FreezeAndCancelSafetyChannels(
+                    channels,
+                    "SoftwareRecoveryCircuitOpen",
+                    cancelStopTokens: true),
+                () => rejectedOff = SubmitEpbOffHighPriorityBatch(
+                    channels,
+                    "SoftwareRecoveryCircuitOpenOffAdmissionRejected",
+                    "SoftwareRecoveryCircuitOpenOffSubmissionException"),
+                null,
+                () =>
+                {
+                    // 整批/进程回收观察者优先于任何逐通道诊断。即使 UI 状态发布
+                    // 变慢，恢复协调器也已经拿到明确的 SystemFault 终态。
+                    NonCriticalObserver.Invoke(
+                        SystemFaultRaised,
+                        fault,
+                        ex => _log?.Warn(
+                            $"无人值守整批重建观察者异常，已隔离：{ex.Message}",
+                            "EPB"));
+                    foreach (var channel in channels)
+                        PublishChannelRuntimeState(
+                            channel,
+                            ChannelRuntimeState.SystemFault,
+                            "SoftwareRecoveryCircuitOpen",
+                            "局部软件自愈连续失败，已停止重复自维护并转入整批安全重建。" + detail,
+                            affectedChannels: channels,
+                            correlationId: runId,
+                            runIdOverride: runId);
+                    _log.Error(
+                        "局部软件自愈达到有界阈值，停止重复自维护并升级为一次整批安全重建。" +
+                        detail,
+                        "EPB");
+                    NonCriticalObserver.Invoke(
+                        ControlFaultRaised,
+                        fault,
+                        ex => _log?.Warn(
+                            $"软件恢复熔断观察者异常，已隔离：{ex.Message}",
+                            "EPB"));
+                },
+                () => ScheduleRejectedOffFallbacks(
+                    rejectedOff,
+                    "SoftwareRecoveryCircuitOpenImmediateOffFallback"));
             return true;
         }
 
@@ -867,7 +910,9 @@ namespace Controller
                         if (!IsAffectedGroupResetRunCurrent(expectedRunId, expectedRunEpoch)) return;
                         _persistence.AcceptGeneration(device, _acq.GetCurrentGeneration(device));
                         if (!IsAffectedGroupResetRunCurrent(expectedRunId, expectedRunEpoch)) return;
-                        _persistence.ResumeAdmission(device);
+                        _persistence.ResumeAdmission(
+                            device,
+                            _acq.GetLastAcceptedSequence(device));
                     }
 
                     if (_powerSupply != null)

@@ -1,6 +1,7 @@
 using System;
 using System.Runtime.CompilerServices;
 using Controller.Alarm;
+using IO.NI;
 
 namespace Controller
 {
@@ -38,6 +39,18 @@ namespace Controller
             return _manager != null
                 ? _manager.CommandEpbOffHighPriority(_channel, stage)
                 : _do.SetEpbOffHighPriority(_channel);
+        }
+
+        /// <summary>
+        /// DAQ/快速自适应判定专用。返回值仅表示 worker 已接纳，不表示物理 OFF 成功。
+        /// </summary>
+        private bool TrySubmitCommandOffHighPriority(
+            Action<HighPriorityDoTelemetry> completion,
+            out Guid commandId)
+        {
+            return _manager != null
+                ? _manager.TrySubmitEpbOffHighPriority(_channel, completion, out commandId)
+                : _do.TrySubmitEpbOffHighPriority(_channel, completion, out commandId);
         }
 
         private void RequireMotorCommandSucceeded(bool succeeded, string command)

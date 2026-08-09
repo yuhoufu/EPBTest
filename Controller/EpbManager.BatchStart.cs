@@ -566,7 +566,7 @@ namespace Controller
                          .Select(_acq.GetDeviceForEpbChannel)
                          .Where(x => !string.IsNullOrWhiteSpace(x))
                          .Distinct(StringComparer.OrdinalIgnoreCase))
-                _persistence.ResumeAdmission(device);
+                _persistence.ResumeAdmission(device, _acq.GetLastAcceptedSequence(device));
 
             var attempt = 0;
             while (true)

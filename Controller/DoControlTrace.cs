@@ -166,8 +166,46 @@ namespace Controller
                 (_, existing) =>
                 {
                     existing.CommandId = telemetry.CommandId;
-                    existing.CallerTimedOut = telemetry.CallerTimedOut;
-                    existing.LateHardwareSuccess = telemetry.LateHardwareSuccess;
+                    existing.CallerTimedOut = existing.CallerTimedOut || telemetry.CallerTimedOut;
+                    existing.LateHardwareSuccess =
+                        existing.LateHardwareSuccess || telemetry.LateHardwareSuccess;
+                    existing.HardwareCompletedUtc = telemetry.HardwareCompletedUtc;
+                    if (telemetry.Result) existing.CommandSucceeded = true;
+                    return existing;
+                });
+        }
+
+        /// <summary>
+        /// 自适应100ms监督截止已经提交终态后的迟到硬件证据。这里只更新证据对象，
+        /// 不发布运行状态、不解除联锁，也不触发电流验证。
+        /// </summary>
+        internal void RecordAdaptiveTerminalOffLateEvidence(
+            HighPriorityDoTelemetry telemetry,
+            string reason)
+        {
+            if (telemetry == null || telemetry.Channel < 1 || telemetry.Channel > 12) return;
+            _terminalOffSafetyEvidence.AddOrUpdate(
+                telemetry.Channel,
+                _ => new TerminalOffSafetyEvidence
+                {
+                    CommandUtc = telemetry.HardwareCompletedUtc,
+                    Reason = "AdaptiveTerminalOffHardwareTimeoutLateCompletion " +
+                             (reason ?? string.Empty),
+                    CommandSucceeded = telemetry.Result,
+                    CommandElapsedMs = telemetry.TotalMs,
+                    CommandId = telemetry.CommandId,
+                    CallerTimedOut = true,
+                    LateHardwareSuccess = telemetry.Result,
+                    HardwareCompletedUtc = telemetry.HardwareCompletedUtc
+                },
+                (_, existing) =>
+                {
+                    existing.Reason =
+                        "AdaptiveTerminalOffHardwareTimeoutLateCompletion " +
+                        (reason ?? string.Empty);
+                    existing.CommandId = telemetry.CommandId;
+                    existing.CallerTimedOut = true;
+                    existing.LateHardwareSuccess = telemetry.Result;
                     existing.HardwareCompletedUtc = telemetry.HardwareCompletedUtc;
                     if (telemetry.Result) existing.CommandSucceeded = true;
                     return existing;
@@ -266,6 +304,34 @@ namespace Controller
                 stage,
                 EpbDoCommand.OffHighPriority,
                 () => _do.SetEpbOffHighPriority(channel));
+        }
+
+        /// <summary>
+        /// DAQ 快速控制链专用：只把 OFF 放入所属设备最高优先级 worker，
+        /// 不读取电流、不生成追踪对象、不写日志，也不等待 NI 物理写完成。
+        /// </summary>
+        internal bool TrySubmitEpbOffHighPriority(
+            int channel,
+            Action<HighPriorityDoTelemetry> completion,
+            out Guid commandId)
+        {
+            return _do.TrySubmitEpbOffHighPriority(channel, completion, out commandId);
+        }
+
+        /// <summary>
+        /// 终态 OFF 在 DAQ 控制线程上未获有界队列接纳时，立即登记组级失效安全任务。
+        /// 后台协调仍通过 DoController 的专用最高优先级 worker 执行 NI 写，
+        /// 本方法没有用 Task.Run 直接包装任何 NI 写入。
+        /// </summary>
+        internal void QueueElectricalGroupEmergencyShutdownFromDaqControl(
+            int channel,
+            string reason)
+        {
+            ObserveBackgroundTask(
+                System.Threading.Tasks.Task.Run(() =>
+                    RequestElectricalGroupEmergencyShutdown(channel, reason)),
+                "AdaptiveTerminalOffAdmissionEmergency",
+                channel);
         }
 
         /// <summary>

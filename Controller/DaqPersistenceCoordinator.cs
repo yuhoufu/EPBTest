@@ -29,10 +29,18 @@ namespace Controller
         public int QueueDepth { get; set; }
         public double OldestBatchAgeMs { get; set; }
         public long Generation { get; set; }
+        /// <summary>Latest sequence whose batch physically completed the configured recorder write.</summary>
         public long Sequence { get; set; }
         public DateTime TimestampUtc { get; set; }
         public Guid CorrelationId { get; set; }
         public long SuppressedBatchCount { get; set; }
+        public long CumulativeSuppressedBatchCount { get; set; }
+        public long LastTerminallyHandledSequence { get; set; }
+        public long SuppressAfterSequence { get; set; }
+        public long SuppressThroughSequence { get; set; }
+        public long FirstSuppressedSequence { get; set; }
+        public long LastSuppressedSequence { get; set; }
+        public long SuppressedRangeCount { get; set; }
         public long DiscardedGenerationBatchCount { get; set; }
         public long OverCapacityDroppedBatchCount { get; set; }
         public bool DurabilityBlocked { get; set; }
@@ -47,6 +55,9 @@ namespace Controller
         {
             public readonly ConcurrentQueue<DaqDiskBatch> Queue = new();
             public readonly SemaphoreSlim Signal = new(0);
+            public readonly object WriteStallGate = new();
+            public readonly object SuppressionGate = new();
+            public readonly HashSet<string> ActiveCycleLimitFaults = new(StringComparer.Ordinal);
             public SemaphoreSlim Slots;
             // Single-consumer ownership slot. Once a batch leaves Queue it remains here until
             // the write has reached an explicit terminal boundary. The supervisor therefore
@@ -56,22 +67,46 @@ namespace Controller
             public int PauseLatched;
             public int FreshAfterLowWater;
             public int PendingFreshWhileWrite;
+            // Latest physically written sequence. This is deliberately not a synthetic
+            // "terminally handled" watermark: explicitly excluded tails are audited separately.
             public long LastPersistedSequence;
+            public long LastTerminallyHandledSequence;
             public long AcceptedGeneration;
             public long LastLagLogTicks;
             public long InFlightEnqueuedTicks;
             public long InFlightSequence;
+            public long InFlightGeneration;
+            public long WriteCallStartedTicks;
             public int WriteInFlight;
+            public int WriteStallLatched;
             public int UnresolvedWriteFailure;
             public int FailureTimedOut;
             public int QueueFullLatched;
             // DateTime/Nullable<DateTime> reads are not atomic in the 32-bit production process.
             // Zero means admission is open; all other values are UTC DateTime ticks.
             public long SuppressAfterUtcTicks;
-            public Guid CorrelationId;
+            public long SuppressAfterSequence;
+            // long.MaxValue means the recovery tail is still open. ResumeAdmission freezes a
+            // finite upper bound so delayed old-generation batches remain excluded while the
+            // first strictly newer sequence reopens physical persistence.
+            public long SuppressThroughSequence;
+            // Guid is 16 bytes and can tear in the 32-bit production process. Publish an
+            // immutable reference instead so every reader observes either the old or new
+            // complete identity.
+            public CorrelationIdentity Correlation;
             public long SuppressedBatchCount;
+            public long CumulativeSuppressedBatchCount;
+            public long FirstSuppressedSequence;
+            public long LastSuppressedSequence;
+            public long SuppressedRangeCount;
             public long DiscardedGenerationBatchCount;
             public long OverCapacityDroppedBatchCount;
+        }
+
+        private sealed class CorrelationIdentity
+        {
+            internal CorrelationIdentity(Guid value) { Value = value; }
+            internal Guid Value { get; }
         }
 
         private readonly Func<IEpbCycleRecorder> _recorder;
@@ -91,6 +126,7 @@ namespace Controller
         private readonly CancellationTokenSource _cts = new();
         private readonly Task _dev1Worker;
         private readonly Task _dev2Worker;
+        private readonly Task _writeStallWatchdog;
         private readonly object _disposeGate = new();
         private int _disposed;
         private int _resourcesDisposed;
@@ -132,6 +168,7 @@ namespace Controller
             // recorder 内部仍用通道锁和低频 SQLite 事务保证数据一致性。
             _dev1Worker = StartPersistenceWorker("Dev1", _dev1);
             _dev2Worker = StartPersistenceWorker("Dev2", _dev2);
+            _writeStallWatchdog = StartWriteStallWatchdog();
         }
 
         private Task StartPersistenceWorker(string device, DeviceQueue queue)
@@ -155,6 +192,15 @@ namespace Controller
                 TaskScheduler.Default);
         }
 
+        private Task StartWriteStallWatchdog()
+        {
+            return Task.Factory.StartNew(
+                WriteStallWatchdogLoop,
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default);
+        }
+
         internal event Action<DaqPersistenceStateChanged> StateChanged;
 
         internal bool Enqueue(DaqDiskBatch batch)
@@ -171,15 +217,16 @@ namespace Controller
                 var q = GetQueue(batch.Device);
                 UpdateAcceptedGeneration(q, batch.Generation);
 
-                var suppressAfterTicks = Interlocked.Read(ref q.SuppressAfterUtcTicks);
-                if (suppressAfterTicks > 0 && batch.SampleCount > 0 &&
-                    batch.TimestampsUtc[0].ToUniversalTime().Ticks > suppressAfterTicks)
+                // Cheap early handling avoids consuming a persistence slot for an already-known
+                // excluded tail. The same predicate is checked again under the commit gate after
+                // a slot is obtained; this early check alone is not the linearization point.
+                lock (q.SuppressionGate)
                 {
-                    Interlocked.Increment(ref q.SuppressedBatchCount);
-                    MarkPersisted(q, batch.Sequence);
-                    EvaluateRecovery(batch.Device, q, batch);
-                    batch.Dispose();
-                    return true;
+                    if (TryHandleSuppressionUnderGate(q, batch.Sequence))
+                    {
+                        batch.Dispose();
+                        return true;
+                    }
                 }
 
                 var slotAcquired = false;
@@ -234,9 +281,27 @@ namespace Controller
                     try { q.Slots.Release(); } catch { }
                     return false;
                 }
-                // Admission linearizes when the accepted batch becomes part of the counted FIFO.
-                Interlocked.Increment(ref q.Count);
-                q.Queue.Enqueue(batch);
+                var suppressedAtCommit = false;
+                lock (q.SuppressionGate)
+                {
+                    // SuppressAfter uses this same gate. A batch that observed admission-open,
+                    // then waited for a slot or a test seam while cutoff was installed, must be
+                    // reclassified as an explicit excluded tail before FIFO publication.
+                    suppressedAtCommit = TryHandleSuppressionUnderGate(q, batch.Sequence);
+                    if (!suppressedAtCommit)
+                    {
+                        // Admission linearizes when the accepted batch becomes part of the
+                        // counted FIFO while cutoff mutation is excluded by the same gate.
+                        Interlocked.Increment(ref q.Count);
+                        q.Queue.Enqueue(batch);
+                    }
+                }
+                if (suppressedAtCommit)
+                {
+                    try { q.Slots.Release(); } catch { }
+                    batch.Dispose();
+                    return true;
+                }
                 q.Signal.Release();
                 EvaluateLag(batch.Device, q, batch);
                 return true;
@@ -247,22 +312,46 @@ namespace Controller
             }
         }
 
-        internal void SuppressAfter(string device, DateTime cutoffUtc, Guid correlationId)
+        internal void SuppressAfter(
+            string device,
+            DateTime cutoffUtc,
+            long lastSequenceThatMustBePhysicallyPersisted,
+            Guid correlationId)
         {
             var q = GetQueue(device);
-            Interlocked.Exchange(
-                ref q.SuppressAfterUtcTicks,
-                cutoffUtc.ToUniversalTime().Ticks);
-            Interlocked.Exchange(ref q.SuppressedBatchCount, 0);
-            Interlocked.Exchange(ref q.DiscardedGenerationBatchCount, 0);
-            if (correlationId != Guid.Empty) q.CorrelationId = correlationId;
+            lock (q.SuppressionGate)
+            {
+                Interlocked.Exchange(
+                    ref q.SuppressAfterSequence,
+                    Math.Max(0, lastSequenceThatMustBePhysicallyPersisted));
+                Interlocked.Exchange(ref q.SuppressThroughSequence, long.MaxValue);
+                Interlocked.Exchange(
+                    ref q.SuppressAfterUtcTicks,
+                    cutoffUtc.ToUniversalTime().Ticks);
+                Interlocked.Exchange(ref q.SuppressedBatchCount, 0);
+                if (correlationId != Guid.Empty) SetCorrelation(q, correlationId);
+            }
         }
 
-        internal void ResumeAdmission(string device)
+        internal void ResumeAdmission(string device, long closeSuppressionThroughSequence)
         {
             var q = GetQueue(device);
-            Interlocked.Exchange(ref q.SuppressAfterUtcTicks, 0);
-            q.CorrelationId = Guid.Empty;
+            lock (q.SuppressionGate)
+            {
+                if (Interlocked.Read(ref q.SuppressAfterUtcTicks) != 0)
+                {
+                    var fromExclusive = Interlocked.Read(ref q.SuppressAfterSequence);
+                    Interlocked.Exchange(
+                        ref q.SuppressThroughSequence,
+                        Math.Max(fromExclusive, closeSuppressionThroughSequence));
+                }
+                else
+                {
+                    Interlocked.Exchange(ref q.SuppressAfterSequence, 0);
+                    Interlocked.Exchange(ref q.SuppressThroughSequence, 0);
+                }
+                SetCorrelation(q, Guid.Empty);
+            }
             Interlocked.Exchange(ref q.FreshAfterLowWater, 0);
             Interlocked.Exchange(ref q.PendingFreshWhileWrite, 0);
             Interlocked.Exchange(ref q.PauseLatched, 0);
@@ -290,7 +379,9 @@ namespace Controller
                         : DaqPersistenceState.Paused)
                     : DaqPersistenceState.Recovered,
                 Code = Volatile.Read(ref q.FailureTimedOut) != 0
-                    ? "DaqPersistenceRecoveryTimeout"
+                    ? (Volatile.Read(ref q.WriteStallLatched) != 0
+                        ? "DaqPersistenceWriteStall"
+                        : "DaqPersistenceRecoveryTimeout")
                     : (Volatile.Read(ref q.QueueFullLatched) != 0
                         ? "DaqPersistenceQueueFull"
                         : (Volatile.Read(ref q.PauseLatched) != 0
@@ -301,8 +392,17 @@ namespace Controller
                 Generation = Interlocked.Read(ref q.AcceptedGeneration),
                 Sequence = Interlocked.Read(ref q.LastPersistedSequence),
                 TimestampUtc = DateTime.UtcNow,
-                CorrelationId = q.CorrelationId,
+                CorrelationId = GetCorrelation(q),
                 SuppressedBatchCount = Interlocked.Read(ref q.SuppressedBatchCount),
+                CumulativeSuppressedBatchCount = Interlocked.Read(
+                    ref q.CumulativeSuppressedBatchCount),
+                LastTerminallyHandledSequence = Interlocked.Read(
+                    ref q.LastTerminallyHandledSequence),
+                SuppressAfterSequence = Interlocked.Read(ref q.SuppressAfterSequence),
+                SuppressThroughSequence = Interlocked.Read(ref q.SuppressThroughSequence),
+                FirstSuppressedSequence = Interlocked.Read(ref q.FirstSuppressedSequence),
+                LastSuppressedSequence = Interlocked.Read(ref q.LastSuppressedSequence),
+                SuppressedRangeCount = Interlocked.Read(ref q.SuppressedRangeCount),
                 DiscardedGenerationBatchCount = Interlocked.Read(ref q.DiscardedGenerationBatchCount),
                 OverCapacityDroppedBatchCount = Interlocked.Read(ref q.OverCapacityDroppedBatchCount),
                 DurabilityBlocked = Volatile.Read(ref q.UnresolvedWriteFailure) != 0 ||
@@ -469,6 +569,60 @@ namespace Controller
             }
         }
 
+        private void WriteStallWatchdogLoop()
+        {
+            try
+            {
+                while (!_cts.IsCancellationRequested)
+                {
+                    CheckWriteStall("Dev1", _dev1);
+                    CheckWriteStall("Dev2", _dev2);
+                    if (_cts.Token.WaitHandle.WaitOne(
+                            Math.Max(10, Math.Min(100, _recoveryTimeoutMs / 10))))
+                        return;
+                }
+            }
+            catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+            {
+                // Normal coordinator shutdown.
+            }
+            catch (Exception ex)
+            {
+                SafeWarn($"DAQ持久化卡死看门狗异常：{ex.Message}", "落盘");
+            }
+        }
+
+        private void CheckWriteStall(string device, DeviceQueue q)
+        {
+            lock (q.WriteStallGate)
+            {
+                if (Volatile.Read(ref q.WriteInFlight) == 0) return;
+                var started = Interlocked.Read(ref q.WriteCallStartedTicks);
+                if (started <= 0) return;
+                var elapsed = (Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency;
+                if (elapsed < _recoveryTimeoutMs ||
+                    Interlocked.CompareExchange(ref q.WriteStallLatched, 1, 0) != 0)
+                    return;
+
+                Interlocked.Exchange(ref q.UnresolvedWriteFailure, 1);
+                Interlocked.Exchange(ref q.FailureTimedOut, 1);
+                Interlocked.Exchange(ref q.PauseLatched, 1);
+                var correlation = EnsureCorrelation(q);
+                var sequence = Interlocked.Read(ref q.InFlightSequence);
+                var generation = Interlocked.Read(ref q.InFlightGeneration);
+                Publish(
+                    null,
+                    q,
+                    DaqPersistenceState.Failed,
+                    "DaqPersistenceWriteStall",
+                    $"{device} 持久化同步写调用连续 {elapsed:F0}ms 未返回；" +
+                    $"Sequence={sequence}，已锁存进程回收故障，禁止并行重写当前批次。",
+                    correlation,
+                    generationOverride: generation,
+                    sequenceOverride: sequence);
+            }
+        }
+
         private void WorkerLoopCore(string device, DeviceQueue q)
         {
             while (!_cts.IsCancellationRequested)
@@ -483,6 +637,7 @@ namespace Controller
                     // old dequeue->publish empty window.
                     if (!q.Queue.TryPeek(out var pending)) continue;
                     Interlocked.Exchange(ref q.InFlightSequence, pending.Sequence);
+                    Interlocked.Exchange(ref q.InFlightGeneration, pending.Generation);
                     Interlocked.Exchange(
                         ref q.InFlightEnqueuedTicks,
                         pending.EnqueuedMonotonicTicks);
@@ -506,6 +661,7 @@ namespace Controller
 
                 var batchDevice = batch.Device;
                 var sequence = batch.Sequence;
+                MarkTerminallyHandled(q, sequence);
                 MarkPersisted(q, sequence);
                 Volatile.Write(ref q.CurrentBatch, null);
                 ClearInFlight(q);
@@ -526,7 +682,18 @@ namespace Controller
                 try
                 {
                     var writeStarted = Stopwatch.GetTimestamp();
-                    WriteBatch(batch);
+                    lock (q.WriteStallGate)
+                        Interlocked.Exchange(ref q.WriteCallStartedTicks, writeStarted);
+                    try
+                    {
+                        WriteBatch(batch);
+                    }
+                    finally
+                    {
+                        lock (q.WriteStallGate)
+                            Interlocked.Exchange(ref q.WriteCallStartedTicks, 0);
+                    }
+                    q.ActiveCycleLimitFaults.Clear();
                     Interlocked.Exchange(ref q.UnresolvedWriteFailure, 0);
                     Interlocked.Exchange(ref q.FailureTimedOut, 0);
                     try
@@ -549,15 +716,27 @@ namespace Controller
                 }
                 catch (ActiveCycleDataLimitExceededException ex)
                 {
-                    var correlation = EnsureCorrelation(q);
-                    Publish(batch, q, DaqPersistenceState.Failed, "ActiveCycleDataLimitExceeded",
-                        $"活动圈数据达到安全上限。EPB={ex.EpbId} " +
-                        $"Cycle={ex.CycleNumber} Limit={ex.Limit}。",
-                        correlation,
-                        ex.EpbId,
-                        ex.CycleNumber,
-                        ex.Limit);
-                    return;
+                    // EpbDiskWriter has already latched the offending channel and rolled back the
+                    // device-batch accounting. Retain this exact CurrentBatch and retry it: the
+                    // next attempt skips the latched channel but still writes every healthy peer.
+                    // Returning here would let WorkerLoopCore mark the whole device batch as
+                    // persisted even though the writer rolled it back.
+                    var faultIdentity = ex.EpbId + ":" + ex.CycleNumber;
+                    if (q.ActiveCycleLimitFaults.Add(faultIdentity))
+                    {
+                        var correlation = EnsureCorrelation(q);
+                        Publish(batch, q, DaqPersistenceState.Failed, "ActiveCycleDataLimitExceeded",
+                            $"活动圈数据达到安全上限。EPB={ex.EpbId} " +
+                            $"Cycle={ex.CycleNumber} Limit={ex.Limit}；" +
+                            "保留当前整设备批次原序重试，健康通道真实写入后才推进耐久边界。",
+                            correlation,
+                            ex.EpbId,
+                            ex.CycleNumber,
+                            ex.Limit);
+                    }
+                    var delay = RetryDelaysMs[Math.Min(attempt++, RetryDelaysMs.Length - 1)];
+                    if (_cts.Token.WaitHandle.WaitOne(delay))
+                        _cts.Token.ThrowIfCancellationRequested();
                 }
                 catch (Exception ex)
                 {
@@ -708,7 +887,7 @@ namespace Controller
             if (last != 0 && (now - last) * 1000.0 / Stopwatch.Frequency < 1000) return;
             Interlocked.Exchange(ref q.LastLagLogTicks, now);
             Publish(batch, q, DaqPersistenceState.Lagging, "DaqPersistenceLag",
-                $"{device} 持久化延迟。Depth={depth}, Oldest={age:F1}ms。", q.CorrelationId);
+                $"{device} 持久化延迟。Depth={depth}, Oldest={age:F1}ms。", GetCorrelation(q));
         }
 
         private void EvaluateRecovery(string device, DeviceQueue q, DaqDiskBatch batch)
@@ -736,10 +915,11 @@ namespace Controller
                     Interlocked.Exchange(ref q.FreshAfterLowWater, 0);
                     Interlocked.Exchange(ref q.PauseLatched, 0);
                     Interlocked.Exchange(ref q.QueueFullLatched, 0);
+                    Interlocked.Exchange(ref q.WriteStallLatched, 0);
                     Publish(batch, q, DaqPersistenceState.Recovered, "DaqPersistenceRecovered",
                         $"{device} 持久化队列已恢复。Depth={depth}, Oldest={age:F1}ms, " +
                         $"OverCapacityDropped={Interlocked.Read(ref q.OverCapacityDroppedBatchCount)}。",
-                        q.CorrelationId);
+                        GetCorrelation(q));
                 }
             }
             else
@@ -758,7 +938,9 @@ namespace Controller
             Guid correlationId,
             int epbId = 0,
             int cycleNumber = 0,
-            int recordLimit = 0)
+            int recordLimit = 0,
+            long? generationOverride = null,
+            long? sequenceOverride = null)
         {
             var update = new DaqPersistenceStateChanged
             {
@@ -768,11 +950,24 @@ namespace Controller
                 Reason = reason,
                 QueueDepth = Volatile.Read(ref q.Count),
                 OldestBatchAgeMs = GetOldestAge(q),
-                Generation = batch?.Generation ?? Interlocked.Read(ref q.AcceptedGeneration),
-                Sequence = batch?.Sequence ?? Interlocked.Read(ref q.LastPersistedSequence),
+                Generation = generationOverride ??
+                             batch?.Generation ??
+                             Interlocked.Read(ref q.AcceptedGeneration),
+                Sequence = sequenceOverride ??
+                           batch?.Sequence ??
+                           Interlocked.Read(ref q.LastPersistedSequence),
                 TimestampUtc = DateTime.UtcNow,
                 CorrelationId = correlationId,
                 SuppressedBatchCount = Interlocked.Read(ref q.SuppressedBatchCount),
+                CumulativeSuppressedBatchCount = Interlocked.Read(
+                    ref q.CumulativeSuppressedBatchCount),
+                LastTerminallyHandledSequence = Interlocked.Read(
+                    ref q.LastTerminallyHandledSequence),
+                SuppressAfterSequence = Interlocked.Read(ref q.SuppressAfterSequence),
+                SuppressThroughSequence = Interlocked.Read(ref q.SuppressThroughSequence),
+                FirstSuppressedSequence = Interlocked.Read(ref q.FirstSuppressedSequence),
+                LastSuppressedSequence = Interlocked.Read(ref q.LastSuppressedSequence),
+                SuppressedRangeCount = Interlocked.Read(ref q.SuppressedRangeCount),
                 DiscardedGenerationBatchCount = Interlocked.Read(ref q.DiscardedGenerationBatchCount),
                 OverCapacityDroppedBatchCount = Interlocked.Read(ref q.OverCapacityDroppedBatchCount),
                 DurabilityBlocked = Volatile.Read(ref q.UnresolvedWriteFailure) != 0 ||
@@ -847,6 +1042,63 @@ namespace Controller
             } while (Interlocked.CompareExchange(ref q.LastPersistedSequence, sequence, current) != current);
         }
 
+        private static void MarkTerminallyHandled(DeviceQueue q, long sequence)
+        {
+            long current;
+            do
+            {
+                current = Interlocked.Read(ref q.LastTerminallyHandledSequence);
+                if (current >= sequence) return;
+            } while (Interlocked.CompareExchange(
+                         ref q.LastTerminallyHandledSequence,
+                         sequence,
+                         current) != current);
+        }
+
+        // Caller holds q.SuppressionGate.
+        private static bool TryHandleSuppressionUnderGate(DeviceQueue q, long sequence)
+        {
+            var suppressAfterTicks = Interlocked.Read(ref q.SuppressAfterUtcTicks);
+            if (suppressAfterTicks <= 0) return false;
+            var suppressAfterSequence = Interlocked.Read(ref q.SuppressAfterSequence);
+            var suppressThroughSequence = Interlocked.Read(ref q.SuppressThroughSequence);
+            if (suppressAfterSequence >= 0 &&
+                sequence > suppressAfterSequence &&
+                (suppressThroughSequence == long.MaxValue ||
+                 sequence <= suppressThroughSequence))
+            {
+                // Explicitly excluded batches are terminally handled but not physically written.
+                RecordSuppressedUnderGate(q, sequence);
+                MarkTerminallyHandled(q, sequence);
+                return true;
+            }
+
+            if (suppressThroughSequence != long.MaxValue &&
+                sequence > suppressThroughSequence)
+            {
+                // Per-device processing is FIFO. The first sequence beyond the finite resume
+                // floor closes the active window; cumulative evidence remains intact.
+                Interlocked.Exchange(ref q.SuppressAfterUtcTicks, 0);
+                Interlocked.Exchange(ref q.SuppressAfterSequence, 0);
+                Interlocked.Exchange(ref q.SuppressThroughSequence, 0);
+            }
+            return false;
+        }
+
+        // Caller holds q.SuppressionGate.
+        private static void RecordSuppressedUnderGate(DeviceQueue q, long sequence)
+        {
+            Interlocked.Increment(ref q.SuppressedBatchCount);
+            Interlocked.Increment(ref q.CumulativeSuppressedBatchCount);
+            var previous = Interlocked.Read(ref q.LastSuppressedSequence);
+            if (Interlocked.Read(ref q.FirstSuppressedSequence) == 0)
+                Interlocked.Exchange(ref q.FirstSuppressedSequence, sequence);
+            if (previous == 0 || sequence != previous + 1)
+                Interlocked.Increment(ref q.SuppressedRangeCount);
+            if (sequence > previous)
+                Interlocked.Exchange(ref q.LastSuppressedSequence, sequence);
+        }
+
         private static void UpdateAcceptedGeneration(DeviceQueue q, long generation)
         {
             long current;
@@ -859,9 +1111,20 @@ namespace Controller
 
         private static Guid EnsureCorrelation(DeviceQueue q)
         {
-            if (q.CorrelationId == Guid.Empty) q.CorrelationId = Guid.NewGuid();
-            return q.CorrelationId;
+            var current = Volatile.Read(ref q.Correlation);
+            if (current != null) return current.Value;
+            var created = new CorrelationIdentity(Guid.NewGuid());
+            current = Interlocked.CompareExchange(ref q.Correlation, created, null);
+            return (current ?? created).Value;
         }
+
+        private static Guid GetCorrelation(DeviceQueue q)
+            => Volatile.Read(ref q.Correlation)?.Value ?? Guid.Empty;
+
+        private static void SetCorrelation(DeviceQueue q, Guid correlationId)
+            => Volatile.Write(
+                ref q.Correlation,
+                correlationId == Guid.Empty ? null : new CorrelationIdentity(correlationId));
 
         private static double GetOldestAge(DeviceQueue q)
         {
@@ -876,7 +1139,10 @@ namespace Controller
         private static void ClearInFlight(DeviceQueue q)
         {
             Interlocked.Exchange(ref q.InFlightSequence, 0);
+            Interlocked.Exchange(ref q.InFlightGeneration, 0);
             Interlocked.Exchange(ref q.InFlightEnqueuedTicks, 0);
+            lock (q.WriteStallGate)
+                Interlocked.Exchange(ref q.WriteCallStartedTicks, 0);
             // WriteInFlight is the release marker and must be cleared last.
             Interlocked.Exchange(ref q.WriteInFlight, 0);
         }
@@ -940,12 +1206,14 @@ namespace Controller
                 try
                 {
                     workersStopped = Task.WaitAll(
-                        new[] { _dev1Worker, _dev2Worker },
+                        new[] { _dev1Worker, _dev2Worker, _writeStallWatchdog },
                         Math.Max(1000, workerTimeoutMs));
                 }
                 catch
                 {
-                    workersStopped = _dev1Worker.IsCompleted && _dev2Worker.IsCompleted;
+                    workersStopped = _dev1Worker.IsCompleted &&
+                                     _dev2Worker.IsCompleted &&
+                                     _writeStallWatchdog.IsCompleted;
                 }
                 if (!workersStopped) return false;
 
