@@ -299,17 +299,56 @@ $soakSummary = Invoke-CandidateTest `
     -SuccessPattern '^PASS\s+1/1$'
 
 $powerSupplyProject = Join-Path $repo 'Tests\PowerSupplyDebugger.Tests\PowerSupplyDebugger.Tests.csproj'
-$powerSupplyOutput = @(& dotnet test $powerSupplyProject `
-    --configuration Release --no-restore --no-build --verbosity minimal 2>&1)
-$powerSupplyExitCode = $LASTEXITCODE
-foreach ($line in $powerSupplyOutput) { Write-Host ([string]$line) }
-if ($powerSupplyExitCode -ne 0) {
-    throw "PowerSupplyDebugger.Tests 失败，ExitCode=$powerSupplyExitCode"
+$tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\', '/')
+$powerSupplyResultsDirectory = [IO.Path]::GetFullPath((Join-Path `
+    $tempRoot ('epb-release-power-' + [Guid]::NewGuid().ToString('N'))))
+$tempPrefix = $tempRoot + [IO.Path]::DirectorySeparatorChar
+if (-not $powerSupplyResultsDirectory.StartsWith(
+        $tempPrefix,
+        [StringComparison]::OrdinalIgnoreCase)) {
+    throw "电源测试临时目录越界：$powerSupplyResultsDirectory"
 }
-$powerSupplySummary = @($powerSupplyOutput | ForEach-Object { [string]$_ } |
-    Where-Object { $_ -match '(Passed|通过).*[1-9]\d*' } | Select-Object -Last 1)
-if ($powerSupplySummary.Count -eq 0) {
-    throw 'PowerSupplyDebugger.Tests 未输出通过摘要。'
+$powerSupplyTrxName = 'PowerSupplyDebugger.Tests.trx'
+$powerSupplyTrxPath = Join-Path $powerSupplyResultsDirectory $powerSupplyTrxName
+$powerSupplySummary = $null
+try {
+    [void](New-Item -ItemType Directory -Path $powerSupplyResultsDirectory)
+    $powerSupplyOutput = @(& dotnet test $powerSupplyProject `
+        --configuration Release --no-restore --no-build --verbosity minimal `
+        --results-directory $powerSupplyResultsDirectory `
+        --logger "trx;LogFileName=$powerSupplyTrxName" 2>&1)
+    $powerSupplyExitCode = $LASTEXITCODE
+    foreach ($line in $powerSupplyOutput) { Write-Host ([string]$line) }
+    if ($powerSupplyExitCode -ne 0) {
+        throw "PowerSupplyDebugger.Tests 失败，ExitCode=$powerSupplyExitCode"
+    }
+    if (-not (Test-Path -LiteralPath $powerSupplyTrxPath -PathType Leaf)) {
+        throw "PowerSupplyDebugger.Tests 未生成结构化 TRX：$powerSupplyTrxPath"
+    }
+
+    [xml]$powerSupplyTrx = [IO.File]::ReadAllText(
+        $powerSupplyTrxPath,
+        [Text.Encoding]::UTF8)
+    $powerSupplyCounters = $powerSupplyTrx.SelectSingleNode(
+        "//*[local-name()='ResultSummary']/*[local-name()='Counters']")
+    if ($null -eq $powerSupplyCounters) {
+        throw 'PowerSupplyDebugger.Tests TRX 缺少 Counters。'
+    }
+    $powerSupplyTotal = [int]$powerSupplyCounters.GetAttribute('total')
+    $powerSupplyPassed = [int]$powerSupplyCounters.GetAttribute('passed')
+    $powerSupplyFailed = [int]$powerSupplyCounters.GetAttribute('failed')
+    if ($powerSupplyTotal -lt 1 -or
+        $powerSupplyFailed -ne 0 -or
+        $powerSupplyPassed -ne $powerSupplyTotal) {
+        throw "PowerSupplyDebugger.Tests TRX 未全通过：" +
+              "Total=$powerSupplyTotal Passed=$powerSupplyPassed Failed=$powerSupplyFailed"
+    }
+    $powerSupplySummary = "PASS $powerSupplyPassed/$powerSupplyTotal"
+}
+finally {
+    if (Test-Path -LiteralPath $powerSupplyResultsDirectory -PathType Container) {
+        Remove-Item -LiteralPath $powerSupplyResultsDirectory -Recurse -Force
+    }
 }
 
 $fieldGateOutput = @(& py -3 -m unittest -v Tools.test_validate_epb_field_gate 2>&1)
@@ -334,7 +373,7 @@ $verification = [ordered]@{
     epbDiskWriterTests = $diskWriterSummary
     persistenceSoak = $soakSummary
     persistenceSoakSeconds = $PersistenceSoakSeconds
-    powerSupplyDebuggerTests = $powerSupplySummary[0].Trim()
+    powerSupplyDebuggerTests = $powerSupplySummary
     fieldGateTests = $fieldGateSummary[0].Trim()
 }
 
