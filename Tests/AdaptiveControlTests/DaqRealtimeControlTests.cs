@@ -28,6 +28,22 @@ namespace AdaptiveControlTests
             return passed;
         }
 
+        internal static int RunDoCommandRingRegression()
+        {
+            var passed = 0;
+            RunDoCommandRingRegression(ref passed);
+            return passed;
+        }
+
+        private static void RunDoCommandRingRegression(ref int passed)
+        {
+            Run("DO固定优先级命令抢占低优先级积压", DoCommandRingPriorityPreempts, ref passed);
+            Run("DO命令环64槽硬容量有界拒绝", DoCommandRingCapacityIsHardBounded, ref passed);
+            Run("DO同优先级命令严格FIFO", DoCommandRingPreservesFifo, ref passed);
+            Run("DO并发准入硬容量与完成回调精确一次", DoCommandRingConcurrentAdmissionCompletesExactlyOnce, ref passed);
+            Run("DO预分配命令环十万次稳态零分配", DoCommandRingSteadyStateDoesNotAllocate, ref passed);
+        }
+
         internal static int RunAll()
         {
             var passed = 0;
@@ -39,6 +55,7 @@ namespace AdaptiveControlTests
             Run("控制积压先追最新而回调故障才重建", DaqFastResyncRecreatePolicy, ref passed);
             Run("DAQ软件恢复持续局部退避且仅双重硬件证据报警", DaqSelfMaintenancePolicy, ref passed);
             Run("恢复阶段只在终态导出完整重证据", IncidentSnapshotHeavyEvidencePolicy, ref passed);
+            Run("百次事故症状共用容量2取证门且终态精确一次", IncidentEvidenceQueueIsBoundedAndCoalesced, ref passed);
             Run("DAQ恢复先恢复安全电源再做机械定位", DaqRecoveryPrerequisiteOrder, ref passed);
             Run("DAQ截止在所有权等待前按暂停冻结抑制取消断电排序", DaqCutoffPreOwnershipSafetyOrder, ref passed);
             Run("Stop在恢复等待前先撤权暂停断电并启动电源关闭", StopPreRecoveryWaitSafetyOrder, ref passed);
@@ -77,6 +94,7 @@ namespace AdaptiveControlTests
             Run("同设备百次事故症状只生成一个上下文触发和终态", HundredIncidentSymptomsMergeIntoOneContext, ref passed);
             Run("DAQ恢复终态结束旧事故且后续故障使用新关联号", IncidentCompletionStartsNewCorrelation, ref passed);
             Run("DAQ恢复期间旧运行和软预警不能覆盖恢复状态", DaqRecoveryStateCannotRegress, ref passed);
+            RunDoCommandRingRegression(ref passed);
             Run("高优先级DO超时不回退到调用线程无限等待", HighPriorityDoTimeoutIsBounded, ref passed);
             Run("同通道重复OFF合并且不再分配未释放等待句柄", HighPriorityDoCoalescesDuplicateOff, ref passed);
             Run("异步OFF合并后每个提交者获得唯一完成", HighPriorityDoAsyncCoalescingCompletesEverySubmitter, ref passed);
@@ -778,6 +796,157 @@ namespace AdaptiveControlTests
                 "触发瞬间未保留轻量时序证据，或维护阶段仍在重复导出");
         }
 
+        private static void IncidentEvidenceQueueIsBoundedAndCoalesced()
+        {
+            var exported = new ConcurrentQueue<DaqIncidentEvidenceBatch>();
+            using var triggerEntered = new ManualResetEventSlim(false);
+            using var releaseTrigger = new ManualResetEventSlim(false);
+            var observedWorkers = 0;
+            var queue = new DaqIncidentEvidenceQueue(
+                batch =>
+                {
+                    exported.Enqueue(batch);
+                    if (batch.Trigger == null) return;
+                    triggerEntered.Set();
+                    if (!releaseTrigger.Wait(5000))
+                        throw new TimeoutException("测试未及时释放trigger证据写入");
+                },
+                _ => Interlocked.Increment(ref observedWorkers));
+            var runId = Guid.NewGuid();
+            var correlationId = Guid.NewGuid();
+            var contextKey = $"{runId:N}:{correlationId:N}";
+            Assert(queue.Submit(new DaqIncidentEvidenceSubmission
+                {
+                    ContextKey = contextKey,
+                    RunId = runId,
+                    CorrelationId = correlationId,
+                    Device = "Dev1",
+                    StartedUtc = DateTime.UtcNow,
+                    PhaseKey = "00-trigger",
+                    PhaseDirectoryName = "00-trigger-001-000000_000",
+                    IncidentJson = "{}",
+                    IsTrigger = true
+                }),
+                "根事故trigger未进入取证门");
+            Assert(triggerEntered.Wait(2000), "trigger取证worker未启动");
+
+            var submitWatch = Stopwatch.StartNew();
+            try
+            {
+                for (var index = 0; index < 100; index++)
+                {
+                    Assert(queue.Submit(new DaqIncidentEvidenceSubmission
+                        {
+                            ContextKey = contextKey,
+                            RunId = runId,
+                            CorrelationId = correlationId,
+                            Device = "Dev1",
+                            StartedUtc = DateTime.UtcNow,
+                            PhaseKey = $"symptom-{index:D3}",
+                            IncidentJson = "{}"
+                        }),
+                        $"第{index + 1}个派生症状未合并到根事故");
+                }
+                Assert(queue.Submit(new DaqIncidentEvidenceSubmission
+                    {
+                        ContextKey = contextKey,
+                        RunId = runId,
+                        CorrelationId = correlationId,
+                        Device = "Dev1",
+                        StartedUtc = DateTime.UtcNow,
+                        PhaseKey = "90-recovered",
+                        PhaseDirectoryName = "90-recovered-102-000001_000",
+                        IncidentJson = "{}",
+                        IsTerminal = true
+                    }),
+                    "根事故terminal未获保留");
+                submitWatch.Stop();
+                Assert(submitWatch.ElapsedMilliseconds < 500,
+                    $"恢复调用被证据写入拖慢：{submitWatch.ElapsedMilliseconds}ms");
+                Assert(queue.ContextCount == 1,
+                    $"百次症状产生了多个根上下文：{queue.ContextCount}");
+                Assert(queue.RunningCount <= 1 && queue.PendingCount <= 1 &&
+                       queue.ActiveJobCount <= 2,
+                    $"取证门越界：Running={queue.RunningCount} Pending={queue.PendingCount} " +
+                    $"Active={queue.ActiveJobCount}");
+                Assert(queue.WorkerStartCount == 1 && observedWorkers == 1,
+                    $"派生症状创建了额外Task：Starts={queue.WorkerStartCount} " +
+                    $"Observed={observedWorkers}");
+                var boundedDrain = Stopwatch.StartNew();
+                Assert(!queue.DrainAsync(50).GetAwaiter().GetResult(),
+                    "trigger仍阻塞时drain错误报告完成");
+                boundedDrain.Stop();
+                Assert(boundedDrain.ElapsedMilliseconds < 1000,
+                    $"阻塞证据的drain未保持有界：{boundedDrain.ElapsedMilliseconds}ms");
+            }
+            finally
+            {
+                releaseTrigger.Set();
+            }
+
+            Assert(queue.DrainAsync(5000).GetAwaiter().GetResult(),
+                "释放证据写入后队列未在5秒内排空");
+            var submissions = exported
+                .SelectMany(batch => batch.OrderedSubmissions())
+                .ToArray();
+            Assert(submissions.Count(item => item.IsTrigger) == 1,
+                "根事故trigger导出次数不是1");
+            Assert(submissions.Count(item => item.IsTerminal) == 1,
+                "根事故terminal导出次数不是1");
+            var symptoms = submissions.Where(item => !item.IsTrigger && !item.IsTerminal).ToArray();
+            Assert(symptoms.Length == 100 &&
+                   symptoms.Select(item => item.PhaseKey).Distinct().Count() == 100,
+                $"派生症状manifest不完整或重复：Count={symptoms.Length}");
+            Assert(submissions.Count(item =>
+                       !string.IsNullOrWhiteSpace(item.PhaseDirectoryName)) == 2 &&
+                   symptoms.All(item => string.IsNullOrWhiteSpace(item.PhaseDirectoryName)),
+                "派生症状仍创建了独立phase目录，未只追加根manifest");
+            Assert(queue.ContextCount == 0 && queue.RunningCount == 0 &&
+                   queue.PendingCount == 0 && queue.ActiveJobCount == 0,
+                "terminal后根上下文或门状态未收口");
+
+            var unfinished = new DaqIncidentEvidenceQueue(_ => { });
+            var unfinishedRun = Guid.NewGuid();
+            var unfinishedCorrelation = Guid.NewGuid();
+            Assert(unfinished.Submit(new DaqIncidentEvidenceSubmission
+                {
+                    ContextKey = $"{unfinishedRun:N}:{unfinishedCorrelation:N}",
+                    RunId = unfinishedRun,
+                    CorrelationId = unfinishedCorrelation,
+                    Device = "Dev2",
+                    StartedUtc = DateTime.UtcNow,
+                    PhaseKey = "00-trigger",
+                    IncidentJson = "{}",
+                    IsTrigger = true
+                }),
+                "未终态反例的trigger未获准");
+            Assert(SpinWait.SpinUntil(
+                    () => unfinished.WorkerStartCount > 0 &&
+                          unfinished.RunningCount == 0 && unfinished.PendingCount == 0,
+                    2000),
+                "未终态反例的trigger未完成导出");
+            var unfinishedDrain = Stopwatch.StartNew();
+            Assert(!unfinished.DrainAsync(50).GetAwaiter().GetResult(),
+                "只含trigger、尚无terminal的根事故被drain误报完成");
+            unfinishedDrain.Stop();
+            Assert(unfinishedDrain.ElapsedMilliseconds < 1000,
+                $"未终态根事故drain未保持有界：{unfinishedDrain.ElapsedMilliseconds}ms");
+            Assert(unfinished.Submit(new DaqIncidentEvidenceSubmission
+                {
+                    ContextKey = $"{unfinishedRun:N}:{unfinishedCorrelation:N}",
+                    RunId = unfinishedRun,
+                    CorrelationId = unfinishedCorrelation,
+                    Device = "Dev2",
+                    StartedUtc = DateTime.UtcNow,
+                    PhaseKey = "90-recovered",
+                    IncidentJson = "{}",
+                    IsTerminal = true
+                }),
+                "未终态反例补交terminal失败");
+            Assert(unfinished.DrainAsync(2000).GetAwaiter().GetResult(),
+                "未终态反例补交terminal后仍未收口");
+        }
+
         private static void DaqRecoveryPrerequisiteOrder()
         {
             var order = new List<string>();
@@ -813,6 +982,7 @@ namespace AdaptiveControlTests
                 () => order.Add("CancelSubmitOffAll"),
                 () => order.Add("StartPowerDisable"),
                 () => order.Add("StartRejectedOffFallbacks"),
+                () => order.Add("RevokeHydraulicStartRelease"),
                 () => order.Add("PublishObservers"));
             Assert(order.SequenceEqual(new[]
                 {
@@ -822,6 +992,7 @@ namespace AdaptiveControlTests
                     "CancelSubmitOffAll",
                     "StartPowerDisable",
                     "StartRejectedOffFallbacks",
+                    "RevokeHydraulicStartRelease",
                     "PublishObservers"
                 }),
                 "DAQ截止仍可能在暂停/冻结前取消圈，或在整组断能前调用日志/UI观察者");
@@ -831,6 +1002,7 @@ namespace AdaptiveControlTests
             var paused = false;
             var offSubmitted = false;
             var powerStarted = false;
+            var hydraulicRevoked = false;
             var blocked = Task.Run(() => EpbManager.ExecuteDaqCutoffBeforeOwnershipWait(
                 () => { },
                 () => paused = true,
@@ -838,16 +1010,45 @@ namespace AdaptiveControlTests
                 () => offSubmitted = true,
                 () => powerStarted = true,
                 () => { },
+                () => hydraulicRevoked = true,
                 () =>
                 {
                     observerEntered.Set();
                     releaseObserver.Wait(2000);
                 }));
             Assert(observerEntered.Wait(1000), "DAQ截止观察者阻塞测试未进入观察者");
-            Assert(paused && offSubmitted && powerStarted,
-                "DAQ截止观察者阻塞时仍有兄弟通道未暂停/OFF或电源Disable未启动");
+            Assert(paused && offSubmitted && powerStarted && hydraulicRevoked,
+                "DAQ截止观察者阻塞时仍有兄弟通道未暂停/OFF、未启动电源Disable或未退出液压代次");
             releaseObserver.Set();
             Assert(blocked.Wait(1000), "DAQ截止观察者释放后顺序助手未退出");
+
+            using var ownershipEntered = new ManualResetEventSlim(false);
+            using var releaseOwnership = new ManualResetEventSlim(false);
+            var participantRemoved = false;
+            var leaseReleaseSubmitted = false;
+            var ownershipBlocked = Task.Run(() =>
+            {
+                EpbManager.ExecuteDaqCutoffBeforeOwnershipWait(
+                    () => { },
+                    () => { },
+                    () => { },
+                    () => { },
+                    () => { },
+                    () => { },
+                    () =>
+                    {
+                        participantRemoved = true;
+                        leaseReleaseSubmitted = true;
+                    },
+                    () => { });
+                ownershipEntered.Set();
+                releaseOwnership.Wait(2000);
+            });
+            Assert(ownershipEntered.Wait(1000), "DAQ恢复未进入模拟ownership等待");
+            Assert(participantRemoved && leaseReleaseSubmitted,
+                "ownership阻塞前受影响通道仍占用液压参与代次或lease release尚未投递");
+            releaseOwnership.Set();
+            Assert(ownershipBlocked.Wait(1000), "释放模拟ownership等待后测试任务未退出");
         }
 
         private static void StopPreRecoveryWaitSafetyOrder()
@@ -1003,13 +1204,60 @@ namespace AdaptiveControlTests
         {
             var order = new List<string>();
             EpbManager.ExecuteDaqFaultSafetyFirst(
-                new[] { 4, 5, 6 },
-                channel => order.Add("cancel-" + channel),
-                channel => order.Add("off-" + channel));
-            order.Add("log-ui-snapshot");
-            var publishIndex = order.IndexOf("log-ui-snapshot");
-            Assert(new[] { 4, 5, 6 }.All(channel => order.IndexOf("off-" + channel) < publishIndex),
-                "日志/UI/快照先于安全断电");
+                () => order.Add("freeze-cancel-all"),
+                () => order.Add("submit-off-all"),
+                () => order.Add("start-power-disable"),
+                () => order.Add("publish-fault"),
+                () => order.Add("start-rejected-fallbacks"));
+            Assert(order.SequenceEqual(new[]
+                {
+                    "freeze-cancel-all",
+                    "submit-off-all",
+                    "start-power-disable",
+                    "publish-fault",
+                    "start-rejected-fallbacks"
+                }),
+                "DAQ硬件确认仍在整组异步OFF/电源Disable前发布故障，或在发布前同步执行拒绝项兜底");
+
+            using var firstFallbackEntered = new ManualResetEventSlim(false);
+            using var releaseFirstFallback = new ManualResetEventSlim(false);
+            using var secondFallbackEntered = new ManualResetEventSlim(false);
+            IReadOnlyDictionary<int, Task<bool>> fallbackTasks = null;
+            var powerDisableStarted = false;
+            var faultPublicationStarted = false;
+            EpbManager.ExecuteDaqFaultSafetyFirst(
+                () => { },
+                () => { },
+                () => powerDisableStarted = true,
+                () => faultPublicationStarted = true,
+                () => fallbackTasks = EpbManager.StartIndependentSafetyFallbackTasks(
+                    new Dictionary<int, string>
+                    {
+                        [4] = "Rejected",
+                        [5] = "Rejected"
+                    },
+                    (channel, _) =>
+                    {
+                        if (channel == 4)
+                        {
+                            firstFallbackEntered.Set();
+                            releaseFirstFallback.Wait(2000);
+                        }
+                        else
+                        {
+                            secondFallbackEntered.Set();
+                        }
+                        return true;
+                    }));
+            Assert(powerDisableStarted && faultPublicationStarted,
+                "DAQ硬件确认的电源Disable或故障发布未在拒绝项同步兜底前启动");
+            Assert(firstFallbackEntered.Wait(1000), "首通道阻塞OFF兜底未启动");
+            Assert(secondFallbackEntered.Wait(1000),
+                "首通道同步OFF兜底阻塞了兄弟通道独立兜底");
+            releaseFirstFallback.Set();
+            Assert(fallbackTasks != null &&
+                   Task.WaitAll(fallbackTasks.Values.ToArray(), 2000),
+                "释放首通道OFF兜底后独立任务未全部退出");
         }
 
         private static void AdaptiveHotLoopDoesNotAllocate()
@@ -1341,6 +1589,317 @@ namespace AdaptiveControlTests
                 "根事故重复提交terminal成功");
             Assert(!latch.TryGet(run, "Dev1", out _),
                 "根事故终态后仍残留活动上下文");
+        }
+
+        private static void DoCommandRingPriorityPreempts()
+        {
+            using var worker = new DoController.HighPriorityDoWorker(
+                "PriorityPreemption",
+                combineDistinctChannels: false);
+            using var pressureEntered = new ManualResetEventSlim(false);
+            using var releasePressure = new ManualResetEventSlim(false);
+            using var completed = new CountdownEvent(5);
+            var execution = new ConcurrentQueue<string>();
+
+            Func<IReadOnlyList<int>, DoWriteTiming, bool> BlockingPressure = (channels, timing) =>
+            {
+                execution.Enqueue("pressure-running");
+                pressureEntered.Set();
+                return releasePressure.Wait(5000);
+            };
+            Func<IReadOnlyList<int>, DoWriteTiming, bool> Record(string name)
+                => (channels, timing) =>
+                {
+                    execution.Enqueue(name);
+                    return true;
+                };
+            void OnCompleted(HighPriorityDoTelemetry _) => completed.Signal();
+
+            try
+            {
+                Assert(worker.TryPostCommand(
+                        1,
+                        DoController.DoCommandPriority.Pressure,
+                        BlockingPressure,
+                        OnCompleted,
+                        out _),
+                    "首个Pressure命令未获接纳");
+                Assert(pressureEntered.Wait(1000), "首个Pressure命令未进入设备worker");
+                Assert(worker.TryPostCommand(
+                        2,
+                        DoController.DoCommandPriority.Pressure,
+                        Record("pressure-queued"),
+                        OnCompleted,
+                        out _),
+                    "排队Pressure命令未获接纳");
+                Assert(worker.TryPostCommand(
+                        3,
+                        DoController.DoCommandPriority.DirectionChange,
+                        Record("direction"),
+                        OnCompleted,
+                        out _),
+                    "DirectionChange命令未获接纳");
+                Assert(worker.TryPostCommand(
+                        4,
+                        DoController.DoCommandPriority.ChannelOff,
+                        Record("channel-off"),
+                        OnCompleted,
+                        out _),
+                    "ChannelOff命令未获接纳");
+                Assert(worker.TryPostCommand(
+                        5,
+                        DoController.DoCommandPriority.EmergencyGroupOff,
+                        Record("emergency-group-off"),
+                        OnCompleted,
+                        out _),
+                    "EmergencyGroupOff命令未获接纳");
+                Assert(worker.PendingWorkItems == 5,
+                    $"优先级测试命令数错误：{worker.PendingWorkItems}");
+
+                releasePressure.Set();
+                Assert(completed.Wait(3000), "优先级命令未全部完成");
+                Assert(execution.SequenceEqual(new[]
+                    {
+                        "pressure-running",
+                        "emergency-group-off",
+                        "channel-off",
+                        "direction",
+                        "pressure-queued"
+                    }),
+                    "DO固定优先级未在当前物理写结束后抢占低优先级积压：" +
+                    string.Join(",", execution));
+            }
+            finally
+            {
+                releasePressure.Set();
+            }
+        }
+
+        private static void DoCommandRingCapacityIsHardBounded()
+        {
+            using var worker = new DoController.HighPriorityDoWorker(
+                "HardCapacity",
+                combineDistinctChannels: false);
+            using var entered = new ManualResetEventSlim(false);
+            using var release = new ManualResetEventSlim(false);
+            using var completed = new CountdownEvent(64);
+            Func<IReadOnlyList<int>, DoWriteTiming, bool> work = (channels, timing) =>
+            {
+                entered.Set();
+                return release.Wait(5000);
+            };
+            void OnCompleted(HighPriorityDoTelemetry _) => completed.Signal();
+
+            try
+            {
+                Assert(worker.TryPostCommand(
+                        1,
+                        DoController.DoCommandPriority.Pressure,
+                        work,
+                        OnCompleted,
+                        out _),
+                    "硬容量测试首命令未获接纳");
+                Assert(entered.Wait(1000), "硬容量测试首命令未阻塞worker");
+                for (var channel = 2; channel <= 64; channel++)
+                {
+                    Assert(worker.TryPostCommand(
+                            channel,
+                            DoController.DoCommandPriority.Pressure,
+                            work,
+                            OnCompleted,
+                            out _),
+                        $"硬容量第{channel}槽被提前拒绝");
+                }
+
+                Assert(worker.PendingWorkItems == 64,
+                    $"命令环未把in-flight计入64槽硬容量：{worker.PendingWorkItems}");
+                var rejectionClock = Stopwatch.StartNew();
+                Assert(!worker.TryPostCommand(
+                        65,
+                        DoController.DoCommandPriority.Pressure,
+                        work,
+                        OnCompleted,
+                        out _),
+                    "第65个物理命令越过硬容量");
+                rejectionClock.Stop();
+                Assert(rejectionClock.Elapsed.TotalMilliseconds < 20,
+                    $"硬容量拒绝超过20ms：{rejectionClock.Elapsed.TotalMilliseconds:F3}ms");
+
+                release.Set();
+                Assert(completed.Wait(5000), "64个已接纳命令未全部完成");
+                Assert(SpinWait.SpinUntil(() => worker.PendingWorkItems == 0, 1000),
+                    "命令环排空后仍残留租用槽位");
+            }
+            finally
+            {
+                release.Set();
+            }
+        }
+
+        private static void DoCommandRingPreservesFifo()
+        {
+            using var worker = new DoController.HighPriorityDoWorker(
+                "PriorityFifo",
+                combineDistinctChannels: false);
+            using var entered = new ManualResetEventSlim(false);
+            using var release = new ManualResetEventSlim(false);
+            using var completed = new CountdownEvent(5);
+            var execution = new ConcurrentQueue<int>();
+
+            try
+            {
+                Assert(worker.TryPostCommand(
+                        1,
+                        DoController.DoCommandPriority.Pressure,
+                        (channels, timing) =>
+                        {
+                            execution.Enqueue(-1);
+                            entered.Set();
+                            return release.Wait(5000);
+                        },
+                        _ => completed.Signal(),
+                        out _),
+                    "FIFO屏障命令未获接纳");
+                Assert(entered.Wait(1000), "FIFO屏障命令未进入worker");
+                for (var index = 0; index < 4; index++)
+                {
+                    var captured = index;
+                    Assert(worker.TryPostCommand(
+                            10 + index,
+                            DoController.DoCommandPriority.DirectionChange,
+                            (channels, timing) =>
+                            {
+                                execution.Enqueue(captured);
+                                return true;
+                            },
+                            _ => completed.Signal(),
+                            out _),
+                        $"FIFO第{index + 1}个命令未获接纳");
+                }
+
+                release.Set();
+                Assert(completed.Wait(3000), "FIFO命令未全部完成");
+                Assert(execution.SequenceEqual(new[] { -1, 0, 1, 2, 3 }),
+                    "同优先级命令未保持提交FIFO：" + string.Join(",", execution));
+            }
+            finally
+            {
+                release.Set();
+            }
+        }
+
+        private static void DoCommandRingConcurrentAdmissionCompletesExactlyOnce()
+        {
+            using var worker = new DoController.HighPriorityDoWorker(
+                "ConcurrentAdmission",
+                combineDistinctChannels: false);
+            using var entered = new ManualResetEventSlim(false);
+            using var release = new ManualResetEventSlim(false);
+            var completionCounts = new ConcurrentDictionary<Guid, int>();
+            var accepted = 0;
+            var rejected = 0;
+            var callbackCount = 0;
+            Func<IReadOnlyList<int>, DoWriteTiming, bool> work = (channels, timing) =>
+            {
+                entered.Set();
+                return release.Wait(5000);
+            };
+            void OnCompleted(HighPriorityDoTelemetry telemetry)
+            {
+                completionCounts.AddOrUpdate(telemetry.CommandId, 1, (_, count) => count + 1);
+                Interlocked.Increment(ref callbackCount);
+            }
+
+            try
+            {
+                Assert(worker.TryPostCommand(
+                        1,
+                        DoController.DoCommandPriority.Pressure,
+                        work,
+                        OnCompleted,
+                        out _),
+                    "并发准入屏障命令未获接纳");
+                accepted = 1;
+                Assert(entered.Wait(1000), "并发准入屏障命令未进入worker");
+
+                var producers = Enumerable.Range(0, 8)
+                    .Select(producer => Task.Run(() =>
+                    {
+                        for (var index = 0; index < 32; index++)
+                        {
+                            if (worker.TryPostCommand(
+                                    1000 + (producer * 32) + index,
+                                    DoController.DoCommandPriority.Pressure,
+                                    work,
+                                    OnCompleted,
+                                    out _))
+                                Interlocked.Increment(ref accepted);
+                            else
+                                Interlocked.Increment(ref rejected);
+                        }
+                    }))
+                    .ToArray();
+                Assert(Task.WaitAll(producers, 5000), "并发准入生产者未在有界时间退出");
+                Assert(accepted > 1 && accepted <= 64 && rejected > 0,
+                    $"并发准入未受64槽硬容量约束：Accepted={accepted} Rejected={rejected}");
+                Assert(worker.PendingWorkItems == accepted,
+                    $"并发准入计数与租用槽位不一致：Accepted={accepted} " +
+                    $"Pending={worker.PendingWorkItems}");
+
+                release.Set();
+                Assert(SpinWait.SpinUntil(
+                        () => Volatile.Read(ref callbackCount) == Volatile.Read(ref accepted),
+                        5000),
+                    $"已接纳并发命令未精确完成：Accepted={accepted} Callbacks={callbackCount}");
+                Thread.Sleep(50);
+                Assert(callbackCount == accepted && completionCounts.Count == accepted &&
+                       completionCounts.All(pair => pair.Value == 1),
+                    $"并发完成存在丢失/重复：Accepted={accepted} Callbacks={callbackCount} " +
+                    $"Unique={completionCounts.Count}");
+                Assert(SpinWait.SpinUntil(() => worker.PendingWorkItems == 0, 1000),
+                    "并发命令完成后仍残留命令环槽位");
+            }
+            finally
+            {
+                release.Set();
+            }
+        }
+
+        private static void DoCommandRingSteadyStateDoesNotAllocate()
+        {
+            const int capacity = 64;
+            const int iterations = 100000;
+            var ring = new DoController.PreallocatedDoCommandRing(capacity);
+
+            for (var index = 0; index < 1000; index++)
+            {
+                Assert(ring.TryRent(out var slot), "命令环预热租槽失败");
+                var priority = (DoController.DoCommandPriority)(index & 3);
+                Assert(ring.TryEnqueue(slot, priority), "命令环预热入队失败");
+                Assert(ring.TryDequeueHighest(out var dequeued, out var actualPriority) &&
+                       dequeued == slot && actualPriority == priority,
+                    "命令环预热出队错误");
+                Assert(ring.Return(dequeued), "命令环预热归还失败");
+            }
+
+            var before = GC.GetAllocatedBytesForCurrentThread();
+            var valid = true;
+            for (var index = 0; index < iterations; index++)
+            {
+                var priority = (DoController.DoCommandPriority)(index & 3);
+                valid &= ring.TryRent(out var slot);
+                valid &= ring.TryEnqueue(slot, priority);
+                valid &= ring.TryDequeueHighest(out var dequeued, out var actualPriority);
+                valid &= dequeued == slot && actualPriority == priority;
+                valid &= ring.Return(dequeued);
+            }
+            var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+            Assert(valid, "命令环十万次稳态操作发生状态损坏");
+            Assert(allocated == 0,
+                $"预分配命令环十万次稳态仍分配 {allocated} bytes");
+            Assert(ring.Capacity == capacity && ring.QueuedCount == 0 && ring.LeasedCount == 0,
+                $"命令环稳态后未完全归还：Queued={ring.QueuedCount} Leased={ring.LeasedCount}");
         }
 
         private static void HighPriorityDoTimeoutIsBounded()

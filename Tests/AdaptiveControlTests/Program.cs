@@ -42,6 +42,13 @@ namespace AdaptiveControlTests
                     return 0;
                 }
                 if (args.Length == 1 &&
+                    args[0].Equals("--do-command-ring", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += DaqRealtimeControlTests.RunDoCommandRingRegression();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
                     args[0].Equals("--field-clock", StringComparison.OrdinalIgnoreCase))
                 {
                     _passed += DaqRealtimeControlTests.RunFieldClockRegression();

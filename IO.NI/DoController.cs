@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -53,10 +54,127 @@ namespace IO.NI
     {
         #region 内部类型与字段
 
+        internal enum DoCommandPriority
+        {
+            Pressure = 0,
+            DirectionChange = 1,
+            ChannelOff = 2,
+            EmergencyGroupOff = 3
+        }
+
         /// <summary>
-        ///     DO 写入专用高优先级 Worker。
-        ///     设计目的：将“触发后断电”等关键 DO 写入从线程池/多线程锁竞争中剥离出来，
-        ///     以更稳定的调度优先级执行写入，减少尾部抖动。
+        /// 固定容量、无链表节点分配的四级命令环。所有方法由所属设备的准入门串行调用。
+        /// 已租出的槽位（包含正在执行的命令）也占用硬容量，直到完成登记全部封口才归还。
+        /// </summary>
+        internal sealed class PreallocatedDoCommandRing
+        {
+            private const int PriorityCount = 4;
+            private readonly int _capacity;
+            private readonly int[] _slotsByPriority;
+            private readonly int[] _heads = new int[PriorityCount];
+            private readonly int[] _tails = new int[PriorityCount];
+            private readonly int[] _counts = new int[PriorityCount];
+            private readonly int[] _freeSlots;
+            private readonly byte[] _slotStates;
+            private int _freeCount;
+            private int _queuedCount;
+
+            internal PreallocatedDoCommandRing(int capacity)
+            {
+                if (capacity <= 0) throw new ArgumentOutOfRangeException(nameof(capacity));
+                _capacity = capacity;
+                _slotsByPriority = new int[capacity * PriorityCount];
+                _freeSlots = new int[capacity];
+                _slotStates = new byte[capacity];
+                _freeCount = capacity;
+                for (var index = 0; index < capacity; index++)
+                    _freeSlots[index] = capacity - index - 1;
+            }
+
+            internal int Capacity => _capacity;
+            internal int QueuedCount => _queuedCount;
+            internal int LeasedCount => _capacity - _freeCount;
+
+            internal bool TryRent(out int slotIndex)
+            {
+                if (_freeCount == 0)
+                {
+                    slotIndex = -1;
+                    return false;
+                }
+
+                slotIndex = _freeSlots[--_freeCount];
+                _slotStates[slotIndex] = 1;
+                return true;
+            }
+
+            internal bool TryEnqueue(int slotIndex, DoCommandPriority priority)
+            {
+                var priorityIndex = (int)priority;
+                if ((uint)slotIndex >= (uint)_capacity ||
+                    (uint)priorityIndex >= PriorityCount ||
+                    _slotStates[slotIndex] != 1 ||
+                    _counts[priorityIndex] >= _capacity)
+                    return false;
+
+                var tail = _tails[priorityIndex];
+                _slotsByPriority[(priorityIndex * _capacity) + tail] = slotIndex;
+                _tails[priorityIndex] = tail + 1 == _capacity ? 0 : tail + 1;
+                _counts[priorityIndex]++;
+                _queuedCount++;
+                _slotStates[slotIndex] = 2;
+                return true;
+            }
+
+            internal bool TryDequeueHighest(
+                out int slotIndex,
+                out DoCommandPriority priority)
+            {
+                for (var priorityIndex = PriorityCount - 1; priorityIndex >= 0; priorityIndex--)
+                {
+                    if (TryDequeue((DoCommandPriority)priorityIndex, out slotIndex))
+                    {
+                        priority = (DoCommandPriority)priorityIndex;
+                        return true;
+                    }
+                }
+
+                slotIndex = -1;
+                priority = DoCommandPriority.Pressure;
+                return false;
+            }
+
+            internal bool TryDequeue(DoCommandPriority priority, out int slotIndex)
+            {
+                var priorityIndex = (int)priority;
+                if ((uint)priorityIndex >= PriorityCount || _counts[priorityIndex] == 0)
+                {
+                    slotIndex = -1;
+                    return false;
+                }
+
+                var head = _heads[priorityIndex];
+                slotIndex = _slotsByPriority[(priorityIndex * _capacity) + head];
+                _heads[priorityIndex] = head + 1 == _capacity ? 0 : head + 1;
+                _counts[priorityIndex]--;
+                _queuedCount--;
+                _slotStates[slotIndex] = 1;
+                return true;
+            }
+
+            internal bool Return(int slotIndex)
+            {
+                if ((uint)slotIndex >= (uint)_capacity || _slotStates[slotIndex] != 1)
+                    return false;
+                _slotStates[slotIndex] = 0;
+                _freeSlots[_freeCount++] = slotIndex;
+                return true;
+            }
+        }
+
+        /// <summary>
+        ///     每物理 DO 设备独占的最高优先级 Worker。物理写固定按
+        ///     EmergencyGroupOff、ChannelOff、DirectionChange、Pressure 顺序出队。
         /// </summary>
         internal sealed class HighPriorityDoWorker : IDisposable
         {
@@ -65,24 +183,73 @@ namespace IO.NI
             private const int MaxPendingCompletionItems = 4096;
             private const double NonBlockingAdmissionBudgetMs = 10.0;
 
+            private enum RegistrationAttempt
+            {
+                Retry,
+                Accepted,
+                Full
+            }
+
             private sealed class WorkItem
             {
+                internal WorkItem(int slotIndex)
+                {
+                    SlotIndex = slotIndex;
+                    Registrations = new List<CompletionRegistration>(
+                        MaxRegistrationsPerWorkItem);
+                }
+
+                public readonly int SlotIndex;
                 public int Channel;
+                public DoCommandPriority Priority;
+                public long PendingKey;
+                public int PendingIndexed;
                 public Func<IReadOnlyList<int>, DoWriteTiming, bool> BatchWork;
                 public long DequeuedTicks;
                 public long CompletedTicks;
                 public bool Result;
                 public Exception Error;
                 public readonly object RegistrationGate = new object();
-                public readonly List<CompletionRegistration> Registrations =
-                    new List<CompletionRegistration>();
+                public readonly List<CompletionRegistration> Registrations;
                 public bool CompletionClosed;
+
+                internal void Prepare(
+                    int channel,
+                    DoCommandPriority priority,
+                    long pendingKey,
+                    Func<IReadOnlyList<int>, DoWriteTiming, bool> batchWork,
+                    CompletionRegistration registration)
+                {
+                    Channel = channel;
+                    Priority = priority;
+                    PendingKey = pendingKey;
+                    PendingIndexed = pendingKey == 0 ? 0 : 1;
+                    BatchWork = batchWork;
+                    DequeuedTicks = 0;
+                    CompletedTicks = 0;
+                    Result = false;
+                    Error = null;
+                    CompletionClosed = false;
+                    Registrations.Clear();
+                    Registrations.Add(registration);
+                }
+
+                internal void ClearForReuse()
+                {
+                    Channel = 0;
+                    Priority = DoCommandPriority.Pressure;
+                    PendingKey = 0;
+                    PendingIndexed = 0;
+                    BatchWork = null;
+                    DequeuedTicks = 0;
+                    CompletedTicks = 0;
+                    Result = false;
+                    Error = null;
+                    CompletionClosed = true;
+                    Registrations.Clear();
+                }
             }
 
-            /// <summary>
-            /// 一个物理 OFF 可以合并多个同通道请求，但每个请求仍保留独立命令号、
-            /// 独立超时状态和一次性完成回调，禁止合并后吞掉后续提交者的完成通知。
-            /// </summary>
             private sealed class CompletionRegistration
             {
                 public Guid CommandId;
@@ -96,10 +263,56 @@ namespace IO.NI
                 public int CompletionSlotReserved;
             }
 
-            private readonly ConcurrentQueue<WorkItem> _hiQueue = new ConcurrentQueue<WorkItem>();
+            private sealed class ChannelBatchView : IReadOnlyList<int>
+            {
+                private readonly int[] _channels;
+                private int _count;
+
+                internal ChannelBatchView(int capacity)
+                {
+                    _channels = new int[capacity];
+                }
+
+                public int Count => _count;
+
+                public int this[int index]
+                {
+                    get
+                    {
+                        if ((uint)index >= (uint)_count)
+                            throw new ArgumentOutOfRangeException(nameof(index));
+                        return _channels[index];
+                    }
+                }
+
+                internal void Reset() => _count = 0;
+
+                internal void AddDistinct(int channel)
+                {
+                    for (var index = 0; index < _count; index++)
+                    {
+                        if (_channels[index] == channel) return;
+                    }
+                    _channels[_count++] = channel;
+                }
+
+                public IEnumerator<int> GetEnumerator()
+                {
+                    for (var index = 0; index < _count; index++)
+                        yield return _channels[index];
+                }
+
+                IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+            }
+
+            private readonly PreallocatedDoCommandRing _commandRing =
+                new PreallocatedDoCommandRing(MaxPendingWorkItems);
+            private readonly WorkItem[] _workItems = new WorkItem[MaxPendingWorkItems];
+            private readonly WorkItem[] _batchScratch = new WorkItem[MaxPendingWorkItems];
+            private readonly WorkItem[] _disposeBatchScratch = new WorkItem[MaxPendingWorkItems];
+            private readonly ChannelBatchView _channelBatch =
+                new ChannelBatchView(MaxPendingWorkItems);
             private readonly ConcurrentQueue<Action> _completionQueue = new ConcurrentQueue<Action>();
-            private readonly ConcurrentDictionary<int, WorkItem> _pendingByChannel =
-                new ConcurrentDictionary<int, WorkItem>();
             private readonly AutoResetEvent _signal = new AutoResetEvent(false);
             private readonly AutoResetEvent _completionSignal = new AutoResetEvent(false);
             private readonly object _startGate = new object();
@@ -111,36 +324,26 @@ namespace IO.NI
             private int _pendingWorkItems;
             private int _pendingCompletionItems;
             private int _reservedCompletionSlots;
-            // Dispose 所有者 + 实际 DO worker 各持有一个 completion producer 引用。
             private int _completionProducerCount = 1;
             private int _disposeProducerReleased;
             private long _coalescedRequests;
             private Thread _thread;
             private Thread _completionThread;
 
-            // 仅供并发回归在“索引登记后、物理队列入队前”建立确定性交叉点。
+            // 仅供并发回归在“索引登记后、物理环入队前”建立确定性交叉点。
             internal Action AdmissionIndexedTestHook { get; set; }
 
             internal HighPriorityDoWorker(string workerName, bool combineDistinctChannels = true)
             {
                 _workerName = string.IsNullOrWhiteSpace(workerName) ? "Unknown" : workerName.Trim();
                 _combineDistinctChannels = combineDistinctChannels;
+                for (var slotIndex = 0; slotIndex < _workItems.Length; slotIndex++)
+                    _workItems[slotIndex] = new WorkItem(slotIndex);
             }
 
             internal int PendingWorkItems => Math.Max(0, Volatile.Read(ref _pendingWorkItems));
-
             internal long CoalescedRequests => Interlocked.Read(ref _coalescedRequests);
 
-            /// <summary>
-            ///     启动高优先级 worker 线程。
-            /// </summary>
-            /// <remarks>
-            ///     线程模型：
-            ///     <list type="bullet">
-            ///         <item>使用专用 <see cref="Thread"/>，不占用线程池。</item>
-            ///         <item>线程优先级设为 <see cref="ThreadPriority.Highest"/>。</item>
-            ///     </list>
-            /// </remarks>
             public void StartIfNeeded()
             {
                 if (_thread != null) return;
@@ -167,47 +370,74 @@ namespace IO.NI
                 }
             }
 
-            /// <summary>
-            ///     在高优先级 worker 线程中执行一个 DO 写入任务，并同步等待完成。
-            /// </summary>
-            /// <param name="work">具体写入逻辑；应为短任务（单次 NI 写入）。</param>
-            /// <param name="timeoutMs">
-            ///     等待超时（毫秒）。超时后调用方必须进入组级隔离，禁止在调用线程直接写DO。
-            /// </param>
             public bool InvokeHi(
                 int channel,
                 Func<IReadOnlyList<int>, DoWriteTiming, bool> batchWork,
                 int timeoutMs,
                 Action<HighPriorityDoTelemetry> completion)
             {
-                if (channel <= 0 || batchWork == null || _stopping) return false;
+                return InvokeCommand(
+                    channel,
+                    DoCommandPriority.ChannelOff,
+                    batchWork,
+                    timeoutMs,
+                    completion);
+            }
 
-                // 重入时不能在worker线程内再次同步执行NI写入；返回失败交给上层
-                // 电源隔离/重试，避免日志或观察者回调形成递归阻塞。
-                if (Thread.CurrentThread == _thread)
+            internal bool InvokeCommand(
+                int channel,
+                DoCommandPriority priority,
+                Func<IReadOnlyList<int>, DoWriteTiming, bool> batchWork,
+                int timeoutMs,
+                Action<HighPriorityDoTelemetry> completion)
+            {
+                if (channel <= 0 || batchWork == null || !IsValidPriority(priority) || _stopping)
                     return false;
+                if (Thread.CurrentThread == _thread) return false;
 
                 var registration = NewRegistration(timeoutMs, completion, createWaiter: true);
-                if (!TryEnqueue(channel, batchWork, registration)) return false;
+                if (!TryEnqueue(channel, priority, batchWork, registration)) return false;
                 return WaitForCompletion(registration, timeoutMs);
             }
 
-            /// <summary>
-            /// 非阻塞提交一个最高优先级 DO 任务。返回 true 仅代表有界队列已接纳；
-            /// NI 物理写入结果只能由 completion 回调确认。
-            /// </summary>
             internal bool TryPostHi(
                 int channel,
                 Func<IReadOnlyList<int>, DoWriteTiming, bool> batchWork,
                 Action<HighPriorityDoTelemetry> completion,
                 out Guid commandId)
             {
+                return TryPostCommand(
+                    channel,
+                    DoCommandPriority.ChannelOff,
+                    batchWork,
+                    completion,
+                    out commandId);
+            }
+
+            internal bool TryPostCommand(
+                int channel,
+                DoCommandPriority priority,
+                Func<IReadOnlyList<int>, DoWriteTiming, bool> batchWork,
+                Action<HighPriorityDoTelemetry> completion,
+                out Guid commandId)
+            {
                 var registration = NewRegistration(0, completion, createWaiter: false);
                 commandId = registration.CommandId;
-                if (channel <= 0 || batchWork == null || completion == null || _stopping)
+                if (channel <= 0 || batchWork == null || completion == null ||
+                    !IsValidPriority(priority) || _stopping)
                     return false;
-                return TryEnqueue(channel, batchWork, registration);
+                return TryEnqueue(channel, priority, batchWork, registration);
             }
+
+            private static bool IsValidPriority(DoCommandPriority priority)
+                => (uint)priority < 4;
+
+            private static bool CanCoalesce(DoCommandPriority priority)
+                => priority == DoCommandPriority.ChannelOff ||
+                   priority == DoCommandPriority.EmergencyGroupOff;
+
+            private static long BuildPendingKey(DoCommandPriority priority, int channel)
+                => ((long)(int)priority << 32) | (uint)channel;
 
             private static CompletionRegistration NewRegistration(
                 int timeoutMs,
@@ -229,6 +459,7 @@ namespace IO.NI
 
             private bool TryEnqueue(
                 int channel,
+                DoCommandPriority priority,
                 Func<IReadOnlyList<int>, DoWriteTiming, bool> batchWork,
                 CompletionRegistration registration)
             {
@@ -238,73 +469,63 @@ namespace IO.NI
                 {
                     StartIfNeeded();
                     var admissionStarted = Stopwatch.GetTimestamp();
-                    while (!_stopping)
+                    var pendingKey = CanCoalesce(priority)
+                        ? BuildPendingKey(priority, channel)
+                        : 0;
+
+                    while (!_stopping &&
+                           ElapsedMs(admissionStarted, Stopwatch.GetTimestamp()) <
+                           NonBlockingAdmissionBudgetMs)
                     {
-                        if (ElapsedMs(admissionStarted, Stopwatch.GetTimestamp()) >=
-                            NonBlockingAdmissionBudgetMs)
-                            return false;
-                        if (_pendingByChannel.TryGetValue(channel, out var existing))
-                        {
-                            registration.QueueDepthAtEnqueue = Math.Max(1, PendingWorkItems);
-                            if (TryRegister(existing, registration))
-                            {
-                                Interlocked.Increment(ref _coalescedRequests);
-                                accepted = true;
-                                return true;
-                            }
-
-                            // Worker 已经封口该 WorkItem，字典删除马上可见；让出一次时间片后
-                            // 重新提交，不能把竞态中的请求误报为已接纳。
-                            Thread.Yield();
-                            continue;
-                        }
-
                         var gateTaken = false;
                         try
                         {
-                            // 准入 API 的调用线程只允许尝试取得线性化门，绝不在门上等待；
-                            // 门内只做索引与入队，竞争时由调用方立即得到“未接纳”。
                             Monitor.TryEnter(_admissionStopGate, 0, ref gateTaken);
-                            if (!gateTaken) return false;
-                            if (_stopping) return false;
-                            // 获取门锁后必须重查索引；另一个提交者可能已经在我们等待
-                            // admission gate 时为同通道建立了可合并 WorkItem。
-                            if (_pendingByChannel.TryGetValue(channel, out existing))
+                            if (!gateTaken)
                             {
-                                registration.QueueDepthAtEnqueue = Math.Max(1, PendingWorkItems);
-                                if (TryRegister(existing, registration))
+                                Thread.Yield();
+                                continue;
+                            }
+                            if (_stopping) return false;
+
+                            if (pendingKey != 0 && TryFindPending(pendingKey, out var existing))
+                            {
+                                var registrationAttempt = TryRegister(
+                                    existing,
+                                    pendingKey,
+                                    registration);
+                                if (registrationAttempt == RegistrationAttempt.Accepted)
                                 {
+                                    registration.QueueDepthAtEnqueue =
+                                        Math.Max(1, PendingWorkItems);
                                     Interlocked.Increment(ref _coalescedRequests);
                                     accepted = true;
                                     return true;
                                 }
+                                if (registrationAttempt == RegistrationAttempt.Full)
+                                    return false;
+
+                                Thread.Yield();
                                 continue;
                             }
 
+                            if (!_commandRing.TryRent(out var slotIndex)) return false;
                             var pending = Interlocked.Increment(ref _pendingWorkItems);
-                            if (pending > MaxPendingWorkItems)
+                            registration.QueueDepthAtEnqueue = pending;
+                            var item = _workItems[slotIndex];
+                            item.Prepare(channel, priority, pendingKey, batchWork, registration);
+
+                            try { AdmissionIndexedTestHook?.Invoke(); }
+                            catch { /* 测试钩子不得改变生产准入语义 */ }
+
+                            if (!_commandRing.TryEnqueue(slotIndex, priority))
                             {
+                                item.ClearForReuse();
+                                _commandRing.Return(slotIndex);
                                 Interlocked.Decrement(ref _pendingWorkItems);
                                 return false;
                             }
 
-                            registration.QueueDepthAtEnqueue = pending;
-                            var item = new WorkItem
-                            {
-                                Channel = channel,
-                                BatchWork = batchWork
-                            };
-                            item.Registrations.Add(registration);
-
-                            if (!_pendingByChannel.TryAdd(channel, item))
-                            {
-                                Interlocked.Decrement(ref _pendingWorkItems);
-                                continue;
-                            }
-
-                            try { AdmissionIndexedTestHook?.Invoke(); }
-                            catch { /* 测试钩子不得改变生产准入语义 */ }
-                            _hiQueue.Enqueue(item);
                             _signal.Set();
                             accepted = true;
                             return true;
@@ -320,6 +541,47 @@ namespace IO.NI
                 finally
                 {
                     if (!accepted) ReleaseCompletionSlot(registration);
+                }
+            }
+
+            private bool TryFindPending(long pendingKey, out WorkItem item)
+            {
+                for (var slotIndex = 0; slotIndex < _workItems.Length; slotIndex++)
+                {
+                    var candidate = _workItems[slotIndex];
+                    if (Volatile.Read(ref candidate.PendingIndexed) != 0 &&
+                        Volatile.Read(ref candidate.PendingKey) == pendingKey)
+                    {
+                        item = candidate;
+                        return true;
+                    }
+                }
+
+                item = null;
+                return false;
+            }
+
+            private static RegistrationAttempt TryRegister(
+                WorkItem item,
+                long expectedPendingKey,
+                CompletionRegistration registration)
+            {
+                var gateTaken = false;
+                try
+                {
+                    Monitor.TryEnter(item.RegistrationGate, 0, ref gateTaken);
+                    if (!gateTaken) return RegistrationAttempt.Retry;
+                    if (item.CompletionClosed || item.PendingIndexed == 0 ||
+                        item.PendingKey != expectedPendingKey)
+                        return RegistrationAttempt.Retry;
+                    if (item.Registrations.Count >= MaxRegistrationsPerWorkItem)
+                        return RegistrationAttempt.Full;
+                    item.Registrations.Add(registration);
+                    return RegistrationAttempt.Accepted;
+                }
+                finally
+                {
+                    if (gateTaken) Monitor.Exit(item.RegistrationGate);
                 }
             }
 
@@ -344,20 +606,6 @@ namespace IO.NI
                 Interlocked.Decrement(ref _reservedCompletionSlots);
             }
 
-            private static bool TryRegister(
-                WorkItem item,
-                CompletionRegistration registration)
-            {
-                lock (item.RegistrationGate)
-                {
-                    if (item.CompletionClosed ||
-                        item.Registrations.Count >= MaxRegistrationsPerWorkItem)
-                        return false;
-                    item.Registrations.Add(registration);
-                    return true;
-                }
-            }
-
             private static bool WaitForCompletion(
                 CompletionRegistration registration,
                 int timeoutMs)
@@ -380,33 +628,53 @@ namespace IO.NI
                 }
             }
 
+            private bool TryTakeBatch(
+                WorkItem[] scratch,
+                out WorkItem first,
+                out int batchCount)
+            {
+                first = null;
+                batchCount = 0;
+                lock (_admissionStopGate)
+                {
+                    if (!_commandRing.TryDequeueHighest(out var slotIndex, out var priority))
+                        return false;
+
+                    first = _workItems[slotIndex];
+                    scratch[batchCount++] = first;
+                    if (!_combineDistinctChannels || !CanCoalesce(priority)) return true;
+
+                    while (batchCount < scratch.Length &&
+                           _commandRing.TryDequeue(priority, out slotIndex))
+                        scratch[batchCount++] = _workItems[slotIndex];
+                    return true;
+                }
+            }
+
             private void Loop()
             {
+                var timing = new DoWriteTiming();
                 try
                 {
                     while (!_stopping)
                     {
-                        if (!_hiQueue.TryDequeue(out var item))
+                        if (!TryTakeBatch(_batchScratch, out var item, out var batchCount))
                         {
                             _signal.WaitOne(50);
                             continue;
                         }
 
-                        var batch = new List<WorkItem> { item };
-                        if (_combineDistinctChannels)
-                        {
-                            while (_hiQueue.TryDequeue(out var additional))
-                                batch.Add(additional);
-                        }
-
                         var batchResult = false;
                         Exception batchError = null;
-                        var timing = new DoWriteTiming();
+                        timing.LockWaitMs = 0;
+                        timing.NiWriteMs = 0;
                         var dequeuedTicks = Stopwatch.GetTimestamp();
                         try
                         {
-                            var channels = batch.Select(workItem => workItem.Channel).Distinct().ToArray();
-                            batchResult = item.BatchWork(channels, timing);
+                            _channelBatch.Reset();
+                            for (var index = 0; index < batchCount; index++)
+                                _channelBatch.AddDistinct(_batchScratch[index].Channel);
+                            batchResult = item.BatchWork(_channelBatch, timing);
                         }
                         catch (Exception ex)
                         {
@@ -417,18 +685,18 @@ namespace IO.NI
                         {
                             var completedTicks = Stopwatch.GetTimestamp();
                             var completedUtc = DateTime.UtcNow;
-                            foreach (var completedItem in batch)
+                            for (var index = 0; index < batchCount; index++)
                             {
+                                var completedItem = _batchScratch[index];
+                                _batchScratch[index] = null;
                                 completedItem.DequeuedTicks = dequeuedTicks;
                                 completedItem.CompletedTicks = completedTicks;
                                 completedItem.Error = batchError;
                                 completedItem.Result = batchResult;
-                                // 先从合并索引移除，再在锁内封口登记列表：
-                                // 提交线程要么被本次物理写完整接纳，要么创建下一次物理写，
-                                // 不存在“返回已接纳却收不到完成”的竞态窗口。
-                                RemovePending(completedItem);
+                                CloseRegistrations(completedItem);
                                 Interlocked.Decrement(ref _pendingWorkItems);
                                 CompleteRegistrations(completedItem, timing, completedUtc);
+                                ReturnWorkItem(completedItem);
                             }
                         }
                     }
@@ -440,21 +708,24 @@ namespace IO.NI
                 }
             }
 
+            private static void CloseRegistrations(WorkItem item)
+            {
+                lock (item.RegistrationGate)
+                {
+                    item.PendingIndexed = 0;
+                    item.CompletionClosed = true;
+                }
+            }
+
             private void CompleteRegistrations(
                 WorkItem item,
                 DoWriteTiming timing,
                 DateTime completedUtc)
             {
-                CompletionRegistration[] registrations;
-                lock (item.RegistrationGate)
+                var registrationCount = item.Registrations.Count;
+                for (var index = 0; index < registrationCount; index++)
                 {
-                    item.CompletionClosed = true;
-                    registrations = item.Registrations.ToArray();
-                    item.Registrations.Clear();
-                }
-
-                foreach (var registration in registrations)
-                {
+                    var registration = item.Registrations[index];
                     registration.Done?.TrySetResult(item.Result);
                     if (registration.Completion == null) continue;
                     var telemetry = new HighPriorityDoTelemetry
@@ -479,6 +750,18 @@ namespace IO.NI
                         NiWriteMs = timing?.NiWriteMs ?? 0
                     };
                     QueueCompletion(registration, telemetry);
+                }
+                item.Registrations.Clear();
+            }
+
+            private void ReturnWorkItem(WorkItem item)
+            {
+                lock (_admissionStopGate)
+                {
+                    var slotIndex = item.SlotIndex;
+                    item.ClearForReuse();
+                    if (!_commandRing.Return(slotIndex))
+                        throw new InvalidOperationException("DO命令环槽位被重复归还。");
                 }
             }
 
@@ -525,8 +808,6 @@ namespace IO.NI
 
             public void Dispose()
             {
-                // 与 TryEnqueue 的“pending index + physical queue enqueue”共享线性化门；
-                // 一旦 stopping 可见，绝不可能再出现 Dispose 排空后才入队的 accepted 工作。
                 lock (_admissionStopGate)
                     _stopping = true;
                 try { _signal.Set(); } catch { /* ignore */ }
@@ -537,15 +818,26 @@ namespace IO.NI
                 {
                     try { workerExited = thread.Join(1000); } catch { /* ignore */ }
                 }
-                while (_hiQueue.TryDequeue(out var pending))
+
+                var disposeTiming = new DoWriteTiming();
+                while (TryTakeBatch(_disposeBatchScratch, out _, out var batchCount))
                 {
-                    RemovePending(pending);
-                    Interlocked.Decrement(ref _pendingWorkItems);
-                    pending.Result = false;
-                    pending.DequeuedTicks = Stopwatch.GetTimestamp();
-                    pending.CompletedTicks = pending.DequeuedTicks;
-                    CompleteRegistrations(pending, new DoWriteTiming(), DateTime.UtcNow);
+                    var completedTicks = Stopwatch.GetTimestamp();
+                    var completedUtc = DateTime.UtcNow;
+                    for (var index = 0; index < batchCount; index++)
+                    {
+                        var pending = _disposeBatchScratch[index];
+                        _disposeBatchScratch[index] = null;
+                        pending.Result = false;
+                        pending.DequeuedTicks = completedTicks;
+                        pending.CompletedTicks = completedTicks;
+                        CloseRegistrations(pending);
+                        Interlocked.Decrement(ref _pendingWorkItems);
+                        CompleteRegistrations(pending, disposeTiming, completedUtc);
+                        ReturnWorkItem(pending);
+                    }
                 }
+
                 if (Interlocked.Exchange(ref _disposeProducerReleased, 1) == 0)
                     Interlocked.Decrement(ref _completionProducerCount);
                 try { _completionSignal.Set(); } catch { /* ignore */ }
@@ -555,8 +847,6 @@ namespace IO.NI
                 {
                     try { completionExited = completionThread.Join(1000); } catch { /* ignore */ }
                 }
-                // 若 NI 写仍被驱动阻塞，worker 与 completion dispatcher 必须保留信号句柄，
-                // 等物理调用返回后完成所有已经接纳的回调，不能因 Dispose 超时制造挂死。
                 if (workerExited)
                 {
                     try { _signal.Dispose(); } catch { /* ignore */ }
@@ -565,13 +855,6 @@ namespace IO.NI
                 {
                     try { _completionSignal.Dispose(); } catch { /* ignore */ }
                 }
-            }
-
-            private void RemovePending(WorkItem item)
-            {
-                if (item == null) return;
-                ((ICollection<KeyValuePair<int, WorkItem>>)_pendingByChannel).Remove(
-                    new KeyValuePair<int, WorkItem>(item.Channel, item));
             }
         }
 
