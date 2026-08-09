@@ -40,6 +40,8 @@ public readonly struct DaqAIData
 
 public class DaqAIContext
 {
+    internal const int RawAdmissionTimeoutMs = 100;
+    internal const int DefaultFlushTimeoutMs = 10000;
     public string DaqCardName { get; }
     private readonly int Channels;
     private readonly string currentStatFileName;
@@ -171,6 +173,8 @@ public class DaqAIContext
 
     private void EnqueueRawCore(DaqAIData data)
     {
+        var slotAcquired = false;
+        var gateAcquired = false;
         if (!rawQueueSlots.Wait(0))
         {
             if (Interlocked.CompareExchange(ref rawQueueFullLatched, 1, 0) == 0)
@@ -179,25 +183,35 @@ public class DaqAIContext
                 catch { }
             }
             // 调用线程是 Raw 后台发布线程，不是 NI 回调线程。容量耗尽时把背压
-            // 逐级传回采集安全暂停，绝不能删除队头的已接收批次。
-            rawQueueSlots.Wait();
+            // 逐级传回采集安全暂停，绝不能删除队头的已接收批次。这里必须有界返回：
+            // 上游按原序保留所有权并重试，连续超时会晋升永久Raw gap；无限 Wait 会让
+            // Raw worker、StopAndDrain 和无人值守进程回收形成无法逃生的闭环。
+            if (!rawQueueSlots.Wait(RawAdmissionTimeoutMs))
+                throw new TimeoutException(
+                    $"{DaqCardName} Raw末端队列在{RawAdmissionTimeoutMs}ms内没有可用槽位。");
         }
+        slotAcquired = true;
 
-        rawQueueGate.Wait();
         try
         {
+            if (!rawQueueGate.Wait(RawAdmissionTimeoutMs))
+                throw new TimeoutException(
+                    $"{DaqCardName} Raw末端准入门在{RawAdmissionTimeoutMs}ms内未释放。");
+            gateAcquired = true;
             DaqRawData.Enqueue(data);
             Interlocked.Increment(ref rawQueueCount);
-        }
-        catch
-        {
-            rawQueueSlots.Release();
-            data.DisposeOwned();
-            throw;
+            // 队列现在拥有批次及容量槽；失败清理不得再释放该槽。
+            slotAcquired = false;
         }
         finally
         {
-            rawQueueGate.Release();
+            if (gateAcquired) rawQueueGate.Release();
+            if (slotAcquired)
+            {
+                // 入队失败表示所有权仍属于调用者。上游会保留/重试或唯一 Dispose；
+                // 此处只归还容量，不得归还池对象，否则会与上游形成双重 Dispose/ABA。
+                rawQueueSlots.Release();
+            }
         }
     }
 
@@ -335,10 +349,20 @@ public class DaqAIContext
     ///     缓冲大小仍按“Lens * SamplesPerChannel”预估；若你的 SamplesPerChannel
     ///     是固定的，此计算与原逻辑一致。
     /// </remarks>
-    public async Task FlushRawToDiskAsync()
+    public Task FlushRawToDiskAsync()
+        => FlushRawToDiskAsync(DefaultFlushTimeoutMs, CancellationToken.None);
+
+    public Task FlushRawToDiskAsync(int timeoutMs, CancellationToken token)
+        => RunWithDeadlineAsync(
+            FlushRawToDiskCoreAsync,
+            timeoutMs,
+            token,
+            $"{DaqCardName} Raw落盘");
+
+    private async Task FlushRawToDiskCoreAsync(CancellationToken token)
     {
-        await rawFileLock.WaitAsync();
-        await rawQueueGate.WaitAsync();
+        var fileLockAcquired = false;
+        var queueGateAcquired = false;
         var pending = new List<DaqAIData>();
         byte[] buffer = null;
         FileStream fs = null;
@@ -347,6 +371,10 @@ public class DaqAIContext
 
         try
         {
+            await rawFileLock.WaitAsync(token).ConfigureAwait(false);
+            fileLockAcquired = true;
+            await rawQueueGate.WaitAsync(token).ConfigureAwait(false);
+            queueGateAcquired = true;
             var Lens = Volatile.Read(ref rawQueueCount);
             if (Lens < 1) return; // finally 仍会执行
 
@@ -413,8 +441,8 @@ public class DaqAIContext
             originalLength = fs.Length;
             fs.Position = originalLength;
 
-            await fs.WriteAsync(buffer, 0, offset);
-            await fs.FlushAsync();
+            await fs.WriteAsync(buffer, 0, offset, token).ConfigureAwait(false);
+            await fs.FlushAsync(token).ConfigureAwait(false);
             SaveRawCounter = nextSaveRawCounter;
 
             foreach (var daqData in pending)
@@ -468,18 +496,30 @@ public class DaqAIContext
         {
             if (buffer != null) ArrayPool<byte>.Shared.Return(buffer, clearArray: false);
             fs?.Dispose();
-            rawQueueGate.Release();
-            rawFileLock.Release();
+            if (queueGateAcquired) rawQueueGate.Release();
+            if (fileLockAcquired) rawFileLock.Release();
         }
     }
 
 
-    public async Task FlushStatToDiskAsync()
+    public Task FlushStatToDiskAsync()
+        => FlushStatToDiskAsync(DefaultFlushTimeoutMs, CancellationToken.None);
+
+    public Task FlushStatToDiskAsync(int timeoutMs, CancellationToken token)
+        => RunWithDeadlineAsync(
+            FlushStatToDiskCoreAsync,
+            timeoutMs,
+            token,
+            $"{DaqCardName} Stat落盘");
+
+    private async Task FlushStatToDiskCoreAsync(CancellationToken token)
     {
-        await statFileLock.WaitAsync();
+        var fileLockAcquired = false;
         FileStream fs = null;
         try
         {
+            await statFileLock.WaitAsync(token).ConfigureAwait(false);
+            fileLockAcquired = true;
             double[] minimum;
             double[] maximum;
             DateTime firstUtc;
@@ -515,22 +555,68 @@ public class DaqAIContext
                 8192,
                 FileOptions.WriteThrough | FileOptions.Asynchronous);
 
-            await fs.WriteAsync(buffer, 0, offset);
-            await fs.FlushAsync();
+            await fs.WriteAsync(buffer, 0, offset, token).ConfigureAwait(false);
+            await fs.FlushAsync(token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
-            var logFilePath = Path.Combine(Directory.GetCurrentDirectory(),
-                $"DAQ_{DaqCardName}WriteDiskErrorLog.txt");
-            var errorMessage = $"[{DateTime.Now}] DAQ_{DaqCardName} flush error: {ex.Message}";
-
-            File.AppendAllText(logFilePath, errorMessage + Environment.NewLine);
+            try
+            {
+                if (Directory.Exists(StorePath))
+                {
+                    var logFilePath = Path.Combine(StorePath,
+                        $"DAQ_{DaqCardName}WriteDiskErrorLog.txt");
+                    var errorMessage = $"[{DateTime.Now}] DAQ_{DaqCardName} flush error: {ex.Message}";
+                    File.AppendAllText(logFilePath, errorMessage + Environment.NewLine);
+                }
+            }
+            catch { }
         }
         finally
         {
-            statFileLock.Release();
+            if (fileLockAcquired) statFileLock.Release();
 
             if (fs != null) fs.Dispose();
         }
+    }
+
+    private static async Task RunWithDeadlineAsync(
+        Func<CancellationToken, Task> operation,
+        int timeoutMs,
+        CancellationToken token,
+        string operationName)
+    {
+        if (operation == null) throw new ArgumentNullException(nameof(operation));
+        var linked = CancellationTokenSource.CreateLinkedTokenSource(token);
+        // 隔离 FileStream 构造、Length/SetLength/Dispose 等同步内核调用，确保 UI/恢复
+        // 调用方能执行下面的deadline竞争；同一上下文的文件锁仍保证最多一个真实I/O。
+        var operationTask = Task.Run(() => operation(linked.Token), CancellationToken.None);
+        var delayTask = Task.Delay(Math.Max(1, timeoutMs), token);
+        var completed = await Task.WhenAny(operationTask, delayTask).ConfigureAwait(false);
+        if (ReferenceEquals(completed, operationTask) || operationTask.IsCompleted)
+        {
+            linked.Dispose();
+            await operationTask.ConfigureAwait(false);
+            return;
+        }
+
+        try { linked.Cancel(); } catch { }
+        // 底层网络盘/文件系统调用可能不响应CancellationToken。调用方必须按deadline
+        // 返回；原操作保留批次所有权并在后台完成回滚/重入队，异常由延续任务观察。
+        _ = operationTask.ContinueWith(
+            task =>
+            {
+                try { _ = task.Exception; } catch { }
+                linked.Dispose();
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+        token.ThrowIfCancellationRequested();
+        throw new TimeoutException($"{operationName}超过{Math.Max(1, timeoutMs)}ms截止时间。");
     }
 }

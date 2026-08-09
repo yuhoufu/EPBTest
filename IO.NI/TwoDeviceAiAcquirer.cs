@@ -45,6 +45,7 @@ namespace IO.NI
 
         internal long LastAllocated => Interlocked.Read(ref _lastAllocated);
         internal long LastAccepted => Interlocked.Read(ref _lastAccepted);
+        internal long LastObserved => Math.Max(LastAllocated, LastAccepted);
     }
 
     internal enum AcceptedBatchDisposition
@@ -609,12 +610,30 @@ namespace IO.NI
         private readonly AutoResetEvent _controlSignalDev1 = new(false);
         private readonly AutoResetEvent _controlSignalDev2 = new(false);
         private readonly DaqDiagnosticRing _timingDiagnostics = new(DiagnosticCapacity);
+        internal const int DefaultProcessingQueueCapacity = 1024;
+        internal const int MaxProcessingQueueCapacity = 4096;
         private readonly int _processingQueueCapacity;
         private const int DiagnosticCapacity = 12000;
         private int _queueCountDev1;
         private int _queueCountDev2;
         private long _queueFaultGenerationDev1 = -1;
         private long _queueFaultGenerationDev2 = -1;
+        private long _workerFaultGenerationDev1 = -1;
+        private long _workerFaultGenerationDev2 = -1;
+        private long _transferFaultGenerationDev1 = -1;
+        private long _transferFaultGenerationDev2 = -1;
+        private long _processingInFlightSequenceDev1;
+        private long _processingInFlightSequenceDev2;
+        private long _processingInFlightEnqueuedTicksDev1;
+        private long _processingInFlightEnqueuedTicksDev2;
+        private long _firstProcessingGapSequenceDev1;
+        private long _firstProcessingGapSequenceDev2;
+        private long _firstRawGapSequenceDev1;
+        private long _firstRawGapSequenceDev2;
+        private long _pendingProcessingGapSequenceDev1;
+        private long _pendingProcessingGapSequenceDev2;
+        private long _pendingRawGapSequenceDev1;
+        private long _pendingRawGapSequenceDev2;
         private long _controlFullFaultGenerationDev1 = -1;
         private long _controlFullFaultGenerationDev2 = -1;
         private long _controlLatencyFaultGenerationDev1 = -1;
@@ -627,8 +646,6 @@ namespace IO.NI
         private long _controlFilterResetEpochDev2;
         private long _lastProcessingLagLogTicksDev1;
         private long _lastProcessingLagLogTicksDev2;
-        private long _lastRuntimeProbeTicksDev1;
-        private long _lastRuntimeProbeTicksDev2;
         private long _lastHostRuntimeLogTicks;
         private long _lastControlWarningTicksDev1;
         private long _lastControlWarningTicksDev2;
@@ -651,22 +668,38 @@ namespace IO.NI
         private readonly HighResolutionSampleClock _sampleClock = new();
         private readonly Task _workerDev1;
         private readonly Task _workerDev2;
-        private readonly Task _rawPublicationWorker;
+        private readonly Task _rawPublicationWorkerDev1;
+        private readonly Task _rawPublicationWorkerDev2;
         private readonly Task _uiPublicationWorker;
+        private readonly Task _runtimeProbeWorker;
+        private readonly Task _processingWatchdogWorker;
         private static readonly Lazy<ClrGcPauseMonitor> SharedGcPauseMonitor =
             new Lazy<ClrGcPauseMonitor>(() => new ClrGcPauseMonitor(NLogger.Instance), true);
         private readonly ClrGcPauseMonitor _gcPauseMonitor;
-        private readonly ConcurrentQueue<OwnedDaqRawBatch> _rawPublicationQueue = new();
-        private readonly SemaphoreSlim _rawPublicationSignal = new(0);
+        private readonly ConcurrentQueue<OwnedDaqRawBatch> _rawPublicationQueueDev1 = new();
+        private readonly ConcurrentQueue<OwnedDaqRawBatch> _rawPublicationQueueDev2 = new();
+        private readonly SemaphoreSlim _rawPublicationSignalDev1 = new(0);
+        private readonly SemaphoreSlim _rawPublicationSignalDev2 = new(0);
         // UI 只消费每块设备的最新快照，因此唤醒信号也必须是二值的。
         // 若使用无上限计数信号，UI/线程池短暂受阻时会积累大量空唤醒；恢复后即使
         // 最新槽已经取空，工作线程仍会反复空转，形成 CPU 尾部尖峰并继续放大卡顿。
         private readonly CoalescingAsyncSignal _uiPublicationSignal = new();
         private const int RawPublicationCapacity = 256;
-        private readonly SemaphoreSlim _rawPublicationSlots =
+        private const int RawTransferPermanentFaultMs = 30000;
+        private readonly SemaphoreSlim _rawPublicationSlotsDev1 =
             new(RawPublicationCapacity, RawPublicationCapacity);
-        private int _rawPublicationCount;
-        private int _rawPublicationInFlight;
+        private readonly SemaphoreSlim _rawPublicationSlotsDev2 =
+            new(RawPublicationCapacity, RawPublicationCapacity);
+        private readonly object _rawPublicationAdmissionGateDev1 = new();
+        private readonly object _rawPublicationAdmissionGateDev2 = new();
+        private readonly object _ownedRawSubscriberGate = new();
+        private Action<OwnedDaqRawBatch> _ownedRawBatchReady;
+        private int _rawPublicationClosedDev1;
+        private int _rawPublicationClosedDev2;
+        private int _rawPublicationCountDev1;
+        private int _rawPublicationCountDev2;
+        private int _rawPublicationInFlightDev1;
+        private int _rawPublicationInFlightDev2;
         private UiPublication _latestUiDev1;
         private UiPublication _latestUiDev2;
         private readonly Thread _controlThreadDev1;
@@ -1052,59 +1085,252 @@ namespace IO.NI
 
         private void AppendDiagnostic(DaqTimingValue record)
         {
-            // GC/内存/线程池探针只在后台处理/恢复线程中每设备约1秒采一次；
-            // DAQ回调只追加轻量时序字段，不能因诊断本身扩大回调抖动。
-            if (!string.Equals(record.Kind, "Callback", StringComparison.OrdinalIgnoreCase))
-            {
-                var nowTicks = Stopwatch.GetTimestamp();
-                ref var lastProbe = ref string.Equals(record.Device, "Dev1", StringComparison.OrdinalIgnoreCase)
-                    ? ref _lastRuntimeProbeTicksDev1
-                    : ref _lastRuntimeProbeTicksDev2;
-                var previous = Interlocked.Read(ref lastProbe);
-                if (previous == 0 ||
-                    (nowTicks - previous) * 1000.0 / Stopwatch.Frequency >= 1000)
-                {
-                    Interlocked.Exchange(ref lastProbe, nowTicks);
-                    ThreadPool.GetAvailableThreads(out var worker, out var io);
-                    var gcPause = _gcPauseMonitor.Snapshot();
-                    var host = HostRuntimeProbe.Capture();
-                    EnqueueDiagnostic(new DaqTimingValue
-                    {
-                        TimestampUtc = record.TimestampUtc,
-                        Device = record.Device,
-                        Kind = "Runtime",
-                        Generation = record.Generation,
-                        Gc0 = GC.CollectionCount(0),
-                        Gc1 = GC.CollectionCount(1),
-                        Gc2 = GC.CollectionCount(2),
-                        ManagedMemoryBytes = GC.GetTotalMemory(false),
-                        ProcessId = host.ProcessId,
-                        ProcessBitness = host.ProcessBitness,
-                        ProcessCpuPercent = host.ProcessCpuPercent,
-                        SystemCpuPercent = host.SystemCpuPercent,
-                        OtherCpuPercent = host.OtherCpuPercent,
-                        WorkingSetBytes = host.WorkingSetBytes,
-                        PrivateMemoryBytes = host.PrivateMemoryBytes,
-                        VirtualMemoryBytes = host.VirtualMemoryBytes,
-                        HandleCount = host.HandleCount,
-                        ThreadCount = host.ThreadCount,
-                        SystemAvailableMemoryBytes = host.SystemAvailableMemoryBytes,
-                        ProgramDriveFreeBytes = host.ProgramDriveFreeBytes,
-                        DiskQueueLength = host.DiskQueueLength,
-                        DiskReadBytesPerSecond = host.DiskReadBytesPerSecond,
-                        DiskWriteBytesPerSecond = host.DiskWriteBytesPerSecond,
-                        WorkerThreadsAvailable = worker,
-                        IoThreadsAvailable = io,
-                        GcEtwStatus = gcPause.Status,
-                        GcPauseDurationMs = gcPause.LastPauseDurationMs,
-                        GcPauseUtc = gcPause.LastPauseUtc,
-                        GcPauseCount = gcPause.PauseCount
-                    });
-                    TryLogHostRuntime(host, nowTicks);
-                }
-            }
+            // 关键处理链只允许 O(1) 诊断入队。Process.Refresh、DriveInfo 和 PDH
+            // PerformanceCounter 可能在系统/磁盘抖动时阻塞数秒，统一由独立低优先级
+            // RuntimeProbeLoop 执行，绝不能占住唯一的 DAQ 工程消费者。
             EnqueueDiagnostic(record);
         }
+
+        private void RuntimeProbeLoop()
+        {
+            try
+            {
+                while (!_cts.IsCancellationRequested)
+                {
+                    var host = HostRuntimeProbe.Capture();
+                    if (_cts.IsCancellationRequested) return;
+
+                    var nowTicks = Stopwatch.GetTimestamp();
+                    var timestampUtc = DateTime.UtcNow;
+                    ThreadPool.GetAvailableThreads(out var worker, out var io);
+                    var gcPause = _gcPauseMonitor.Snapshot();
+                    foreach (var device in new[] { "Dev1", "Dev2" })
+                    {
+                        var hasChannels = string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase)
+                            ? _dev1Channels.Length > 0
+                            : _dev2Channels.Length > 0;
+                        if (!hasChannels) continue;
+                        EnqueueDiagnostic(new DaqTimingValue
+                        {
+                            TimestampUtc = timestampUtc,
+                            Device = device,
+                            Kind = "Runtime",
+                            Generation = GetCurrentGeneration(device),
+                            Gc0 = GC.CollectionCount(0),
+                            Gc1 = GC.CollectionCount(1),
+                            Gc2 = GC.CollectionCount(2),
+                            ManagedMemoryBytes = GC.GetTotalMemory(false),
+                            ProcessId = host.ProcessId,
+                            ProcessBitness = host.ProcessBitness,
+                            ProcessCpuPercent = host.ProcessCpuPercent,
+                            SystemCpuPercent = host.SystemCpuPercent,
+                            OtherCpuPercent = host.OtherCpuPercent,
+                            WorkingSetBytes = host.WorkingSetBytes,
+                            PrivateMemoryBytes = host.PrivateMemoryBytes,
+                            VirtualMemoryBytes = host.VirtualMemoryBytes,
+                            HandleCount = host.HandleCount,
+                            ThreadCount = host.ThreadCount,
+                            SystemAvailableMemoryBytes = host.SystemAvailableMemoryBytes,
+                            ProgramDriveFreeBytes = host.ProgramDriveFreeBytes,
+                            DiskQueueLength = host.DiskQueueLength,
+                            DiskReadBytesPerSecond = host.DiskReadBytesPerSecond,
+                            DiskWriteBytesPerSecond = host.DiskWriteBytesPerSecond,
+                            WorkerThreadsAvailable = worker,
+                            IoThreadsAvailable = io,
+                            GcEtwStatus = gcPause.Status,
+                            GcPauseDurationMs = gcPause.LastPauseDurationMs,
+                            GcPauseUtc = gcPause.LastPauseUtc,
+                            GcPauseCount = gcPause.PauseCount
+                        });
+                    }
+                    TryLogHostRuntime(host, nowTicks);
+
+                    if (_cts.Token.WaitHandle.WaitOne(1000)) return;
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (ObjectDisposedException) when (Volatile.Read(ref _disposed) != 0)
+            {
+            }
+            catch (Exception ex)
+            {
+                // 运行探针失效只损失诊断，不得反向终止 DAQ 采集链。
+                try { _log.Warn($"主机运行探针已隔离退出：{ex.Message}", "AI"); }
+                catch { }
+            }
+        }
+
+        private void ProcessingWatchdogLoop()
+        {
+            const double hardAgeMs = 500.0;
+            try
+            {
+                while (!_cts.IsCancellationRequested)
+                {
+                    CheckProcessingPipelineAge(
+                        "Dev1",
+                        _queueDev1,
+                        Volatile.Read(ref _queueCountDev1),
+                        Interlocked.Read(ref _processingInFlightEnqueuedTicksDev1),
+                        hardAgeMs);
+                    CheckProcessingPipelineAge(
+                        "Dev2",
+                        _queueDev2,
+                        Volatile.Read(ref _queueCountDev2),
+                        Interlocked.Read(ref _processingInFlightEnqueuedTicksDev2),
+                        hardAgeMs);
+                    if (_cts.Token.WaitHandle.WaitOne(50)) return;
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (ObjectDisposedException) when (Volatile.Read(ref _disposed) != 0)
+            {
+            }
+            catch (Exception ex)
+            {
+                // 看门狗本身不在采集/处理关键链上，异常只损失主动提前检测。
+                try { _log.Warn($"DAQ后台处理看门狗已隔离退出：{ex.Message}", "AI"); }
+                catch { }
+            }
+        }
+
+        private void CheckProcessingPipelineAge(
+            string device,
+            ConcurrentQueue<Item> queue,
+            int depth,
+            long inFlightEnqueuedTicks,
+            double hardAgeMs)
+        {
+            var now = Stopwatch.GetTimestamp();
+            var queuedTicks = queue.TryPeek(out var queued)
+                ? queued.EnqueuedMonotonicTicks
+                : 0;
+            var ageMs = GetOldestProcessingAgeMs(queuedTicks, inFlightEnqueuedTicks, now);
+            if (ageMs < hardAgeMs) return;
+
+            PublishQueueFullFault(
+                device,
+                GetCurrentGeneration(device),
+                "BackgroundProcessingStale",
+                "Background",
+                depth,
+                _processingQueueCapacity,
+                ageMs,
+                $"Device={device} DAQ后台处理最老已接收批次滞后{ageMs:F1}ms，" +
+                $"已超过{hardAgeMs:F0}ms独立时效门限；保留队列数据并隔离受影响组，" +
+                "不等待1024批容量耗尽才发现故障。");
+        }
+
+        internal static double GetOldestProcessingAgeMs(
+            long queuedEnqueuedTicks,
+            long inFlightEnqueuedTicks,
+            long nowTicks)
+        {
+            var oldestTicks = inFlightEnqueuedTicks;
+            if (queuedEnqueuedTicks > 0 &&
+                (oldestTicks <= 0 || queuedEnqueuedTicks < oldestTicks))
+                oldestTicks = queuedEnqueuedTicks;
+            return oldestTicks <= 0 ? 0 : AgeMs(oldestTicks, nowTicks);
+        }
+
+        internal static bool IsRawPublicationComplete(
+            bool ownedHandlerConfigured,
+            bool ownedHandlerAccepted,
+            bool legacyHandlerConfigured,
+            bool legacyHandlerCompleted)
+        {
+            // 独占 Raw 接收者是正式耐久链；其返回即完成所有权移交。没有正式接收者时，
+            // 才以兼容观察者成功（或本就无Raw存储）作为完成条件。
+            return ownedHandlerConfigured
+                ? ownedHandlerAccepted
+                : !legacyHandlerConfigured || legacyHandlerCompleted;
+        }
+
+        internal static Action<OwnedDaqRawBatch> AddSingleOwnedRawSubscriber(
+            Action<OwnedDaqRawBatch> current,
+            Action<OwnedDaqRawBatch> candidate)
+        {
+            if (candidate == null) return current;
+            if (current != null)
+                throw new InvalidOperationException(
+                    "OwnedRawBatchReady 只允许一个权威所有者；多个订阅者无法证明池化批次精确一次移交。");
+            return candidate;
+        }
+
+        internal static bool DispatchRawSubscribersExactOnce(
+            OwnedDaqRawBatch batch,
+            Action<OwnedDaqRawBatch> ownedHandler,
+            Action<string, double[,], DateTime, DateTime> legacyHandler,
+            out Exception legacyError)
+        {
+            if (batch == null) throw new ArgumentNullException(nameof(batch));
+            legacyError = null;
+            var device = batch.Device;
+            var current = batch.Current;
+            var last = batch.Last;
+            double[,] legacySnapshot = null;
+            if (legacyHandler != null)
+            {
+                // 必须在权威所有权移交之前复制。接收者返回前即可入队并由另一个线程
+                // Dispose；移交后再读 Values 会访问已归还对象池的数组，形成ABA。
+                legacySnapshot = new double[batch.ChannelCount, batch.SampleCount];
+                Buffer.BlockCopy(
+                    batch.Values,
+                    0,
+                    legacySnapshot,
+                    0,
+                    batch.ChannelCount * batch.SampleCount * sizeof(double));
+            }
+
+            var ownershipTransferred = false;
+            if (ownedHandler != null)
+            {
+                ownedHandler(batch);
+                ownershipTransferred = true;
+            }
+
+            if (legacyHandler != null)
+            {
+                try { legacyHandler(device, legacySnapshot, current, last); }
+                catch (Exception ex)
+                {
+                    if (!ownershipTransferred) throw;
+                    // 兼容观察者不拥有池化批次；其失败不能撤销已经完成的权威移交。
+                    legacyError = ex;
+                }
+            }
+
+            if (!ownershipTransferred) batch.Dispose();
+            return ownershipTransferred;
+        }
+
+        internal static bool IsAcceptedProcessingBatchPublished(
+            long inFlightSequence,
+            long publishedSequence)
+            => inFlightSequence > 0 && publishedSequence >= inFlightSequence;
+
+        internal static long GetFirstUnprocessedSequenceAfterWorkerFault(
+            long inFlightSequence,
+            long publishedSequence,
+            long queuedHeadSequence,
+            long lastAcceptedSequence)
+        {
+            if (IsAcceptedProcessingBatchPublished(inFlightSequence, publishedSequence)) return 0;
+            if (inFlightSequence > 0) return inFlightSequence;
+            if (queuedHeadSequence > 0) return queuedHeadSequence;
+            return lastAcceptedSequence > publishedSequence ? publishedSequence + 1 : 0;
+        }
+
+        internal static bool HasTransferTimedOut(
+            long startedTicks,
+            long nowTicks,
+            int timeoutMs)
+            => startedTicks > 0 && nowTicks >= startedTicks &&
+               (nowTicks - startedTicks) * 1000.0 / Stopwatch.Frequency >= Math.Max(1, timeoutMs);
 
         private void TryLogHostRuntime(HostRuntimeSnapshot host, long nowTicks)
         {
@@ -1320,8 +1546,10 @@ namespace IO.NI
             _daqTimingLogMode = ParseDaqTimingLogMode(SafeGetAppSetting("DaqCallbackTimingLog"));
             _daqTimingLogMinIntervalSec = Math.Max(0.2, ParseDoubleOrDefault(SafeGetAppSetting("DaqCallbackTimingLogMinIntervalSec"), 10.0));
             _daqTimingAnomalyFactor = Math.Max(1.1, ParseDoubleOrDefault(SafeGetAppSetting("DaqCallbackTimingAnomalyFactor"), 1.5));
-            _processingQueueCapacity = Math.Max(1, Math.Min(1024,
-                (int)ParseDoubleOrDefault(SafeGetAppSetting("DaqProcessingQueueCapacity"), 64)));
+            _processingQueueCapacity = Math.Max(1, Math.Min(MaxProcessingQueueCapacity,
+                (int)ParseDoubleOrDefault(
+                    SafeGetAppSetting("DaqProcessingQueueCapacity"),
+                    DefaultProcessingQueueCapacity)));
             var configuredControlCapacity =
                 ParseDoubleOrDefault(SafeGetAppSetting("DaqControlQueueCapacity"), 64);
             _controlQueueCapacity = configuredControlCapacity >= 16 && configuredControlCapacity <= 256
@@ -1402,11 +1630,35 @@ namespace IO.NI
             _dev2MedianCausal = new ClsDataFilter.MedianStreamCausal(_dev2Channels.Length, _medianHalfWidth,
                 MedianSelectPointsMode.OnlyPrevious, _samplesPerChannel); // 控制用因果滤波
 
-            _workerDev1 = Task.Run(
-                () => ProcessLoop("Dev1", _queueDev1, _queueSignalDev1), _cts.Token);
-            _workerDev2 = Task.Run(
-                () => ProcessLoop("Dev2", _queueDev2, _queueSignalDev2), _cts.Token);
-            _rawPublicationWorker = Task.Run(RawPublicationLoop, _cts.Token);
+            // 工程处理和 Raw 移交是采集耐久链的一部分，不能把唯一消费者寄托在
+            // ThreadPool 调度上。LongRunning + 同步等待确保每条关键队列拥有独立线程；
+            // UI 仍保留 latest-only 的线程池发布，不会反压采集。
+            _workerDev1 = StartDedicatedWorker(
+                () => ProcessLoop("Dev1", _queueDev1, _queueSignalDev1),
+                "AI-Process-Dev1",
+                ThreadPriority.Normal);
+            _workerDev2 = StartDedicatedWorker(
+                () => ProcessLoop("Dev2", _queueDev2, _queueSignalDev2),
+                "AI-Process-Dev2",
+                ThreadPriority.Normal);
+            _rawPublicationWorkerDev1 = StartDedicatedWorker(
+                () => RawPublicationLoop("Dev1", _rawPublicationQueueDev1,
+                    _rawPublicationSignalDev1, _rawPublicationSlotsDev1),
+                "AI-Raw-Publish-Dev1",
+                ThreadPriority.Normal);
+            _rawPublicationWorkerDev2 = StartDedicatedWorker(
+                () => RawPublicationLoop("Dev2", _rawPublicationQueueDev2,
+                    _rawPublicationSignalDev2, _rawPublicationSlotsDev2),
+                "AI-Raw-Publish-Dev2",
+                ThreadPriority.Normal);
+            _runtimeProbeWorker = StartDedicatedWorker(
+                RuntimeProbeLoop,
+                "AI-Runtime-Probe",
+                ThreadPriority.BelowNormal);
+            _processingWatchdogWorker = StartDedicatedWorker(
+                ProcessingWatchdogLoop,
+                "AI-Processing-Watchdog",
+                ThreadPriority.Normal);
             _uiPublicationWorker = Task.Run(UiPublicationLoop, _cts.Token);
             _controlThreadDev1 = CreateControlThread("Dev1", _controlRingDev1, _controlSignalDev1);
             _controlThreadDev2 = CreateControlThread("Dev2", _controlRingDev2, _controlSignalDev2);
@@ -1446,7 +1698,8 @@ namespace IO.NI
             _cts.Cancel();
             TrySignal(_queueSignalDev1);
             TrySignal(_queueSignalDev2);
-            TrySignal(_rawPublicationSignal);
+            TrySignal(_rawPublicationSignalDev1);
+            TrySignal(_rawPublicationSignalDev2);
             _uiPublicationSignal.Set();
             TrySignal(_controlSignalDev1);
             TrySignal(_controlSignalDev2);
@@ -1471,11 +1724,44 @@ namespace IO.NI
             }
         }
 
+        private static Task StartDedicatedWorker(
+            Action action,
+            string threadName,
+            ThreadPriority priority)
+        {
+            return Task.Factory.StartNew(
+                () =>
+                {
+                    try
+                    {
+                        if (Thread.CurrentThread.Name == null)
+                            Thread.CurrentThread.Name = threadName;
+                        Thread.CurrentThread.Priority = priority;
+                    }
+                    catch
+                    {
+                        // 线程命名/优先级是调度加固，不得成为启动门槛。
+                    }
+                    action();
+                },
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default);
+        }
+
         private void FinalizeDisposeResources()
         {
             try
             {
-                var workers = new[] { _workerDev1, _workerDev2, _rawPublicationWorker, _uiPublicationWorker }
+                var workers = new[]
+                    {
+                        _workerDev1,
+                        _workerDev2,
+                        _rawPublicationWorkerDev1,
+                        _rawPublicationWorkerDev2,
+                        _uiPublicationWorker,
+                        _processingWatchdogWorker
+                    }
                     .Where(worker => worker != null)
                     .ToArray();
                 if (workers.Length > 0)
@@ -1491,14 +1777,20 @@ namespace IO.NI
 
                 try { _controlThreadDev1?.Join(); } catch { }
                 try { _controlThreadDev2?.Join(); } catch { }
+                // HostRuntime 的 PDH/DriveInfo 调用由低优先级线程隔离；若操作系统探针
+                // 本身卡住，退出流程不得再次被它无限阻塞。它是后台任务，返回后会观察
+                // 已取消的 _cts 并退出。
+                try { _runtimeProbeWorker?.Wait(100); } catch { }
                 _backgroundTasks?.Dispose();
             }
             finally
             {
                 try { _queueSignalDev1.Dispose(); } catch { }
                 try { _queueSignalDev2.Dispose(); } catch { }
-                try { _rawPublicationSignal.Dispose(); } catch { }
-                try { _rawPublicationSlots.Dispose(); } catch { }
+                try { _rawPublicationSignalDev1.Dispose(); } catch { }
+                try { _rawPublicationSignalDev2.Dispose(); } catch { }
+                try { _rawPublicationSlotsDev1.Dispose(); } catch { }
+                try { _rawPublicationSlotsDev2.Dispose(); } catch { }
                 try { _uiPublicationSignal.Dispose(); } catch { }
                 try { _controlSignalDev1.Dispose(); } catch { }
                 try { _controlSignalDev2.Dispose(); } catch { }
@@ -1577,8 +1869,23 @@ namespace IO.NI
         // 不得修改或在回调返回后保留数组引用；随后后台会原地换算该数组。
         public event Action<string /*Dev1|Dev2*/, double[,], DateTime /*current*/, DateTime /*last*/> OnRawBatch;
 
-        /// <summary>池化原始批次所有权转移事件；订阅者负责最终 Dispose。</summary>
-        public event Action<OwnedDaqRawBatch> OwnedRawBatchReady;
+        /// <summary>池化原始批次的唯一权威所有权转移事件；唯一订阅者负责最终 Dispose。</summary>
+        public event Action<OwnedDaqRawBatch> OwnedRawBatchReady
+        {
+            add
+            {
+                lock (_ownedRawSubscriberGate)
+                    _ownedRawBatchReady = AddSingleOwnedRawSubscriber(_ownedRawBatchReady, value);
+            }
+            remove
+            {
+                if (value == null) return;
+                lock (_ownedRawSubscriberGate)
+                {
+                    if (_ownedRawBatchReady == value) _ownedRawBatchReady = null;
+                }
+            }
+        }
 
         public void ReportRawPersistenceQueueFull(string device, int depth, int capacity)
         {
@@ -1656,6 +1963,8 @@ namespace IO.NI
             {
                 Interlocked.Increment(ref _controlFilterResetEpochDev1);
                 Interlocked.Exchange(ref _queueFaultGenerationDev1, -1);
+                Interlocked.Exchange(ref _workerFaultGenerationDev1, -1);
+                Interlocked.Exchange(ref _transferFaultGenerationDev1, -1);
                 Interlocked.Exchange(ref _controlFullFaultGenerationDev1, -1);
                 Interlocked.Exchange(ref _controlLatencyFaultGenerationDev1, -1);
                 Interlocked.Exchange(ref _controlInvariantFaultGenerationDev1, -1);
@@ -1664,6 +1973,8 @@ namespace IO.NI
             {
                 Interlocked.Increment(ref _controlFilterResetEpochDev2);
                 Interlocked.Exchange(ref _queueFaultGenerationDev2, -1);
+                Interlocked.Exchange(ref _workerFaultGenerationDev2, -1);
+                Interlocked.Exchange(ref _transferFaultGenerationDev2, -1);
                 Interlocked.Exchange(ref _controlFullFaultGenerationDev2, -1);
                 Interlocked.Exchange(ref _controlLatencyFaultGenerationDev2, -1);
                 Interlocked.Exchange(ref _controlInvariantFaultGenerationDev2, -1);
@@ -1693,6 +2004,8 @@ namespace IO.NI
                 _uiDispatchGateDev1.Reset();
                 Interlocked.Increment(ref _controlFilterResetEpochDev1);
                 Interlocked.Exchange(ref _queueFaultGenerationDev1, -1);
+                Interlocked.Exchange(ref _workerFaultGenerationDev1, -1);
+                Interlocked.Exchange(ref _transferFaultGenerationDev1, -1);
                 Interlocked.Exchange(ref _controlFullFaultGenerationDev1, -1);
                 Interlocked.Exchange(ref _controlLatencyFaultGenerationDev1, -1);
                 Interlocked.Exchange(ref _controlInvariantFaultGenerationDev1, -1);
@@ -1705,6 +2018,8 @@ namespace IO.NI
                 _uiDispatchGateDev2.Reset();
                 Interlocked.Increment(ref _controlFilterResetEpochDev2);
                 Interlocked.Exchange(ref _queueFaultGenerationDev2, -1);
+                Interlocked.Exchange(ref _workerFaultGenerationDev2, -1);
+                Interlocked.Exchange(ref _transferFaultGenerationDev2, -1);
                 Interlocked.Exchange(ref _controlFullFaultGenerationDev2, -1);
                 Interlocked.Exchange(ref _controlLatencyFaultGenerationDev2, -1);
                 Interlocked.Exchange(ref _controlInvariantFaultGenerationDev2, -1);
@@ -1765,10 +2080,125 @@ namespace IO.NI
                 ? _sequenceDev1.LastAccepted
                 : _sequenceDev2.LastAccepted;
 
+        /// <summary>
+        ///     返回进程回收时可证明连续的最后 accepted 序号。若工程消费者发生不可重放
+        ///     异常，gap 及其后的尾段必须显式作废，不能阻止已安全断能后的进程重启。
+        ///     普通暂停/同进程续测仍使用完整 LastAccepted，不得借此绕过数据空洞。
+        /// </summary>
+        public long GetLastProcessRecycleBoundary(string device)
+        {
+            var isDev1 = string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase);
+            var accepted = isDev1 ? _sequenceDev1.LastAccepted : _sequenceDev2.LastAccepted;
+            var firstGap = GetFirstPermanentContinuityGap(isDev1, includeRaw: true);
+            return ClampPublishedBeforeGap(accepted, firstGap);
+        }
+
+        public bool TryGetDataContinuityGap(
+            string device,
+            out long firstGapSequence,
+            out long lastObservedSequence)
+        {
+            var isDev1 = string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase);
+            firstGapSequence = GetFirstPermanentContinuityGap(isDev1, includeRaw: true);
+            lastObservedSequence = isDev1 ? _sequenceDev1.LastObserved : _sequenceDev2.LastObserved;
+            return IsPermanentContinuityGapObserved(firstGapSequence, lastObservedSequence);
+        }
+
+        /// <summary>
+        ///     判断永久空洞是否已落在生产者实际观察到的序号范围内。这里不能只比较
+        ///     LastAccepted：若队列拒绝的恰好是最后一批，拒绝序号会大于 LastAccepted，
+        ///     但该数据空洞已经真实发生，必须阻止同进程继续运行。
+        /// </summary>
+        internal static bool IsPermanentContinuityGapObserved(
+            long firstGapSequence,
+            long lastObservedSequence)
+            => firstGapSequence > 0 && lastObservedSequence >= firstGapSequence;
+
         public long GetLastDiskPublishedSequence(string device)
-            => string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase)
-                ? Interlocked.Read(ref _diskPublishedSequenceDev1)
-                : Interlocked.Read(ref _diskPublishedSequenceDev2);
+        {
+            var isDev1 = string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase);
+            var published = Interlocked.Read(
+                ref isDev1 ? ref _diskPublishedSequenceDev1 : ref _diskPublishedSequenceDev2);
+            var firstGap = MinPositive(
+                GetFirstPermanentContinuityGap(isDev1, includeRaw: false),
+                Interlocked.Read(
+                    ref isDev1
+                        ? ref _pendingProcessingGapSequenceDev1
+                        : ref _pendingProcessingGapSequenceDev2));
+            return ClampPublishedBeforeGap(published, firstGap);
+        }
+
+        private long GetFirstPermanentContinuityGap(bool isDev1, bool includeRaw)
+        {
+            var permanent = Interlocked.Read(
+                ref isDev1 ? ref _firstProcessingGapSequenceDev1 : ref _firstProcessingGapSequenceDev2);
+            if (!includeRaw) return permanent;
+            var raw = Interlocked.Read(
+                ref isDev1 ? ref _firstRawGapSequenceDev1 : ref _firstRawGapSequenceDev2);
+            return MinPositive(permanent, raw);
+        }
+
+        internal static long MinPositive(long left, long right)
+        {
+            if (left <= 0) return right;
+            if (right <= 0) return left;
+            return Math.Min(left, right);
+        }
+
+        private void SetPendingContinuityGap(string device, long sequence, bool raw)
+        {
+            if (sequence <= 0) return;
+            var isDev1 = string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase);
+            ref var target = ref raw
+                ? ref (isDev1 ? ref _pendingRawGapSequenceDev1 : ref _pendingRawGapSequenceDev2)
+                : ref (isDev1 ? ref _pendingProcessingGapSequenceDev1 : ref _pendingProcessingGapSequenceDev2);
+            Interlocked.CompareExchange(ref target, sequence, 0);
+        }
+
+        private void ClearPendingContinuityGap(string device, long sequence, bool raw)
+        {
+            var isDev1 = string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase);
+            ref var target = ref raw
+                ? ref (isDev1 ? ref _pendingRawGapSequenceDev1 : ref _pendingRawGapSequenceDev2)
+                : ref (isDev1 ? ref _pendingProcessingGapSequenceDev1 : ref _pendingProcessingGapSequenceDev2);
+            Interlocked.CompareExchange(ref target, 0, sequence);
+        }
+
+        private void LatchPermanentRawGap(string device, long sequence)
+        {
+            if (sequence <= 0) return;
+            var isDev1 = string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase);
+            ref var gap = ref isDev1 ? ref _firstRawGapSequenceDev1 : ref _firstRawGapSequenceDev2;
+            long current;
+            do
+            {
+                current = Interlocked.Read(ref gap);
+                if (current > 0 && current <= sequence) return;
+            } while (Interlocked.CompareExchange(ref gap, sequence, current) != current);
+        }
+
+        internal static long ClampPublishedBeforeGap(long published, long firstGap)
+        {
+            return firstGap > 0 ? Math.Min(published, firstGap - 1) : published;
+        }
+
+        private void LatchProcessingGapIfUnpublished(string device, long sequence)
+        {
+            if (sequence <= 0) return;
+            var isDev1 = string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase);
+            var published = Interlocked.Read(
+                ref isDev1 ? ref _diskPublishedSequenceDev1 : ref _diskPublishedSequenceDev2);
+            if (published >= sequence) return;
+            ref var gap = ref isDev1
+                ? ref _firstProcessingGapSequenceDev1
+                : ref _firstProcessingGapSequenceDev2;
+            long current;
+            do
+            {
+                current = Interlocked.Read(ref gap);
+                if (current > 0 && current <= sequence) return;
+            } while (Interlocked.CompareExchange(ref gap, sequence, current) != current);
+        }
 
         internal static AcceptedBatchDisposition ClassifyAcceptedBatch(bool isCurrentGeneration)
             => isCurrentGeneration
@@ -2015,6 +2445,23 @@ namespace IO.NI
         }
 
         /// <summary>串行重建指定 DAQ 设备，并以新 generation 的回调作为恢复证据。</summary>
+        internal static void RestartDeviceAtomically(
+            Action stopDevice,
+            Action startDevice,
+            Func<bool> isDisposed,
+            CancellationToken token)
+        {
+            if (stopDevice == null) throw new ArgumentNullException(nameof(stopDevice));
+            if (startDevice == null) throw new ArgumentNullException(nameof(startDevice));
+            token.ThrowIfCancellationRequested();
+            stopDevice();
+            // 从 Stop 返回到 Start 完成是不可取消临界区。取消可以阻止进入临界区，
+            // 也可以在调用者完成 Start 后生效，但不能留下半状态。
+            if (isDisposed?.Invoke() == true)
+                throw new ObjectDisposedException(nameof(TwoDeviceAiAcquirer));
+            startDevice();
+        }
+
         public async Task<DaqRecoveryResult> RecoverDeviceAsync(
             string device,
             int timeoutMs = 3000,
@@ -2083,11 +2530,13 @@ namespace IO.NI
                 }
                 try
                 {
-                    StopDevice(device);
-                    token.ThrowIfCancellationRequested();
-                    if (Volatile.Read(ref _disposed) != 0)
-                        throw new ObjectDisposedException(nameof(TwoDeviceAiAcquirer));
-                    StartDevice(device);
+                    // 允许在进入硬件临界区前取消；一旦 StopDevice 已执行，就必须先把
+                    // 设备恢复到明确的运行终态，不能把“已停止”状态遗留给后继恢复者。
+                    RestartDeviceAtomically(
+                        () => StopDevice(device),
+                        () => StartDevice(device),
+                        () => Volatile.Read(ref _disposed) != 0,
+                        token);
                     AppendDiagnostic(new DaqTimingValue
                     {
                         TimestampUtc = DateTime.UtcNow,
@@ -2101,6 +2550,12 @@ namespace IO.NI
                 catch (ObjectDisposedException) when (Volatile.Read(ref _disposed) != 0)
                 {
                     throw new OperationCanceledException("DAQ采集器正在释放。", token);
+                }
+                catch (OperationCanceledException) when (token.IsCancellationRequested)
+                {
+                    // 取消若发生在 Stop 前，原样交给恢复编排器；若发生在 Stop 后，
+                    // RestartDeviceAtomically 已先完成 Start，因此两种情况都不是重建失败。
+                    throw;
                 }
                 catch (Exception ex)
                 {
@@ -2122,6 +2577,10 @@ namespace IO.NI
                         Classification = FaultClassification.SystemFault
                     };
                 }
+
+                // Stop→Start 已原子完成后再响应普通恢复抢占。此时抛出取消不会让 DAQ
+                // 留在停止态；后继上下文可复用正在产生的新鲜样本。
+                token.ThrowIfCancellationRequested();
 
                 var recoveredGeneration = GetCurrentGeneration(device);
                 var recoveryVerifier = new DaqRecoveryFreshnessVerifier(
@@ -2273,8 +2732,10 @@ namespace IO.NI
         public async Task<bool> StopAndDrainAsync(int timeoutMs)
         {
             Stop();
-            var dev1Boundary = GetLastAcceptedSequence("Dev1");
-            var dev2Boundary = GetLastAcceptedSequence("Dev2");
+            // 本API只用于最终释放/进程回收。不可重放 processing gap 已由安全故障
+            // 明确记录并作废当前圈；这里只排空 gap 之前可证明连续的前缀。
+            var dev1Boundary = GetLastProcessRecycleBoundary("Dev1");
+            var dev2Boundary = GetLastProcessRecycleBoundary("Dev2");
             return await WaitForBackgroundPipelinesAsync(
                     dev1Boundary,
                     dev2Boundary,
@@ -2294,6 +2755,23 @@ namespace IO.NI
             var dev1Boundary = GetLastAcceptedSequence("Dev1");
             var dev2Boundary = GetLastAcceptedSequence("Dev2");
             return WaitForBackgroundPipelinesAsync(dev1Boundary, dev2Boundary, timeoutMs, token);
+        }
+
+        /// <summary>
+        ///     仅供 StopAll 的已冻结边界收口。普通暂停必须调用无边界重载，让方法自行
+        ///     捕获完整 LastAccepted；不可重放数据洞的进程回收才允许传入 gap-1。
+        /// </summary>
+        public Task<bool> DrainBackgroundPipelinesToBoundariesAsync(
+            long dev1Boundary,
+            long dev2Boundary,
+            int timeoutMs,
+            CancellationToken token = default)
+        {
+            return WaitForBackgroundPipelinesAsync(
+                Math.Max(0, dev1Boundary),
+                Math.Max(0, dev2Boundary),
+                timeoutMs,
+                token);
         }
 
         private async Task<bool> WaitForBackgroundPipelinesAsync(
@@ -3055,7 +3533,7 @@ namespace IO.NI
 
         private void PublishRawSnapshot(Item item)
         {
-            if (OwnedRawBatchReady == null && OnRawBatch == null)
+            if (Volatile.Read(ref _ownedRawBatchReady) == null && OnRawBatch == null)
             {
                 MarkRawTransferred(item.Device, item.Sequence);
                 return;
@@ -3066,89 +3544,254 @@ namespace IO.NI
                 item.Current,
                 item.Last,
                 item.Sequence);
-            if (!_rawPublicationSlots.Wait(0))
+            var isDev1 = string.Equals(item.Device, "Dev1", StringComparison.OrdinalIgnoreCase);
+            var queue = isDev1 ? _rawPublicationQueueDev1 : _rawPublicationQueueDev2;
+            var signal = isDev1 ? _rawPublicationSignalDev1 : _rawPublicationSignalDev2;
+            var slots = isDev1 ? _rawPublicationSlotsDev1 : _rawPublicationSlotsDev2;
+            var admissionGate = isDev1
+                ? _rawPublicationAdmissionGateDev1
+                : _rawPublicationAdmissionGateDev2;
+            ref var count = ref isDev1 ? ref _rawPublicationCountDev1 : ref _rawPublicationCountDev2;
+            ref var closed = ref isDev1 ? ref _rawPublicationClosedDev1 : ref _rawPublicationClosedDev2;
+            var slotAcquired = false;
+            var enqueued = false;
+            try
             {
-                PublishQueueFullFault(
-                    item.Device,
-                    item.Generation,
-                    "RawPersistenceQueueFull",
-                    "RawPersistence",
-                    Volatile.Read(ref _rawPublicationCount),
-                    RawPublicationCapacity,
-                    reasonOverride: $"Device={item.Device} 原始数据异步发布队列达到上限 {RawPublicationCapacity} 批；" +
-                                    "后台工程线程已进入有界背压，保留当前已接收批次等待移交，不再静默丢弃。");
-                try
+                if (Volatile.Read(ref closed) != 0)
+                    throw new InvalidOperationException(
+                        $"{item.Device} Raw发布链已经关闭，拒绝向无消费者队列转移所有权。");
+                if (!slots.Wait(0))
                 {
-                    _rawPublicationSlots.Wait(_cts.Token);
+                    PublishQueueFullFault(
+                        item.Device,
+                        item.Generation,
+                        "RawPersistenceQueueFull",
+                        "RawPersistence",
+                        Volatile.Read(ref count),
+                        RawPublicationCapacity,
+                        reasonOverride: $"Device={item.Device} 原始数据异步发布队列达到上限 {RawPublicationCapacity} 批；" +
+                                        "后台工程线程已进入有界背压，保留当前已接收批次等待移交，不再静默丢弃。");
+                    slots.Wait(_cts.Token);
                 }
-                catch
+                slotAcquired = true;
+                lock (admissionGate)
                 {
-                    snapshot.Dispose();
-                    throw;
+                    // Worker 在永久故障/Dispose 时先在同一门内关闭准入再排空。
+                    // 因此这里不会在最后一次排空之后把批次投递给已经退出的消费者。
+                    if (Volatile.Read(ref closed) != 0)
+                        throw new InvalidOperationException(
+                            $"{item.Device} Raw发布链在准入期间关闭，所有权仍由调用方保留。");
+                    Interlocked.Increment(ref count);
+                    queue.Enqueue(snapshot);
+                    enqueued = true;
+                    slotAcquired = false;
+                    TrySignal(signal);
                 }
             }
-            Interlocked.Increment(ref _rawPublicationCount);
-            _rawPublicationQueue.Enqueue(snapshot);
-            TrySignal(_rawPublicationSignal);
+            catch
+            {
+                if (slotAcquired)
+                {
+                    try { slots.Release(); } catch { }
+                }
+                if (!enqueued) snapshot.Dispose();
+                throw;
+            }
         }
 
-        private async Task RawPublicationLoop()
+        private void RawPublicationLoop(
+            string workerDevice,
+            ConcurrentQueue<OwnedDaqRawBatch> queue,
+            SemaphoreSlim signal,
+            SemaphoreSlim slots)
         {
+            var isDev1 = string.Equals(workerDevice, "Dev1", StringComparison.OrdinalIgnoreCase);
+            var currentSequence = 0L;
             try
             {
                 while (!_cts.IsCancellationRequested)
                 {
-                    await _rawPublicationSignal.WaitAsync(_cts.Token).ConfigureAwait(false);
-                    while (_rawPublicationQueue.TryDequeue(out var batch))
+                    signal.Wait(_cts.Token);
+                    while (queue.TryDequeue(out var batch))
                     {
-                        Interlocked.Decrement(ref _rawPublicationCount);
-                        _rawPublicationSlots.Release();
-                        Interlocked.Increment(ref _rawPublicationInFlight);
-                        var transferred = false;
+                        // 权威接收者返回后 batch 及其池化数组完全归接收方；即使当前实现
+                        // Dispose 仍保留元数据，也禁止依赖该偶然行为。所有后续诊断/水位
+                        // 只使用移交前冻结值。
+                        var batchDevice = batch.Device;
+                        var batchSequence = batch.Sequence;
+                        currentSequence = batchSequence;
+                        Interlocked.Decrement(
+                            ref isDev1 ? ref _rawPublicationCountDev1 : ref _rawPublicationCountDev2);
+                        slots.Release();
+                        Interlocked.Increment(
+                            ref isDev1 ? ref _rawPublicationInFlightDev1 : ref _rawPublicationInFlightDev2);
+                        var rawOwnershipTransferred = false;
+                        var rawPublicationCompleted = false;
+                        var rawTransferAttempt = 0;
+                        var rawTransferStartedTicks = Stopwatch.GetTimestamp();
                         try
                         {
-                            var ownedHandler = OwnedRawBatchReady;
-                            if (ownedHandler != null)
+                            while (true)
                             {
-                                ownedHandler(batch);
-                                transferred = true;
+                                var ownershipTransferred = false;
+                                try
+                                {
+                                    var ownedHandler = Volatile.Read(ref _ownedRawBatchReady);
+                                    var legacy = OnRawBatch;
+                                    ownershipTransferred = DispatchRawSubscribersExactOnce(
+                                        batch,
+                                        ownedHandler,
+                                        legacy,
+                                        out var legacyError);
+                                    rawOwnershipTransferred = ownershipTransferred;
+                                    if (legacyError != null)
+                                    {
+                                        try
+                                        {
+                                            _log.Warn(
+                                                $"{batchDevice} Raw兼容观察者异常，主Raw所有权已安全移交：" +
+                                                legacyError.Message,
+                                                "AI");
+                                        }
+                                        catch { }
+                                    }
+
+                                    MarkRawTransferred(batchDevice, batchSequence);
+                                    ClearPendingContinuityGap(batchDevice, batchSequence, raw: true);
+                                    rawPublicationCompleted = true;
+                                    break;
+                                }
+                                catch (Exception ex)
+                                {
+                                    // 主所有权接收者已经返回即表示 Raw 已进入其无丢弃队列；
+                                    // 此后兼容观察者失败不能夺回所有权，也不能二次 Dispose。
+                                    if (ownershipTransferred)
+                                    {
+                                        MarkRawTransferred(batchDevice, batchSequence);
+                                        ClearPendingContinuityGap(batchDevice, batchSequence, raw: true);
+                                        rawPublicationCompleted = true;
+                                        try
+                                        {
+                                            _log.Warn(
+                                                $"{batchDevice} Raw兼容观察者异常，主Raw所有权已安全移交：{ex.Message}",
+                                                "AI");
+                                        }
+                                        catch { }
+                                        break;
+                                    }
+
+                                    rawTransferAttempt++;
+                                    SetPendingContinuityGap(batchDevice, batchSequence, raw: true);
+                                    if (HasTransferTimedOut(
+                                            rawTransferStartedTicks,
+                                            Stopwatch.GetTimestamp(),
+                                            RawTransferPermanentFaultMs))
+                                    {
+                                        LatchPermanentRawGap(batchDevice, batchSequence);
+                                        PublishQueueFullFault(
+                                            batchDevice,
+                                            GetCurrentGeneration(batchDevice),
+                                            "RawPersistencePermanentFault",
+                                            "RawPersistence",
+                                            Volatile.Read(
+                                                ref isDev1
+                                                    ? ref _rawPublicationCountDev1
+                                                    : ref _rawPublicationCountDev2),
+                                            RawPublicationCapacity,
+                                            reasonOverride:
+                                            $"Device={batchDevice} Sequence={batchSequence} Raw所有权连续{RawTransferPermanentFaultMs / 1000}秒未能移交；" +
+                                            "已显式锁存不可重放Raw尾段，当前圈作废并请求有界进程回收。");
+                                        return;
+                                    }
+                                    if (rawTransferAttempt == 1 || rawTransferAttempt % 100 == 0)
+                                        _log.Error(
+                                            $"{batchDevice} Raw所有权移交失败，保留序号{batchSequence}并在100ms后原序重试。" +
+                                            $"Attempt={rawTransferAttempt} Error={ex.Message}",
+                                            "AI",
+                                            ex);
+                                    PublishQueueFullFault(
+                                        batchDevice,
+                                        GetCurrentGeneration(batchDevice),
+                                        "RawPersistenceTransferFault",
+                                        "RawPersistence",
+                                        Volatile.Read(
+                                            ref isDev1
+                                                ? ref _rawPublicationCountDev1
+                                                : ref _rawPublicationCountDev2),
+                                        RawPublicationCapacity,
+                                        reasonOverride:
+                                        $"Device={batchDevice} Sequence={batchSequence} Raw所有权未移交；" +
+                                        "已保留当前批次原序重试，禁止把失败批次标记为Transferred。");
+                                    if (_cts.Token.WaitHandle.WaitOne(100))
+                                        _cts.Token.ThrowIfCancellationRequested();
+                                }
                             }
-                            var legacy = OnRawBatch;
-                            if (legacy != null)
-                            {
-                                var matrix = new double[batch.ChannelCount, batch.SampleCount];
-                                Buffer.BlockCopy(
-                                    batch.Values,
-                                    0,
-                                    matrix,
-                                    0,
-                                    batch.ChannelCount * batch.SampleCount * sizeof(double));
-                                legacy(batch.Device, matrix, batch.Current, batch.Last);
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            _log.Warn($"{batch.Device} 原始批次异步订阅者异常：{ex.Message}", "AI");
                         }
                         finally
                         {
-                            MarkRawTransferred(batch.Device, batch.Sequence);
-                            if (!transferred) batch.Dispose();
-                            Interlocked.Decrement(ref _rawPublicationInFlight);
+                            if (!rawPublicationCompleted && !rawOwnershipTransferred)
+                                batch.Dispose();
+                            Interlocked.Decrement(
+                                ref isDev1
+                                    ? ref _rawPublicationInFlightDev1
+                                    : ref _rawPublicationInFlightDev2);
                         }
+                        currentSequence = 0;
                     }
                 }
             }
             catch (OperationCanceledException) { }
+            catch (Exception ex)
+            {
+                if (currentSequence > 0)
+                    LatchPermanentRawGap(workerDevice, currentSequence);
+                try
+                {
+                    _log.Error(
+                        $"{workerDevice} Raw专用发布线程发生未分类异常，已锁存数据连续性故障并停止该设备Raw链：" +
+                        ex.Message,
+                        "AI",
+                        ex);
+                    PublishQueueFullFault(
+                        workerDevice,
+                        GetCurrentGeneration(workerDevice),
+                        "RawPersistencePermanentFault",
+                        "RawPersistence",
+                        isDev1
+                            ? Volatile.Read(ref _rawPublicationCountDev1)
+                            : Volatile.Read(ref _rawPublicationCountDev2),
+                        RawPublicationCapacity,
+                        reasonOverride:
+                        $"Device={workerDevice} Sequence={currentSequence} Raw发布线程异常；" +
+                        "当前圈作废并请求有界进程回收，另一DAQ设备Raw链不受影响。");
+                }
+                catch
+                {
+                    // 故障诊断自身不得让 finally 跳过池化资源清理。
+                }
+            }
             finally
             {
-                while (_rawPublicationQueue.TryDequeue(out var batch))
+                var admissionGate = isDev1
+                    ? _rawPublicationAdmissionGateDev1
+                    : _rawPublicationAdmissionGateDev2;
+                lock (admissionGate)
                 {
-                    batch.Dispose();
-                    try { _rawPublicationSlots.Release(); } catch { }
+                    Interlocked.Exchange(
+                        ref isDev1 ? ref _rawPublicationClosedDev1 : ref _rawPublicationClosedDev2,
+                        1);
+                    while (queue.TryDequeue(out var batch))
+                    {
+                        batch.Dispose();
+                        try { slots.Release(); } catch { }
+                    }
+                    Interlocked.Exchange(
+                        ref isDev1 ? ref _rawPublicationCountDev1 : ref _rawPublicationCountDev2,
+                        0);
                 }
-                Interlocked.Exchange(ref _rawPublicationCount, 0);
-                Interlocked.Exchange(ref _rawPublicationInFlight, 0);
+                Interlocked.Exchange(
+                    ref isDev1 ? ref _rawPublicationInFlightDev1 : ref _rawPublicationInFlightDev2,
+                    0);
             }
         }
 
@@ -3201,7 +3844,106 @@ namespace IO.NI
                 Interlocked.Exchange(ref _rawTransferredSequenceDev2, sequence);
         }
 
-        private async Task ProcessLoop(
+        private void ProcessLoop(
+            string workerDevice,
+            ConcurrentQueue<Item> queue,
+            SemaphoreSlim signal)
+        {
+            while (!_cts.IsCancellationRequested)
+            {
+                try
+                {
+                    ProcessLoopCore(workerDevice, queue, signal);
+                    return;
+                }
+                catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+                {
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    var failedSequence = Interlocked.Read(
+                        ref string.Equals(workerDevice, "Dev1", StringComparison.OrdinalIgnoreCase)
+                            ? ref _processingInFlightSequenceDev1
+                            : ref _processingInFlightSequenceDev2);
+                    var publishedSequence = Interlocked.Read(
+                        ref string.Equals(workerDevice, "Dev1", StringComparison.OrdinalIgnoreCase)
+                            ? ref _diskPublishedSequenceDev1
+                            : ref _diskPublishedSequenceDev2);
+                    var currentBatchCommitted = IsAcceptedProcessingBatchPublished(
+                        failedSequence,
+                        publishedSequence);
+                    if (!currentBatchCommitted)
+                    {
+                        var queuedHeadSequence = queue.TryPeek(out var pending) ? pending.Sequence : 0;
+                        var lastAccepted = string.Equals(
+                            workerDevice,
+                            "Dev1",
+                            StringComparison.OrdinalIgnoreCase)
+                            ? _sequenceDev1.LastAccepted
+                            : _sequenceDev2.LastAccepted;
+                        var firstUnprocessedSequence = GetFirstUnprocessedSequenceAfterWorkerFault(
+                            failedSequence,
+                            publishedSequence,
+                            queuedHeadSequence,
+                            lastAccepted);
+                        LatchProcessingGapIfUnpublished(workerDevice, firstUnprocessedSequence);
+                    }
+                    else
+                    {
+                        // Raw 已在处理开头进入该设备独立 FIFO，SQLite 所有权也已经完成
+                        // 移交；此后的 UI/诊断异常不能把下一批留在无人消费的队列里。
+                        // 清除当前在途标记并监督重入，从下一批继续排空。故障仍上报，
+                        // 上层可安全停机/回收进程，但 Stop 边界不再被假死消费者卡住。
+                        Interlocked.Exchange(
+                            ref string.Equals(workerDevice, "Dev1", StringComparison.OrdinalIgnoreCase)
+                                ? ref _processingInFlightSequenceDev1
+                                : ref _processingInFlightSequenceDev2,
+                            0);
+                        Interlocked.Exchange(
+                            ref string.Equals(workerDevice, "Dev1", StringComparison.OrdinalIgnoreCase)
+                                ? ref _processingInFlightEnqueuedTicksDev1
+                                : ref _processingInFlightEnqueuedTicksDev2,
+                            0);
+                    }
+                    try
+                    {
+                        _log.Error(
+                            currentBatchCommitted
+                                ? $"AI {workerDevice}后台处理在线程提交点后异常，已从下一批监督重入。" +
+                                  $"QueueDepth={queue.Count} Sequence={failedSequence} Error={ex.Message}"
+                                : $"AI {workerDevice}后台处理在线程提交点前异常，已停止消费者并锁存首个数据空洞。" +
+                                  $"QueueDepth={queue.Count} Sequence={failedSequence} Error={ex.Message}",
+                            "AI",
+                            ex);
+                    }
+                    catch { }
+                    try
+                    {
+                        PublishQueueFullFault(
+                            workerDevice,
+                            GetCurrentGeneration(workerDevice),
+                            "BackgroundWorkerFault",
+                            "Background",
+                            queue.Count,
+                            _processingQueueCapacity,
+                            reasonOverride: currentBatchCommitted
+                                ? $"Device={workerDevice} 后台处理线程在耐久提交点后异常；" +
+                                  "消费者已从下一批监督重入以保证Stop可排空，受影响组保持断能并请求进程回收。"
+                                : $"Device={workerDevice} 后台处理线程在耐久提交点前异常；" +
+                                  "已锁存不可重放空洞，受影响组保持断能并请求进程回收。");
+                    }
+                    catch { }
+                    if (currentBatchCommitted) continue;
+                    // 此处不能监督重启后直接消费下一批：当前 accepted 批次可能只完成了
+                    // 部分原地换算，重做会二次标定，跳过又会制造不可见空洞。保持消费者
+                    // 停止并让上层执行有界进程回收，是唯一不会伪造连续前缀的终态。
+                    return;
+                }
+            }
+        }
+
+        private void ProcessLoopCore(
             string workerDevice,
             ConcurrentQueue<Item> queue,
             SemaphoreSlim signal)
@@ -3210,8 +3952,18 @@ namespace IO.NI
             {
                 while (!_cts.IsCancellationRequested)
                 {
-                    await signal.WaitAsync(_cts.Token).ConfigureAwait(false);
+                    signal.Wait(_cts.Token);
                     if (!queue.TryDequeue(out var item)) continue;
+                    Interlocked.Exchange(
+                        ref string.Equals(workerDevice, "Dev1", StringComparison.OrdinalIgnoreCase)
+                            ? ref _processingInFlightSequenceDev1
+                            : ref _processingInFlightSequenceDev2,
+                        item.Sequence);
+                    Interlocked.Exchange(
+                        ref string.Equals(workerDevice, "Dev1", StringComparison.OrdinalIgnoreCase)
+                            ? ref _processingInFlightEnqueuedTicksDev1
+                            : ref _processingInFlightEnqueuedTicksDev2,
+                        item.EnqueuedMonotonicTicks);
                     if (string.Equals(workerDevice, "Dev1", StringComparison.OrdinalIgnoreCase))
                         DaqQueueAdmission.Release(ref _queueCountDev1);
                     else
@@ -3297,14 +4049,20 @@ namespace IO.NI
                     #region 生成“落盘批次”并触发 OnDiskBatch（使用 engFiltered，不取绝对值） On 2025.09.16 
 
                     // ====== 生成“落盘批次”并触发 OnDiskBatch（使用 engFiltered，不取绝对值） ======
-                    DateTime[] pooledTimestamps = null;
-                    DaqDiskChannelBatch[] pooledCurrents = null;
-                    var pooledCurrentCount = 0;
-                    double[] pooledPressure1 = null;
-                    double[] pooledPressure2 = null;
-                    DaqDiskBatch ownedDiskBatch = null;
-                    try
+                    // 已接纳批次一旦离开 processing FIFO，就必须保持本批次所有权直至
+                    // SQLite 队列明确接收。构建/移交的瞬时失败只重试当前批次，不能跳到
+                    // 更大序号，也不能靠永久 gap 把同进程恢复锁死。
+                    var diskTransferAttempt = 0;
+                    while (true)
                     {
+                        DateTime[] pooledTimestamps = null;
+                        DaqDiskChannelBatch[] pooledCurrents = null;
+                        var pooledCurrentCount = 0;
+                        double[] pooledPressure1 = null;
+                        double[] pooledPressure2 = null;
+                        DaqDiskBatch ownedDiskBatch = null;
+                        try
+                        {
                         // 1) 计算时间戳数组（以本批最后一个样本对齐 item.Current，向前按 Fs 均匀回推）
                         var n = engFiltered.GetLength(1);
                         var tsUtc = pooledTimestamps = ArrayPool<DateTime>.Shared.Rent(n);
@@ -3452,11 +4210,11 @@ namespace IO.NI
                             }
 
                             var handler = DiskBatchReady;
-                            if (handler != null)
-                            {
-                                handler(diskBatch);
-                                transferred = true;
-                            }
+                            if (handler == null)
+                                throw new InvalidOperationException(
+                                    $"{item.Device} 未注册持久化所有权接收者。");
+                            handler(diskBatch);
+                            transferred = true;
                             diskDispatchMs = (Stopwatch.GetTimestamp() - dispatchStartedTicks) * 1000.0 / Stopwatch.Frequency;
                         }
                         finally
@@ -3470,38 +4228,66 @@ namespace IO.NI
                                     Interlocked.Exchange(ref _diskPublishedSequenceDev1, item.Sequence);
                                 else
                                     Interlocked.Exchange(ref _diskPublishedSequenceDev2, item.Sequence);
+                                ClearPendingContinuityGap(item.Device, item.Sequence, raw: false);
                             }
                             if (!transferred) diskBatch.Dispose();
                         }
-                    }
-                    catch (Exception ex)
-                    {
-                        if (ownedDiskBatch == null)
-                        {
-                            if (pooledTimestamps != null)
-                                ArrayPool<DateTime>.Shared.Return(pooledTimestamps, clearArray: false);
-                            if (pooledCurrents != null)
-                            {
-                                for (var i = 0; i < pooledCurrentCount; i++)
-                                    if (pooledCurrents[i].Currents != null)
-                                        ArrayPool<double>.Shared.Return(pooledCurrents[i].Currents, clearArray: false);
-                                ArrayPool<DaqDiskChannelBatch>.Shared.Return(pooledCurrents, clearArray: true);
-                            }
-                            if (pooledPressure1 != null)
-                                ArrayPool<double>.Shared.Return(pooledPressure1, clearArray: false);
-                            if (pooledPressure2 != null)
-                                ArrayPool<double>.Shared.Return(pooledPressure2, clearArray: false);
                         }
-                        _log?.Warn($"生成写盘批次时出现异常（已忽略）：{ex.Message}", "AI");
+                        catch (Exception ex)
+                        {
+                            if (ownedDiskBatch == null)
+                            {
+                                if (pooledTimestamps != null)
+                                    ArrayPool<DateTime>.Shared.Return(pooledTimestamps, clearArray: false);
+                                if (pooledCurrents != null)
+                                {
+                                    for (var i = 0; i < pooledCurrentCount; i++)
+                                        if (pooledCurrents[i].Currents != null)
+                                            ArrayPool<double>.Shared.Return(pooledCurrents[i].Currents, clearArray: false);
+                                    ArrayPool<DaqDiskChannelBatch>.Shared.Return(pooledCurrents, clearArray: true);
+                                }
+                                if (pooledPressure1 != null)
+                                    ArrayPool<double>.Shared.Return(pooledPressure1, clearArray: false);
+                                if (pooledPressure2 != null)
+                                    ArrayPool<double>.Shared.Return(pooledPressure2, clearArray: false);
+                            }
+                            if (_cts.IsCancellationRequested)
+                                _cts.Token.ThrowIfCancellationRequested();
+                            diskTransferAttempt++;
+                            SetPendingContinuityGap(item.Device, item.Sequence, raw: false);
+                            if (diskTransferAttempt >= 300)
+                            {
+                                LatchProcessingGapIfUnpublished(item.Device, item.Sequence);
+                                throw new InvalidOperationException(
+                                    $"{item.Device} 序号{item.Sequence}写盘所有权连续30秒未能移交，" +
+                                    "已锁存不可重放工程处理尾段并请求有界进程回收。",
+                                    ex);
+                            }
+                            if (diskTransferAttempt == 1 || diskTransferAttempt % 100 == 0)
+                                _log?.Error(
+                                    $"{item.Device} 序号{item.Sequence}写盘批次构建/移交失败，" +
+                                    $"保留当前已接纳批次并在100ms后原序重试。" +
+                                    $"Attempt={diskTransferAttempt} Error={ex.Message}",
+                                    "AI",
+                                    ex);
+                            PublishQueueFullFault(
+                                item.Device,
+                                item.Generation,
+                                "BackgroundBatchTransferFault",
+                                "Background",
+                                queue.Count,
+                                _processingQueueCapacity,
+                                reasonOverride:
+                                $"Device={item.Device} Sequence={item.Sequence} 写盘所有权未移交；" +
+                                "已保留当前批次原序重试，禁止后续大序号越过该批次。");
+                            if (_cts.Token.WaitHandle.WaitOne(100))
+                                _cts.Token.ThrowIfCancellationRequested();
+                            continue;
+                        }
+                        break;
                     }
-                    finally
-                    {
-                        if (string.Equals(item.Device, "Dev1", StringComparison.OrdinalIgnoreCase))
-                            Interlocked.Exchange(ref _diskPublishedSequenceDev1, item.Sequence);
-                        else
-                            Interlocked.Exchange(ref _diskPublishedSequenceDev2, item.Sequence);
-                    }
-                    
+                    // 写盘所有权未成功移交时不得推进 Published 水位。否则停止边界会把
+                    // 当前空洞伪装成已进入持久化队列，掩盖真正的数据缺口。
 
                     #endregion
                     var diskBatchBuildMs =
@@ -3538,17 +4324,21 @@ namespace IO.NI
                         UiNotifyMs = uiNotifyMs,
                         Detail = liveGeneration ? string.Empty : "ArchivedInvalidatedGeneration"
                     });
+                    Interlocked.Exchange(
+                        ref string.Equals(workerDevice, "Dev1", StringComparison.OrdinalIgnoreCase)
+                            ? ref _processingInFlightSequenceDev1
+                            : ref _processingInFlightSequenceDev2,
+                        0);
+                    Interlocked.Exchange(
+                        ref string.Equals(workerDevice, "Dev1", StringComparison.OrdinalIgnoreCase)
+                            ? ref _processingInFlightEnqueuedTicksDev1
+                            : ref _processingInFlightEnqueuedTicksDev2,
+                        0);
 
                     //OnFastEpbCurrent?.Invoke(epbCh, eng, item.Current);
                 }
             }
-            catch (OperationCanceledException)
-            {
-            }
-            catch (Exception ex)
-            {
-                _log.Error($"AI 后台处理异常：{ex}", "AI", ex);
-            }
+            catch (OperationCanceledException) { throw; }
         }
 
 
@@ -3853,6 +4643,10 @@ namespace IO.NI
             {
                 if (!DaqQueueAdmission.TryEnter(ref _queueCountDev1, _processingQueueCapacity))
                 {
+                    // sequence 已在回调中分配，但本批没有进入任何可重放的工程处理队列。
+                    // 必须在发布故障事件前锁存永久空洞，使同步停止处理器冻结边界时即可
+                    // 观察到该事实；后续即使短暂又接收了更大序号，也只能作为作废尾段。
+                    LatchProcessingGapIfUnpublished(item.Device, item.Sequence);
                     var depth = Volatile.Read(ref _queueCountDev1);
                     var oldestAgeMs = _queueDev1.TryPeek(out var oldest)
                         ? AgeMs(oldest.EnqueuedMonotonicTicks, Stopwatch.GetTimestamp())
@@ -3877,6 +4671,7 @@ namespace IO.NI
             {
                 if (!DaqQueueAdmission.TryEnter(ref _queueCountDev2, _processingQueueCapacity))
                 {
+                    LatchProcessingGapIfUnpublished(item.Device, item.Sequence);
                     var depth = Volatile.Read(ref _queueCountDev2);
                     var oldestAgeMs = _queueDev2.TryPeek(out var oldest)
                         ? AgeMs(oldest.EnqueuedMonotonicTicks, Stopwatch.GetTimestamp())
@@ -3970,6 +4765,17 @@ namespace IO.NI
                 latchedGeneration = ref isDev1
                     ? ref _clockFaultGenerationDev1
                     : ref _clockFaultGenerationDev2;
+            else if (string.Equals(code, "BackgroundQueueFull", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(code, "BackgroundWorkerFault", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(code, "RawPersistencePermanentFault", StringComparison.OrdinalIgnoreCase))
+                latchedGeneration = ref isDev1
+                    ? ref _workerFaultGenerationDev1
+                    : ref _workerFaultGenerationDev2;
+            else if (string.Equals(code, "BackgroundBatchTransferFault", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(code, "RawPersistenceTransferFault", StringComparison.OrdinalIgnoreCase))
+                latchedGeneration = ref isDev1
+                    ? ref _transferFaultGenerationDev1
+                    : ref _transferFaultGenerationDev2;
             if (Interlocked.Exchange(ref latchedGeneration, generation) == generation) return;
             if (queueCapacity <= 0) queueCapacity = _processingQueueCapacity;
             if (queueDepth <= 0)

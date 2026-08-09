@@ -539,9 +539,10 @@ namespace Controller
                         selected,
                         null,
                         DateTime.UtcNow,
-                        failedRunId,
+                        Guid.NewGuid(),
                         FaultClassification.SystemFault,
-                        FaultRecoveryPolicy.UnattendedBatchRecycle);
+                        FaultRecoveryPolicy.UnattendedBatchRecycle,
+                        failedRunId);
                     NonCriticalObserver.Invoke(
                         SystemFaultRaised,
                         fault,
@@ -827,6 +828,7 @@ namespace Controller
             try
             {
                 _softwareRecoveryEscalation.Reset();
+                _isolatedInfrastructureRecoveryAttempts.Clear();
                 Interlocked.Increment(ref _runEpoch);
                 Interlocked.Exchange(ref _formalPhaseCommitted, 0);
                 var linked = CancellationTokenSource.CreateLinkedTokenSource(externalToken);

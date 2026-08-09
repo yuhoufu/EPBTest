@@ -1,5 +1,7 @@
 using System;
+using System.Diagnostics;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Config;
 using Controller;
@@ -8,6 +10,8 @@ namespace MTEmbTest
 {
     public partial class FrmEpbMainMonitor
     {
+        private const int UnattendedQuiesceTotalTimeoutMs = 30000;
+
         private void AttachUnattendedRecovery()
         {
             if (_epb == null || _cfg == null) return;
@@ -18,23 +22,158 @@ namespace MTEmbTest
 
         private async Task QuiesceAndFlushForUnattendedRestartAsync()
         {
-            // 先刷新末端Raw队列以释放背压槽，再停止并排空上游，最后二次Flush。
-            if (_daqDev1 != null) await _daqDev1.FlushRawToDiskAsync().ConfigureAwait(false);
-            if (_daqDev2 != null) await _daqDev2.FlushRawToDiskAsync().ConfigureAwait(false);
-            if (twoDeviceAiAcquirer != null &&
-                !await twoDeviceAiAcquirer.StopAndDrainAsync(10000).ConfigureAwait(false))
-                throw new TimeoutException("DAQ采集/Raw发布链10秒内未排空。");
-            if (_daqDev1 != null)
+            var deadline = Stopwatch.GetTimestamp() +
+                           (long)(UnattendedQuiesceTotalTimeoutMs / 1000.0 * Stopwatch.Frequency);
+            var daqDev1 = _daqDev1;
+            var daqDev2 = _daqDev2;
+            var acquirer = twoDeviceAiAcquirer;
+            try
             {
-                await _daqDev1.FlushRawToDiskAsync().ConfigureAwait(false);
-                await _daqDev1.FlushStatToDiskAsync().ConfigureAwait(false);
+                // 先刷新末端Raw队列以释放背压槽，再停止并排空上游，最后二次Flush。
+                // Flush API没有调用方CancellationToken，因此每一步都必须由共享总期限
+                // 的Task.WhenAny隔离，禁止某个文件锁/磁盘I/O永久占住进程重启单飞门。
+                if (daqDev1 != null)
+                    await AwaitUnattendedQuiesceStageAsync(
+                            () => daqDev1.FlushRawToDiskAsync(),
+                            "Dev1首次Raw落盘",
+                            deadline)
+                        .ConfigureAwait(false);
+                if (daqDev2 != null)
+                    await AwaitUnattendedQuiesceStageAsync(
+                            () => daqDev2.FlushRawToDiskAsync(),
+                            "Dev2首次Raw落盘",
+                            deadline)
+                        .ConfigureAwait(false);
+                if (acquirer != null)
+                {
+                    var drainTimeoutMs = Math.Min(
+                        10000,
+                        RequireUnattendedQuiesceTimeRemaining("DAQ采集/Raw发布链排空", deadline));
+                    await AwaitUnattendedQuiesceStageAsync(
+                            async () =>
+                            {
+                                if (!await acquirer.StopAndDrainAsync(drainTimeoutMs)
+                                        .ConfigureAwait(false))
+                                    throw new TimeoutException(
+                                        $"DAQ采集/Raw发布链{drainTimeoutMs}ms内未排空。");
+                            },
+                            "DAQ采集/Raw发布链排空",
+                            deadline)
+                        .ConfigureAwait(false);
+                }
+                if (daqDev1 != null)
+                {
+                    await AwaitUnattendedQuiesceStageAsync(
+                            () => daqDev1.FlushRawToDiskAsync(),
+                            "Dev1最终Raw落盘",
+                            deadline)
+                        .ConfigureAwait(false);
+                    await AwaitUnattendedQuiesceStageAsync(
+                            () => daqDev1.FlushStatToDiskAsync(),
+                            "Dev1最终Stat落盘",
+                            deadline)
+                        .ConfigureAwait(false);
+                }
+                if (daqDev2 != null)
+                {
+                    await AwaitUnattendedQuiesceStageAsync(
+                            () => daqDev2.FlushRawToDiskAsync(),
+                            "Dev2最终Raw落盘",
+                            deadline)
+                        .ConfigureAwait(false);
+                    await AwaitUnattendedQuiesceStageAsync(
+                            () => daqDev2.FlushStatToDiskAsync(),
+                            "Dev2最终Stat落盘",
+                            deadline)
+                        .ConfigureAwait(false);
+                }
+                if (acquirer != null)
+                    await AwaitUnattendedQuiesceStageAsync(
+                            () => Task.Run(() => acquirer.Dispose()),
+                            "DAQ资源释放",
+                            deadline)
+                        .ConfigureAwait(false);
             }
-            if (_daqDev2 != null)
+            catch
             {
-                await _daqDev2.FlushRawToDiskAsync().ConfigureAwait(false);
-                await _daqDev2.FlushStatToDiskAsync().ConfigureAwait(false);
+                // StopAll已经确认执行器和压力安全；此处再异步冻结新采样，避免一个
+                // 卡死的NI驱动调用突破总期限。失败会回到RestartAsync并释放单飞门，
+                // 检查点保留Armed，后续仍可在重启预算内重试。
+                RequestAcquirerStopAfterQuiesceFailure(acquirer);
+                throw;
             }
-            twoDeviceAiAcquirer?.Dispose();
+        }
+
+        private static async Task AwaitUnattendedQuiesceStageAsync(
+            Func<Task> operation,
+            string stage,
+            long deadline)
+        {
+            var remainingMs = RequireUnattendedQuiesceTimeRemaining(stage, deadline);
+            var operationTask = operation?.Invoke() ??
+                                throw new ArgumentNullException(nameof(operation));
+            using (var delayCancellation = new CancellationTokenSource())
+            {
+                var timeoutTask = Task.Delay(remainingMs, delayCancellation.Token);
+                var completed = await Task.WhenAny(operationTask, timeoutTask).ConfigureAwait(false);
+                if (!ReferenceEquals(completed, operationTask))
+                {
+                    ObserveLateUnattendedQuiesceTask(operationTask, stage);
+                    throw new TimeoutException(
+                        $"无人值守静默/落盘超过总期限{UnattendedQuiesceTotalTimeoutMs}ms，" +
+                        $"阶段={stage}。");
+                }
+
+                delayCancellation.Cancel();
+                await operationTask.ConfigureAwait(false);
+            }
+        }
+
+        private static int RequireUnattendedQuiesceTimeRemaining(string stage, long deadline)
+        {
+            var remainingTicks = deadline - Stopwatch.GetTimestamp();
+            if (remainingTicks <= 0)
+                throw new TimeoutException(
+                    $"无人值守静默/落盘超过总期限{UnattendedQuiesceTotalTimeoutMs}ms，" +
+                    $"阶段={stage}。");
+
+            var remainingMs = (long)Math.Ceiling(
+                remainingTicks * 1000.0 / Stopwatch.Frequency);
+            return (int)Math.Max(1L, Math.Min((long)int.MaxValue, remainingMs));
+        }
+
+        private static void ObserveLateUnattendedQuiesceTask(Task operationTask, string stage)
+        {
+            _ = operationTask.ContinueWith(
+                faulted => ProjectLogHub.Write(
+                    ProjectLogLevel.Error,
+                    $"无人值守静默超时后后台阶段最终失败。Stage={stage}",
+                    "无人值守恢复",
+                    faulted.Exception?.GetBaseException()),
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+
+        private static void RequestAcquirerStopAfterQuiesceFailure(IO.NI.TwoDeviceAiAcquirer acquirer)
+        {
+            if (acquirer == null) return;
+            Task stopTask;
+            try
+            {
+                stopTask = Task.Run(() => acquirer.Stop());
+            }
+            catch (Exception ex)
+            {
+                ProjectLogHub.Write(
+                    ProjectLogLevel.Error,
+                    "无人值守静默失败后无法调度DAQ停止。",
+                    "无人值守恢复",
+                    ex);
+                return;
+            }
+
+            ObserveLateUnattendedQuiesceTask(stopTask, "失败后DAQ停止");
         }
 
         private void UpdateUnattendedRunAuthorization(ChannelRuntimeStateChangedEvent state)

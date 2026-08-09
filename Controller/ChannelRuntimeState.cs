@@ -215,6 +215,8 @@ namespace Controller
         public bool PressureSafeConfirmed { get; set; }
         public bool PersistenceBoundaryConfirmed { get; set; }
         public bool RawStorageFlushed { get; set; }
+        public bool DataContinuityCompromised { get; set; }
+        public string DataContinuityError { get; set; } = string.Empty;
         public bool ReusedPreviousResult { get; set; }
         public DateTime StartedUtc { get; set; }
         public DateTime CompletedUtc { get; set; }
@@ -236,7 +238,8 @@ namespace Controller
         public bool CanCloseApplication => CanReleaseAcquisition && PersistenceBoundaryConfirmed;
         public bool PhysicalSafetyConfirmed => CanReleaseAcquisition && PressureSafeConfirmed;
         public bool FullyConfirmed => PhysicalSafetyConfirmed && PersistenceBoundaryConfirmed;
-        public bool CanRestartInProcess => FullyConfirmed && LogicalQuiescenceConfirmed;
+        public bool CanRestartInProcess => FullyConfirmed && LogicalQuiescenceConfirmed &&
+                                           !DataContinuityCompromised;
 
         public StopSafetyResult Clone(bool reused = false)
         {
@@ -250,6 +253,8 @@ namespace Controller
                 PressureSafeConfirmed = PressureSafeConfirmed,
                 PersistenceBoundaryConfirmed = PersistenceBoundaryConfirmed,
                 RawStorageFlushed = RawStorageFlushed,
+                DataContinuityCompromised = DataContinuityCompromised,
+                DataContinuityError = DataContinuityError,
                 ReusedPreviousResult = reused,
                 StartedUtc = StartedUtc,
                 CompletedUtc = CompletedUtc,

@@ -13,6 +13,8 @@ namespace Controller
     {
         internal string Device { get; set; } = string.Empty;
         internal long Boundary { get; set; }
+        internal long FinalBoundary { get; set; }
+        internal bool BoundaryStable { get; set; }
         internal long Published { get; set; }
         internal long Persisted { get; set; }
         internal int QueueDepth { get; set; }
@@ -163,11 +165,46 @@ namespace Controller
                overCapacityDroppedBatchCount == 0 &&
                (!requireRecoveredState || state == DaqPersistenceState.Recovered);
 
+        internal static bool IsFrozenStopPersistenceBoundaryClosed(
+            long boundary,
+            long finalBoundary,
+            bool rawPipelineDrained,
+            long published,
+            long persisted,
+            int queueDepth,
+            DaqPersistenceState state = DaqPersistenceState.Recovered,
+            bool requireRecoveredState = true,
+            bool durabilityBlocked = false,
+            long discardedGenerationBatchCount = 0,
+            long overCapacityDroppedBatchCount = 0)
+            => rawPipelineDrained && finalBoundary == boundary &&
+               IsStopPersistenceBoundaryClosed(
+                   boundary,
+                   published,
+                   persisted,
+                   queueDepth,
+                   state,
+                   requireRecoveredState,
+                   durabilityBlocked,
+                   discardedGenerationBatchCount,
+                   overCapacityDroppedBatchCount);
+
         internal static bool ShouldStopAcquisitionBeforeFinalPersistence(StopSource source)
+            // StopAll 一律先冻结DAQ生产者；同进程重新开始会在预检中建立
+            // 新 generation。只有这样 Raw/SQLite 才能对同一最终边界做闭合证明。
+            => true;
+
+        internal static bool IsFinalExitStopSource(StopSource source)
             => source == StopSource.ApplicationClosing || source == StopSource.ProgramExit;
 
+        internal static bool CanReuseStopResultForSource(
+            StopSource completedSource,
+            StopSource requestedSource)
+            => !IsFinalExitStopSource(requestedSource) ||
+               IsFinalExitStopSource(completedSource);
+
         internal static bool RequiresRecoveredPersistenceStateForStop(StopSource source)
-            => source != StopSource.ApplicationClosing && source != StopSource.ProgramExit;
+            => !IsFinalExitStopSource(source);
 
         private async Task<StopPersistenceBoundaryResult[]> WaitForStopPersistenceBoundariesAsync(
             IReadOnlyDictionary<string, long> boundaries,
@@ -179,17 +216,15 @@ namespace Controller
             var rawDrainMs = (int)Math.Max(
                 1,
                 (deadline - Stopwatch.GetTimestamp()) * 1000.0 / Stopwatch.Frequency);
-            var rawPipelineDrained = await _acq.DrainBackgroundPipelinesAsync(
+            var rawPipelineDrained = await _acq.DrainBackgroundPipelinesToBoundariesAsync(
+                    boundaries.TryGetValue("Dev1", out var dev1Boundary) ? dev1Boundary : 0,
+                    boundaries.TryGetValue("Dev2", out var dev2Boundary) ? dev2Boundary : 0,
                     rawDrainMs,
                     CancellationToken.None)
                 .ConfigureAwait(false);
-            // DrainBackgroundPipelinesAsync 捕获的是调用时边界。取其完成后的已发布序号作为
-            // 最终持久化边界，可覆盖 Stop 请求发出时正在回调/工程处理中的批次。
-            var effectiveBoundaries = boundaries.ToDictionary(
-                pair => pair.Key,
-                pair => Math.Max(pair.Value, _acq.GetLastDiskPublishedSequence(pair.Key)));
-
-            foreach (var pair in effectiveBoundaries)
+            // boundaries 是DAQ停止后冻结的唯一身份。禁止在Raw只排到A后又将
+            // SQLite边界扩大到B，否则A+1..B的Raw尚未移交也会被伪装成完整收口。
+            foreach (var pair in boundaries)
             {
                 var remainingMs = (int)Math.Max(
                     1,
@@ -207,14 +242,18 @@ namespace Controller
                 (deadline - Stopwatch.GetTimestamp()) * 1000.0 / Stopwatch.Frequency);
             await _persistence.DrainAsync(remainingDrainMs).ConfigureAwait(false);
 
-            var results = effectiveBoundaries.Select(pair =>
+            var results = boundaries.Select(pair =>
             {
                 var persistence = _persistence.GetSnapshot(pair.Key);
                 var published = _acq.GetLastDiskPublishedSequence(pair.Key);
+                var finalBoundary = _acq.GetLastProcessRecycleBoundary(pair.Key);
+                var boundaryStable = finalBoundary == pair.Value;
                 return new StopPersistenceBoundaryResult
                 {
                     Device = pair.Key,
                     Boundary = pair.Value,
+                    FinalBoundary = finalBoundary,
+                    BoundaryStable = boundaryStable,
                     Published = published,
                     Persisted = persistence.Sequence,
                     QueueDepth = persistence.QueueDepth,
@@ -224,8 +263,10 @@ namespace Controller
                     DiscardedGenerationBatchCount = persistence.DiscardedGenerationBatchCount,
                     OverCapacityDroppedBatchCount = persistence.OverCapacityDroppedBatchCount,
                     RawPipelineDrained = rawPipelineDrained,
-                    Closed = rawPipelineDrained && IsStopPersistenceBoundaryClosed(
+                    Closed = IsFrozenStopPersistenceBoundaryClosed(
                         pair.Value,
+                        finalBoundary,
+                        rawPipelineDrained,
                         published,
                         persistence.Sequence,
                         persistence.QueueDepth,
@@ -242,7 +283,8 @@ namespace Controller
                 var message =
                     $"FieldMetric STOP_PERSISTENCE Device={result.Device} " +
                     $"RawDrained={result.RawPipelineDrained} " +
-                    $"Boundary={result.Boundary} Published={result.Published} " +
+                    $"Boundary={result.Boundary} FinalBoundary={result.FinalBoundary} " +
+                    $"BoundaryStable={result.BoundaryStable} Published={result.Published} " +
                     $"Persisted={result.Persisted} Depth={result.QueueDepth} " +
                     $"State={result.PersistenceState} RequireRecovered={result.RequireRecoveredState} " +
                     $"DurabilityBlocked={result.DurabilityBlocked} " +

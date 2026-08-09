@@ -31,6 +31,7 @@ namespace IO.NI
     {
         private static readonly object Gate = new object();
         private static long _lastCaptureTimestamp;
+        private static long _lastProcessCpuTimestamp;
         private static long _lastProcessCpuTicks;
         private static ulong _lastSystemIdle;
         private static ulong _lastSystemKernel;
@@ -56,10 +57,16 @@ namespace IO.NI
                 {
                     process.Refresh();
                     var processCpuTicks = process.TotalProcessorTime.Ticks;
+                    var processCpuTimestamp = Stopwatch.GetTimestamp();
                     var processCpu = 0.0;
-                    if (_lastCaptureTimestamp != 0 && now > _lastCaptureTimestamp)
+                    if (_lastProcessCpuTimestamp != 0 &&
+                        processCpuTimestamp > _lastProcessCpuTimestamp)
                     {
-                        var elapsedSeconds = (now - _lastCaptureTimestamp) / (double)Stopwatch.Frequency;
+                        // CPU 时间差必须使用与 TotalProcessorTime 同一采样阶段的时钟锚点。
+                        // 缓存锚点在昂贵探针全部完成后更新；二者混用会把本次探针阻塞
+                        // 从 elapsed 中扣掉，导致 ProcessCpuPercent 虚高并被夹到100%。
+                        var elapsedSeconds = (processCpuTimestamp - _lastProcessCpuTimestamp) /
+                                             (double)Stopwatch.Frequency;
                         var cpuSeconds = (processCpuTicks - _lastProcessCpuTicks) / (double)TimeSpan.TicksPerSecond;
                         processCpu = ClampPercent(
                             cpuSeconds * 100.0 / (elapsedSeconds * Math.Max(1, Environment.ProcessorCount)));
@@ -101,7 +108,10 @@ namespace IO.NI
                         out snapshot.DiskQueueLength,
                         out snapshot.DiskReadBytesPerSecond,
                         out snapshot.DiskWriteBytesPerSecond);
-                    _lastCaptureTimestamp = now;
+                    // 以昂贵探针全部返回后的时刻作为缓存锚点。旧实现保存调用前时刻，
+                    // 探针一旦阻塞超过900ms，返回后会立即再采一次，形成级联放大。
+                    _lastCaptureTimestamp = Stopwatch.GetTimestamp();
+                    _lastProcessCpuTimestamp = processCpuTimestamp;
                     _lastProcessCpuTicks = processCpuTicks;
                     _cached = snapshot;
                     return snapshot;

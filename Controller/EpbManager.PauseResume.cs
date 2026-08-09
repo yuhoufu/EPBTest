@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -8,6 +9,11 @@ using Timing;
 
 namespace Controller
 {
+    internal sealed class DaqDataContinuityCompromisedException : InvalidOperationException
+    {
+        internal DaqDataContinuityCompromisedException(string message) : base(message) { }
+    }
+
     public sealed partial class EpbManager
     {
         private readonly SemaphoreSlim _pauseResumeGate = new SemaphoreSlim(1, 1);
@@ -17,14 +23,15 @@ namespace Controller
         private DateTime _batchPausedUtc = DateTime.MinValue;
         private int[] _batchPausedChannels = Array.Empty<int>();
         private long _qualificationGeneration;
-        private Func<CancellationToken, Task> _pausePersistenceFlush;
+        private Func<IReadOnlyDictionary<string, long>, CancellationToken, Task> _pausePersistenceFlush;
 
         public event Action<BatchPauseStateChangedEvent> BatchPauseStateChanged;
 
         /// <summary>
         /// 由宿主注册Raw发布/文件写入排空回调。优雅暂停只有在圈数据与原始数据链均排空后才完成。
         /// </summary>
-        public void RegisterPausePersistenceFlush(Func<CancellationToken, Task> flush)
+        public void RegisterPausePersistenceFlush(
+            Func<IReadOnlyDictionary<string, long>, CancellationToken, Task> flush)
         {
             Interlocked.Exchange(ref _pausePersistenceFlush, flush);
         }
@@ -118,10 +125,15 @@ namespace Controller
             catch (Exception ex)
             {
                 SetBatchPauseState(BatchPauseState.Stopping, _batchPausedChannels, ex.Message);
+                var continuityCompromised =
+                    ex is DaqDataContinuityCompromisedException ||
+                    TryGetPermanentDataContinuityGap(out _);
                 await StopAllAsync(
                         new StopContext
                         {
-                            Source = StopSource.ManualUi,
+                            Source = continuityCompromised
+                                ? StopSource.SystemFault
+                                : StopSource.ManualUi,
                             Reason = "优雅暂停失败，已升级为立即安全停止：" + ex.Message,
                             Initiator = nameof(PauseBatchGracefullyAsync),
                             CorrelationId = Guid.NewGuid().ToString("N")
@@ -157,6 +169,7 @@ namespace Controller
                     .ToArray();
                 if (channels.Length == 0)
                     throw new InvalidOperationException("暂停运行对象已丢失，不能快速恢复；请重新开始并完整学习。");
+                EnsureNoPermanentDataContinuityGap("批次恢复预检");
                 resumeCts = CreateResumeLinkedTokenSource(token, channels, includeBatchSession: true);
                 var resumeToken = resumeCts.Token;
 
@@ -175,6 +188,9 @@ namespace Controller
                 EnsureStrictCurveControl(channels);
                 EnsureAdaptiveProfilesReady(channels);
                 await EnsurePowerSupplyReadyBeforeStartAsync(channels, resumeToken).ConfigureAwait(false);
+                // DAQ健康回调只证明采集硬件仍在工作，不能消除已锁存的
+                // 工程/Raw数据空洞。上电前再检一次，封住预检期间的迟到故障。
+                EnsureNoPermanentDataContinuityGap("批次恢复上电门禁");
 
                 var plan = GetCompatibleStaggerPlan(channels);
                 RejoinFormalChannelsAtSharedFutureSlot(
@@ -194,7 +210,30 @@ namespace Controller
                 token.IsCancellationRequested ||
                 (resumeCts?.IsCancellationRequested ?? false))
             {
-                if (!IsBatchSessionActive)
+                if (TryGetPermanentDataContinuityGap(out var gapDetail))
+                {
+                    var stop = await StopAllAsync(
+                            new StopContext
+                            {
+                                Source = StopSource.SystemFault,
+                                Reason = "批次恢复取消时已检测到永久DAQ数据空洞：" + gapDetail,
+                                Initiator = nameof(ResumeBatchAsync),
+                                CorrelationId = Guid.NewGuid().ToString("N")
+                            },
+                            CancellationToken.None)
+                        .ConfigureAwait(false);
+                    var failureState = SelectBatchResumeFailureState(
+                        continuityCompromised: true,
+                        stopFullyConfirmed: stop?.FullyConfirmed == true);
+                    if (failureState == BatchPauseState.Idle)
+                        MarkBatchIdle("永久DAQ数据空洞已安全停机，等待进程回收");
+                    else
+                        SetBatchPauseState(
+                            failureState,
+                            _batchPausedChannels,
+                            "永久DAQ数据空洞停机尚未完全确认，禁止同进程恢复");
+                }
+                else if (!IsBatchSessionActive)
                     SetBatchPauseState(BatchPauseState.Idle, Array.Empty<int>(), "恢复自愈已由停止请求取消");
                 else
                 {
@@ -203,11 +242,40 @@ namespace Controller
                 }
                 throw;
             }
-            catch
+            catch (Exception ex)
             {
-                // 预检或资格失败时保持定时器暂停，不允许带故障恢复。
-                SetBatchPauseState(BatchPauseState.Paused, _batchPausedChannels, "恢复失败，保持安全暂停");
-                PublishChannelsHeldAfterResumeFailure(channels, "BatchResumeFailed");
+                var continuityCompromised =
+                    ex is DaqDataContinuityCompromisedException ||
+                    TryGetPermanentDataContinuityGap(out _);
+                if (continuityCompromised)
+                {
+                    var stop = await StopAllAsync(
+                            new StopContext
+                            {
+                                Source = StopSource.SystemFault,
+                                Reason = "批次暂停恢复发现DAQ数据连续性已破坏：" + ex.Message,
+                                Initiator = nameof(ResumeBatchAsync),
+                                CorrelationId = Guid.NewGuid().ToString("N")
+                            },
+                            CancellationToken.None)
+                        .ConfigureAwait(false);
+                    var failureState = SelectBatchResumeFailureState(
+                        continuityCompromised: true,
+                        stopFullyConfirmed: stop?.FullyConfirmed == true);
+                    if (failureState == BatchPauseState.Idle)
+                        MarkBatchIdle("永久DAQ数据空洞已安全停机，等待进程回收");
+                    else
+                        SetBatchPauseState(
+                            failureState,
+                            _batchPausedChannels,
+                            "永久DAQ数据空洞停机尚未完全确认，禁止同进程恢复");
+                }
+                else
+                {
+                    // 普通预检或资格失败时保持定时器暂停，允许排障后再次继续。
+                    SetBatchPauseState(BatchPauseState.Paused, _batchPausedChannels, "恢复失败，保持安全暂停");
+                    PublishChannelsHeldAfterResumeFailure(channels, "BatchResumeFailed");
+                }
                 throw;
             }
             finally
@@ -259,10 +327,25 @@ namespace Controller
                         $"EPB[{channel}] 暂停观察者异常已隔离：{ex.Message}",
                         "EPB"));
             }
-            catch
+            catch (Exception ex)
             {
-                // 单通道优雅暂停未能完成安全边界时，立即停止该通道，不能遗留在半暂停状态。
-                try { StopChannel(channel); } catch { }
+                var continuityCompromised =
+                    ex is DaqDataContinuityCompromisedException ||
+                    TryGetPermanentDataContinuityGap(out _);
+                if (continuityCompromised)
+                    await StopAllAsync(
+                            new StopContext
+                            {
+                                Source = StopSource.SystemFault,
+                                Reason = $"EPB[{channel}]优雅暂停发现DAQ数据连续性已破坏：{ex.Message}",
+                                Initiator = nameof(PauseChannelGracefullyAsync),
+                                CorrelationId = Guid.NewGuid().ToString("N")
+                            },
+                            CancellationToken.None)
+                        .ConfigureAwait(false);
+                else
+                    // 单通道优雅暂停未能完成安全边界时，立即停止该通道，不能遗留在半暂停状态。
+                    try { StopChannel(channel); } catch { }
                 throw;
             }
             finally
@@ -282,6 +365,7 @@ namespace Controller
                     !_timers.TryGetValue(channel, out var timer) ||
                     !_runners.ContainsKey(channel))
                     throw new InvalidOperationException($"EPB[{channel}] 不处于可恢复的安全暂停状态。");
+                EnsureNoPermanentDataContinuityGap("单通道恢复预检");
                 resumeCts = CreateResumeLinkedTokenSource(
                     token,
                     new[] { channel },
@@ -300,6 +384,7 @@ namespace Controller
                 EnsureAdaptiveProfilesReady(new[] { channel });
                 await EnsurePowerSupplyReadyBeforeStartAsync(new[] { channel }, resumeToken)
                     .ConfigureAwait(false);
+                EnsureNoPermanentDataContinuityGap("单通道恢复上电门禁");
 
                 var plan = GetCompatibleStaggerPlan(new[] { channel });
                 RejoinFormalChannelsAtSharedFutureSlot(
@@ -310,9 +395,21 @@ namespace Controller
                     allowTerminalReset: false);
                 _channelPausedUtc.TryRemove(channel, out _);
             }
-            catch
+            catch (Exception ex)
             {
-                if (_channelPausedUtc.ContainsKey(channel) && _timers.ContainsKey(channel))
+                if (ex is DaqDataContinuityCompromisedException ||
+                    TryGetPermanentDataContinuityGap(out _))
+                    await StopAllAsync(
+                            new StopContext
+                            {
+                                Source = StopSource.SystemFault,
+                                Reason = $"EPB[{channel}]暂停恢复发现DAQ数据连续性已破坏：{ex.Message}",
+                                Initiator = nameof(ResumePausedChannelAsync),
+                                CorrelationId = Guid.NewGuid().ToString("N")
+                            },
+                            CancellationToken.None)
+                        .ConfigureAwait(false);
+                else if (_channelPausedUtc.ContainsKey(channel) && _timers.ContainsKey(channel))
                     PublishChannelRuntimeState(
                         channel,
                         ChannelRuntimeState.Paused,
@@ -373,6 +470,7 @@ namespace Controller
             CancellationToken token)
         {
             var selected = (channels ?? Array.Empty<int>()).Distinct().OrderBy(x => x).ToArray();
+            EnsureNoPermanentDataContinuityGap("暂停安全边界");
             foreach (var channel in selected)
             {
                 if (!CommandEpbOffHighPriority(channel, "GracefulPause"))
@@ -391,32 +489,42 @@ namespace Controller
                 await Task.WhenAll(selected.Select(HydraulicMarkReleaseAsync)).ConfigureAwait(false);
             }
 
-            var drained = await _persistence.DrainAsync(10000).ConfigureAwait(false);
-            if (!drained)
-                _log.Warn(
-                    "暂停时圈数据持久化队列10秒内未完全排空；电机和液压已处于安全态，" +
-                    "不升级全局停机，DAQ自维护继续处理，必要时允许作废受影响圈。",
-                    "落盘");
-
             var flushRaw = Volatile.Read(ref _pausePersistenceFlush);
-            if (flushRaw != null)
+            if (flushRaw == null)
+                throw new InvalidOperationException("暂停Raw最终落盘回调未注册。");
+            var pauseBoundaries = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase)
             {
-                try
-                {
-                    await flushRaw(token).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (token.IsCancellationRequested)
-                {
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    _log.Warn(
-                        $"暂停时Raw数据链排空/刷新未完成：{ex.Message}；" +
-                        "不升级全局停机，后台自维护继续运行。",
-                        "落盘");
-                }
+                ["Dev1"] = _acq.GetLastAcceptedSequence("Dev1"),
+                ["Dev2"] = _acq.GetLastAcceptedSequence("Dev2")
+            };
+            try
+            {
+                await flushRaw(pauseBoundaries, token).ConfigureAwait(false);
             }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException("暂停时Raw数据链排空/刷新未完成。", ex);
+            }
+
+            // Raw/工程链排到 pauseBoundaries 后才能等SQLite。若先Drain SQLite，
+            // 上游在后续Raw drain中新移交的批次会落在门禁之后，暂停仍可虚假成功。
+            var persistenceDeadline = Stopwatch.GetTimestamp() + 10L * Stopwatch.Frequency;
+            foreach (var pair in pauseBoundaries)
+            {
+                var remainingMs = Math.Max(
+                    1,
+                    (int)((persistenceDeadline - Stopwatch.GetTimestamp()) * 1000.0 /
+                          Stopwatch.Frequency));
+                if (!await _persistence.WaitForDurablePrefixAsync(
+                        pair.Key,
+                        pair.Value,
+                        remainingMs,
+                        token).ConfigureAwait(false))
+                    throw new TimeoutException(
+                        $"暂停时{pair.Key}持久化前缀未越过序号{pair.Value}。");
+            }
+            EnsureNoPermanentDataContinuityGap("暂停提交门禁");
 
             try
             {
@@ -437,6 +545,46 @@ namespace Controller
                     "不升级全局停机，正式圈索引和后台写盘保持运行。",
                     "落盘");
             }
+        }
+
+        private bool TryGetPermanentDataContinuityGap(out string detail)
+        {
+            var gaps = new List<string>();
+            var dev1Gap = false;
+            var dev2Gap = false;
+            foreach (var device in new[] { "Dev1", "Dev2" })
+                if (_acq != null && _acq.TryGetDataContinuityGap(
+                        device,
+                        out var firstGap,
+                        out var lastObserved))
+                {
+                    gaps.Add($"{device}:FirstGap={firstGap},LastObserved={lastObserved}," +
+                             $"AbandonedTail={Math.Max(0, lastObserved - firstGap + 1)}");
+                    if (string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase))
+                        dev1Gap = true;
+                    else
+                        dev2Gap = true;
+                }
+            detail = string.Join("; ", gaps);
+            return MustBlockPauseOrResumeForContinuity(dev1Gap, dev2Gap);
+        }
+
+        internal static bool MustBlockPauseOrResumeForContinuity(bool dev1Gap, bool dev2Gap)
+            => dev1Gap || dev2Gap;
+
+        internal static BatchPauseState SelectBatchResumeFailureState(
+            bool continuityCompromised,
+            bool stopFullyConfirmed)
+        {
+            if (!continuityCompromised) return BatchPauseState.Paused;
+            return stopFullyConfirmed ? BatchPauseState.Idle : BatchPauseState.Stopping;
+        }
+
+        private void EnsureNoPermanentDataContinuityGap(string operation)
+        {
+            if (TryGetPermanentDataContinuityGap(out var detail))
+                throw new DaqDataContinuityCompromisedException(
+                    $"{operation}禁止同进程继续。Code=DaqDataContinuityGap; {detail}");
         }
 
         private async Task<int[]> RunPausedQualificationAsync(
@@ -823,10 +971,9 @@ namespace Controller
             HydraulicRecoveryOwnershipCoordinator.HydraulicRecoveryOwnershipLease ownership = null;
             var hardDeadlineReached = false;
             var resetOnHardDeadline = IsBatchSessionActive;
+            var recoveryRunId = _activeBatchId;
             var recoveryRunEpoch = Interlocked.Read(ref _runEpoch);
-            var recoveryCorrelation = _activeBatchId == Guid.Empty
-                ? Guid.NewGuid()
-                : _activeBatchId;
+            var recoveryCorrelation = Guid.NewGuid();
             try
             {
                 if (!CanAcknowledgeChannelAlarm(channel, out rejection))
@@ -1007,6 +1154,7 @@ namespace Controller
                         new[] { channel },
                         "AlarmResumeHardDeadline",
                         recoveryCorrelation,
+                        recoveryRunId,
                         recoveryRunEpoch)
                     .ConfigureAwait(false);
         }

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.Linq;
 using System.Threading;
@@ -70,29 +71,55 @@ namespace MTEmbTest
             _epb?.RegisterPausePersistenceFlush(FlushPausePersistenceAsync);
         }
 
-        private async Task FlushPausePersistenceAsync(CancellationToken token)
+        private async Task FlushPausePersistenceAsync(
+            IReadOnlyDictionary<string, long> boundaries,
+            CancellationToken token)
         {
+            const int totalTimeoutMs = 10000;
+            using var deadlineCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+            deadlineCts.CancelAfter(totalTimeoutMs);
+            var flushToken = deadlineCts.Token;
+            var deadlineTicks = Stopwatch.GetTimestamp() +
+                                (long)(totalTimeoutMs / 1000.0 * Stopwatch.Frequency);
+            int RemainingMs()
+                => Math.Max(
+                    1,
+                    (int)((deadlineTicks - Stopwatch.GetTimestamp()) * 1000.0 /
+                          Stopwatch.Frequency));
+
             // 先释放 DaqAIContext 末端容量，再等待上游排空；否则当末端队列已满时，
             // Raw发布线程正阻塞在所有权移交，先 Drain 会与等待槽位形成闭环。
-            if (_daqDev1 != null) await _daqDev1.FlushRawToDiskAsync().ConfigureAwait(false);
-            if (_daqDev2 != null) await _daqDev2.FlushRawToDiskAsync().ConfigureAwait(false);
+            if (_daqDev1 != null)
+                await _daqDev1.FlushRawToDiskAsync(RemainingMs(), flushToken).ConfigureAwait(false);
+            if (_daqDev2 != null)
+                await _daqDev2.FlushRawToDiskAsync(RemainingMs(), flushToken).ConfigureAwait(false);
 
+            var dev1Boundary = boundaries != null && boundaries.TryGetValue("Dev1", out var dev1)
+                ? Math.Max(0, dev1)
+                : 0;
+            var dev2Boundary = boundaries != null && boundaries.TryGetValue("Dev2", out var dev2)
+                ? Math.Max(0, dev2)
+                : 0;
             if (twoDeviceAiAcquirer != null &&
-                !await twoDeviceAiAcquirer.DrainBackgroundPipelinesAsync(10000, token)
+                !await twoDeviceAiAcquirer.DrainBackgroundPipelinesToBoundariesAsync(
+                        dev1Boundary,
+                        dev2Boundary,
+                        RemainingMs(),
+                        flushToken)
                     .ConfigureAwait(false))
                 throw new TimeoutException("暂停时DAQ工程处理/Raw发布链10秒内未排空。");
 
             // 上游排空过程中刚转移到末端的批次再做一次最终Flush。
-            token.ThrowIfCancellationRequested();
+            flushToken.ThrowIfCancellationRequested();
             if (_daqDev1 != null)
             {
-                await _daqDev1.FlushRawToDiskAsync().ConfigureAwait(false);
-                await _daqDev1.FlushStatToDiskAsync().ConfigureAwait(false);
+                await _daqDev1.FlushRawToDiskAsync(RemainingMs(), flushToken).ConfigureAwait(false);
+                await _daqDev1.FlushStatToDiskAsync(RemainingMs(), flushToken).ConfigureAwait(false);
             }
             if (_daqDev2 != null)
             {
-                await _daqDev2.FlushRawToDiskAsync().ConfigureAwait(false);
-                await _daqDev2.FlushStatToDiskAsync().ConfigureAwait(false);
+                await _daqDev2.FlushRawToDiskAsync(RemainingMs(), flushToken).ConfigureAwait(false);
+                await _daqDev2.FlushStatToDiskAsync(RemainingMs(), flushToken).ConfigureAwait(false);
             }
         }
 

@@ -570,13 +570,15 @@ namespace Controller
         private bool TrySealSoftwareRecoveryCycleWindows(
             IReadOnlyDictionary<int, int> cycles,
             DateTime cutoffUtc,
-            string reason)
+            string reason,
+            Func<bool> canMutate = null)
         {
             if (cycles == null || cycles.Count == 0) return true;
             if (!(Recorder is IBatchedEpbCycleRecorder batched)) return true;
             var succeeded = true;
             foreach (var pair in cycles)
             {
+                if (canMutate != null && !canMutate()) return false;
                 try
                 {
                     batched.SealCycleWindow(pair.Key, pair.Value, cutoffUtc);
@@ -604,7 +606,8 @@ namespace Controller
             DateTime cutoffUtc,
             string reason,
             int timeoutMs,
-            CancellationToken token)
+            CancellationToken token,
+            Func<bool> canMutate = null)
         {
             if (cycles == null || cycles.Count == 0) return true;
             if (!await TryWaitForCycleDurableCutoffAsync(
@@ -612,12 +615,14 @@ namespace Controller
                     cutoffUtc,
                     reason,
                     timeoutMs,
-                    token)
+                    token,
+                    canMutate)
                 .ConfigureAwait(false))
                 return false;
 
             foreach (var pair in cycles)
             {
+                if (canMutate != null && !canMutate()) return false;
                 if (!_currentCycleNumberByChannel.TryGetValue(pair.Key, out var actualCycle))
                     continue;
                 if (actualCycle != pair.Value)
@@ -628,6 +633,7 @@ namespace Controller
                         "落盘");
                     return false;
                 }
+                if (canMutate != null && !canMutate()) return false;
                 if (!DiscardCurrentCycleForSoftwareRecovery(
                         pair.Key,
                         cutoffUtc,
@@ -648,10 +654,11 @@ namespace Controller
             DateTime cutoffUtc,
             string reason,
             int timeoutMs,
-            CancellationToken token)
+            CancellationToken token,
+            Func<bool> canMutate = null)
         {
             if (cycles == null || cycles.Count == 0) return true;
-            if (!TrySealSoftwareRecoveryCycleWindows(cycles, cutoffUtc, reason)) return false;
+            if (!TrySealSoftwareRecoveryCycleWindows(cycles, cutoffUtc, reason, canMutate)) return false;
 
             var deadline = Stopwatch.GetTimestamp() +
                            (long)(Math.Max(1, timeoutMs) / 1000.0 * Stopwatch.Frequency);
@@ -668,6 +675,8 @@ namespace Controller
                 return false;
             }
 
+            if (canMutate != null && !canMutate()) return false;
+
             var devices = cycles.Keys
                 .Select(channel => _acq.GetDeviceForEpbChannel(channel))
                 .Where(device => !string.IsNullOrWhiteSpace(device))
@@ -675,6 +684,7 @@ namespace Controller
                 .ToArray();
             foreach (var device in devices)
             {
+                if (canMutate != null && !canMutate()) return false;
                 var boundary = _acq.GetLastDiskPublishedSequence(device);
                 var remainingMs = (int)Math.Max(
                     1,
@@ -697,6 +707,7 @@ namespace Controller
                 }
             }
 
+            if (canMutate != null && !canMutate()) return false;
             return true;
         }
 
@@ -2801,14 +2812,22 @@ namespace Controller
         internal static bool RequiresDaqTaskRecreate(string triggerCode)
         {
             // Consumer/backlog faults can recover by dropping stale history only after the
-            // affected group is safely de-energized. Callback, clock and producer-identity
-            // faults still require a real NI task rebuild.
+            // affected group is safely de-energized。DaqCallbackStale 先复核当前 generation：
+            // 现场短暂停顿后回调已自行恢复，强制 Stop/Start 反而扩大故障；若500ms内仍不
+            // 新鲜，RecoverDeviceAsync 会自动进入真实 NI task 重建。时钟/生产者身份故障
+            // 仍要求立即重建。
             return !string.Equals(triggerCode, "ActiveCycleDataLimitExceeded", StringComparison.OrdinalIgnoreCase) &&
                    !string.Equals(triggerCode, "ControlLatencyExceeded", StringComparison.OrdinalIgnoreCase) &&
                    !string.Equals(triggerCode, "ControlProcessingStale", StringComparison.OrdinalIgnoreCase) &&
                    !string.Equals(triggerCode, "ControlEnqueueStale", StringComparison.OrdinalIgnoreCase) &&
                    !string.Equals(triggerCode, "ControlQueueFull", StringComparison.OrdinalIgnoreCase) &&
                    !string.Equals(triggerCode, "BackgroundQueueFull", StringComparison.OrdinalIgnoreCase) &&
+                   !string.Equals(triggerCode, "BackgroundProcessingStale", StringComparison.OrdinalIgnoreCase) &&
+                   !string.Equals(triggerCode, "BackgroundWorkerFault", StringComparison.OrdinalIgnoreCase) &&
+                   !string.Equals(triggerCode, "BackgroundBatchTransferFault", StringComparison.OrdinalIgnoreCase) &&
+                   !string.Equals(triggerCode, "RawPersistenceTransferFault", StringComparison.OrdinalIgnoreCase) &&
+                   !string.Equals(triggerCode, "RawPersistencePermanentFault", StringComparison.OrdinalIgnoreCase) &&
+                   !string.Equals(triggerCode, "DaqCallbackStale", StringComparison.OrdinalIgnoreCase) &&
                    !string.Equals(triggerCode, "DaqPersistenceLag", StringComparison.OrdinalIgnoreCase) &&
                    !string.Equals(triggerCode, "DaqPersistenceQueueFull", StringComparison.OrdinalIgnoreCase);
         }
@@ -2977,6 +2996,14 @@ namespace Controller
                 CutoffPersistenceBoundary = 0
             };
             if (!_daqAutoRecovery.TryAdd(device, context)) return;
+            if (TryEscalatePermanentDataContinuityGap(
+                    "BeginDaqAutoRecovery",
+                    context.AffectedChannels,
+                    context.RunId,
+                    context.RunEpoch,
+                    context.CorrelationId,
+                    context))
+                return;
             // 只有真正取得该设备恢复所有权的请求才消耗 epoch；重复请求不会再制造
             // “恢复代次前进但没有对应恢复任务”的假象。
             context.RecoveryEpoch = Interlocked.Increment(ref _recoveryEpoch);
@@ -3220,6 +3247,14 @@ namespace Controller
                             .ConfigureAwait(false);
                         return;
                     }
+                    if (TryEscalatePermanentDataContinuityGap(
+                            "AfterDaqRebuild",
+                            context.AffectedChannels,
+                            context.RunId,
+                            context.RunEpoch,
+                            context.CorrelationId,
+                            context))
+                        return;
                     _persistence.AcceptGeneration(device, _acq.GetCurrentGeneration(device));
                     if (!context.Phase.EnableValidation())
                         throw new InvalidOperationException(
@@ -3250,6 +3285,14 @@ namespace Controller
             if (Interlocked.CompareExchange(ref context.Completing, 1, 0) != 0) return;
             try
             {
+                if (TryEscalatePermanentDataContinuityGap(
+                        "TryCompleteEntry",
+                        context.AffectedChannels,
+                        context.RunId,
+                        context.RunEpoch,
+                        context.CorrelationId,
+                        context))
+                    return;
                 context.ValidationPhase = "CutoffBarrier";
                 await context.Phase.WaitForCutoffAsync(context.Cancellation.Token)
                     .ConfigureAwait(false);
@@ -3293,6 +3336,14 @@ namespace Controller
                     .ConfigureAwait(false);
                 if (ready.Any(x => !x.Recovered)) return;
                 if (!IsCurrentRecovery(context)) return;
+                if (TryEscalatePermanentDataContinuityGap(
+                        "FreshDaqSamplesValidated",
+                        context.AffectedChannels,
+                        context.RunId,
+                        context.RunEpoch,
+                        context.CorrelationId,
+                        context))
+                    return;
                 context.AfterClock = _acq.GetDaqFreshnessSnapshot(device, _daqPersistenceResumeAgeMs);
                 ObserveBackgroundTask(
                     ExportDaqIncidentSnapshotAsync(
@@ -3313,6 +3364,14 @@ namespace Controller
                         context.Cancellation.Token)
                     .ConfigureAwait(false);
                 if (!IsCurrentRecovery(context)) return;
+                if (TryEscalatePermanentDataContinuityGap(
+                        "BeforePowerAndMechanicalRejoin",
+                        context.AffectedChannels,
+                        context.RunId,
+                        context.RunEpoch,
+                        context.CorrelationId,
+                        context))
+                    return;
 
                 var batchPauseState = CurrentBatchPauseState;
                 var holdForBatchPause = ShouldHoldDaqRecoveredChannelsForBatchPause(batchPauseState);
@@ -3397,6 +3456,14 @@ namespace Controller
                     lock (_daqRecoveryCommitGate)
                     {
                         if (!IsCurrentRecovery(context)) return;
+                        if (TryEscalatePermanentDataContinuityGap(
+                                "RejoinAndCommit",
+                                context.AffectedChannels,
+                                context.RunId,
+                                context.RunEpoch,
+                                context.CorrelationId,
+                                context))
+                            return;
                         if (!context.Phase.TryBeginRejoin())
                             throw new InvalidOperationException(
                                 $"DAQ恢复重入阶段顺序无效 Device={device} " +
@@ -3666,7 +3733,8 @@ namespace Controller
                     context.AffectedChannels,
                     context.RunId,
                     context.RunEpoch,
-                    failureCount))
+                    failureCount,
+                    faultCode: context.TriggerCode))
                 return;
             var delayMs = GetDaqSelfMaintenanceDelayMs(failureCount);
             foreach (var channel in context.AffectedChannels)
@@ -3720,7 +3788,7 @@ namespace Controller
                                         _daqPersistenceRequiredFreshBatches,
                                         (int)_daqPersistenceResumeAgeMs,
                                         ct,
-                                        forceRecreate: true)
+                                        forceRecreate: RequiresDaqTaskRecreate(context.TriggerCode))
                                     .ConfigureAwait(false);
                             },
                             context.Cancellation.Token)
@@ -4666,6 +4734,7 @@ namespace Controller
                             channels,
                             $"HydraulicRecoveryHardDeadline:{fault.Code}",
                             fault.CorrelationId,
+                            recoveryRunId,
                             recoveryRunEpoch)
                         .ConfigureAwait(false);
             }), "HydraulicSoftwareRecovery");
@@ -5090,6 +5159,7 @@ namespace Controller
                             channels,
                             $"PowerRecoveryHardDeadline:{sourceFault.Code}",
                             controlFault.CorrelationId,
+                            recoveryRunId,
                             recoveryRunEpoch)
                         .ConfigureAwait(false);
             }), "PowerSupplySoftwareRecovery");
@@ -5570,8 +5640,8 @@ namespace Controller
             {
                 if (_stopSafetyTask != null && !_stopSafetyTask.IsCompleted)
                 {
-                    if (ShouldStopAcquisitionBeforeFinalPersistence(context.Source) &&
-                        !ShouldStopAcquisitionBeforeFinalPersistence(_stopSafetyTaskSource))
+                    if (IsFinalExitStopSource(context.Source) &&
+                        !IsFinalExitStopSource(_stopSafetyTaskSource))
                     {
                         _stopSafetyTask = ContinueWithFinalExitStopAsync(
                             _stopSafetyTask,
@@ -5584,8 +5654,9 @@ namespace Controller
                 if (_lastStopSafetyResult != null && !IsBatchSessionActive &&
                     _activeBatchId == Guid.Empty &&
                     _lastStopSafetyResult.CanRestartInProcess &&
-                    (!ShouldStopAcquisitionBeforeFinalPersistence(context.Source) ||
-                     ShouldStopAcquisitionBeforeFinalPersistence(_lastStopSafetyResult.Source)) &&
+                    CanReuseStopResultForSource(
+                        _lastStopSafetyResult.Source,
+                        context.Source) &&
                     CaptureLogicalQuiescenceSnapshot().IsQuiescent)
                     return Task.FromResult(_lastStopSafetyResult.Clone(reused: true));
                 _stopSafetyTask = RunStopSafetyAsync(context, token);
@@ -5673,11 +5744,8 @@ namespace Controller
                 stopCycles,
                 startedUtc,
                 $"StopAll:{context.Source}");
-            var stopPersistenceBoundaries = new Dictionary<string, long>
-            {
-                ["Dev1"] = _acq.GetLastAcceptedSequence("Dev1"),
-                ["Dev2"] = _acq.GetLastAcceptedSequence("Dev2")
-            };
+            var processingDataGaps = new List<string>();
+            var stopPersistenceBoundaries = new Dictionary<string, long>();
             if (context.Source == StopSource.ManualUi ||
                 context.Source == StopSource.ApplicationClosing ||
                 context.Source == StopSource.ProgramExit ||
@@ -5782,12 +5850,13 @@ namespace Controller
             ClearChannelRuntimes(nameof(RunStopSafetyAsync));
 
             // 3. 液压释放/压力确认和程控电源Disable/回读并行，互不遮蔽结果。
-            var pressureTask = ConfirmPressureSafeForStopAsync(context);
             var powerTask = ConfirmPowerOffForStopAsync(context, token);
+            var pressureTask = ConfirmPressureSafeForStopAsync(context, powerTask);
             var pressure = await pressureTask.ConfigureAwait(false);
             var power = await powerTask.ConfigureAwait(false);
-            // 退出进程前必须先停止新回调，再确定最终耐久边界；否则 DAQ 在边界检查
-            // 与 Dispose 之间仍可接收新批次，最后一批可能没有机会完成 Raw/SQLite 落盘。
+            // StopAll 的耐久证明必须建立在一个不再增长的接纳边界上。即使是
+            // 人工停止/同进程重新开始，也先停止DAQ；后续预检会建立新generation。
+            // 否则只能用旧A验证Raw，却用更新B验证SQLite，造成虚假FullyConfirmed。
             if (ShouldStopAcquisitionBeforeFinalPersistence(context.Source))
             {
                 try { _acq.Stop(); }
@@ -5796,6 +5865,26 @@ namespace Controller
                     _log.Warn($"退出前停止DAQ失败，将继续按已接收边界排空：{ex.Message}", "AI");
                 }
             }
+            // StopDevice 已等待在途回调退出；此后一次性冻结同一组最终边界，
+            // Raw、工程处理和SQLite全部只允许针对这一组值给出闭合证明。
+            foreach (var device in new[] { "Dev1", "Dev2" })
+            {
+                if (_acq.TryGetDataContinuityGap(
+                        device,
+                        out var firstGapSequence,
+                        out var lastObservedSequence))
+                    processingDataGaps.Add(
+                        $"{device}:FirstGap={firstGapSequence},LastObserved={lastObservedSequence}," +
+                        $"AbandonedTail={Math.Max(0, lastObservedSequence - firstGapSequence + 1)}");
+                stopPersistenceBoundaries[device] =
+                    _acq.GetLastProcessRecycleBoundary(device);
+            }
+            if (processingDataGaps.Count > 0)
+                _log.Error(
+                    "检测到不可重放的DAQ工程/Raw处理空洞；已显式作废故障批次及其后尾段，" +
+                    "当前圈不计数，仅允许完成安全断能和进程回收，禁止同进程重新开始。" +
+                    string.Join("; ", processingDataGaps),
+                    "落盘");
             var rawStorageFlushed = true;
             var rawStorageFlushError = string.Empty;
             if (ShouldStopAcquisitionBeforeFinalPersistence(context.Source))
@@ -5810,7 +5899,8 @@ namespace Controller
                 {
                     try
                     {
-                        await flushRaw(CancellationToken.None).ConfigureAwait(false);
+                        await flushRaw(stopPersistenceBoundaries, CancellationToken.None)
+                            .ConfigureAwait(false);
                     }
                     catch (Exception ex)
                     {
@@ -5867,6 +5957,8 @@ namespace Controller
                 PressureSafeConfirmed = pressure.ok,
                 PersistenceBoundaryConfirmed = persistenceBoundaryConfirmed,
                 RawStorageFlushed = rawStorageFlushed,
+                DataContinuityCompromised = processingDataGaps.Count > 0,
+                DataContinuityError = string.Join("; ", processingDataGaps),
                 StartedUtc = startedUtc,
                 CompletedUtc = DateTime.UtcNow,
                 MotorError = string.Join("; ", motorErrors),
@@ -5897,9 +5989,11 @@ namespace Controller
                 $"Pressure={(result.PressureSafeConfirmed ? "Confirmed" : "Unconfirmed")}; " +
                 $"RawStorage={(result.RawStorageFlushed ? "Confirmed" : "Unconfirmed")}; " +
                 $"Persistence={(result.PersistenceBoundaryConfirmed ? "Confirmed" : "Unconfirmed")}; " +
+                $"DataContinuity={(result.DataContinuityCompromised ? "CompromisedProcessRecycleRequired" : "Confirmed")}; " +
                 $"Logical={(result.LogicalQuiescenceConfirmed ? "Confirmed" : "Pending")}; " +
                 $"MotorError={result.MotorError}; PowerError={result.PowerError}; " +
                 $"PressureError={result.PressureError}; PersistenceError={result.PersistenceError}; " +
+                $"DataContinuityError={result.DataContinuityError}; " +
                 $"LogicalError={result.LogicalError}";
             if (result.CanRestartInProcess)
                 _log.Info(logText, "EPB");
@@ -5925,7 +6019,7 @@ namespace Controller
             bool persistenceBoundaryConfirmed)
         {
             return persistenceBoundaryConfirmed &&
-                   (source == StopSource.ApplicationClosing || source == StopSource.ProgramExit);
+                   IsFinalExitStopSource(source);
         }
 
         private void NotifyRunAuthorizationRevoking(
@@ -5990,20 +6084,100 @@ namespace Controller
                 : string.Empty;
         }
 
-        private async Task<(bool ok, string error)> ConfirmPressureSafeForStopAsync(StopContext context)
+        private async Task<(bool ok, string error)> ConfirmPressureSafeForStopAsync(
+            StopContext context,
+            Task<(bool ok, string error)> powerOffTask)
         {
-            try
+            var hydraulicIds = _cfg.Test.Hydraulics.Select(x => x.Id).Distinct().ToArray();
+            Exception lastFailure = null;
+            // 最多为每个液压组恢复一次只读采样；仍拿不到新鲜证据就保持禁止启动，
+            // 绝不以旧压力或固定延时替代真实安全确认。
+            for (var rearmAttempt = 0; rearmAttempt <= hydraulicIds.Length; rearmAttempt++)
             {
-                var hydraulicIds = _cfg.Test.Hydraulics.Select(x => x.Id).Distinct().ToArray();
-                await Task.WhenAll(hydraulicIds.Select(id =>
-                        _hydCoordinator.ForceReleaseAsync(id, $"StopAll:{context.Source}")))
-                    .ConfigureAwait(false);
-                return (true, string.Empty);
+                try
+                {
+                    await Task.WhenAll(hydraulicIds.Select(id =>
+                            _hydCoordinator.ForceReleaseAsync(id, $"StopAll:{context.Source}")))
+                        .ConfigureAwait(false);
+                    return (true, string.Empty);
+                }
+                catch (HydraulicReleaseTimeoutException ex)
+                    when (ex.IsPressureEvidenceUnavailable && rearmAttempt < hydraulicIds.Length)
+                {
+                    lastFailure = ex;
+                    // 复用 StopAll 已启动的唯一电源关闭任务。不得并发第二次 DisableAll，
+                    // 否则串口/网络电源驱动的内部锁可能放大退出卡顿。
+                    var powerOff = powerOffTask == null
+                        ? (ok: false, error: "PowerOffTaskMissing")
+                        : await powerOffTask.ConfigureAwait(false);
+                    if (!powerOff.ok)
+                        return (false,
+                            ex.Message + "; PressureSensingRearmBlockedByPower=" + powerOff.error);
+                    var channels = SelectPressureEvidenceRearmChannels(
+                        ex.HydraulicId,
+                        Enumerable.Range(1, 12),
+                        channel => _acq.GetDeviceForEpbChannel(channel));
+                    if (channels.Length == 0)
+                        return (false,
+                            ex.Message + "; PressureSensingRearmFailed=NoMappedDaqChannel");
+
+                    try
+                    {
+                        IO.NI.DaqRecoveryResult[] ready = null;
+                        await RecoveryStageDeadline.RunAsync(
+                                "StopPressureSensingRearm",
+                                RecoveryMechanicalReleaseTimeoutMs,
+                                async ct =>
+                                {
+                                    ready = await _acq.EnsureChannelsReadyAsync(
+                                            channels,
+                                            RecoveryStageTimeoutMs,
+                                            _daqPersistenceRequiredFreshBatches,
+                                            (int)_daqPersistenceResumeAgeMs,
+                                            ct)
+                                        .ConfigureAwait(false);
+                                },
+                                CancellationToken.None)
+                            .ConfigureAwait(false);
+                        if (ready == null || ready.Any(result => !result.Recovered))
+                            return (false,
+                                ex.Message + "; PressureSensingRearmFailed=" +
+                                string.Join("|", ready?.Select(result =>
+                                    $"{result.Device}:{result.FailureKind}:{result.FailureReason}") ??
+                                    Array.Empty<string>()));
+
+                        _log.Warn(
+                            $"StopAll检测到液压组{ex.HydraulicId}压力证据陈旧；所有输出保持断能，" +
+                            $"已只恢复DAQ采样 Channels=[{string.Join(",", channels)}]，现在重新确认新鲜压力。",
+                            "液压协调");
+                    }
+                    catch (Exception rearmException)
+                    {
+                        return (false,
+                            ex.Message + "; PressureSensingRearmFailed=" + rearmException.Message);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    return (false, ex.Message);
+                }
             }
-            catch (Exception ex)
-            {
-                return (false, ex.Message);
-            }
+            return (false, lastFailure?.Message ?? "PressureSafetyConfirmationFailed");
+        }
+
+        internal static int[] SelectPressureEvidenceRearmChannels(
+            int hydraulicId,
+            IEnumerable<int> candidates,
+            Func<int, string> resolveDaqDevice)
+        {
+            if (hydraulicId <= 0 || resolveDaqDevice == null) return Array.Empty<int>();
+            return (candidates ?? Enumerable.Empty<int>())
+                .Where(channel => channel >= 1 && channel <= 12)
+                .Where(channel => GetHydraulicGroupForChannel(channel) == hydraulicId)
+                .Where(channel => !string.IsNullOrWhiteSpace(resolveDaqDevice(channel)))
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
         }
 
         private async Task<(bool ok, string error)> ConfirmPowerOffForStopAsync(

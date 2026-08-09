@@ -48,6 +48,10 @@ namespace Controller
             public readonly ConcurrentQueue<DaqDiskBatch> Queue = new();
             public readonly SemaphoreSlim Signal = new(0);
             public SemaphoreSlim Slots;
+            // Single-consumer ownership slot. Once a batch leaves Queue it remains here until
+            // the write has reached an explicit terminal boundary. The supervisor therefore
+            // restarts the same batch after an unexpected worker fault instead of losing it.
+            public DaqDiskBatch CurrentBatch;
             public int Count;
             public int PauseLatched;
             public int FreshAfterLowWater;
@@ -61,7 +65,9 @@ namespace Controller
             public int UnresolvedWriteFailure;
             public int FailureTimedOut;
             public int QueueFullLatched;
-            public DateTime? SuppressAfterUtc;
+            // DateTime/Nullable<DateTime> reads are not atomic in the 32-bit production process.
+            // Zero means admission is open; all other values are UTC DateTime ticks.
+            public long SuppressAfterUtcTicks;
             public Guid CorrelationId;
             public long SuppressedBatchCount;
             public long DiscardedGenerationBatchCount;
@@ -85,7 +91,16 @@ namespace Controller
         private readonly CancellationTokenSource _cts = new();
         private readonly Task _dev1Worker;
         private readonly Task _dev2Worker;
+        private readonly object _disposeGate = new();
         private int _disposed;
+        private int _resourcesDisposed;
+        private int _deferredDisposeScheduled;
+        private int _enqueueInFlight;
+
+        // Deterministic concurrency seam used only by the focused coordinator tests. It runs
+        // after dequeue ownership is published and before the write starts.
+        internal Action<string, long> BatchClaimedForTest;
+        internal Action<string, long> AdmissionCommitBarrierForTest;
 
         internal DaqPersistenceCoordinator(
             Func<IEpbCycleRecorder> recorder,
@@ -115,8 +130,29 @@ namespace Controller
             _requiredFreshBatches = Math.Max(1, requiredFreshBatches);
             // 两块 DAQ 各自排队、各自写入。一个设备的慢盘/重试不再阻塞另一设备；
             // recorder 内部仍用通道锁和低频 SQLite 事务保证数据一致性。
-            _dev1Worker = Task.Run(() => WorkerLoop("Dev1", _dev1));
-            _dev2Worker = Task.Run(() => WorkerLoop("Dev2", _dev2));
+            _dev1Worker = StartPersistenceWorker("Dev1", _dev1);
+            _dev2Worker = StartPersistenceWorker("Dev2", _dev2);
+        }
+
+        private Task StartPersistenceWorker(string device, DeviceQueue queue)
+        {
+            return Task.Factory.StartNew(
+                () =>
+                {
+                    try
+                    {
+                        if (Thread.CurrentThread.Name == null)
+                            Thread.CurrentThread.Name = "EPB-Persist-" + device;
+                    }
+                    catch
+                    {
+                        // 线程命名只是诊断增强。
+                    }
+                    SuperviseWorkerLoop(device, queue);
+                },
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default);
         }
 
         internal event Action<DaqPersistenceStateChanged> StateChanged;
@@ -124,72 +160,99 @@ namespace Controller
         internal bool Enqueue(DaqDiskBatch batch)
         {
             if (batch == null) return false;
-            if (Volatile.Read(ref _disposed) != 0)
+            Interlocked.Increment(ref _enqueueInFlight);
+            try
             {
-                batch.Dispose();
-                return false;
-            }
-
-            var q = GetQueue(batch.Device);
-            UpdateAcceptedGeneration(q, batch.Generation);
-
-            var suppressAfter = q.SuppressAfterUtc;
-            if (suppressAfter.HasValue && batch.SampleCount > 0 &&
-                batch.TimestampsUtc[0].ToUniversalTime() > suppressAfter.Value)
-            {
-                Interlocked.Increment(ref q.SuppressedBatchCount);
-                MarkPersisted(q, batch.Sequence);
-                EvaluateRecovery(batch.Device, q, batch);
-                batch.Dispose();
-                return true;
-            }
-
-            if (!q.Slots.Wait(0))
-            {
-                // 容量满是一次状态跃迁，不是每个后续采样批次各自一个新故障。
-                // 旧实现对每个拒绝批次都发布 Failed，现场 20 秒内产生 1491 条
-                // 错误、1491 个 UI 更新和大量重复恢复任务，反过来继续拖慢写盘。
-                // 这里先同步锁存安全暂停，再仅由首个批次发布恢复事件。
-                Interlocked.Exchange(ref q.PauseLatched, 1);
-                if (Interlocked.CompareExchange(ref q.QueueFullLatched, 1, 0) == 0)
+                if (Volatile.Read(ref _disposed) != 0)
                 {
-                    var correlation = EnsureCorrelation(q);
-                    Publish(batch, q, DaqPersistenceState.Failed, "DaqPersistenceQueueFull",
-                        $"{batch.Device} 持久化队列达到硬上限 {_capacity} 批；" +
-                        "已锁存安全暂停，同一拥塞事件不重复发布故障。",
-                        correlation);
+                    return false;
                 }
-                // 当前调用位于 DAQ 后台工程线程，不是 NI 回调线程。容量用尽后允许
-                // 有界背压传回上游安全暂停，但绝不能丢弃已经接收、已分配池化所有权的批次。
+
+                var q = GetQueue(batch.Device);
+                UpdateAcceptedGeneration(q, batch.Generation);
+
+                var suppressAfterTicks = Interlocked.Read(ref q.SuppressAfterUtcTicks);
+                if (suppressAfterTicks > 0 && batch.SampleCount > 0 &&
+                    batch.TimestampsUtc[0].ToUniversalTime().Ticks > suppressAfterTicks)
+                {
+                    Interlocked.Increment(ref q.SuppressedBatchCount);
+                    MarkPersisted(q, batch.Sequence);
+                    EvaluateRecovery(batch.Device, q, batch);
+                    batch.Dispose();
+                    return true;
+                }
+
+                var slotAcquired = false;
                 try
                 {
-                    q.Slots.Wait(_cts.Token);
+                    slotAcquired = q.Slots.Wait(0);
+                    if (!slotAcquired)
+                    {
+                        // 容量满是一次状态跃迁，不是每个后续采样批次各自一个新故障。
+                        // 旧实现对每个拒绝批次都发布 Failed，现场 20 秒内产生 1491 条
+                        // 错误、1491 个 UI 更新和大量重复恢复任务，反过来继续拖慢写盘。
+                        // 这里先同步锁存安全暂停，再仅由首个批次发布恢复事件。
+                        Interlocked.Exchange(ref q.PauseLatched, 1);
+                        if (Interlocked.CompareExchange(ref q.QueueFullLatched, 1, 0) == 0)
+                        {
+                            var correlation = EnsureCorrelation(q);
+                            Publish(batch, q, DaqPersistenceState.Failed, "DaqPersistenceQueueFull",
+                                $"{batch.Device} 持久化队列达到硬上限 {_capacity} 批；" +
+                                "已锁存安全暂停，同一拥塞事件不重复发布故障。",
+                                correlation);
+                        }
+                        // 当前调用位于 DAQ 后台工程线程，不是 NI 回调线程。容量用尽后允许
+                        // 有界背压传回上游安全暂停，但绝不能丢弃已经接收、已分配池化所有权的批次。
+                        q.Slots.Wait(_cts.Token);
+                        slotAcquired = true;
+                    }
                 }
                 catch
                 {
-                    batch.Dispose();
+                    // Enqueue(false) never transfers pooled-buffer ownership to this coordinator.
                     return false;
                 }
-            }
 
-            if (Volatile.Read(ref _disposed) != 0)
+                if (Volatile.Read(ref _disposed) != 0)
+                {
+                    if (slotAcquired)
+                    {
+                        try { q.Slots.Release(); }
+                        catch { }
+                    }
+                    return false;
+                }
+
+                // Deterministic barrier for the final-check -> queue-publication shutdown race.
+                // Drain observes _enqueueInFlight while this pre-commit seam is blocked.
+                try
+                {
+                    AdmissionCommitBarrierForTest?.Invoke(batch.Device, batch.Sequence);
+                }
+                catch
+                {
+                    try { q.Slots.Release(); } catch { }
+                    return false;
+                }
+                // Admission linearizes when the accepted batch becomes part of the counted FIFO.
+                Interlocked.Increment(ref q.Count);
+                q.Queue.Enqueue(batch);
+                q.Signal.Release();
+                EvaluateLag(batch.Device, q, batch);
+                return true;
+            }
+            finally
             {
-                q.Slots.Release();
-                batch.Dispose();
-                return false;
+                Interlocked.Decrement(ref _enqueueInFlight);
             }
-
-            Interlocked.Increment(ref q.Count);
-            q.Queue.Enqueue(batch);
-            q.Signal.Release();
-            EvaluateLag(batch.Device, q, batch);
-            return true;
         }
 
         internal void SuppressAfter(string device, DateTime cutoffUtc, Guid correlationId)
         {
             var q = GetQueue(device);
-            q.SuppressAfterUtc = cutoffUtc.ToUniversalTime();
+            Interlocked.Exchange(
+                ref q.SuppressAfterUtcTicks,
+                cutoffUtc.ToUniversalTime().Ticks);
             Interlocked.Exchange(ref q.SuppressedBatchCount, 0);
             Interlocked.Exchange(ref q.DiscardedGenerationBatchCount, 0);
             if (correlationId != Guid.Empty) q.CorrelationId = correlationId;
@@ -198,7 +261,7 @@ namespace Controller
         internal void ResumeAdmission(string device)
         {
             var q = GetQueue(device);
-            q.SuppressAfterUtc = null;
+            Interlocked.Exchange(ref q.SuppressAfterUtcTicks, 0);
             q.CorrelationId = Guid.Empty;
             Interlocked.Exchange(ref q.FreshAfterLowWater, 0);
             Interlocked.Exchange(ref q.PendingFreshWhileWrite, 0);
@@ -300,8 +363,9 @@ namespace Controller
         /// 等待指定生产序号之前的已接纳批次全部真实写入。与整设备截止使用的
         /// <see cref="WaitForDurableBoundaryAsync"/> 不同，本门禁允许同一设备上的健康通道
         /// 继续产生更高序号批次，因此不要求整条队列为零；但队头和在途批次都必须已经
-        /// 越过目标序号，且期间不得发生准入抑制或未解决写故障。generation 切换不撤销
-        /// 已接收 FIFO 的耐久义务，因此不能作为拒绝前缀的条件。
+        /// 越过目标序号，且期间不得发生未解决写故障。SuppressAfter 只拒绝截止点之后的
+        /// 新准入，不撤销截止点之前已经接收并真实写入的 FIFO 前缀；generation 切换同样
+        /// 不撤销已接收 FIFO 的耐久义务，因此二者都不能作为拒绝前缀的条件。
         /// </summary>
         internal async Task<bool> WaitForDurablePrefixAsync(
             string device,
@@ -325,8 +389,7 @@ namespace Controller
             DeviceQueue q,
             long sequence)
         {
-            if (q.SuppressAfterUtc.HasValue ||
-                Volatile.Read(ref q.UnresolvedWriteFailure) != 0 ||
+            if (Volatile.Read(ref q.UnresolvedWriteFailure) != 0 ||
                 Volatile.Read(ref q.FailureTimedOut) != 0 ||
                 Volatile.Read(ref q.QueueFullLatched) != 0 ||
                 Interlocked.Read(ref q.LastPersistedSequence) < sequence)
@@ -346,73 +409,114 @@ namespace Controller
                            (long)(Math.Max(1, timeoutMs) / 1000.0 * Stopwatch.Frequency);
             while (Stopwatch.GetTimestamp() < deadline)
             {
-                if (Volatile.Read(ref _dev1.Count) == 0 && Volatile.Read(ref _dev2.Count) == 0 &&
-                    Volatile.Read(ref _dev1.WriteInFlight) == 0 && Volatile.Read(ref _dev2.WriteInFlight) == 0)
+                if (Volatile.Read(ref _enqueueInFlight) == 0 &&
+                    IsDrained(_dev1) && IsDrained(_dev2))
                     return true;
                 await Task.Delay(10).ConfigureAwait(false);
             }
-            return Volatile.Read(ref _dev1.Count) == 0 && Volatile.Read(ref _dev2.Count) == 0 &&
-                   Volatile.Read(ref _dev1.WriteInFlight) == 0 && Volatile.Read(ref _dev2.WriteInFlight) == 0;
+            return Volatile.Read(ref _enqueueInFlight) == 0 &&
+                   IsDrained(_dev1) && IsDrained(_dev2);
         }
 
         internal async Task<bool> ShutdownAsync(int timeoutMs)
         {
+            if (Volatile.Read(ref _resourcesDisposed) != 0) return true;
             var drained = await DrainAsync(timeoutMs).ConfigureAwait(false);
             // A timeout is not permission to discard the accepted FIFO prefix. Keep the
             // workers alive so storage recovery can finish the original batches; the caller
             // must remain safely stopped and retry shutdown later.
             if (!drained) return false;
-            Dispose();
-            return true;
+
+            // Preserve the historical retry contract: a timed-out ShutdownAsync does not close
+            // admission. Once a clean drain is observed, close admission and check again to cover
+            // the narrow producer race between the first observation and the close.
+            Interlocked.Exchange(ref _disposed, 1);
+            if (!await DrainAsync(timeoutMs).ConfigureAwait(false)) return false;
+            return TryCompleteDispose(Math.Max(1000, timeoutMs));
         }
 
-        private async Task WorkerLoop(string device, DeviceQueue q)
+        private void SuperviseWorkerLoop(string device, DeviceQueue q)
         {
-            try
+            var restartCount = 0;
+            while (!_cts.IsCancellationRequested)
             {
-                while (!_cts.IsCancellationRequested)
+                try
                 {
-                    await q.Signal.WaitAsync(_cts.Token).ConfigureAwait(false);
-                    if (!q.Queue.TryDequeue(out var batch)) continue;
-                    Interlocked.Decrement(ref q.Count);
-                    q.Slots.Release();
-                    var batchDevice = batch.Device;
-                    var boundaryHandled = false;
-                    try
-                    {
-                        Interlocked.Exchange(ref q.InFlightSequence, batch.Sequence);
-                        Interlocked.Exchange(ref q.InFlightEnqueuedTicks, batch.EnqueuedMonotonicTicks);
-                        Interlocked.Exchange(ref q.WriteInFlight, 1);
-                        await WriteWithRetryAsync(batch, q).ConfigureAwait(false);
-                        boundaryHandled = true;
-                    }
-                    finally
-                    {
-                        Interlocked.Exchange(ref q.WriteInFlight, 0);
-                        Interlocked.Exchange(ref q.InFlightEnqueuedTicks, 0);
-                        // 只有真实写入成功、活动圈上限已显式报告，或旧代次被明确淘汰时
-                        // 才推进处理边界。进程退出/取消发生在失败重试中时不得伪装成已落盘。
-                        if (boundaryHandled) MarkPersisted(q, batch.Sequence);
-                        Interlocked.Exchange(ref q.InFlightSequence, 0);
-                        batch.Dispose();
-                    }
-                    // batch 已归还数组池，不能再读取其 Device/Generation/Sequence。
-                    // 发布恢复状态使用已捕获的设备号和队列的最新持久化快照。
-                    EvaluateRecovery(batchDevice, q, null);
+                    WorkerLoopCore(device, q);
+                    return;
+                }
+                catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+                {
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    restartCount++;
+                    Interlocked.Exchange(ref q.UnresolvedWriteFailure, 1);
+                    Interlocked.Exchange(ref q.FailureTimedOut, 1);
+                    Interlocked.Exchange(ref q.PauseLatched, 1);
+                    var correlation = EnsureCorrelation(q);
+                    Publish(
+                        null,
+                        q,
+                        DaqPersistenceState.Failed,
+                        "DaqPersistenceWorkerFault",
+                        $"{device} 持久化专用线程异常，100ms后监督重启；" +
+                        $"Restart={restartCount} Error={ex.Message}",
+                        correlation);
+                    if (_cts.Token.WaitHandle.WaitOne(100)) return;
                 }
             }
-            catch (OperationCanceledException) { }
-            catch (Exception ex)
+        }
+
+        private void WorkerLoopCore(string device, DeviceQueue q)
+        {
+            while (!_cts.IsCancellationRequested)
             {
-                _log?.Error($"{device} DAQ持久化工作线程异常：{ex.Message}", "落盘", ex);
-            }
-            finally
-            {
-                DisposeQueue(q);
+                var batch = Volatile.Read(ref q.CurrentBatch);
+                if (batch == null)
+                {
+                    q.Signal.Wait(_cts.Token);
+
+                    // Publish in-flight ownership while the batch is still visible at the queue
+                    // head. Readers therefore observe either Queue.Peek or InFlight, never the
+                    // old dequeue->publish empty window.
+                    if (!q.Queue.TryPeek(out var pending)) continue;
+                    Interlocked.Exchange(ref q.InFlightSequence, pending.Sequence);
+                    Interlocked.Exchange(
+                        ref q.InFlightEnqueuedTicks,
+                        pending.EnqueuedMonotonicTicks);
+                    Interlocked.Exchange(ref q.WriteInFlight, 1);
+
+                    if (!q.Queue.TryDequeue(out batch))
+                    {
+                        ClearInFlight(q);
+                        continue;
+                    }
+                    Volatile.Write(ref q.CurrentBatch, batch);
+                    Interlocked.Decrement(ref q.Count);
+                    q.Slots.Release();
+                    BatchClaimedForTest?.Invoke(device, batch.Sequence);
+                }
+
+                // No finally is allowed to dispose this batch. If anything outside the normal
+                // write retry loop faults, q.CurrentBatch remains owned by the supervisor and is
+                // retried before any later FIFO item when WorkerLoopCore is entered again.
+                WriteWithRetry(batch, q);
+
+                var batchDevice = batch.Device;
+                var sequence = batch.Sequence;
+                MarkPersisted(q, sequence);
+                Volatile.Write(ref q.CurrentBatch, null);
+                ClearInFlight(q);
+                batch.Dispose();
+
+                // batch has been returned to the pool and must not be read again.
+                EvaluateRecovery(batchDevice, q, null);
             }
         }
 
-        private async Task WriteWithRetryAsync(DaqDiskBatch batch, DeviceQueue q)
+        private void WriteWithRetry(DaqDiskBatch batch, DeviceQueue q)
         {
             var start = Stopwatch.GetTimestamp();
             var attempt = 0;
@@ -437,7 +541,7 @@ namespace Controller
                     }
                     catch (Exception ex)
                     {
-                        _log?.Warn(
+                        SafeWarn(
                             $"DAQ持久化时序观察者异常已隔离：{ex.Message}",
                             "落盘");
                     }
@@ -464,7 +568,7 @@ namespace Controller
                         recoverable.TryRecoverStorage(ex, out var recoveryDetail))
                     {
                         mappingRecoveryAttempted = true;
-                        _log?.Warn(
+                        SafeWarn(
                             $"DAQ写盘映射已进程内自愈，立即重试当前批次：" +
                             $"Device={batch.Device} Sequence={batch.Sequence} {recoveryDetail} " +
                             $"Cause={ex.GetType().Name}: {ex.Message}",
@@ -490,7 +594,8 @@ namespace Controller
                     // 超过恢复时限只触发控制层安全停机，不能丢弃当前批次。worker 保留
                     // 该批次并以最大 250ms 退避持续重试；磁盘恢复后按原 FIFO 顺序写入。
                     var delay = RetryDelaysMs[Math.Min(attempt++, RetryDelaysMs.Length - 1)];
-                    await Task.Delay(delay, _cts.Token).ConfigureAwait(false);
+                    if (_cts.Token.WaitHandle.WaitOne(delay))
+                        _cts.Token.ThrowIfCancellationRequested();
                 }
             }
         }
@@ -498,7 +603,9 @@ namespace Controller
         private void WriteBatch(DaqDiskBatch batch)
         {
             var recorder = _recorder();
-            if (recorder == null) return;
+            if (recorder == null)
+                throw new InvalidOperationException(
+                    "DAQ持久化记录器暂不可用；保留当前批次并等待记录器恢复。");
             var batched = recorder as IBatchedEpbCycleRecorder;
             if (batched != null)
             {
@@ -674,18 +781,39 @@ namespace Controller
                 CycleNumber = cycleNumber,
                 RecordLimit = recordLimit
             };
-            if (state == DaqPersistenceState.Lagging)
-                _log?.Warn(reason, "落盘");
-            else if (state == DaqPersistenceState.Failed)
-                _log?.Error(reason, "落盘");
-            else
-                _log?.Warn(reason, "落盘");
-            NonCriticalObserver.Invoke(
-                StateChanged,
-                update,
-                ex => _log?.Warn(
-                    $"DAQ持久化状态观察者异常已隔离：{ex.Message}",
-                    "落盘"));
+            try
+            {
+                if (state == DaqPersistenceState.Lagging)
+                    _log?.Warn(reason, "落盘");
+                else if (state == DaqPersistenceState.Failed)
+                    _log?.Error(reason, "落盘");
+                else
+                    _log?.Warn(reason, "落盘");
+            }
+            catch
+            {
+                // State publication is part of the persistence supervisor and must be no-throw.
+            }
+            try
+            {
+                NonCriticalObserver.Invoke(
+                    StateChanged,
+                    update,
+                    ex =>
+                    {
+                        try
+                        {
+                            _log?.Warn(
+                                $"DAQ持久化状态观察者异常已隔离：{ex.Message}",
+                                "落盘");
+                        }
+                        catch { }
+                    });
+            }
+            catch
+            {
+                // Defensive boundary in case an observer dispatcher itself fails.
+            }
             try
             {
                 _diagnostic?.Invoke(new DaqTimingRecord
@@ -701,7 +829,11 @@ namespace Controller
             }
             catch (Exception ex)
             {
-                _log?.Warn($"DAQ诊断观察者异常已隔离：{ex.Message}", "落盘");
+                try
+                {
+                    _log?.Warn($"DAQ诊断观察者异常已隔离：{ex.Message}", "落盘");
+                }
+                catch { }
             }
         }
 
@@ -741,34 +873,142 @@ namespace Controller
             return Math.Max(queuedAge, inFlightAge);
         }
 
+        private static void ClearInFlight(DeviceQueue q)
+        {
+            Interlocked.Exchange(ref q.InFlightSequence, 0);
+            Interlocked.Exchange(ref q.InFlightEnqueuedTicks, 0);
+            // WriteInFlight is the release marker and must be cleared last.
+            Interlocked.Exchange(ref q.WriteInFlight, 0);
+        }
+
+        private static bool IsDrained(DeviceQueue q)
+        {
+            return Volatile.Read(ref q.Count) == 0 &&
+                   q.Queue.IsEmpty &&
+                   Volatile.Read(ref q.WriteInFlight) == 0 &&
+                   Volatile.Read(ref q.CurrentBatch) == null;
+        }
+
         private DeviceQueue GetQueue(string device)
             => string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase) ? _dev1 : _dev2;
 
         private static string NormalizeDevice(string device)
             => string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase) ? "Dev1" : "Dev2";
 
-        private static void DisposeQueue(DeviceQueue q)
+        internal async Task<bool> DisposeAfterDrainAsync(int timeoutMs)
         {
-            while (q.Queue.TryDequeue(out var batch))
-            {
-                batch.Dispose();
-                try { q.Slots.Release(); } catch { }
-            }
-            Interlocked.Exchange(ref q.Count, 0);
+            if (Volatile.Read(ref _resourcesDisposed) != 0) return true;
+            Interlocked.Exchange(ref _disposed, 1);
+            if (!await DrainAsync(timeoutMs).ConfigureAwait(false)) return false;
+            return TryCompleteDispose(Math.Max(1000, timeoutMs));
         }
 
         public void Dispose()
         {
-            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
-            _cts.Cancel();
-            try { _dev1.Signal.Release(); } catch { }
-            try { _dev2.Signal.Release(); } catch { }
-            try { Task.WaitAll(new[] { _dev1Worker, _dev2Worker }, 10000); } catch { }
-            _dev1.Signal.Dispose();
-            _dev2.Signal.Dispose();
-            _dev1.Slots.Dispose();
-            _dev2.Slots.Dispose();
-            _cts.Dispose();
+            if (Volatile.Read(ref _resourcesDisposed) != 0) return;
+            var drained = false;
+            try
+            {
+                drained = DisposeAfterDrainAsync(10000).GetAwaiter().GetResult();
+            }
+            catch
+            {
+                // The deferred disposer below retains all queues/resources and retries safely.
+            }
+
+            if (drained) return;
+
+            // IDisposable cannot report a timeout. Keep the live workers and every accepted batch
+            // intact, then finish resource release only after a later safe drain.
+            ScheduleDeferredDispose();
+        }
+
+        private bool TryCompleteDispose(int workerTimeoutMs)
+        {
+            lock (_disposeGate)
+            {
+                if (Volatile.Read(ref _resourcesDisposed) != 0) return true;
+                if (Volatile.Read(ref _enqueueInFlight) != 0 ||
+                    !IsDrained(_dev1) || !IsDrained(_dev2))
+                    return false;
+
+                try { _cts.Cancel(); } catch { }
+                try { _dev1.Signal.Release(); } catch { }
+                try { _dev2.Signal.Release(); } catch { }
+
+                var workersStopped = false;
+                try
+                {
+                    workersStopped = Task.WaitAll(
+                        new[] { _dev1Worker, _dev2Worker },
+                        Math.Max(1000, workerTimeoutMs));
+                }
+                catch
+                {
+                    workersStopped = _dev1Worker.IsCompleted && _dev2Worker.IsCompleted;
+                }
+                if (!workersStopped) return false;
+
+                // Never clear a queue as a disposal shortcut. A true drain is the only state in
+                // which pooled batches and synchronization primitives may be released.
+                if (Volatile.Read(ref _enqueueInFlight) != 0 ||
+                    !IsDrained(_dev1) || !IsDrained(_dev2))
+                    return false;
+                _dev1.Signal.Dispose();
+                _dev2.Signal.Dispose();
+                _dev1.Slots.Dispose();
+                _dev2.Slots.Dispose();
+                _cts.Dispose();
+                Interlocked.Exchange(ref _resourcesDisposed, 1);
+                return true;
+            }
+        }
+
+        private void SafeWarn(string message, string category)
+        {
+            try { _log?.Warn(message, category); }
+            catch { }
+        }
+
+        private void ScheduleDeferredDispose()
+        {
+            if (Volatile.Read(ref _resourcesDisposed) != 0 ||
+                Interlocked.CompareExchange(ref _deferredDisposeScheduled, 1, 0) != 0)
+                return;
+
+            Task.Run(async () =>
+            {
+                try
+                {
+                    while (Volatile.Read(ref _resourcesDisposed) == 0)
+                    {
+                        if (await DrainAsync(1000).ConfigureAwait(false) &&
+                            TryCompleteDispose(10000))
+                            return;
+                        await Task.Delay(250).ConfigureAwait(false);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    try
+                    {
+                        _log?.Warn(
+                            $"DAQ持久化延迟释放任务异常，将继续重试：{ex.Message}",
+                            "落盘");
+                    }
+                    catch
+                    {
+                        // Disposal diagnostics must not terminate the retry contract.
+                    }
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref _deferredDisposeScheduled, 0);
+                    if (Volatile.Read(ref _disposed) != 0 &&
+                        Volatile.Read(ref _resourcesDisposed) == 0)
+                        ScheduleDeferredDispose();
+                }
+            });
         }
 
         private static class ArrayPoolZeroCache

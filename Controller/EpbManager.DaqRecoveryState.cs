@@ -211,7 +211,11 @@ namespace Controller
                 ControlFaultRaised,
                 fault,
                 ex => _log?.Warn($"DAQ隔离故障观察者异常，已隔离：{ex.Message}", "AI"));
-            ScheduleIsolatedInfrastructureRecovery(channels, code, fault.CorrelationId);
+            ScheduleIsolatedInfrastructureRecovery(
+                channels,
+                code,
+                fault.CorrelationId,
+                code);
         }
     }
 }

@@ -206,14 +206,14 @@ namespace MTEmbTest
                     .Where(value => TryParseUtc(value, out var timestamp) &&
                                     now - timestamp <= TimeSpan.FromMinutes(10))
                     .ToList();
-                if (checkpoint.RestartHistoryUtc.Count >= 3)
+                if (checkpoint.RestartHistoryUtc.Count >= EpbManager.UnattendedProcessRestartBudget)
                 {
                     checkpoint.Armed = false;
                     checkpoint.RestartPending = false;
                     checkpoint.LastReason = "RestartBudgetExhausted";
                     checkpoint.UpdatedUtc = now.ToString("O", CultureInfo.InvariantCulture);
                     SaveUnsafe(checkpoint);
-                    error = "10分钟内已执行3次自重启，重启预算耗尽。";
+                    error = $"10分钟内已执行{EpbManager.UnattendedProcessRestartBudget}次自重启，重启预算耗尽。";
                     return false;
                 }
 
@@ -431,6 +431,99 @@ namespace MTEmbTest
                 checkpoint.LastReason = reason ?? "RestartCancelled";
                 checkpoint.UpdatedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
                 SaveUnsafe(checkpoint);
+            }
+        }
+
+        internal static bool ReleasePendingRestartForRetry(
+            string expectedRecoveryNonce,
+            string expectedRunId,
+            string reason,
+            out int attemptsInWindow,
+            out string error)
+        {
+            attemptsInWindow = 0;
+            error = string.Empty;
+            lock (Sync)
+            {
+                var checkpoint = LoadUnsafe();
+                if (checkpoint == null)
+                {
+                    error = "CheckpointMissing";
+                    return false;
+                }
+                if (!EpbManager.AreSameNonEmptyRunIds(checkpoint.RunId, expectedRunId))
+                {
+                    error = "RunIdMismatch";
+                    return false;
+                }
+                if (!checkpoint.Armed)
+                {
+                    error = "AuthorizationRevoked";
+                    return false;
+                }
+                if (!checkpoint.RestartPending ||
+                    string.IsNullOrWhiteSpace(expectedRecoveryNonce) ||
+                    !string.Equals(
+                        checkpoint.RecoveryNonce,
+                        expectedRecoveryNonce,
+                        StringComparison.Ordinal))
+                {
+                    error = "RecoveryNonceMismatch";
+                    return false;
+                }
+
+                // 保留当前 Armed 状态和 RestartHistoryUtc：失败的交接仍计入既有
+                // 10分钟/3次预算，但只要人工没有撤销授权，当前恢复序列可主动重试。
+                // 绝不能在这里把 Armed 强制设回 true，否则会覆盖并发的人工停止。
+                var now = DateTime.UtcNow;
+                checkpoint.RestartHistoryUtc = (checkpoint.RestartHistoryUtc ?? new List<string>())
+                    .Where(value => TryParseUtc(value, out var timestamp) &&
+                                    now - timestamp <= TimeSpan.FromMinutes(10))
+                    .ToList();
+                attemptsInWindow = checkpoint.RestartHistoryUtc.Count;
+                checkpoint.RestartPending = false;
+                checkpoint.RecoveryNonce = string.Empty;
+                checkpoint.LastReason = string.IsNullOrWhiteSpace(reason)
+                    ? "RestartReleasedForRetry"
+                    : reason;
+                checkpoint.UpdatedUtc = now.ToString("O", CultureInfo.InvariantCulture);
+
+                if (!EpbManager.ShouldScheduleUnattendedProcessRestartRetry(
+                        nonceReleased: true,
+                        armed: checkpoint.Armed,
+                        checkpointRunId: checkpoint.RunId,
+                        expectedRunId: expectedRunId,
+                        attemptsInWindow: attemptsInWindow))
+                {
+                    var terminalReason = attemptsInWindow >= EpbManager.UnattendedProcessRestartBudget
+                        ? "RestartBudgetExhaustedAfterFailedAttempt"
+                        : "RestartRetryAuthorizationInvalid";
+                    DisarmUnsafe(checkpoint, terminalReason);
+                    error = terminalReason;
+                    return false;
+                }
+
+                SaveUnsafe(checkpoint);
+                return true;
+            }
+        }
+
+        internal static bool IsPendingRestartAuthorized(
+            string expectedRecoveryNonce,
+            string expectedRunId)
+        {
+            lock (Sync)
+            {
+                var checkpoint = LoadUnsafe();
+                return checkpoint != null &&
+                       checkpoint.Armed &&
+                       checkpoint.RestartPending &&
+                       EpbManager.AreSameNonEmptyRunIds(checkpoint.RunId, expectedRunId) &&
+                       !string.IsNullOrWhiteSpace(expectedRecoveryNonce) &&
+                       string.Equals(
+                           checkpoint.RecoveryNonce,
+                           expectedRecoveryNonce,
+                           StringComparison.Ordinal);
             }
         }
 
@@ -807,6 +900,7 @@ namespace MTEmbTest
         private static EpbManager _manager;
         private static GlobalConfig _config;
         private static Func<Task> _quiesceAndFlush;
+        private static CancellationTokenSource _restartSequenceCancellation;
         private static int _restartStarted;
         private static int _inProcessRecoveryStarted;
 
@@ -832,6 +926,7 @@ namespace MTEmbTest
 
         internal static void Arm(GlobalConfig config, IEnumerable<int> channels, Guid runId)
         {
+            CancelRestartRetrySequence();
             UnattendedRunCheckpointStore.Arm(config, channels, runId);
         }
 
@@ -842,7 +937,15 @@ namespace MTEmbTest
 
         internal static void Disarm(string reason)
         {
+            CancelRestartRetrySequence();
             UnattendedRunCheckpointStore.Disarm(reason);
+        }
+
+        private static void CancelRestartRetrySequence()
+        {
+            CancellationTokenSource cancellation;
+            lock (Sync) cancellation = _restartSequenceCancellation;
+            try { cancellation?.Cancel(); } catch (ObjectDisposedException) { }
         }
 
         internal static void RequestFatalRestart(string source, Exception exception)
@@ -863,7 +966,10 @@ namespace MTEmbTest
             {
                 var graceful = UnattendedRunCheckpointStore.Load();
                 if (graceful?.Armed == true && graceful.GracefulPaused)
+                {
+                    CancelRestartRetrySequence();
                     return;
+                }
             }
 
             // A system-fault restart registers a one-time recovery nonce before it asks
@@ -876,6 +982,7 @@ namespace MTEmbTest
                 if (checkpoint?.RestartPending == true)
                     return;
             }
+            CancelRestartRetrySequence();
             UnattendedRunCheckpointStore.DisarmIfRunMatches(
                 context?.RunId,
                 $"{context?.Source}: {context?.Reason ?? "Run authorization revoked"}");
@@ -896,7 +1003,8 @@ namespace MTEmbTest
             RecoveryTasks.Observe(
                 Task.Run(() => RestartAsync(
                     fault?.Reason ?? "SystemFault",
-                    correlationId.ToString("N"))),
+                    correlationId.ToString("N"),
+                    fault?.RunId.ToString("N"))),
                 "UnattendedProcessRestart",
                 correlationId,
                 fault?.AffectedChannels?.FirstOrDefault() ?? 0);
@@ -940,7 +1048,7 @@ namespace MTEmbTest
                     !UnattendedRunCheckpointStore.TryRegisterInProcessRecovery(
                         config,
                         fingerprint,
-                        fault?.CorrelationId.ToString("N"),
+                        fault?.RunId.ToString("N"),
                         out checkpoint,
                         out registrationError))
                 {
@@ -949,7 +1057,7 @@ namespace MTEmbTest
                         ProjectLogHub.Write(
                             ProjectLogLevel.Warning,
                             $"忽略迟到旧运行的无人值守恢复请求。" +
-                            $"FaultRunId={fault?.CorrelationId:N}; Fault={reason}",
+                            $"FaultRunId={fault?.RunId:N}; CorrelationId={fault?.CorrelationId:N}; Fault={reason}",
                             "无人值守恢复");
                         return;
                     }
@@ -959,7 +1067,7 @@ namespace MTEmbTest
                         $"Reason={registrationError}; Fault={reason}",
                         "无人值守恢复");
                     Interlocked.Exchange(ref _inProcessRecoveryStarted, 0);
-                    await RestartAsync(reason, correlationId, fault?.CorrelationId.ToString("N"))
+                    await RestartAsync(reason, correlationId, fault?.RunId.ToString("N"))
                         .ConfigureAwait(false);
                     return;
                 }
@@ -1040,7 +1148,7 @@ namespace MTEmbTest
                     $"同进程无人值守恢复失败，升级到进程自重启：{ex}",
                     "无人值守恢复");
                 Interlocked.Exchange(ref _inProcessRecoveryStarted, 0);
-                await RestartAsync(reason, correlationId, fault?.CorrelationId.ToString("N"))
+                await RestartAsync(reason, correlationId, fault?.RunId.ToString("N"))
                     .ConfigureAwait(false);
                 return;
             }
@@ -1057,81 +1165,264 @@ namespace MTEmbTest
             string expectedRunId = null)
         {
             if (Interlocked.CompareExchange(ref _restartStarted, 1, 0) != 0) return;
+            var handoffCommitted = false;
+            var checkpointAtStart = UnattendedRunCheckpointStore.Load();
+            var guardedRunId = string.IsNullOrWhiteSpace(expectedRunId)
+                ? checkpointAtStart?.RunId
+                : expectedRunId;
+            var sequenceCancellation = new CancellationTokenSource();
+            CancellationTokenSource staleCancellation;
+            lock (Sync)
+            {
+                staleCancellation = _restartSequenceCancellation;
+                _restartSequenceCancellation = sequenceCancellation;
+            }
+            if (staleCancellation != null && !ReferenceEquals(staleCancellation, sequenceCancellation))
+            {
+                try { staleCancellation.Cancel(); } catch (ObjectDisposedException) { }
+            }
+            var handoffReady = false;
+
             try
             {
-                if (!UnattendedRunCheckpointStore.TryRegisterRestart(
-                        correlationId,
-                        expectedRunId,
-                        out var intent,
-                        out var registrationError))
+                while (!sequenceCancellation.IsCancellationRequested)
                 {
-                    if (string.Equals(registrationError, "RunIdMismatch", StringComparison.Ordinal))
+                    RecoveryStartupIntent intent = null;
+                    var retryable = false;
+                    var retryReason = "RestartAttemptDidNotHandoff";
+                    if (!UnattendedRunCheckpointStore.TryRegisterRestart(
+                            correlationId,
+                            guardedRunId,
+                            out intent,
+                            out var registrationError))
+                    {
+                        if (string.Equals(registrationError, "RunIdMismatch", StringComparison.Ordinal))
+                        {
+                            ProjectLogHub.Write(
+                                ProjectLogLevel.Warning,
+                                $"忽略迟到旧运行的进程自重启请求。ExpectedRunId={guardedRunId}; " +
+                                $"CorrelationId={correlationId}; Reason={reason}",
+                                "无人值守恢复");
+                            return;
+                        }
+                        ProjectLogHub.Write(
+                            ProjectLogLevel.Error,
+                            $"系统故障保持安全停机，不再自重启：{registrationError}; Reason={reason}",
+                            "无人值守恢复");
+                        await SafeStopOnlyAsync(reason, correlationId).ConfigureAwait(false);
+                        return;
+                    }
+
+                    retryable = true;
+                    try
+                    {
+                        if (!EpbManager.ShouldRepeatProcessRestartSafetyTeardown(handoffReady))
+                        {
+                            if (sequenceCancellation.IsCancellationRequested ||
+                                !UnattendedRunCheckpointStore.IsPendingRestartAuthorized(
+                                    intent.Nonce,
+                                    guardedRunId))
+                            {
+                                retryable = false;
+                                retryReason = "RestartAuthorizationRevokedAtHandoffRetry";
+                            }
+                            else
+                            {
+                                StartRecoveryProcess(intent);
+                                handoffCommitted = true;
+                                Environment.Exit(86);
+                                return;
+                            }
+                        }
+                        else
+                        {
+                            var manager = _manager;
+                            if (manager == null)
+                            {
+                                retryReason = "ManagerUnavailable";
+                            }
+                            else
+                            {
+                                StopSafetyResult safety = null;
+                                try
+                                {
+                                    using (var stopTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(20)))
+                                        safety = await manager.StopAllAsync(
+                                                new StopContext
+                                                {
+                                                    Source = StopSource.SystemFault,
+                                                    Reason = reason,
+                                                    Initiator = nameof(UnattendedRecoveryCoordinator),
+                                                    CorrelationId = correlationId,
+                                                    RequestedUtc = DateTime.UtcNow
+                                                },
+                                                stopTimeout.Token)
+                                            .ConfigureAwait(false);
+                                }
+                                catch (Exception stopError)
+                                {
+                                    retryReason = "SafetyStopFailed: " + stopError.Message;
+                                    ProjectLogHub.Write(
+                                        ProjectLogLevel.Error,
+                                        stopError.ToString(),
+                                        "无人值守恢复");
+                                }
+
+                                // Do not quiesce/dispose acquisition or persistence before validating
+                                // StopAll. A failed attempt keeps the process safely stopped and retries
+                                // the complete invariant with a fresh nonce and the same RunId.
+                                if (safety == null || !safety.FullyConfirmed)
+                                {
+                                    if (string.Equals(
+                                            retryReason,
+                                            "RestartAttemptDidNotHandoff",
+                                            StringComparison.Ordinal))
+                                        retryReason = "SafetyStopUnconfirmed";
+                                    ProjectLogHub.Write(
+                                        ProjectLogLevel.Error,
+                                        "自重启本次未交接：电机DO、程控电源、安全压力或数据耐久边界未全部确认；" +
+                                        "保持安全停机并按有界预算主动重试。",
+                                        "无人值守恢复");
+                                    ProjectLogHub.Flush(true);
+                                }
+                                else if (sequenceCancellation.IsCancellationRequested ||
+                                         !UnattendedRunCheckpointStore.IsPendingRestartAuthorized(
+                                             intent.Nonce,
+                                             guardedRunId))
+                                {
+                                    retryable = false;
+                                    retryReason = "RestartAuthorizationRevokedBeforeQuiesce";
+                                }
+                                else
+                                {
+                                    Func<Task> quiesceAndFlush;
+                                    lock (Sync) quiesceAndFlush = _quiesceAndFlush;
+                                    if (quiesceAndFlush != null)
+                                        await quiesceAndFlush().ConfigureAwait(false);
+                                    if (!await manager.ShutdownPersistenceAsync(10000).ConfigureAwait(false))
+                                        throw new IOException("DAQ持久化队列未能在10秒内安全关闭。");
+
+                                    if (sequenceCancellation.IsCancellationRequested ||
+                                        !UnattendedRunCheckpointStore.IsPendingRestartAuthorized(
+                                            intent.Nonce,
+                                            guardedRunId))
+                                    {
+                                        retryable = false;
+                                        retryReason = "RestartAuthorizationRevokedBeforeHandoff";
+                                    }
+                                    else
+                                    {
+                                        manager.ReleaseHardwareForRestart();
+                                        handoffReady = true;
+                                        ProjectLogHub.Flush(true);
+
+                                        // 最后一次令牌复核必须紧贴进程创建，防止5s/15s旧重试在
+                                        // 人工撤权或新Run已经Arm之后复活旧检查点。
+                                        if (sequenceCancellation.IsCancellationRequested ||
+                                            !UnattendedRunCheckpointStore.IsPendingRestartAuthorized(
+                                                intent.Nonce,
+                                                guardedRunId))
+                                        {
+                                            retryable = false;
+                                            retryReason = "RestartAuthorizationRevokedAtHandoff";
+                                        }
+                                        else
+                                        {
+                                            StartRecoveryProcess(intent);
+                                            handoffCommitted = true;
+                                            Environment.Exit(86);
+                                            return;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        retryReason = "RestartFailed: " + ex.Message;
+                        ProjectLogHub.Write(ProjectLogLevel.Error, ex.ToString(), "无人值守恢复");
+                        ProjectLogHub.Flush(true);
+                    }
+
+                    var releasedForRetry = false;
+                    var attemptsInWindow = 0;
+                    var releaseError = string.Empty;
+                    try
+                    {
+                        releasedForRetry = UnattendedRunCheckpointStore.ReleasePendingRestartForRetry(
+                            intent.Nonce,
+                            guardedRunId,
+                            retryReason,
+                            out attemptsInWindow,
+                            out releaseError);
+                    }
+                    catch (Exception releaseException)
                     {
                         ProjectLogHub.Write(
-                            ProjectLogLevel.Warning,
-                            $"忽略迟到旧运行的进程自重启请求。ExpectedRunId={expectedRunId}; " +
-                            $"CorrelationId={correlationId}; Reason={reason}",
+                            ProjectLogLevel.Error,
+                            "释放进程自重启单飞检查点失败。",
+                            "无人值守恢复",
+                            releaseException);
+                    }
+
+                    if (!retryable || !releasedForRetry)
+                    {
+                        ProjectLogHub.Write(
+                            ProjectLogLevel.Error,
+                            $"进程自重启序列终止并保持安全停机。" +
+                            $"Retryable={retryable}; Release={releasedForRetry}; " +
+                            $"Gate={releaseError}; RunId={guardedRunId}",
+                            "无人值守恢复");
+                        if (!string.Equals(releaseError, "RunIdMismatch", StringComparison.Ordinal))
+                            await SafeStopOnlyAsync(reason, correlationId).ConfigureAwait(false);
+                        return;
+                    }
+
+                    var retryDelayMs = EpbManager.SelectUnattendedProcessRestartRetryDelayMs(
+                        attemptsInWindow);
+                    ProjectLogHub.Write(
+                        ProjectLogLevel.Warning,
+                        $"进程自重启第{attemptsInWindow}次交接失败，" +
+                        $"将在{retryDelayMs}ms后使用同一RunId和新nonce主动重试；" +
+                        $"Reason={retryReason}; RunId={guardedRunId}",
+                        "无人值守恢复");
+                    ProjectLogHub.Flush(true);
+                    try
+                    {
+                        await Task.Delay(retryDelayMs, sequenceCancellation.Token)
+                            .ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        ProjectLogHub.Write(
+                            ProjectLogLevel.Info,
+                            $"进程自重启退避已因人工撤权或运行代次变化取消。RunId={guardedRunId}",
                             "无人值守恢复");
                         return;
                     }
-                    ProjectLogHub.Write(
-                        ProjectLogLevel.Error,
-                        $"系统故障保持安全停机，不再自重启：{registrationError}; Reason={reason}",
-                        "无人值守恢复");
-                    await SafeStopOnlyAsync(reason, correlationId).ConfigureAwait(false);
-                    return;
                 }
-
-                var manager = _manager;
-                if (manager == null)
-                {
-                    UnattendedRunCheckpointStore.CancelPendingRestart("ManagerUnavailable");
-                    return;
-                }
-
-                StopSafetyResult safety;
-                using (var stopTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(20)))
-                    safety = await manager.StopAllAsync(
-                            new StopContext
-                            {
-                                Source = StopSource.SystemFault,
-                                Reason = reason,
-                                Initiator = nameof(UnattendedRecoveryCoordinator),
-                                CorrelationId = correlationId,
-                                RequestedUtc = DateTime.UtcNow
-                            },
-                            stopTimeout.Token)
-                        .ConfigureAwait(false);
-                // Do not quiesce/dispose acquisition or persistence before validating the
-                // StopAll durability and physical-safety result. A canceled restart must
-                // leave the original process able to continue retrying its accepted data.
-                if (safety == null || !safety.FullyConfirmed)
-                {
-                    UnattendedRunCheckpointStore.CancelPendingRestart("SafetyStopUnconfirmed");
-                    ProjectLogHub.Write(
-                        ProjectLogLevel.Error,
-                        "自重启已取消：电机DO、程控电源、安全压力或数据耐久边界未全部确认。",
-                        "无人值守恢复");
-                    ProjectLogHub.Flush(true);
-                    return;
-                }
-                Func<Task> quiesceAndFlush;
-                lock (Sync) quiesceAndFlush = _quiesceAndFlush;
-                if (quiesceAndFlush != null)
-                    await quiesceAndFlush().ConfigureAwait(false);
-                if (!await manager.ShutdownPersistenceAsync(10000).ConfigureAwait(false))
-                    throw new IOException("DAQ持久化队列未能在10秒内安全关闭。");
-                manager.ReleaseHardwareForRestart();
-                ProjectLogHub.Flush(true);
-
-                StartRecoveryProcess(intent);
-                Environment.Exit(86);
             }
             catch (Exception ex)
             {
-                UnattendedRunCheckpointStore.CancelPendingRestart("RestartFailed: " + ex.Message);
-                ProjectLogHub.Write(ProjectLogLevel.Error, ex.ToString(), "无人值守恢复");
+                ProjectLogHub.Write(
+                    ProjectLogLevel.Error,
+                    "进程自重启协调器异常，保持安全停机。",
+                    "无人值守恢复",
+                    ex);
                 ProjectLogHub.Flush(true);
+                await SafeStopOnlyAsync(reason, correlationId).ConfigureAwait(false);
+            }
+            finally
+            {
+                lock (Sync)
+                {
+                    if (ReferenceEquals(_restartSequenceCancellation, sequenceCancellation))
+                        _restartSequenceCancellation = null;
+                }
+                sequenceCancellation.Dispose();
+                if (!handoffCommitted)
+                    Interlocked.Exchange(ref _restartStarted, 0);
             }
         }
 

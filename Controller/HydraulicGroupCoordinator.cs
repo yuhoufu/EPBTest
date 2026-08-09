@@ -40,7 +40,8 @@ namespace Controller
         public ControlFault(string code, string reason, FaultScope scope, int[] affectedChannels,
             int? groupId, DateTime timestampUtc, Guid correlationId,
             FaultClassification classification = FaultClassification.HardwareConfirmed,
-            FaultRecoveryPolicy recoveryPolicy = FaultRecoveryPolicy.NonRecoverable)
+            FaultRecoveryPolicy recoveryPolicy = FaultRecoveryPolicy.NonRecoverable,
+            Guid runId = default)
         {
             Code = code ?? string.Empty;
             Reason = reason ?? string.Empty;
@@ -49,6 +50,7 @@ namespace Controller
             GroupId = groupId;
             TimestampUtc = timestampUtc;
             CorrelationId = correlationId;
+            RunId = runId;
             Classification = classification;
             RecoveryPolicy = recoveryPolicy;
         }
@@ -59,6 +61,11 @@ namespace Controller
         public int? GroupId { get; }
         public DateTime TimestampUtc { get; }
         public Guid CorrelationId { get; }
+        /// <summary>
+        /// 触发本故障的正式运行身份。它与用于日志/诊断去重的 CorrelationId 独立；
+        /// 无人值守恢复只能用此字段校验检查点授权。
+        /// </summary>
+        public Guid RunId { get; }
         public FaultClassification Classification { get; }
         public FaultRecoveryPolicy RecoveryPolicy { get; }
         public bool DisableChannelOnLatch =>
