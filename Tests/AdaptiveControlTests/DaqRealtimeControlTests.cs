@@ -36,7 +36,7 @@ namespace AdaptiveControlTests
             Run("恢复轮询跨多批仍按连续序号累计", RecoveryVerifierAcceptsBurstProgress, ref passed);
             Run("恢复连续性故障后重新建立干净窗口", RecoveryVerifierResetsOnRealDiscontinuity, ref passed);
             Run("控制积压先追最新而回调故障才重建", DaqFastResyncRecreatePolicy, ref passed);
-            Run("DAQ软件恢复三次后整批重建且仅双重硬件证据报警", DaqSelfMaintenancePolicy, ref passed);
+            Run("DAQ软件恢复持续局部退避且仅双重硬件证据报警", DaqSelfMaintenancePolicy, ref passed);
             Run("恢复阶段只在终态导出完整重证据", IncidentSnapshotHeavyEvidencePolicy, ref passed);
             Run("DAQ恢复先恢复安全电源再做机械定位", DaqRecoveryPrerequisiteOrder, ref passed);
             Run("学习和资格通道即使没有定时器也恢复供电", DaqRecoveryIncludesRunnerOnlyChannels, ref passed);
@@ -53,6 +53,17 @@ namespace AdaptiveControlTests
             Run("恢复后定时器只在未来完整周期锚点执行", TimerResumesAtFutureCompleteBoundary, ref passed);
             Run("暂停数据链必须越过捕获边界且无在途Raw", PauseDrainRequiresAllPipelineBoundaries, ref passed);
             Run("停止边界排除已编号但未被后台接收的末批", RejectedFinalBatchDoesNotPoisonStopBoundary, ref passed);
+            Run("处理队列入口拒绝先锁存永久空洞再发布故障", ProcessingAdmissionRejectLatchesBeforeFaultPublication, ref passed);
+            Run("处理空洞锁存阻止更大水位伪装完整前缀", ProcessingGapClampsPublishedWatermark, ref passed);
+            Run("处理线程提交点后异常从下一批监督重入", ProcessingFaultAfterCommitDoesNotStrandTail, ref passed);
+            Run("处理容量1024仍由500ms独立时效门限提前发现", ProcessingWatchdogUsesOldestAcceptedAge, ref passed);
+            Run("Raw订阅失败不得伪装所有权已移交", RawTransferRequiresAuthoritativeAcceptance, ref passed);
+            Run("Raw权威接收者即时Dispose后兼容快照仍安全", RawOwnerImmediateDisposeStillFeedsLegacySnapshot, ref passed);
+            Run("Raw池化所有权拒绝多个权威订阅者", RawOwnerContractRejectsSecondSubscriber, ref passed);
+            Run("Dev1与Dev2 Raw发布队列和专用线程完全隔离", RawPublicationPipelinesArePerDevice, ref passed);
+            Run("Raw末端准入有界返回且超时仍保留所有权", RawTerminalAdmissionTimeoutIsBounded, ref passed);
+            Run("Raw连续移交超时按真实经过时间晋升", RawTransferPromotionUsesElapsedTime, ref passed);
+            Run("Raw与Stat最终落盘调用均受硬截止约束", RawAndStatFlushDeadlinesAreBounded, ref passed);
             Run("DAQ代次失效后已接收批次只退出实时链但继续归档", InvalidatedGenerationStillArchivesAcceptedBatch, ref passed);
             Run("恢复成功超时停止硬件确认并发只提交一个终态", RecoveryTerminalGateCommitsExactlyOnce, ref passed);
             Run("DAQ探测能力缺失不能误确认为硬件拔除", ProbeCapabilityMissingIsNotHardwareEvidence, ref passed);
@@ -199,9 +210,44 @@ namespace AdaptiveControlTests
                 "拒绝批次没有保留诊断序号");
             Assert(sequence.LastAccepted == accepted,
                 "未入后台队列的末批错误扩大了停止耐久边界");
+            Assert(sequence.LastObserved == rejected &&
+                   TwoDeviceAiAcquirer.IsPermanentContinuityGapObserved(
+                       rejected,
+                       sequence.LastObserved),
+                "最终拒绝序号大于LastAccepted时永久处理空洞被错误隐藏");
+            Assert(TwoDeviceAiAcquirer.ClampPublishedBeforeGap(
+                       sequence.LastAccepted,
+                       rejected) == accepted,
+                "最终拒绝批次错误收紧或扩大了可证明的连续接收前缀");
             Assert(TwoDeviceAiAcquirer.IsBackgroundPipelineDrained(
                     accepted, sequence.LastAccepted, 0, 0, accepted, 0),
                 "已接收前缀全部发布后仍被不存在的拒绝末批永久阻塞");
+        }
+
+        private static void ProcessingAdmissionRejectLatchesBeforeFaultPublication()
+        {
+            var type = typeof(TwoDeviceAiAcquirer);
+            var enqueue = type.GetMethod(
+                "EnqueueForProcessing",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            var latch = type.GetMethod(
+                "LatchProcessingGapIfUnpublished",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            var publish = type.GetMethod(
+                "PublishQueueFullFault",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert(enqueue != null && latch != null && publish != null,
+                "无法读取处理队列入口的连续性锁存调用链");
+
+            var il = enqueue.GetMethodBody()?.GetILAsByteArray();
+            Assert(il != null && il.Length > 0, "EnqueueForProcessing没有可审计IL");
+            var latchOffsets = FindMetadataTokenOffsets(il, latch.MetadataToken);
+            var publishOffsets = FindMetadataTokenOffsets(il, publish.MetadataToken);
+            Assert(latchOffsets.Count == 2 && publishOffsets.Count == 2,
+                "Dev1/Dev2入口拒绝分支没有各自锁存空洞并发布故障");
+            Assert(latchOffsets[0] < publishOffsets[0] &&
+                   latchOffsets[1] < publishOffsets[1],
+                "入口拒绝先发布故障后锁存空洞，同步停止可能冻结错误边界");
         }
 
         private static void InvalidatedGenerationStillArchivesAcceptedBatch()
@@ -212,6 +258,286 @@ namespace AdaptiveControlTests
             Assert(TwoDeviceAiAcquirer.ClassifyAcceptedBatch(false) ==
                    AcceptedBatchDisposition.ArchiveOnly,
                 "失效代次已接收批次被错误丢弃或重新进入实时控制");
+        }
+
+        private static void ProcessingGapClampsPublishedWatermark()
+        {
+            Assert(TwoDeviceAiAcquirer.ClampPublishedBeforeGap(250, 0) == 250,
+                "无空洞时发布水位被错误收紧");
+            Assert(TwoDeviceAiAcquirer.ClampPublishedBeforeGap(250, 201) == 200,
+                "更大发布序号越过首个处理空洞并伪装成完整前缀");
+            Assert(TwoDeviceAiAcquirer.ClampPublishedBeforeGap(150, 201) == 150,
+                "尚未到达空洞时发布水位被错误扩大或收紧");
+
+            // 队列在序号2拒绝后即使回调短暂继续并接收了序号3，序号3也只是
+            // 明确作废的尾段；进程回收边界必须稳定停在连续前缀1。
+            var sequence = new DaqPipelineSequenceState();
+            var accepted1 = sequence.Allocate();
+            sequence.Accept(accepted1);
+            var rejected2 = sequence.Allocate();
+            var accepted3 = sequence.Allocate();
+            sequence.Accept(accepted3);
+            Assert(accepted1 == 1 && rejected2 == 2 && accepted3 == 3 &&
+                   sequence.LastAccepted == 3 && sequence.LastObserved == 3,
+                "处理入口拒绝回放的序号/接收证据错误");
+            Assert(TwoDeviceAiAcquirer.IsPermanentContinuityGapObserved(
+                       rejected2,
+                       sequence.LastObserved) &&
+                   TwoDeviceAiAcquirer.ClampPublishedBeforeGap(
+                       sequence.LastAccepted,
+                       rejected2) == 1,
+                "accept1-reject2-accept3错误形成大于1的进程回收边界");
+
+            var stop = new StopSafetyResult
+            {
+                MotorOffCommandSucceeded = true,
+                PowerOffConfirmed = true,
+                PressureSafeConfirmed = true,
+                PersistenceBoundaryConfirmed = true,
+                LogicalQuiescenceConfirmed = true,
+                DataContinuityCompromised = true
+            };
+            Assert(stop.FullyConfirmed && stop.CanCloseApplication,
+                "已记录空洞的安全前缀闭合后仍阻止无人值守进程回收");
+            Assert(!stop.CanRestartInProcess,
+                "不可重放处理空洞错误允许同进程继续运行");
+            Assert(EpbManager.MustBlockPauseOrResumeForContinuity(true, false) &&
+                   EpbManager.MustBlockPauseOrResumeForContinuity(false, true) &&
+                   !EpbManager.MustBlockPauseOrResumeForContinuity(false, false),
+                "普通Pause/Resume没有将任一DAQ设备的永久数据gap作为同进程硬门禁");
+            Assert(EpbManager.SelectBatchResumeFailureState(true, true) == BatchPauseState.Idle &&
+                   EpbManager.SelectBatchResumeFailureState(true, false) == BatchPauseState.Stopping &&
+                   EpbManager.SelectBatchResumeFailureState(false, false) == BatchPauseState.Paused,
+                "永久DAQ数据空洞后批次仍会错误提交为可再次恢复的Paused");
+        }
+
+        private static void ProcessingFaultAfterCommitDoesNotStrandTail()
+        {
+            Assert(TwoDeviceAiAcquirer.IsAcceptedProcessingBatchPublished(240, 240),
+                "当前批已完成SQLite所有权移交却未识别提交点");
+            Assert(!TwoDeviceAiAcquirer.IsAcceptedProcessingBatchPublished(240, 239),
+                "尚未完成SQLite所有权移交却被误判为已提交");
+            Assert(TwoDeviceAiAcquirer.GetFirstUnprocessedSequenceAfterWorkerFault(
+                       240, 240, 241, 260) == 0,
+                "提交点后UI/诊断异常仍锁存当前批并阻止消费者监督重入");
+            Assert(TwoDeviceAiAcquirer.GetFirstUnprocessedSequenceAfterWorkerFault(
+                       240, 239, 241, 260) == 240,
+                "提交点前异常没有锁存当前在途批次");
+            Assert(TwoDeviceAiAcquirer.GetFirstUnprocessedSequenceAfterWorkerFault(
+                       0, 240, 241, 260) == 241,
+                "无在途标记时没有锁存真实队头首个未处理序号");
+        }
+
+        private static void ProcessingWatchdogUsesOldestAcceptedAge()
+        {
+            var now = Stopwatch.Frequency * 20L;
+            var queued = now - (long)(Stopwatch.Frequency * 0.60);
+            var inFlight = now - (long)(Stopwatch.Frequency * 0.30);
+            var age = TwoDeviceAiAcquirer.GetOldestProcessingAgeMs(queued, inFlight, now);
+            Assert(age >= 599 && age <= 601,
+                $"看门狗未按队列/在途中的最老已接纳批次计龄：{age:F1}ms");
+            Assert(TwoDeviceAiAcquirer.GetOldestProcessingAgeMs(0, inFlight, now) >= 299,
+                "队列为空时忽略了仍在处理的批次");
+            Assert(TwoDeviceAiAcquirer.GetOldestProcessingAgeMs(0, 0, now) == 0,
+                "空流水线被误判为陈旧");
+        }
+
+        private static void RawTransferRequiresAuthoritativeAcceptance()
+        {
+            Assert(!TwoDeviceAiAcquirer.IsRawPublicationComplete(true, false, false, false),
+                "正式Raw接收者抛错后仍被伪装为已移交");
+            Assert(TwoDeviceAiAcquirer.IsRawPublicationComplete(true, true, true, false),
+                "正式Raw所有权已接收却被兼容观察者异常撤销");
+            Assert(TwoDeviceAiAcquirer.IsRawPublicationComplete(false, false, true, true),
+                "仅兼容Raw链成功时未完成发布");
+            Assert(!TwoDeviceAiAcquirer.IsRawPublicationComplete(false, false, true, false),
+                "兼容Raw链失败仍推进Transferred水位");
+        }
+
+        private static void RawOwnerImmediateDisposeStillFeedsLegacySnapshot()
+        {
+            var now = DateTime.UtcNow;
+            var batch = OwnedDaqRawBatch.CopyFrom(
+                "Dev1",
+                new[,] { { 1.25, 2.5 }, { 3.75, 5.0 } },
+                now,
+                now.AddMilliseconds(-1),
+                77);
+            var ownerCalled = false;
+            var legacyCalled = false;
+            var reRentedOriginalBuffer = false;
+            var rentedAfterDispose = new List<double[]>();
+            var accepted = TwoDeviceAiAcquirer.DispatchRawSubscribersExactOnce(
+                batch,
+                owned =>
+                {
+                    ownerCalled = true;
+                    // 模拟权威接收者在返回前已由末端消费者完成并归还池化数组。
+                    var returnedBuffer = owned.Values;
+                    owned.Dispose();
+                    // 立即从共享池并发重租并覆写；即使正好拿回同一数组，legacy 也必须
+                    // 只读取移交前的独立快照，而不能观察复用后的内容。
+                    for (var attempt = 0; attempt < 64; attempt++)
+                    {
+                        var rented = ArrayPool<double>.Shared.Rent(returnedBuffer.Length);
+                        rentedAfterDispose.Add(rented);
+                        if (!ReferenceEquals(rented, returnedBuffer)) continue;
+                        reRentedOriginalBuffer = true;
+                        for (var index = 0; index < rented.Length; index++) rented[index] = -999.0;
+                        break;
+                    }
+                },
+                (device, matrix, current, last) =>
+                {
+                    legacyCalled = true;
+                    Assert(device == "Dev1" && current == now && last == now.AddMilliseconds(-1),
+                        "兼容Raw快照元数据错误");
+                    Assert(Math.Abs(matrix[0, 0] - 1.25) < 1e-12 &&
+                           Math.Abs(matrix[1, 1] - 5.0) < 1e-12,
+                        "权威接收者即时Dispose后兼容快照读取了已归还对象池的数组");
+                },
+                out var legacyError);
+            foreach (var rented in rentedAfterDispose)
+                ArrayPool<double>.Shared.Return(rented, clearArray: false);
+            Assert(accepted && ownerCalled && legacyCalled && legacyError == null,
+                "Raw权威所有权和兼容快照未按精确一次顺序完成");
+            Assert(reRentedOriginalBuffer,
+                "测试未实际覆盖权威接收者Dispose后同一池化数组被立即重租的ABA场景");
+
+            var legacyFaultBatch = OwnedDaqRawBatch.CopyFrom(
+                "Dev1", new[,] { { 6.0 } }, now, now, 78);
+            var ownerAcceptedDespiteLegacyFault = TwoDeviceAiAcquirer.DispatchRawSubscribersExactOnce(
+                legacyFaultBatch,
+                owned => owned.Dispose(),
+                (_, _, _, _) => throw new InvalidOperationException("legacy fault"),
+                out var isolatedLegacyError);
+            Assert(ownerAcceptedDespiteLegacyFault && isolatedLegacyError is InvalidOperationException,
+                "兼容观察者异常撤销了已完成的Raw权威所有权移交");
+        }
+
+        private static void RawOwnerContractRejectsSecondSubscriber()
+        {
+            Action<OwnedDaqRawBatch> first = _ => { };
+            Action<OwnedDaqRawBatch> second = _ => { };
+            var current = TwoDeviceAiAcquirer.AddSingleOwnedRawSubscriber(null, first);
+            var rejected = false;
+            try { _ = TwoDeviceAiAcquirer.AddSingleOwnedRawSubscriber(current, second); }
+            catch (InvalidOperationException) { rejected = true; }
+            Assert(current == first && rejected,
+                "多个Raw权威订阅者仍可形成前一订阅者接纳、后一订阅者抛错后的重试/双重Dispose");
+        }
+
+        private static void RawPublicationPipelinesArePerDevice()
+        {
+            var flags = BindingFlags.Instance | BindingFlags.NonPublic;
+            var type = typeof(TwoDeviceAiAcquirer);
+            foreach (var suffix in new[] { "Queue", "Signal", "Slots", "Worker" })
+            {
+                Assert(type.GetField("_rawPublication" + suffix + "Dev1", flags) != null,
+                    "Dev1 Raw" + suffix + "未独立定义");
+                Assert(type.GetField("_rawPublication" + suffix + "Dev2", flags) != null,
+                    "Dev2 Raw" + suffix + "未独立定义");
+            }
+        }
+
+        private static void RawTerminalAdmissionTimeoutIsBounded()
+        {
+            var directory = Path.Combine(
+                Path.GetTempPath(),
+                "epb-raw-admission-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            var context = new DaqAIContext("Dev1", 1, 60, 1, 1, 1, directory);
+            OwnedDaqRawBatch rejected = null;
+            try
+            {
+                var now = DateTime.UtcNow;
+                for (var sequence = 1; sequence <= context.RawQueueCapacity; sequence++)
+                {
+                    var accepted = OwnedDaqRawBatch.CopyFrom(
+                        "Dev1", new[,] { { (double)sequence } }, now, now.AddMilliseconds(-1), sequence);
+                    context.EnqueueRawData(accepted);
+                }
+
+                rejected = OwnedDaqRawBatch.CopyFrom(
+                    "Dev1", new[,] { { 999.0 } }, now, now.AddMilliseconds(-1), 999);
+                var elapsed = Stopwatch.StartNew();
+                var timedOut = false;
+                try { context.EnqueueRawData(rejected); }
+                catch (TimeoutException) { timedOut = true; }
+                elapsed.Stop();
+                Assert(timedOut, "Raw末端队列满后仍无限等待或错误接纳超容量批次");
+                Assert(elapsed.ElapsedMilliseconds < 2000,
+                    $"Raw末端准入没有有界返回：{elapsed.ElapsedMilliseconds}ms");
+                Assert(Math.Abs(rejected[0, 0] - 999.0) < 1e-12,
+                    "准入超时后上游所有权已被错误Dispose/归还对象池");
+            }
+            finally
+            {
+                rejected?.Dispose();
+                try { context.FlushRawToDiskAsync().GetAwaiter().GetResult(); } catch { }
+                try { Directory.Delete(directory, true); } catch { }
+            }
+        }
+
+        private static void RawTransferPromotionUsesElapsedTime()
+        {
+            var start = Stopwatch.Frequency * 10L;
+            var before = start + (long)(Stopwatch.Frequency * 29.999);
+            var deadline = start + Stopwatch.Frequency * 30L;
+            Assert(!TwoDeviceAiAcquirer.HasTransferTimedOut(start, before, 30000),
+                "Raw瞬时/短时背压被提前晋升为永久数据空洞");
+            Assert(TwoDeviceAiAcquirer.HasTransferTimedOut(start, deadline, 30000),
+                "Raw持续阻塞30秒仍未晋升永久数据空洞");
+        }
+
+        private static void RawAndStatFlushDeadlinesAreBounded()
+        {
+            var directory = Path.Combine(
+                Path.GetTempPath(),
+                "epb-flush-deadline-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            var context = new DaqAIContext("Dev1", 1, 60, 1, 1, 1, directory);
+            var flags = BindingFlags.Instance | BindingFlags.NonPublic;
+            var rawGate = (SemaphoreSlim)typeof(DaqAIContext)
+                .GetField("rawQueueGate", flags)?.GetValue(context);
+            var statGate = (SemaphoreSlim)typeof(DaqAIContext)
+                .GetField("statFileLock", flags)?.GetValue(context);
+            Assert(rawGate != null && statGate != null, "Raw/Stat落盘门禁字段不可用");
+            var rawHeldByTest = false;
+            var statHeldByTest = false;
+            try
+            {
+                rawGate.Wait();
+                rawHeldByTest = true;
+                var rawElapsed = Stopwatch.StartNew();
+                var rawTimedOut = false;
+                try { context.FlushRawToDiskAsync(100, CancellationToken.None).GetAwaiter().GetResult(); }
+                catch (TimeoutException) { rawTimedOut = true; }
+                rawElapsed.Stop();
+                Assert(rawTimedOut && rawElapsed.ElapsedMilliseconds < 2000,
+                    $"Raw落盘永久等待未被deadline切断：{rawElapsed.ElapsedMilliseconds}ms");
+                rawGate.Release();
+                rawHeldByTest = false;
+
+                statGate.Wait();
+                statHeldByTest = true;
+                var statElapsed = Stopwatch.StartNew();
+                var statTimedOut = false;
+                try { context.FlushStatToDiskAsync(100, CancellationToken.None).GetAwaiter().GetResult(); }
+                catch (TimeoutException) { statTimedOut = true; }
+                statElapsed.Stop();
+                Assert(statTimedOut && statElapsed.ElapsedMilliseconds < 2000,
+                    $"Stat落盘永久等待未被deadline切断：{statElapsed.ElapsedMilliseconds}ms");
+                statGate.Release();
+                statHeldByTest = false;
+            }
+            finally
+            {
+                if (rawHeldByTest) rawGate.Release();
+                if (statHeldByTest) statGate.Release();
+                Thread.Sleep(50);
+                try { Directory.Delete(directory, true); } catch { }
+            }
         }
 
         private static void RingOrderCapacityResetAndIsolation()
@@ -365,8 +691,14 @@ namespace AdaptiveControlTests
                 "控制积压仍被强制Stop/Start，未先丢旧追新");
             Assert(!EpbManager.RequiresDaqTaskRecreate("ControlQueueFull"),
                 "控制队列积压未走快速重同步");
-            Assert(EpbManager.RequiresDaqTaskRecreate("DaqCallbackStale"),
-                "真实回调中断未要求DAQ任务重建");
+            Assert(!EpbManager.RequiresDaqTaskRecreate("BackgroundProcessingStale") &&
+                   !EpbManager.RequiresDaqTaskRecreate("BackgroundWorkerFault") &&
+                   !EpbManager.RequiresDaqTaskRecreate("BackgroundBatchTransferFault") &&
+                   !EpbManager.RequiresDaqTaskRecreate("RawPersistenceTransferFault") &&
+                   !EpbManager.RequiresDaqTaskRecreate("RawPersistencePermanentFault"),
+                "后台消费者/所有权移交故障仍错误重建健康NI任务");
+            Assert(!EpbManager.RequiresDaqTaskRecreate("DaqCallbackStale"),
+                "短暂回调停顿仍被强制Stop/Start，未先复核已自行恢复的新鲜回调");
             Assert(EpbManager.RequiresDaqTaskRecreate("DaqClockModelInvalid"),
                 "时钟模型失效未要求DAQ任务重建");
         }
@@ -389,8 +721,9 @@ namespace AdaptiveControlTests
                    EpbManager.GetDaqSelfMaintenanceDelayMs(20) == 30000,
                 "自维护退避不是1/2/5/10/30秒有界序列");
             Assert(!EpbManager.ShouldEscalateSoftwareRecovery(2) &&
-                   EpbManager.ShouldEscalateSoftwareRecovery(3),
-                "DAQ软件恢复未在三次失败后切换为整批软件重建");
+                   EpbManager.ShouldEscalateSoftwareRecovery(3) &&
+                   EpbManager.ShouldKeepSoftwareRecoveryLocal("DaqSelfMaintenance"),
+                "DAQ自维护未保持局部退避或丢失通用三次阈值");
         }
 
         private static void IncidentSnapshotHeavyEvidencePolicy()
@@ -641,7 +974,7 @@ namespace AdaptiveControlTests
             Directory.CreateDirectory(root);
             try
             {
-                const string version = "V2.12.0.25";
+                const string version = "V2.12.0.26";
                 const string commit = "0123456789abcdef0123456789abcdef01234567";
                 const string buildUtc = "2026-08-09T13:00:00.0000000Z";
                 const string configSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -1843,6 +2176,26 @@ namespace AdaptiveControlTests
                 if (il[offset - 1] == 0x28 || il[offset - 1] == 0x6f) return offset;
             }
             return -1;
+        }
+
+        private static List<int> FindMetadataTokenOffsets(byte[] il, int metadataToken)
+        {
+            var offsets = new List<int>();
+            var token = BitConverter.GetBytes(metadataToken);
+            for (var offset = 1; offset <= il.Length - token.Length; offset++)
+            {
+                var matches = true;
+                for (var index = 0; index < token.Length; index++)
+                {
+                    if (il[offset + index] == token[index]) continue;
+                    matches = false;
+                    break;
+                }
+                if (!matches) continue;
+                if (il[offset - 1] == 0x28 || il[offset - 1] == 0x6f)
+                    offsets.Add(offset);
+            }
+            return offsets;
         }
 
         private static void RawBatchOwnershipStressForBothDevices()

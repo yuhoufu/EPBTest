@@ -71,6 +71,8 @@ namespace AdaptiveControlTests
             Assert(snapshot.OverCapacityDroppedBatchCount == 0 &&
                    snapshot.DiscardedGenerationBatchCount == 0,
                 "容量满背压仍发生了已接收批次丢弃");
+
+            RejectedEnqueueAndDisposeTimeoutPreserveCallerOwnership();
         }
 
         internal static void GenerationChangePreservesAcceptedFifo()
@@ -281,6 +283,8 @@ namespace AdaptiveControlTests
             {
                 canceled.Dispose();
             }
+
+            RecorderAbsenceAndSupervisorFaultRetainOriginalOrder();
         }
 
         internal static void DurablePrefixAllowsHealthyLaterTrafficButRejectsSuppression()
@@ -310,9 +314,263 @@ namespace AdaptiveControlTests
                 "第三批写入后耐久前缀未放行");
 
             coordinator.SuppressAfter("Dev1", DateTime.UtcNow, Guid.NewGuid());
-            Assert(!coordinator.WaitForDurablePrefixAsync(
+            Assert(coordinator.WaitForDurablePrefixAsync(
                     "Dev1", 3, 50, CancellationToken.None).GetAwaiter().GetResult(),
-                "DAQ准入抑制期间错误复用通道级耐久前缀门禁");
+                "主动截止错误撤销了截止前已真实写入的耐久前缀");
+
+            DequeuePublishesInFlightBeforeRemovingQueueHead();
+            SuppressionCutoffUsesAtomicUtcTicks();
+        }
+
+        private static void RejectedEnqueueAndDisposeTimeoutPreserveCallerOwnership()
+        {
+            var alreadyDisposed = new DaqPersistenceCoordinator(
+                () => new BlockingRecorder(0),
+                Config.NullLogger.Instance,
+                4, 3, 1, 1000, 100, 2000, 1);
+            Assert(alreadyDisposed.DisposeAfterDrainAsync(1000).GetAwaiter().GetResult(),
+                "空持久化协调器未能安全释放");
+            var rejected = NewBatch("Dev1", 701);
+            try
+            {
+                Assert(!alreadyDisposed.Enqueue(rejected),
+                    "已释放协调器错误接纳新批次");
+                Assert(rejected.Device == "Dev1" && rejected.Sequence == 701 &&
+                       rejected.TimestampsUtc != null,
+                    "Enqueue(false) 错误释放调用者仍拥有的池化批次");
+            }
+            finally
+            {
+                // A rejected batch has exactly one owner: the caller.
+                rejected.Dispose();
+                alreadyDisposed.Dispose();
+            }
+
+            var recorder = new GatedFailureRecorder();
+            var coordinator = new DaqPersistenceCoordinator(
+                () => recorder,
+                Config.NullLogger.Instance,
+                2, 1, 0, 1000, 100, 1000, 1);
+            var first = NewBatch("Dev1", 711);
+            var second = NewBatch("Dev1", 712);
+            var third = NewBatch("Dev1", 713);
+            var rejectedWhileClosing = NewBatch("Dev1", 714);
+            try
+            {
+                Assert(coordinator.Enqueue(first), "关闭竞态首批未入队");
+                WaitUntil(
+                    () => coordinator.GetSnapshot("Dev1").DurabilityBlocked,
+                    2000,
+                    "关闭竞态首批未进入写盘重试");
+                Assert(coordinator.Enqueue(second), "关闭竞态第二批未入队");
+                Assert(coordinator.Enqueue(third), "关闭竞态第三批未入队");
+
+                var producer = Task.Run(() => coordinator.Enqueue(rejectedWhileClosing));
+                Thread.Sleep(50);
+                Assert(!coordinator.DisposeAfterDrainAsync(50).GetAwaiter().GetResult(),
+                    "仍有在途批次时错误完成资源释放");
+                Assert(first.Device == "Dev1" && first.Sequence == 711 &&
+                       first.TimestampsUtc != null,
+                    "释放超时清除了仍由活 worker 持有的当前批次");
+
+                recorder.AllowWrites();
+                Assert(producer.Wait(2000) && !producer.Result,
+                    "关闭准入后受背压生产者未以 Enqueue(false) 返回");
+                Assert(rejectedWhileClosing.Device == "Dev1" &&
+                       rejectedWhileClosing.Sequence == 714 &&
+                       rejectedWhileClosing.TimestampsUtc != null,
+                    "关闭竞态 Enqueue(false) 释放了调用者批次，存在对象池 ABA 风险");
+                rejectedWhileClosing.Dispose();
+                rejectedWhileClosing = null;
+
+                WaitUntil(() => Volatile.Read(ref recorder.SuccessCount) == 3, 3000,
+                    "释放超时后活 worker 未按原队列完成三批补写");
+                Assert(coordinator.DisposeAfterDrainAsync(2000).GetAwaiter().GetResult(),
+                    "安全排空后未完成真正资源释放");
+            }
+            finally
+            {
+                rejectedWhileClosing?.Dispose();
+                coordinator.Dispose();
+            }
+
+            AdmissionCloseWaitsForCommittedEnqueue();
+        }
+
+        private static void AdmissionCloseWaitsForCommittedEnqueue()
+        {
+            var recorder = new OrderedRecorder();
+            var coordinator = new DaqPersistenceCoordinator(
+                () => recorder,
+                Config.NullLogger.Instance,
+                4, 3, 1, 1000, 100, 2000, 1);
+            using var committed = new ManualResetEventSlim(false);
+            using var release = new ManualResetEventSlim(false);
+            var batch = NewBatch("Dev1", 719);
+            Task<bool> producer = null;
+            coordinator.AdmissionCommitBarrierForTest = (device, sequence) =>
+            {
+                if (device != "Dev1" || sequence != 719) return;
+                committed.Set();
+                if (!release.Wait(3000))
+                    throw new TimeoutException("admission close barrier timeout");
+            };
+            try
+            {
+                producer = Task.Run(() => coordinator.Enqueue(batch));
+                Assert(committed.Wait(2000),
+                    "生产者未到达最终准入检查后的提交屏障");
+                Assert(!coordinator.DisposeAfterDrainAsync(50).GetAwaiter().GetResult(),
+                    "关闭未等待已越过最终检查但尚未入队的生产者");
+
+                release.Set();
+                Assert(producer.Wait(2000) && producer.Result,
+                    "关闭竞态中已线性接纳的批次未完成入队");
+                WaitUntil(() => recorder.Count == 1, 2000,
+                    "关闭竞态中已接纳批次未被worker写入");
+                Assert(recorder.SequenceEqual(719),
+                    "关闭竞态写入了错误批次");
+                Assert(coordinator.DisposeAfterDrainAsync(2000).GetAwaiter().GetResult(),
+                    "已接纳批次排空后资源仍未安全释放");
+            }
+            finally
+            {
+                release.Set();
+                if (producer == null || (producer.IsCompleted && !producer.Result))
+                    batch.Dispose();
+                coordinator.Dispose();
+            }
+        }
+
+        private static void RecorderAbsenceAndSupervisorFaultRetainOriginalOrder()
+        {
+            var recorder = new OrderedRecorder();
+            var provider = new SwitchableRecorderProvider();
+            using (var coordinator = new DaqPersistenceCoordinator(
+                       provider.Get,
+                       Config.NullLogger.Instance,
+                       8, 6, 4, 1000, 100, 1000, 1))
+            {
+                Assert(coordinator.Enqueue(NewBatch("Dev1", 721)),
+                    "记录器为空场景首批未入队");
+                Assert(coordinator.Enqueue(NewBatch("Dev1", 722)),
+                    "记录器为空场景第二批未入队");
+                Thread.Sleep(150);
+                Assert(coordinator.GetSnapshot("Dev1").Sequence == 0,
+                    "记录器为空时当前批次被伪装成已持久化");
+                Assert(!coordinator.WaitForDurablePrefixAsync(
+                        "Dev1", 721, 50, CancellationToken.None).GetAwaiter().GetResult(),
+                    "记录器为空时耐久前缀错误放行");
+
+                provider.Set(recorder);
+                WaitUntil(() => recorder.Count == 2, 3000,
+                    "记录器恢复后未补写保留批次");
+                Assert(recorder.SequenceEqual(721, 722),
+                    "记录器恢复后没有按原 FIFO 顺序补写");
+            }
+
+            var supervisedRecorder = new OrderedRecorder();
+            var flakyProvider = new ThrowingRecorderProvider(supervisedRecorder, 2);
+            var states = new ConcurrentQueue<DaqPersistenceStateChanged>();
+            using (var coordinator = new DaqPersistenceCoordinator(
+                       flakyProvider.Get,
+                       new ThrowingLogger(),
+                       8, 6, 4, 1000, 100, 1000, 1))
+            {
+                coordinator.StateChanged += states.Enqueue;
+                Assert(coordinator.Enqueue(NewBatch("Dev2", 731)),
+                    "监督重启场景首批未入队");
+                Assert(coordinator.Enqueue(NewBatch("Dev2", 732)),
+                    "监督重启场景第二批未入队");
+                WaitUntil(() => supervisedRecorder.Count == 2, 3000,
+                    "worker异常监督重启后未补写原批次");
+                Assert(supervisedRecorder.SequenceEqual(731, 732),
+                    "worker监督重启丢失当前批次或打乱 FIFO 顺序");
+                Assert(coordinator.WaitForDurablePrefixAsync(
+                        "Dev2", 732, 1000, CancellationToken.None).GetAwaiter().GetResult(),
+                    "监督重启补写后耐久边界未闭合");
+                Assert(states.Any(state =>
+                           state.State == DaqPersistenceState.Failed &&
+                           state.Code == "DaqPersistenceWorkerFault"),
+                    "worker异常未锁存并发布持久化失败");
+                Assert(states.Any(state =>
+                           state.State == DaqPersistenceState.Recovered &&
+                           state.Code == "DaqPersistenceRecovered"),
+                    "worker监督补写成功后未发布Recovered");
+            }
+        }
+
+        private static void DequeuePublishesInFlightBeforeRemovingQueueHead()
+        {
+            var recorder = new OrderedRecorder();
+            using var coordinator = new DaqPersistenceCoordinator(
+                () => recorder,
+                Config.NullLogger.Instance,
+                8, 6, 4, 1000, 100, 2000, 1);
+            using var claimed = new ManualResetEventSlim(false);
+            using var release = new ManualResetEventSlim(false);
+            coordinator.BatchClaimedForTest = (device, sequence) =>
+            {
+                if (device != "Dev1" || sequence != 741) return;
+                claimed.Set();
+                if (!release.Wait(3000))
+                    throw new TimeoutException("in-flight publication test gate timeout");
+            };
+
+            Assert(coordinator.Enqueue(NewBatch("Dev1", 741)),
+                "in-flight窗口测试批次未入队");
+            Assert(claimed.Wait(2000), "worker未到达已发布dequeue所有权的测试门");
+            Assert(coordinator.GetSnapshot("Dev1").QueueDepth == 0,
+                "测试未覆盖队头已移除状态");
+            Assert(!coordinator.DrainAsync(50).GetAwaiter().GetResult(),
+                "队头移除但写入尚未开始时 Drain 错误提前放行");
+            Assert(!coordinator.WaitForDurablePrefixAsync(
+                    "Dev1", 741, 50, CancellationToken.None).GetAwaiter().GetResult(),
+                "队头移除但仍在途时耐久前缀错误提前放行");
+
+            release.Set();
+            Assert(coordinator.WaitForDurablePrefixAsync(
+                    "Dev1", 741, 2000, CancellationToken.None).GetAwaiter().GetResult(),
+                "在途批次真实写入后耐久前缀未放行");
+        }
+
+        private static void SuppressionCutoffUsesAtomicUtcTicks()
+        {
+            var queueType = typeof(DaqPersistenceCoordinator).GetNestedType(
+                "DeviceQueue", BindingFlags.NonPublic);
+            var cutoffField = queueType?.GetField(
+                "SuppressAfterUtcTicks", BindingFlags.Instance | BindingFlags.Public);
+            Assert(cutoffField != null && cutoffField.FieldType == typeof(long),
+                "32位进程的 SuppressAfter 截止仍不是原子 long ticks 表示");
+            Assert(queueType?.GetField(
+                       "SuppressAfterUtc", BindingFlags.Instance | BindingFlags.Public) == null,
+                "非原子 Nullable<DateTime> 截止字段仍然存在");
+
+            var recorder = new OrderedRecorder();
+            using var coordinator = new DaqPersistenceCoordinator(
+                () => recorder,
+                Config.NullLogger.Instance,
+                8, 6, 4, 1000, 100, 2000, 1);
+            var cutoff = DateTime.UtcNow.AddSeconds(1);
+            coordinator.SuppressAfter("Dev1", cutoff, Guid.NewGuid());
+            Assert(coordinator.Enqueue(NewBatchAt("Dev1", 751, cutoff.AddTicks(-1))),
+                "截止前批次未被接纳");
+            Assert(coordinator.Enqueue(NewBatchAt("Dev1", 752, cutoff.AddTicks(1))),
+                "截止后批次未被明确抑制处理");
+            WaitUntil(() => recorder.Count == 1, 2000,
+                "截止前批次未真实写入");
+            Assert(recorder.SequenceEqual(751),
+                "截止后批次错误进入记录器");
+            Assert(coordinator.GetSnapshot("Dev1").SuppressedBatchCount == 1,
+                "原子截止没有准确统计被抑制批次");
+
+            coordinator.ResumeAdmission("Dev1");
+            Assert(coordinator.Enqueue(NewBatchAt("Dev1", 753, cutoff.AddTicks(2))),
+                "恢复准入后批次未入队");
+            WaitUntil(() => recorder.Count == 2, 2000,
+                "恢复准入后批次未写入");
+            Assert(recorder.SequenceEqual(751, 753),
+                "恢复准入后的真实写入顺序错误");
         }
 
         internal static void DiskWriterUsesLazyTransactionalViewsAndCanResetThem()
@@ -734,13 +992,21 @@ namespace AdaptiveControlTests
         }
 
         private static DaqDiskBatch NewBatch(string device, long sequence, long generation = 0)
+            => NewBatchAt(device, sequence, DateTime.UtcNow, generation);
+
+        private static DaqDiskBatch NewBatchAt(
+            string device,
+            long sequence,
+            DateTime timestampUtc,
+            long generation = 0)
         {
-            var now = DateTime.UtcNow;
             var timestamps = ArrayPool<DateTime>.Shared.Rent(1);
             var currents = ArrayPool<double>.Shared.Rent(1);
             var pressures = ArrayPool<double>.Shared.Rent(1);
-            timestamps[0] = now;
-            currents[0] = 1;
+            timestamps[0] = timestampUtc;
+            // The sequence tag lets test recorders prove FIFO identity without exposing a
+            // production-only sequence field through the recorder interface.
+            currents[0] = sequence;
             pressures[0] = 10;
             return new DaqDiskBatch(
                 device,
@@ -900,6 +1166,86 @@ namespace AdaptiveControlTests
             public void FlushRecent(int epbId, int lastNCycles) { }
             public int GetLastCycleNumber(int ch) => 0;
             public void FlushRecentTo(int epbId, int lastNCycles, string exportDir, bool includeRunningCycle) { }
+        }
+
+        private sealed class OrderedRecorder : IEpbCycleRecorder, IBatchedEpbCycleRecorder
+        {
+            private readonly ConcurrentQueue<long> _sequences = new();
+
+            internal int Count => _sequences.Count;
+
+            internal bool SequenceEqual(params long[] expected)
+                => _sequences.ToArray().SequenceEqual(expected ?? Array.Empty<long>());
+
+            public void WriteDeviceBatch(
+                DateTime[] timestampsUtc,
+                IReadOnlyList<EpbChannelDiskBatch> channels,
+                int count)
+            {
+                if (channels == null || channels.Count == 0 ||
+                    channels[0].Currents == null || count <= 0)
+                    throw new InvalidOperationException("ordered recorder received an empty batch");
+                _sequences.Enqueue((long)channels[0].Currents[0]);
+            }
+
+            public void WriteBatch(int epbId, DateTime[] timestampsUtc, double[] currents, double[] pressures, int count)
+                => _sequences.Enqueue((long)currents[0]);
+            public void WriteBatch(int epbId, DateTime[] tsUtc, double[] currents, double[] groupPressures)
+                => _sequences.Enqueue((long)currents[0]);
+            public void SealCycleWindow(int epbId, int cycleNumber, DateTime endUtc) { }
+            public void BeginCycle(int epbId, int cycleNumber, DateTime utcNow) { }
+            public int BeginLearningCycle(int epbId, DateTime utcNow) => -1;
+            public int GetCurrentCycleSampleCount(int epbId) => 0;
+            public void CompleteCycle(int epbId, int cycleNumber, int finalN, DateTime utcNow) { }
+            public void AlarmCycle(int epbId, int cycleNumber, int finalN, DateTime utcNow) { }
+            public AlarmCycleSnapshotEvidence SealAndExportAlarmCycle(int epbId, int cycleNumber, string exportDir, DateTime fallbackEndUtc) => new();
+            public AlarmCycleSnapshotEvidence SealAndExportCycle(int epbId, int cycleNumber, string exportDir, DateTime fallbackEndUtc, string status) => new();
+            public void AbortCycle(int epbId, int cycleNumber, int finalN, DateTime utcNow, string status) { }
+            public void FlushRecent(int epbId, int lastNCycles) { }
+            public int GetLastCycleNumber(int ch) => 0;
+            public void FlushRecentTo(int epbId, int lastNCycles, string exportDir, bool includeRunningCycle) { }
+        }
+
+        private sealed class SwitchableRecorderProvider
+        {
+            private IEpbCycleRecorder _current;
+
+            internal IEpbCycleRecorder Get() => Volatile.Read(ref _current);
+
+            internal void Set(IEpbCycleRecorder recorder)
+                => Volatile.Write(ref _current, recorder);
+        }
+
+        private sealed class ThrowingRecorderProvider
+        {
+            private readonly IEpbCycleRecorder _recorder;
+            private readonly int _throwCount;
+            private int _calls;
+
+            internal ThrowingRecorderProvider(IEpbCycleRecorder recorder, int throwCount)
+            {
+                _recorder = recorder;
+                _throwCount = Math.Max(0, throwCount);
+            }
+
+            internal IEpbCycleRecorder Get()
+            {
+                if (Interlocked.Increment(ref _calls) <= _throwCount)
+                    throw new InvalidOperationException("simulated recorder provider fault");
+                return _recorder;
+            }
+        }
+
+        private sealed class ThrowingLogger : Config.IAppLogger
+        {
+            public void Info(string message, string category = null)
+                => throw new InvalidOperationException("simulated info logger fault");
+
+            public void Warn(string message, string category = null)
+                => throw new InvalidOperationException("simulated warning logger fault");
+
+            public void Error(string message, string category = null, Exception ex = null)
+                => throw new InvalidOperationException("simulated error logger fault");
         }
 
         private sealed class ActiveCycleLimitRecorder : IEpbCycleRecorder, IBatchedEpbCycleRecorder

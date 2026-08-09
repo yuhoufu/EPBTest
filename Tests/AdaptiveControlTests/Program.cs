@@ -264,7 +264,7 @@ namespace AdaptiveControlTests
                 Run("DAQ代次切换不丢弃已接收持久化FIFO", DaqPersistenceCoordinatorTests.GenerationChangePreservesAcceptedFifo);
                 Run("磁盘50至1500ms暂停均不反压生产且单次暂停后恢复", DaqPersistenceCoordinatorTests.DiskPauseMatrixRemainsBoundedAndRecovers);
                 Run("写盘超时保留原批次且存储恢复后按序补写", DaqPersistenceCoordinatorTests.RecoveryTimeoutRetainsBatchUntilStorageReturns);
-                Run("通道级耐久前缀不阻塞同设备健康后续流量", DaqPersistenceCoordinatorTests.DurablePrefixAllowsHealthyLaterTrafficButRejectsSuppression);
+                Run("主动截止不撤销已写入耐久前缀且不阻塞健康后续流量", DaqPersistenceCoordinatorTests.DurablePrefixAllowsHealthyLaterTrafficButRejectsSuppression);
                 Run("活动圈上限事件携带EPB圈号和限制", DaqPersistenceCoordinatorTests.ActiveCycleLimitPublishesLifecycleIdentity);
                 Run("持久化诊断观察者异常不重复写盘", DaqPersistenceCoordinatorTests.DiagnosticObserverFailureDoesNotRetryWrite);
                 Run("映射故障进程内自愈不触发DAQ停机", DaqPersistenceCoordinatorTests.MappingFailureRecoversBeforeSafetyPause);
@@ -3231,17 +3231,21 @@ namespace AdaptiveControlTests
             Assert(gate.TryOpen(runId) && !gate.TryOpen(runId),
                 "新运行复位后恢复熔断器未重新允许一次整批重建");
 
+            var faultCorrelationId = Guid.NewGuid();
             var fault = EpbManager.CreateSoftwareRecoveryCircuitFault(
                 runId,
                 new[] { 5, 4, 5, 99 },
-                "Injected");
+                "Injected",
+                faultCorrelationId);
             Assert(fault.Code == "SoftwareRecoveryCircuitOpen" &&
-                   fault.CorrelationId == runId &&
+                   fault.RunId == runId &&
+                   fault.CorrelationId == faultCorrelationId &&
+                   fault.CorrelationId != fault.RunId &&
                    fault.Scope == FaultScope.Global &&
                    fault.Classification == FaultClassification.SystemFault &&
                    fault.RecoveryPolicy == FaultRecoveryPolicy.UnattendedBatchRecycle &&
                    fault.AffectedChannels.SequenceEqual(new[] { 4, 5 }),
-                "软件恢复熔断未携带原 RunId 或未路由到无人值守整批重建");
+                "软件恢复熔断未显式隔离 RunId/CorrelationId 或未路由到无人值守整批重建");
         }
 
         private static void ExternalEquipmentFaultsRemainRecoverable()
@@ -3937,13 +3941,25 @@ namespace AdaptiveControlTests
                        StopSource.ManualUi,
                        persistenceBoundaryConfirmed: true),
                 "写盘器关闭策略没有区分退出和普通停止");
+            Assert(!EpbManager.CanReuseStopResultForSource(
+                       StopSource.ManualUi,
+                       StopSource.ApplicationClosing) &&
+                   EpbManager.CanReuseStopResultForSource(
+                       StopSource.ApplicationClosing,
+                       StopSource.ApplicationClosing) &&
+                   EpbManager.CanReuseStopResultForSource(
+                       StopSource.ApplicationClosing,
+                       StopSource.ManualUi),
+                "Manual Stop的成功结果被ApplicationClosing误复用，最终persistence shutdown会被跳过");
             Assert(EpbManager.ShouldStopAcquisitionBeforeFinalPersistence(
                        StopSource.ApplicationClosing) &&
                    EpbManager.ShouldStopAcquisitionBeforeFinalPersistence(
                        StopSource.ProgramExit) &&
-                   !EpbManager.ShouldStopAcquisitionBeforeFinalPersistence(
+                   EpbManager.ShouldStopAcquisitionBeforeFinalPersistence(
+                       StopSource.SystemFault) &&
+                   EpbManager.ShouldStopAcquisitionBeforeFinalPersistence(
                        StopSource.ManualUi),
-                "退出前停止DAQ的最终边界策略没有区分进程退出和普通停止");
+                "StopAll仍允许DAQ在最终Raw/SQLite边界冻结后继续接纳新批次");
 
             var powerMissing = new StopSafetyResult
             {
@@ -3987,6 +4003,15 @@ namespace AdaptiveControlTests
         {
             Assert(EpbManager.IsStopPersistenceBoundaryClosed(100, 100, 100, 0),
                 "边界、Raw发布、持久化和队列均闭合时被误拒绝");
+            Assert(EpbManager.IsFrozenStopPersistenceBoundaryClosed(
+                    100, 100, true, 100, 100, 0),
+                "DAQ停止后同一冻结边界的Raw/SQLite前缀被误拒绝");
+            Assert(!EpbManager.IsFrozenStopPersistenceBoundaryClosed(
+                    100, 101, true, 101, 101, 0),
+                "Raw只排到旧A时，更新B的SQLite水位仍伪装成最终收口");
+            Assert(!EpbManager.IsFrozenStopPersistenceBoundaryClosed(
+                    100, 100, false, 100, 100, 0),
+                "冻结边界的Raw链未排空却被持久化水位单独放行");
             Assert(!EpbManager.IsStopPersistenceBoundaryClosed(100, 99, 100, 0),
                 "Raw发布尚未越过停止边界时错误放行");
             Assert(!EpbManager.IsStopPersistenceBoundaryClosed(100, 100, 99, 0),

@@ -1,10 +1,12 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Controller;
+using IO.NI;
 
 namespace AdaptiveControlTests
 {
@@ -20,6 +22,15 @@ namespace AdaptiveControlTests
             Run("迟到旧代清理不得删除新代液压参与状态", LateCleanupCannotTouchNewParticipantVersion, ref passed);
             Run("连续100次恢复故障无所有权和Failure=1残留", HundredFaultsLeaveNoOwnerOrResetLoop, ref passed);
             Run("活动圈上限不触发DAQ任务重建", ActiveCycleLimitIsNotADaqTaskFault, ref passed);
+            Run("基础设施恢复永不拖停健康DAQ组", InfrastructureRecoveryRemainsLocal, ref passed);
+            Run("确定性处理空洞第3次升级无人值守整批回收", DeterministicGapEscalatesAtThirdAttempt, ref passed);
+            Run("final reject永久空洞禁止DAQ同进程恢复提交", PermanentGapBlocksDaqRecoveryCommit, ref passed);
+            Run("基础设施恢复次数按RunEpoch隔离", InfrastructureAttemptsAreRunScoped, ref passed);
+            Run("旧Run受影响组清场不得阻塞或修改新Run", AffectedGroupResetIsRunScoped, ref passed);
+            Run("基础设施重试冻结完整液压组成员", InfrastructureCohortSurvivesRuntimeRemoval, ref passed);
+            Run("压力证据陈旧只重启所属液压组DAQ采样", PressureEvidenceRearmIsGroupScoped, ref passed);
+            Run("DAQ停止后取消仍必须完成重新启动", CancellationCannotSplitDaqRestart, ref passed);
+            Run("进程回收失败按5秒/15秒退避且受RunId与三次预算门禁", ProcessRestartRetryIsBoundedAndRunScoped, ref passed);
             return passed;
         }
 
@@ -187,6 +198,238 @@ namespace AdaptiveControlTests
         {
             Assert(!EpbManager.RequiresDaqTaskRecreate("ActiveCycleDataLimitExceeded"),
                 "活动圈生命周期故障仍会重建健康DAQ任务");
+        }
+
+        private static void ProcessRestartRetryIsBoundedAndRunScoped()
+        {
+            const string run1 = "11111111111111111111111111111111";
+            const string run2 = "22222222222222222222222222222222";
+            Assert(EpbManager.SelectUnattendedProcessRestartRetryDelayMs(1) == 5_000,
+                "第一次交接失败没有使用5秒快速退避");
+            Assert(EpbManager.SelectUnattendedProcessRestartRetryDelayMs(2) == 15_000,
+                "第二次交接失败没有使用15秒退避");
+            Assert(EpbManager.ShouldRepeatProcessRestartSafetyTeardown(handoffReady: false) &&
+                   !EpbManager.ShouldRepeatProcessRestartSafetyTeardown(handoffReady: true),
+                "子进程首次创建失败后仍会重复访问已释放的DAQ/持久化对象");
+            Assert(EpbManager.ShouldScheduleUnattendedProcessRestartRetry(
+                    nonceReleased: true,
+                    armed: true,
+                    checkpointRunId: run1,
+                    expectedRunId: run1,
+                    attemptsInWindow: 1) &&
+                   EpbManager.ShouldScheduleUnattendedProcessRestartRetry(
+                       nonceReleased: true,
+                       armed: true,
+                       checkpointRunId: run1,
+                       expectedRunId: run1,
+                       attemptsInWindow: 2),
+                "同一RunId预算内失败未获主动重试资格");
+            Assert(!EpbManager.ShouldScheduleUnattendedProcessRestartRetry(
+                       nonceReleased: false,
+                       armed: true,
+                       checkpointRunId: run1,
+                       expectedRunId: run1,
+                       attemptsInWindow: 1) &&
+                   !EpbManager.ShouldScheduleUnattendedProcessRestartRetry(
+                       nonceReleased: true,
+                       armed: false,
+                       checkpointRunId: run1,
+                       expectedRunId: run1,
+                       attemptsInWindow: 1) &&
+                   !EpbManager.ShouldScheduleUnattendedProcessRestartRetry(
+                       nonceReleased: true,
+                       armed: true,
+                       checkpointRunId: run1,
+                       expectedRunId: run2,
+                       attemptsInWindow: 1) &&
+                   !EpbManager.ShouldScheduleUnattendedProcessRestartRetry(
+                       nonceReleased: true,
+                       armed: true,
+                       checkpointRunId: run1,
+                       expectedRunId: run1,
+                       attemptsInWindow: EpbManager.UnattendedProcessRestartBudget),
+                "旧nonce、人工撤权、旧RunId或预算耗尽仍可复活进程回收");
+        }
+
+        private static void InfrastructureRecoveryRemainsLocal()
+        {
+            Assert(EpbManager.ShouldKeepSoftwareRecoveryLocal(
+                    "DaqSelfMaintenance",
+                    "DaqCallbackStale"),
+                "DAQ自维护仍可能升级全局StopAll");
+            Assert(!EpbManager.ShouldKeepSoftwareRecoveryLocal(
+                     "DaqSelfMaintenance",
+                     "BackgroundWorkerFault") &&
+                   !EpbManager.ShouldKeepSoftwareRecoveryLocal(
+                    "DaqSelfMaintenance",
+                    "RawPersistencePermanentFault"),
+                "确定性处理空洞仍被伪装成可无限局部重试的瞬时抖动");
+            Assert(EpbManager.IsDeterministicProcessingGap("BackgroundWorkerFault") &&
+                   EpbManager.IsDeterministicProcessingGap("BackgroundQueueFull") &&
+                   EpbManager.IsDeterministicProcessingGap("RawPersistencePermanentFault") &&
+                   !EpbManager.IsDeterministicProcessingGap("BackgroundProcessingStale") &&
+                   !EpbManager.IsDeterministicProcessingGap("BackgroundBatchTransferFault") &&
+                   !EpbManager.IsDeterministicProcessingGap("RawPersistenceTransferFault"),
+                "确定性处理空洞与可恢复队列积压分类错误");
+            Assert(EpbManager.ShouldKeepSoftwareRecoveryLocal("IsolatedInfrastructureRecovery"),
+                "外部基础设施恢复仍可能升级全局StopAll");
+            Assert(EpbManager.ShouldKeepSoftwareRecoveryLocal(
+                    "IsolatedInfrastructureRecoveryException"),
+                "基础设施恢复异常仍可能升级全局StopAll");
+            Assert(!EpbManager.ShouldKeepSoftwareRecoveryLocal("TimerRuntime"),
+                "非基础设施故障被意外改写为无限局部重试");
+        }
+
+        private static void DeterministicGapEscalatesAtThirdAttempt()
+        {
+            foreach (var code in new[]
+                     {
+                         "BackgroundQueueFull",
+                         "BackgroundWorkerFault",
+                         "DaqDataContinuityGap",
+                         "RawPersistencePermanentFault"
+                     })
+            {
+                Assert(!EpbManager.ShouldPublishUnattendedBatchRecycle(
+                           2,
+                           "IsolatedInfrastructureRecovery",
+                           code) &&
+                       EpbManager.ShouldPublishUnattendedBatchRecycle(
+                           3,
+                           "IsolatedInfrastructureRecovery",
+                           code),
+                    $"确定性空洞{code}没有在第3次从局部循环升级");
+            }
+
+            Assert(!EpbManager.ShouldPublishUnattendedBatchRecycle(
+                       300,
+                       "IsolatedInfrastructureRecovery",
+                       "DaqCallbackStale"),
+                "可恢复DAQ采样抖动被错误升级为进程回收");
+
+            var runId = Guid.NewGuid();
+            var fault = EpbManager.CreateSoftwareRecoveryCircuitFault(
+                runId,
+                new[] { 4, 5 },
+                "Injected deterministic gap",
+                Guid.NewGuid());
+            Assert(fault.RunId == runId &&
+                   fault.RecoveryPolicy == FaultRecoveryPolicy.UnattendedBatchRecycle,
+                "确定性空洞升级未发布携带真实RunId的UnattendedBatchRecycle故障");
+        }
+
+        private static void PermanentGapBlocksDaqRecoveryCommit()
+        {
+            Assert(EpbManager.MustBlockDaqRecoveryCommitForContinuityGap(true) &&
+                   !EpbManager.MustBlockDaqRecoveryCommitForContinuityGap(false),
+                "TryComplete/RejoinAndCommit未把永久序号空洞作为硬门禁");
+            Assert(EpbManager.IsDeterministicProcessingGap("DaqDataContinuityGap") &&
+                   EpbManager.ShouldPublishUnattendedBatchRecycle(
+                       EpbManager.SoftwareRecoveryEscalationAttempts,
+                       "DaqRecoveryDataContinuityGap",
+                       "DaqDataContinuityGap"),
+                "final reject空洞仍会等待普通局部恢复而非立即进程回收");
+        }
+
+        private static void InfrastructureAttemptsAreRunScoped()
+        {
+            var run1Group1 = EpbManager.GetInfrastructureRecoveryAttemptKey(41, 1);
+            var run1Group2 = EpbManager.GetInfrastructureRecoveryAttemptKey(41, 2);
+            var run2Group1 = EpbManager.GetInfrastructureRecoveryAttemptKey(42, 1);
+            Assert(run1Group1 != run1Group2 &&
+                   run1Group1 != run2Group1 &&
+                   run1Group2 != run2Group1,
+                "不同RunEpoch或液压组复用了同一个恢复次数键");
+
+            var scheduled = new ConcurrentDictionary<long, byte>();
+            Assert(scheduled.TryAdd(run1Group1, 0) &&
+                   scheduled.TryAdd(run2Group1, 0),
+                "旧run的同液压组调度锁吞掉了新run恢复任务");
+            scheduled.TryRemove(run1Group1, out _);
+            Assert(scheduled.ContainsKey(run2Group1),
+                "旧run finally错误删除了新run同液压组调度锁");
+        }
+
+        private static void AffectedGroupResetIsRunScoped()
+        {
+            var oldRunId = Guid.NewGuid();
+            var newRunId = Guid.NewGuid();
+            const long oldEpoch = 90;
+            const long newEpoch = 91;
+            var oldKey = EpbManager.GetAffectedGroupResetKey(oldEpoch, 1);
+            var newKey = EpbManager.GetAffectedGroupResetKey(newEpoch, 1);
+            var inProgress = new ConcurrentDictionary<long, byte>();
+            var admitted = 0;
+            Parallel.Invoke(
+                () => { if (inProgress.TryAdd(oldKey, 0)) Interlocked.Increment(ref admitted); },
+                () => { if (inProgress.TryAdd(newKey, 0)) Interlocked.Increment(ref admitted); });
+            Assert(admitted == 2 && oldKey != newKey,
+                "旧Run同液压组清场锁仍吞掉新Run任务");
+
+            Assert(!EpbManager.IsAffectedGroupResetRunCurrent(
+                       oldRunId,
+                       oldEpoch,
+                       newRunId,
+                       newEpoch) &&
+                   !EpbManager.IsAffectedGroupResetRunCurrent(
+                       newRunId,
+                       oldEpoch,
+                       newRunId,
+                       newEpoch) &&
+                   EpbManager.IsAffectedGroupResetRunCurrent(
+                       newRunId,
+                       newEpoch,
+                       newRunId,
+                       newEpoch),
+                "旧RunId/RunEpoch仍可通过组清场副作用门禁");
+
+            inProgress.TryRemove(oldKey, out _);
+            Assert(inProgress.ContainsKey(newKey),
+                "旧Run finally删除了新Run受影响组清场锁");
+        }
+
+        private static void PressureEvidenceRearmIsGroupScoped()
+        {
+            var selected = EpbManager.SelectPressureEvidenceRearmChannels(
+                1,
+                Enumerable.Range(1, 12),
+                channel => channel == 2 ? string.Empty : (channel <= 6 ? "Dev1" : "Dev2"));
+            Assert(selected.SequenceEqual(new[] { 1, 3, 4, 5, 6 }),
+                "压力采样再武装越过液压组或包含未映射通道");
+        }
+
+        private static void InfrastructureCohortSurvivesRuntimeRemoval()
+        {
+            var frozen = EpbManager.MergeInfrastructureRecoveryCohort(
+                1,
+                new[] { 5 },
+                new[] { 4, 5 },
+                Array.Empty<int>());
+            // 模拟首轮失败已删除timer/runner；重试使用首轮冻结数组而非重新从空字典推导。
+            var removedRuntimeSource = Array.Empty<int>();
+            Assert(frozen.SequenceEqual(new[] { 4, 5 }) &&
+                   removedRuntimeSource.Length == 0,
+                "首轮清场后兄弟EPB4从重试cohort中丢失");
+        }
+
+        private static void CancellationCannotSplitDaqRestart()
+        {
+            using var cancellation = new CancellationTokenSource();
+            var stopped = false;
+            var started = false;
+            TwoDeviceAiAcquirer.RestartDeviceAtomically(
+                () =>
+                {
+                    stopped = true;
+                    cancellation.Cancel();
+                },
+                () => started = true,
+                () => false,
+                cancellation.Token);
+            Assert(stopped && started,
+                "StopDevice内发生取消后未完成StartDevice，DAQ会遗留停止态");
+            Assert(cancellation.IsCancellationRequested,
+                "故障注入未在Stop→Start临界区产生取消");
         }
 
         private static void RunAsync(Func<Task> action)
