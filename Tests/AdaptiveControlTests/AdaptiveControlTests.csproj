@@ -47,6 +47,7 @@
   <ItemGroup>
     <Compile Include="Program.cs" />
     <Compile Include="CalibrationMathTests.cs" />
+    <Compile Include="CycleAttemptLifecycleTests.cs" />
     <Compile Include="DaqPersistenceCoordinatorTests.cs" />
     <Compile Include="DaqRealtimeControlTests.cs" />
     <Compile Include="HydraulicGroupCoordinatorTests.cs" />

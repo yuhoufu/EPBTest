@@ -42,6 +42,13 @@ namespace AdaptiveControlTests
                     return 0;
                 }
                 if (args.Length == 1 &&
+                    args[0].Equals("--cycle-lifecycle", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += CycleAttemptLifecycleTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
                     args[0].Equals("--do-command-ring", StringComparison.OrdinalIgnoreCase))
                 {
                     _passed += DaqRealtimeControlTests.RunDoCommandRingRegression();
@@ -118,6 +125,7 @@ namespace AdaptiveControlTests
                     return 0;
                 }
 
+                _passed += CycleAttemptLifecycleTests.RunAll();
                 Run("正常夹紧", NormalClamp);
                 Run("学习尾部提前量后预测夹紧", LearnedTailLeadPredictsClamp);
                 Run("低斜率不提前误触发", LowSlopeDoesNotPredictEarly);

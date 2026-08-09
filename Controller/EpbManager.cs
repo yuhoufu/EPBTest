@@ -501,6 +501,56 @@ namespace Controller
             string reason,
             int? expectedCycleNumber = null)
         {
+            if (_cycleAttempts.TryGetCurrent(channel, out var context))
+            {
+                if (expectedCycleNumber.HasValue && context.Cycle != expectedCycleNumber.Value)
+                {
+                    _log.Warn(
+                        $"EPB[{channel}] 拒绝作废非当前统一圈尝试。" +
+                        $"ExpectedCycle={expectedCycleNumber} ActualCycle={context.Cycle} " +
+                        $"Attempt={context.AttemptId} Reason={reason}",
+                        "落盘");
+                    return false;
+                }
+
+                context.CancelAttempt();
+                try
+                {
+                    var committed = context.AbortRecorderOnce(
+                        () =>
+                        {
+                            if (Recorder is IBatchedEpbCycleRecorder batchedRecorder)
+                                batchedRecorder.SealCycleWindow(channel, context.Cycle, cutoffUtc);
+                            AbortCycleAfterPersistence(
+                                Recorder,
+                                channel,
+                                context.Cycle,
+                                cutoffUtc,
+                                "AbortedBySoftwareRecovery");
+                            return true;
+                        },
+                        RemoveCycleAttemptAfterDurableTerminal);
+                    if (!committed && !context.IsDurablyCommitted) return false;
+
+                    _formalPersistenceRecoveryPendingCycles.TryRemove(channel, out _);
+                    MarkDaqClockCycleAborted(channel, context.Cycle);
+                    _log.Warn(
+                        $"EPB[{channel}] Cycle={context.Cycle} Attempt={context.AttemptId} " +
+                        $"因软件自愈作废；不计正式完成数。Reason={reason}",
+                        "落盘");
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    // context 与旧字典投影均保持活动；恢复代次稍后可精确重试。
+                    _log.Warn(
+                        $"EPB[{channel}] 软件自愈作废统一圈尝试失败：" +
+                        $"Cycle={context.Cycle} Attempt={context.AttemptId} Error={ex.Message}",
+                        "落盘");
+                    return false;
+                }
+            }
+
             int cycleNumber;
             if (expectedCycleNumber.HasValue)
             {
@@ -579,6 +629,20 @@ namespace Controller
             foreach (var pair in cycles)
             {
                 if (canMutate != null && !canMutate()) return false;
+                if (TryGetCycleAttempt(pair.Key, pair.Value, out var context))
+                {
+                    if (context.BeginState == CycleAttemptBeginState.Registered)
+                    {
+                        context.CancelAttempt();
+                        _log.Warn(
+                            $"EPB[{pair.Key}] Recorder.BeginCycle尚未返回，" +
+                            $"拒绝提前封闭不存在的圈窗口。Cycle={pair.Value} Reason={reason}",
+                            "落盘");
+                        return false;
+                    }
+                    if (context.BeginState == CycleAttemptBeginState.Failed)
+                        continue;
+                }
                 try
                 {
                     batched.SealCycleWindow(pair.Key, pair.Value, cutoffUtc);
@@ -744,6 +808,28 @@ namespace Controller
                 }
                 try
                 {
+                    if (TryGetCycleAttempt(pair.Key, pair.Value, out var context))
+                    {
+                        context.CancelAttempt();
+                        var committed = context.AbortRecorderOnce(
+                            () =>
+                            {
+                                var finalN = recorder.GetCurrentCycleSampleCount(pair.Key);
+                                recorder.AbortCycle(pair.Key, pair.Value, finalN, cutoffUtc, status);
+                                return true;
+                            },
+                            RemoveCycleAttemptAfterDurableTerminal);
+                        if (!committed && !context.IsDurablyCommitted)
+                        {
+                            allFinalized = false;
+                            continue;
+                        }
+                        _formalPersistenceRecoveryPendingCycles.TryRemove(pair.Key, out _);
+                        MarkDaqClockCycleAborted(pair.Key, pair.Value);
+                        QueuePendingWarningSnapshotsForCycle(pair.Key, pair.Value);
+                        continue;
+                    }
+
                     var finalN = recorder.GetCurrentCycleSampleCount(pair.Key);
                     recorder.AbortCycle(pair.Key, pair.Value, finalN, cutoffUtc, status);
                     var removed =
@@ -996,25 +1082,43 @@ namespace Controller
         {
             try
             {
-                var finalUtc = DateTime.UtcNow;
-                var finalN = FinalizeCyclePersistence(
-                    recorder,
-                    channel,
-                    cycleNumber,
-                    finalUtc,
-                    recorder.GetCurrentCycleSampleCount(channel));
-                if (hasSnapshotFiles)
+                bool PersistAlarmTerminal()
                 {
-                    recorder.AlarmCycle(channel, cycleNumber, finalN, finalUtc);
+                    var finalUtc = DateTime.UtcNow;
+                    var finalN = FinalizeCyclePersistence(
+                        recorder,
+                        channel,
+                        cycleNumber,
+                        finalUtc,
+                        recorder.GetCurrentCycleSampleCount(channel));
+                    if (hasSnapshotFiles)
+                    {
+                        recorder.AlarmCycle(channel, cycleNumber, finalN, finalUtc);
+                    }
+                    else
+                    {
+                        // FinalizeCyclePersistence 已经完成统一 Raw/耐久屏障，此处只提交终态。
+                        recorder.AbortCycle(channel, cycleNumber, finalN, finalUtc, "failed");
+                        _log.Warn(
+                            $"EPB[{channel}] 报警快照文件未完整生成，当前圈记为 failed，不写入 alarm。",
+                            "落盘");
+                    }
+                    return true;
                 }
-                else
+
+                if (TryGetCycleAttempt(channel, cycleNumber, out var context))
                 {
-                    // FinalizeCyclePersistence 已经完成统一 Raw/耐久屏障，此处只提交终态。
-                    recorder.AbortCycle(channel, cycleNumber, finalN, finalUtc, "failed");
-                    _log.Warn(
-                        $"EPB[{channel}] 报警快照文件未完整生成，当前圈记为 failed，不写入 alarm。",
-                        "落盘");
+                    var committed = hasSnapshotFiles
+                        ? context.AlarmRecorderOnce(
+                            PersistAlarmTerminal,
+                            RemoveCycleAttemptAfterDurableTerminal)
+                        : context.AbortRecorderOnce(
+                            PersistAlarmTerminal,
+                            RemoveCycleAttemptAfterDurableTerminal);
+                    return committed || context.IsDurablyCommitted;
                 }
+
+                PersistAlarmTerminal();
                 ((ICollection<KeyValuePair<int, int>>)_currentCycleNumberByChannel)
                     .Remove(new KeyValuePair<int, int>(channel, cycleNumber));
                 _currentAttemptIdByChannel.TryRemove(channel, out _);
@@ -1032,8 +1136,13 @@ namespace Controller
 
         internal void GetPeakCaptureIdentity(int channel, out Guid runId, out int cycleNumber)
         {
+            if (_cycleAttempts.TryGetCurrent(channel, out var attempt))
+            {
+                runId = attempt.RunId;
+                cycleNumber = attempt.Cycle;
+                return;
+            }
             runId = _activeBatchId;
-            if (runId == Guid.Empty) runId = Guid.Empty;
             cycleNumber = _currentCycleNumberByChannel.TryGetValue(channel, out var current)
                 ? current
                 : 0;
@@ -1719,6 +1828,7 @@ namespace Controller
                 correlationId: singleRunId);
             LogFieldSessionMetric("Start", singleRunId, new[] { channel }, false, "SingleFormal");
             var singleFormalAnchorUtc = DateTime.UtcNow.AddMilliseconds(staggerMs);
+            var singleBaseCycle = Recorder?.GetLastCycleNumber(channel) ?? 0;
             var singleSuccessfulCycles = 0;
             ObserveBackgroundTask(timer.StartAsync(null, staggerMs, async (i, token) =>
             {
@@ -1735,6 +1845,7 @@ namespace Controller
                     ? 0L
                     : (long)Math.Floor(elapsedSinceNominalMs / periodMs);
                 var plannedStartUtc = nominalDueUtc.AddMilliseconds(rolledPeriods * periodMs);
+                var cycleNumber = singleBaseCycle + i;
                 MarkElectricalPhaseDue(channel, plannedStartUtc);
 
                 _log.Info(
@@ -1747,7 +1858,15 @@ namespace Controller
 
                 // —— 圈开始（圈号 i，以 1 开始；若你的计数为 0 开始，可按需调整）——
                 var recorder = Recorder;
-                if (!TryBeginFormalCycle(recorder, channel, i, DateTime.UtcNow))
+                if (!TryBeginFormalCycleAttempt(
+                        recorder,
+                        channel,
+                        cycleNumber,
+                        DateTime.UtcNow,
+                        singleRunId,
+                        CycleAttemptKind.FormalSingle,
+                        ct,
+                        out var cycleAttempt))
                 {
                     ReleaseCyclePauseCts(channel, cyclePauseCts);
                     return false;
@@ -1756,7 +1875,8 @@ namespace Controller
                 var ok = false;
                 try
                 {
-                    ok = await runner.RunOneAsync(periodMs, ct).ConfigureAwait(false);
+                    ok = await runner.RunOneAsync(periodMs, cycleAttempt.AttemptCts.Token)
+                        .ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                 {
@@ -1774,54 +1894,62 @@ namespace Controller
                 if (controlNeedsSoftwareRecovery)
                     ReportFormalControlSoftwareRecovery(
                         channel,
-                        i,
+                        cycleNumber,
                         runner.LastCycleOutcome.Reason);
 
                 // —— 圈结束：根据是否报警停机决定封圈状态 ——
-                var persistenceCommitted = recorder == null;
-                if (recorder != null)
+                var persistenceCommitted = false;
+                try
                 {
-                    try
+                    if (TryConsumeDaqClockCycleAbort(channel, cycleNumber))
                     {
-                        var finalN = recorder.GetCurrentCycleSampleCount(channel);
+                        CommitExternallyAbortedCycleAttempt(cycleAttempt);
+                        _log.Warn(
+                            $"EPB[{channel}] 单通道周期 {cycleNumber} 已由DAQ流程封存，跳过重复终态提交。",
+                            "落盘");
+                    }
+                    else
+                    {
+                        var finalN = recorder?.GetCurrentCycleSampleCount(channel) ?? 0;
                         if (IsAlarmStopRequested(channel))
                         {
-                            // 报警后台流程负责在快照文件存在后封圈。
+                            // 报警后台流程负责在快照文件存在后封圈；context 保持可见。
                         }
                         else if (controlNeedsSoftwareRecovery)
-                            AbortCycleAfterPersistence(
+                            AbortFormalCycleAttempt(
+                                cycleAttempt,
                                 recorder,
-                                channel,
-                                i,
                                 DateTime.UtcNow,
                                 "AbortedBySoftwareRecovery");
                         else if (runner.LastCycleOutcome.Kind == EpbCycleOutcomeKind.HardFault)
-                            AbortCycleAfterPersistence(recorder, channel, i, DateTime.UtcNow, "failed");
-                        else if (controlSucceeded)
-                            persistenceCommitted = CompleteCycleAndScheduleEvidence(
+                            AbortFormalCycleAttempt(
+                                cycleAttempt,
                                 recorder,
-                                channel,
-                                i,
+                                DateTime.UtcNow,
+                                "failed");
+                        else if (controlSucceeded)
+                            persistenceCommitted = CompleteFormalCycleAttempt(
+                                cycleAttempt,
+                                recorder,
                                 finalN,
                                 DateTime.UtcNow);
                         else
-                            AbortCycleAfterPersistence(
+                            AbortFormalCycleAttempt(
+                                cycleAttempt,
                                 recorder,
-                                channel,
-                                i,
                                 DateTime.UtcNow,
                                 runner.LastCycleOutcome.Kind == EpbCycleOutcomeKind.Canceled
                                     ? "canceled"
                                     : "failed");
                     }
-                    catch (Exception ex)
-                    {
-                        PreserveFormalCycleForPersistenceRecovery(
-                            channel,
-                            i,
-                            "CycleFinalizer",
-                            ex);
-                    }
+                }
+                catch (Exception ex)
+                {
+                    PreserveFormalCycleForPersistenceRecovery(
+                        channel,
+                        cycleNumber,
+                        "CycleFinalizer",
+                        ex);
                 }
 
                 // 若本通道自然完成最后一圈，则做统一收尾（含“停止即存最近10圈”）
@@ -1834,7 +1962,7 @@ namespace Controller
                         OnFormalCycleCommittedAndEvaluateClampFault(
                             runner,
                             channel,
-                            i,
+                            cycleNumber,
                             committedCycles);
                     if (!nonRecoverableAlarm && committedCycles >= _cfg.Test.TestTarget)
                     {
@@ -1842,9 +1970,6 @@ namespace Controller
                         timer.Stop();
                     }
                 }
-
-                if (!IsAlarmStopRequested(channel))
-                    ClearCurrentCycleNumber(channel);
 
                 _log.Info(
                     $"EPB[{channel}] 周期 {i}/{_cfg.Test.TestTarget} " +
@@ -2221,7 +2346,7 @@ namespace Controller
                 if (snapshotEvidence == null)
                     TryFinalizeCurrentCycleAfterSnapshot(channel, false);
                 else
-                    ClearCurrentCycleNumber(channel);
+                    CommitCycleAttemptAfterSnapshotEvidence(channel, snapshotEvidence);
 
                 if (recoveryPolicy == FaultRecoveryPolicy.NonRecoverableDisableChannel)
                     PersistentlyDisableChannel(channel, reason);
@@ -4470,7 +4595,7 @@ namespace Controller
                     if (snapshot == null && primaryChannel > 0)
                         TryFinalizeCurrentCycleAfterSnapshot(primaryChannel, false);
                     else if (primaryChannel > 0)
-                        ClearCurrentCycleNumber(primaryChannel);
+                        CommitCycleAttemptAfterSnapshotEvidence(primaryChannel, snapshot);
                 }
                 catch
                 {
@@ -5337,7 +5462,7 @@ namespace Controller
                     if (snapshotEvidence == null)
                         TryFinalizeCurrentCycleAfterSnapshot(channel, false);
                     else
-                        ClearCurrentCycleNumber(channel);
+                        CommitCycleAttemptAfterSnapshotEvidence(channel, snapshotEvidence);
                 }
 
                 // 先完成同组所有 EPB 高优先级断电，再关闭共享电源输出。
@@ -5797,6 +5922,24 @@ namespace Controller
                     $"EPB[{alarmChannel}] 报警快照缺少活动圈及冻结圈号。Reason={reason}",
                     "落盘");
                 return null;
+            }
+
+            if (TryGetCycleAttempt(alarmChannel, alarmCycleNumber, out var attempt))
+            {
+                if (attempt.BeginState == CycleAttemptBeginState.Registered)
+                {
+                    attempt.CancelAttempt();
+                    _log.Warn(
+                        $"EPB[{alarmChannel}] Recorder.BeginCycle尚未返回，报警快照延后重试。" +
+                        $"Attempt={attempt.AttemptId} Cycle={attempt.Cycle}",
+                        "落盘");
+                    return null;
+                }
+                if (attempt.BeginState == CycleAttemptBeginState.Failed)
+                {
+                    attempt.AbortOnce(() => true, RemoveCycleAttemptAfterDurableTerminal);
+                    return null;
+                }
             }
 
             // 快照去抖：同一通道在 cooldown 内只导出一次

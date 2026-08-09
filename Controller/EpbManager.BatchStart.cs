@@ -1089,7 +1089,15 @@ namespace Controller
                             // 2.5) ★ 圈开始：通知 Recorder
                             var cycleNumber = cycleIndex + baseCycle;
                             var recorder = Recorder;
-                            if (!TryBeginFormalCycle(recorder, ch, cycleNumber, DateTime.UtcNow))
+                            if (!TryBeginFormalCycleAttempt(
+                                    recorder,
+                                    ch,
+                                    cycleNumber,
+                                    DateTime.UtcNow,
+                                    _activeBatchId,
+                                    CycleAttemptKind.FormalBatch,
+                                    token,
+                                    out var cycleAttempt))
                             {
                                 await AbortHydraulicLeaseForChannelAsync(
                                         ch,
@@ -1109,7 +1117,7 @@ namespace Controller
                                     phase,
                                     T8MinMs,
                                     deadlineUtc,
-                                    token
+                                    cycleAttempt.AttemptCts.Token
                                 ).ConfigureAwait(false);
                             }
                             catch (OperationCanceledException)
@@ -1153,72 +1161,58 @@ namespace Controller
                             }
 
                             // 4) ★ 圈结束：根据是否报警停机决定封圈状态
-                            var persistenceCommitted = recorder == null;
-                            if (recorder != null)
+                            var persistenceCommitted = false;
+                            try
                             {
-                                try
+                                if (TryConsumeDaqClockCycleAbort(ch, cycleNumber))
                                 {
-                                    if (TryConsumeDaqClockCycleAbort(ch, cycleNumber))
-                                    {
-                                        _log?.Warn(
-                                            $"EPB[{ch}] 周期 {cycleNumber} 已由DAQ时钟恢复流程封存，" +
-                                            "跳过周期尾重复记账。",
-                                            "落盘");
-                                        goto CyclePersistenceFinished;
-                                    }
-                                    var finalN = recorder.GetCurrentCycleSampleCount(ch);
-                                    if (IsAlarmStopRequested(ch))
-                                    {
-                                        // 报警后台流程会在确认当前圈 CSV/BIN 快照存在后封为 alarm；
-                                        // 若快照失败则封为 failed。这里保持 running，避免先写无文件的 alarm。
-                                    }
-                                    else if (controlNeedsSoftwareRecovery)
-                                    {
-                                        AbortCycleAfterPersistence(
-                                            recorder,
-                                            ch,
-                                            cycleNumber,
-                                            DateTime.UtcNow,
-                                            "AbortedBySoftwareRecovery");
-                                    }
-                                    else if (runner.LastCycleOutcome.Kind == Adaptive.EpbCycleOutcomeKind.HardFault)
-                                    {
-                                        AbortCycleAfterPersistence(
-                                            recorder,
-                                            ch,
-                                            cycleNumber,
-                                            DateTime.UtcNow,
-                                            "failed");
-                                    }
-                                    else if (controlSucceeded)
-                                    {
-                                        persistenceCommitted = CompleteCycleAndScheduleEvidence(
-                                            recorder,
-                                            ch,
-                                            cycleNumber,
-                                            finalN,
-                                            DateTime.UtcNow);
-                                    }
-                                    else
-                                    {
-                                        AbortCycleAfterPersistence(
-                                            recorder,
-                                            ch,
-                                            cycleNumber,
-                                            DateTime.UtcNow,
-                                            runner.LastCycleOutcome.Kind == Adaptive.EpbCycleOutcomeKind.Canceled
-                                                ? "canceled"
-                                                : "failed");
-                                    }
+                                    CommitExternallyAbortedCycleAttempt(cycleAttempt);
+                                    _log?.Warn(
+                                        $"EPB[{ch}] 周期 {cycleNumber} 已由DAQ时钟恢复流程封存，" +
+                                        "跳过周期尾重复记账。",
+                                        "落盘");
+                                    goto CyclePersistenceFinished;
                                 }
-                                catch (Exception ex)
+                                var finalN = recorder?.GetCurrentCycleSampleCount(ch) ?? 0;
+                                if (IsAlarmStopRequested(ch))
                                 {
-                                    PreserveFormalCycleForPersistenceRecovery(
-                                        ch,
-                                        cycleNumber,
-                                        "CycleFinalizer",
-                                        ex);
+                                    // 报警后台流程会在确认当前圈 CSV/BIN 快照存在后封为 alarm；
+                                    // 若快照失败则封为 failed。这里保持活动身份，避免先写无文件的 alarm。
                                 }
+                                else if (controlNeedsSoftwareRecovery)
+                                    AbortFormalCycleAttempt(
+                                        cycleAttempt,
+                                        recorder,
+                                        DateTime.UtcNow,
+                                        "AbortedBySoftwareRecovery");
+                                else if (runner.LastCycleOutcome.Kind == Adaptive.EpbCycleOutcomeKind.HardFault)
+                                    AbortFormalCycleAttempt(
+                                        cycleAttempt,
+                                        recorder,
+                                        DateTime.UtcNow,
+                                        "failed");
+                                else if (controlSucceeded)
+                                    persistenceCommitted = CompleteFormalCycleAttempt(
+                                        cycleAttempt,
+                                        recorder,
+                                        finalN,
+                                        DateTime.UtcNow);
+                                else
+                                    AbortFormalCycleAttempt(
+                                        cycleAttempt,
+                                        recorder,
+                                        DateTime.UtcNow,
+                                        runner.LastCycleOutcome.Kind == Adaptive.EpbCycleOutcomeKind.Canceled
+                                            ? "canceled"
+                                            : "failed");
+                            }
+                            catch (Exception ex)
+                            {
+                                PreserveFormalCycleForPersistenceRecovery(
+                                    ch,
+                                    cycleNumber,
+                                    "CycleFinalizer",
+                                    ex);
                             }
 
                         CyclePersistenceFinished:
@@ -1241,9 +1235,6 @@ namespace Controller
                                     timer.Stop();
                                 }
                             }
-
-                            if (!IsAlarmStopRequested(ch))
-                                ClearCurrentCycleNumber(ch);
 
                             ReleaseCyclePauseCts(ch, cyclePauseCts);
                             return controlSucceeded && persistenceCommitted;

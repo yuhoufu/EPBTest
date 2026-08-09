@@ -1491,7 +1491,15 @@ namespace Controller
                 var cycleNumber = baseCycle + cycleIndex;
                 MarkElectricalPhaseDue(channel, plannedUtc);
                 var recorder = Recorder;
-                if (!TryBeginFormalCycle(recorder, channel, cycleNumber, DateTime.UtcNow))
+                if (!TryBeginFormalCycleAttempt(
+                        recorder,
+                        channel,
+                        cycleNumber,
+                        DateTime.UtcNow,
+                        _activeBatchId,
+                        CycleAttemptKind.FormalRecovery,
+                        ct,
+                        out var cycleAttempt))
                 {
                     await AbortHydraulicLeaseForChannelAsync(
                             channel,
@@ -1509,7 +1517,7 @@ namespace Controller
                             phase,
                             T8MinMs,
                             window.DeadlineUtc,
-                            ct)
+                            cycleAttempt.AttemptCts.Token)
                         .ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) { ok = false; }
@@ -1535,48 +1543,53 @@ namespace Controller
                         cycleNumber,
                         runner.LastCycleOutcome.Reason);
 
-                var persistenceCommitted = recorder == null;
-                if (recorder != null)
+                var persistenceCommitted = false;
+                try
                 {
-                    try
+                    if (TryConsumeDaqClockCycleAbort(channel, cycleNumber))
                     {
-                        var finalN = recorder.GetCurrentCycleSampleCount(channel);
+                        CommitExternallyAbortedCycleAttempt(cycleAttempt);
+                        _log?.Warn(
+                            $"EPB[{channel}] 恢复正式周期 {cycleNumber} 已由DAQ流程封存，" +
+                            "跳过重复终态提交。",
+                            "落盘");
+                    }
+                    else
+                    {
+                        var finalN = recorder?.GetCurrentCycleSampleCount(channel) ?? 0;
                         if (IsAlarmStopRequested(channel))
                         {
-                            // 报警后台取得封存权。
+                            // 报警后台取得封存权；活动 context 保留到报警耐久终态。
                         }
                         else if (controlNeedsSoftwareRecovery)
-                            AbortCycleAfterPersistence(
+                            AbortFormalCycleAttempt(
+                                cycleAttempt,
                                 recorder,
-                                channel,
-                                cycleNumber,
                                 DateTime.UtcNow,
                                 "AbortedBySoftwareRecovery");
                         else if (controlSucceeded)
-                            persistenceCommitted = CompleteCycleAndScheduleEvidence(
+                            persistenceCommitted = CompleteFormalCycleAttempt(
+                                cycleAttempt,
                                 recorder,
-                                channel,
-                                cycleNumber,
                                 finalN,
                                 DateTime.UtcNow);
                         else
-                            AbortCycleAfterPersistence(
+                            AbortFormalCycleAttempt(
+                                cycleAttempt,
                                 recorder,
-                                channel,
-                                cycleNumber,
                                 DateTime.UtcNow,
                                 runner.LastCycleOutcome.Kind == Adaptive.EpbCycleOutcomeKind.Canceled
                                     ? "canceled"
                                     : "failed");
                     }
-                    catch (Exception ex)
-                    {
-                        PreserveFormalCycleForPersistenceRecovery(
-                            channel,
-                            cycleNumber,
-                            "CycleFinalizer",
-                            ex);
-                    }
+                }
+                catch (Exception ex)
+                {
+                    PreserveFormalCycleForPersistenceRecovery(
+                        channel,
+                        cycleNumber,
+                        "CycleFinalizer",
+                        ex);
                 }
                 if (IsFormalCycleCountable(
                         controlSucceeded,
@@ -1595,7 +1608,6 @@ namespace Controller
                         timer.Stop();
                     }
                 }
-                if (!IsAlarmStopRequested(channel)) ClearCurrentCycleNumber(channel);
                 ReleaseCyclePauseCts(channel, cyclePauseCts);
                 return controlSucceeded && persistenceCommitted;
             }), "RejoinedChannelTimer", channel);

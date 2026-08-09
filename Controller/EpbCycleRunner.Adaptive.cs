@@ -77,8 +77,8 @@ namespace Controller
         private double _adaptiveForwardControlPeakA;
         private double _adaptiveDecisionPeakEvidenceLagMs = double.NaN;
         private DateTime _adaptiveDecisionPeakEvidenceThroughUtc = DateTime.MinValue;
-        private int _adaptiveClampPeakCaptureStarted;
-        private PeakCaptureToken _adaptivePeakCaptureToken;
+        private readonly ExactTokenLeaseOwner<PeakCaptureToken> _adaptivePeakCapture =
+            new ExactTokenLeaseOwner<PeakCaptureToken>();
         private long _lastFastBatchSequence;
         private long _lastFastRepresentativeBits;
         private int _lastFastQualityFlags;
@@ -418,7 +418,7 @@ namespace Controller
             _adaptiveForwardControlPeakA = 0;
             _adaptiveDecisionPeakEvidenceLagMs = double.NaN;
             _adaptiveDecisionPeakEvidenceThroughUtc = DateTime.MinValue;
-            Interlocked.Exchange(ref _adaptiveClampPeakCaptureStarted, 0);
+            CancelAdaptivePeakCapture();
             Interlocked.Exchange(ref _adaptiveTerminalOffLatched, 0);
             _adaptiveForwardDoTiming = null;
 
@@ -518,18 +518,7 @@ namespace Controller
 
         private void DisarmAdaptiveMonitoring()
         {
-            if (Interlocked.Exchange(ref _adaptiveClampPeakCaptureStarted, 0) != 0)
-            {
-                try
-                {
-                    if (_adaptivePeakCaptureToken != null)
-                        _acq?.CancelEpbCurrentPeak(_adaptivePeakCaptureToken);
-                    else
-                        _acq?.CancelEpbCurrentPeak(_channel);
-                }
-                catch { }
-            }
-            _adaptivePeakCaptureToken = null;
+            CancelAdaptivePeakCapture();
             _adaptiveStateMachine?.Disarm();
             _adaptiveDirection = string.Empty;
             lock (_adaptiveGate)
@@ -537,6 +526,17 @@ namespace Controller
                 _adaptiveForwardCompletion = null;
                 _adaptiveReverseCompletion = null;
             }
+        }
+
+        private void CancelAdaptivePeakCapture()
+        {
+            var lease = _adaptivePeakCapture.DetachCurrent();
+            if (lease == null) return;
+            lease.CancelWhenPublished(token =>
+            {
+                try { _acq?.CancelEpbCurrentPeak(token); }
+                catch { }
+            });
         }
 
         private void ProcessAdaptiveSample(
@@ -572,12 +572,11 @@ namespace Controller
                 var evidenceThroughUtc = DateTime.MinValue;
                 if (_acq != null &&
                     string.Equals(_adaptiveDirection, "Forward", StringComparison.Ordinal) &&
-                    Interlocked.CompareExchange(ref _adaptiveClampPeakCaptureStarted, 1, 1) == 1)
+                    _adaptivePeakCapture.TryPeek(out var peakToken))
                 {
                     try
                     {
-                        if (_adaptivePeakCaptureToken != null &&
-                            _acq.TryPeekEpbCurrentPeak(_adaptivePeakCaptureToken, out var peak))
+                        if (_acq.TryPeekEpbCurrentPeak(peakToken, out var peak))
                         {
                             fullRatePeakA = peak.MaxAmp;
                             evidenceThroughUtc = peak.LastSampleAt.ToUniversalTime();
@@ -1403,23 +1402,34 @@ namespace Controller
 
         private void EnsureAdaptiveClampPeakCaptureStarted()
         {
-            if (_acq == null ||
-                Interlocked.CompareExchange(ref _adaptiveClampPeakCaptureStarted, 1, 0) != 0)
-                return;
+            if (_acq == null) return;
+            var lease = _adaptivePeakCapture.TryReserve();
+            if (lease == null) return;
             try
             {
                 var runId = Guid.Empty;
                 var cycleNumber = 0;
                 _manager?.GetPeakCaptureIdentity(_channel, out runId, out cycleNumber);
-                _adaptivePeakCaptureToken = _acq.BeginEpbCurrentPeak(
+                var token = _acq.BeginEpbCurrentPeak(
                     _channel,
                     runId,
                     cycleNumber);
+                lease.TryPublish(
+                    token,
+                    staleToken =>
+                    {
+                        try { _acq.CancelEpbCurrentPeak(staleToken); }
+                        catch { }
+                    });
             }
             catch
             {
-                Interlocked.Exchange(ref _adaptiveClampPeakCaptureStarted, 0);
-                _adaptivePeakCaptureToken = null;
+                _adaptivePeakCapture.TryDetachExact(lease);
+                lease.CancelWhenPublished(token =>
+                {
+                    try { _acq.CancelEpbCurrentPeak(token); }
+                    catch { }
+                });
             }
         }
 
@@ -1433,13 +1443,15 @@ namespace Controller
             {
                 double fullRatePeakA = double.NaN;
                 double evidenceAgeMs = double.PositiveInfinity;
+                var peakLease = _adaptivePeakCapture.DetachCurrent();
+                PeakCaptureToken peakToken = null;
                 try
                 {
-                    if (_acq != null && _adaptivePeakCaptureToken != null &&
-                        Interlocked.CompareExchange(ref _adaptiveClampPeakCaptureStarted, 1, 1) == 1)
+                    if (_acq != null && peakLease != null &&
+                        peakLease.TryTakePublished(out peakToken))
                     {
                         var capture = await _acq.EndEpbCurrentPeakAsync(
-                                _adaptivePeakCaptureToken,
+                                peakToken,
                                 100,
                                 // 调用时即固定逻辑截止；100ms 只用于等待在途批次入账，
                                 // 不能把断电后的新时间窗混入快速过流证据。
@@ -1454,15 +1466,23 @@ namespace Controller
                                              capture.Peak.LastSampleAt.ToUniversalTime()).TotalMilliseconds;
                         }
                     }
+                    else
+                    {
+                        peakLease?.CancelWhenPublished(token =>
+                        {
+                            try { _acq?.CancelEpbCurrentPeak(token); }
+                            catch { }
+                        });
+                    }
                 }
                 catch (Exception ex)
                 {
+                    if (peakToken != null)
+                    {
+                        try { _acq?.CancelEpbCurrentPeak(peakToken); }
+                        catch { }
+                    }
                     _log?.Warn($"EPB[{_channel}] 快速过流证据封口失败：{ex.Message}", "EPB");
-                }
-                finally
-                {
-                    Interlocked.Exchange(ref _adaptiveClampPeakCaptureStarted, 0);
-                    _adaptivePeakCaptureToken = null;
                 }
 
                 var fastPeakA = Math.Max(
@@ -1650,13 +1670,15 @@ namespace Controller
                     decisionEvidenceLagMs = _adaptiveDecisionPeakEvidenceLagMs;
                     decisionEvidenceThroughUtc = _adaptiveDecisionPeakEvidenceThroughUtc;
                 }
+                var peakLease = _adaptivePeakCapture.DetachCurrent();
+                PeakCaptureToken peakToken = null;
                 try
                 {
-                    if (_acq != null &&
-                        Interlocked.CompareExchange(ref _adaptiveClampPeakCaptureStarted, 1, 1) == 1)
+                    if (_acq != null && peakLease != null &&
+                        peakLease.TryTakePublished(out peakToken))
                     {
                         var captureResult = await _acq.EndEpbCurrentPeakAsync(
-                                _adaptivePeakCaptureToken,
+                                peakToken,
                                 peakEvidenceDrainMs,
                                 // 在断电判定完成时固定逻辑截止，随后仅等待截止前的在途
                                 // 全速率样本入账，保证快速/完整证据使用同一时间窗。
@@ -1701,27 +1723,33 @@ namespace Controller
                                     peakEvidenceMismatch =
                                     $"QuickPeak={quickPeak:F3}A FullRatePeak={peak.MaxAmp:F3}A " +
                                     $"Tolerance={_programSafetySettings.PeakEvidenceMismatchToleranceA:F3}A " +
-                                    $"CaptureId={_adaptivePeakCaptureToken?.CaptureId:N}";
+                                    $"CaptureId={peakToken.CaptureId:N}";
                             }
                         }
-                        Interlocked.Exchange(ref _adaptiveClampPeakCaptureStarted, 0);
-                        _adaptivePeakCaptureToken = null;
+                    }
+                    else
+                    {
+                        peakCaptureFailure = "FullRatePeakTokenUnavailable";
+                        peakLease?.CancelWhenPublished(staleToken =>
+                        {
+                            try { _acq?.CancelEpbCurrentPeak(staleToken); }
+                            catch { }
+                        });
                     }
                 }
                 catch (Exception ex)
                 {
-                    if (Interlocked.Exchange(ref _adaptiveClampPeakCaptureStarted, 0) != 0)
+                    if (peakToken != null)
                     {
-                        try
-                        {
-                            if (_adaptivePeakCaptureToken != null)
-                                _acq?.CancelEpbCurrentPeak(_adaptivePeakCaptureToken);
-                            else
-                                _acq?.CancelEpbCurrentPeak(_channel);
-                        }
+                        try { _acq?.CancelEpbCurrentPeak(peakToken); }
                         catch { }
                     }
-                    _adaptivePeakCaptureToken = null;
+                    else
+                        peakLease?.CancelWhenPublished(staleToken =>
+                        {
+                            try { _acq?.CancelEpbCurrentPeak(staleToken); }
+                            catch { }
+                        });
                     // 峰值封口失败不改变已经由快速样本确认的夹紧结果。
                     _log?.Warn($"EPB[{_channel}] 断电后峰值捕获失败：{ex.Message}", "EPB");
                 }
