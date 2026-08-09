@@ -146,13 +146,8 @@ function Assert-VerificationEvidence {
         throw "正式候选持久化浸泡不足 600 秒：$soakSeconds"
     }
 
-    $powerSummary = Get-RequiredJsonProperty $Verification 'powerSupplyDebuggerTests' 'identity.verification'
-    $powerPassed = $powerSummary -is [string] -and (
-        $powerSummary -match '(?i)Failed\s*:\s*0\b.*Passed\s*:\s*[1-9]\d*\b' -or
-        $powerSummary -match '失败\s*:\s*0\b.*通过\s*:\s*[1-9]\d*\b')
-    if (-not $powerPassed) {
-        throw "verification.powerSupplyDebuggerTests 未证明零失败：$powerSummary"
-    }
+    Assert-CompletePassSummary 'powerSupplyDebuggerTests' (
+        Get-RequiredJsonProperty $Verification 'powerSupplyDebuggerTests' 'identity.verification')
 
     $fieldGateSummary = Get-RequiredJsonProperty $Verification 'fieldGateTests' 'identity.verification'
     if ($fieldGateSummary -isnot [string] -or
