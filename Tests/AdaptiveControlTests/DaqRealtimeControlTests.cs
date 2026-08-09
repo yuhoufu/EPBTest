@@ -42,6 +42,7 @@ namespace AdaptiveControlTests
             Run("UI发布限频不影响首批和周期后批次", UiDispatchGateUsesMonotonicRateLimit, ref passed);
             Run("UI最新值唤醒在阻塞期间只保留一个待处理信号", UiLatestValueSignalCoalescesBacklog, ref passed);
             Run("UI双设备邮箱十万批阻塞后每设备只保留最新一批", UiLatestPairMailboxStaysBounded, ref passed);
+            Run("UI跳过显示批次保持连线而真实DAQ断点仍断笔", UiCurveBreakUsesAcquisitionTimeline, ref passed);
             Run("DAQ陈旧根因区分回调与控制消费", DaqStaleRootClassification, ref passed);
             Run("DAQ批次和兼容队列包装不再持续分配", DaqBatchObjectsAreReusableValueBacked, ref passed);
             Run("旧原始二进制写入池化后格式保持不变", LegacyRawWriterKeepsBinaryFormat, ref passed);
@@ -574,8 +575,8 @@ namespace AdaptiveControlTests
                    !string.IsNullOrWhiteSpace(identity.ConfigSha256), "版本或哈希字段缺失");
             Assert(identity.ProductVersion.Split('.').Length == 4,
                 "产品版本未保留补丁Revision，无法区分2.12.0.x候选");
-            Assert(RuntimeBuildIdentity.FormatProductVersion(new Version(2, 12, 0, 20)) ==
-                   "V2.12.0.20",
+            Assert(RuntimeBuildIdentity.FormatProductVersion(new Version(2, 12, 0, 21)) ==
+                   "V2.12.0.21",
                 "四段现场补丁版本被截断，事故身份无法区分候选");
             Assert(json.Contains("\"gitCommit\"") && json.Contains("\"gitDirty\"") &&
                    json.Contains("\"processId\"") && json.Contains("\"buildUtc\"") &&
@@ -1125,6 +1126,38 @@ namespace AdaptiveControlTests
         private sealed class MailboxValue
         {
             public int Sequence;
+        }
+
+        private static void UiCurveBreakUsesAcquisitionTimeline()
+        {
+            var previous = new DateTime(2026, 8, 9, 6, 0, 0, DateTimeKind.Utc);
+            const int sampleCount = 20;
+            const double sampleIntervalSeconds = 0.0005;
+
+            // 即使 UI 数百毫秒没有绘制，只要被发布批次携带的上一 DAQ 批次仍相邻，
+            // 就不能把显示邮箱的覆盖误画成采集断点。
+            Assert(!UiCurveContinuityPolicy.ShouldBreakLine(
+                    previous.AddMilliseconds(10), previous, sampleCount, sampleIntervalSeconds),
+                "相邻DAQ批次被错误断笔");
+            Assert(UiCurveContinuityPolicy.ShouldBreakLine(
+                    previous.AddMilliseconds(500), previous, sampleCount, sampleIntervalSeconds),
+                "真实DAQ时间轴空窗未断笔");
+            Assert(!UiCurveContinuityPolicy.ShouldBreakLine(
+                    previous.AddMilliseconds(500), DateTime.MinValue, sampleCount, sampleIntervalSeconds),
+                "首批无上一时间戳时被错误断笔");
+
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            var before = GC.GetAllocatedBytesForCurrentThread();
+            var breaks = 0;
+            for (var i = 0; i < 100000; i++)
+                if (UiCurveContinuityPolicy.ShouldBreakLine(
+                        previous.AddMilliseconds(10), previous, sampleCount, sampleIntervalSeconds))
+                    breaks++;
+            var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+            Assert(breaks == 0, "连续批次压力测试出现误断笔");
+            Assert(allocated <= 256, $"曲线连续性判定十万次持续分配 {allocated} bytes");
         }
 
         private static void DaqStaleRootClassification()

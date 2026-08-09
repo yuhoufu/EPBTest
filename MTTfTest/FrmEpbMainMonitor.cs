@@ -1987,6 +1987,10 @@ namespace MTEmbTest
 
             try
             {
+                // UI 发布允许限频和覆盖，因此“距上次绘制点很远”只能说明 UI 跳过了显示批次，
+                // 不能据此断笔。只有当前批次携带的相邻 DAQ 时间戳确实不连续时才断线。
+                var breakLine = UiCurveContinuityPolicy.ShouldBreakLine(current, last, cols, dt);
+
                 for (var r = 0; r < rows; r++)
                 {
                     if (!_route.TryGetValue(RouteKey(dev, r), out var g))
@@ -1995,7 +1999,7 @@ namespace MTEmbTest
                     var draw = _checkByGlobal.TryGetValue(g, out var cb) ? cb.Checked : true;
 
                     // 直接从矩阵追加，避免每批/每通道分配数组造成 GC 抖动
-                    AppendChannelBatchFromMatrix(g, eng, r, cols, dt, draw, current);
+                    AppendChannelBatchFromMatrix(g, eng, r, cols, dt, draw, current, breakLine);
                 }
 
                 lastGraphyTime = current;
@@ -2017,7 +2021,7 @@ namespace MTEmbTest
         /// <param name="draw">是否显示该通道。</param>
         /// <param name="batchEndUtc">本批次结束的绝对时间戳（用于绝对对齐）。</param>
         private void AppendChannelBatchFromMatrix(int globalIndex, double[,] eng, int row, int colCount, double dt,
-            bool draw, DateTime batchEndUtc)
+            bool draw, DateTime batchEndUtc, bool breakLine)
         {
             if (_isClosing || Volatile.Read(ref _formClosedFlag) == 1) return;
             if (zedGraphRealChart == null || zedGraphRealChart.IsDisposed) return;
@@ -2027,8 +2031,8 @@ namespace MTEmbTest
                 try
                 {
                     zedGraphRealChart.BeginInvoke(
-                        new Action<int, double[,], int, int, double, bool, DateTime>(AppendChannelBatchFromMatrix),
-                        globalIndex, eng, row, colCount, dt, draw, batchEndUtc);
+                        new Action<int, double[,], int, int, double, bool, DateTime, bool>(AppendChannelBatchFromMatrix),
+                        globalIndex, eng, row, colCount, dt, draw, batchEndUtc, breakLine);
                 }
                 catch
                 {
@@ -2057,13 +2061,11 @@ namespace MTEmbTest
             var endX = (batchEndUtc - _plotZeroTime).TotalSeconds;
             var startX = endX - (colCount - 1) * dt;
 
-            // 3. 检查是否需要断线（Gap Detection）
-            //    如果 startX 比 _lastX 大太多，说明中间有丢包或停顿
+            // 3. 只有相邻 DAQ 批次本身不连续才断线。UI 限频或邮箱覆盖造成的显示空窗
+            //    由 ZedGraph 连接相邻可见点，避免把 UI 忙误画成采集断点。
             var lastX = _lastX[globalIndex];
             var expectedX = list.Count > 0 ? lastX + dt : startX;
-            var gap = startX - expectedX;
-
-            if (gap > 0.3) // 阈值 0.3s
+            if (breakLine)
             {
                 // 不要用 NaN 作为 X：否则后续清理时 (x < purgeBefore) 比较恒为 false，可能卡住裁剪导致点数无限增长。
                 // 断线用“正常 X + Y=NaN”即可让 ZedGraph 断笔，同时不影响裁剪。

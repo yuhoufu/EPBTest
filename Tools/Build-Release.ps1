@@ -7,8 +7,8 @@ $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 Set-Location -LiteralPath $repo
 
-$expectedProductVersion = '2.12.0.20'
-$expectedProductLabel = 'V2.12.0.20'
+$expectedProductVersion = '2.12.0.21'
+$expectedProductLabel = 'V2.12.0.21'
 $expectedPublishedConfigs = @(
     'Config/AIConfig.xml',
     'Config/AlarmConfig.xml',
@@ -113,6 +113,7 @@ function Get-RecursivePackageFiles {
 Assert-LegacyCompileItems -ProjectRelativePath 'Controller\Controller.csproj' -RequiredItems @(
     'EpbManager.FieldMetrics.cs',
     'LatestPairMailbox.cs',
+    'UiCurveContinuityPolicy.cs',
     'TaskSupervisor.cs'
 )
 Assert-LegacyCompileItems -ProjectRelativePath 'IO.NI\IO.NI.csproj' -RequiredItems @(
