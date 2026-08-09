@@ -7,6 +7,18 @@ $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 Set-Location -LiteralPath $repo
 
+$expectedProductVersion = '2.12.0.20'
+$expectedProductLabel = 'V2.12.0.20'
+$expectedPublishedConfigs = @(
+    'Config/AIConfig.xml',
+    'Config/AlarmConfig.xml',
+    'Config/AOConfig.xml',
+    'Config/DOConfig.xml',
+    'Config/PowerSupplyConfig.xml',
+    'Config/TestConfig.xml',
+    'Config/UIConfig.xml'
+)
+
 $dirty = @(git status --porcelain)
 if ($LASTEXITCODE -ne 0) { throw '无法读取 Git 状态。' }
 $isDirty = $dirty.Count -ne 0
@@ -134,6 +146,15 @@ foreach ($contentItem in @($mainProjectXml.Project.ItemGroup.Content)) {
 if ($configSources.Count -eq 0) {
     throw 'MTTfTest.csproj 中没有声明复制到输出目录的 Config XML。'
 }
+$missingConfigs = @($expectedPublishedConfigs |
+    Where-Object { -not $configSources.ContainsKey($_) })
+$unexpectedConfigs = @($configSources.Keys |
+    Where-Object { $_ -notin $expectedPublishedConfigs })
+if ($missingConfigs.Count -ne 0 -or $unexpectedConfigs.Count -ne 0 -or
+    $configSources.Count -ne $expectedPublishedConfigs.Count) {
+    throw "项目发布配置集合不合规：Missing=$($missingConfigs -join ',') " +
+          "Unexpected=$($unexpectedConfigs -join ',')"
+}
 $configHash = Get-AggregateFileHash $configSources
 
 if (-not (Test-Path -LiteralPath $MsBuild -PathType Leaf)) {
@@ -166,8 +187,8 @@ if ($LASTEXITCODE -ne 0) { throw "Release 构建失败：$LASTEXITCODE" }
 
 $exePath = Join-Path $output 'MTTFTest.exe'
 $actualProductVersion = (Get-Item -LiteralPath $exePath).VersionInfo.ProductVersion
-if ($actualProductVersion -ne '2.12.0.19') {
-    throw "版本身份不一致：期望 2.12.0.19，实际 $actualProductVersion"
+if ($actualProductVersion -ne $expectedProductVersion) {
+    throw "版本身份不一致：期望 $expectedProductVersion，实际 $actualProductVersion"
 }
 
 $publishedConfigs = New-OrdinalPathMap
@@ -175,6 +196,15 @@ $publishedConfigDirectory = Join-Path $output 'Config'
 foreach ($file in Get-ChildItem -LiteralPath $publishedConfigDirectory -Filter '*.xml' -File) {
     $relativePath = 'Config/' + $file.Name
     $publishedConfigs.Add($relativePath, $file.FullName)
+}
+$missingOutputConfigs = @($expectedPublishedConfigs |
+    Where-Object { -not $publishedConfigs.ContainsKey($_) })
+$unexpectedOutputConfigs = @($publishedConfigs.Keys |
+    Where-Object { $_ -notin $expectedPublishedConfigs })
+if ($missingOutputConfigs.Count -ne 0 -or $unexpectedOutputConfigs.Count -ne 0 -or
+    $publishedConfigs.Count -ne $expectedPublishedConfigs.Count) {
+    throw "输出配置集合不合规：Missing=$($missingOutputConfigs -join ',') " +
+          "Unexpected=$($unexpectedOutputConfigs -join ',')"
 }
 $publishedConfigHash = Get-AggregateFileHash $publishedConfigs
 if ($publishedConfigHash -ne $configHash) {
@@ -192,7 +222,7 @@ $manifestFiles = foreach ($entry in $files.GetEnumerator()) {
     }
 }
 $identity = [ordered]@{
-    productVersion = 'V2.12.0.19'
+    productVersion = $expectedProductLabel
     releaseStatus = if ($isDirty) { 'DIRTY_CANDIDATE_NOT_FOR_PRODUCTION' } else { 'FORMAL_RELEASE_CANDIDATE' }
     deploymentApproved = -not $isDirty
     gitCommit = $commit

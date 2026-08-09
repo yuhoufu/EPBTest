@@ -5,6 +5,18 @@
 
 $ErrorActionPreference = 'Stop'
 
+$expectedProductVersion = '2.12.0.20'
+$expectedProductLabel = 'V2.12.0.20'
+$expectedPublishedConfigs = @(
+    'Config/AIConfig.xml',
+    'Config/AlarmConfig.xml',
+    'Config/AOConfig.xml',
+    'Config/DOConfig.xml',
+    'Config/PowerSupplyConfig.xml',
+    'Config/TestConfig.xml',
+    'Config/UIConfig.xml'
+)
+
 function New-OrdinalPathMap {
     return New-Object 'System.Collections.Generic.SortedDictionary[string,string]' `
         ([StringComparer]::Ordinal)
@@ -90,11 +102,11 @@ foreach ($required in @($identityPath, $checksumPath, $exePath)) {
 }
 
 $identity = Get-Content -LiteralPath $identityPath -Raw -Encoding UTF8 | ConvertFrom-Json
-if ($identity.productVersion -ne 'V2.12.0.19') {
+if ($identity.productVersion -ne $expectedProductLabel) {
     throw "identity 产品版本错误：$($identity.productVersion)"
 }
 $actualProductVersion = (Get-Item -LiteralPath $exePath).VersionInfo.ProductVersion
-if ($actualProductVersion -ne '2.12.0.19') {
+if ($actualProductVersion -ne $expectedProductVersion) {
     throw "EXE 产品版本错误：$actualProductVersion"
 }
 if ($identity.platform -ne 'x86') {
@@ -144,6 +156,15 @@ $publishedConfigs = New-OrdinalPathMap
 $publishedConfigDirectory = Join-Path $release 'Config'
 foreach ($file in Get-ChildItem -LiteralPath $publishedConfigDirectory -Filter '*.xml' -File) {
     $publishedConfigs.Add('Config/' + $file.Name, $file.FullName)
+}
+$missingConfigs = @($expectedPublishedConfigs |
+    Where-Object { -not $publishedConfigs.ContainsKey($_) })
+$unexpectedConfigs = @($publishedConfigs.Keys |
+    Where-Object { $_ -notin $expectedPublishedConfigs })
+if ($missingConfigs.Count -ne 0 -or $unexpectedConfigs.Count -ne 0 -or
+    $publishedConfigs.Count -ne $expectedPublishedConfigs.Count) {
+    throw "发布配置集合不合规：Missing=$($missingConfigs -join ',') " +
+          "Unexpected=$($unexpectedConfigs -join ',')"
 }
 $actualConfigHash = Get-AggregateFileHash $publishedConfigs
 if ($actualConfigHash -ne ([string]$identity.configSha256).ToLowerInvariant()) {
