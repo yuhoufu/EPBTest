@@ -28,7 +28,9 @@ if ($isDirty -and -not $AllowDirtyCandidate) {
 }
 
 $commit = (git rev-parse HEAD).Trim()
-$branch = (git branch --show-current).Trim()
+$branchOutput = git branch --show-current
+if ($LASTEXITCODE -ne 0) { throw '无法读取 Git 分支。' }
+$branch = ([string]$branchOutput).Trim()
 if ([string]::IsNullOrWhiteSpace($branch)) { $branch = 'detached' }
 $buildUtc = [DateTime]::UtcNow.ToString('O')
 $gitDirtyText = $isDirty.ToString().ToLowerInvariant()
