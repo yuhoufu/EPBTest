@@ -419,6 +419,7 @@ namespace Controller
         private readonly ConcurrentDictionary<long, byte> _daqClockAbortedCycles = new();
         private readonly object _stopSafetyGate = new();
         private Task<StopSafetyResult> _stopSafetyTask;
+        private StopSource _stopSafetyTaskSource = StopSource.UnknownLegacy;
         private StopSafetyResult _lastStopSafetyResult;
 
         private sealed class DaqAutoRecoveryContext
@@ -1259,7 +1260,14 @@ namespace Controller
                     r.FeedCurrentSample(sample);
             };
 
-            _acq.DiskBatchReady += batch => _persistence.Enqueue(batch);
+            _acq.DiskBatchReady += batch =>
+            {
+                var device = batch.Device;
+                var sequence = batch.Sequence;
+                if (!_persistence.Enqueue(batch))
+                    throw new InvalidOperationException(
+                        $"{device} 序号 {sequence} 未被持久化队列接收；禁止推进已发布边界。");
+            };
 
             _hydraulic = new HydraulicController(
                 _do,
@@ -5561,15 +5569,42 @@ namespace Controller
             lock (_stopSafetyGate)
             {
                 if (_stopSafetyTask != null && !_stopSafetyTask.IsCompleted)
+                {
+                    if (ShouldStopAcquisitionBeforeFinalPersistence(context.Source) &&
+                        !ShouldStopAcquisitionBeforeFinalPersistence(_stopSafetyTaskSource))
+                    {
+                        _stopSafetyTask = ContinueWithFinalExitStopAsync(
+                            _stopSafetyTask,
+                            context,
+                            token);
+                        _stopSafetyTaskSource = context.Source;
+                    }
                     return _stopSafetyTask;
+                }
                 if (_lastStopSafetyResult != null && !IsBatchSessionActive &&
                     _activeBatchId == Guid.Empty &&
                     _lastStopSafetyResult.CanRestartInProcess &&
+                    (!ShouldStopAcquisitionBeforeFinalPersistence(context.Source) ||
+                     ShouldStopAcquisitionBeforeFinalPersistence(_lastStopSafetyResult.Source)) &&
                     CaptureLogicalQuiescenceSnapshot().IsQuiescent)
                     return Task.FromResult(_lastStopSafetyResult.Clone(reused: true));
                 _stopSafetyTask = RunStopSafetyAsync(context, token);
+                _stopSafetyTaskSource = context.Source;
                 return _stopSafetyTask;
             }
+        }
+
+        private async Task<StopSafetyResult> ContinueWithFinalExitStopAsync(
+            Task<StopSafetyResult> previous,
+            StopContext context,
+            CancellationToken token)
+        {
+            try { await previous.ConfigureAwait(false); }
+            catch (Exception ex)
+            {
+                _log.Warn($"等待在途停止流程后执行最终退出收口：{ex.GetBaseException().Message}", "EPB");
+            }
+            return await RunStopSafetyAsync(context, token).ConfigureAwait(false);
         }
 
         public Task<bool> ShutdownPersistenceAsync(int timeoutMs = 10000)
@@ -5761,11 +5796,37 @@ namespace Controller
                     _log.Warn($"退出前停止DAQ失败，将继续按已接收边界排空：{ex.Message}", "AI");
                 }
             }
+            var rawStorageFlushed = true;
+            var rawStorageFlushError = string.Empty;
+            if (ShouldStopAcquisitionBeforeFinalPersistence(context.Source))
+            {
+                var flushRaw = Volatile.Read(ref _pausePersistenceFlush);
+                if (flushRaw == null)
+                {
+                    rawStorageFlushed = false;
+                    rawStorageFlushError = "Raw最终落盘回调未注册";
+                }
+                else
+                {
+                    try
+                    {
+                        await flushRaw(CancellationToken.None).ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        rawStorageFlushed = false;
+                        rawStorageFlushError = ex.GetBaseException().Message;
+                        _log.Error($"退出前Raw最终落盘失败，保留进程等待重试：{rawStorageFlushError}", "落盘", ex);
+                    }
+                }
+            }
             var persistenceBoundaries = await WaitForStopPersistenceBoundariesAsync(
                     stopPersistenceBoundaries,
-                    10000)
+                    10000,
+                    RequiresRecoveredPersistenceStateForStop(context.Source))
                 .ConfigureAwait(false);
             var persistenceBoundaryConfirmed =
+                rawStorageFlushed &&
                 persistenceBoundaries.Length == stopPersistenceBoundaries.Count &&
                 persistenceBoundaries.All(item => item.Closed);
             if (persistenceBoundaryConfirmed)
@@ -5798,12 +5859,14 @@ namespace Controller
             var logicalState = CaptureLogicalQuiescenceSnapshot();
             var result = new StopSafetyResult
             {
+                Source = context.Source,
                 CorrelationId = context.CorrelationId ?? string.Empty,
                 RunId = runId,
                 MotorOffCommandSucceeded = motorOk,
                 PowerOffConfirmed = power.ok,
                 PressureSafeConfirmed = pressure.ok,
                 PersistenceBoundaryConfirmed = persistenceBoundaryConfirmed,
+                RawStorageFlushed = rawStorageFlushed,
                 StartedUtc = startedUtc,
                 CompletedUtc = DateTime.UtcNow,
                 MotorError = string.Join("; ", motorErrors),
@@ -5811,13 +5874,16 @@ namespace Controller
                 PressureError = pressure.error,
                 PersistenceError = persistenceBoundaryConfirmed
                     ? string.Empty
-                    : string.Join("; ", persistenceBoundaries
-                        .Where(item => !item.Closed)
-                        .Select(item =>
-                            $"{item.Device}:RawDrained={item.RawPipelineDrained}," +
-                            $"Boundary={item.Boundary},Published={item.Published}," +
-                            $"Persisted={item.Persisted},Depth={item.QueueDepth}," +
-                            $"State={item.PersistenceState}")),
+                    : string.Join("; ",
+                        new[] { rawStorageFlushed ? null : $"RawStorage:{rawStorageFlushError}" }
+                            .Concat(persistenceBoundaries
+                                .Where(item => !item.Closed)
+                                .Select(item =>
+                                    $"{item.Device}:RawDrained={item.RawPipelineDrained}," +
+                                    $"Boundary={item.Boundary},Published={item.Published}," +
+                                    $"Persisted={item.Persisted},Depth={item.QueueDepth}," +
+                                    $"State={item.PersistenceState}"))
+                            .Where(item => !string.IsNullOrWhiteSpace(item))),
                 LogicalQuiescenceConfirmed = logicalState.IsQuiescent,
                 LogicalError = logicalState.IsQuiescent ? string.Empty : logicalState.ToString(),
                 LogicalState = logicalState
@@ -5829,6 +5895,7 @@ namespace Controller
                 $"MotorDO={(result.MotorOffCommandSucceeded ? "Confirmed" : "Unconfirmed")}; " +
                 $"Power={(result.PowerOffConfirmed ? "Confirmed" : "Unconfirmed")}; " +
                 $"Pressure={(result.PressureSafeConfirmed ? "Confirmed" : "Unconfirmed")}; " +
+                $"RawStorage={(result.RawStorageFlushed ? "Confirmed" : "Unconfirmed")}; " +
                 $"Persistence={(result.PersistenceBoundaryConfirmed ? "Confirmed" : "Unconfirmed")}; " +
                 $"Logical={(result.LogicalQuiescenceConfirmed ? "Confirmed" : "Pending")}; " +
                 $"MotorError={result.MotorError}; PowerError={result.PowerError}; " +
@@ -5964,7 +6031,10 @@ namespace Controller
             {
                 _lastStopSafetyResult = null;
                 if (_stopSafetyTask?.IsCompleted == true)
+                {
                     _stopSafetyTask = null;
+                    _stopSafetyTaskSource = StopSource.UnknownLegacy;
+                }
             }
         }
 

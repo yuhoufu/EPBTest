@@ -5,8 +5,8 @@
 
 $ErrorActionPreference = 'Stop'
 
-$expectedProductVersion = '2.12.0.23'
-$expectedProductLabel = 'V2.12.0.23'
+$expectedProductVersion = '2.12.0.24'
+$expectedProductLabel = 'V2.12.0.24'
 $expectedPublishedConfigs = @(
     'Config/AIConfig.xml',
     'Config/AlarmConfig.xml',

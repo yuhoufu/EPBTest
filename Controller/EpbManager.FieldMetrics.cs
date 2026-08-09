@@ -17,6 +17,10 @@ namespace Controller
         internal long Persisted { get; set; }
         internal int QueueDepth { get; set; }
         internal DaqPersistenceState PersistenceState { get; set; }
+        internal bool RequireRecoveredState { get; set; }
+        internal bool DurabilityBlocked { get; set; }
+        internal long DiscardedGenerationBatchCount { get; set; }
+        internal long OverCapacityDroppedBatchCount { get; set; }
         internal bool RawPipelineDrained { get; set; }
         internal bool Closed { get; set; }
     }
@@ -146,16 +150,26 @@ namespace Controller
             long published,
             long persisted,
             int queueDepth,
-            DaqPersistenceState state = DaqPersistenceState.Recovered)
+            DaqPersistenceState state = DaqPersistenceState.Recovered,
+            bool requireRecoveredState = true,
+            bool durabilityBlocked = false,
+            long discardedGenerationBatchCount = 0,
+            long overCapacityDroppedBatchCount = 0)
             => boundary >= 0 && published >= boundary && persisted >= boundary && queueDepth == 0 &&
-               state == DaqPersistenceState.Recovered;
+               !durabilityBlocked && discardedGenerationBatchCount == 0 &&
+               overCapacityDroppedBatchCount == 0 &&
+               (!requireRecoveredState || state == DaqPersistenceState.Recovered);
 
         internal static bool ShouldStopAcquisitionBeforeFinalPersistence(StopSource source)
             => source == StopSource.ApplicationClosing || source == StopSource.ProgramExit;
 
+        internal static bool RequiresRecoveredPersistenceStateForStop(StopSource source)
+            => source != StopSource.ApplicationClosing && source != StopSource.ProgramExit;
+
         private async Task<StopPersistenceBoundaryResult[]> WaitForStopPersistenceBoundariesAsync(
             IReadOnlyDictionary<string, long> boundaries,
-            int timeoutMs)
+            int timeoutMs,
+            bool requireRecoveredState)
         {
             var deadline = Stopwatch.GetTimestamp() +
                            (long)(Math.Max(1, timeoutMs) / 1000.0 * Stopwatch.Frequency);
@@ -202,13 +216,21 @@ namespace Controller
                     Persisted = persistence.Sequence,
                     QueueDepth = persistence.QueueDepth,
                     PersistenceState = persistence.State,
+                    RequireRecoveredState = requireRecoveredState,
+                    DurabilityBlocked = persistence.DurabilityBlocked,
+                    DiscardedGenerationBatchCount = persistence.DiscardedGenerationBatchCount,
+                    OverCapacityDroppedBatchCount = persistence.OverCapacityDroppedBatchCount,
                     RawPipelineDrained = rawPipelineDrained,
                     Closed = rawPipelineDrained && IsStopPersistenceBoundaryClosed(
                         pair.Value,
                         published,
                         persistence.Sequence,
                         persistence.QueueDepth,
-                        persistence.State)
+                        persistence.State,
+                        requireRecoveredState,
+                        persistence.DurabilityBlocked,
+                        persistence.DiscardedGenerationBatchCount,
+                        persistence.OverCapacityDroppedBatchCount)
                 };
             }).ToArray();
 
@@ -219,7 +241,11 @@ namespace Controller
                     $"RawDrained={result.RawPipelineDrained} " +
                     $"Boundary={result.Boundary} Published={result.Published} " +
                     $"Persisted={result.Persisted} Depth={result.QueueDepth} " +
-                    $"State={result.PersistenceState} Closed={result.Closed}";
+                    $"State={result.PersistenceState} RequireRecovered={result.RequireRecoveredState} " +
+                    $"DurabilityBlocked={result.DurabilityBlocked} " +
+                    $"Discarded={result.DiscardedGenerationBatchCount} " +
+                    $"OverCapacityDropped={result.OverCapacityDroppedBatchCount} " +
+                    $"Closed={result.Closed}";
                 if (result.Closed) _log.Info(message, "FIELD");
                 else _log.Error(message, "FIELD");
             }

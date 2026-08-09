@@ -52,6 +52,7 @@ namespace AdaptiveControlTests
             Run("恢复后定时器只在未来完整周期锚点执行", TimerResumesAtFutureCompleteBoundary, ref passed);
             Run("暂停数据链必须越过捕获边界且无在途Raw", PauseDrainRequiresAllPipelineBoundaries, ref passed);
             Run("停止边界排除已编号但未被后台接收的末批", RejectedFinalBatchDoesNotPoisonStopBoundary, ref passed);
+            Run("DAQ代次失效后已接收批次只退出实时链但继续归档", InvalidatedGenerationStillArchivesAcceptedBatch, ref passed);
             Run("恢复成功超时停止硬件确认并发只提交一个终态", RecoveryTerminalGateCommitsExactlyOnce, ref passed);
             Run("DAQ探测能力缺失不能误确认为硬件拔除", ProbeCapabilityMissingIsNotHardwareEvidence, ref passed);
             Run("DAQ事故关联去重优先级与新运行复位", IncidentCorrelationAndPriority, ref passed);
@@ -199,6 +200,16 @@ namespace AdaptiveControlTests
             Assert(TwoDeviceAiAcquirer.IsBackgroundPipelineDrained(
                     accepted, sequence.LastAccepted, 0, 0, accepted, 0),
                 "已接收前缀全部发布后仍被不存在的拒绝末批永久阻塞");
+        }
+
+        private static void InvalidatedGenerationStillArchivesAcceptedBatch()
+        {
+            Assert(TwoDeviceAiAcquirer.ClassifyAcceptedBatch(true) ==
+                   AcceptedBatchDisposition.LiveAndArchive,
+                "当前代次批次未同时进入实时链和归档链");
+            Assert(TwoDeviceAiAcquirer.ClassifyAcceptedBatch(false) ==
+                   AcceptedBatchDisposition.ArchiveOnly,
+                "失效代次已接收批次被错误丢弃或重新进入实时控制");
         }
 
         private static void RingOrderCapacityResetAndIsolation()
@@ -1279,17 +1290,27 @@ namespace AdaptiveControlTests
                 var path = Path.Combine(root, "DAQ_Dev1_Raw_1.bin");
                 using var stream = File.OpenRead(path);
                 using var reader = new BinaryReader(stream);
-                Assert(stream.Length == 56, $"原始二进制长度变化：{stream.Length}");
+                Assert(stream.Length == 112, $"原始二进制长度变化或首次Flush仍被丢弃：{stream.Length}");
                 Assert(reader.ReadInt32() == 1, "原始二进制计数器布局变化");
+                _ = reader.ReadInt64();
+                Assert(Math.Abs(reader.ReadDouble()) < 1e-12 &&
+                       Math.Abs(reader.ReadDouble()) < 1e-12,
+                    "原始二进制首次Flush首样本布局变化");
+                Assert(reader.ReadInt32() == 1, "原始二进制第二样本计数器变化");
+                _ = reader.ReadInt64();
+                Assert(Math.Abs(reader.ReadDouble()) < 1e-12 &&
+                       Math.Abs(reader.ReadDouble()) < 1e-12,
+                    "原始二进制首次Flush第二样本布局变化");
+                Assert(reader.ReadInt32() == 2, "第二次Flush原始二进制计数器变化");
                 _ = reader.ReadInt64();
                 Assert(Math.Abs(reader.ReadDouble() - 1.25) < 1e-12 &&
                        Math.Abs(reader.ReadDouble() + 3.75) < 1e-12,
-                    "原始二进制首样本布局变化");
-                Assert(reader.ReadInt32() == 1, "原始二进制第二样本计数器变化");
+                    "原始二进制第三样本布局变化");
+                Assert(reader.ReadInt32() == 2, "第二次Flush原始二进制第二样本计数器变化");
                 _ = reader.ReadInt64();
                 Assert(Math.Abs(reader.ReadDouble() - 2.5) < 1e-12 &&
                        Math.Abs(reader.ReadDouble() - 4.5) < 1e-12,
-                    "原始二进制第二样本布局变化");
+                    "原始二进制第四样本布局变化");
             }
             finally
             {

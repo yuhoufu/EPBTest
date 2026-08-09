@@ -8,6 +8,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Threading;
+using System.Threading.Tasks;
 using Controller;
 using DataOperation;
 using IO.NI;
@@ -49,23 +50,49 @@ namespace AdaptiveControlTests
                 2, 1, 0, 1000, 100, 2000, 1);
             var states = new ConcurrentQueue<DaqPersistenceStateChanged>();
             coordinator.StateChanged += states.Enqueue;
-            for (var sequence = 1; sequence <= 8; sequence++)
-                coordinator.Enqueue(NewBatch("Dev1", sequence));
+            var producer = Task.Run(() =>
+            {
+                for (var sequence = 1; sequence <= 8; sequence++)
+                    Assert(coordinator.Enqueue(NewBatch("Dev1", sequence)),
+                        $"容量背压期间批次{sequence}被丢弃");
+            });
             WaitUntil(
                 () => states.Any(x => x.State == DaqPersistenceState.Failed && x.Code == "DaqPersistenceQueueFull"),
                 2000,
                 "持久化硬容量故障未使用独立 DaqPersistenceQueueFull 分类");
-            Thread.Sleep(50);
+            Assert(producer.Wait(8000), "容量恢复后生产者仍未解除背压");
+            WaitUntil(() => Volatile.Read(ref recorder.WriteCount) >= 8, 3000,
+                "容量恢复后未把全部八批按FIFO写入");
             Assert(states.Count(x =>
                        x.State == DaqPersistenceState.Failed &&
                        x.Code == "DaqPersistenceQueueFull") == 1,
                 "同一次持久化容量满重复发布 Failed，可能造成 UI/恢复任务风暴");
             var snapshot = coordinator.GetSnapshot("Dev1");
-            Assert(snapshot.OverCapacityDroppedBatchCount > 0,
-                "容量满拒绝批次未进入结构化审计计数");
-            Assert(snapshot.State == DaqPersistenceState.Failed &&
-                   snapshot.Code == "DaqPersistenceQueueFull",
-                "容量满锁存期间结构化状态未保持为 DaqPersistenceQueueFull/Failed");
+            Assert(snapshot.OverCapacityDroppedBatchCount == 0 &&
+                   snapshot.DiscardedGenerationBatchCount == 0,
+                "容量满背压仍发生了已接收批次丢弃");
+        }
+
+        internal static void GenerationChangePreservesAcceptedFifo()
+        {
+            var recorder = new GatedFailureRecorder();
+            using var coordinator = new DaqPersistenceCoordinator(
+                () => recorder,
+                Config.NullLogger.Instance,
+                8, 6, 4, 1000, 100, 3000, 1);
+
+            Assert(coordinator.Enqueue(NewBatch("Dev1", 1, 1)), "旧代次首批未入队");
+            Assert(coordinator.Enqueue(NewBatch("Dev1", 2, 1)), "旧代次第二批未入队");
+            Thread.Sleep(100);
+            coordinator.AcceptGeneration("Dev1", 2);
+            Assert(coordinator.Enqueue(NewBatch("Dev1", 3, 2)), "新代次批次未入队");
+
+            recorder.AllowWrites();
+            WaitUntil(() => Volatile.Read(ref recorder.SuccessCount) >= 3, 5000,
+                "代次切换后旧代次已接收批次未全部真实补写");
+            var snapshot = coordinator.GetSnapshot("Dev1");
+            Assert(snapshot.Sequence >= 3 && snapshot.DiscardedGenerationBatchCount == 0,
+                "代次切换伪装推进持久化边界或丢弃旧批次");
         }
 
         internal static void DiskPauseMatrixRemainsBoundedAndRecovers()
@@ -706,7 +733,7 @@ namespace AdaptiveControlTests
             if (!condition) throw new InvalidOperationException(message);
         }
 
-        private static DaqDiskBatch NewBatch(string device, long sequence)
+        private static DaqDiskBatch NewBatch(string device, long sequence, long generation = 0)
         {
             var now = DateTime.UtcNow;
             var timestamps = ArrayPool<DateTime>.Shared.Rent(1);
@@ -717,7 +744,7 @@ namespace AdaptiveControlTests
             pressures[0] = 10;
             return new DaqDiskBatch(
                 device,
-                0,
+                generation,
                 sequence,
                 1,
                 timestamps,

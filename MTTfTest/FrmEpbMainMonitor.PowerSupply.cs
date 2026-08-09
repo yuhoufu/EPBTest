@@ -55,23 +55,34 @@ namespace MTEmbTest
             if (twoDeviceAiAcquirer == null ||
                 Interlocked.Exchange(ref _ownedRawPipelineAttached, 1) != 0)
                 return;
-            // Load 期间旧订阅只短暂存在；Shown 后切换到有所有权、池化且异步的 Raw 链。
+            // Load 期间旧订阅只短暂存在。连续 Raw 存储默认未初始化时，
+            // 不能再挂一个“收到后立即 Dispose”的空消费者；否则每 10 ms
+            // 仍会拷贝两设备原始矩阵并进入异步队列，却不生成任何 Raw 文件。
             twoDeviceAiAcquirer.OnRawBatch -= Acq_OnRawBatch;
-            twoDeviceAiAcquirer.OwnedRawBatchReady += Acq_OnOwnedRawBatch;
+            if (_daqDev1 != null || _daqDev2 != null)
+                twoDeviceAiAcquirer.OwnedRawBatchReady += Acq_OnOwnedRawBatch;
             if (_daqDev1 != null)
                 _daqDev1.QueueFull += twoDeviceAiAcquirer.ReportRawPersistenceQueueFull;
             if (_daqDev2 != null)
                 _daqDev2.QueueFull += twoDeviceAiAcquirer.ReportRawPersistenceQueueFull;
+            // 即使连续 Raw 存储未启用，仍注册统一的最终 Flush 门禁；
+            // 此时回调只排空采集/SQLite 发布链，不会伪称生成了 Raw 文件。
             _epb?.RegisterPausePersistenceFlush(FlushPausePersistenceAsync);
         }
 
         private async Task FlushPausePersistenceAsync(CancellationToken token)
         {
+            // 先释放 DaqAIContext 末端容量，再等待上游排空；否则当末端队列已满时，
+            // Raw发布线程正阻塞在所有权移交，先 Drain 会与等待槽位形成闭环。
+            if (_daqDev1 != null) await _daqDev1.FlushRawToDiskAsync().ConfigureAwait(false);
+            if (_daqDev2 != null) await _daqDev2.FlushRawToDiskAsync().ConfigureAwait(false);
+
             if (twoDeviceAiAcquirer != null &&
                 !await twoDeviceAiAcquirer.DrainBackgroundPipelinesAsync(10000, token)
                     .ConfigureAwait(false))
                 throw new TimeoutException("暂停时DAQ工程处理/Raw发布链10秒内未排空。");
 
+            // 上游排空过程中刚转移到末端的批次再做一次最终Flush。
             token.ThrowIfCancellationRequested();
             if (_daqDev1 != null)
             {
@@ -88,11 +99,8 @@ namespace MTEmbTest
         private void Acq_OnOwnedRawBatch(OwnedDaqRawBatch batch)
         {
             if (batch == null) return;
-            if (_isClosing)
-            {
-                batch.Dispose();
-                return;
-            }
+            // 首次 FormClosing 会先置 _isClosing，再停止 DAQ 并排空已接收批次。
+            // 此窗口内仍必须完成 Raw 所有权移交；否则最后批会被伪装成 transferred 后丢弃。
             if (batch.Device.Equals("Dev1", StringComparison.OrdinalIgnoreCase) && _daqDev1 != null)
                 _daqDev1.EnqueueRawData(batch);
             else if (batch.Device.Equals("Dev2", StringComparison.OrdinalIgnoreCase) && _daqDev2 != null)

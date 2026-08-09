@@ -18,6 +18,9 @@ namespace MTEmbTest
 
         private async Task QuiesceAndFlushForUnattendedRestartAsync()
         {
+            // 先刷新末端Raw队列以释放背压槽，再停止并排空上游，最后二次Flush。
+            if (_daqDev1 != null) await _daqDev1.FlushRawToDiskAsync().ConfigureAwait(false);
+            if (_daqDev2 != null) await _daqDev2.FlushRawToDiskAsync().ConfigureAwait(false);
             if (twoDeviceAiAcquirer != null &&
                 !await twoDeviceAiAcquirer.StopAndDrainAsync(10000).ConfigureAwait(false))
                 throw new TimeoutException("DAQ采集/Raw发布链10秒内未排空。");

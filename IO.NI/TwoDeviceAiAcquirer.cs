@@ -47,6 +47,12 @@ namespace IO.NI
         internal long LastAccepted => Interlocked.Read(ref _lastAccepted);
     }
 
+    internal enum AcceptedBatchDisposition
+    {
+        LiveAndArchive,
+        ArchiveOnly
+    }
+
     public sealed class DaqDiagnosticsCapture
     {
         internal DaqTimingValue[] Records { get; set; } = Array.Empty<DaqTimingValue>();
@@ -657,6 +663,8 @@ namespace IO.NI
         // 最新槽已经取空，工作线程仍会反复空转，形成 CPU 尾部尖峰并继续放大卡顿。
         private readonly CoalescingAsyncSignal _uiPublicationSignal = new();
         private const int RawPublicationCapacity = 256;
+        private readonly SemaphoreSlim _rawPublicationSlots =
+            new(RawPublicationCapacity, RawPublicationCapacity);
         private int _rawPublicationCount;
         private int _rawPublicationInFlight;
         private UiPublication _latestUiDev1;
@@ -1490,6 +1498,7 @@ namespace IO.NI
                 try { _queueSignalDev1.Dispose(); } catch { }
                 try { _queueSignalDev2.Dispose(); } catch { }
                 try { _rawPublicationSignal.Dispose(); } catch { }
+                try { _rawPublicationSlots.Dispose(); } catch { }
                 try { _uiPublicationSignal.Dispose(); } catch { }
                 try { _controlSignalDev1.Dispose(); } catch { }
                 try { _controlSignalDev2.Dispose(); } catch { }
@@ -1760,6 +1769,11 @@ namespace IO.NI
             => string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase)
                 ? Interlocked.Read(ref _diskPublishedSequenceDev1)
                 : Interlocked.Read(ref _diskPublishedSequenceDev2);
+
+        internal static AcceptedBatchDisposition ClassifyAcceptedBatch(bool isCurrentGeneration)
+            => isCurrentGeneration
+                ? AcceptedBatchDisposition.LiveAndArchive
+                : AcceptedBatchDisposition.ArchiveOnly;
 
 
         /// <summary>
@@ -3052,21 +3066,28 @@ namespace IO.NI
                 item.Current,
                 item.Last,
                 item.Sequence);
-            var count = Interlocked.Increment(ref _rawPublicationCount);
-            if (count > RawPublicationCapacity)
+            if (!_rawPublicationSlots.Wait(0))
             {
-                Interlocked.Decrement(ref _rawPublicationCount);
-                snapshot.Dispose();
                 PublishQueueFullFault(
                     item.Device,
                     item.Generation,
                     "RawPersistenceQueueFull",
                     "RawPersistence",
-                    count,
+                    Volatile.Read(ref _rawPublicationCount),
                     RawPublicationCapacity,
-                    reasonOverride: $"Device={item.Device} 原始数据异步发布队列达到上限 {RawPublicationCapacity} 批。");
-                return;
+                    reasonOverride: $"Device={item.Device} 原始数据异步发布队列达到上限 {RawPublicationCapacity} 批；" +
+                                    "后台工程线程已进入有界背压，保留当前已接收批次等待移交，不再静默丢弃。");
+                try
+                {
+                    _rawPublicationSlots.Wait(_cts.Token);
+                }
+                catch
+                {
+                    snapshot.Dispose();
+                    throw;
+                }
             }
+            Interlocked.Increment(ref _rawPublicationCount);
             _rawPublicationQueue.Enqueue(snapshot);
             TrySignal(_rawPublicationSignal);
         }
@@ -3081,6 +3102,7 @@ namespace IO.NI
                     while (_rawPublicationQueue.TryDequeue(out var batch))
                     {
                         Interlocked.Decrement(ref _rawPublicationCount);
+                        _rawPublicationSlots.Release();
                         Interlocked.Increment(ref _rawPublicationInFlight);
                         var transferred = false;
                         try
@@ -3120,7 +3142,11 @@ namespace IO.NI
             catch (OperationCanceledException) { }
             finally
             {
-                while (_rawPublicationQueue.TryDequeue(out var batch)) batch.Dispose();
+                while (_rawPublicationQueue.TryDequeue(out var batch))
+                {
+                    batch.Dispose();
+                    try { _rawPublicationSlots.Release(); } catch { }
+                }
                 Interlocked.Exchange(ref _rawPublicationCount, 0);
                 Interlocked.Exchange(ref _rawPublicationInFlight, 0);
             }
@@ -3190,16 +3216,12 @@ namespace IO.NI
                         DaqQueueAdmission.Release(ref _queueCountDev1);
                     else
                         DaqQueueAdmission.Release(ref _queueCountDev2);
-                    // 重启前积压的批次不再参与快照、峰值或落盘，避免旧代次数据
-                    // 在新任务恢复后倒灌成“新数据”。
-                    if (!IsCurrentGeneration(item.Device, item.Generation))
-                    {
-                        if (string.Equals(item.Device, "Dev1", StringComparison.OrdinalIgnoreCase))
-                            Interlocked.Exchange(ref _diskPublishedSequenceDev1, item.Sequence);
-                        else
-                            Interlocked.Exchange(ref _diskPublishedSequenceDev2, item.Sequence);
-                        continue;
-                    }
+                    // generation 失效只禁止旧批次回流到实时控制/UI，不能撤销已经完成的
+                    // 后台队列准入。已接收旧批次仍按 FIFO 完成 Raw 和 SQLite 移交，确保
+                    // Stop/恢复边界不会因代次切换产生永久空洞。
+                    var disposition = ClassifyAcceptedBatch(
+                        IsCurrentGeneration(item.Device, item.Generation));
+                    var liveGeneration = disposition == AcceptedBatchDisposition.LiveAndArchive;
 
                     var processStartTicks = Stopwatch.GetTimestamp();
                     var queueAgeMs =
@@ -3261,12 +3283,13 @@ namespace IO.NI
 
 
                     // 刷新“最近值”供控制逻辑查询（**改动：写入 _lastFilteredValue**）
-                    UpdateLastSnapshot(engFiltered, item.Device, item.Current.ToUniversalTime());
+                    if (liveGeneration)
+                        UpdateLastSnapshot(engFiltered, item.Device, item.Current.ToUniversalTime());
 
                     // —— fast 快照语义 ——
                     // - 当 fast 来源为 DaqCallback：fast 由 DAQ 回调线程更新，后台线程不得覆盖；
                     // - 当 fast 来源为 ProcessLoopFiltered*：fast 由后台线程从滤波矩阵提升生成。
-                    if (_fastSource != FastSource.DaqCallback)
+                    if (liveGeneration && _fastSource != FastSource.DaqCallback)
                     {
                         PromoteFilteredToFastForCurrents(engFiltered, item.Device, item.Current);
                     }
@@ -3333,7 +3356,7 @@ namespace IO.NI
                         var peakStartedTicks = Stopwatch.GetTimestamp();
                         try
                         {
-                            if (AnyPeakArmed && tsUtc != null && tsUtc.Length > 0)
+                            if (liveGeneration && AnyPeakArmed && tsUtc != null && tsUtc.Length > 0)
                             {
                                 for (var currentIndex = 0; currentIndex < pooledCurrentCount; currentIndex++)
                                 {
@@ -3403,20 +3426,29 @@ namespace IO.NI
                             var legacy = OnDiskBatch;
                             if (legacy != null)
                             {
-                                var legacyTs = new DateTime[n];
-                                Array.Copy(tsUtc, legacyTs, n);
-                                var legacyCurrents = new Dictionary<int, double[]>();
-                                for (var channelIndex = 0; channelIndex < pooledCurrentCount; channelIndex++)
+                                try
                                 {
-                                    var channel = currentsByEpb[channelIndex];
-                                    var copy = new double[n];
-                                    Array.Copy(channel.Currents, copy, n);
-                                    legacyCurrents[channel.EpbId] = copy;
+                                    var legacyTs = new DateTime[n];
+                                    Array.Copy(tsUtc, legacyTs, n);
+                                    var legacyCurrents = new Dictionary<int, double[]>();
+                                    for (var channelIndex = 0; channelIndex < pooledCurrentCount; channelIndex++)
+                                    {
+                                        var channel = currentsByEpb[channelIndex];
+                                        var copy = new double[n];
+                                        Array.Copy(channel.Currents, copy, n);
+                                        legacyCurrents[channel.EpbId] = copy;
+                                    }
+                                    double[] p1 = null, p2 = null;
+                                    if (pressure1 != null) { p1 = new double[n]; Array.Copy(pressure1, p1, n); }
+                                    if (pressure2 != null) { p2 = new double[n]; Array.Copy(pressure2, p2, n); }
+                                    legacy(item.Device, legacyTs, legacyCurrents, p1, p2);
                                 }
-                                double[] p1 = null, p2 = null;
-                                if (pressure1 != null) { p1 = new double[n]; Array.Copy(pressure1, p1, n); }
-                                if (pressure2 != null) { p2 = new double[n]; Array.Copy(pressure2, p2, n); }
-                                legacy(item.Device, legacyTs, legacyCurrents, p1, p2);
+                                catch (Exception legacyEx)
+                                {
+                                    // 兼容观察者不拥有耐久化所有权，它的异常不能跳过
+                                    // 后续唯一的 SQLite 所有权移交。
+                                    _log?.Warn($"{item.Device} 兼容写盘观察者异常，继续主持久化链：{legacyEx.Message}", "AI");
+                                }
                             }
 
                             var handler = DiskBatchReady;
@@ -3429,10 +3461,16 @@ namespace IO.NI
                         }
                         finally
                         {
-                            if (string.Equals(item.Device, "Dev1", StringComparison.OrdinalIgnoreCase))
-                                Interlocked.Exchange(ref _diskPublishedSequenceDev1, item.Sequence);
-                            else
-                                Interlocked.Exchange(ref _diskPublishedSequenceDev2, item.Sequence);
+                            // 只有下游真正接收了所有权才能推进 Published。
+                            // 旧实现在订阅者抛异常/拒绝时仍推进，后续更大序号会
+                            // 掩盖中间空洞，停止边界也无法再发现丢批。
+                            if (transferred)
+                            {
+                                if (string.Equals(item.Device, "Dev1", StringComparison.OrdinalIgnoreCase))
+                                    Interlocked.Exchange(ref _diskPublishedSequenceDev1, item.Sequence);
+                                else
+                                    Interlocked.Exchange(ref _diskPublishedSequenceDev2, item.Sequence);
+                            }
                             if (!transferred) diskBatch.Dispose();
                         }
                     }
@@ -3475,7 +3513,7 @@ namespace IO.NI
                         : _uiDispatchGateDev2;
                     // UI 只需要 20~30 Hz 的最新趋势。仅在真正发布时创建绝对值矩阵，
                     // 避免两台设备每 10 ms 各分配一个二维数组并推动全代 GC。
-                    if (OnEngBatch != null && uiGate.TryAcquire(uiStartedTicks))
+                    if (liveGeneration && OnEngBatch != null && uiGate.TryAcquire(uiStartedTicks))
                     {
                         var uiEng = MakeEngineeringAbsoluteCopy(engFiltered);
                         PublishLatestUi(item.Device, uiEng, item.Current, item.Last);
@@ -3497,7 +3535,8 @@ namespace IO.NI
                         PeakMs = peakMs,
                         DiskBatchBuildMs = diskBatchBuildMs,
                         DiskDispatchMs = diskDispatchMs,
-                        UiNotifyMs = uiNotifyMs
+                        UiNotifyMs = uiNotifyMs,
+                        Detail = liveGeneration ? string.Empty : "ArchivedInvalidatedGeneration"
                     });
 
                     //OnFastEpbCurrent?.Invoke(epbCh, eng, item.Current);

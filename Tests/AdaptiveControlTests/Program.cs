@@ -260,7 +260,8 @@ namespace AdaptiveControlTests
                 Run("固定随机种子10万圈耐久仿真", HundredThousandCycleDurabilitySimulation);
                 Run("UI十万条日志生产保持512有界且50行批量消费", UiLogFloodStaysBoundedAndBatched);
                 Run("持久化积压低水位后自动恢复", DaqPersistenceCoordinatorTests.PauseAndRecoverAfterLowWater);
-                Run("持久化硬容量使用独立故障码", DaqPersistenceCoordinatorTests.HardCapacityKeepsRealFaultCode);
+                Run("持久化硬容量背压保留全部批次且只发布一次故障", DaqPersistenceCoordinatorTests.HardCapacityKeepsRealFaultCode);
+                Run("DAQ代次切换不丢弃已接收持久化FIFO", DaqPersistenceCoordinatorTests.GenerationChangePreservesAcceptedFifo);
                 Run("磁盘50至1500ms暂停均不反压生产且单次暂停后恢复", DaqPersistenceCoordinatorTests.DiskPauseMatrixRemainsBoundedAndRecovers);
                 Run("写盘超时保留原批次且存储恢复后按序补写", DaqPersistenceCoordinatorTests.RecoveryTimeoutRetainsBatchUntilStorageReturns);
                 Run("通道级耐久前缀不阻塞同设备健康后续流量", DaqPersistenceCoordinatorTests.DurablePrefixAllowsHealthyLaterTrafficButRejectsSuppression);
@@ -3995,6 +3996,30 @@ namespace AdaptiveControlTests
             Assert(!EpbManager.IsStopPersistenceBoundaryClosed(
                     100, 100, 100, 0, DaqPersistenceState.Failed),
                 "持久化失败状态错误放行同进程重启");
+            Assert(EpbManager.IsStopPersistenceBoundaryClosed(
+                    100, 100, 100, 0, DaqPersistenceState.Failed,
+                    requireRecoveredState: false),
+                "退出时数据已真实耐久但仅剩恢复计数锁存，被错误阻止关闭");
+            Assert(!EpbManager.IsStopPersistenceBoundaryClosed(
+                    100, 100, 100, 0, DaqPersistenceState.Failed,
+                    requireRecoveredState: false,
+                    durabilityBlocked: true),
+                "退出时仍有未解决写故障却被错误放行");
+            Assert(!EpbManager.IsStopPersistenceBoundaryClosed(
+                    100, 100, 100, 0, DaqPersistenceState.Failed,
+                    requireRecoveredState: false,
+                    discardedGenerationBatchCount: 1),
+                "退出时存在代次丢弃却被错误放行");
+            Assert(!EpbManager.IsStopPersistenceBoundaryClosed(
+                    100, 100, 100, 0, DaqPersistenceState.Failed,
+                    requireRecoveredState: false,
+                    overCapacityDroppedBatchCount: 1),
+                "退出时存在容量丢弃却被错误放行");
+            Assert(EpbManager.RequiresRecoveredPersistenceStateForStop(StopSource.ManualUi),
+                "人工停止仍可能同进程重启，却错误放宽恢复门禁");
+            Assert(!EpbManager.RequiresRecoveredPersistenceStateForStop(StopSource.ApplicationClosing) &&
+                   !EpbManager.RequiresRecoveredPersistenceStateForStop(StopSource.ProgramExit),
+                "退出路径没有采用数据耐久而非新鲜批次恢复判据");
         }
 
         private static void ActiveCycleBlocksInProcessRestart()

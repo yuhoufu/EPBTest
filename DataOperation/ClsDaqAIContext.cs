@@ -44,6 +44,10 @@ public class DaqAIContext
     private readonly int Channels;
     private readonly string currentStatFileName;
     private readonly ConcurrentQueue<DaqAIData> DaqRawData = new();
+    private readonly SemaphoreSlim rawQueueGate = new(1);
+    private readonly SemaphoreSlim rawQueueSlots;
+    private int rawQueueCount;
+    private int rawQueueFullLatched;
 
     private readonly ConcurrentQueue<DaqAIData> DaqStatData = new();
     private readonly int MaxLens;
@@ -83,6 +87,7 @@ public class DaqAIContext
         DaqCardName = cardName;
 
         MaxLens = Math.Max(256, maxLens);
+        rawQueueSlots = new SemaphoreSlim(MaxLens, MaxLens);
         StoreTimeMinutes = storeTimeMinutes;
         DaqSpanMillSec1 = daqSpanMillSec;
         SamplesPerChannel = samplesPerChannel;
@@ -108,6 +113,9 @@ public class DaqAIContext
     }
 
     public event Action<string, int, int> QueueFull;
+
+    public int RawQueueDepth => Volatile.Read(ref rawQueueCount);
+    public int RawQueueCapacity => MaxLens;
 
     private string GenerateRawFileName()
     {
@@ -148,25 +156,48 @@ public class DaqAIContext
 
     public void EnqueueRawData(double[,] data, DateTime recvTime, DateTime lastTime)
     {
-        var daqData = new DaqAIData(data, recvTime, lastTime);
-
-        DaqRawData.Enqueue(daqData);
-        if (DaqRawData.Count > MaxLens)
-        {
-            if (DaqRawData.TryDequeue(out var removedData)) removedData.DisposeOwned();
-            QueueFull?.Invoke(DaqCardName, DaqRawData.Count, MaxLens);
-        }
+        EnqueueRawCore(new DaqAIData(data, recvTime, lastTime));
     }
 
     public void EnqueueRawData(OwnedDaqRawBatch batch)
     {
         if (batch == null) return;
-        AccumulateStat(batch);
-        DaqRawData.Enqueue(new DaqAIData(batch));
-        if (DaqRawData.Count > MaxLens)
+        // 统计是派生数据，异常不能撤销 Raw 所有权。Raw 成功进入无丢弃队列后，
+        // 上游即可安全结束所有权转移。
+        try { AccumulateStat(batch); }
+        catch { }
+        EnqueueRawCore(new DaqAIData(batch));
+    }
+
+    private void EnqueueRawCore(DaqAIData data)
+    {
+        if (!rawQueueSlots.Wait(0))
         {
-            if (DaqRawData.TryDequeue(out var removed)) removed.DisposeOwned();
-            QueueFull?.Invoke(DaqCardName, DaqRawData.Count, MaxLens);
+            if (Interlocked.CompareExchange(ref rawQueueFullLatched, 1, 0) == 0)
+            {
+                try { QueueFull?.Invoke(DaqCardName, RawQueueDepth, MaxLens); }
+                catch { }
+            }
+            // 调用线程是 Raw 后台发布线程，不是 NI 回调线程。容量耗尽时把背压
+            // 逐级传回采集安全暂停，绝不能删除队头的已接收批次。
+            rawQueueSlots.Wait();
+        }
+
+        rawQueueGate.Wait();
+        try
+        {
+            DaqRawData.Enqueue(data);
+            Interlocked.Increment(ref rawQueueCount);
+        }
+        catch
+        {
+            rawQueueSlots.Release();
+            data.DisposeOwned();
+            throw;
+        }
+        finally
+        {
+            rawQueueGate.Release();
         }
     }
 
@@ -307,17 +338,29 @@ public class DaqAIContext
     public async Task FlushRawToDiskAsync()
     {
         await rawFileLock.WaitAsync();
-        var Lens = DaqRawData.Count;
-
+        await rawQueueGate.WaitAsync();
+        var pending = new List<DaqAIData>();
         byte[] buffer = null;
         FileStream fs = null;
+        long originalLength = -1;
+        string targetFile = null;
 
         try
         {
+            var Lens = Volatile.Read(ref rawQueueCount);
             if (Lens < 1) return; // finally 仍会执行
 
-            // 共享缓冲池避免每次定时刷新都创建一个大对象并进入 LOH。
-            var estimatedBytes = checked(Lens * SamplesPerChannel * (4 + 8 + 8 * Channels));
+            for (var i = 0; i < Lens; i++)
+            {
+                if (!DaqRawData.TryDequeue(out var daqData)) break;
+                pending.Add(daqData);
+                Interlocked.Decrement(ref rawQueueCount);
+            }
+            if (pending.Count == 0) return;
+
+            // 按真实批次样本数计算缓冲，避免配置样本数与现场批次变化时越界。
+            var totalSamples = pending.Sum(item => item.SampleCount);
+            var estimatedBytes = checked(totalSamples * (4 + 8 + 8 * Channels));
             buffer = ArrayPool<byte>.Shared.Rent(Math.Max(1, estimatedBytes));
 
             // Step 1: 检查是否需要切换文件
@@ -327,76 +370,106 @@ public class DaqAIContext
                 _lastFlushTime = DateTime.Now;
             }
 
-            SaveRawCounter++;
+            targetFile = currentRawFileName;
+            var nextSaveRawCounter = checked(SaveRawCounter + 1);
             var offset = 0;
 
-            // 跳过首次写盘（保持你原有策略）
-            if (SaveRawCounter <= 1)
-            {
-                for (var i = 0; i < Lens; i++)
-                    if (DaqRawData.TryDequeue(out var skipped)) skipped.DisposeOwned();
-                return;
-            }
-
             // Step 2: 逐批取出并展开为“逐样本”记录
-            for (var i = 0; i < Lens; i++)
+            foreach (var daqData in pending)
             {
-                if (!DaqRawData.TryDequeue(out var daqData)) continue;
-                try
-                {
-                    var recvSamples = daqData.SampleCount;
-                    if (recvSamples <= 0) continue;
+                var recvSamples = daqData.SampleCount;
+                if (recvSamples <= 0) continue;
 
-                    // —— 用 Ticks 做线性插值，更精确 —— //
-                    var lastTicks = daqData.LastRecvTime.Ticks;
-                    var spanTicks = (daqData.RecvTime - daqData.LastRecvTime).Ticks;
-                    var stepTicks = spanTicks > 0
-                        ? spanTicks / (double)recvSamples
-                        : TimeSpan.FromMilliseconds(DaqSpanMillSec1).Ticks;
+                // —— 用 Ticks 做线性插值，更精确 —— //
+                var lastTicks = daqData.LastRecvTime.Ticks;
+                var spanTicks = (daqData.RecvTime - daqData.LastRecvTime).Ticks;
+                var stepTicks = spanTicks > 0
+                    ? spanTicks / (double)recvSamples
+                    : TimeSpan.FromMilliseconds(DaqSpanMillSec1).Ticks;
 
-                    for (var j = 0; j < recvSamples; j++)
-                    {
-                        var tsTicks = lastTicks + (long)Math.Round(stepTicks * (j + 1));
-                        var daqTime = new DateTime(tsTicks, DateTimeKind.Local);
-                        WriteInt32LittleEndian(buffer, ref offset, SaveRawCounter - 1);
-                        WriteInt64LittleEndian(buffer, ref offset, daqTime.ToFileTime());
-                        for (var k = 0; k < Channels; k++)
-                            WriteInt64LittleEndian(
-                                buffer,
-                                ref offset,
-                                BitConverter.DoubleToInt64Bits(daqData.GetValue(k, j)));
-                    }
-                }
-                finally
+                for (var j = 0; j < recvSamples; j++)
                 {
-                    daqData.DisposeOwned();
+                    var tsTicks = lastTicks + (long)Math.Round(stepTicks * (j + 1));
+                    var daqTime = new DateTime(tsTicks, DateTimeKind.Local);
+                    WriteInt32LittleEndian(buffer, ref offset, nextSaveRawCounter);
+                    WriteInt64LittleEndian(buffer, ref offset, daqTime.ToFileTime());
+                    for (var k = 0; k < Channels; k++)
+                        WriteInt64LittleEndian(
+                            buffer,
+                            ref offset,
+                            BitConverter.DoubleToInt64Bits(daqData.GetValue(k, j)));
                 }
             }
 
-            // Step 3: 异步批量写入
+            // Step 3: 记录追加前长度。任何异常先回滚文件，再把原批次按 FIFO 放回队头语义；
+            // 在 rawQueueGate 持有期间没有新生产者插入，因此重新入队不会改变顺序。
             fs = new FileStream(
-                currentRawFileName,
-                FileMode.Append,
+                targetFile,
+                FileMode.OpenOrCreate,
                 FileAccess.Write,
                 FileShare.Read,
                 8192,
                 FileOptions.WriteThrough | FileOptions.Asynchronous);
+            originalLength = fs.Length;
+            fs.Position = originalLength;
 
             await fs.WriteAsync(buffer, 0, offset);
             await fs.FlushAsync();
+            SaveRawCounter = nextSaveRawCounter;
+
+            foreach (var daqData in pending)
+            {
+                daqData.DisposeOwned();
+                rawQueueSlots.Release();
+            }
+            pending.Clear();
+            Interlocked.Exchange(ref rawQueueFullLatched, 0);
         }
         catch (Exception ex)
         {
-            var logFilePath = Path.Combine(Directory.GetCurrentDirectory(),
-                $"DAQ_{DaqCardName}WriteDiskErrorLog.txt");
-            var errorMessage = $"[{DateTime.Now}] DAQ_{DaqCardName} flush error: {ex.Message}";
-            File.AppendAllText(logFilePath, errorMessage + Environment.NewLine);
+            Exception rollbackError = null;
+            if (fs != null && originalLength >= 0)
+            {
+                try
+                {
+                    fs.SetLength(originalLength);
+                    await fs.FlushAsync();
+                }
+                catch (Exception rollbackEx)
+                {
+                    rollbackError = rollbackEx;
+                }
+            }
+
+            foreach (var daqData in pending)
+            {
+                DaqRawData.Enqueue(daqData);
+                Interlocked.Increment(ref rawQueueCount);
+            }
+            pending.Clear();
+
+            try
+            {
+                if (Directory.Exists(StorePath))
+                {
+                    var logFilePath = Path.Combine(StorePath,
+                        $"DAQ_{DaqCardName}WriteDiskErrorLog.txt");
+                    var errorMessage = $"[{DateTime.Now}] DAQ_{DaqCardName} flush error: {ex.Message}";
+                    File.AppendAllText(logFilePath, errorMessage + Environment.NewLine);
+                }
+            }
+            catch { }
+
+            if (rollbackError != null)
+                throw new AggregateException("Raw写入失败且文件长度回滚失败；保留内存批次并禁止静默继续。", ex, rollbackError);
+            throw;
         }
         finally
         {
-            rawFileLock.Release();
             if (buffer != null) ArrayPool<byte>.Shared.Return(buffer, clearArray: false);
             fs?.Dispose();
+            rawQueueGate.Release();
+            rawFileLock.Release();
         }
     }
 

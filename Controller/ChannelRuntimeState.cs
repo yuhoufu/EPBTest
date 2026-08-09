@@ -207,12 +207,14 @@ namespace Controller
 
     public sealed class StopSafetyResult
     {
+        public StopSource Source { get; set; } = StopSource.UnknownLegacy;
         public string CorrelationId { get; set; } = string.Empty;
         public Guid RunId { get; set; }
         public bool MotorOffCommandSucceeded { get; set; }
         public bool PowerOffConfirmed { get; set; }
         public bool PressureSafeConfirmed { get; set; }
         public bool PersistenceBoundaryConfirmed { get; set; }
+        public bool RawStorageFlushed { get; set; }
         public bool ReusedPreviousResult { get; set; }
         public DateTime StartedUtc { get; set; }
         public DateTime CompletedUtc { get; set; }
@@ -240,12 +242,14 @@ namespace Controller
         {
             return new StopSafetyResult
             {
+                Source = Source,
                 CorrelationId = CorrelationId,
                 RunId = RunId,
                 MotorOffCommandSucceeded = MotorOffCommandSucceeded,
                 PowerOffConfirmed = PowerOffConfirmed,
                 PressureSafeConfirmed = PressureSafeConfirmed,
                 PersistenceBoundaryConfirmed = PersistenceBoundaryConfirmed,
+                RawStorageFlushed = RawStorageFlushed,
                 ReusedPreviousResult = reused,
                 StartedUtc = StartedUtc,
                 CompletedUtc = CompletedUtc,

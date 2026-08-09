@@ -47,6 +47,7 @@ namespace Controller
         {
             public readonly ConcurrentQueue<DaqDiskBatch> Queue = new();
             public readonly SemaphoreSlim Signal = new(0);
+            public SemaphoreSlim Slots;
             public int Count;
             public int PauseLatched;
             public int FreshAfterLowWater;
@@ -104,6 +105,8 @@ namespace Controller
             _diagnostic = diagnostic;
             _persistenceTiming = persistenceTiming;
             _capacity = Math.Max(2, capacity);
+            _dev1.Slots = new SemaphoreSlim(_capacity, _capacity);
+            _dev2.Slots = new SemaphoreSlim(_capacity, _capacity);
             _pauseDepth = Math.Max(1, Math.Min(_capacity - 1, pauseDepth));
             _resumeDepth = Math.Max(0, Math.Min(_pauseDepth - 1, resumeDepth));
             _pauseAgeMs = Math.Max(100, pauseAgeMs);
@@ -128,15 +131,7 @@ namespace Controller
             }
 
             var q = GetQueue(batch.Device);
-            var acceptedGeneration = Interlocked.Read(ref q.AcceptedGeneration);
-            if (batch.Generation < acceptedGeneration)
-            {
-                Interlocked.Increment(ref q.DiscardedGenerationBatchCount);
-                batch.Dispose();
-                return true;
-            }
-            if (batch.Generation > acceptedGeneration)
-                Interlocked.Exchange(ref q.AcceptedGeneration, batch.Generation);
+            UpdateAcceptedGeneration(q, batch.Generation);
 
             var suppressAfter = q.SuppressAfterUtc;
             if (suppressAfter.HasValue && batch.SampleCount > 0 &&
@@ -149,11 +144,8 @@ namespace Controller
                 return true;
             }
 
-            var count = Interlocked.Increment(ref q.Count);
-            if (count > _capacity)
+            if (!q.Slots.Wait(0))
             {
-                Interlocked.Decrement(ref q.Count);
-                Interlocked.Increment(ref q.OverCapacityDroppedBatchCount);
                 // 容量满是一次状态跃迁，不是每个后续采样批次各自一个新故障。
                 // 旧实现对每个拒绝批次都发布 Failed，现场 20 秒内产生 1491 条
                 // 错误、1491 个 UI 更新和大量重复恢复任务，反过来继续拖慢写盘。
@@ -164,13 +156,30 @@ namespace Controller
                     var correlation = EnsureCorrelation(q);
                     Publish(batch, q, DaqPersistenceState.Failed, "DaqPersistenceQueueFull",
                         $"{batch.Device} 持久化队列达到硬上限 {_capacity} 批；" +
-                        "已锁存安全暂停，同一拥塞事件后续批次只计数不重复发布。",
+                        "已锁存安全暂停，同一拥塞事件不重复发布故障。",
                         correlation);
                 }
+                // 当前调用位于 DAQ 后台工程线程，不是 NI 回调线程。容量用尽后允许
+                // 有界背压传回上游安全暂停，但绝不能丢弃已经接收、已分配池化所有权的批次。
+                try
+                {
+                    q.Slots.Wait(_cts.Token);
+                }
+                catch
+                {
+                    batch.Dispose();
+                    return false;
+                }
+            }
+
+            if (Volatile.Read(ref _disposed) != 0)
+            {
+                q.Slots.Release();
                 batch.Dispose();
                 return false;
             }
 
+            Interlocked.Increment(ref q.Count);
             q.Queue.Enqueue(batch);
             q.Signal.Release();
             EvaluateLag(batch.Device, q, batch);
@@ -200,15 +209,9 @@ namespace Controller
         internal void AcceptGeneration(string device, long generation)
         {
             var q = GetQueue(device);
-            Interlocked.Exchange(ref q.AcceptedGeneration, generation);
-            while (q.Queue.TryPeek(out var batch) && batch.Generation != generation)
-            {
-                if (!q.Queue.TryDequeue(out batch)) break;
-                Interlocked.Decrement(ref q.Count);
-                Interlocked.Increment(ref q.DiscardedGenerationBatchCount);
-                MarkPersisted(q, batch.Sequence);
-                batch.Dispose();
-            }
+            // generation 只用于恢复身份和诊断。已进入持久化 FIFO 的旧代次批次仍必须
+            // 真实写入，不能以“代次已更新”为由伪装成已持久化。
+            UpdateAcceptedGeneration(q, generation);
         }
 
         internal DaqPersistenceStateChanged GetSnapshot(string device)
@@ -297,7 +300,8 @@ namespace Controller
         /// 等待指定生产序号之前的已接纳批次全部真实写入。与整设备截止使用的
         /// <see cref="WaitForDurableBoundaryAsync"/> 不同，本门禁允许同一设备上的健康通道
         /// 继续产生更高序号批次，因此不要求整条队列为零；但队头和在途批次都必须已经
-        /// 越过目标序号，且期间不得发生代次切换、准入抑制或未解决写故障。
+        /// 越过目标序号，且期间不得发生准入抑制或未解决写故障。generation 切换不撤销
+        /// 已接收 FIFO 的耐久义务，因此不能作为拒绝前缀的条件。
         /// </summary>
         internal async Task<bool> WaitForDurablePrefixAsync(
             string device,
@@ -307,24 +311,21 @@ namespace Controller
         {
             if (sequence <= 0) return true;
             var q = GetQueue(device);
-            var expectedGeneration = Interlocked.Read(ref q.AcceptedGeneration);
             var deadline = Stopwatch.GetTimestamp() +
                            (long)(Math.Max(1, timeoutMs) / 1000.0 * Stopwatch.Frequency);
             while (!token.IsCancellationRequested && Stopwatch.GetTimestamp() < deadline)
             {
-                if (IsDurablePrefix(q, sequence, expectedGeneration)) return true;
+                if (IsDurablePrefix(q, sequence)) return true;
                 await Task.Delay(5, token).ConfigureAwait(false);
             }
-            return IsDurablePrefix(q, sequence, expectedGeneration);
+            return IsDurablePrefix(q, sequence);
         }
 
         private static bool IsDurablePrefix(
             DeviceQueue q,
-            long sequence,
-            long expectedGeneration)
+            long sequence)
         {
             if (q.SuppressAfterUtc.HasValue ||
-                Interlocked.Read(ref q.AcceptedGeneration) != expectedGeneration ||
                 Volatile.Read(ref q.UnresolvedWriteFailure) != 0 ||
                 Volatile.Read(ref q.FailureTimedOut) != 0 ||
                 Volatile.Read(ref q.QueueFullLatched) != 0 ||
@@ -374,17 +375,12 @@ namespace Controller
                     await q.Signal.WaitAsync(_cts.Token).ConfigureAwait(false);
                     if (!q.Queue.TryDequeue(out var batch)) continue;
                     Interlocked.Decrement(ref q.Count);
+                    q.Slots.Release();
                     var batchDevice = batch.Device;
                     var boundaryHandled = false;
                     try
                     {
                         Interlocked.Exchange(ref q.InFlightSequence, batch.Sequence);
-                        if (batch.Generation != Interlocked.Read(ref q.AcceptedGeneration))
-                        {
-                            Interlocked.Increment(ref q.DiscardedGenerationBatchCount);
-                            boundaryHandled = true;
-                            continue;
-                        }
                         Interlocked.Exchange(ref q.InFlightEnqueuedTicks, batch.EnqueuedMonotonicTicks);
                         Interlocked.Exchange(ref q.WriteInFlight, 1);
                         await WriteWithRetryAsync(batch, q).ConfigureAwait(false);
@@ -719,6 +715,16 @@ namespace Controller
             } while (Interlocked.CompareExchange(ref q.LastPersistedSequence, sequence, current) != current);
         }
 
+        private static void UpdateAcceptedGeneration(DeviceQueue q, long generation)
+        {
+            long current;
+            do
+            {
+                current = Interlocked.Read(ref q.AcceptedGeneration);
+                if (generation <= current) return;
+            } while (Interlocked.CompareExchange(ref q.AcceptedGeneration, generation, current) != current);
+        }
+
         private static Guid EnsureCorrelation(DeviceQueue q)
         {
             if (q.CorrelationId == Guid.Empty) q.CorrelationId = Guid.NewGuid();
@@ -743,7 +749,11 @@ namespace Controller
 
         private static void DisposeQueue(DeviceQueue q)
         {
-            while (q.Queue.TryDequeue(out var batch)) batch.Dispose();
+            while (q.Queue.TryDequeue(out var batch))
+            {
+                batch.Dispose();
+                try { q.Slots.Release(); } catch { }
+            }
             Interlocked.Exchange(ref q.Count, 0);
         }
 
@@ -756,6 +766,8 @@ namespace Controller
             try { Task.WaitAll(new[] { _dev1Worker, _dev2Worker }, 10000); } catch { }
             _dev1.Signal.Dispose();
             _dev2.Signal.Dispose();
+            _dev1.Slots.Dispose();
+            _dev2.Slots.Dispose();
             _cts.Dispose();
         }
 

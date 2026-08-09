@@ -64,6 +64,9 @@ namespace EpbDiskWriterTests
                 Run("Latest并发导出原子且无临时残留", ConcurrentLatestExportsAreAtomic);
                 Run("Latest每通道计数收敛且Unlimited不删除", LatestPackageRetentionModes);
                 Run("不同数据根目录的写盘器可同时映射且保持隔离", DifferentRootsUseIndependentMappingScopes);
+                Run("Raw首次Flush不再主动丢弃缓存", RawFirstFlushPersistsBufferedData);
+                Run("Raw硬容量背压后全部批次落盘", RawCapacityBackpressurePreservesAllBatches);
+                Run("Raw写入失败保留FIFO并可重试", RawWriteFailureRetainsFifoForRetry);
                 Console.WriteLine($"PASS {_passed}/{_passed}");
                 return 0;
             }
@@ -1406,6 +1409,68 @@ namespace EpbDiskWriterTests
             }
 
             throw new InvalidOperationException("预期导出失败，但操作成功。");
+        }
+
+        private static void RawFirstFlushPersistsBufferedData()
+        {
+            WithRoot(root =>
+            {
+                var context = new DaqAIContext("Dev1", 256, 60, 1, 1, 1, root);
+                context.EnqueueRawData(new[,] { { 12.5 } }, DateTime.Now, DateTime.Now.AddMilliseconds(-1));
+                context.FlushRawToDiskAsync().GetAwaiter().GetResult();
+                var path = Path.Combine(root, "DAQ_Dev1_Raw_1.bin");
+                Assert(File.Exists(path) && new FileInfo(path).Length == 20,
+                    "首次Flush仍丢弃缓存或Raw帧长度错误");
+                Assert(context.RawQueueDepth == 0, "首次Flush成功后Raw队列未清零");
+            });
+        }
+
+        private static void RawCapacityBackpressurePreservesAllBatches()
+        {
+            WithRoot(root =>
+            {
+                var context = new DaqAIContext("Dev1", 256, 60, 1, 1, 1, root);
+                var queueFullEvents = 0;
+                context.QueueFull += (_, __, ___) => Interlocked.Increment(ref queueFullEvents);
+                var now = DateTime.Now;
+                for (var i = 0; i < context.RawQueueCapacity; i++)
+                    context.EnqueueRawData(new[,] { { (double)i } }, now.AddMilliseconds(i + 1), now.AddMilliseconds(i));
+
+                var blockedProducer = Task.Run(() =>
+                    context.EnqueueRawData(new[,] { { 999.0 } }, now.AddSeconds(1), now.AddSeconds(1).AddMilliseconds(-1)));
+                Assert(!blockedProducer.Wait(100), "Raw容量满时生产者未形成有界背压");
+                context.FlushRawToDiskAsync().GetAwaiter().GetResult();
+                Assert(blockedProducer.Wait(3000), "Raw刷新成功后生产者未解除背压");
+                context.FlushRawToDiskAsync().GetAwaiter().GetResult();
+
+                var path = Path.Combine(root, "DAQ_Dev1_Raw_1.bin");
+                Assert(new FileInfo(path).Length == (context.RawQueueCapacity + 1L) * 20L,
+                    "Raw容量背压期间仍发生批次丢失");
+                Assert(queueFullEvents == 1 && context.RawQueueDepth == 0,
+                    "同一次Raw容量事故重复发布或队列未排空");
+            });
+        }
+
+        private static void RawWriteFailureRetainsFifoForRetry()
+        {
+            WithRoot(root =>
+            {
+                var missing = Path.Combine(root, "not-created", "raw");
+                var context = new DaqAIContext("Dev1", 256, 60, 1, 1, 1, missing);
+                var now = DateTime.Now;
+                context.EnqueueRawData(new[,] { { 7.0 } }, now, now.AddMilliseconds(-1));
+                var failed = false;
+                try { context.FlushRawToDiskAsync().GetAwaiter().GetResult(); }
+                catch { failed = true; }
+                Assert(failed && context.RawQueueDepth == 1,
+                    "Raw写入失败被吞掉或FIFO所有权已释放");
+
+                Directory.CreateDirectory(missing);
+                context.FlushRawToDiskAsync().GetAwaiter().GetResult();
+                var path = Path.Combine(missing, "DAQ_Dev1_Raw_1.bin");
+                Assert(File.Exists(path) && new FileInfo(path).Length == 20 && context.RawQueueDepth == 0,
+                    "存储恢复后Raw保留批次未成功补写");
+            });
         }
 
         private static void WithRoot(Action<string> action)
