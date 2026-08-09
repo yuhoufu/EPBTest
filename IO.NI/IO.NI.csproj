@@ -83,6 +83,7 @@
     <Compile Include="HighResolutionSampleClock.cs" />
     <Compile Include="HostRuntimeProbe.cs" />
     <Compile Include="IAppLogger.cs" />
+    <Compile Include="PreallocatedSpscRing.cs" />
     <Compile Include="CoalescingTaskSupervisor.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="TwoDeviceAiAcquirer.cs" />

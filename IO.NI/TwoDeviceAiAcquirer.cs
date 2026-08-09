@@ -626,8 +626,8 @@ namespace IO.NI
         private readonly int _medianLens;
 
         // 两块采集卡分别处理，避免任一设备的滤波/落盘/UI订阅拖住另一块卡。
-        private readonly ConcurrentQueue<Item> _queueDev1 = new();
-        private readonly ConcurrentQueue<Item> _queueDev2 = new();
+        private readonly PreallocatedSpscRing<Item> _queueDev1;
+        private readonly PreallocatedSpscRing<Item> _queueDev2;
         private readonly SemaphoreSlim _queueSignalDev1 = new(0);
         private readonly SemaphoreSlim _queueSignalDev2 = new(0);
         private readonly ControlBatchRing _controlRingDev1;
@@ -701,8 +701,8 @@ namespace IO.NI
         private static readonly Lazy<ClrGcPauseMonitor> SharedGcPauseMonitor =
             new Lazy<ClrGcPauseMonitor>(() => new ClrGcPauseMonitor(NLogger.Instance), true);
         private readonly ClrGcPauseMonitor _gcPauseMonitor;
-        private readonly ConcurrentQueue<OwnedDaqRawBatch> _rawPublicationQueueDev1 = new();
-        private readonly ConcurrentQueue<OwnedDaqRawBatch> _rawPublicationQueueDev2 = new();
+        private readonly PreallocatedSpscRing<OwnedDaqRawBatch> _rawPublicationQueueDev1;
+        private readonly PreallocatedSpscRing<OwnedDaqRawBatch> _rawPublicationQueueDev2;
         private readonly SemaphoreSlim _rawPublicationSignalDev1 = new(0);
         private readonly SemaphoreSlim _rawPublicationSignalDev2 = new(0);
         // UI 只消费每块设备的最新快照，因此唤醒信号也必须是二值的。
@@ -1225,7 +1225,7 @@ namespace IO.NI
 
         private void CheckProcessingPipelineAge(
             string device,
-            ConcurrentQueue<Item> queue,
+            PreallocatedSpscRing<Item> queue,
             int depth,
             long inFlightEnqueuedTicks,
             double hardAgeMs)
@@ -1575,6 +1575,12 @@ namespace IO.NI
                 (int)ParseDoubleOrDefault(
                     SafeGetAppSetting("DaqProcessingQueueCapacity"),
                     DefaultProcessingQueueCapacity)));
+            _queueDev1 = new PreallocatedSpscRing<Item>(_processingQueueCapacity);
+            _queueDev2 = new PreallocatedSpscRing<Item>(_processingQueueCapacity);
+            _rawPublicationQueueDev1 =
+                new PreallocatedSpscRing<OwnedDaqRawBatch>(RawPublicationCapacity);
+            _rawPublicationQueueDev2 =
+                new PreallocatedSpscRing<OwnedDaqRawBatch>(RawPublicationCapacity);
             var configuredControlCapacity =
                 ParseDoubleOrDefault(SafeGetAppSetting("DaqControlQueueCapacity"), 64);
             _controlQueueCapacity = configuredControlCapacity >= 16 && configuredControlCapacity <= 256
@@ -3668,7 +3674,12 @@ namespace IO.NI
                         throw new InvalidOperationException(
                             $"{item.Device} Raw发布链在准入期间关闭，所有权仍由调用方保留。");
                     Interlocked.Increment(ref count);
-                    queue.Enqueue(snapshot);
+                    if (!queue.TryEnqueue(snapshot))
+                    {
+                        Interlocked.Decrement(ref count);
+                        throw new InvalidOperationException(
+                            $"{item.Device} Raw预分配环容量与准入计数不一致；所有权仍由调用方保留。");
+                    }
                     enqueued = true;
                     slotAcquired = false;
                     TrySignal(signal);
@@ -3687,7 +3698,7 @@ namespace IO.NI
 
         private void RawPublicationLoop(
             string workerDevice,
-            ConcurrentQueue<OwnedDaqRawBatch> queue,
+            PreallocatedSpscRing<OwnedDaqRawBatch> queue,
             SemaphoreSlim signal,
             SemaphoreSlim slots)
         {
@@ -3932,7 +3943,7 @@ namespace IO.NI
 
         private void ProcessLoop(
             string workerDevice,
-            ConcurrentQueue<Item> queue,
+            PreallocatedSpscRing<Item> queue,
             SemaphoreSlim signal)
         {
             while (!_cts.IsCancellationRequested)
@@ -4031,7 +4042,7 @@ namespace IO.NI
 
         private void ProcessLoopCore(
             string workerDevice,
-            ConcurrentQueue<Item> queue,
+            PreallocatedSpscRing<Item> queue,
             SemaphoreSlim signal)
         {
             try
@@ -4747,10 +4758,24 @@ namespace IO.NI
                         oldestAgeMs);
                     return false;
                 }
-                // TryEnter 成功后 ConcurrentQueue.Enqueue 不会按容量拒绝。先公布接收边界，
+                // TryEnter 成功后再由预分配环做第二道不变量检查。先公布接收边界，
                 // 再使 Item 对消费者可见，避免停止线程在两步之间漏掉真实在途批次。
                 _sequenceDev1.Accept(item.Sequence);
-                _queueDev1.Enqueue(item);
+                if (!_queueDev1.TryEnqueue(item))
+                {
+                    DaqQueueAdmission.Release(ref _queueCountDev1);
+                    LatchProcessingGapIfUnpublished(item.Device, item.Sequence);
+                    PublishQueueFullFault(
+                        item.Device,
+                        item.Generation,
+                        "BackgroundQueueFull",
+                        "Background",
+                        _queueDev1.Count,
+                        _processingQueueCapacity,
+                        reasonOverride: "Dev1 后台处理预分配环容量与准入计数不一致；" +
+                                        "已锁存当前批永久连续性空洞并禁止同进程续测。");
+                    return false;
+                }
                 TrySignal(_queueSignalDev1);
             }
             else
@@ -4773,7 +4798,21 @@ namespace IO.NI
                     return false;
                 }
                 _sequenceDev2.Accept(item.Sequence);
-                _queueDev2.Enqueue(item);
+                if (!_queueDev2.TryEnqueue(item))
+                {
+                    DaqQueueAdmission.Release(ref _queueCountDev2);
+                    LatchProcessingGapIfUnpublished(item.Device, item.Sequence);
+                    PublishQueueFullFault(
+                        item.Device,
+                        item.Generation,
+                        "BackgroundQueueFull",
+                        "Background",
+                        _queueDev2.Count,
+                        _processingQueueCapacity,
+                        reasonOverride: "Dev2 后台处理预分配环容量与准入计数不一致；" +
+                                        "已锁存当前批永久连续性空洞并禁止同进程续测。");
+                    return false;
+                }
                 TrySignal(_queueSignalDev2);
             }
             return true;
@@ -4900,9 +4939,7 @@ namespace IO.NI
                 Generation = generation,
                 TimestampUtc = DateTime.UtcNow,
                 QueueKind = queueKind,
-                QueueType = string.Equals(queueKind, "Control", StringComparison.OrdinalIgnoreCase)
-                    ? "PreallocatedSpscRing"
-                    : "BoundedConcurrentQueue",
+                QueueType = "PreallocatedSpscRing",
                 QueueDepth = queueDepth,
                 QueueCapacity = queueCapacity,
                 OldestBatchAgeMs = oldestBatchAgeMs,
