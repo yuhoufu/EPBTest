@@ -142,6 +142,70 @@ class FieldGateValidatorTests(unittest.TestCase):
         )
         return process, json.loads(output_json.read_text(encoding="utf-8-sig"))
 
+    @staticmethod
+    def incident_identity() -> dict:
+        return {
+            "productVersion": "V2.12.0.27",
+            "assemblyVersion": "2.12.0.27",
+            "executablePath": r"D:\EPBTest\MTTFTest.exe",
+            "executableSha256": "a" * 64,
+            "configSha256": "d" * 64,
+            "releaseConfigSha256": "a" * 64,
+            "processBitness": 32,
+            "processId": 1234,
+            "gitCommit": "b" * 40,
+            "gitDirty": "False",
+            "buildUtc": "2026-08-08T00:00:00Z",
+        }
+
+    @staticmethod
+    def auto_incident_record(result: str, sequence: int) -> dict:
+        terminal = result.startswith("90-")
+        return {
+            "device": "Dev1",
+            "correlationId": "c" * 32,
+            "runId": "a" * 32,
+            "runEpoch": 1,
+            "recoveryEpoch": 1,
+            "faultCode": "DaqPersistenceLag",
+            "reason": "fixture",
+            "generation": 2,
+            "previousGeneration": 1,
+            "recoveredGeneration": 2,
+            "firstVerifiedSequence": 100,
+            "lastVerifiedSequence": 101,
+            "recoveryAttempt": 1,
+            "affectedChannels": [4],
+            "timingEvidenceIncluded": result == "00-trigger" or terminal,
+            "fullEvidenceIncluded": terminal,
+            "recentCycleCopiesIncluded": False,
+            "result": result,
+            "capturedUtc": f"2026-08-08T10:00:{sequence:02d}.0000000Z",
+        }
+
+    def write_auto_incident_phase(
+        self,
+        result: str,
+        sequence: int,
+        *,
+        include_identity: bool = True,
+        record_overrides: dict | None = None,
+    ) -> Path:
+        incident = self.root / "IncidentSnapshots" / (
+            "20260808_100000_000-Dev1-" + "c" * 32
+        )
+        phase = incident / f"{result}-{sequence:03d}-{100000 + sequence:06d}_000"
+        phase.mkdir(parents=True)
+        record = self.auto_incident_record(result, sequence)
+        record.update(record_overrides or {})
+        (phase / "incident.json").write_text(json.dumps(record), encoding="utf-8")
+        if include_identity:
+            (phase / "build-identity.json").write_text(
+                json.dumps(self.incident_identity()),
+                encoding="utf-8",
+            )
+        return phase
+
     def test_clean_sealed_project_passes(self) -> None:
         process, result = self.run_gate()
         self.assertEqual(0, process.returncode, process.stderr + process.stdout)
@@ -244,45 +308,41 @@ class FieldGateValidatorTests(unittest.TestCase):
         self.assertIn("正式会话从完整已批准发布包启动", failures)
 
     def test_incident_phase_without_build_identity_fails(self) -> None:
-        phase = self.root / "IncidentSnapshots" / "incident-a" / "00-trigger"
-        phase.mkdir(parents=True)
-        (phase / "incident.json").write_text(
-            json.dumps({"correlationId": "c" * 32}),
-            encoding="utf-8",
-        )
+        self.write_auto_incident_phase("00-trigger", 1)
+        self.write_auto_incident_phase("90-recovered", 2, include_identity=False)
         process, result = self.run_gate()
         self.assertEqual(2, process.returncode)
         failures = {item["name"] for item in result["checks"] if not item["passed"]}
         self.assertIn("每个事故阶段构建身份完整", failures)
+        self.assertNotIn("每根事故单trigger/terminal", failures)
 
     def test_incident_phases_with_complete_build_identity_pass(self) -> None:
-        identity = {
-            "productVersion": "V2.12.0.27",
-            "assemblyVersion": "2.12.0.27",
-            "executablePath": r"D:\EPBTest\MTTFTest.exe",
-            "executableSha256": "a" * 64,
-            "configSha256": "d" * 64,
-            "releaseConfigSha256": "a" * 64,
-            "processBitness": 32,
-            "processId": 1234,
-            "gitCommit": "b" * 40,
-            "gitDirty": "False",
-            "buildUtc": "2026-08-08T00:00:00Z",
-        }
-        for phase_name in ("00-trigger", "90-terminal"):
-            phase = self.root / "IncidentSnapshots" / "incident-a" / phase_name
-            phase.mkdir(parents=True)
-            (phase / "incident.json").write_text(
-                json.dumps({"correlationId": "c" * 32}),
-                encoding="utf-8",
-            )
-            (phase / "build-identity.json").write_text(
-                json.dumps(identity),
-                encoding="utf-8",
-            )
+        self.write_auto_incident_phase("00-trigger", 1)
+        self.write_auto_incident_phase("90-recovered", 2)
         process, result = self.run_gate()
         self.assertEqual(0, process.returncode, process.stderr + process.stdout)
         self.assertEqual("PASS", result["status"])
+        self.assertEqual(0, result["metrics"]["invalid_incident_phase_schema"])
+
+    def test_incident_trigger_without_terminal_fails(self) -> None:
+        self.write_auto_incident_phase("00-trigger", 1)
+        process, result = self.run_gate()
+        self.assertEqual(2, process.returncode)
+        failures = {item["name"] for item in result["checks"] if not item["passed"]}
+        self.assertIn("每根事故单trigger/terminal", failures)
+
+    def test_incident_90_directory_without_valid_schema_is_not_terminal(self) -> None:
+        self.write_auto_incident_phase("00-trigger", 1)
+        self.write_auto_incident_phase(
+            "90-recovered",
+            2,
+            record_overrides={"capturedUtc": "not-a-timestamp"},
+        )
+        process, result = self.run_gate()
+        self.assertEqual(2, process.returncode)
+        failures = {item["name"] for item in result["checks"] if not item["passed"]}
+        self.assertIn("事故phase schema有效", failures)
+        self.assertIn("每根事故单trigger/terminal", failures)
 
     def test_redline_and_running_cycle_fail(self) -> None:
         (self.root / "log" / "error.log").write_text(

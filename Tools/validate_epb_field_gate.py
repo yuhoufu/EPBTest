@@ -157,6 +157,73 @@ def normalized_guid(value: str | None) -> str | None:
         return None
 
 
+def valid_incident_timestamp(value: object) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    normalized = value.strip()
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    try:
+        datetime.fromisoformat(normalized)
+        return True
+    except ValueError:
+        return False
+
+
+def classify_incident_phase(data: dict, directory_name: str) -> str | None:
+    """Return trigger/terminal/phase only for a production-shaped incident phase."""
+    correlation = normalized_guid(str(data.get("correlationId") or ""))
+    run_id = normalized_guid(str(data.get("runId") or ""))
+    device = str(data.get("device") or "").strip().lower()
+    affected = data.get("affectedChannels")
+    common_valid = (
+        correlation not in {None, "0" * 32}
+        and run_id not in {None, "0" * 32}
+        and device in {"dev1", "dev2"}
+        and isinstance(affected, list)
+        and bool(affected)
+        and all(isinstance(channel, int) and 1 <= channel <= 12 for channel in affected)
+        and valid_incident_timestamp(data.get("capturedUtc"))
+    )
+    if not common_valid:
+        return None
+
+    phase_directory = directory_name.strip().lower()
+    result_value = data.get("result")
+    if isinstance(result_value, str) and result_value.strip():
+        result = result_value.strip().lower()
+        if re.fullmatch(r"\d{2}-[a-z0-9]+(?:-[a-z0-9]+)*", result) is None:
+            return None
+        if re.fullmatch(
+            re.escape(result) + r"-\d{3}-\d{6}_\d{3}",
+            phase_directory,
+        ) is None:
+            return None
+        terminal = result.startswith("90-")
+        timing = result == "00-trigger" or terminal
+        if (
+            not str(data.get("faultCode") or "").strip()
+            or data.get("fullEvidenceIncluded") is not terminal
+            or data.get("timingEvidenceIncluded") is not timing
+            or not isinstance(data.get("recentCycleCopiesIncluded"), bool)
+        ):
+            return None
+        if result == "00-trigger":
+            return "trigger"
+        return "terminal" if terminal else "phase"
+
+    # Confirmed hardware faults use a distinct terminal schema and directory format.
+    if re.fullmatch(r"90-terminal-\d{6}_\d{3}-[0-9a-f]{32}", phase_directory) is None:
+        return None
+    if (
+        not str(data.get("primaryFault") or "").strip()
+        or not valid_incident_timestamp(data.get("firstSeenUtc"))
+        or not valid_incident_timestamp(data.get("lastSeenUtc"))
+    ):
+        return None
+    return "terminal"
+
+
 def select_validation_session(
     logs: dict[str, str],
     expected_version: str,
@@ -1239,6 +1306,7 @@ def validate_incidents(
     queue_age: list[float] = []
     subscriber: list[float] = []
     malformed = 0
+    invalid_phase_schema = 0
     for directory, _, files in os.walk(incident_root):
         directory_path = Path(directory)
         try:
@@ -1258,14 +1326,17 @@ def validate_incidents(
                 try:
                     data = json.loads(path.read_text(encoding="utf-8-sig", errors="replace"))
                     incident_directories.add(path.parent)
-                    correlation = str(data.get("correlationId") or "").replace("-", "").lower()
-                    if not correlation:
-                        malformed += 1
+                    if not isinstance(data, dict):
+                        invalid_phase_schema += 1
                         continue
-                    lowered = str(path.parent).lower()
-                    if "00-trigger" in lowered:
+                    correlation = normalized_guid(str(data.get("correlationId") or ""))
+                    phase_kind = classify_incident_phase(data, path.parent.name)
+                    if correlation is None or phase_kind is None:
+                        invalid_phase_schema += 1
+                        continue
+                    if phase_kind == "trigger":
                         correlations[correlation]["trigger"] += 1
-                    if "90-terminal" in lowered or "90-hardware-confirmed" in lowered:
+                    elif phase_kind == "terminal":
                         correlations[correlation]["terminal"] += 1
                 except (OSError, json.JSONDecodeError):
                     malformed += 1
@@ -1303,6 +1374,7 @@ def validate_incidents(
     metrics.update(
         incident_count=len(correlations),
         malformed_incident_json=malformed,
+        invalid_incident_phase_schema=invalid_phase_schema,
         duplicate_trigger_correlations=duplicate_trigger,
         duplicate_terminal_correlations=duplicate_terminal,
         missing_terminal_correlations=missing_terminal,
@@ -1311,6 +1383,11 @@ def validate_incidents(
         "事故JSON可解析",
         malformed == 0,
         f"correlations={len(correlations)}, malformed={malformed}",
+    ))
+    checks.append(Check(
+        "事故phase schema有效",
+        invalid_phase_schema == 0,
+        f"invalid={invalid_phase_schema}",
     ))
     checks.append(Check(
         "每根事故单trigger/terminal",
