@@ -25,8 +25,8 @@ class FieldGateValidatorTests(unittest.TestCase):
         sha = "a" * 64
         commit = "b" * 40
         (log / "run.log").write_text(
-            "2026-08-08 10:00:00.000\tINFO\t启动\tProductVersion=V2.12.0.28\n"
-            f"2026-08-08 10:00:00.000\tINFO\tFIELD\tFieldMetric SESSION Phase=Start RunId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa Channels=4,9 Closed=False Detail=BatchFormal ProductVersion=V2.12.0.28 AssemblyVersion=2.12.0.28 ProcessId=1234 ExecutablePath=D:\\EPBTest\\MTTFTest.exe ExeSha256={sha} ConfigSha256={sha} GitCommit={commit} GitDirty=False BuildUtc=2026-08-08T00:00:00Z AsyncLogDropped=0 PackageVerified=True PackageCode=Verified PackageFiles=96\n"
+            "2026-08-08 10:00:00.000\tINFO\t启动\tProductVersion=V2.12.0.29\n"
+            f"2026-08-08 10:00:00.000\tINFO\tFIELD\tFieldMetric SESSION Phase=Start RunId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa Channels=4,9 Closed=False Detail=BatchFormal ProductVersion=V2.12.0.29 AssemblyVersion=2.12.0.29 ProcessId=1234 ExecutablePath=D:\\EPBTest\\MTTFTest.exe ExeSha256={sha} ConfigSha256={sha} GitCommit={commit} GitDirty=False BuildUtc=2026-08-08T00:00:00Z AsyncLogDropped=0 PackageVerified=True PackageCode=Verified PackageFiles=96\n"
             "2026-08-08 10:00:00.100\tINFO\tFIELD\tFieldMetric STATE RunId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa Device=Dev1 Channel=4 State=Running Reason=Running Revision=1 CorrelationId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa RunEpoch=1 Enabled=True Formal=True Timer=True Runner=True Energized=False\n"
             "2026-08-08 10:00:00.100\tINFO\tFIELD\tFieldMetric STATE RunId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa Device=Dev2 Channel=9 State=Running Reason=Running Revision=1 CorrelationId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa RunEpoch=1 Enabled=True Formal=True Timer=True Runner=True Energized=False\n"
             "2026-08-08 10:00:01.000\tINFO\tFIELD\tFieldMetric DAQ Phase=Running Device=Dev1 ControlDepth=0 ControlOldestMs=0.0 ControlProcessMs=1.0 SubscriberMaxMs=1.0 ProcessingDepth=0 ProcessingCapacity=64 ProcessingOldestMs=0.0 ProcessingInFlight=0 RawDepth=0 RawCapacity=64 RawInFlight=0 PersistenceState=Recovered PersistenceDepth=1 PersistenceOldestMs=5.0 CallbackAgeMs=10.0 ControlProcessedAgeMs=10.0 Produced=100 Processed=100 Allocated=100 Accepted=100 Observed=100 Published=100 RawTransferred=100 Persisted=99 TerminallyHandled=99 SuppressBoundary=0 SuppressThrough=0 Suppressed=0 SuppressedCumulative=0 SuppressedFirst=0 SuppressedLast=0 SuppressedRanges=0 FirstPermanentGap=0 PendingProcessingGap=0 PendingRawGap=0 Discontinuities=0 DurabilityBlocked=False Discarded=0 OverCapacityDropped=0 AsyncLogDropped=0\n"
@@ -41,7 +41,7 @@ class FieldGateValidatorTests(unittest.TestCase):
             "2026-08-08 10:59:58.000\tINFO\tFIELD\tFieldMetric STATE RunId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa Device=Dev2 Channel=9 State=ManualStopped Reason=StopAll Revision=2 CorrelationId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa RunEpoch=1 Enabled=True Formal=False Timer=False Runner=False Energized=False\n"
             "2026-08-08 10:59:59.000\tINFO\tFIELD\tFieldMetric STOP_PERSISTENCE Device=Dev1 RawDrained=True Boundary=100 FinalBoundary=100 BoundaryStable=True Published=100 Persisted=100 Depth=0 State=Recovered RequireRecovered=True DurabilityBlocked=False Discarded=0 OverCapacityDropped=0 Closed=True\n"
             "2026-08-08 10:59:59.000\tINFO\tFIELD\tFieldMetric STOP_PERSISTENCE Device=Dev2 RawDrained=True Boundary=100 FinalBoundary=100 BoundaryStable=True Published=100 Persisted=100 Depth=0 State=Recovered RequireRecovered=True DurabilityBlocked=False Discarded=0 OverCapacityDropped=0 Closed=True\n"
-            "2026-08-08 11:00:00.000\tINFO\tFIELD\tFieldMetric SESSION Phase=Stop RunId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa Channels=4,9 Closed=True Detail=ManualUi ProductVersion=V2.12.0.28 ExeSha256=unused ConfigSha256=unused GitCommit=unused GitDirty=False BuildUtc=unused AsyncLogDropped=0\n"
+            "2026-08-08 11:00:00.000\tINFO\tFIELD\tFieldMetric SESSION Phase=Stop RunId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa Channels=4,9 Closed=True Detail=ManualUi ProductVersion=V2.12.0.29 ExeSha256=unused ConfigSha256=unused GitCommit=unused GitDirty=False BuildUtc=unused AsyncLogDropped=0\n"
             "2026-08-08 11:00:00.001\tINFO\t停止\tNormal Stop\n",
             encoding="utf-8",
         )
@@ -148,8 +148,8 @@ class FieldGateValidatorTests(unittest.TestCase):
     @staticmethod
     def incident_identity() -> dict:
         return {
-            "productVersion": "V2.12.0.28",
-            "assemblyVersion": "2.12.0.28",
+            "productVersion": "V2.12.0.29",
+            "assemblyVersion": "2.12.0.29",
             "executablePath": r"D:\EPBTest\MTTFTest.exe",
             "executableSha256": "a" * 64,
             "configSha256": "d" * 64,
@@ -538,7 +538,7 @@ class FieldGateValidatorTests(unittest.TestCase):
         second = (
             "2026-08-08 10:30:00.000\tINFO\tFIELD\t"
             "FieldMetric SESSION Phase=Start RunId=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb Channels=4,9 Closed=False "
-            "Detail=BatchFormal ProductVersion=V2.12.0.28 ExeSha256=" + "a" * 64 +
+            "Detail=BatchFormal ProductVersion=V2.12.0.29 ExeSha256=" + "a" * 64 +
             " ConfigSha256=" + "a" * 64 + " GitCommit=" + "b" * 40 +
             " GitDirty=False BuildUtc=2026-08-08T00:30:00Z\n"
         )
@@ -559,7 +559,7 @@ class FieldGateValidatorTests(unittest.TestCase):
         latest = (
             "2026-08-08 11:30:00.000\tINFO\tFIELD\t"
             "FieldMetric SESSION Phase=Start RunId=latest-unsealed Channels=4,9 Closed=False "
-            "Detail=BatchFormal ProductVersion=V2.12.0.28 ExeSha256=" + "a" * 64 +
+            "Detail=BatchFormal ProductVersion=V2.12.0.29 ExeSha256=" + "a" * 64 +
             " ConfigSha256=" + "a" * 64 + " GitCommit=" + "b" * 40 +
             " GitDirty=False BuildUtc=2026-08-08T01:30:00Z\n"
         )
@@ -576,7 +576,7 @@ class FieldGateValidatorTests(unittest.TestCase):
         duplicate = (
             "2026-08-08 11:00:00.500\tINFO\tFIELD\t"
             "FieldMetric SESSION Phase=Complete RunId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa Channels=4,9 Closed=True "
-            "Detail=Duplicate ProductVersion=V2.12.0.28 ExeSha256=unused "
+            "Detail=Duplicate ProductVersion=V2.12.0.29 ExeSha256=unused "
             "ConfigSha256=unused GitCommit=unused GitDirty=False BuildUtc=unused\n"
         )
         run_log.write_text(text + duplicate, encoding="utf-8")
@@ -851,8 +851,8 @@ class FieldGateValidatorTests(unittest.TestCase):
         )
         (phase / "build-identity.json").write_text(
             json.dumps({
-                "productVersion": "V2.12.0.28",
-                "assemblyVersion": "2.12.0.28",
+                "productVersion": "V2.12.0.29",
+                "assemblyVersion": "2.12.0.29",
                 "executablePath": r"D:\EPBTest\MTTFTest.exe",
                 "executableSha256": "c" * 64,
                 "configSha256": "a" * 64,

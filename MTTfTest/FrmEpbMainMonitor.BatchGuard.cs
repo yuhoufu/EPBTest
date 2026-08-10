@@ -46,15 +46,22 @@ namespace MTEmbTest
                     return;
                 }
 
-                // 新试验或跨进程检查点恢复必须从完整正式包启动。bin\Release 可能被
-                // VS 普通生成覆盖而仍保留旧版本号；只看窗口标题无法识别混包。
+                // 新试验或跨进程检查点恢复必须从完整的独立候选目录启动。bin\Release
+                // 是 VS 可反复覆盖的暂存区；Release 生成会自动在 artifacts\vs2022 下
+                // 重新封装一个与本次输出匹配的独立候选。
                 var identity = Controller.RuntimeBuildIdentity.Capture();
                 var package = Controller.ReleasePackageVerifier.VerifyCurrent(identity, refresh: true);
                 if (!package.Verified)
                     throw new InvalidOperationException(
-                        "当前程序目录不是完整、已批准的正式候选包，已拒绝开始试验。\r\n" +
+                        "当前程序目录不是完整、可验证的独立候选包，已拒绝开始试验。\r\n" +
                         $"Code={package.Code}\r\n{package.Detail}\r\n" +
-                        "请从独立版本发布目录重新启动，禁止直接运行 bin\\Release。" );
+                        "请从 VS2022 生成输出中提示的 artifacts\\vs2022 独立候选目录重新启动；" +
+                        "禁止直接运行 bin\\Release。" );
+
+                if (string.Equals(package.Code, "VerifiedVs2022", StringComparison.Ordinal))
+                    LogInfo(
+                        "当前运行的是 VS2022 独立候选：允许调试/试运行，但没有完成正式发布全回归，" +
+                        "不得作为生产验收或100000圈放行证据。");
 
                 if (await TryResumePendingGracefulPauseAsync().ConfigureAwait(true))
                     return;

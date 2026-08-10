@@ -10,8 +10,8 @@ $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 Set-Location -LiteralPath $repo
 
-$expectedProductVersion = '2.12.0.28'
-$expectedProductLabel = 'V2.12.0.28'
+$expectedProductVersion = '2.12.0.29'
+$expectedProductLabel = 'V2.12.0.29'
 $expectedAssemblyName = 'MTTFTest'
 $expectedPublishedConfigs = @(
     'Config/AIConfig.xml',
@@ -250,7 +250,7 @@ $identityPath = Join-Path $output 'build-identity.json'
 $checksumPath = Join-Path $output 'SHA256SUMS.txt'
 
 & $MsBuild $solutionPath /t:Rebuild /m `
-    /p:Configuration=Release '/p:Platform=Any CPU' `
+    /p:Configuration=Release '/p:Platform=Any CPU' /p:FormalReleaseBuild=true `
     "/p:GitCommit=$commit" "/p:GitBranch=$branch" "/p:GitDirty=$gitDirtyText" `
     "/p:BuildUtc=$buildUtc" "/p:ReleaseConfigSha256=$configHash"
 if ($LASTEXITCODE -ne 0) { throw "Release 构建失败：$LASTEXITCODE" }

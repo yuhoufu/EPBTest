@@ -1416,12 +1416,14 @@ namespace AdaptiveControlTests
             Directory.CreateDirectory(root);
             try
             {
-                const string version = "V2.12.0.28";
+                const string version = "V2.12.0.29";
                 const string commit = "0123456789abcdef0123456789abcdef01234567";
                 const string buildUtc = "2026-08-09T13:00:00.0000000Z";
                 const string configSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
                 File.WriteAllText(Path.Combine(root, "MTTFTest.exe"), "formal-exe");
                 File.WriteAllText(Path.Combine(root, "Config.dll"), "formal-config-dll");
+                Directory.CreateDirectory(Path.Combine(root, "Config"));
+                File.WriteAllText(Path.Combine(root, "Config", "TestConfig.xml"), "<test value=\"1\" />");
                 File.WriteAllText(
                     Path.Combine(root, "build-identity.json"),
                     "{\n" +
@@ -1437,8 +1439,21 @@ namespace AdaptiveControlTests
 
                 var valid = ReleasePackageVerifier.VerifyDirectory(
                     root, version, commit, "false", buildUtc, configSha);
-                Assert(valid.Verified && valid.VerifiedFileCount == 3,
+                Assert(valid.Verified && valid.VerifiedFileCount == 4,
                     "完整正式包未通过校验：" + valid);
+
+                File.WriteAllText(Path.Combine(root, "Config", "TestConfig.xml"), "<test value=\"2\" />");
+                var editedConfig = ReleasePackageVerifier.VerifyDirectory(
+                    root, version, commit, "false", buildUtc, configSha);
+                Assert(editedConfig.Verified,
+                    "界面允许编辑的项目配置导致候选包自失效：" + editedConfig);
+
+                Directory.CreateDirectory(Path.Combine(root, "DataStore", "session-1"));
+                File.WriteAllText(Path.Combine(root, "DataStore", "session-1", "runtime.db"), "runtime");
+                var withRuntimeData = ReleasePackageVerifier.VerifyDirectory(
+                    root, version, commit, "false", buildUtc, configSha);
+                Assert(withRuntimeData.Verified,
+                    "运行期数据目录导致候选包自失效：" + withRuntimeData);
 
                 File.WriteAllText(Path.Combine(root, "Config.dll"), "vs-overwrite");
                 var mixed = ReleasePackageVerifier.VerifyDirectory(
@@ -1452,6 +1467,39 @@ namespace AdaptiveControlTests
                     root, version, commit, "false", buildUtc, configSha);
                 Assert(!extra.Verified && extra.Code == "PackageFileSetMismatch",
                     "发布目录出现清单外文件后仍被放行：" + extra);
+
+                File.Delete(Path.Combine(root, "unexpected.tmp"));
+                File.WriteAllText(Path.Combine(root, "Config", "Backup.xml"), "<backup />");
+                var unexpectedConfig = ReleasePackageVerifier.VerifyDirectory(
+                    root, version, commit, "false", buildUtc, configSha);
+                Assert(!unexpectedConfig.Verified &&
+                       unexpectedConfig.Code == "PackageMutableConfigSetMismatch",
+                    "发布目录出现清单外配置后仍被放行：" + unexpectedConfig);
+
+                File.Delete(Path.Combine(root, "Config", "Backup.xml"));
+                File.WriteAllText(
+                    Path.Combine(root, "build-identity.json"),
+                    "{\n" +
+                    $"  \"productVersion\": \"{version}\",\n" +
+                    "  \"releaseStatus\": \"VS2022_RELEASE_CANDIDATE\",\n" +
+                    "  \"deploymentApproved\": false,\n" +
+                    "  \"gitCommit\": \"unknown\",\n" +
+                    "  \"gitDirty\": true,\n" +
+                    "  \"buildUtc\": \"unknown\",\n" +
+                    "  \"configSha256\": \"unknown\"\n" +
+                    "}\n");
+                WriteReleaseChecksums(root);
+                var vsCandidate = ReleasePackageVerifier.VerifyDirectory(
+                    root, version, "unknown", "unknown", "unknown", "unknown");
+                Assert(vsCandidate.Verified && vsCandidate.Code == "VerifiedVs2022",
+                    "VS2022 自洽独立候选未被允许试运行：" + vsCandidate);
+
+                File.WriteAllText(Path.Combine(root, "Config.dll"), "second-vs-overwrite");
+                var changedVsCandidate = ReleasePackageVerifier.VerifyDirectory(
+                    root, version, "unknown", "unknown", "unknown", "unknown");
+                Assert(!changedVsCandidate.Verified &&
+                       changedVsCandidate.Code == "PackageFileHashMismatch",
+                    "VS2022 独立候选的不可变DLL被修改后仍被放行：" + changedVsCandidate);
             }
             finally
             {

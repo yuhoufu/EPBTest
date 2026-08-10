@@ -25,7 +25,7 @@
     <UpdateRequired>false</UpdateRequired>
     <MapFileExtensions>true</MapFileExtensions>
     <ApplicationRevision>0</ApplicationRevision>
-    <ApplicationVersion>2.12.0.28</ApplicationVersion>
+    <ApplicationVersion>2.12.0.29</ApplicationVersion>
     <IsWebBootstrapper>false</IsWebBootstrapper>
     <UseApplicationTrust>false</UseApplicationTrust>
     <BootstrapperEnabled>true</BootstrapperEnabled>
@@ -378,6 +378,21 @@
           BeforeTargets="GenerateBindingRedirectsUpdateAppConfig"
           Condition="'@(SuggestedBindingRedirects)' == '' and Exists('$(_GenerateBindingRedirectsIntermediateAppConfig)')">
     <Delete Files="$(_GenerateBindingRedirectsIntermediateAppConfig)" />
+  </Target>
+  <!--
+    bin\Release 是 VS/MSBuild 可反复覆盖的暂存目录，不能保留上一次正式包的身份。
+    普通 VS2022 Release 生成后，自动复制到独立目录并重新生成与本次输出匹配的清单。
+    正式发布脚本会传入 FormalReleaseBuild=true，避免重复生成 VS 候选。
+  -->
+  <Target Name="RemoveStaleReleasePackageIdentity"
+          BeforeTargets="PrepareForBuild"
+          Condition="'$(Configuration)' == 'Release' and '$(FormalReleaseBuild)' != 'true' and '$(DesignTimeBuild)' != 'true'">
+    <Delete Files="$(TargetDir)build-identity.json;$(TargetDir)SHA256SUMS.txt" />
+  </Target>
+  <Target Name="SealVs2022ReleaseCandidate"
+          AfterTargets="Build"
+          Condition="'$(Configuration)' == 'Release' and '$(FormalReleaseBuild)' != 'true' and '$(DesignTimeBuild)' != 'true'">
+    <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\..\Tools\Seal-Vs2022-Candidate.ps1&quot; -OutputDirectory &quot;$(TargetDir).&quot;" />
   </Target>
   <Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">
     <PropertyGroup>

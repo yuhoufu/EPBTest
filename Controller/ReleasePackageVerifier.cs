@@ -96,16 +96,37 @@ namespace Controller
                     !TryReadJsonString(identityJson, "configSha256", out var configSha256))
                     return Failed("PackageIdentityInvalid", "build-identity.json 缺少正式身份字段。");
 
-                if (!approved || gitDirty ||
-                    !string.Equals(releaseStatus, "FORMAL_RELEASE_CANDIDATE", StringComparison.Ordinal))
+                var isFormalCandidate = string.Equals(
+                    releaseStatus,
+                    "FORMAL_RELEASE_CANDIDATE",
+                    StringComparison.Ordinal);
+                var isVs2022Candidate = string.Equals(
+                    releaseStatus,
+                    "VS2022_RELEASE_CANDIDATE",
+                    StringComparison.Ordinal);
+                if (!isFormalCandidate && !isVs2022Candidate)
                     return Failed(
                         "PackageNotApproved",
                         $"Status={releaseStatus} Approved={approved} GitDirty={gitDirty}");
-                if (!EqualsOrdinal(productVersion, expectedProductVersion) ||
-                    !EqualsOrdinalIgnoreCase(gitCommit, expectedGitCommit) ||
-                    !EqualsOrdinalIgnoreCase(buildUtc, expectedBuildUtc) ||
-                    !EqualsOrdinalIgnoreCase(configSha256, expectedConfigSha256) ||
-                    !string.Equals(expectedGitDirty, "false", StringComparison.OrdinalIgnoreCase))
+                if (isFormalCandidate && (!approved || gitDirty))
+                    return Failed(
+                        "PackageNotApproved",
+                        $"Status={releaseStatus} Approved={approved} GitDirty={gitDirty}");
+                if (isVs2022Candidate && approved)
+                    return Failed(
+                        "PackageIdentityInvalid",
+                        "VS2022 直接候选不得声明 deploymentApproved=true。");
+
+                var identityMatches = EqualsOrdinal(productVersion, expectedProductVersion);
+                if (isFormalCandidate)
+                {
+                    identityMatches = identityMatches &&
+                        EqualsOrdinalIgnoreCase(gitCommit, expectedGitCommit) &&
+                        EqualsOrdinalIgnoreCase(buildUtc, expectedBuildUtc) &&
+                        EqualsOrdinalIgnoreCase(configSha256, expectedConfigSha256) &&
+                        string.Equals(expectedGitDirty, "false", StringComparison.OrdinalIgnoreCase);
+                }
+                if (!identityMatches)
                     return Failed(
                         "PackageIdentityMismatch",
                         $"Version={productVersion}/{expectedProductVersion} " +
@@ -139,15 +160,40 @@ namespace Controller
                         "SHA256SUMS.txt",
                         StringComparison.OrdinalIgnoreCase))
                     .ToArray();
-                if (actualFiles.Length != expectedFiles.Count)
+
+                // Config/*.xml 是产品界面允许修改的项目参数；DataStore/log 等目录是运行时
+                // 证据。它们不能参与“不可变程序文件”数量和哈希，否则一个正确候选首次
+                // 启动、保存设置后就会把自己判成混包。配置内容由每次 SESSION 的配置身份
+                // 独立留证；这里仍严格要求配置文件名集合与打包时一致。
+                var expectedConfigFiles = new HashSet<string>(
+                    expectedFiles.Keys.Where(IsMutableConfigPath),
+                    StringComparer.OrdinalIgnoreCase);
+                var actualConfigFiles = new HashSet<string>(
+                    actualFiles.Select(file => file.Relative).Where(IsMutableConfigPath),
+                    StringComparer.OrdinalIgnoreCase);
+                if (!expectedConfigFiles.SetEquals(actualConfigFiles))
+                    return Failed(
+                        "PackageMutableConfigSetMismatch",
+                        $"Manifest={string.Join(",", expectedConfigFiles.OrderBy(value => value))} " +
+                        $"Actual={string.Join(",", actualConfigFiles.OrderBy(value => value))}");
+
+                var expectedImmutableFiles = expectedFiles
+                    .Where(pair => !IsMutableConfigPath(pair.Key) &&
+                                   !IsRuntimeGeneratedPath(pair.Key))
+                    .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
+                var actualImmutableFiles = actualFiles
+                    .Where(item => !IsMutableConfigPath(item.Relative) &&
+                                   !IsRuntimeGeneratedPath(item.Relative))
+                    .ToArray();
+                if (actualImmutableFiles.Length != expectedImmutableFiles.Count)
                     return Failed(
                         "PackageFileSetMismatch",
-                        $"Manifest={expectedFiles.Count} Actual={actualFiles.Length}");
+                        $"Manifest={expectedImmutableFiles.Count} Actual={actualImmutableFiles.Length}");
 
                 var verified = 0;
-                foreach (var file in actualFiles)
+                foreach (var file in actualImmutableFiles)
                 {
-                    if (!expectedFiles.TryGetValue(file.Relative, out var expectedHash))
+                    if (!expectedImmutableFiles.TryGetValue(file.Relative, out var expectedHash))
                         return Failed("UnexpectedPackageFile", file.Relative);
                     var actualHash = ComputeSha256(file.FullPath);
                     if (!string.Equals(actualHash, expectedHash, StringComparison.OrdinalIgnoreCase))
@@ -156,12 +202,15 @@ namespace Controller
                             $"{file.Relative} Expected={expectedHash} Actual={actualHash}");
                     verified++;
                 }
+                verified += actualConfigFiles.Count;
 
                 return new ReleasePackageVerification
                 {
                     Verified = true,
-                    Code = "Verified",
-                    Detail = "正式发布身份与递归文件哈希一致。",
+                    Code = isFormalCandidate ? "Verified" : "VerifiedVs2022",
+                    Detail = isFormalCandidate
+                        ? "正式发布身份、不可变程序文件哈希与可编辑配置集合一致。"
+                        : "VS2022 独立候选的程序文件哈希与配置集合一致；未执行正式发布全回归，不得作为生产放行证据。",
                     VerifiedFileCount = verified
                 };
             }
@@ -178,6 +227,30 @@ namespace Controller
             if (normalized.Split('/').Any(part => part == ".." || part.Length == 0)) return null;
             return normalized;
         }
+
+        private static bool IsMutableConfigPath(string relativePath)
+        {
+            if (string.IsNullOrWhiteSpace(relativePath)) return false;
+            var normalized = relativePath.Replace('\\', '/');
+            return normalized.StartsWith("Config/", StringComparison.OrdinalIgnoreCase) &&
+                   normalized.EndsWith(".xml", StringComparison.OrdinalIgnoreCase) &&
+                   normalized.IndexOf('/', "Config/".Length) < 0;
+        }
+
+        private static bool IsRuntimeGeneratedPath(string relativePath)
+        {
+            if (string.IsNullOrWhiteSpace(relativePath)) return false;
+            var normalized = relativePath.Replace('\\', '/').TrimStart('/');
+            return StartsWithDirectory(normalized, "DataStore") ||
+                   StartsWithDirectory(normalized, "Data") ||
+                   StartsWithDirectory(normalized, "log") ||
+                   StartsWithDirectory(normalized, "IncidentSnapshots-Fallback");
+        }
+
+        private static bool StartsWithDirectory(string relativePath, string directory)
+            => relativePath.StartsWith(
+                directory + "/",
+                StringComparison.OrdinalIgnoreCase);
 
         private static string ComputeSha256(string path)
         {
