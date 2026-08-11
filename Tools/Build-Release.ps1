@@ -10,8 +10,8 @@ $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 Set-Location -LiteralPath $repo
 
-$expectedProductVersion = '2.12.0.29'
-$expectedProductLabel = 'V2.12.0.29'
+$expectedProductVersion = '2.12.0.32'
+$expectedProductLabel = 'V2.12.0.32'
 $expectedAssemblyName = 'MTTFTest'
 $expectedPublishedConfigs = @(
     'Config/AIConfig.xml',
