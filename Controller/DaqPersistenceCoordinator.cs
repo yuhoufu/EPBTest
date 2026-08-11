@@ -46,9 +46,23 @@ namespace Controller
         public long DiscardedGenerationBatchCount { get; set; }
         public long OverCapacityDroppedBatchCount { get; set; }
         public bool DurabilityBlocked { get; set; }
+        public long PendingHeadSequence { get; set; }
+        public long InFlightSequence { get; set; }
         public int EpbId { get; set; }
         public int CycleNumber { get; set; }
         public int RecordLimit { get; set; }
+    }
+
+    internal sealed class DaqDurablePrefixResult
+    {
+        public string Device { get; set; } = string.Empty;
+        public long Boundary { get; set; }
+        public bool Completed { get; set; }
+        public long Persisted { get; set; }
+        public long PendingHeadSequence { get; set; }
+        public long InFlightSequence { get; set; }
+        public bool DurabilityBlocked { get; set; }
+        public string PendingPredicate { get; set; } = string.Empty;
     }
 
     internal sealed class DaqPersistenceCoordinator : IDisposable
@@ -424,6 +438,9 @@ namespace Controller
                 lastSuppressedSequence = Interlocked.Read(ref q.LastSuppressedSequence);
                 suppressedRangeCount = Interlocked.Read(ref q.SuppressedRangeCount);
             }
+            var pendingHeadSequence = q.Queue.TryPeek(out var pendingHead)
+                ? pendingHead.Sequence
+                : 0;
             return new DaqPersistenceStateChanged
             {
                 Device = NormalizeDevice(device),
@@ -461,7 +478,9 @@ namespace Controller
                 DiscardedGenerationBatchCount = Interlocked.Read(ref q.DiscardedGenerationBatchCount),
                 OverCapacityDroppedBatchCount = Interlocked.Read(ref q.OverCapacityDroppedBatchCount),
                 DurabilityBlocked = Volatile.Read(ref q.UnresolvedWriteFailure) != 0 ||
-                                    Volatile.Read(ref q.FailureTimedOut) != 0
+                                    Volatile.Read(ref q.FailureTimedOut) != 0,
+                PendingHeadSequence = pendingHeadSequence,
+                InFlightSequence = Interlocked.Read(ref q.InFlightSequence)
             };
         }
 
@@ -527,35 +546,62 @@ namespace Controller
             long sequence,
             int timeoutMs,
             CancellationToken token)
+            => (await WaitForDurablePrefixDetailedAsync(
+                    device,
+                    sequence,
+                    timeoutMs,
+                    token)
+                .ConfigureAwait(false)).Completed;
+
+        internal async Task<DaqDurablePrefixResult> WaitForDurablePrefixDetailedAsync(
+            string device,
+            long sequence,
+            int timeoutMs,
+            CancellationToken token)
         {
-            if (sequence <= 0) return true;
             var q = GetQueue(device);
+            if (sequence <= 0) return CaptureDurablePrefix(q, device, sequence);
             var deadline = Stopwatch.GetTimestamp() +
                            (long)(Math.Max(1, timeoutMs) / 1000.0 * Stopwatch.Frequency);
             while (!token.IsCancellationRequested && Stopwatch.GetTimestamp() < deadline)
             {
-                if (IsDurablePrefix(q, sequence)) return true;
+                var current = CaptureDurablePrefix(q, device, sequence);
+                if (current.Completed) return current;
                 await Task.Delay(5, token).ConfigureAwait(false);
             }
-            return IsDurablePrefix(q, sequence);
+            return CaptureDurablePrefix(q, device, sequence);
         }
 
-        private static bool IsDurablePrefix(
+        private static DaqDurablePrefixResult CaptureDurablePrefix(
             DeviceQueue q,
+            string device,
             long sequence)
         {
-            if (Volatile.Read(ref q.UnresolvedWriteFailure) != 0 ||
-                Volatile.Read(ref q.FailureTimedOut) != 0 ||
-                Volatile.Read(ref q.QueueFullLatched) != 0 ||
-                Interlocked.Read(ref q.LastPersistedSequence) < sequence)
-                return false;
-
+            var persisted = Interlocked.Read(ref q.LastPersistedSequence);
             var inFlight = Interlocked.Read(ref q.InFlightSequence);
-            if (inFlight > 0 && inFlight <= sequence) return false;
             // ConcurrentQueue.TryPeek 与 worker 并发安全。批次若恰好在读取后被归还
             // 对象池，Sequence 可能变为 0；这只会保守地多等一轮，不会提前放行。
-            if (q.Queue.TryPeek(out var pending) && pending.Sequence <= sequence) return false;
-            return true;
+            var pendingHead = q.Queue.TryPeek(out var pending) ? pending.Sequence : 0;
+            var durabilityBlocked = Volatile.Read(ref q.UnresolvedWriteFailure) != 0 ||
+                                    Volatile.Read(ref q.FailureTimedOut) != 0;
+            string predicate;
+            if (durabilityBlocked) predicate = "DurabilityBlocked";
+            else if (Volatile.Read(ref q.QueueFullLatched) != 0) predicate = "QueueFullLatched";
+            else if (persisted < sequence) predicate = "PersistedBelowBoundary";
+            else if (inFlight > 0 && inFlight <= sequence) predicate = "InFlightAtOrBelowBoundary";
+            else if (pendingHead > 0 && pendingHead <= sequence) predicate = "PendingHeadAtOrBelowBoundary";
+            else predicate = string.Empty;
+            return new DaqDurablePrefixResult
+            {
+                Device = NormalizeDevice(device),
+                Boundary = Math.Max(0, sequence),
+                Completed = predicate.Length == 0,
+                Persisted = persisted,
+                PendingHeadSequence = pendingHead,
+                InFlightSequence = inFlight,
+                DurabilityBlocked = durabilityBlocked,
+                PendingPredicate = predicate
+            };
         }
 
         internal async Task<bool> DrainAsync(int timeoutMs)
@@ -1033,6 +1079,10 @@ namespace Controller
                 OverCapacityDroppedBatchCount = Interlocked.Read(ref q.OverCapacityDroppedBatchCount),
                 DurabilityBlocked = Volatile.Read(ref q.UnresolvedWriteFailure) != 0 ||
                                     Volatile.Read(ref q.FailureTimedOut) != 0,
+                PendingHeadSequence = q.Queue.TryPeek(out var pendingHead)
+                    ? pendingHead.Sequence
+                    : 0,
+                InFlightSequence = Interlocked.Read(ref q.InFlightSequence),
                 EpbId = epbId,
                 CycleNumber = cycleNumber,
                 RecordLimit = recordLimit

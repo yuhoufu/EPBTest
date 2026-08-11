@@ -41,6 +41,24 @@ namespace Controller
         public int[] QuarantinedChannels => Faults.Select(x => x.Channel).Distinct().OrderBy(x => x).ToArray();
     }
 
+    internal sealed class UnattendedRemainingCyclePlan
+    {
+        internal UnattendedRemainingCyclePlan(
+            int[] channels,
+            Dictionary<int, int> remainingCycles,
+            string error)
+        {
+            Channels = channels ?? Array.Empty<int>();
+            RemainingCycles = remainingCycles ?? new Dictionary<int, int>();
+            Error = error ?? string.Empty;
+        }
+
+        internal int[] Channels { get; }
+        internal Dictionary<int, int> RemainingCycles { get; }
+        internal string Error { get; }
+        internal bool IsValid => string.IsNullOrWhiteSpace(Error);
+    }
+
     /// <summary>
     ///     EpbManager 扩展：批量启动（学习 + 正式），并为每个压力组建立“锚点时间轴”，
     ///     让每个通道以固定相位（电源组内索引 × Δ）锁相到这条时间轴，保证“每圈对齐 + 组内错峰”。
@@ -90,6 +108,123 @@ namespace Controller
         /// <summary>当前是否已有批量学习或正式试验会话。</summary>
         public bool IsBatchSessionActive => Volatile.Read(ref _batchSessionActive) != 0;
         internal bool IsFormalPhaseCommitted => Volatile.Read(ref _formalPhaseCommitted) != 0;
+
+        /// <summary>
+        /// 自动进程交接不能沿用人工入口的“健康通道先跑、故障通道留给操作员”语义。
+        /// 检查点授权的是一个完整通道集合；其中任意通道未启动都意味着同一授权运行链
+        /// 无法完成每通道剩余正式圈，必须回到有界进程恢复，禁止静默部分运行。
+        /// </summary>
+        internal static string ValidateUnattendedBatchStartResult(
+            IEnumerable<int> expectedChannels,
+            BatchStartResult result)
+        {
+            var expected = (expectedChannels ?? Array.Empty<int>())
+                .Where(channel => channel >= 1 && channel <= 12)
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
+            if (expected.Length == 0)
+                return "UnattendedStartExpectedChannelsMissing";
+            if (result == null)
+                return "UnattendedStartResultMissing";
+            if (result.TestRunId == Guid.Empty)
+                return "UnattendedStartRunIdMissing";
+
+            var started = (result.StartedChannels ?? Array.Empty<int>())
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
+            var missing = expected.Except(started).ToArray();
+            var unexpected = started.Except(expected).ToArray();
+            var faults = result.Faults ?? Array.Empty<ChannelStartFault>();
+            if (missing.Length == 0 && unexpected.Length == 0 && faults.Length == 0)
+                return string.Empty;
+
+            var faultSummary = string.Join(",", faults
+                .OrderBy(fault => fault.Channel)
+                .Select(fault => $"EPB{fault.Channel}:{fault.Stage}:{fault.Reason}"));
+            return
+                $"UnattendedStartIncomplete Missing=[{string.Join(",", missing)}] " +
+                $"Unexpected=[{string.Join(",", unexpected)}] Faults=[{faultSummary}]";
+        }
+
+        /// <summary>
+        /// 自动恢复时以 SQLite 中的成功正式圈数为当前权威值，并以恢复检查点
+        /// 检查点作为单调性护栏。DB 可能比检查点更新（提交成功后进程在事件回调前
+        /// 退出），但绝不能比检查点倒退；已经完成的通道不得再次启动一圈。
+        /// </summary>
+        internal static UnattendedRemainingCyclePlan BuildUnattendedRemainingCyclePlan(
+            IEnumerable<int> authorizedChannels,
+            IDictionary<string, int> checkpointRemaining,
+            IDictionary<int, int> durableRemaining)
+        {
+            var authorized = (authorizedChannels ?? Array.Empty<int>())
+                .Where(channel => channel >= 1 && channel <= 12)
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
+            if (authorized.Length == 0)
+                return new UnattendedRemainingCyclePlan(
+                    Array.Empty<int>(),
+                    null,
+                    "UnattendedProgressAuthorizedChannelsMissing");
+            if (checkpointRemaining == null || durableRemaining == null)
+                return new UnattendedRemainingCyclePlan(
+                    Array.Empty<int>(),
+                    null,
+                    "UnattendedProgressEvidenceMissing");
+
+            var remaining = new Dictionary<int, int>();
+            foreach (var channel in authorized)
+            {
+                var key = channel.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                if (!checkpointRemaining.TryGetValue(key, out var checkpointValue) ||
+                    checkpointValue < 0)
+                    return new UnattendedRemainingCyclePlan(
+                        Array.Empty<int>(),
+                        null,
+                        $"UnattendedCheckpointRemainingMissing EPB={channel}");
+                if (!durableRemaining.TryGetValue(channel, out var durableValue) ||
+                    durableValue < 0)
+                    return new UnattendedRemainingCyclePlan(
+                        Array.Empty<int>(),
+                        null,
+                        $"UnattendedDurableRemainingMissing EPB={channel}");
+
+                // 检查点只在成功正式圈提交事件后递减。若重载后的 SQLite/XML 成功圈
+                // 反而更少，继续运行会掩盖数据丢失或配置回退，必须拒绝自动上电。
+                if (durableValue > checkpointValue)
+                    return new UnattendedRemainingCyclePlan(
+                        Array.Empty<int>(),
+                        null,
+                        $"UnattendedProgressRegression EPB={channel} " +
+                        $"DurableRemaining={durableValue} CheckpointRemaining={checkpointValue}");
+
+                remaining[channel] = durableValue;
+            }
+
+            return new UnattendedRemainingCyclePlan(
+                remaining.Where(pair => pair.Value > 0)
+                    .Select(pair => pair.Key)
+                    .OrderBy(channel => channel)
+                    .ToArray(),
+                remaining,
+                string.Empty);
+        }
+
+        /// <summary>
+        /// 同进程恢复不能只读取稍早写入的 JSON 检查点。正式圈的 SQLite 提交与
+        /// 检查点事件之间存在极短窗口，故障恰好发生在窗口内时，数据库可能已经
+        /// 多完成一圈。这里直接读取记录器的耐久成功圈计数，作为续跑的权威事实。
+        /// </summary>
+        internal int GetDurableCompletedFormalCycleCount(int channel)
+        {
+            if (channel < 1 || channel > 12)
+                throw new ArgumentOutOfRangeException(nameof(channel));
+            var recorder = _recorder ?? throw new InvalidOperationException(
+                "正式圈记录器不可用，拒绝在缺少耐久进度证据时自动恢复。");
+            return Math.Max(0, recorder.GetLastCycleNumber(channel));
+        }
 
         /// <summary>
         /// 对外暴露的“EPB 单圈完成”事件。
@@ -186,7 +321,8 @@ namespace Controller
         /// </summary>
         public async Task<StopSafetyResult> PrepareForFreshRestartAsync(
             StopContext context,
-            CancellationToken token = default)
+            CancellationToken token = default,
+            bool discardHistoricalStopChecks = false)
         {
             context ??= new StopContext
             {
@@ -206,7 +342,11 @@ namespace Controller
                     token)
                 .ConfigureAwait(false);
 
-            if (!safety.CanRestartInProcess)
+            var canDiscardHistoricalChecks =
+                CanDiscardHistoricalStopChecksForExplicitRestart(
+                    safety,
+                    discardHistoricalStopChecks);
+            if (!safety.CanRestartInProcess && !canDiscardHistoricalChecks)
             {
                 throw new InvalidOperationException(
                     "重新开始清场未通过物理安全与软件逻辑不变量。" +
@@ -214,10 +354,31 @@ namespace Controller
                     $"Pressure={safety.PressureError}; Logical={safety.LogicalError}");
             }
 
+            if (!safety.CanRestartInProcess)
+                _log?.Warn(
+                    "操作员已先执行“停止试验”；上一批次的持久化、数据连续性或逻辑清场" +
+                    "未确认项只保留为诊断，不再阻止本次完整学习启动。" +
+                    $" Motor={safety.MotorError}; Power={safety.PowerError}; " +
+                    $"Pressure={safety.PressureError}; Persistence={safety.PersistenceError}; " +
+                    $"DataContinuity={safety.DataContinuityError}; Logical={safety.LogicalError}",
+                    "EPB");
+
             _log?.Info(
                 "重新开始清场完成：旧批次软件状态、在途启动与瞬态故障已抛弃；开始执行新批次实时预检。",
                 "EPB");
             return safety;
+        }
+
+        /// <summary>
+        /// 显式停止后的新批次只要求电机断能命令和程控电源关闭已确认；上一批次的
+        /// 压力证据、写盘、连续性和逻辑清场结果不再作为新批次许可条件。
+        /// 新批次仍会重新执行实时 DAQ、电源、液压和完整学习预检。
+        /// </summary>
+        internal static bool CanDiscardHistoricalStopChecksForExplicitRestart(
+            StopSafetyResult safety,
+            bool explicitlyStopped)
+        {
+            return explicitlyStopped && safety?.CanReleaseAcquisition == true;
         }
 
         private async Task<BatchStartResult> StartBatchCoreAsync(
@@ -457,6 +618,7 @@ namespace Controller
                 StartFormalPhaseTimers(groups, t0OfGroup, staggerPlan, sessionToken);
                 MarkBatchRunning(activeChannels, "正式试验运行中");
                 LogFieldSessionMetric("Start", _activeBatchId, activeChannels, false, "BatchFormal");
+                LogDaqLivenessRunBinding(_activeBatchId);
                 return new BatchStartResult(_activeBatchId, activeChannels, startFaults.ToArray());
             }
             catch (Exception ex)
@@ -842,6 +1004,10 @@ namespace Controller
             {
                 _softwareRecoveryEscalation.Reset();
                 _isolatedInfrastructureRecoveryAttempts.Clear();
+                _daqRecoveryBatchBarriers.Clear();
+                _daqRecoveryBatchAliases.Clear();
+                _daqLivenessLatchedGeneration.Clear();
+                _daqLivenessObservedGapEvents.Clear();
                 Interlocked.Increment(ref _runEpoch);
                 Interlocked.Exchange(ref _formalPhaseCommitted, 0);
                 var linked = CancellationTokenSource.CreateLinkedTokenSource(externalToken);

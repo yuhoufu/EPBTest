@@ -38,7 +38,23 @@ namespace MtEmbTest
         static void Main(string[] args)
         {
             var recoveryIntent = RecoveryProcessBootstrap.Parse(args);
+            UnattendedRecoveryCoordinator.SetRecoveryProcessMode(recoveryIntent != null);
+            using var recoveryHandoff = RecoveryProcessBootstrap.AttachHandoff(recoveryIntent);
+            if (recoveryIntent != null && recoveryHandoff == null)
+            {
+                TryWriteFatalLog(
+                    "RecoveryHandoff",
+                    new InvalidOperationException("恢复子进程未取得父进程创建的跨进程撤权门，拒绝续测。"));
+                return;
+            }
             RecoveryProcessBootstrap.WaitForParent(recoveryIntent);
+            if (recoveryHandoff?.IsRevoked == true)
+            {
+                TryWriteFatalLog(
+                    "RecoveryHandoff",
+                    new OperationCanceledException("父进程退出前运行授权已撤销，恢复子进程保持全断能退出。"));
+                return;
+            }
             using var singleInstance = new Mutex(false, RecoveryProcessBootstrap.MutexName);
             var ownsMutex = false;
             try

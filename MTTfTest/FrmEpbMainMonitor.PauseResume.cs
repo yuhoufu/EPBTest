@@ -148,7 +148,7 @@ namespace MTEmbTest
             catch (Exception ex)
             {
                 LogInfo($"EPB{channel} RUN/STOP操作失败：{ex.Message}");
-                MessageBox.Show(
+                ShowOperatorMessage(
                     ex.Message,
                     $"EPB{channel} 状态转换失败",
                     MessageBoxButtons.OK,
@@ -332,21 +332,32 @@ namespace MTEmbTest
                 .Distinct()
                 .OrderBy(channel => channel)
                 .ToArray();
-            var remaining = checkpoint.RemainingFormalCycles ??
-                            new System.Collections.Generic.Dictionary<string, int>();
-            var remainingByChannel = checkpointChannels.ToDictionary(
+            var durableRemaining = checkpointChannels.ToDictionary(
                 channel => channel,
-                channel => remaining.TryGetValue(channel.ToString(), out var count)
-                    ? Math.Max(0, count)
-                    : Math.Max(0, _cfg.Test.GetEpbRecord(channel).TotalCount -
-                                  _cfg.Test.GetEpbRecord(channel).RunCount));
-            var channels = checkpointChannels
-                .Where(channel => remainingByChannel[channel] > 0)
-                .ToArray();
+                channel =>
+                {
+                    var record = _cfg.Test.GetEpbRecord(channel);
+                    return Math.Max(0, record.TotalCount - record.RunCount);
+                });
+            var remainingPlan = EpbManager.BuildUnattendedRemainingCyclePlan(
+                checkpointChannels,
+                checkpoint.RemainingFormalCycles,
+                durableRemaining);
+            if (!remainingPlan.IsValid)
+            {
+                ClearGracefulPauseCheckpoint("GracefulProgressEvidenceMismatch");
+                LogInfo(
+                    $"正常暂停检查点进度与SQLite成功圈数不一致：{remainingPlan.Error}；" +
+                    "本次点击改走完整学习和耐久进度重算。 ");
+                return false;
+            }
+            var remainingByChannel = remainingPlan.RemainingCycles;
+            var channels = remainingPlan.Channels;
             if (channels.Length == 0)
             {
                 ClearGracefulPauseCheckpoint("NoRemainingFormalCycles");
-                throw new InvalidOperationException("暂停检查点中的所有通道均已完成目标圈数。");
+                LogInfo("暂停检查点中的所有通道均已完成目标正式圈；不会重复启动已完成通道。");
+                return true;
             }
             _epb.EpbTestCycle = remainingByChannel
                 .Where(pair => pair.Value > 0)

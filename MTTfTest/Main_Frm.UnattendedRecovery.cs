@@ -1,6 +1,7 @@
 using System;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using Config;
 using MTEmbTest;
 
 namespace MtEmbTest
@@ -44,7 +45,7 @@ namespace MtEmbTest
             catch (Exception ex)
             {
                 UnattendedRunCheckpointStore.ClearGracefulPause("GracefulPauseLoadFailed");
-                MessageBox.Show(
+                ShowMainOperatorMessage(
                     "正常暂停检查点加载失败：" + ex.Message +
                     "\r\n检查点已撤销，下次开始将执行完整学习。",
                     "暂停恢复",
@@ -63,11 +64,12 @@ namespace MtEmbTest
                         out var checkpoint,
                         out var error))
                 {
-                    MessageBox.Show(
-                        "无人值守自动续测已拒绝：" + error + "\r\n所有输出保持关闭。",
-                        "系统恢复",
-                        MessageBoxButtons.OK,
-                        MessageBoxIcon.Error);
+                    // 未授权、过期或身份不一致的恢复参数只能保持全断能，不能弹出一个
+                    // 必须由现场人员确认的模态框。该次十万圈由现场门禁判失败。
+                    ProjectLogHub.Write(
+                        ProjectLogLevel.Error,
+                        "无人值守自动续测已拒绝：" + error + "；所有输出保持关闭。",
+                        "无人值守恢复");
                     return;
                 }
 
@@ -77,12 +79,17 @@ namespace MtEmbTest
             }
             catch (Exception ex)
             {
-                UnattendedRunCheckpointStore.Disarm("RecoveryPreflightFailed");
-                MessageBox.Show(
-                    "无人值守恢复预检失败：" + ex.Message + "\r\n检查点已撤销，所有输出保持关闭。",
-                    "系统恢复",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Error);
+                // nonce 已消费后的初始化/启动失败仍属于同一授权恢复链。保留检查点、
+                // RootRunId 和重启历史，按既有三次预算再做受控进程交接；预算耗尽后
+                // RestartAsync 会保持安全停机。禁止以消息框代替无人值守恢复。
+                ProjectLogHub.Write(
+                    ProjectLogLevel.Error,
+                    "无人值守恢复预检或批量启动失败，将进入有界进程重试：" + ex.Message,
+                    "无人值守恢复",
+                    ex);
+                UnattendedRecoveryCoordinator.RequestRecoveryStartupRestart(
+                    "RecoveryStartupFailed",
+                    ex);
             }
         }
     }

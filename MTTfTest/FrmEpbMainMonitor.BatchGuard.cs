@@ -1,6 +1,8 @@
 using System;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Controller;
 
 namespace MTEmbTest
 {
@@ -13,10 +15,56 @@ namespace MTEmbTest
         /// </summary>
         private async void BtnStartTestGuarded_Click(object sender, EventArgs e)
         {
+            try
+            {
+                await HandleBatchStartRequestAsync(
+                        sender,
+                        e,
+                        unattendedRecovery: false,
+                        expectedChannels: null)
+                    .ConfigureAwait(true);
+            }
+            catch (Exception ex)
+            {
+                // 人工按钮入口保留可见提示；自动恢复入口由其调用者记录并进入有界
+                // 进程交接，绝不能在无人值守路径弹出需要人工确认的消息框。
+                LogInfo($"开始/暂停/继续操作失败：{ex.Message}");
+                System.Windows.Forms.MessageBox.Show(
+                    ex.Message,
+                    "试验状态转换失败",
+                    System.Windows.Forms.MessageBoxButtons.OK,
+                    System.Windows.Forms.MessageBoxIcon.Warning);
+            }
+        }
+
+        internal Task<BatchStartResult> StartUnattendedBatchAsync(int[] expectedChannels)
+        {
+            var expected = (expectedChannels ?? Array.Empty<int>())
+                .Where(channel => channel >= 1 && channel <= 12)
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
+            if (expected.Length == 0)
+                throw new InvalidOperationException("无人值守恢复没有有效的目标通道。");
+            return HandleBatchStartRequestAsync(
+                this,
+                EventArgs.Empty,
+                unattendedRecovery: true,
+                expectedChannels: expected);
+        }
+
+        private async Task<BatchStartResult> HandleBatchStartRequestAsync(
+            object sender,
+            EventArgs e,
+            bool unattendedRecovery,
+            int[] expectedChannels)
+        {
             if (Interlocked.CompareExchange(ref _batchStartUiGuard, 1, 0) != 0)
             {
+                if (unattendedRecovery)
+                    throw new InvalidOperationException("无人值守恢复启动入口正被其它操作占用。");
                 LogInfo("开始/暂停操作正在处理中，请勿重复点击。");
-                return;
+                return null;
             }
 
             try
@@ -32,39 +80,31 @@ namespace MTEmbTest
 
                 if (requestedState == Controller.BatchPauseState.Paused)
                 {
+                    if (unattendedRecovery)
+                        throw new InvalidOperationException(
+                            "自动重启子进程出现非预期 Paused 状态，拒绝把它当作新运行继续。");
                     await _epb.ResumeBatchAsync().ConfigureAwait(true);
                     ClearGracefulPauseCheckpoint("SameProcessResumed");
                     LogInfo("批次已通过恢复预检并继续试验。");
-                    return;
+                    return null;
                 }
 
                 if (requestedState == Controller.BatchPauseState.Running)
                 {
+                    if (unattendedRecovery)
+                        throw new InvalidOperationException(
+                            "自动重启子进程已存在 Running 批次，拒绝重复提交恢复启动。");
                     await _epb.PauseBatchGracefullyAsync().ConfigureAwait(true);
                     SaveGracefulPauseCheckpoint();
                     LogInfo("批次已在所有卡钳完成当前圈后安全暂停。");
-                    return;
+                    return null;
                 }
 
-                // 新试验或跨进程检查点恢复必须从完整的独立候选目录启动。bin\Release
-                // 是 VS 可反复覆盖的暂存区；Release 生成会自动在 artifacts\vs2022 下
-                // 重新封装一个与本次输出匹配的独立候选。
-                var identity = Controller.RuntimeBuildIdentity.Capture();
-                var package = Controller.ReleasePackageVerifier.VerifyCurrent(identity, refresh: true);
-                if (!package.Verified)
-                    throw new InvalidOperationException(
-                        "当前程序目录不是完整、可验证的独立候选包，已拒绝开始试验。\r\n" +
-                        $"Code={package.Code}\r\n{package.Detail}\r\n" +
-                        "请从 VS2022 生成输出中提示的 artifacts\\vs2022 独立候选目录重新启动；" +
-                        "禁止直接运行 bin\\Release。" );
+                if (!unattendedRecovery &&
+                    await TryResumePendingGracefulPauseAsync().ConfigureAwait(true))
+                    return null;
 
-                if (string.Equals(package.Code, "VerifiedVs2022", StringComparison.Ordinal))
-                    LogInfo(
-                        "当前运行的是 VS2022 独立候选：允许调试/试运行，但没有完成正式发布全回归，" +
-                        "不得作为生产验收或100000圈放行证据。");
-
-                if (await TryResumePendingGracefulPauseAsync().ConfigureAwait(true))
-                    return;
+                var explicitlyStopped = Volatile.Read(ref _operatorStopRequested) != 0;
 
                 // 只要用户再次选择“开始”，就把上一批次的软件问题和仍在收尾的启动任务一并抛弃。
                 // 同一次点击会等待安全清场结束并直接发起新批次，不要求用户稍后再点一次。
@@ -82,7 +122,8 @@ namespace MTEmbTest
                                 Initiator = nameof(BtnStartTestGuarded_Click),
                                 CorrelationId = Guid.NewGuid().ToString("N"),
                                 RequestedUtc = DateTime.UtcNow
-                            })
+                            },
+                            discardHistoricalStopChecks: explicitlyStopped)
                         .ConfigureAwait(true);
                     ClearGracefulPauseCheckpoint("FreshRestart");
                     LogInfo(
@@ -109,20 +150,35 @@ namespace MTEmbTest
                     }
                 }
 
-                BtnStartTest_Click(sender, e);
+                var startTask = StartNewBatchAsync(unattendedRecovery);
+
+                if (unattendedRecovery)
+                {
+                    var startResult = await startTask.ConfigureAwait(true);
+                    var validationError = EpbManager.ValidateUnattendedBatchStartResult(
+                        expectedChannels,
+                        startResult);
+                    if (!string.IsNullOrWhiteSpace(validationError))
+                        throw new InvalidOperationException(validationError);
+                    Interlocked.Exchange(ref _operatorStopRequested, 0);
+                    return startResult;
+                }
 
                 // 原处理函数是 async void；只等待控制层建立会话，不再占用按钮到整批结束。
                 for (var i = 0; i < 20 && !(_epb?.IsBatchSessionActive ?? false); i++)
                     await Task.Delay(100).ConfigureAwait(true);
-            }
-            catch (Exception ex)
-            {
-                LogInfo($"开始/暂停/继续操作失败：{ex.Message}");
-                System.Windows.Forms.MessageBox.Show(
-                    ex.Message,
-                    "试验状态转换失败",
-                    System.Windows.Forms.MessageBoxButtons.OK,
-                    System.Windows.Forms.MessageBoxIcon.Warning);
+                if (_epb?.IsBatchSessionActive ?? false)
+                    Interlocked.Exchange(ref _operatorStopRequested, 0);
+
+                // 人工入口维持原来的快速释放按钮行为，但必须观察后台启动任务，避免
+                // async void 异常成为未观察异常。StartNewBatchAsync 的人工路径会自行
+                // 记录并显示可操作错误。
+                _ = startTask.ContinueWith(
+                    task => LogInfo($"启动后台任务异常：{task.Exception?.GetBaseException().Message}"),
+                    CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted,
+                    TaskScheduler.Default);
+                return null;
             }
             finally
             {

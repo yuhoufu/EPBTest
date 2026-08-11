@@ -734,6 +734,24 @@ namespace Controller
             QueuePendingWarningSnapshotsForCycle(channel, cycleNumber);
         }
 
+        /// <summary>
+        /// 调用方已经针对事故首次冻结的唯一前缀完成 Raw/SQLite 耐久证明时提交圈终态。
+        /// 此路径严禁再次读取 LastDiskPublishedSequence，否则 SuppressAfter 之后的新鲜度
+        /// 验证批次会被错误扩大为新的正式落盘义务。
+        /// </summary>
+        private void AbortCycleAtConfirmedDurableBoundary(
+            IEpbCycleRecorder recorder,
+            int channel,
+            int cycleNumber,
+            DateTime endUtc,
+            string status)
+        {
+            if (recorder == null) return;
+            var finalN = recorder.GetCurrentCycleSampleCount(channel);
+            recorder.AbortCycle(channel, cycleNumber, finalN, endUtc, status);
+            QueuePendingWarningSnapshotsForCycle(channel, cycleNumber);
+        }
+
         private bool TryBeginFormalCycle(
             IEpbCycleRecorder recorder,
             int channel,
@@ -969,6 +987,8 @@ namespace Controller
                 $"  \"beforeSkewPpm\": {beforeClock.EstimatedSkewPpm.ToString("F3", CultureInfo.InvariantCulture)},\n" +
                 $"  \"beforeResidualMs\": {beforeClock.ClockResidualMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
                 $"  \"beforeCallbackAgeMs\": {beforeClock.CallbackAgeMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
+                $"  \"beforeCallbackGapEvents\": {beforeClock.CallbackGapEventCount},\n" +
+                $"  \"beforeLastCallbackGapMs\": {beforeClock.LastCallbackGapIntervalMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
                 $"  \"beforeControlEnqueueAgeMs\": {beforeClock.ControlEnqueueAgeMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
                 $"  \"beforeControlProcessedAgeMs\": {beforeClock.ControlProcessedAgeMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
                 $"  \"beforeSampleAgeMs\": {beforeClock.AgeMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
@@ -978,6 +998,8 @@ namespace Controller
                 $"  \"afterSkewPpm\": {afterClock.EstimatedSkewPpm.ToString("F3", CultureInfo.InvariantCulture)},\n" +
                 $"  \"afterResidualMs\": {afterClock.ClockResidualMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
                 $"  \"afterCallbackAgeMs\": {afterClock.CallbackAgeMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
+                $"  \"afterCallbackGapEvents\": {afterClock.CallbackGapEventCount},\n" +
+                $"  \"afterLastCallbackGapMs\": {afterClock.LastCallbackGapIntervalMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
                 $"  \"afterControlEnqueueAgeMs\": {afterClock.ControlEnqueueAgeMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
                 $"  \"afterControlProcessedAgeMs\": {afterClock.ControlProcessedAgeMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +
                 $"  \"afterSampleAgeMs\": {afterClock.AgeMs.ToString("F3", CultureInfo.InvariantCulture)},\n" +

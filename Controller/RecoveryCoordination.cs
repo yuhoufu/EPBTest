@@ -29,6 +29,7 @@ namespace Controller
             internal RecoveryOwnerPriority Priority;
             internal CancellationTokenSource Cancellation;
             internal TaskCompletionSource<bool> Completion;
+            internal int LeaseCount;
         }
 
         private readonly object _gate = new object();
@@ -107,10 +108,20 @@ namespace Controller
                             Priority = priority,
                             Cancellation = new CancellationTokenSource(),
                             Completion = new TaskCompletionSource<bool>(
-                                TaskCreationOptions.RunContinuationsAsynchronously)
+                                TaskCreationOptions.RunContinuationsAsynchronously),
+                            LeaseCount = 1
                         };
                         _owners.Add(hydraulicGroupId, created);
                         return new HydraulicRecoveryOwnershipLease(this, created);
+                    }
+
+                    // 同一次双DAQ批次恢复会由两个设备上下文到达同一液压组。它们共享
+                    // ownerId 时属于一个事务，不得按“同优先级抢占”互相取消。
+                    if (priority == current.Priority &&
+                        string.Equals(ownerId, current.OwnerId, StringComparison.Ordinal))
+                    {
+                        current.LeaseCount++;
+                        return new HydraulicRecoveryOwnershipLease(this, current);
                     }
 
                     if (priority >= current.Priority)
@@ -149,12 +160,21 @@ namespace Controller
         private void Release(OwnerState state)
         {
             if (state == null) return;
+            var complete = false;
             lock (_gate)
             {
                 if (_owners.TryGetValue(state.HydraulicGroupId, out var current) &&
                     ReferenceEquals(current, state))
-                    _owners.Remove(state.HydraulicGroupId);
+                {
+                    state.LeaseCount = Math.Max(0, state.LeaseCount - 1);
+                    if (state.LeaseCount == 0)
+                    {
+                        _owners.Remove(state.HydraulicGroupId);
+                        complete = true;
+                    }
+                }
             }
+            if (!complete) return;
             state.Completion.TrySetResult(true);
             try { state.Cancellation.Dispose(); }
             catch { }

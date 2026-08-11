@@ -37,6 +37,7 @@ namespace Controller
                 MarkDaqRecoveryTerminal(context.CorrelationId, context.Device);
                 TryRemoveExactDaqRecoveryContext(context);
             }
+            MarkDaqRecoveryBatchTerminal(context);
             ReleaseDaqRecoveryOwnerships(context);
             try { context.Cancellation.Cancel(); } catch { }
             var result = new DaqRecoveryResult
@@ -58,6 +59,7 @@ namespace Controller
                 Classification = FaultClassification.SoftwareTransient
             };
             context.Completion.TrySetResult(result);
+            LogDaqRecoveryFieldMetric(context, "Cancelled", reason);
             NonCriticalObserver.Invoke(
                 DaqRecoveryStateChanged,
                 result,
@@ -79,7 +81,8 @@ namespace Controller
         private void MarkDaqRecoveryTerminal(Guid correlationId, string device)
         {
             if (correlationId == Guid.Empty) return;
-            _daqRecoveryTerminalCorrelations[correlationId] = DateTime.UtcNow;
+            _daqRecoveryTerminalCorrelations[BuildDaqRecoveryTerminalKey(device, correlationId)] =
+                DateTime.UtcNow;
             _daqIncidentLatch.Complete(device, correlationId);
             if (_daqRecoveryTerminalCorrelations.Count <= 1024) return;
             var cutoff = DateTime.UtcNow.AddMinutes(-30);
@@ -87,6 +90,16 @@ namespace Controller
                 if (item.Value < cutoff)
                     _daqRecoveryTerminalCorrelations.TryRemove(item.Key, out _);
         }
+
+        private bool IsDaqRecoveryTerminalCorrelation(string device, Guid correlationId)
+        {
+            return correlationId != Guid.Empty &&
+                   _daqRecoveryTerminalCorrelations.ContainsKey(
+                       BuildDaqRecoveryTerminalKey(device, correlationId));
+        }
+
+        internal static string BuildDaqRecoveryTerminalKey(string device, Guid correlationId)
+            => $"{(device ?? string.Empty).Trim().ToUpperInvariant()}:{correlationId:N}";
 
         private void StartDaqRecoveryWatchdog(DaqAutoRecoveryContext context)
         {
@@ -130,6 +143,7 @@ namespace Controller
         private void PublishRecoveryProgress(DaqAutoRecoveryContext context, string reason)
         {
             var queue = _persistence.GetSnapshot(context.Device);
+            LogDaqRecoveryFieldMetric(context, "Progress", reason);
             NonCriticalObserver.Invoke(
                 DaqPersistenceStateChanged,
                 new DaqPersistenceStateChanged

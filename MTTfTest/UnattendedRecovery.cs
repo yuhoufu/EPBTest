@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
@@ -45,9 +46,17 @@ namespace MTEmbTest
         public string ConfigurationSha256 { get; set; }
         public string ExecutableSha256 { get; set; }
         public string BuildVersion { get; set; }
+        /// <summary>首次人工授权本次无人值守运行链时的 RunId，进程重启后保持不变。</summary>
+        public string RootRunId { get; set; }
+        /// <summary>创建当前执行 RunId 的上一进程 RunId；首次人工启动为空。</summary>
+        public string ParentRunId { get; set; }
         public string RunId { get; set; }
+        public int RestartGeneration { get; set; }
+        /// <summary>恢复子进程已消费 nonce，等待新执行 RunId 首次 Arm。</summary>
+        public bool RecoveryChainPendingStart { get; set; }
         public string ActiveFaultCorrelationId { get; set; }
         public string RecoveryNonce { get; set; }
+        public string LastRecoveryNonceSha256 { get; set; }
         public string LastReason { get; set; }
         public string UpdatedUtc { get; set; }
         public List<string> RestartHistoryUtc { get; set; } = new List<string>();
@@ -59,32 +68,61 @@ namespace MTEmbTest
 
     internal static class UnattendedRunCheckpointStore
     {
-        private const int CurrentSchemaVersion = 4;
+        private const int CurrentSchemaVersion = 5;
         private static readonly object Sync = new object();
+        private static readonly ConcurrentDictionary<string, byte> RevokedRuns =
+            new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
         private static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
         internal static readonly string CheckpointPath = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "MTTFTest",
             "unattended-run-checkpoint.json");
 
-        internal static void Arm(GlobalConfig config, IEnumerable<int> channels, Guid runId)
+        internal static UnattendedRunChainTransition Arm(
+            GlobalConfig config,
+            IEnumerable<int> channels,
+            Guid runId,
+            bool requireRecoveryPending = false)
         {
-            if (config?.Test == null) return;
+            if (config?.Test == null)
+                return default;
             var selected = (channels ?? Enumerable.Empty<int>())
                 .Where(channel => channel >= 1 && channel <= 12)
                 .Distinct()
                 .OrderBy(channel => channel)
                 .ToArray();
-            if (selected.Length == 0) return;
+            if (selected.Length == 0)
+                return default;
 
             lock (Sync)
             {
                 var checkpoint = LoadUnsafe() ?? new UnattendedRunCheckpoint();
+                var checkpointRunId = NormalizeRunId(checkpoint.RunId);
+                var revocationObserved = checkpointRunId.Length > 0 &&
+                                         RevokedRuns.ContainsKey(checkpointRunId);
+                if (requireRecoveryPending &&
+                    !EpbManager.CanCommitUnattendedRecovery(
+                        checkpoint.Armed,
+                        checkpoint.RecoveryChainPendingStart,
+                        checkpoint.InProcessRecoveryPending,
+                        revocationObserved))
+                    throw new InvalidOperationException(
+                        "自动恢复完成确认时授权已被撤销或不再处于待提交状态。");
+                var transition = EpbManager.SelectUnattendedRunChainTransition(
+                    checkpoint.RunId,
+                    checkpoint.RootRunId,
+                    checkpoint.ParentRunId,
+                    checkpoint.RestartGeneration,
+                    checkpoint.Armed,
+                    checkpoint.RecoveryChainPendingStart,
+                    checkpoint.InProcessRecoveryPending,
+                    runId == Guid.Empty ? string.Empty : runId.ToString("N"));
                 checkpoint.SchemaVersion = CurrentSchemaVersion;
                 checkpoint.Armed = true;
                 checkpoint.RestartPending = false;
                 checkpoint.InProcessRecoveryPending = false;
                 checkpoint.GracefulPaused = false;
+                checkpoint.RecoveryChainPendingStart = false;
                 checkpoint.StoreDir = config.Test.StoreDir ?? string.Empty;
                 checkpoint.TestName = config.Test.TestName ?? string.Empty;
                 checkpoint.SelectedChannels = selected;
@@ -92,8 +130,17 @@ namespace MTEmbTest
                 checkpoint.ConfigurationSha256 = ComputeConfigurationHash(config);
                 checkpoint.ExecutableSha256 = ComputeFileHash(GetExecutablePath());
                 checkpoint.BuildVersion = Assembly.GetEntryAssembly()?.GetName().Version?.ToString() ?? "unknown";
-                checkpoint.RunId = runId == Guid.Empty ? string.Empty : runId.ToString("N");
-                checkpoint.ActiveFaultCorrelationId = string.Empty;
+                checkpoint.RootRunId = transition.RootRunId;
+                checkpoint.ParentRunId = transition.ParentRunId;
+                checkpoint.RunId = transition.CurrentRunId;
+                checkpoint.RestartGeneration = transition.RestartGeneration;
+                if (transition.NewAuthorizationChain)
+                {
+                    RevokedRuns.Clear();
+                    checkpoint.RestartHistoryUtc = new List<string>();
+                    checkpoint.ActiveFaultCorrelationId = string.Empty;
+                    checkpoint.LastRecoveryNonceSha256 = string.Empty;
+                }
                 checkpoint.RecoveryNonce = string.Empty;
                 checkpoint.LastReason = "FormalRunArmed";
                 checkpoint.UpdatedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
@@ -105,6 +152,7 @@ namespace MTEmbTest
                         return Math.Max(0, record.TotalCount - record.RunCount);
                     });
                 SaveUnsafe(checkpoint);
+                return transition;
             }
         }
 
@@ -117,6 +165,7 @@ namespace MTEmbTest
                 checkpoint.RestartPending = false;
                 checkpoint.InProcessRecoveryPending = false;
                 checkpoint.GracefulPaused = false;
+                checkpoint.RecoveryChainPendingStart = false;
                 checkpoint.RecoveryNonce = string.Empty;
                 checkpoint.LastReason = string.IsNullOrWhiteSpace(reason) ? "AuthorizationRevoked" : reason;
                 checkpoint.UpdatedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
@@ -169,7 +218,8 @@ namespace MTEmbTest
             lock (Sync)
             {
                 var checkpoint = LoadUnsafe();
-                if (checkpoint == null || !checkpoint.Armed)
+                if (checkpoint == null || !checkpoint.Armed ||
+                    IsRunRevokedInMemory(checkpoint.RunId))
                 {
                     error = "无人值守续测未授权。";
                     return false;
@@ -183,7 +233,15 @@ namespace MTEmbTest
                 if (checkpoint.SchemaVersion < CurrentSchemaVersion ||
                     !EpbManager.AreSameNonEmptyRunIds(checkpoint.RunId, checkpoint.RunId))
                 {
-                    error = "检查点缺少V4运行身份，拒绝自动续测。";
+                    error = "检查点缺少V5运行链身份，拒绝自动续测。";
+                    return false;
+                }
+                if (!EpbManager.AreSameNonEmptyRunIds(
+                        checkpoint.RootRunId,
+                        checkpoint.RootRunId))
+                {
+                    DisarmUnsafe(checkpoint, "RootRunIdMissingBeforeRestart");
+                    error = "检查点缺少首次人工授权的根RunId，拒绝自动续测。";
                     return false;
                 }
 
@@ -221,6 +279,7 @@ namespace MTEmbTest
                 checkpoint.RestartHistoryUtc.Add(now.ToString("O", CultureInfo.InvariantCulture));
                 checkpoint.RestartPending = true;
                 checkpoint.RecoveryNonce = nonce;
+                checkpoint.LastRecoveryNonceSha256 = ComputeTextHash(nonce);
                 checkpoint.ActiveFaultCorrelationId = correlationId ?? string.Empty;
                 checkpoint.LastReason = "SystemFaultRestartPending";
                 checkpoint.UpdatedUtc = now.ToString("O", CultureInfo.InvariantCulture);
@@ -241,6 +300,7 @@ namespace MTEmbTest
             GlobalConfig config,
             string fingerprint,
             string expectedRunId,
+            string faultCorrelationId,
             out UnattendedRunCheckpoint checkpoint,
             out string error)
         {
@@ -249,7 +309,8 @@ namespace MTEmbTest
             lock (Sync)
             {
                 var current = LoadUnsafe();
-                if (current == null || !current.Armed)
+                if (current == null || !current.Armed ||
+                    IsRunRevokedInMemory(current.RunId))
                 {
                     error = "无人值守续测未授权。";
                     return false;
@@ -261,7 +322,7 @@ namespace MTEmbTest
                 }
                 if (current.SchemaVersion < CurrentSchemaVersion)
                 {
-                    error = "检查点版本低于V4，拒绝同进程自动续测。";
+                    error = "检查点版本低于V5，拒绝同进程自动续测。";
                     return false;
                 }
                 if (current.InProcessRecoveryPending)
@@ -298,10 +359,11 @@ namespace MTEmbTest
                     return false;
                 }
 
-                // Schema 只能单调前进。V4 包含 RunId，恢复登记不得把它降回旧格式。
+                // Schema 只能单调前进。V5 包含根/父/当前 RunId，恢复登记不得降级。
                 current.SchemaVersion = CurrentSchemaVersion;
                 current.InProcessRecoveryPending = true;
                 current.InProcessRecoveryFingerprint = normalized;
+                current.ActiveFaultCorrelationId = faultCorrelationId ?? string.Empty;
                 current.InProcessRecoveryHistory.Add(
                     now.ToString("O", CultureInfo.InvariantCulture) + "|" + normalized);
                 current.LastReason = "InProcessRecoveryPending";
@@ -367,6 +429,13 @@ namespace MTEmbTest
                     error = "检查点未授权、已被消费或恢复令牌不匹配。";
                     return false;
                 }
+                if (current.SchemaVersion < CurrentSchemaVersion ||
+                    !EpbManager.AreSameNonEmptyRunIds(current.RootRunId, current.RootRunId))
+                {
+                    DisarmUnsafe(current, "RecoveryChainIdentityMissing");
+                    error = "恢复检查点缺少V5根RunId，拒绝自动续测。";
+                    return false;
+                }
                 if (!TryParseUtc(current.UpdatedUtc, out var updatedUtc) ||
                     DateTime.UtcNow - updatedUtc > TimeSpan.FromMinutes(5))
                 {
@@ -410,6 +479,7 @@ namespace MTEmbTest
 
                 current.RestartPending = false;
                 current.RecoveryNonce = string.Empty;
+                current.RecoveryChainPendingStart = true;
                 current.LastReason = "RecoveryInstanceValidated";
                 current.UpdatedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
                 SaveUnsafe(current);
@@ -427,6 +497,7 @@ namespace MTEmbTest
                 checkpoint.Armed = false;
                 checkpoint.RestartPending = false;
                 checkpoint.InProcessRecoveryPending = false;
+                checkpoint.RecoveryChainPendingStart = false;
                 checkpoint.RecoveryNonce = string.Empty;
                 checkpoint.LastReason = reason ?? "RestartCancelled";
                 checkpoint.UpdatedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
@@ -483,6 +554,7 @@ namespace MTEmbTest
                 attemptsInWindow = checkpoint.RestartHistoryUtc.Count;
                 checkpoint.RestartPending = false;
                 checkpoint.RecoveryNonce = string.Empty;
+                checkpoint.RecoveryChainPendingStart = false;
                 checkpoint.LastReason = string.IsNullOrWhiteSpace(reason)
                     ? "RestartReleasedForRetry"
                     : reason;
@@ -532,6 +604,26 @@ namespace MTEmbTest
             lock (Sync) return LoadUnsafe();
         }
 
+        internal static void MarkRunRevokedInMemory(string runId)
+        {
+            var normalized = NormalizeRunId(runId);
+            if (normalized.Length > 0) RevokedRuns[normalized] = 0;
+        }
+
+        private static bool IsRunRevokedInMemory(string runId)
+        {
+            var normalized = NormalizeRunId(runId);
+            return normalized.Length > 0 && RevokedRuns.ContainsKey(normalized);
+        }
+
+        private static string NormalizeRunId(string runId)
+        {
+            var text = (runId ?? string.Empty).Trim().Replace("-", string.Empty);
+            return Guid.TryParseExact(text, "N", out var parsed)
+                ? parsed.ToString("N")
+                : string.Empty;
+        }
+
         internal static void SaveGracefulPause(
             GlobalConfig config,
             IEnumerable<int> channels,
@@ -558,6 +650,7 @@ namespace MTEmbTest
                 checkpoint.RestartPending = false;
                 checkpoint.InProcessRecoveryPending = false;
                 checkpoint.GracefulPaused = true;
+                checkpoint.RecoveryChainPendingStart = false;
                 checkpoint.StoreDir = config.Test.StoreDir ?? string.Empty;
                 checkpoint.TestName = config.Test.TestName ?? string.Empty;
                 checkpoint.SelectedChannels = selected;
@@ -565,7 +658,11 @@ namespace MTEmbTest
                 checkpoint.ConfigurationSha256 = ComputeConfigurationHash(config);
                 checkpoint.ExecutableSha256 = ComputeFileHash(GetExecutablePath());
                 checkpoint.BuildVersion = Assembly.GetEntryAssembly()?.GetName().Version?.ToString() ?? "unknown";
+                checkpoint.RootRunId = runId.ToString("N");
+                checkpoint.ParentRunId = string.Empty;
                 checkpoint.RunId = runId.ToString("N");
+                checkpoint.RestartGeneration = 0;
+                checkpoint.RestartHistoryUtc = new List<string>();
                 checkpoint.AdaptiveProfilesSha256 = ComputeFileHash(Path.Combine(
                     ConfigLoader.GetProjectConfigDir(config.Test.StoreDir, config.Test.TestName),
                     "EpbAdaptiveProfiles.xml"));
@@ -692,6 +789,7 @@ namespace MTEmbTest
                 checkpoint.Armed = false;
                 checkpoint.GracefulPaused = false;
                 checkpoint.RestartPending = false;
+                checkpoint.RecoveryChainPendingStart = false;
                 checkpoint.LastReason = reason ?? "GracefulPauseConsumed";
                 checkpoint.UpdatedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
                 SaveUnsafe(checkpoint);
@@ -716,6 +814,7 @@ namespace MTEmbTest
                 checkpoint.Armed = false;
                 checkpoint.GracefulPaused = false;
                 checkpoint.RestartPending = false;
+                checkpoint.RecoveryChainPendingStart = false;
                 checkpoint.RecoveryNonce = string.Empty;
                 checkpoint.RemainingFormalCycles = new Dictionary<string, int>();
                 checkpoint.LastReason = reason ?? "ProjectProgressCleared";
@@ -768,9 +867,18 @@ namespace MTEmbTest
             {
                 var document = new XmlDocument { PreserveWhitespace = false };
                 document.Load(path);
-                var records = document.SelectNodes("//EpbRecords");
-                if (records != null)
-                    foreach (XmlNode node in records.Cast<XmlNode>().ToArray())
+                // EpbRecords 同时包含运行进度和试验授权配置。旧实现删除整个节点，
+                // 会把 TotalCount/Enabled 的人工变更也从身份哈希中删除，使恢复子进程
+                // 可能在目标圈数已变化后继续上电。只剔除每圈提交会变化的运行字段，
+                // 保留 Id、Enabled、TotalCount 参与配置身份验证。
+                var runtimeFields = document.SelectNodes(
+                    "//EpbRecords/Record/StartTime | " +
+                    "//EpbRecords/Record/LatestStartTime | " +
+                    "//EpbRecords/Record/RunTime | " +
+                    "//EpbRecords/Record/RunCount | " +
+                    "//EpbRecords/Record/Status");
+                if (runtimeFields != null)
+                    foreach (XmlNode node in runtimeFields.Cast<XmlNode>().ToArray())
                         node.ParentNode?.RemoveChild(node);
                 return Encoding.UTF8.GetBytes(document.OuterXml);
             }
@@ -786,6 +894,7 @@ namespace MTEmbTest
             checkpoint.RestartPending = false;
             checkpoint.InProcessRecoveryPending = false;
             checkpoint.GracefulPaused = false;
+            checkpoint.RecoveryChainPendingStart = false;
             checkpoint.RecoveryNonce = string.Empty;
             checkpoint.LastReason = reason;
             checkpoint.UpdatedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
@@ -862,6 +971,13 @@ namespace MTEmbTest
             }
         }
 
+        private static string ComputeTextHash(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return string.Empty;
+            using (var sha = SHA256.Create())
+                return ToHex(sha.ComputeHash(Encoding.UTF8.GetBytes(value)));
+        }
+
         private static string ToHex(byte[] bytes)
         {
             return string.Concat(bytes.Select(value => value.ToString("x2", CultureInfo.InvariantCulture)));
@@ -901,8 +1017,16 @@ namespace MTEmbTest
         private static GlobalConfig _config;
         private static Func<Task> _quiesceAndFlush;
         private static CancellationTokenSource _restartSequenceCancellation;
+        private static EventWaitHandle _activeHandoffRevocation;
         private static int _restartStarted;
         private static int _inProcessRecoveryStarted;
+        private static int _recoveryProcessMode;
+
+        internal static bool IsRecoveryProcessMode =>
+            Volatile.Read(ref _recoveryProcessMode) != 0;
+
+        internal static void SetRecoveryProcessMode(bool enabled)
+            => Volatile.Write(ref _recoveryProcessMode, enabled ? 1 : 0);
 
         internal static void Attach(EpbManager manager, GlobalConfig config)
         {
@@ -913,12 +1037,16 @@ namespace MTEmbTest
                 if (_manager != null)
                 {
                     _manager.SystemFaultRaised -= OnSystemFaultRaised;
+                    _manager.RunAuthorizationRevocationBarrier -=
+                        OnRunAuthorizationRevocationBarrier;
                     _manager.RunAuthorizationRevoking -= OnRunAuthorizationRevoking;
                     _manager.ChannelCycleCompleted -= OnFormalCycleCompleted;
                 }
                 _manager = manager;
                 _config = config;
                 manager.SystemFaultRaised += OnSystemFaultRaised;
+                manager.RunAuthorizationRevocationBarrier +=
+                    OnRunAuthorizationRevocationBarrier;
                 manager.RunAuthorizationRevoking += OnRunAuthorizationRevoking;
                 manager.ChannelCycleCompleted += OnFormalCycleCompleted;
             }
@@ -927,7 +1055,49 @@ namespace MTEmbTest
         internal static void Arm(GlobalConfig config, IEnumerable<int> channels, Guid runId)
         {
             CancelRestartRetrySequence();
-            UnattendedRunCheckpointStore.Arm(config, channels, runId);
+            var transition = UnattendedRunCheckpointStore.Arm(config, channels, runId);
+            if (string.IsNullOrWhiteSpace(transition.CurrentRunId)) return;
+            var checkpoint = UnattendedRunCheckpointStore.Load();
+            ProjectLogHub.Write(
+                ProjectLogLevel.Info,
+                $"FieldMetric RECOVERY_CHAIN RootRunId={transition.RootRunId} " +
+                $"ParentRunId={(string.IsNullOrWhiteSpace(transition.ParentRunId) ? "none" : transition.ParentRunId)} " +
+                $"CurrentRunId={transition.CurrentRunId} " +
+                $"RestartGeneration={transition.RestartGeneration} " +
+                $"SameRun={transition.SameRun} " +
+                $"RecoveryContinuation={transition.RecoveryContinuation} " +
+                $"RecoveryMode={transition.RecoveryMode} " +
+                $"FaultCorrelationId={(string.IsNullOrWhiteSpace(checkpoint?.ActiveFaultCorrelationId) ? "none" : checkpoint.ActiveFaultCorrelationId)} " +
+                $"RecoveryNonceSha256={(string.IsNullOrWhiteSpace(checkpoint?.LastRecoveryNonceSha256) ? "none" : checkpoint.LastRecoveryNonceSha256)}",
+                "FIELD");
+        }
+
+        internal static void ConfirmRecoveryBatchStarted(
+            GlobalConfig config,
+            IEnumerable<int> channels,
+            Guid runId)
+        {
+            if (runId == Guid.Empty)
+                throw new InvalidOperationException("自动恢复完成确认缺少新执行 RunId。");
+            CancelRestartRetrySequence();
+            var transition = UnattendedRunCheckpointStore.Arm(
+                config,
+                channels,
+                runId,
+                requireRecoveryPending: true);
+            var checkpoint = UnattendedRunCheckpointStore.Load();
+            ProjectLogHub.Write(
+                ProjectLogLevel.Info,
+                $"FieldMetric RECOVERY_CHAIN RootRunId={transition.RootRunId} " +
+                $"ParentRunId={(string.IsNullOrWhiteSpace(transition.ParentRunId) ? "none" : transition.ParentRunId)} " +
+                $"CurrentRunId={transition.CurrentRunId} " +
+                $"RestartGeneration={transition.RestartGeneration} " +
+                $"SameRun={transition.SameRun} " +
+                $"RecoveryContinuation={transition.RecoveryContinuation} " +
+                $"RecoveryMode={transition.RecoveryMode} " +
+                $"FaultCorrelationId={(string.IsNullOrWhiteSpace(checkpoint?.ActiveFaultCorrelationId) ? "none" : checkpoint.ActiveFaultCorrelationId)} " +
+                $"RecoveryNonceSha256={(string.IsNullOrWhiteSpace(checkpoint?.LastRecoveryNonceSha256) ? "none" : checkpoint.LastRecoveryNonceSha256)}",
+                "FIELD");
         }
 
         internal static void RegisterQuiesceAndFlush(Func<Task> callback)
@@ -944,8 +1114,14 @@ namespace MTEmbTest
         private static void CancelRestartRetrySequence()
         {
             CancellationTokenSource cancellation;
-            lock (Sync) cancellation = _restartSequenceCancellation;
+            EventWaitHandle handoffRevocation;
+            lock (Sync)
+            {
+                cancellation = _restartSequenceCancellation;
+                handoffRevocation = _activeHandoffRevocation;
+            }
             try { cancellation?.Cancel(); } catch (ObjectDisposedException) { }
+            try { handoffRevocation?.Set(); } catch (ObjectDisposedException) { }
         }
 
         internal static void RequestFatalRestart(string source, Exception exception)
@@ -956,6 +1132,84 @@ namespace MTEmbTest
                 RestartAsync(reason, Guid.NewGuid().ToString("N")).GetAwaiter().GetResult();
             }
             catch { }
+        }
+
+        /// <summary>
+        /// 恢复子进程已经消费一次性 nonce 后，初始化或批量启动仍可能因瞬态设备、
+        /// 配置读取或 UI 初始化失败。此时不能弹框后静默停住，也不能清空既有授权链；
+        /// 使用当前检查点 RunId 和跨进程重启历史重新进入同一 10 分钟/3 次预算。
+        /// </summary>
+        internal static void RequestRecoveryStartupRestart(string source, Exception exception)
+        {
+            var correlationId = Guid.NewGuid();
+            var reason = source + ": " + (exception?.Message ?? "unknown recovery startup exception");
+            var checkpoint = UnattendedRunCheckpointStore.Load();
+            ProjectLogHub.Write(
+                ProjectLogLevel.Error,
+                $"FieldMetric RECOVERY_STARTUP Result=RetryScheduled " +
+                $"RootRunId={NormalizeMetric(checkpoint?.RootRunId)} " +
+                $"CurrentRunId={NormalizeMetric(checkpoint?.RunId)} " +
+                $"RestartGeneration={Math.Max(0, checkpoint?.RestartGeneration ?? 0)} " +
+                $"AttemptInWindow={checkpoint?.RestartHistoryUtc?.Count ?? 0} " +
+                $"RecoveryNonceSha256={NormalizeMetric(checkpoint?.LastRecoveryNonceSha256)} " +
+                $"CorrelationId={correlationId:N} ReasonCode=RecoveryStartupFailed",
+                "FIELD",
+                exception);
+            RecoveryTasks.Observe(
+                Task.Run(() => RestartAsync(reason, correlationId.ToString("N"))),
+                "RecoveryStartupProcessRestart",
+                correlationId);
+        }
+
+        internal static void LogRecoveryStartupRecovered(Guid startedRunId, IEnumerable<int> channels)
+        {
+            var checkpoint = UnattendedRunCheckpointStore.Load();
+            ProjectLogHub.Write(
+                ProjectLogLevel.Info,
+                $"FieldMetric RECOVERY_STARTUP Result=Recovered " +
+                $"RootRunId={NormalizeMetric(checkpoint?.RootRunId)} " +
+                $"ParentRunId={NormalizeMetric(checkpoint?.ParentRunId)} " +
+                $"CurrentRunId={(startedRunId == Guid.Empty ? NormalizeMetric(checkpoint?.RunId) : startedRunId.ToString("N"))} " +
+                $"RestartGeneration={Math.Max(0, checkpoint?.RestartGeneration ?? 0)} " +
+                $"AttemptInWindow={checkpoint?.RestartHistoryUtc?.Count ?? 0} " +
+                $"RecoveryNonceSha256={NormalizeMetric(checkpoint?.LastRecoveryNonceSha256)} " +
+                $"Channels={string.Join(",", (channels ?? Array.Empty<int>()).Distinct().OrderBy(x => x))}",
+                "FIELD");
+        }
+
+        private static void LogProcessRestartMetric(
+            string result,
+            string correlationId,
+            string reasonCode)
+        {
+            var checkpoint = UnattendedRunCheckpointStore.Load();
+            ProjectLogHub.Write(
+                string.Equals(result, "Rejected", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(result, "TerminalSafeStop", StringComparison.OrdinalIgnoreCase)
+                    ? ProjectLogLevel.Error
+                    : ProjectLogLevel.Info,
+                $"FieldMetric PROCESS_RESTART Result={NormalizeMetric(result)} " +
+                $"RootRunId={NormalizeMetric(checkpoint?.RootRunId)} " +
+                $"CurrentRunId={NormalizeMetric(checkpoint?.RunId)} " +
+                $"RestartGeneration={Math.Max(0, checkpoint?.RestartGeneration ?? 0)} " +
+                $"AttemptInWindow={checkpoint?.RestartHistoryUtc?.Count ?? 0} " +
+                $"RecoveryNonceSha256={NormalizeMetric(checkpoint?.LastRecoveryNonceSha256)} " +
+                $"FaultCorrelationId={NormalizeMetric(checkpoint?.ActiveFaultCorrelationId)} " +
+                $"CorrelationId={NormalizeMetric(correlationId)} " +
+                $"ReasonCode={NormalizeMetric(reasonCode)}",
+                "FIELD");
+        }
+
+        private static string NormalizeMetric(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return "none";
+            return new string(value
+                .Trim()
+                .Select(character => char.IsLetterOrDigit(character) ||
+                                     character == '-' || character == '_' || character == '.'
+                    ? character
+                    : '_')
+                .ToArray());
         }
 
         private static void OnRunAuthorizationRevoking(StopContext context)
@@ -979,13 +1233,20 @@ namespace MTEmbTest
             if (context?.Source == StopSource.SystemFault)
             {
                 var checkpoint = UnattendedRunCheckpointStore.Load();
-                if (checkpoint?.RestartPending == true)
+                if (checkpoint?.RestartPending == true ||
+                    checkpoint?.InProcessRecoveryPending == true)
                     return;
             }
             CancelRestartRetrySequence();
             UnattendedRunCheckpointStore.DisarmIfRunMatches(
                 context?.RunId,
                 $"{context?.Source}: {context?.Reason ?? "Run authorization revoked"}");
+        }
+
+        private static void OnRunAuthorizationRevocationBarrier(StopContext context)
+        {
+            UnattendedRunCheckpointStore.MarkRunRevokedInMemory(context?.RunId);
+            CancelRestartRetrySequence();
         }
 
         private static void OnSystemFaultRaised(ControlFault fault)
@@ -1021,6 +1282,7 @@ namespace MTEmbTest
         private static async Task RecoverInProcessOrRestartAsync(ControlFault fault)
         {
             if (Interlocked.CompareExchange(ref _inProcessRecoveryStarted, 1, 0) != 0) return;
+            var recoveryBatchCommitted = false;
             var reason = fault?.Reason ?? "SoftwareRecoveryCircuitOpen";
             var correlationId = fault?.CorrelationId.ToString("N") ?? Guid.NewGuid().ToString("N");
             var affected = string.Join(",", (fault?.AffectedChannels ?? Array.Empty<int>())
@@ -1049,6 +1311,7 @@ namespace MTEmbTest
                         config,
                         fingerprint,
                         fault?.RunId.ToString("N"),
+                        correlationId,
                         out checkpoint,
                         out registrationError))
                 {
@@ -1092,26 +1355,39 @@ namespace MTEmbTest
                     throw new InvalidOperationException(
                         "同进程恢复清场不变量未通过：" + safety.LogicalError);
 
-                var remaining = (checkpoint.RemainingFormalCycles ??
-                                 new Dictionary<string, int>())
-                    .Select(pair => new
-                    {
-                        Parsed = int.TryParse(
-                            pair.Key,
-                            NumberStyles.Integer,
-                            CultureInfo.InvariantCulture,
-                            out var channel),
-                        Channel = channel,
-                        Remaining = Math.Max(0, pair.Value)
-                    })
-                    .Where(item => item.Parsed && item.Channel >= 1 && item.Channel <= 12 &&
-                                   item.Remaining > 0)
-                    .ToDictionary(item => item.Channel, item => item.Remaining);
-                var selected = (checkpoint.SelectedChannels ?? Array.Empty<int>())
-                    .Where(channel => remaining.ContainsKey(channel))
+                var authorized = (checkpoint.SelectedChannels ?? Array.Empty<int>())
+                    .Where(channel => channel >= 1 && channel <= 12)
                     .Distinct()
                     .OrderBy(channel => channel)
                     .ToArray();
+                var durableRemaining = authorized.ToDictionary(
+                    channel => channel,
+                    channel => Math.Max(
+                        0,
+                        config.Test.GetEpbRecord(channel).TotalCount -
+                        manager.GetDurableCompletedFormalCycleCount(channel)));
+                var remainingPlan = EpbManager.BuildUnattendedRemainingCyclePlan(
+                    authorized,
+                    checkpoint.RemainingFormalCycles,
+                    durableRemaining);
+                if (!remainingPlan.IsValid)
+                    throw new InvalidOperationException(
+                        remainingPlan.Error +
+                        "；拒绝在正式圈进度证据不一致时同进程自动上电。");
+                var selected = remainingPlan.Channels;
+                foreach (var channel in authorized)
+                {
+                    var key = channel.ToString(CultureInfo.InvariantCulture);
+                    var checkpointValue = checkpoint.RemainingFormalCycles[key];
+                    var durableValue = remainingPlan.RemainingCycles[channel];
+                    if (durableValue < checkpointValue)
+                        ProjectLogHub.Write(
+                            ProjectLogLevel.Info,
+                            $"FieldMetric RECOVERY_PROGRESS Result=DurableAhead EPB={channel} " +
+                            $"DurableRemaining={durableValue} " +
+                            $"CheckpointRemaining={checkpointValue} RecoveryMode=InProcess",
+                            "FIELD");
+                }
                 if (selected.Length == 0)
                 {
                     UnattendedRunCheckpointStore.CompleteInProcessRecovery(true, "NoRemainingCycles");
@@ -1119,13 +1395,26 @@ namespace MTEmbTest
                     return;
                 }
 
-                manager.EpbTestCycle = remaining;
+                manager.EpbTestCycle = remainingPlan.RemainingCycles
+                    .Where(pair => pair.Value > 0)
+                    .ToDictionary(pair => pair.Key, pair => pair.Value);
                 var learnCycles = Math.Max(5, checkpoint.LearnCycles);
-                await manager.StartBatchSynchronizedWithResultAsync(
+                var startResult = await manager.StartBatchSynchronizedWithResultAsync(
                         selected,
                         learnCycles,
                         CancellationToken.None)
                     .ConfigureAwait(false);
+                var startValidation = EpbManager.ValidateUnattendedBatchStartResult(
+                    selected,
+                    startResult);
+                if (!string.IsNullOrWhiteSpace(startValidation))
+                    throw new InvalidOperationException(
+                        "同进程无人值守恢复未启动全部授权通道：" + startValidation);
+                ConfirmRecoveryBatchStarted(
+                    config,
+                    startResult.StartedChannels,
+                    startResult.TestRunId);
+                recoveryBatchCommitted = true;
                 var rebuildSummary = safety.LogicalState?.HydraulicGroups == null
                     ? "Hydraulics=Unavailable"
                     : "Hydraulics=" + string.Join(
@@ -1142,6 +1431,19 @@ namespace MTEmbTest
             }
             catch (Exception ex)
             {
+                if (!EpbManager.ShouldRestartAfterRecoveryStartupFailure(
+                        recoveryBatchCommitted))
+                {
+                    // 新 Run 已经通过完整通道启动验证并原子提交。提交后的检查点附加
+                    // 状态或观察日志失败不得把健康的新执行再次 StopAll/重启。
+                    ProjectLogHub.Write(
+                        ProjectLogLevel.Error,
+                        "同进程无人值守恢复已提交新批次，但提交后观察性处理失败；" +
+                        "保留新批次继续运行。",
+                        "无人值守恢复",
+                        ex);
+                    return;
+                }
                 UnattendedRunCheckpointStore.CompleteInProcessRecovery(false, ex.Message);
                 ProjectLogHub.Write(
                     ProjectLogLevel.Error,
@@ -1209,11 +1511,18 @@ namespace MTEmbTest
                             ProjectLogLevel.Error,
                             $"系统故障保持安全停机，不再自重启：{registrationError}; Reason={reason}",
                             "无人值守恢复");
+                        LogProcessRestartMetric(
+                            "Rejected",
+                            correlationId,
+                            string.IsNullOrWhiteSpace(registrationError)
+                                ? "RegistrationRejected"
+                                : registrationError);
                         await SafeStopOnlyAsync(reason, correlationId).ConfigureAwait(false);
                         return;
                     }
 
                     retryable = true;
+                    LogProcessRestartMetric("Registered", correlationId, "PendingHandoff");
                     try
                     {
                         if (!EpbManager.ShouldRepeatProcessRestartSafetyTeardown(handoffReady))
@@ -1230,7 +1539,7 @@ namespace MTEmbTest
                             {
                                 StartRecoveryProcess(intent);
                                 handoffCommitted = true;
-                                Environment.Exit(86);
+                                CompleteCommittedProcessHandoff(correlationId, ref handoffCommitted);
                                 return;
                             }
                         }
@@ -1330,7 +1639,7 @@ namespace MTEmbTest
                                         {
                                             StartRecoveryProcess(intent);
                                             handoffCommitted = true;
-                                            Environment.Exit(86);
+                                            CompleteCommittedProcessHandoff(correlationId, ref handoffCommitted);
                                             return;
                                         }
                                     }
@@ -1345,6 +1654,10 @@ namespace MTEmbTest
                         ProjectLogHub.Flush(true);
                     }
 
+                    // 能运行到这里就证明本次注册没有成功交接到子进程；无论原因是
+                    // StopAll 未确认、授权被撤销还是 Process.Start 异常，都输出唯一
+                    // 的结构化失败终态，然后才释放 nonce 进入下一次预算。
+                    LogProcessRestartMetric("AttemptFailed", correlationId, retryReason);
                     var releasedForRetry = false;
                     var attemptsInWindow = 0;
                     var releaseError = string.Empty;
@@ -1368,6 +1681,12 @@ namespace MTEmbTest
 
                     if (!retryable || !releasedForRetry)
                     {
+                        LogProcessRestartMetric(
+                            "TerminalSafeStop",
+                            correlationId,
+                            string.IsNullOrWhiteSpace(releaseError)
+                                ? retryReason
+                                : releaseError);
                         ProjectLogHub.Write(
                             ProjectLogLevel.Error,
                             $"进程自重启序列终止并保持安全停机。" +
@@ -1452,6 +1771,30 @@ namespace MTEmbTest
             }
         }
 
+        private static void CompleteCommittedProcessHandoff(
+            string correlationId,
+            ref bool handoffCommitted)
+        {
+            // 子进程已经接管跨进程撤权门，此刻交接成为不可逆提交。结构化日志是观察性
+            // 证据，不能再通过同步 Flush 把成功的进程交接拖回重试路径。若 Exit 本身被
+            // 环境拒绝，则先置位撤权门，让等待中的子进程安全退出，再回到父进程安全停机。
+            try
+            {
+                LogProcessRestartMetric("ChildCreated", correlationId, "HandoffLaunched");
+            }
+            catch { }
+            try
+            {
+                Environment.Exit(86);
+            }
+            catch
+            {
+                CancelRestartRetrySequence();
+                handoffCommitted = false;
+                throw;
+            }
+        }
+
         private static void StartRecoveryProcess(RecoveryStartupIntent intent)
         {
             var executable = Process.GetCurrentProcess().MainModule?.FileName ??
@@ -1462,20 +1805,110 @@ namespace MTEmbTest
                 intent.Nonce,
                 intent.ParentPid,
                 intent.ParentStartUtcTicks);
-            Process.Start(new ProcessStartInfo
+            var revocation = new EventWaitHandle(
+                false,
+                EventResetMode.ManualReset,
+                RecoveryProcessBootstrap.GetRevocationEventName(intent.Nonce));
+            using (var attached = new EventWaitHandle(
+                       false,
+                       EventResetMode.ManualReset,
+                       RecoveryProcessBootstrap.GetAttachedEventName(intent.Nonce)))
             {
-                FileName = executable,
-                Arguments = arguments,
-                WorkingDirectory = Environment.CurrentDirectory,
-                UseShellExecute = false,
-                CreateNoWindow = false
-            });
+                EventWaitHandle previous;
+                lock (Sync)
+                {
+                    previous = _activeHandoffRevocation;
+                    _activeHandoffRevocation = revocation;
+                }
+                try { previous?.Dispose(); } catch { }
+
+                Process child = null;
+                var attachedToRevocationGate = false;
+                try
+                {
+                    child = Process.Start(new ProcessStartInfo
+                    {
+                        FileName = executable,
+                        Arguments = arguments,
+                        WorkingDirectory = Environment.CurrentDirectory,
+                        UseShellExecute = false,
+                        CreateNoWindow = false
+                    });
+                    if (child == null)
+                        throw new InvalidOperationException("恢复子进程创建未返回进程句柄。");
+                    if (!attached.WaitOne(5000))
+                        throw new TimeoutException("恢复子进程未在5秒内接管跨进程撤权门。");
+                    if (revocation.WaitOne(0))
+                        throw new OperationCanceledException("恢复子进程交接期间运行授权已撤销。");
+                    attachedToRevocationGate = true;
+                }
+                finally
+                {
+                    if (!attachedToRevocationGate)
+                    {
+                        lock (Sync)
+                        {
+                            if (ReferenceEquals(_activeHandoffRevocation, revocation))
+                                _activeHandoffRevocation = null;
+                        }
+                        try { revocation.Dispose(); } catch { }
+                        try
+                        {
+                            if (child != null && !child.HasExited) child.Kill();
+                        }
+                        catch { }
+                    }
+                    try { child?.Dispose(); } catch { }
+                }
+            }
+            // 成功时父进程必须继续持有 revocation，直到 Environment.Exit。人工停止即使
+            // 恰好发生在 Process.Start 与父进程退出之间，也会同步置位；子进程已持有
+            // 同一个内核事件，并会在等待父进程退出后、读取检查点和初始化硬件前拒绝续测。
         }
     }
 
     internal static class RecoveryProcessBootstrap
     {
         internal const string MutexName = @"Local\MTTFTest_V2_10_2_4_SingleInstance";
+
+        internal static string GetRevocationEventName(string nonce)
+            => @"Local\MTTFTest_RecoveryRevoked_" + NormalizeNonce(nonce);
+
+        internal static string GetAttachedEventName(string nonce)
+            => @"Local\MTTFTest_RecoveryAttached_" + NormalizeNonce(nonce);
+
+        internal static RecoveryHandoffAttachment AttachHandoff(RecoveryStartupIntent intent)
+        {
+            if (intent == null) return null;
+            var nonce = NormalizeNonce(intent.Nonce);
+            if (nonce.Length == 0) return null;
+            EventWaitHandle revocation = null;
+            EventWaitHandle attached = null;
+            try
+            {
+                revocation = EventWaitHandle.OpenExisting(GetRevocationEventName(nonce));
+                attached = EventWaitHandle.OpenExisting(GetAttachedEventName(nonce));
+                attached.Set();
+                return new RecoveryHandoffAttachment(revocation);
+            }
+            catch (WaitHandleCannotBeOpenedException)
+            {
+                revocation?.Dispose();
+                return null;
+            }
+            finally
+            {
+                attached?.Dispose();
+            }
+        }
+
+        private static string NormalizeNonce(string nonce)
+        {
+            var text = (nonce ?? string.Empty).Trim().Replace("-", string.Empty);
+            return Guid.TryParseExact(text, "N", out var parsed)
+                ? parsed.ToString("N")
+                : string.Empty;
+        }
 
         internal static RecoveryStartupIntent Parse(string[] args)
         {
@@ -1530,6 +1963,30 @@ namespace MTEmbTest
             {
                 return false;
             }
+        }
+    }
+
+    internal sealed class RecoveryHandoffAttachment : IDisposable
+    {
+        private EventWaitHandle _revocation;
+
+        internal RecoveryHandoffAttachment(EventWaitHandle revocation)
+        {
+            _revocation = revocation ?? throw new ArgumentNullException(nameof(revocation));
+        }
+
+        internal bool IsRevoked
+        {
+            get
+            {
+                try { return _revocation == null || _revocation.WaitOne(0); }
+                catch (ObjectDisposedException) { return true; }
+            }
+        }
+
+        public void Dispose()
+        {
+            Interlocked.Exchange(ref _revocation, null)?.Dispose();
         }
     }
 }

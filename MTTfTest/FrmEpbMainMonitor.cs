@@ -160,6 +160,9 @@ namespace MTEmbTest
         private int _closingReentry = 0;
         private int _closeSafetyWarningShown;
         private int _closePersistenceWarningShown;
+        /// <summary>操作员已明确点击“停止试验”；允许关闭或抛弃旧批次诊断后重新开始。</summary>
+        private int _operatorStopRequested;
+        private int _stopUiGuard;
 
         private string _currentDev = "EMB1"; // 添加私有字段
 
@@ -503,6 +506,26 @@ namespace MTEmbTest
             // }
         }
 
+        private static DialogResult ShowOperatorMessage(
+            string message,
+            string caption = "提示",
+            MessageBoxButtons buttons = MessageBoxButtons.OK,
+            MessageBoxIcon icon = MessageBoxIcon.None)
+        {
+            if (!UnattendedRecoveryCoordinator.IsRecoveryProcessMode)
+                return MessageBox.Show(message, caption, buttons, icon);
+
+            // 自动恢复子进程从启动到续测结束都不得出现需要现场人员点击的模态框。
+            // 所有这类信息进入持久化项目日志；控制层安全门禁决定是否继续或重启。
+            ProjectLogHub.Write(
+                icon == MessageBoxIcon.Error
+                    ? ProjectLogLevel.Error
+                    : ProjectLogLevel.Warning,
+                $"SuppressModalDialog Caption={caption}; Message={message}",
+                "无人值守恢复");
+            return DialogResult.OK;
+        }
+
         /// <summary>
         ///     动态从AIConfig.xml读取配置并构建通道映射，按界面控件顺序排列
         ///     界面顺序：CheckEpbA1-A12, CheckP1, CheckP2, CheckF
@@ -575,7 +598,7 @@ namespace MTEmbTest
             catch (Exception ex)
             {
                 // 配置读取失败时，回退到最小化的默认配置
-                MessageBox.Show($"读取AIConfig.xml失败，使用默认配置：{ex.Message}", "配置错误",
+                ShowOperatorMessage($"读取AIConfig.xml失败，使用默认配置：{ex.Message}", "配置错误",
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return GetFallbackChannels();
             }
@@ -827,13 +850,13 @@ namespace MTEmbTest
                     Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev1", out Dev1UsedDaqAIChannels);
                 if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
                 {
-                    MessageBox.Show(ReadMsg);
+                    ShowOperatorMessage(ReadMsg);
                     return;
                 }
 
                 if (Dev1UsedDaqAIChannels.Length < 1)
                 {
-                    MessageBox.Show(@"未读取到 Dev1 DAQ AI 相关信息！");
+                    ShowOperatorMessage(@"未读取到 Dev1 DAQ AI 相关信息！");
                     return;
                 }
 
@@ -842,13 +865,13 @@ namespace MTEmbTest
                     Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev2", out Dev2UsedDaqAIChannels);
                 if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
                 {
-                    MessageBox.Show(ReadMsg);
+                    ShowOperatorMessage(ReadMsg);
                     return;
                 }
 
                 if (Dev2UsedDaqAIChannels.Length < 1)
                 {
-                    MessageBox.Show(@"未读取到 Dev2 DAQ AI 相关信息！");
+                    ShowOperatorMessage(@"未读取到 Dev2 DAQ AI 相关信息！");
                     return;
                 }
 
@@ -858,13 +881,13 @@ namespace MTEmbTest
                     out Dev1DaqChannel, new string[] { }); //paramTypeFilter 参数为空，处理所有类型
                 if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
                 {
-                    MessageBox.Show(ReadMsg);
+                    ShowOperatorMessage(ReadMsg);
                     return;
                 }
 
                 if (Dev1DaqChannel.Count < 1)
                 {
-                    MessageBox.Show(@"未读取到DAQ电流和EPB卡钳对应关系！");
+                    ShowOperatorMessage(@"未读取到DAQ电流和EPB卡钳对应关系！");
                     return;
                 }
 
@@ -874,13 +897,13 @@ namespace MTEmbTest
                     out Dev2DaqChannel, new string[] { }); //paramTypeFilter 参数为空，不过滤
                 if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
                 {
-                    MessageBox.Show(ReadMsg);
+                    ShowOperatorMessage(ReadMsg);
                     return;
                 }
 
                 if (Dev2DaqChannel.Count < 1)
                 {
-                    MessageBox.Show(@"未读取到DAQ电流和EPB卡钳对应关系！");
+                    ShowOperatorMessage(@"未读取到DAQ电流和EPB卡钳对应关系！");
                     return;
                 }
 
@@ -889,7 +912,7 @@ namespace MTEmbTest
                     Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev1", out Dev1ParaNameToScale);
                 if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
                 {
-                    MessageBox.Show(ReadMsg);
+                    ShowOperatorMessage(ReadMsg);
                     return;
                 }
 
@@ -897,7 +920,7 @@ namespace MTEmbTest
                     Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev1", out Dev1ParaNameToOffset);
                 if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
                 {
-                    MessageBox.Show(ReadMsg);
+                    ShowOperatorMessage(ReadMsg);
                     return;
                 }
 
@@ -905,7 +928,7 @@ namespace MTEmbTest
                     Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev1", out Dev1ParaNameToZeroValue);
                 if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
                 {
-                    MessageBox.Show(ReadMsg);
+                    ShowOperatorMessage(ReadMsg);
                     return;
                 }
 
@@ -914,7 +937,7 @@ namespace MTEmbTest
                     Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev2", out Dev2ParaNameToScale);
                 if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
                 {
-                    MessageBox.Show(ReadMsg);
+                    ShowOperatorMessage(ReadMsg);
                     return;
                 }
 
@@ -922,7 +945,7 @@ namespace MTEmbTest
                     Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev2", out Dev2ParaNameToOffset);
                 if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
                 {
-                    MessageBox.Show(ReadMsg);
+                    ShowOperatorMessage(ReadMsg);
                     return;
                 }
 
@@ -930,7 +953,7 @@ namespace MTEmbTest
                     Environment.CurrentDirectory + @"\Config\AIConfig.xml", "Dev2", out Dev2ParaNameToZeroValue);
                 if (ReadMsg.IndexOf("OK", StringComparison.Ordinal) < 0)
                 {
-                    MessageBox.Show(ReadMsg);
+                    ShowOperatorMessage(ReadMsg);
                     return;
                 }
 
@@ -1147,7 +1170,8 @@ namespace MTEmbTest
 
             catch (Exception ex)
             {
-                MessageBox.Show(@"初始化错误 : " + ex.Message);
+                ShowOperatorMessage(@"初始化错误 : " + ex.Message, "无人值守初始化", MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
             }
         }
 
@@ -1402,7 +1426,7 @@ namespace MTEmbTest
             {
                 if (_cfg?.Test == null)
                 {
-                    MessageBox.Show(@"TestConfig 尚未加载！", @"提示",
+                    ShowOperatorMessage(@"TestConfig 尚未加载！", @"提示",
                         MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
@@ -1422,7 +1446,7 @@ namespace MTEmbTest
             }
             catch (Exception ex)
             {
-                MessageBox.Show($@"加载试验配置失败：{ex.Message}",
+                ShowOperatorMessage($@"加载试验配置失败：{ex.Message}",
                     @"错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
@@ -1555,7 +1579,8 @@ namespace MTEmbTest
             }
             catch (Exception ex)
             {
-                MessageBox.Show(@"初始化组件失败！" + ex.Message);
+                ShowOperatorMessage(@"初始化组件失败！" + ex.Message, "无人值守初始化",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
@@ -1569,7 +1594,7 @@ namespace MTEmbTest
             // 暂时注释处理
             /*if (!EpbGroup[index].CtrlPower.Checked && EpbGroup[index].CtrlRunning.Checked) //运行状态
             {
-                MessageBox.Show(@"请先打开电源！");
+                ShowOperatorMessage(@"请先打开电源！");
                 EpbGroup[index].CtrlRunning.Checked = false;
             }*/
         }
@@ -1586,7 +1611,7 @@ namespace MTEmbTest
             {
                 if (!IsTestConfirm)
                 {
-                    MessageBox.Show(@"请先确认试验信息！");
+                    ShowOperatorMessage(@"请先确认试验信息！");
                     EpbGroup[index].CtrlPower.Toggle();
 
                     // EpbGroup[index].CtrlPower.Checked = false;
@@ -1598,7 +1623,7 @@ namespace MTEmbTest
 
                 if (!EpbGroup[index].CtrlPower.Checked && EpbGroup[index].CtrlRunning.Checked) //运行状态想关电源
                 {
-                    MessageBox.Show(@"请先停止运行再关闭电源！");
+                    ShowOperatorMessage(@"请先停止运行再关闭电源！");
                     EpbGroup[index].CtrlPower.Checked = true;
                     return;
                 }
@@ -1798,7 +1823,7 @@ namespace MTEmbTest
             {
                 if (_alarmManager == null)
                 {
-                    MessageBox.Show(@"报警子系统未初始化（未加载 AlarmConfig.xml 或初始化失败）。", @"提示",
+                    ShowOperatorMessage(@"报警子系统未初始化（未加载 AlarmConfig.xml 或初始化失败）。", @"提示",
                         MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
@@ -1816,7 +1841,7 @@ namespace MTEmbTest
             }
             catch (Exception ex)
             {
-                MessageBox.Show($@"打开测试界面失败：{ex.Message}", @"提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                ShowOperatorMessage($@"打开测试界面失败：{ex.Message}", @"提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
         }
 
@@ -2197,7 +2222,8 @@ namespace MTEmbTest
         #endregion
 
 
-        private async void BtnStartTest_Click(object sender, EventArgs e)
+        private async System.Threading.Tasks.Task<BatchStartResult> StartNewBatchAsync(
+            bool unattendedRecovery)
         {
             #region 旧的代码
 
@@ -2288,7 +2314,7 @@ namespace MTEmbTest
             }
             catch (Exception ex)
             {
-                MessageBox.Show($@"启动卡钳1测试失败：{ex.Message}", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                ShowOperatorMessage($@"启动卡钳1测试失败：{ex.Message}", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
             */
 
@@ -2296,6 +2322,7 @@ namespace MTEmbTest
 
             var channels = new int[] { };
             var startedChannels = Array.Empty<int>();
+            BatchStartResult completedStart = null;
             try
             {
                 // 4) 组装 EpbManager（把回调委托接进去）
@@ -2329,6 +2356,9 @@ namespace MTEmbTest
 
                 if (selected.Count == 0)
                 {
+                    if (unattendedRecovery)
+                        throw new InvalidOperationException(
+                            "无人值守恢复没有勾选任何检查点通道，拒绝静默停在启动界面。");
                     // Create and initialize an object with message box settings.
                     var args = new XtraMessageBoxArgs
                     {
@@ -2341,7 +2371,7 @@ namespace MTEmbTest
                     // Assign a message box icon.
                     // Display the message box and close the application if the user clicks "Yes".
                     if (await XtraMessageBox.ShowAsync(args) == DialogResult.Yes)
-                        return;
+                        return null;
                 }
 
                 // 读取自学习圈数（比如从一个文本框；没有就用3）
@@ -2382,6 +2412,7 @@ namespace MTEmbTest
                         learnCycles, // 自学习圈数（按你期望）
                         _batchCts.Token // 取消令牌（Stop 按钮用）
                     );
+                    completedStart = startResult;
                     startedChannels = startResult.StartedChannels;
 
                     if (startResult.Faults.Length > 0)
@@ -2394,10 +2425,13 @@ namespace MTEmbTest
                 catch (OperationCanceledException)
                 {
                     LogInfo("批量启动取消。");
+                    if (unattendedRecovery) throw;
                 }
                 catch (Exception ex)
                 {
                     LogInfo($"批量启动失败：{ex.Message}");
+                    if (unattendedRecovery)
+                        throw new InvalidOperationException("无人值守恢复批量启动失败。", ex);
                 }
 
                 #endregion
@@ -2413,12 +2447,15 @@ namespace MTEmbTest
 
                 // UI 提示
                 // RtbInfo?.AppendText($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  > 卡钳1测试已启动\n");
+                return completedStart;
             }
             catch (Exception ex)
             {
                 LogInfo($"启动卡钳{string.Join(",", channels)} 测试失败：{ex.Message}");
-                MessageBox.Show($@"启动卡钳{channels}测试失败：{ex.Message}", @"提示", MessageBoxButtons.OK,
+                if (unattendedRecovery) throw;
+                ShowOperatorMessage($@"启动卡钳{channels}测试失败：{ex.Message}", @"提示", MessageBoxButtons.OK,
                     MessageBoxIcon.Warning);
+                return null;
             }
         }
 
@@ -2427,7 +2464,7 @@ namespace MTEmbTest
         /// </summary>
         /// <param name="sender"></param>
         /// <param name="e"></param>
-        private void BtnStop_Click(object sender, EventArgs e)
+        private async void BtnStop_Click(object sender, EventArgs e)
         {
             #region 旧的代码
 
@@ -2456,15 +2493,52 @@ namespace MTEmbTest
             }
 
 
+            if (Interlocked.CompareExchange(ref _stopUiGuard, 1, 0) != 0)
+            {
+                LogInfo("停止试验正在处理中，请勿重复点击。");
+                return;
+            }
+
+            Interlocked.Exchange(ref _operatorStopRequested, 1);
+            ClearGracefulPauseCheckpoint("ManualStopRequested");
+            BtnStop.Enabled = false;
+            BtnStop.Cursor = Cursors.WaitCursor;
+            BtnStartTest.Enabled = false;
+            BtnStartTest.Cursor = Cursors.WaitCursor;
             try
             {
-                _batchCts?.Cancel(); // 触发外壳的 await 停下学习/计时器工作
-                _epb.StopAll(); // 内部 DO/AO/Runner 停止
-                LogInfo("停止试验");
+                try { _batchCts?.Cancel(); }
+                catch (ObjectDisposedException) { }
+
+                var safety = await _epb.StopAllAsync(
+                    new StopContext
+                    {
+                        Source = StopSource.ManualUi,
+                        Reason = "操作员点击停止试验",
+                        Initiator = nameof(BtnStop_Click),
+                        CorrelationId = Guid.NewGuid().ToString("N"),
+                        RequestedUtc = DateTime.UtcNow
+                    });
+                LogInfo(
+                    safety.CanRestartInProcess
+                        ? "停止试验完成；可以关闭软件或重新开始。"
+                        : "停止试验已执行；未确认项已记录，不阻止关闭软件或下一次完整学习启动。");
             }
             catch (Exception ex)
             {
-                LogInfo($"停止失败：{ex.Message}");
+                // 操作员的停止意图已经成立；关闭或下一次启动会再次执行幂等清场。
+                LogInfo($"停止试验收尾异常，已记录且允许关闭/重新开始：{ex.Message}");
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _stopUiGuard, 0);
+                if (!IsDisposed && BtnStop != null)
+                {
+                    BtnStop.Enabled = true;
+                    BtnStop.Cursor = Cursors.Hand;
+                }
+                if (!IsDisposed && BtnStartTest != null)
+                    ApplyBatchPauseState(_epb?.CurrentBatchPauseState ?? BatchPauseState.Idle);
             }
         }
 
@@ -2478,6 +2552,8 @@ namespace MTEmbTest
             // 首次关闭只启动一次安全收尾；确认后重入本处理器，再释放DAQ及其它资源。
             if (Volatile.Read(ref _closingReentry) != 2)
             {
+                var wasExplicitlyStopped = Volatile.Read(ref _operatorStopRequested) != 0 ||
+                                           !(_epb?.IsBatchSessionActive ?? false);
                 e.Cancel = true;
                 if (Interlocked.CompareExchange(ref _closingReentry, 1, 0) != 0) return;
                 _isClosing = true;
@@ -2512,8 +2588,11 @@ namespace MTEmbTest
                         items.Add("电机DO关闭未确认：" + (safety.MotorError ?? "无详细信息"));
                     if (!safety.PowerOffConfirmed)
                         items.Add("程控电源关闭回读未确认：" + (safety.PowerError ?? "无详细信息"));
-                    if (Interlocked.Exchange(ref _closeSafetyWarningShown, 1) == 0)
-                        MessageBox.Show(
+                    if (wasExplicitlyStopped)
+                        LogInfo("[关闭警告] 已明确停止试验，电机/电源确认异常不再阻止退出：" +
+                                string.Join("; ", items));
+                    else if (Interlocked.Exchange(ref _closeSafetyWarningShown, 1) == 0)
+                        ShowOperatorMessage(
                             string.Join("\r\n", items) +
                             "\r\n\r\n窗口保持打开，请检查后重试关闭；后续重试只更新日志，不再重复弹框。",
                             "安全关闭未确认",
@@ -2521,9 +2600,12 @@ namespace MTEmbTest
                             MessageBoxIcon.Error);
                     else
                         LogInfo("[安全关闭重试] " + string.Join("; ", items));
-                    _isClosing = false;
-                    Interlocked.Exchange(ref _closingReentry, 0);
-                    return;
+                    if (!wasExplicitlyStopped)
+                    {
+                        _isClosing = false;
+                        Interlocked.Exchange(ref _closingReentry, 0);
+                        return;
+                    }
                 }
 
                 if (!safety.CanCloseApplication)
@@ -2535,8 +2617,11 @@ namespace MTEmbTest
                             : safety.PersistenceError) +
                         "\r\n\r\n窗口保持打开，禁止结束进程。请恢复磁盘/网络存储后再次关闭，" +
                         "避免丢失最后圈或报警证据。后续重试只更新日志，不再重复弹框。";
-                    if (Interlocked.Exchange(ref _closePersistenceWarningShown, 1) == 0)
-                        MessageBox.Show(
+                    if (wasExplicitlyStopped)
+                        LogInfo("[关闭警告] 已明确停止试验，数据耐久边界未确认不再阻止退出：" +
+                                (safety.PersistenceError ?? "无详细信息"));
+                    else if (Interlocked.Exchange(ref _closePersistenceWarningShown, 1) == 0)
+                        ShowOperatorMessage(
                             persistenceMessage,
                             "数据耐久边界未确认",
                             MessageBoxButtons.OK,
@@ -2544,9 +2629,12 @@ namespace MTEmbTest
                     else
                         LogInfo("[关闭重试] 数据耐久边界仍未确认：" +
                                 (safety.PersistenceError ?? "无详细信息"));
-                    _isClosing = false;
-                    Interlocked.Exchange(ref _closingReentry, 0);
-                    return;
+                    if (!wasExplicitlyStopped)
+                    {
+                        _isClosing = false;
+                        Interlocked.Exchange(ref _closingReentry, 0);
+                        return;
+                    }
                 }
 
                 if (!safety.PressureSafeConfirmed)
@@ -3523,7 +3611,7 @@ namespace MTEmbTest
                     ConfigLoader.UpdateUIDefaultChecked(_uiCfg, FormKey, name, cb.Checked);
             }
 
-            MessageBox.Show(@"已将当前勾选状态保存为默认值。");
+            ShowOperatorMessage(@"已将当前勾选状态保存为默认值。");
         }
 
         #endregion
@@ -3764,7 +3852,7 @@ namespace MTEmbTest
             }
             catch (Exception ex)
             {
-                MessageBox.Show(@"初始化曲线显示失败！" + ex.Message, @"提示",
+                ShowOperatorMessage(@"初始化曲线显示失败！" + ex.Message, @"提示",
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError,
                     "初始化曲线显示失败！" + ex.Message, "初始化");
@@ -4604,7 +4692,7 @@ namespace MTEmbTest
 
             catch (Exception ex)
             {
-                MessageBox.Show(@"初始化定时访问组件失败！" + ex.Message);
+                ShowOperatorMessage(@"初始化定时访问组件失败！" + ex.Message);
             }
         }
 
@@ -4636,7 +4724,7 @@ namespace MTEmbTest
 
                 if (timer.TimerId == 0)
                 {
-                    MessageBox.Show($@"Timer {EmbIndex} failed to start!");
+                    ShowOperatorMessage($@"Timer {EmbIndex} failed to start!");
                     Interlocked.Decrement(ref activeTimersCount);
                     return false;
                 }
@@ -5048,7 +5136,7 @@ namespace MTEmbTest
                 var path = ProjectLogHub.GetActivePath(level);
                 if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
                 {
-                    MessageBox.Show(
+                    ShowOperatorMessage(
                         "\u5f53\u524d\u9879\u76ee\u65e5\u5fd7\u5c1a\u672a\u521d\u59cb\u5316\u6216\u8be5\u7ea7\u522b\u5c1a\u65e0\u8bb0\u5f55\u3002",
                         "\u9879\u76ee\u65e5\u5fd7",
                         MessageBoxButtons.OK,
@@ -5060,7 +5148,7 @@ namespace MTEmbTest
             }
             catch (Exception ex)
             {
-                MessageBox.Show(ex.Message);
+                ShowOperatorMessage(ex.Message);
             }
         }
 

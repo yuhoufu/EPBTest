@@ -161,6 +161,9 @@ namespace IO.NI
         public long LastControlEnqueuedMonotonicTicks { get; set; }
         public long LastControlProcessedMonotonicTicks { get; set; }
         public double CallbackAgeMs { get; set; }
+        public long CallbackGapEventCount { get; set; }
+        public double LastCallbackGapIntervalMs { get; set; }
+        public long LastCallbackGapMonotonicTicks { get; set; }
         public double ControlEnqueueAgeMs { get; set; }
         public double ControlProcessedAgeMs { get; set; }
         public DateTime ProcessedSampleUtc { get; set; }
@@ -198,6 +201,34 @@ namespace IO.NI
         public long PendingProcessingGapSequence { get; set; }
         public long PendingRawGapSequence { get; set; }
         public DateTime ObservedUtc { get; set; }
+    }
+
+    /// <summary>
+    /// 冻结生产边界的后台链路排空证据。恢复代码不得只拿一个 bool 猜测失败位置；
+    /// 每个设备的 Published/RawTransferred 必须分别越过首次冻结的 LastAccepted。
+    /// </summary>
+    public sealed class DaqBackgroundDrainResult
+    {
+        public long Dev1Boundary { get; set; }
+        public long Dev2Boundary { get; set; }
+        public long Dev1Published { get; set; }
+        public long Dev2Published { get; set; }
+        public long Dev1RawTransferred { get; set; }
+        public long Dev2RawTransferred { get; set; }
+        public bool Completed { get; set; }
+
+        public string PendingPredicate
+        {
+            get
+            {
+                var pending = new List<string>();
+                if (Dev1Published < Dev1Boundary) pending.Add("Dev1.Published");
+                if (Dev1RawTransferred < Dev1Boundary) pending.Add("Dev1.RawTransferred");
+                if (Dev2Published < Dev2Boundary) pending.Add("Dev2.Published");
+                if (Dev2RawTransferred < Dev2Boundary) pending.Add("Dev2.RawTransferred");
+                return pending.Count == 0 ? "none" : string.Join(",", pending);
+            }
+        }
     }
 
     public sealed class DaqControlSnapshot
@@ -739,6 +770,11 @@ namespace IO.NI
         private NIDaqTask _task1, _task2;
         private readonly object _taskGateDev1 = new();
         private readonly object _taskGateDev2 = new();
+        // StopAll 与恢复重建必须对每台设备共享同一个生命周期门。仅依赖 taskGate
+        // 不足以覆盖 StopDevice 返回到 StartDevice 之间的缝隙：旧 Run 可能先 Stop，
+        // 新 StopAll 随后 Stop，最后旧 Run 又 Start，造成交接后 DAQ 水位继续增长。
+        private readonly object _lifecycleGateDev1 = new();
+        private readonly object _lifecycleGateDev2 = new();
         private long _generationDev1;
         private long _generationDev2;
         private readonly DaqPipelineSequenceState _sequenceDev1 = new();
@@ -833,6 +869,14 @@ namespace IO.NI
 
             /// <summary>最近一次回调间隔（ms，double bits 形式存储以便原子读写）。</summary>
             public long LastCbIntervalMsBits;
+
+            /// <summary>
+            /// 超过最严格允许门槛(50ms)的回调空窗采用单调事件计数保存。宿主线程
+            /// 即使与DAQ一起暂停、并在回调恢复之后才获得调度，也不会丢掉该空窗。
+            /// </summary>
+            public long CallbackGapEventCount;
+            public long LastCallbackGapIntervalMsBits;
+            public long LastCallbackGapSwTick;
 
             /// <summary>最近一次到达延迟（ms，double bits 形式存储以便原子读写）。</summary>
             public long LastArrivalDelayMsBits;
@@ -1018,6 +1062,14 @@ namespace IO.NI
 
             // —— 保存“最近一次回调节拍”，供断电触发点/截断值日志同屏关联 ——
             Interlocked.Exchange(ref diag.LastCbIntervalMsBits, BitConverter.DoubleToInt64Bits(cbIntervalMs));
+            if (cbIntervalMs > 50)
+            {
+                Interlocked.Exchange(
+                    ref diag.LastCallbackGapIntervalMsBits,
+                    BitConverter.DoubleToInt64Bits(cbIntervalMs));
+                Interlocked.Exchange(ref diag.LastCallbackGapSwTick, callbackEntrySwTick);
+                Interlocked.Increment(ref diag.CallbackGapEventCount);
+            }
             Interlocked.Exchange(ref diag.LastArrivalDelayMsBits, BitConverter.DoubleToInt64Bits(arrivalDelayToEndMs));
             Interlocked.Exchange(ref diag.LastArrivalDelayToStartMsBits,
                 BitConverter.DoubleToInt64Bits(arrivalDelayToStartMs));
@@ -2509,6 +2561,11 @@ namespace IO.NI
                 CallbackAgeMs = callbackTick <= 0
                     ? double.PositiveInfinity
                     : (nowTick - callbackTick) * 1000.0 / Stopwatch.Frequency,
+                CallbackGapEventCount = Interlocked.Read(ref diag.CallbackGapEventCount),
+                LastCallbackGapIntervalMs = BitConverter.Int64BitsToDouble(
+                    Interlocked.Read(ref diag.LastCallbackGapIntervalMsBits)),
+                LastCallbackGapMonotonicTicks = Interlocked.Read(
+                    ref diag.LastCallbackGapSwTick),
                 ControlEnqueueAgeMs = enqueuedTick <= 0
                     ? double.PositiveInfinity
                     : (nowTick - enqueuedTick) * 1000.0 / Stopwatch.Frequency,
@@ -2624,11 +2681,14 @@ namespace IO.NI
                 {
                     // 允许在进入硬件临界区前取消；一旦 StopDevice 已执行，就必须先把
                     // 设备恢复到明确的运行终态，不能把“已停止”状态遗留给后继恢复者。
-                    RestartDeviceAtomically(
-                        () => StopDevice(device),
-                        () => StartDevice(device),
-                        () => Volatile.Read(ref _disposed) != 0,
-                        token);
+                    lock (GetLifecycleGate(device))
+                    {
+                        RestartDeviceAtomically(
+                            () => StopDevice(device),
+                            () => StartDevice(device),
+                            () => Volatile.Read(ref _disposed) != 0,
+                            token);
+                    }
                     AppendDiagnostic(new DaqTimingValue
                     {
                         TimestampUtc = DateTime.UtcNow,
@@ -2804,10 +2864,12 @@ namespace IO.NI
             InitTimeBase();
 
 
-            if (_dev1Channels.Length > 0) StartDevice("Dev1");
+            if (_dev1Channels.Length > 0)
+                lock (_lifecycleGateDev1) StartDevice("Dev1");
 
             // 暂时注释dev2
-            if (_dev2Channels.Length > 0) StartDevice("Dev2");
+            if (_dev2Channels.Length > 0)
+                lock (_lifecycleGateDev2) StartDevice("Dev2");
 
             _log.Info(
                 $"AI 采集启动：Dev1[{_dev1Channels.Length}] Dev2[{_dev2Channels.Length}] Fs={_sampleRate}Hz N={_samplesPerChannel}",
@@ -2816,9 +2878,14 @@ namespace IO.NI
 
         public void Stop()
         {
-            StopDevice("Dev1");
-            StopDevice("Dev2");
+            lock (_lifecycleGateDev1) StopDevice("Dev1");
+            lock (_lifecycleGateDev2) StopDevice("Dev2");
         }
+
+        private object GetLifecycleGate(string device)
+            => string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase)
+                ? _lifecycleGateDev1
+                : _lifecycleGateDev2;
 
         /// <summary>停止新采样，并等待已接收批次完成工程处理、持久化投递和 Raw 所有权移交。</summary>
         public async Task<bool> StopAndDrainAsync(int timeoutMs)
@@ -2859,11 +2926,70 @@ namespace IO.NI
             int timeoutMs,
             CancellationToken token = default)
         {
-            return WaitForBackgroundPipelinesAsync(
-                Math.Max(0, dev1Boundary),
-                Math.Max(0, dev2Boundary),
+            return DrainBackgroundPipelinesToBoundariesCoreAsync(
+                dev1Boundary,
+                dev2Boundary,
                 timeoutMs,
                 token);
+        }
+
+        private async Task<bool> DrainBackgroundPipelinesToBoundariesCoreAsync(
+            long dev1Boundary,
+            long dev2Boundary,
+            int timeoutMs,
+            CancellationToken token)
+        {
+            var result = await DrainBackgroundPipelinesToBoundariesDetailedAsync(
+                    dev1Boundary,
+                    dev2Boundary,
+                    timeoutMs,
+                    token)
+                .ConfigureAwait(false);
+            return result.Completed;
+        }
+
+        public async Task<DaqBackgroundDrainResult> DrainBackgroundPipelinesToBoundariesDetailedAsync(
+            long dev1Boundary,
+            long dev2Boundary,
+            int timeoutMs,
+            CancellationToken token = default)
+        {
+            var normalizedDev1 = Math.Max(0, dev1Boundary);
+            var normalizedDev2 = Math.Max(0, dev2Boundary);
+            var deadline = Stopwatch.GetTimestamp() +
+                           (long)(Math.Max(1, timeoutMs) / 1000.0 * Stopwatch.Frequency);
+            DaqBackgroundDrainResult result;
+            do
+            {
+                token.ThrowIfCancellationRequested();
+                result = CaptureBackgroundDrainResult(normalizedDev1, normalizedDev2);
+                if (result.Completed) return result;
+                await Task.Delay(10, token).ConfigureAwait(false);
+            } while (Stopwatch.GetTimestamp() < deadline);
+            return CaptureBackgroundDrainResult(normalizedDev1, normalizedDev2);
+        }
+
+        private DaqBackgroundDrainResult CaptureBackgroundDrainResult(
+            long dev1Boundary,
+            long dev2Boundary)
+        {
+            var result = new DaqBackgroundDrainResult
+            {
+                Dev1Boundary = dev1Boundary,
+                Dev2Boundary = dev2Boundary,
+                Dev1Published = GetLastDiskPublishedSequence("Dev1"),
+                Dev2Published = GetLastDiskPublishedSequence("Dev2"),
+                Dev1RawTransferred = Interlocked.Read(ref _rawTransferredSequenceDev1),
+                Dev2RawTransferred = Interlocked.Read(ref _rawTransferredSequenceDev2)
+            };
+            result.Completed = IsBackgroundPipelineDrained(
+                result.Dev1Published,
+                result.Dev1Boundary,
+                result.Dev2Published,
+                result.Dev2Boundary,
+                result.Dev1RawTransferred,
+                result.Dev2RawTransferred);
+            return result;
         }
 
         private async Task<bool> WaitForBackgroundPipelinesAsync(
@@ -5023,6 +5149,9 @@ namespace IO.NI
             Interlocked.Exchange(ref diag.LastSampleCommitSwTick, 0);
             Interlocked.Exchange(ref diag.LastProcessedSampleUtcTicks, 0);
             Interlocked.Exchange(ref diag.LastCbIntervalMsBits, 0);
+            Interlocked.Exchange(ref diag.CallbackGapEventCount, 0);
+            Interlocked.Exchange(ref diag.LastCallbackGapIntervalMsBits, 0);
+            Interlocked.Exchange(ref diag.LastCallbackGapSwTick, 0);
             Interlocked.Exchange(ref diag.LastArrivalDelayMsBits, 0);
             Interlocked.Exchange(ref diag.LastBatchSequence, 0);
             Interlocked.Exchange(ref diag.LastProcessedSequence, 0);

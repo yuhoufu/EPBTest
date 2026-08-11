@@ -83,7 +83,8 @@ namespace Controller
             string reason,
             DateTime seenUtc,
             int[] affectedChannels,
-            int primaryChannel = 0)
+            int primaryChannel = 0,
+            Guid correlationId = default)
         {
             if (string.IsNullOrWhiteSpace(device))
                 throw new ArgumentException("Device is required.", nameof(device));
@@ -101,12 +102,32 @@ namespace Controller
             {
                 if (!_active.TryGetValue(device, out var context) || context.RunId != runId)
                 {
+                    var selectedCorrelation = correlationId;
+                    if (selectedCorrelation == Guid.Empty)
+                    {
+                        // 周期看门狗和设备回调可能先后发现同一次公共调度停顿。
+                        // 第二台设备在100ms内出现时，从第一刻起复用同一批次身份，
+                        // 避免两个恢复任务在独立监督器下一次扫描前抢占液压所有权。
+                        selectedCorrelation = _active.Values
+                            .Where(item => item.RunId == runId &&
+                                           !string.Equals(
+                                               item.Device,
+                                               device,
+                                               StringComparison.OrdinalIgnoreCase) &&
+                                           Math.Abs((normalizedSeen - item.FirstSeenUtc)
+                                               .TotalMilliseconds) <= 100)
+                            .OrderBy(item => item.FirstSeenUtc)
+                            .Select(item => item.CorrelationId)
+                            .FirstOrDefault();
+                    }
                     context = new DaqIncidentContext
                     {
                         RunId = runId,
                         Device = device,
                         Generation = generation,
-                        CorrelationId = Guid.NewGuid(),
+                        CorrelationId = selectedCorrelation == Guid.Empty
+                            ? Guid.NewGuid()
+                            : selectedCorrelation,
                         PrimaryCode = normalizedCode,
                         PrimaryReason = reason ?? string.Empty,
                         FirstSeenUtc = normalizedSeen,
@@ -205,6 +226,7 @@ namespace Controller
             if (string.Equals(code, "ControlQueueFull", StringComparison.OrdinalIgnoreCase)) return 400;
             if (string.Equals(code, "ControlLatencyExceeded", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(code, "DaqCallbackStale", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(code, "DaqCallbackGap", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(code, "ControlEnqueueStale", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(code, "ControlProcessingStale", StringComparison.OrdinalIgnoreCase)) return 300;
             if (code?.IndexOf("DaqSampleStale", StringComparison.OrdinalIgnoreCase) >= 0) return 200;

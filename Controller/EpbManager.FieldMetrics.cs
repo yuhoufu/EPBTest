@@ -23,7 +23,13 @@ namespace Controller
         internal bool DurabilityBlocked { get; set; }
         internal long DiscardedGenerationBatchCount { get; set; }
         internal long OverCapacityDroppedBatchCount { get; set; }
+        internal long SuppressAfterSequence { get; set; }
+        internal long SuppressThroughSequence { get; set; }
+        internal long LastTerminallyHandledSequence { get; set; }
+        internal long PendingHeadSequence { get; set; }
+        internal long InFlightSequence { get; set; }
         internal bool RawPipelineDrained { get; set; }
+        internal bool PersistenceQueueDrained { get; set; }
         internal bool Closed { get; set; }
     }
 
@@ -123,7 +129,11 @@ namespace Controller
                         $"PersistenceState={persistence.State} " +
                         $"PersistenceDepth={persistence.QueueDepth} " +
                         $"PersistenceOldestMs={Metric(persistence.OldestBatchAgeMs)} " +
+                        $"PersistenceHead={persistence.PendingHeadSequence} " +
+                        $"PersistenceInFlight={persistence.InFlightSequence} " +
                         $"CallbackAgeMs={Metric(freshness.CallbackAgeMs)} " +
+                        $"CallbackGapEvents={freshness.CallbackGapEventCount} " +
+                        $"LastCallbackGapMs={Metric(freshness.LastCallbackGapIntervalMs)} " +
                         $"ControlProcessedAgeMs={Metric(freshness.ControlProcessedAgeMs)} " +
                         $"Produced={freshness.LastProducedSequence} " +
                         $"Processed={freshness.LastProcessedSequence} " +
@@ -174,6 +184,41 @@ namespace Controller
                 "FIELD");
         }
 
+        private void LogDaqRecoveryFieldMetric(
+            DaqAutoRecoveryContext context,
+            string result,
+            string detail)
+        {
+            if (context == null) return;
+            try
+            {
+                var persistence = _persistence.GetSnapshot(context.Device);
+                var pipeline = _acq.GetPipelineSnapshot(context.Device);
+                _log.Info(
+                    $"FieldMetric DAQ_RECOVERY Result={MetricToken(result)} " +
+                    $"Device={context.Device} Phase={MetricToken(context.ValidationPhase)} " +
+                    $"RunId={context.RunId:N} RunEpoch={context.RunEpoch} " +
+                    $"RecoveryEpoch={context.RecoveryEpoch} CorrelationId={context.CorrelationId:N} " +
+                    $"Trigger={MetricToken(context.TriggerCode)} Attempt={context.FailureBackoff.Current} " +
+                    $"RecoveryAttempt={context.RecoveryAttempt} " +
+                    $"ElapsedMs={Math.Max(0, (DateTime.UtcNow - context.StartedUtc).TotalMilliseconds):F0} " +
+                    $"HardDeadlineMs={RecoveryGroupHardDeadlineMs} " +
+                    $"Cutoff={Interlocked.Read(ref context.CutoffPersistenceBoundary)} " +
+                    $"Accepted={pipeline.LastAcceptedSequence} Published={pipeline.LastDiskPublishedSequence} " +
+                    $"RawTransferred={pipeline.LastRawTransferredSequence} Persisted={persistence.Sequence} " +
+                    $"TerminallyHandled={persistence.LastTerminallyHandledSequence} " +
+                    $"Head={persistence.PendingHeadSequence} InFlight={persistence.InFlightSequence} " +
+                    $"SuppressAfter={persistence.SuppressAfterSequence} " +
+                    $"SuppressThrough={persistence.SuppressThroughSequence} " +
+                    $"Detail={MetricToken(detail)}",
+                    "FIELD");
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"FieldMetric DAQ_RECOVERY采集失败已隔离：{ex.Message}", "FIELD");
+            }
+        }
+
         internal static bool IsStopPersistenceBoundaryClosed(
             long boundary,
             long published,
@@ -200,9 +245,15 @@ namespace Controller
             bool requireRecoveredState = true,
             bool durabilityBlocked = false,
             long discardedGenerationBatchCount = 0,
-            long overCapacityDroppedBatchCount = 0)
-            => rawPipelineDrained && finalBoundary == boundary &&
-               IsStopPersistenceBoundaryClosed(
+            long overCapacityDroppedBatchCount = 0,
+            long suppressAfterSequence = 0,
+            long suppressThroughSequence = 0,
+            long lastTerminallyHandledSequence = 0,
+            long pendingHeadSequence = 0,
+            long inFlightSequence = 0)
+        {
+            if (!rawPipelineDrained || finalBoundary < boundary ||
+                !IsStopPersistenceBoundaryClosed(
                    boundary,
                    published,
                    persisted,
@@ -211,7 +262,26 @@ namespace Controller
                    requireRecoveredState,
                    durabilityBlocked,
                    discardedGenerationBatchCount,
-                   overCapacityDroppedBatchCount);
+                   overCapacityDroppedBatchCount))
+                return false;
+            var noUnresolvedPrefixOwner =
+                (pendingHeadSequence <= 0 || pendingHeadSequence > finalBoundary) &&
+                (inFlightSequence <= 0 || inFlightSequence > finalBoundary);
+            if (!noUnresolvedPrefixOwner) return false;
+            if (finalBoundary == boundary) return true;
+
+            // StopAll 接管 DAQ 恢复时，boundary 是事故首次冻结的唯一正式耐久前缀；
+            // 为重建新鲜压力而产生的后续批次属于明确排除的有限尾段。只有抑制窗口从
+            // 同一边界开始、覆盖整个尾段，且发布与终态水位都越过尾端时才能闭合。
+            // 不再要求 FinalBoundary == boundary，这个等式在只读 DAQ 恢复后不可达。
+            var suppressionCoversTail = suppressAfterSequence == boundary &&
+                                        (suppressThroughSequence == long.MaxValue ||
+                                         suppressThroughSequence >= finalBoundary);
+            return suppressionCoversTail &&
+                   published >= finalBoundary &&
+                   lastTerminallyHandledSequence >= finalBoundary &&
+                   noUnresolvedPrefixOwner;
+        }
 
         internal static bool ShouldStopAcquisitionBeforeFinalPersistence(StopSource source)
             // StopAll 一律先冻结DAQ生产者；同进程重新开始会在预检中建立
@@ -237,12 +307,18 @@ namespace Controller
         {
             var deadline = Stopwatch.GetTimestamp() +
                            (long)(Math.Max(1, timeoutMs) / 1000.0 * Stopwatch.Frequency);
+            // DAQ 已在调用方停止。正式义务仍是 boundaries 中的冻结前缀，但还必须把
+            // 截止后已接纳的抑制尾段推进到明确终态，避免仅验证前缀后遗留后台所有权。
+            var finalBoundaries = boundaries.ToDictionary(
+                pair => pair.Key,
+                pair => Math.Max(pair.Value, _acq.GetLastProcessRecycleBoundary(pair.Key)),
+                StringComparer.OrdinalIgnoreCase);
             var rawDrainMs = (int)Math.Max(
                 1,
                 (deadline - Stopwatch.GetTimestamp()) * 1000.0 / Stopwatch.Frequency);
             var rawPipelineDrained = await _acq.DrainBackgroundPipelinesToBoundariesAsync(
-                    boundaries.TryGetValue("Dev1", out var dev1Boundary) ? dev1Boundary : 0,
-                    boundaries.TryGetValue("Dev2", out var dev2Boundary) ? dev2Boundary : 0,
+                    finalBoundaries.TryGetValue("Dev1", out var dev1Boundary) ? dev1Boundary : 0,
+                    finalBoundaries.TryGetValue("Dev2", out var dev2Boundary) ? dev2Boundary : 0,
                     rawDrainMs,
                     CancellationToken.None)
                 .ConfigureAwait(false);
@@ -264,14 +340,21 @@ namespace Controller
             var remainingDrainMs = (int)Math.Max(
                 1,
                 (deadline - Stopwatch.GetTimestamp()) * 1000.0 / Stopwatch.Frequency);
-            await _persistence.DrainAsync(remainingDrainMs).ConfigureAwait(false);
+            var persistenceQueueDrained = await _persistence.DrainAsync(remainingDrainMs)
+                .ConfigureAwait(false);
 
             var results = boundaries.Select(pair =>
             {
                 var persistence = _persistence.GetSnapshot(pair.Key);
                 var published = _acq.GetLastDiskPublishedSequence(pair.Key);
-                var finalBoundary = _acq.GetLastProcessRecycleBoundary(pair.Key);
-                var boundaryStable = finalBoundary == pair.Value;
+                var finalBoundary = finalBoundaries[pair.Key];
+                // Stop 后生产者不得再次前进。若旧 Run 的异步重建在冻结后偷偷启动了
+                // DAQ，ObservedFinal 会大于本次排空目标，必须拒绝交接而不是遗漏新尾段。
+                var observedFinalBoundary = _acq.GetLastProcessRecycleBoundary(pair.Key);
+                var producerStayedStopped = observedFinalBoundary == finalBoundary;
+                var boundaryStable = producerStayedStopped &&
+                                     (finalBoundary == pair.Value ||
+                                      persistence.SuppressAfterSequence == pair.Value);
                 return new StopPersistenceBoundaryResult
                 {
                     Device = pair.Key,
@@ -286,8 +369,15 @@ namespace Controller
                     DurabilityBlocked = persistence.DurabilityBlocked,
                     DiscardedGenerationBatchCount = persistence.DiscardedGenerationBatchCount,
                     OverCapacityDroppedBatchCount = persistence.OverCapacityDroppedBatchCount,
+                    SuppressAfterSequence = persistence.SuppressAfterSequence,
+                    SuppressThroughSequence = persistence.SuppressThroughSequence,
+                    LastTerminallyHandledSequence = persistence.LastTerminallyHandledSequence,
+                    PendingHeadSequence = persistence.PendingHeadSequence,
+                    InFlightSequence = persistence.InFlightSequence,
                     RawPipelineDrained = rawPipelineDrained,
-                    Closed = IsFrozenStopPersistenceBoundaryClosed(
+                    PersistenceQueueDrained = persistenceQueueDrained,
+                    Closed = producerStayedStopped && persistenceQueueDrained &&
+                             IsFrozenStopPersistenceBoundaryClosed(
                         pair.Value,
                         finalBoundary,
                         rawPipelineDrained,
@@ -298,7 +388,12 @@ namespace Controller
                         requireRecoveredState,
                         persistence.DurabilityBlocked,
                         persistence.DiscardedGenerationBatchCount,
-                        persistence.OverCapacityDroppedBatchCount)
+                        persistence.OverCapacityDroppedBatchCount,
+                        persistence.SuppressAfterSequence,
+                        persistence.SuppressThroughSequence,
+                        persistence.LastTerminallyHandledSequence,
+                        persistence.PendingHeadSequence,
+                        persistence.InFlightSequence)
                 };
             }).ToArray();
 
@@ -307,9 +402,14 @@ namespace Controller
                 var message =
                     $"FieldMetric STOP_PERSISTENCE Device={result.Device} " +
                     $"RawDrained={result.RawPipelineDrained} " +
+                    $"PersistenceDrained={result.PersistenceQueueDrained} " +
                     $"Boundary={result.Boundary} FinalBoundary={result.FinalBoundary} " +
                     $"BoundaryStable={result.BoundaryStable} Published={result.Published} " +
                     $"Persisted={result.Persisted} Depth={result.QueueDepth} " +
+                    $"SuppressAfter={result.SuppressAfterSequence} " +
+                    $"SuppressThrough={result.SuppressThroughSequence} " +
+                    $"TerminallyHandled={result.LastTerminallyHandledSequence} " +
+                    $"Head={result.PendingHeadSequence} InFlight={result.InFlightSequence} " +
                     $"State={result.PersistenceState} RequireRecovered={result.RequireRecoveredState} " +
                     $"DurabilityBlocked={result.DurabilityBlocked} " +
                     $"Discarded={result.DiscardedGenerationBatchCount} " +

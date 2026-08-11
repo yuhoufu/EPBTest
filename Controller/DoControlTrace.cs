@@ -459,6 +459,8 @@ namespace Controller
             try
             {
                 commandStartedTicks = Stopwatch.GetTimestamp();
+                if (command == EpbDoCommand.Forward || command == EpbDoCommand.Reverse)
+                    BaselineDaqLivenessBeforeEnergization(channel);
                 result = execute();
                 commandCompletedTicks = Stopwatch.GetTimestamp();
                 if (result)

@@ -1,4 +1,5 @@
 ﻿using Controller;
+using Config;
 using DataOperation;
 using IO.NI;
 using MTEmbTest;
@@ -42,6 +43,56 @@ namespace MtEmbTest
 
         }
 
+        private DialogResult ShowMainOperatorMessage(
+            string message,
+            string caption = "提示",
+            MessageBoxButtons buttons = MessageBoxButtons.OK,
+            MessageBoxIcon icon = MessageBoxIcon.None)
+        {
+            return ShowMainOperatorMessage(this, message, caption, buttons, icon);
+        }
+
+        private static DialogResult ShowMainOperatorMessage(
+            IWin32Window owner,
+            string message,
+            string caption,
+            MessageBoxButtons buttons,
+            MessageBoxIcon icon)
+        {
+            if (!UnattendedRecoveryCoordinator.IsRecoveryProcessMode)
+                return MessageBox.Show(owner, message, caption, buttons, icon);
+
+            ProjectLogHub.Write(
+                icon == MessageBoxIcon.Error
+                    ? ProjectLogLevel.Error
+                    : ProjectLogLevel.Warning,
+                $"FieldMetric RECOVERY_UI Result=SuppressModalDialog Caption={NormalizeRecoveryUiMetric(caption)} " +
+                $"Buttons={buttons} Message={NormalizeRecoveryUiMetric(message)}",
+                "无人值守恢复");
+
+            switch (buttons)
+            {
+                case MessageBoxButtons.OK:
+                    return DialogResult.OK;
+                case MessageBoxButtons.YesNo:
+                    return DialogResult.No;
+                default:
+                    return DialogResult.Cancel;
+            }
+        }
+
+        private static string NormalizeRecoveryUiMetric(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return "-";
+
+            return value
+                .Replace('\r', ' ')
+                .Replace('\n', ' ')
+                .Replace('\t', ' ')
+                .Replace(' ', '_');
+        }
+
         private static string BuildWindowTitle()
         {
             const string productName = "MT EPB常温疲劳测试";
@@ -60,7 +111,7 @@ namespace MtEmbTest
         {
             if (MdiChildren.Length > 0)
             {
-                MessageBox.Show("可能存在正在运行的试验，请先停止试验，关闭子窗口，再退出程序！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                ShowMainOperatorMessage("可能存在正在运行的试验，请先停止试验，关闭子窗口，再退出程序！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 e.Cancel = true;
             }
 
@@ -92,7 +143,7 @@ namespace MtEmbTest
             Cfg = ConfigLoader.LoadAll($@"{Environment.CurrentDirectory}\Config", Logger);
             var projectRestore = ConfigLoader.LastProjectRestoreResult;
             if (projectRestore != null && projectRestore.SelectionFound && !projectRestore.Restored)
-                MessageBox.Show(
+                ShowMainOperatorMessage(
                     projectRestore.Message + "\r\n\r\n程序将继续使用默认项目；原项目选择记录不会被清除。",
                     "上次项目暂不可用",
                     MessageBoxButtons.OK,
@@ -199,12 +250,12 @@ namespace MtEmbTest
                 var DbcMsg = DbcParser.ParseDbcFile(Environment.CurrentDirectory + @"\Config\CAN_V4_3_0.dbc",
                     out ClsGlobal.Dbc);
 
-                if (DbcMsg.IndexOf("OK") < 0) MessageBox.Show(DbcMsg);*/
+                if (DbcMsg.IndexOf("OK") < 0) ShowMainOperatorMessage(DbcMsg);*/
             }
 
             catch (Exception ex)
             {
-                MessageBox.Show(ex.Message);
+                ShowMainOperatorMessage(ex.Message, "主窗体配置加载失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
@@ -276,7 +327,7 @@ namespace MtEmbTest
             foreach (var childForm in MdiChildren)
                 if (childForm.Text == "实时监视")
                 {
-                    MessageBox.Show("请关闭实时监视界面!");
+                    ShowMainOperatorMessage("请关闭实时监视界面!");
                     return;
                 }
 
@@ -333,7 +384,7 @@ namespace MtEmbTest
         private void ShowRuntimeBuildIdentity(object sender, EventArgs e)
         {
             var identity = RuntimeBuildIdentity.Capture();
-            MessageBox.Show(
+            ShowMainOperatorMessage(
                 this,
                 identity.ToDisplayText(),
                 "当前运行身份",
@@ -346,7 +397,7 @@ namespace MtEmbTest
             foreach (var childForm in MdiChildren)
                 if (childForm.Text == "实时监视")
                 {
-                    MessageBox.Show("数据采集中，无法回放!");
+                    ShowMainOperatorMessage("数据采集中，无法回放!");
                     return;
                 }
 
@@ -361,7 +412,7 @@ namespace MtEmbTest
             foreach (var childForm in MdiChildren)
                 if (childForm.Text == "实时监视")
                 {
-                    MessageBox.Show("数据采集中，无法回放!");
+                    ShowMainOperatorMessage("数据采集中，无法回放!");
                     return;
                 }
 
@@ -377,7 +428,7 @@ namespace MtEmbTest
             {
                 if (childForm.Text == "扭矩调节")
                 {
-                    MessageBox.Show("请关闭扭矩调节界面!");
+                    ShowMainOperatorMessage("请关闭扭矩调节界面!");
                     return;
                 }
             }
@@ -396,7 +447,7 @@ namespace MtEmbTest
             {
                 if (childForm.Text == "实时监视")
                 {
-                    MessageBox.Show("请关闭实时监视界面!");
+                    ShowMainOperatorMessage("请关闭实时监视界面!");
                     return;
                 }
             }
@@ -421,7 +472,7 @@ namespace MtEmbTest
                     var ConnectMsg = ConnectToPowerServer(1);
                     if (ConnectMsg.IndexOf("OK") < 0)
                     {
-                        MessageBox.Show(ConnectMsg);
+                        ShowMainOperatorMessage(ConnectMsg);
                         return;
                     }
                 }
@@ -434,7 +485,7 @@ namespace MtEmbTest
 
                 if (initMsg.IndexOf("OK") < 0)
                 {
-                    MessageBox.Show(initMsg);
+                    ShowMainOperatorMessage(initMsg);
                     return;
                 }
 
@@ -444,7 +495,7 @@ namespace MtEmbTest
                 var powerMsg = PowerOpen(1);
                 if (powerMsg.IndexOf("OK") < 0)
                 {
-                    MessageBox.Show("打开电源1失败：" + powerMsg);
+                    ShowMainOperatorMessage("打开电源1失败：" + powerMsg);
                     ClsGlobal.PowerStatus[0] = 0;
                     return;
                 }
@@ -456,7 +507,7 @@ namespace MtEmbTest
                 var ReadMsg = InitSerialPort();
                 if (ReadMsg.IndexOf("OK") < 0)
                 {
-                    MessageBox.Show(ReadMsg);
+                    ShowMainOperatorMessage(ReadMsg);
                     return;
                 }
 
@@ -464,7 +515,7 @@ namespace MtEmbTest
                 var OpenSuccess = await OpenPowerChannel(0, ClsGlobal.SerialPortRetrys);
                 if (!OpenSuccess)
                 {
-                    MessageBox.Show("打开EMB1电源继电器失败！");
+                    ShowMainOperatorMessage("打开EMB1电源继电器失败！");
                     ClsGlobal.PowerStatus[0] = 1;
 
                     return;
@@ -479,7 +530,7 @@ namespace MtEmbTest
                 var ReadMsg = InitSerialPort();
                 if (ReadMsg.IndexOf("OK") < 0)
                 {
-                    MessageBox.Show(ReadMsg);
+                    ShowMainOperatorMessage(ReadMsg);
                     return;
                 }
 
@@ -487,7 +538,7 @@ namespace MtEmbTest
                 var OpenSuccess = await ClosePowerChannel(0, ClsGlobal.SerialPortRetrys);
                 if (!OpenSuccess)
                 {
-                    MessageBox.Show("关闭EMB1电源继电器失败！");
+                    ShowMainOperatorMessage("关闭EMB1电源继电器失败！");
                     ClsGlobal.PowerStatus[0] = 2;
                     return;
                 }
@@ -497,7 +548,7 @@ namespace MtEmbTest
                 var powerMsg = PowerClose(1);
                 if (powerMsg.IndexOf("OK") < 0)
                 {
-                    MessageBox.Show("关闭电源1失败：" + powerMsg);
+                    ShowMainOperatorMessage("关闭电源1失败：" + powerMsg);
                     ClsGlobal.PowerStatus[0] = 1;
                     return;
                 }
@@ -532,7 +583,7 @@ namespace MtEmbTest
             }
             catch (Exception ex)
             {
-                //  MessageBox.Show($"打开COM口失败: {ex.Message}");
+                //  ShowMainOperatorMessage($"打开COM口失败: {ex.Message}");
                 //   ClsErrorProcess.AddToErrorList(MaxErrors, ref LogError, "打开COM口失败: " + ex.Message, "打开COM口");
                 serialPort?.Close();
                 serialPort?.Dispose();
@@ -554,7 +605,7 @@ namespace MtEmbTest
 
             catch (Exception ex)
             {
-                MessageBox.Show("COM口接收数据出错: " + ex.Message);
+                ShowMainOperatorMessage("COM口接收数据出错: " + ex.Message);
             }
         }
 
@@ -581,7 +632,7 @@ namespace MtEmbTest
                     var OpenMsg = InitSerialPort();
                     if (OpenMsg.IndexOf("OK") < 0)
                     {
-                        MessageBox.Show("打开COM口失败: " + OpenMsg);
+                        ShowMainOperatorMessage("打开COM口失败: " + OpenMsg);
                         return false; // 返回失败结果
                     }
                 }
@@ -626,7 +677,7 @@ namespace MtEmbTest
                 {
                     var errorMsg = $"已达最大重试次数（{maxRetries}次），操作失败";
 
-                    MessageBox.Show("打开COM口失败: " + errorMsg);
+                    ShowMainOperatorMessage("打开COM口失败: " + errorMsg);
                     SafeDisposeSerialPort();
                     return false; // 返回失败结果
                 }
@@ -635,7 +686,7 @@ namespace MtEmbTest
             }
             catch (Exception ex)
             {
-                MessageBox.Show("COM口通信错误: " + ex.Message);
+                ShowMainOperatorMessage("COM口通信错误: " + ex.Message);
                 SafeDisposeSerialPort();
                 return false; // 返回失败结果
             }
@@ -654,7 +705,7 @@ namespace MtEmbTest
                     var OpenMsg = InitSerialPort();
                     if (OpenMsg.IndexOf("OK") < 0)
                     {
-                        MessageBox.Show("打开COM口失败: " + OpenMsg);
+                        ShowMainOperatorMessage("打开COM口失败: " + OpenMsg);
                         return false; // 返回失败结果
                     }
                 }
@@ -699,7 +750,7 @@ namespace MtEmbTest
                 if (!operationSuccess)
                 {
                     var errorMsg = $"已达最大重试次数（{maxRetries}次），操作失败";
-                    MessageBox.Show(errorMsg);
+                    ShowMainOperatorMessage(errorMsg);
                     SafeDisposeSerialPort();
                     return false; // 返回失败结果
                 }
@@ -708,7 +759,7 @@ namespace MtEmbTest
             }
             catch (Exception ex)
             {
-                MessageBox.Show("COM口通信错误：" + ex.Message);
+                ShowMainOperatorMessage("COM口通信错误：" + ex.Message);
                 SafeDisposeSerialPort();
                 return false; // 返回失败结果
             }

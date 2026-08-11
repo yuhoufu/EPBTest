@@ -412,10 +412,23 @@ namespace Controller
         private readonly IDaqHardwareProbe _daqHardwareProbe;
         private readonly ConcurrentDictionary<string, DaqAutoRecoveryContext> _daqAutoRecovery =
             new(StringComparer.OrdinalIgnoreCase);
-        private readonly ConcurrentDictionary<Guid, DateTime> _daqRecoveryTerminalCorrelations = new();
+        // 同一扫描的双DAQ故障共享批次 CorrelationId，但每台设备仍需各自完成终态。
+        // 因此终态去重身份必须包含 Device；仅按 Guid 会让先完成的 Dev1 错误吞掉
+        // Dev2 的升级/恢复。
+        private readonly ConcurrentDictionary<string, DateTime> _daqRecoveryTerminalCorrelations = new(
+            StringComparer.OrdinalIgnoreCase);
         private readonly object _daqRecoveryCommitGate = new();
         private long _runEpoch;
         private long _recoveryEpoch;
+        internal event Action<StopContext> RunAuthorizationRevocationBarrier;
+        private readonly System.Threading.Timer _daqLivenessWatchdog;
+        private readonly int _daqLivenessWatchdogIntervalMs;
+        private readonly double _daqLivenessStaleThresholdMs;
+        private readonly ConcurrentDictionary<string, long> _daqLivenessLatchedGeneration =
+            new(StringComparer.OrdinalIgnoreCase);
+        private readonly ConcurrentDictionary<string, long> _daqLivenessObservedGapEvents =
+            new(StringComparer.OrdinalIgnoreCase);
+        private int _daqLivenessWatchdogBusy;
         private readonly ConcurrentDictionary<long, byte> _daqClockAbortedCycles = new();
         private readonly object _stopSafetyGate = new();
         private Task<StopSafetyResult> _stopSafetyTask;
@@ -469,6 +482,8 @@ namespace Controller
             public Dictionary<int, int> CutoffCycles;
             public long CutoffPersistenceBoundary;
             public int CutoffCyclesFinalized;
+            public readonly object CutoffCyclesFinalizationGate = new object();
+            public TaskCompletionSource<bool> CutoffCyclesFinalizationCompletion;
         }
 
         internal static ChannelRuntimeState NormalizeRuntimeStateForEnabled(
@@ -499,7 +514,8 @@ namespace Controller
             int channel,
             DateTime cutoffUtc,
             string reason,
-            int? expectedCycleNumber = null)
+            int? expectedCycleNumber = null,
+            bool durableBoundaryAlreadyConfirmed = false)
         {
             if (_cycleAttempts.TryGetCurrent(channel, out var context))
             {
@@ -521,12 +537,20 @@ namespace Controller
                         {
                             if (Recorder is IBatchedEpbCycleRecorder batchedRecorder)
                                 batchedRecorder.SealCycleWindow(channel, context.Cycle, cutoffUtc);
-                            AbortCycleAfterPersistence(
-                                Recorder,
-                                channel,
-                                context.Cycle,
-                                cutoffUtc,
-                                "AbortedBySoftwareRecovery");
+                            if (durableBoundaryAlreadyConfirmed)
+                                AbortCycleAtConfirmedDurableBoundary(
+                                    Recorder,
+                                    channel,
+                                    context.Cycle,
+                                    cutoffUtc,
+                                    "AbortedBySoftwareRecovery");
+                            else
+                                AbortCycleAfterPersistence(
+                                    Recorder,
+                                    channel,
+                                    context.Cycle,
+                                    cutoffUtc,
+                                    "AbortedBySoftwareRecovery");
                             return true;
                         },
                         RemoveCycleAttemptAfterDurableTerminal);
@@ -577,12 +601,20 @@ namespace Controller
             {
                 if (Recorder is IBatchedEpbCycleRecorder batched)
                     batched.SealCycleWindow(channel, cycleNumber, cutoffUtc);
-                AbortCycleAfterPersistence(
-                    Recorder,
-                    channel,
-                    cycleNumber,
-                    cutoffUtc,
-                    "AbortedBySoftwareRecovery");
+                if (durableBoundaryAlreadyConfirmed)
+                    AbortCycleAtConfirmedDurableBoundary(
+                        Recorder,
+                        channel,
+                        cycleNumber,
+                        cutoffUtc,
+                        "AbortedBySoftwareRecovery");
+                else
+                    AbortCycleAfterPersistence(
+                        Recorder,
+                        channel,
+                        cycleNumber,
+                        cutoffUtc,
+                        "AbortedBySoftwareRecovery");
                 _formalPersistenceRecoveryPendingCycles.TryRemove(channel, out _);
                 // 正式圈回调稍后收尾时只消费此标记，不得把已作废圈再次封账。
                 MarkDaqClockCycleAborted(channel, cycleNumber);
@@ -1361,6 +1393,12 @@ namespace Controller
             _daqClockRecoveryAttempts = new DaqRecoveryAttemptWindow(
                 _daqClockRecoveryMaxAttempts,
                 TimeSpan.FromMinutes(_daqClockRecoveryWindowMinutes));
+            _daqLivenessWatchdogIntervalMs = ReadIntAppSetting(
+                // 这是带电安全门，不允许现场 App.config 把扫描周期放宽到数百毫秒。
+                "DaqLivenessWatchdogIntervalMs", 20, 10, 20);
+            _daqLivenessStaleThresholdMs = ReadDoubleAppSetting(
+                // 100ms 是已批准上限；配置只能更严格，不能把门槛改成500ms/10s。
+                "DaqLivenessStaleThresholdMs", 100, 50, 100);
             _persistence = new DaqPersistenceCoordinator(
                 () => Recorder,
                 _log,
@@ -1429,6 +1467,17 @@ namespace Controller
                 null,
                 _timerRuntimeWatchdogIntervalMs,
                 _timerRuntimeWatchdogIntervalMs);
+            _daqLivenessWatchdog = new System.Threading.Timer(
+                InspectDaqLiveness,
+                null,
+                _daqLivenessWatchdogIntervalMs,
+                _daqLivenessWatchdogIntervalMs);
+            _log.Info(
+                $"FieldMetric DAQ_LIVENESS Result=Configured " +
+                $"IntervalMs={_daqLivenessWatchdogIntervalMs} " +
+                $"ThresholdMs={_daqLivenessStaleThresholdMs:F0} " +
+                $"ProcessId={Process.GetCurrentProcess().Id}",
+                "FIELD");
         }
 
         private CancellationTokenSource RenewCyclePauseCts(int channel)
@@ -2859,6 +2908,11 @@ namespace Controller
         }
 
         private void OnDaqDeviceFaultDetected(DaqDeviceFault deviceFault)
+            => OnDaqDeviceFaultDetected(deviceFault, Guid.Empty);
+
+        private void OnDaqDeviceFaultDetected(
+            DaqDeviceFault deviceFault,
+            Guid batchCorrelationId)
         {
             if (deviceFault == null) return;
             var affected = GetDaqGroupChannels(deviceFault.Device);
@@ -2869,13 +2923,13 @@ namespace Controller
                     Stopwatch.GetTimestamp(),
                     out var attempt))
             {
-                // Repeated software jitter must not become a global StopAll. Keep the affected
-                // group de-energized and let the existing/new recovery context self-maintain;
-                // confirmed hardware absence is handled separately by two independent probes.
+                // 频繁软件抖动仍不是卡钳硬件损坏证据，但也不能无限留在本进程。
+                // 既有恢复上下文按第3次/60秒门槛转 UnattendedBatchRecycle；只有两份
+                // 独立硬件探测证据才允许锁存DAQ硬件报警。
                 _log.Warn(
                     $"Device={deviceFault.Device} {_daqClockRecoveryWindowMinutes}分钟内已发生" +
                     $"{attempt}次DAQ软件恢复，超过阈值{_daqClockRecoveryMaxAttempts}次；" +
-                    "不升级全局故障，进入持续自维护。",
+                    "保持安全断能，并由有界恢复门槛转入整批回收。",
                     "AI");
             }
             var observation = ObserveDaqIncident(
@@ -2884,7 +2938,8 @@ namespace Controller
                 deviceFault.Reason,
                 deviceFault.TimestampUtc,
                 affected,
-                deviceFault.Generation);
+                deviceFault.Generation,
+                correlationId: batchCorrelationId);
             ObserveBackgroundTask(BeginDaqAutoRecoveryAsync(
                 deviceFault.Device,
                 deviceFault.Code,
@@ -3038,7 +3093,60 @@ namespace Controller
             CancellationToken token)
         {
             if (context == null || !IsCurrentRecovery(context)) return false;
-            if (Volatile.Read(ref context.CutoffCyclesFinalized) == 2) return true;
+            TaskCompletionSource<bool> completion;
+            var ownsFinalization = false;
+            lock (context.CutoffCyclesFinalizationGate)
+            {
+                if (Volatile.Read(ref context.CutoffCyclesFinalized) == 2) return true;
+                completion = context.CutoffCyclesFinalizationCompletion;
+                if (completion == null)
+                {
+                    completion = new TaskCompletionSource<bool>(
+                        TaskCreationOptions.RunContinuationsAsynchronously);
+                    context.CutoffCyclesFinalizationCompletion = completion;
+                    Volatile.Write(ref context.CutoffCyclesFinalized, 1);
+                    ownsFinalization = true;
+                }
+            }
+
+            // 后到恢复调用必须等待同一个收尾事务。旧实现看到 InProgress 就立即返回
+            // false，上层会把“另一个所有者正在工作”误报成持久化失败并提前增加恢复次数。
+            if (!ownsFinalization)
+                return await completion.Task.ConfigureAwait(false);
+
+            var succeeded = false;
+            try
+            {
+                succeeded = await FinalizeDaqCutoffCyclesCoreAsync(
+                        context,
+                        timeoutMs,
+                        token)
+                    .ConfigureAwait(false);
+                return succeeded;
+            }
+            finally
+            {
+                lock (context.CutoffCyclesFinalizationGate)
+                {
+                    Volatile.Write(ref context.CutoffCyclesFinalized, succeeded ? 2 : 0);
+                    if (!succeeded)
+                        context.CutoffCyclesFinalizationCompletion = null;
+                    completion.TrySetResult(succeeded);
+                }
+            }
+        }
+
+        private async Task<bool> FinalizeDaqCutoffCyclesCoreAsync(
+            DaqAutoRecoveryContext context,
+            int timeoutMs,
+            CancellationToken token)
+        {
+            if (!TrySealSoftwareRecoveryCycleWindows(
+                    context.CutoffCycles,
+                    context.CutoffUtc,
+                    $"DAQ:{context.TriggerCode}:FrozenBoundary",
+                    () => IsCurrentRecovery(context)))
+                return false;
 
             // CutoffPersistenceBoundary 在首次恢复登记时已经冻结。这里只排该设备的
             // 冻结前缀；另一设备传 0，既不等待健康设备的新流量，也绝不重新抓取一个
@@ -3056,64 +3164,68 @@ namespace Controller
                 StringComparison.OrdinalIgnoreCase)
                 ? boundary
                 : 0;
-            var rawDrained = await _acq.DrainBackgroundPipelinesToBoundariesAsync(
+            var rawDrain = await _acq.DrainBackgroundPipelinesToBoundariesDetailedAsync(
                     dev1Boundary,
                     dev2Boundary,
                     Math.Max(1, timeoutMs),
                     token)
                 .ConfigureAwait(false);
-            if (!rawDrained || !IsCurrentRecovery(context)) return false;
-
-            if (!await _persistence.WaitForDurablePrefixAsync(
-                    context.Device,
-                    boundary,
-                    Math.Max(1, timeoutMs),
-                    token).ConfigureAwait(false))
+            if (!rawDrain.Completed || !IsCurrentRecovery(context))
             {
-                var snapshot = _persistence.GetSnapshot(context.Device);
+                var persistence = _persistence.GetSnapshot(context.Device);
                 _log.Warn(
-                    $"DAQ截止圈等待真实落盘边界超时 Device={context.Device} " +
-                    $"Boundary={boundary} Persisted={snapshot.Sequence} " +
-                    $"Depth={snapshot.QueueDepth} State={snapshot.State} " +
-                    $"DurabilityBlocked={snapshot.DurabilityBlocked}；不封圈、不重入。",
+                    $"DAQ截止后台边界未闭合 Device={context.Device} Boundary={boundary} " +
+                    $"Published={SelectDeviceValue(context.Device, rawDrain.Dev1Published, rawDrain.Dev2Published)} " +
+                    $"RawTransferred={SelectDeviceValue(context.Device, rawDrain.Dev1RawTransferred, rawDrain.Dev2RawTransferred)} " +
+                    $"Persisted={persistence.Sequence} Head={persistence.PendingHeadSequence} " +
+                    $"InFlight={persistence.InFlightSequence} Pending={rawDrain.PendingPredicate}",
                     "落盘");
                 return false;
             }
 
-            if (Interlocked.CompareExchange(ref context.CutoffCyclesFinalized, 1, 0) != 0)
-                return Volatile.Read(ref context.CutoffCyclesFinalized) == 2;
-            try
+            var durablePrefix = await _persistence.WaitForDurablePrefixDetailedAsync(
+                    context.Device,
+                    boundary,
+                    Math.Max(1, timeoutMs),
+                    token).ConfigureAwait(false);
+            if (!durablePrefix.Completed)
             {
-                var allFinalized = true;
-                foreach (var pair in context.CutoffCycles ?? new Dictionary<int, int>())
-                {
-                    if (pair.Value == 0) continue;
-                    var finalized = DiscardCurrentCycleForSoftwareRecovery(
-                        pair.Key,
-                        context.CutoffUtc,
-                        $"DAQ:{context.TriggerCode}",
-                        pair.Value);
-                    if (!finalized &&
-                             !_currentCycleNumberByChannel.ContainsKey(pair.Key))
-                    {
-                        // 当前圈已经由其自身取消/失败收尾封存，无需再次作废。
-                        finalized = true;
-                    }
-                    allFinalized &= finalized;
-                }
-                if (!allFinalized) return false;
-                Volatile.Write(ref context.CutoffCyclesFinalized, 2);
-                _log.Info(
-                    $"DAQ截止圈已在真实落盘边界后封存 Device={context.Device} " +
-                    $"Boundary={boundary} Cycles=[{string.Join(",", (context.CutoffCycles ?? new Dictionary<int, int>()).Values.Where(value => value != 0))}]。",
+                _log.Warn(
+                    $"DAQ截止圈等待真实落盘边界超时 Device={context.Device} " +
+                    $"Boundary={boundary} Persisted={durablePrefix.Persisted} " +
+                    $"Head={durablePrefix.PendingHeadSequence} InFlight={durablePrefix.InFlightSequence} " +
+                    $"DurabilityBlocked={durablePrefix.DurabilityBlocked} " +
+                    $"Pending={durablePrefix.PendingPredicate}；不封圈、不重入。",
                     "落盘");
-                return true;
+                return false;
             }
-            finally
+            if (!IsCurrentRecovery(context)) return false;
+
+            var allFinalized = true;
+            foreach (var pair in context.CutoffCycles ?? new Dictionary<int, int>())
             {
-                if (Volatile.Read(ref context.CutoffCyclesFinalized) != 2)
-                    Interlocked.Exchange(ref context.CutoffCyclesFinalized, 0);
+                if (!IsCurrentRecovery(context)) return false;
+                if (pair.Value == 0) continue;
+                var finalized = DiscardCurrentCycleForSoftwareRecovery(
+                    pair.Key,
+                    context.CutoffUtc,
+                    $"DAQ:{context.TriggerCode}",
+                    pair.Value,
+                    durableBoundaryAlreadyConfirmed: true);
+                if (!finalized &&
+                    !_currentCycleNumberByChannel.ContainsKey(pair.Key))
+                {
+                    // 当前圈已经由其自身取消/失败收尾封存，无需再次作废。
+                    finalized = true;
+                }
+                allFinalized &= finalized;
             }
+            if (!allFinalized) return false;
+            _log.Info(
+                $"DAQ截止圈已在冻结耐久前缀后封存 Device={context.Device} " +
+                $"Boundary={boundary} Cycles=[{string.Join(",", (context.CutoffCycles ?? new Dictionary<int, int>()).Values.Where(value => value != 0))}]。",
+                "落盘");
+            return true;
         }
 
         private DaqRecoveryResult CreateDaqRecoveryTimeoutResult(string device)
@@ -3683,6 +3795,11 @@ namespace Controller
                         context))
                     return;
 
+                context.ValidationPhase = "DaqBatchRecoveryBarrier";
+                if (!await WaitForDaqRecoveryBatchBarrierAsync(context).ConfigureAwait(false))
+                    return;
+                if (!IsCurrentRecovery(context)) return;
+
                 var batchPauseState = CurrentBatchPauseState;
                 var holdForBatchPause = ShouldHoldDaqRecoveredChannelsForBatchPause(batchPauseState);
                 var powerRecoveryChannels = SelectDaqRecoveryPowerChannels(
@@ -3799,9 +3916,11 @@ namespace Controller
 
                         context.FailureBackoff.CommitSuccess();
                         MarkDaqRecoveryTerminal(context.CorrelationId, context.Device);
+                        MarkDaqRecoveryBatchTerminal(context);
                         _persistence.ResumeAdmission(
                             device,
                             _acq.GetLastAcceptedSequence(device));
+                        LogDaqRecoveryFieldMetric(context, "Recovered", "RejoinAndCommit");
                         _daqAutoRecovery.TryRemove(device, out _);
                         context.Completion.TrySetResult(result);
                     }
@@ -3911,6 +4030,21 @@ namespace Controller
                 var phase = string.IsNullOrWhiteSpace(context.ValidationPhase)
                     ? "Unknown"
                     : context.ValidationPhase;
+                if (RequiresImmediateDaqRejoinSafetyRollback(phase))
+                {
+                    RollbackDaqRecoveryRejoinSafety(context, phase, ex.Message);
+                    // When called from the self-maintenance validation loop, propagate to its
+                    // outer bounded-recovery handler so the loop cannot re-enable the PSU forty
+                    // times at 250ms intervals. A standalone persistence-recovered callback has
+                    // no such owner, so explicitly create one bounded maintenance attempt.
+                    if (Volatile.Read(ref context.MaintenanceScheduled) != 0)
+                        throw;
+                    ScheduleDaqSelfMaintenance(
+                        context,
+                        "DaqRejoinValidationFailed",
+                        $"Phase={phase}; Error={ex.Message}; 已立即回滚整组断电。");
+                    return;
+                }
                 var signature = phase + ":" + ex.GetType().Name + ":" + ex.Message;
                 var nowTicks = Stopwatch.GetTimestamp();
                 var shouldLog = false;
@@ -3947,8 +4081,7 @@ namespace Controller
             Guid correlationId,
             DaqRecoveryResult recoveryResult = null)
         {
-            if (correlationId != Guid.Empty &&
-                _daqRecoveryTerminalCorrelations.ContainsKey(correlationId))
+            if (IsDaqRecoveryTerminalCorrelation(device, correlationId))
                 return;
             if (!_daqAutoRecovery.TryGetValue(device, out var context))
             {
@@ -3987,6 +4120,7 @@ namespace Controller
                     if (!context.Terminal.TryCommit(DaqRecoveryTerminal.HardwareConfirmed)) return;
                     context.Phase.MarkTerminal();
                     MarkDaqRecoveryTerminal(context.CorrelationId, context.Device);
+                    MarkDaqRecoveryBatchTerminal(context);
                     _daqAutoRecovery.TryRemove(device, out _);
                 }
                 var primary = context.AffectedChannels.OrderBy(x => x).FirstOrDefault();
@@ -4034,6 +4168,48 @@ namespace Controller
                 maintenanceResult,
                 ex => _log?.Warn($"DAQ维护状态观察者异常，已隔离：{ex.Message}", "AI"));
             ScheduleDaqSelfMaintenance(context, code, reason);
+        }
+
+        internal static bool RequiresImmediateDaqRejoinSafetyRollback(string phase)
+        {
+            return string.Equals(
+                       phase,
+                       "PowerEnableThenMechanicalRelease",
+                       StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(
+                       phase,
+                       "RejoinAndCommit",
+                       StringComparison.OrdinalIgnoreCase);
+        }
+
+        private void RollbackDaqRecoveryRejoinSafety(
+            DaqAutoRecoveryContext context,
+            string phase,
+            string error)
+        {
+            if (context == null) return;
+            Dictionary<int, string> rejectedOff = null;
+            ExecuteNonBlockingSafetyIsolationOrder(
+                () => FreezeAndCancelSafetyChannels(
+                    context.AffectedChannels,
+                    "DaqRejoinSafetyRollback",
+                    cancelStopTokens: false),
+                () => rejectedOff = SubmitEpbOffHighPriorityBatch(
+                    context.AffectedChannels,
+                    "DaqRejoinRollbackOffAdmissionRejected",
+                    "DaqRejoinRollbackOffSubmissionException"),
+                () => StartElectricalGroupSafetyDisables(
+                    context.AffectedChannels,
+                    $"DAQ恢复重入失败安全回滚 Device={context.Device} Phase={phase}",
+                    "DaqRejoinRollbackPowerDisable"),
+                () => _log.Error(
+                    $"DAQ恢复在重新使能后的阶段失败，已立即暂停整组、提交电机OFF并关闭程控电源。" +
+                    $"Device={context.Device} Phase={phase} CorrelationId={context.CorrelationId:N} " +
+                    $"Error={error}",
+                    "AI"),
+                () => ScheduleRejectedOffFallbacks(
+                    rejectedOff,
+                    "DaqRejoinRollbackImmediateOffFallback"));
         }
 
         private void ScheduleDaqSelfMaintenance(
@@ -4794,7 +4970,8 @@ namespace Controller
             DateTime timestampUtc,
             int[] affectedChannels,
             long generation = 0,
-            int primaryChannel = 0)
+            int primaryChannel = 0,
+            Guid correlationId = default)
         {
             var runId = _activeBatchId;
             if (generation <= 0)
@@ -4807,7 +4984,8 @@ namespace Controller
                 reason,
                 timestampUtc,
                 affectedChannels,
-                primaryChannel);
+                primaryChannel,
+                correlationId);
         }
 
         private long BuildDaqChannelMask(string device)
@@ -6390,6 +6568,7 @@ namespace Controller
                 _log.Warn($"释放硬件前等待液压后台任务失败：{ex.Message}", "液压协调");
             }
             try { _timerRuntimeWatchdog?.Dispose(); } catch { }
+            try { _daqLivenessWatchdog?.Dispose(); } catch { }
             try { _powerSupply?.Dispose(); } catch { }
             try { _acq?.Dispose(); } catch { }
             try { _ao?.ResetAll(); } catch { }
@@ -6885,6 +7064,7 @@ namespace Controller
                                 .Where(item => !item.Closed)
                                 .Select(item =>
                                     $"{item.Device}:RawDrained={item.RawPipelineDrained}," +
+                                    $"PersistenceDrained={item.PersistenceQueueDrained}," +
                                     $"Boundary={item.Boundary},Published={item.Published}," +
                                     $"Persisted={item.Persisted},Depth={item.QueueDepth}," +
                                     $"State={item.PersistenceState}"))
@@ -6953,6 +7133,13 @@ namespace Controller
                 FaultScope = scope,
                 RequestedUtc = DateTime.UtcNow
             };
+            // 授权撤销的内存屏障必须先于后台观察者执行。该专用事件只允许做无I/O、
+            // 无等待的RunId标记，确保人工停止不会被并发恢复确认反向重新授权。
+            try { RunAuthorizationRevocationBarrier?.Invoke(context); }
+            catch (Exception ex)
+            {
+                _log.Error("同步无人值守授权撤销屏障执行失败。", "EPB", ex);
+            }
             // 外部授权/UI 是观察者，不能位于硬件断电和软件自愈的同步关键路径上。
             ObserveBackgroundTask(Task.Run(() =>
                 NonCriticalObserver.Invoke(

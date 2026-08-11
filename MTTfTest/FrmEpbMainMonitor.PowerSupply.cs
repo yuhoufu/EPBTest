@@ -599,7 +599,7 @@ namespace MTEmbTest
                 }
 
                 LogInfo(message);
-                MessageBox.Show(
+                ShowOperatorMessage(
                     message,
                     "卡钳禁用状态保存失败",
                     MessageBoxButtons.OK,
@@ -636,7 +636,7 @@ namespace MTEmbTest
         private async System.Threading.Tasks.Task ResetPowerSupplyFaultFromUiAsync(int groupId)
         {
             if (_epb == null) return;
-            if (MessageBox.Show(
+            if (ShowOperatorMessage(
                     $"确认人工复位电源组 {groupId} 的故障锁存？\r\n" +
                     "程序会重新核对输出已关闭、保护已解除和设备身份；本操作不会开启输出。",
                     "复位程控电源故障",
@@ -650,7 +650,7 @@ namespace MTEmbTest
             }
             catch (Exception ex)
             {
-                MessageBox.Show(
+                ShowOperatorMessage(
                     $"电源组{groupId}故障复位失败：\r\n{ex.Message}",
                     "复位失败",
                     MessageBoxButtons.OK,

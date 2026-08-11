@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -8,6 +9,104 @@ using Config;
 
 namespace Controller
 {
+    internal readonly struct UnattendedRunChainTransition
+    {
+        internal UnattendedRunChainTransition(
+            string rootRunId,
+            string parentRunId,
+            string currentRunId,
+            int restartGeneration,
+            bool sameRun,
+            bool recoveryContinuation,
+            bool processRestartContinuation)
+        {
+            RootRunId = rootRunId ?? string.Empty;
+            ParentRunId = parentRunId ?? string.Empty;
+            CurrentRunId = currentRunId ?? string.Empty;
+            RestartGeneration = Math.Max(0, restartGeneration);
+            SameRun = sameRun;
+            RecoveryContinuation = recoveryContinuation;
+            ProcessRestartContinuation = processRestartContinuation;
+        }
+
+        internal string RootRunId { get; }
+        internal string ParentRunId { get; }
+        internal string CurrentRunId { get; }
+        internal int RestartGeneration { get; }
+        internal bool SameRun { get; }
+        internal bool RecoveryContinuation { get; }
+        internal bool ProcessRestartContinuation { get; }
+        internal string RecoveryMode => SameRun
+            ? "SameRun"
+            : !RecoveryContinuation
+                ? "ManualAuthorization"
+                : ProcessRestartContinuation
+                    ? "ProcessRestart"
+                    : "InProcess";
+        internal bool NewAuthorizationChain => !SameRun && !RecoveryContinuation;
+    }
+
+    internal sealed class DaqRecoveryBatchBarrier
+    {
+        private readonly object _gate = new object();
+        private readonly HashSet<string> _expected;
+        private readonly HashSet<string> _ready = new HashSet<string>(
+            StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> _terminal = new HashSet<string>(
+            StringComparer.OrdinalIgnoreCase);
+        private readonly TaskCompletionSource<bool> _released =
+            new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal DaqRecoveryBatchBarrier(Guid runId, long runEpoch, IEnumerable<string> devices)
+        {
+            RunId = runId;
+            RunEpoch = runEpoch;
+            _expected = new HashSet<string>(
+                (devices ?? Array.Empty<string>())
+                    .Where(device => !string.IsNullOrWhiteSpace(device)),
+                StringComparer.OrdinalIgnoreCase);
+        }
+
+        internal Guid RunId { get; }
+        internal long RunEpoch { get; }
+
+        internal async Task<bool> SignalReadyAndWaitAsync(
+            string device,
+            CancellationToken token)
+        {
+            lock (_gate)
+            {
+                if (!_expected.Contains(device ?? string.Empty)) return false;
+                _ready.Add(device);
+                if (_ready.Count == _expected.Count)
+                    _released.TrySetResult(true);
+            }
+
+            var cancelled = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            using (token.Register(() => cancelled.TrySetCanceled()))
+            {
+                var completed = await Task.WhenAny(_released.Task, cancelled.Task)
+                    .ConfigureAwait(false);
+                if (completed != _released.Task)
+                    token.ThrowIfCancellationRequested();
+                return await _released.Task.ConfigureAwait(false);
+            }
+        }
+
+        internal bool MarkTerminal(string device)
+        {
+            lock (_gate)
+            {
+                if (_expected.Contains(device ?? string.Empty))
+                    _terminal.Add(device);
+                if (_ready.Count < _expected.Count)
+                    _released.TrySetResult(false);
+                return _terminal.Count == _expected.Count;
+            }
+        }
+    }
+
     /// <summary>
     ///     Ensures that repeated software-recovery failures open at most one batch-recycle
     ///     circuit per RunId.  A new formal run resets the gate; competing recovery owners
@@ -43,6 +142,86 @@ namespace Controller
         internal const int SoftwareRecoveryEscalationAttempts = 3;
         public const int UnattendedProcessRestartBudget = 3;
 
+        internal static UnattendedRunChainTransition SelectUnattendedRunChainTransition(
+            string existingCurrentRunId,
+            string existingRootRunId,
+            string existingParentRunId,
+            int existingRestartGeneration,
+            bool armed,
+            bool recoveryChainPendingStart,
+            bool inProcessRecoveryPending,
+            string incomingRunId)
+        {
+            var incoming = Guid.TryParse(incomingRunId, out var incomingGuid) &&
+                           incomingGuid != Guid.Empty
+                ? incomingGuid.ToString("N")
+                : string.Empty;
+            var existingCurrent = Guid.TryParse(existingCurrentRunId, out var currentGuid) &&
+                                  currentGuid != Guid.Empty
+                ? currentGuid.ToString("N")
+                : string.Empty;
+            var existingRoot = Guid.TryParse(existingRootRunId, out var rootGuid) &&
+                               rootGuid != Guid.Empty
+                ? rootGuid.ToString("N")
+                : string.Empty;
+            var existingParent = Guid.TryParse(existingParentRunId, out var parentGuid) &&
+                                 parentGuid != Guid.Empty
+                ? parentGuid.ToString("N")
+                : string.Empty;
+
+            // A multi-channel batch publishes Starting once per channel. Those repeated
+            // notifications are one execution, not new authorization chains, and must not
+            // reset the root RunId or the ten-minute process-restart budget.
+            if (incoming.Length > 0 &&
+                string.Equals(existingCurrent, incoming, StringComparison.OrdinalIgnoreCase))
+                return new UnattendedRunChainTransition(
+                    existingRoot.Length > 0 ? existingRoot : incoming,
+                    existingParent,
+                    incoming,
+                    existingRestartGeneration,
+                    sameRun: true,
+                    recoveryContinuation: false,
+                    processRestartContinuation: false);
+
+            // The child process has consumed the one-time nonce but has not yet created its
+            // new in-process RunId. Preserve the first manually authorized RunId as the chain
+            // root, link the old execution as the parent, and carry the restart budget forward.
+            if (armed && (recoveryChainPendingStart || inProcessRecoveryPending) &&
+                incoming.Length > 0 &&
+                existingCurrent.Length > 0 && existingRoot.Length > 0)
+                return new UnattendedRunChainTransition(
+                    existingRoot,
+                    existingCurrent,
+                    incoming,
+                    checked(Math.Max(0, existingRestartGeneration) + 1),
+                    sameRun: false,
+                    recoveryContinuation: true,
+                    processRestartContinuation: recoveryChainPendingStart);
+
+            // A new manual authorization starts a fresh chain and a fresh restart budget.
+            return new UnattendedRunChainTransition(
+                incoming,
+                string.Empty,
+                incoming,
+                0,
+                sameRun: false,
+                recoveryContinuation: false,
+                processRestartContinuation: false);
+        }
+
+        internal static bool ShouldRestartAfterRecoveryStartupFailure(
+            bool recoveryBatchCommitted)
+            => !recoveryBatchCommitted;
+
+        internal static bool CanCommitUnattendedRecovery(
+            bool armed,
+            bool processRecoveryPending,
+            bool inProcessRecoveryPending,
+            bool revocationObserved)
+            => armed &&
+               (processRecoveryPending || inProcessRecoveryPending) &&
+               !revocationObserved;
+
         private readonly HydraulicRecoveryOwnershipCoordinator _recoveryOwnership =
             new HydraulicRecoveryOwnershipCoordinator();
         private readonly ConcurrentDictionary<long, byte> _affectedGroupResetInProgress = new();
@@ -55,10 +234,92 @@ namespace Controller
         // 新 run 的恢复次数；BeginBatchSession 仍会主动清空历史键。
         private readonly ConcurrentDictionary<long, int> _isolatedInfrastructureRecoveryAttempts = new();
         private readonly SoftwareRecoveryEscalationGate _softwareRecoveryEscalation = new();
+        private readonly ConcurrentDictionary<Guid, DaqRecoveryBatchBarrier>
+            _daqRecoveryBatchBarriers = new();
+        private readonly ConcurrentDictionary<Guid, Guid> _daqRecoveryBatchAliases = new();
+
+        private void RegisterDaqRecoveryBatchBarrier(
+            Guid correlationId,
+            IEnumerable<string> devices,
+            Guid runId,
+            long runEpoch,
+            IEnumerable<Guid> correlationAliases = null)
+        {
+            if (correlationId == Guid.Empty) return;
+            var expected = (devices ?? Array.Empty<string>())
+                .Where(device => !string.IsNullOrWhiteSpace(device))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (expected.Length <= 1) return;
+            var barrier = new DaqRecoveryBatchBarrier(runId, runEpoch, expected);
+            var aliases = (correlationAliases ?? Array.Empty<Guid>())
+                .Append(correlationId)
+                .Where(value => value != Guid.Empty)
+                .Distinct()
+                .ToArray();
+            var existingBarrier = aliases
+                .Select(alias => _daqRecoveryBatchBarriers.TryGetValue(
+                    alias,
+                    out var found)
+                    ? found
+                    : null)
+                .FirstOrDefault(found => found != null);
+            if (existingBarrier != null)
+                barrier = existingBarrier;
+            foreach (var alias in aliases)
+            {
+                _daqRecoveryBatchBarriers[alias] = barrier;
+                _daqRecoveryBatchAliases[alias] = correlationId;
+            }
+        }
+
+        private async Task<bool> WaitForDaqRecoveryBatchBarrierAsync(
+            DaqAutoRecoveryContext context)
+        {
+            if (context == null ||
+                !_daqRecoveryBatchBarriers.TryGetValue(context.CorrelationId, out var barrier))
+                return true;
+            if (barrier.RunId != context.RunId || barrier.RunEpoch != context.RunEpoch)
+                return false;
+            return await barrier.SignalReadyAndWaitAsync(
+                    context.Device,
+                    context.Cancellation.Token)
+                .ConfigureAwait(false);
+        }
+
+        private void MarkDaqRecoveryBatchTerminal(DaqAutoRecoveryContext context)
+        {
+            if (context == null ||
+                !_daqRecoveryBatchBarriers.TryGetValue(context.CorrelationId, out var barrier))
+                return;
+            if (!barrier.MarkTerminal(context.Device)) return;
+            foreach (var alias in _daqRecoveryBatchBarriers
+                         .Where(pair => ReferenceEquals(pair.Value, barrier))
+                         .Select(pair => pair.Key)
+                         .ToArray())
+            {
+                ((ICollection<KeyValuePair<Guid, DaqRecoveryBatchBarrier>>)_daqRecoveryBatchBarriers)
+                    .Remove(new KeyValuePair<Guid, DaqRecoveryBatchBarrier>(alias, barrier));
+                _daqRecoveryBatchAliases.TryRemove(alias, out _);
+            }
+        }
 
         internal static bool ShouldEscalateSoftwareRecovery(int attempt)
         {
             return attempt >= SoftwareRecoveryEscalationAttempts;
+        }
+
+        internal static bool IsSoftwareRecoveryHardDeadlineElapsed(
+            long startedTicks,
+            long nowTicks,
+            long stopwatchFrequency,
+            int hardDeadlineMs = RecoveryGroupHardDeadlineMs)
+        {
+            if (startedTicks <= 0 || nowTicks < startedTicks || stopwatchFrequency <= 0)
+                return false;
+            var elapsedTicks = nowTicks - startedTicks;
+            var requiredTicks = Math.Max(1, hardDeadlineMs) / 1000.0 * stopwatchFrequency;
+            return elapsedTicks >= requiredTicks;
         }
 
         public static int SelectUnattendedProcessRestartRetryDelayMs(int completedAttempts)
@@ -142,9 +403,14 @@ namespace Controller
             // 同步存储调用已超过看门狗时限时，本进程无法取消该内核I/O，也不能在
             // 同一批次上并行重写。第一次确认 stall 就请求安全整批/进程交接；
             // 交接仍须满足断能与耐久边界，未满足时保持安全停止。
-            return (RequiresImmediateProcessRecycle(faultCode) ||
-                    ShouldEscalateSoftwareRecovery(attempt)) &&
-                   !ShouldKeepSoftwareRecoveryLocal(stage, faultCode);
+            if (RequiresImmediateProcessRecycle(faultCode)) return true;
+            if (!ShouldEscalateSoftwareRecovery(attempt)) return false;
+
+            // Local means "prefer an in-process repair before the threshold", never
+            // "retry forever". V2.12.0.29 combined the old local-stage predicate with the
+            // threshold using &&, so DaqCallbackStale could retry hundreds of times without
+            // opening the unattended recycle circuit.
+            return true;
         }
 
         internal static bool ShouldEnterSoftwareRecoveryCircuitOpen(
@@ -249,9 +515,9 @@ namespace Controller
                 runEpoch != Interlocked.Read(ref _runEpoch))
                 return false;
 
-            // 可重放的DAQ/外部基础设施抖动不是“所有卡钳都坏”的证据，继续对受影响组
-            // 断能并按30秒封顶退避；但已形成不可重放序号空洞的 QueueFull/Worker/
-            // RawPermanent 必须在第3次转整批/进程回收，禁止在同进程伪装成无限抖动。
+            // 可重放的DAQ/外部基础设施抖动不是“所有卡钳都坏”的证据，前两次优先在
+            // 受影响组内修复；第3次仍未闭环即说明本进程恢复生命周期失效，必须转入
+            // 统一StopAll/整批回收。该升级仍是软件故障，不会伪装成卡钳永久报警。
             // DaqPersistenceWriteStall is already a confirmed, non-cancellable synchronous
             // storage stall.  It must reach the same real circuit-opening branch on attempt 1;
             // gating this method with the generic three-attempt threshold would make the
@@ -260,8 +526,8 @@ namespace Controller
             {
                 if (attempt == SoftwareRecoveryEscalationAttempts || attempt % 10 == 0)
                     _log.Warn(
-                        $"局部基础设施自愈已连续{attempt}次失败，保持受影响组断能并持续重试；" +
-                        $"不升级全局StopAll。Stage={stage} FaultCode={faultCode ?? "Unknown"} " +
+                        $"局部基础设施自愈已连续{attempt}次失败，尚未达到有界回收阈值；" +
+                        $"Stage={stage} FaultCode={faultCode ?? "Unknown"} " +
                         $"Channels=[{string.Join(",", affectedChannels ?? Array.Empty<int>())}] " +
                         $"Error={reason}",
                         "EPB");
@@ -422,8 +688,11 @@ namespace Controller
             IEnumerable<int> affectedChannels,
             string reason,
             Guid correlationId,
-            string faultCode = null)
+            string faultCode = null,
+            long recoveryStartedTicks = 0)
         {
+            if (recoveryStartedTicks <= 0)
+                recoveryStartedTicks = Stopwatch.GetTimestamp();
             var runId = _activeBatchId;
             var runEpoch = Interlocked.Read(ref _runEpoch);
             // 故障码必须在第一次调度时冻结并跨异常/重登记原样传递；若只保留人类可读
@@ -473,6 +742,27 @@ namespace Controller
                                 channel => _channelRuntimeStateStore.Get(channel)?.State ??
                                            ChannelRuntimeState.NotEnabled);
                             if (eligible.Length == 0) return;
+
+                            if (IsSoftwareRecoveryHardDeadlineElapsed(
+                                    recoveryStartedTicks,
+                                    Stopwatch.GetTimestamp(),
+                                    Stopwatch.Frequency))
+                            {
+                                var deadlineAttempt = _isolatedInfrastructureRecoveryAttempts
+                                    .TryGetValue(attemptKey, out var currentAttempt)
+                                    ? currentAttempt
+                                    : 0;
+                                TryEscalateSoftwareRecoveryCircuitOpen(
+                                    "IsolatedInfrastructureRecoveryHardDeadline",
+                                    $"Reason={reason}; Hydraulic={hydraulicGroupId}; " +
+                                    $"HardDeadlineMs={RecoveryGroupHardDeadlineMs}",
+                                    eligible,
+                                    runId,
+                                    runEpoch,
+                                    Math.Max(SoftwareRecoveryEscalationAttempts, deadlineAttempt),
+                                    frozenFaultCode);
+                                return;
+                            }
 
                             var attempt = _isolatedInfrastructureRecoveryAttempts.AddOrUpdate(
                                 attemptKey,
@@ -573,7 +863,8 @@ namespace Controller
                                 requested,
                                 reason,
                                 correlationId,
-                                frozenFaultCode);
+                                frozenFaultCode,
+                                recoveryStartedTicks);
                     }
                 }), "IsolatedInfrastructureRecovery");
             }
@@ -616,8 +907,11 @@ namespace Controller
         {
             if (context == null) throw new ArgumentNullException(nameof(context));
             context.ValidationPhase = "RecoveryOwnership";
+            var batchCorrelation = ResolveDaqRecoveryBatchCorrelation(
+                context.CorrelationId,
+                _daqRecoveryBatchAliases);
             var leases = await AcquireRecoveryOwnershipsAsync(
-                    $"DAQ:{context.Device}:{context.CorrelationId:N}",
+                    $"DAQ_BATCH:{batchCorrelation:N}",
                     RecoveryOwnerPriority.Daq,
                     context.AffectedChannels,
                     context.Cancellation.Token)
@@ -642,6 +936,18 @@ namespace Controller
                         "DaqRecoveryOwnershipPreempted");
                 }))
                 .ToArray();
+        }
+
+        internal static Guid ResolveDaqRecoveryBatchCorrelation(
+            Guid individualCorrelation,
+            IReadOnlyDictionary<Guid, Guid> aliases)
+        {
+            if (individualCorrelation == Guid.Empty) return Guid.Empty;
+            return aliases != null &&
+                   aliases.TryGetValue(individualCorrelation, out var batchCorrelation) &&
+                   batchCorrelation != Guid.Empty
+                ? batchCorrelation
+                : individualCorrelation;
         }
 
         private void ReleaseDaqRecoveryOwnerships(DaqAutoRecoveryContext context)
@@ -680,19 +986,25 @@ namespace Controller
                         .ToArray();
                     _log.Error(
                         $"DAQ恢复超过{RecoveryGroupHardDeadlineMs}ms未提交，" +
-                        $"执行受影响组Stop→Start等价清场。Device={context.Device} " +
+                        $"停止局部重试并转入无人值守整批回收。Device={context.Device} " +
                         $"Channels=[{string.Join(",", channels)}] " +
                         $"Phase={context.ValidationPhase} CorrelationId={context.CorrelationId:N}",
                         "AI");
 
-                    CompleteCancelledRecovery(context, "AffectedGroupHardDeadlineReset");
-                    await ExecuteAffectedGroupResetAsync(
-                            channels,
-                            $"DaqRecoveryHardDeadline:{context.Device}",
-                            context.CorrelationId,
-                            context.RunId,
-                            context.RunEpoch)
-                        .ConfigureAwait(false);
+                    var escalated = TryEscalateSoftwareRecoveryCircuitOpen(
+                        "DaqRecoveryHardDeadline",
+                        $"Device={context.Device}; Phase={context.ValidationPhase}; " +
+                        $"CorrelationId={context.CorrelationId:N}",
+                        channels,
+                        context.RunId,
+                        context.RunEpoch,
+                        SoftwareRecoveryEscalationAttempts,
+                        context.TriggerCode);
+                    CompleteCancelledRecovery(
+                        context,
+                        escalated
+                            ? "DaqRecoveryHardDeadlineBatchRecycle"
+                            : "DaqRecoveryHardDeadlineRunChanged");
                 }
                 catch (OperationCanceledException) { }
                 catch (Exception ex)
