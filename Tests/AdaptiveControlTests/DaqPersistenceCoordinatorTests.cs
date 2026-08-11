@@ -71,6 +71,12 @@ namespace AdaptiveControlTests
                        x.State == DaqPersistenceState.Failed &&
                        x.Code == "DaqPersistenceQueueFull") == 1,
                 "同一次持久化容量满重复发布 Failed，可能造成 UI/恢复任务风暴");
+            var capacityFault = states.First(x =>
+                x.State == DaqPersistenceState.Failed &&
+                x.Code == "DaqPersistenceQueueFull");
+            Assert(capacityFault.PendingHeadSequence > 0 ||
+                   capacityFault.InFlightSequence > 0,
+                "持久化故障状态事件未报告队头或在途序号，现场无法解释未通过谓词");
             var snapshot = coordinator.GetSnapshot("Dev1");
             Assert(snapshot.OverCapacityDroppedBatchCount == 0 &&
                    snapshot.DiscardedGenerationBatchCount == 0,
@@ -376,9 +382,15 @@ namespace AdaptiveControlTests
                 "第三批写入后耐久前缀未放行");
 
             coordinator.SuppressAfter("Dev1", DateTime.UtcNow, 3, Guid.NewGuid());
-            Assert(coordinator.WaitForDurablePrefixAsync(
-                    "Dev1", 3, 50, CancellationToken.None).GetAwaiter().GetResult(),
-                "主动截止错误撤销了截止前已真实写入的耐久前缀");
+            var frozenPrefix = coordinator.WaitForDurablePrefixDetailedAsync(
+                    "Dev1", 3, 50, CancellationToken.None).GetAwaiter().GetResult();
+            Assert(frozenPrefix.Completed &&
+                   frozenPrefix.Boundary == 3 &&
+                   frozenPrefix.Persisted == 3 &&
+                   frozenPrefix.PendingHeadSequence == 0 &&
+                   frozenPrefix.InFlightSequence == 0 &&
+                   string.IsNullOrEmpty(frozenPrefix.PendingPredicate),
+                "Persisted等于冻结截止时没有立即通过，或结构化排空结果不完整");
 
             DequeuePublishesInFlightBeforeRemovingQueueHead();
             SuppressionCutoffUsesAtomicUtcTicks();

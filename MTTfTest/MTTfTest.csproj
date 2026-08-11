@@ -379,21 +379,6 @@
           Condition="'@(SuggestedBindingRedirects)' == '' and Exists('$(_GenerateBindingRedirectsIntermediateAppConfig)')">
     <Delete Files="$(_GenerateBindingRedirectsIntermediateAppConfig)" />
   </Target>
-  <!--
-    bin\Release 是 VS/MSBuild 可反复覆盖的暂存目录，不能保留上一次正式包的身份。
-    普通 VS2022 Release 生成后，自动复制到独立目录并重新生成与本次输出匹配的清单。
-    正式发布脚本会传入 FormalReleaseBuild=true，避免重复生成 VS 候选。
-  -->
-  <Target Name="RemoveStaleReleasePackageIdentity"
-          BeforeTargets="PrepareForBuild"
-          Condition="'$(Configuration)' == 'Release' and '$(FormalReleaseBuild)' != 'true' and '$(DesignTimeBuild)' != 'true'">
-    <Delete Files="$(TargetDir)build-identity.json;$(TargetDir)SHA256SUMS.txt" />
-  </Target>
-  <Target Name="SealVs2022ReleaseCandidate"
-          AfterTargets="Build"
-          Condition="'$(Configuration)' == 'Release' and '$(FormalReleaseBuild)' != 'true' and '$(DesignTimeBuild)' != 'true'">
-    <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\..\Tools\Seal-Vs2022-Candidate.ps1&quot; -OutputDirectory &quot;$(TargetDir).&quot;" />
-  </Target>
   <Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">
     <PropertyGroup>
       <ErrorText>这台计算机上缺少此项目引用的 NuGet 程序包。使用“NuGet 程序包还原”可下载这些程序包。有关更多信息，请参见 http://go.microsoft.com/fwlink/?LinkID=322105。缺少的文件是 {0}。</ErrorText>

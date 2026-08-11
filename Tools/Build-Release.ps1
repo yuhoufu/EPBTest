@@ -173,6 +173,7 @@ function Invoke-CandidateTest {
 # 编译；在正式构建前显式检查，避免 VS 缓存或手工编辑再次生成“类型不存在”的假版本。
 Assert-LegacyCompileItems -ProjectRelativePath 'Controller\Controller.csproj' -RequiredItems @(
     'EpbManager.FieldMetrics.cs',
+    'EpbManager.DaqLiveness.cs',
     'LatestPairMailbox.cs',
     'ReleasePackageVerifier.cs',
     'UiCurveContinuityPolicy.cs',

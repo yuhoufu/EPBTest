@@ -17,21 +17,314 @@ namespace AdaptiveControlTests
             var passed = 0;
             Run("EPB8从Slot506起才进入液压成员快照", FutureSlotEligibilityIsAtomic, ref passed);
             Run("液压超时与DAQ恢复只有一个所有者", HigherRecoveryPreemptsAndWaitsForHydraulic, ref passed);
+            Run("双DAQ批次对同一液压组共享引用计数所有权", SameDaqBatchSharesHydraulicOwnership, ref passed);
             Run("恢复阶段忽略取消仍受硬期限约束", IgnoredCancellationCannotHoldRecoveryStage, ref passed);
             Run("DAQ恢复先到必须等待整组截止且重入后才能提交", RecoveryWaitsForCutoffAndRejoin, ref passed);
             Run("迟到旧代清理不得删除新代液压参与状态", LateCleanupCannotTouchNewParticipantVersion, ref passed);
             Run("连续100次恢复故障无所有权和Failure=1残留", HundredFaultsLeaveNoOwnerOrResetLoop, ref passed);
             Run("活动圈上限不触发DAQ任务重建", ActiveCycleLimitIsNotADaqTaskFault, ref passed);
-            Run("基础设施恢复永不拖停健康DAQ组", InfrastructureRecoveryRemainsLocal, ref passed);
-            Run("确定性处理空洞第3次升级无人值守整批回收", DeterministicGapEscalatesAtThirdAttempt, ref passed);
+            Run("基础设施恢复前两次局部处理且第3次有界整批回收", InfrastructureRecoveryRemainsLocal, ref passed);
+            Run("软件与确定性DAQ故障第3次升级无人值守整批回收", DeterministicGapEscalatesAtThirdAttempt, ref passed);
             Run("final reject永久空洞禁止DAQ同进程恢复提交", PermanentGapBlocksDaqRecoveryCommit, ref passed);
             Run("基础设施恢复次数按RunEpoch隔离", InfrastructureAttemptsAreRunScoped, ref passed);
             Run("旧Run受影响组清场不得阻塞或修改新Run", AffectedGroupResetIsRunScoped, ref passed);
             Run("基础设施重试冻结完整液压组成员", InfrastructureCohortSurvivesRuntimeRemoval, ref passed);
             Run("压力证据陈旧只重启所属液压组DAQ采样", PressureEvidenceRearmIsGroupScoped, ref passed);
             Run("DAQ停止后取消仍必须完成重新启动", CancellationCannotSplitDaqRestart, ref passed);
+            Run("双DAQ同一扫描恢复在两台均验证前禁止单边重入", SimultaneousDaqRecoveryUsesBatchBarrier, ref passed);
             Run("进程回收失败按5秒/15秒退避且受RunId与三次预算门禁", ProcessRestartRetryIsBoundedAndRunScoped, ref passed);
+            Run("自动恢复保留根RunId且多通道Starting幂等", UnattendedRunChainIdentityIsStable, ref passed);
+            Run("基础设施异常重新登记仍沿用首次60秒硬期限", InfrastructureRecoveryDeadlineIsMonotonic, ref passed);
+            Run("DAQ重新使能或重入提交异常必须立即安全回滚", DaqRejoinFailureRequiresImmediateRollback, ref passed);
+            Run("自动重启子进程必须确认全部授权通道已启动", UnattendedChildStartRequiresCompleteCohort, ref passed);
+            Run("自动重启按耐久成功圈续跑且不得重启已完成通道", UnattendedRestartUsesDurableRemainingCycles, ref passed);
             return passed;
+        }
+
+        private static void UnattendedRestartUsesDurableRemainingCycles()
+        {
+            var checkpoint = new Dictionary<string, int>
+            {
+                ["1"] = 12,
+                ["4"] = 0,
+                ["6"] = 8
+            };
+            var durable = new Dictionary<int, int>
+            {
+                [1] = 11, // DB 已提交，但进程在检查点事件前退出：允许采用更小值
+                [4] = 0,  // 已完成通道必须从恢复启动集合移除
+                [6] = 8
+            };
+            var plan = EpbManager.BuildUnattendedRemainingCyclePlan(
+                new[] { 1, 4, 6 },
+                checkpoint,
+                durable);
+            Assert(plan.IsValid &&
+                   plan.Channels.SequenceEqual(new[] { 1, 6 }) &&
+                   plan.RemainingCycles[1] == 11 &&
+                   plan.RemainingCycles[4] == 0,
+                "耐久进度领先或已完成通道的恢复计划错误");
+
+            durable[6] = 9;
+            var regressed = EpbManager.BuildUnattendedRemainingCyclePlan(
+                new[] { 1, 4, 6 },
+                checkpoint,
+                durable);
+            Assert(!regressed.IsValid &&
+                   regressed.Error.Contains("UnattendedProgressRegression") &&
+                   regressed.Error.Contains("EPB=6"),
+                "SQLite/XML成功圈数相对检查点倒退时仍允许自动恢复");
+
+            checkpoint.Remove("1");
+            var missing = EpbManager.BuildUnattendedRemainingCyclePlan(
+                new[] { 1, 4 },
+                checkpoint,
+                new Dictionary<int, int> { [1] = 0, [4] = 0 });
+            Assert(!missing.IsValid &&
+                   missing.Error.Contains("UnattendedCheckpointRemainingMissing"),
+                "缺失通道检查点进度时仍允许自动恢复");
+        }
+
+        private static void UnattendedChildStartRequiresCompleteCohort()
+        {
+            var runId = Guid.NewGuid();
+            var complete = new BatchStartResult(
+                runId,
+                new[] { 6, 1, 4 },
+                Array.Empty<ChannelStartFault>());
+            Assert(string.IsNullOrEmpty(EpbManager.ValidateUnattendedBatchStartResult(
+                       new[] { 1, 4, 6 },
+                       complete)),
+                "全部授权通道已启动仍被拒绝");
+
+            var partial = new BatchStartResult(
+                runId,
+                new[] { 1, 4 },
+                new[]
+                {
+                    new ChannelStartFault(
+                        6,
+                        "DaqStartPreflight",
+                        "DaqRecoveryFreshnessTimeout",
+                        FaultScope.DaqGroup)
+                });
+            var partialError = EpbManager.ValidateUnattendedBatchStartResult(
+                new[] { 1, 4, 6 },
+                partial);
+            Assert(partialError.Contains("Missing=[6]") &&
+                   partialError.Contains("EPB6:DaqStartPreflight"),
+                "自动重启子进程错误接受了部分通道启动");
+            Assert(EpbManager.ValidateUnattendedBatchStartResult(
+                       new[] { 1 },
+                       null) == "UnattendedStartResultMissing" &&
+                   EpbManager.ValidateUnattendedBatchStartResult(
+                       new[] { 1 },
+                       new BatchStartResult(
+                           Guid.Empty,
+                           new[] { 1 },
+                           Array.Empty<ChannelStartFault>())) == "UnattendedStartRunIdMissing",
+                "无人值守启动缺少结果或RunId时未拒绝");
+        }
+
+        private static void DaqRejoinFailureRequiresImmediateRollback()
+        {
+            Assert(EpbManager.RequiresImmediateDaqRejoinSafetyRollback(
+                       "PowerEnableThenMechanicalRelease") &&
+                   EpbManager.RequiresImmediateDaqRejoinSafetyRollback(
+                       "RejoinAndCommit") &&
+                   !EpbManager.RequiresImmediateDaqRejoinSafetyRollback(
+                       "PersistenceFreshness") &&
+                   !EpbManager.RequiresImmediateDaqRejoinSafetyRollback(
+                       "EmergencyPowerOffBarrier"),
+                "DAQ重入后异常与仍保持全断能的验证异常分类错误");
+        }
+
+        private static void InfrastructureRecoveryDeadlineIsMonotonic()
+        {
+            const long frequency = 10_000;
+            const long started = 50_000;
+            Assert(!EpbManager.IsSoftwareRecoveryHardDeadlineElapsed(
+                       started,
+                       started + 599_999,
+                       frequency,
+                       hardDeadlineMs: 60_000) &&
+                   EpbManager.IsSoftwareRecoveryHardDeadlineElapsed(
+                       started,
+                       started + 600_000,
+                       frequency,
+                       hardDeadlineMs: 60_000),
+                "60秒硬期限边界计算错误");
+            Assert(EpbManager.IsSoftwareRecoveryHardDeadlineElapsed(
+                    started,
+                    started + 610_000,
+                    frequency,
+                    hardDeadlineMs: 60_000),
+                "异常重登记后错误从新时间起点重新计算硬期限");
+        }
+
+        private static void UnattendedRunChainIdentityIsStable()
+        {
+            var root = Guid.NewGuid().ToString("N");
+            var recovered = Guid.NewGuid().ToString("N");
+            var continuation = EpbManager.SelectUnattendedRunChainTransition(
+                root,
+                root,
+                string.Empty,
+                0,
+                armed: true,
+                recoveryChainPendingStart: true,
+                inProcessRecoveryPending: false,
+                incomingRunId: recovered);
+            Assert(continuation.RecoveryContinuation &&
+                   continuation.ProcessRestartContinuation &&
+                   continuation.RecoveryMode == "ProcessRestart" &&
+                   !continuation.NewAuthorizationChain &&
+                   continuation.RootRunId == root &&
+                   continuation.ParentRunId == root &&
+                   continuation.CurrentRunId == recovered &&
+                   continuation.RestartGeneration == 1,
+                "自动恢复新执行覆盖了首次人工授权的根RunId");
+
+            var repeatedStarting = EpbManager.SelectUnattendedRunChainTransition(
+                continuation.CurrentRunId,
+                continuation.RootRunId,
+                continuation.ParentRunId,
+                continuation.RestartGeneration,
+                armed: true,
+                recoveryChainPendingStart: false,
+                inProcessRecoveryPending: false,
+                incomingRunId: recovered);
+            Assert(repeatedStarting.SameRun &&
+                   !repeatedStarting.NewAuthorizationChain &&
+                   repeatedStarting.RootRunId == root &&
+                   repeatedStarting.ParentRunId == root &&
+                   repeatedStarting.RestartGeneration == 1,
+                "同一批次多个Starting事件重置了恢复链或重启代次");
+
+            var manual = Guid.NewGuid().ToString("N");
+            var newAuthorization = EpbManager.SelectUnattendedRunChainTransition(
+                recovered,
+                root,
+                root,
+                1,
+                armed: true,
+                recoveryChainPendingStart: false,
+                inProcessRecoveryPending: false,
+                incomingRunId: manual);
+            Assert(newAuthorization.NewAuthorizationChain &&
+                   newAuthorization.RootRunId == manual &&
+                   newAuthorization.ParentRunId.Length == 0 &&
+                   newAuthorization.RestartGeneration == 0,
+                "显式新人工启动没有建立新的授权链和独立重启预算");
+
+            var inProcess = Guid.NewGuid().ToString("N");
+            var inProcessContinuation = EpbManager.SelectUnattendedRunChainTransition(
+                recovered,
+                root,
+                root,
+                1,
+                armed: true,
+                recoveryChainPendingStart: false,
+                inProcessRecoveryPending: true,
+                incomingRunId: inProcess);
+            Assert(inProcessContinuation.RecoveryContinuation &&
+                   !inProcessContinuation.ProcessRestartContinuation &&
+                   inProcessContinuation.RecoveryMode == "InProcess" &&
+                   !inProcessContinuation.NewAuthorizationChain &&
+                   inProcessContinuation.RootRunId == root &&
+                   inProcessContinuation.ParentRunId == recovered &&
+                   inProcessContinuation.CurrentRunId == inProcess &&
+                   inProcessContinuation.RestartGeneration == 2,
+                "同进程自动恢复被误判为新人工授权或丢失恢复链身份");
+            Assert(EpbManager.ShouldRestartAfterRecoveryStartupFailure(false) &&
+                   !EpbManager.ShouldRestartAfterRecoveryStartupFailure(true),
+                "恢复提交后的观察性异常仍会再次回收健康新批次");
+            Assert(EpbManager.CanCommitUnattendedRecovery(
+                       armed: true,
+                       processRecoveryPending: false,
+                       inProcessRecoveryPending: true,
+                       revocationObserved: false) &&
+                   !EpbManager.CanCommitUnattendedRecovery(
+                       armed: true,
+                       processRecoveryPending: true,
+                       inProcessRecoveryPending: false,
+                       revocationObserved: true),
+                "人工停止的同步撤权屏障仍允许并发自动恢复重新授权");
+        }
+
+        private static void SimultaneousDaqRecoveryUsesBatchBarrier()
+        {
+            RunAsync(async () =>
+            {
+                var batchCorrelation = Guid.NewGuid();
+                var dev1Correlation = Guid.NewGuid();
+                var dev2Correlation = Guid.NewGuid();
+                var aliases = new Dictionary<Guid, Guid>
+                {
+                    [dev1Correlation] = batchCorrelation,
+                    [dev2Correlation] = batchCorrelation
+                };
+                Assert(EpbManager.ResolveDaqRecoveryBatchCorrelation(
+                           dev1Correlation,
+                           aliases) == batchCorrelation &&
+                       EpbManager.ResolveDaqRecoveryBatchCorrelation(
+                           dev2Correlation,
+                           aliases) == batchCorrelation,
+                    "先形成的双DAQ独立关联号没有合并到同一批次恢复所有者");
+                var now = DateTime.UtcNow;
+                var gapTick = Stopwatch.GetTimestamp();
+                Assert(EpbManager.ShouldMergeDaqRecoveryEvents(
+                           now,
+                           now.AddMilliseconds(20),
+                           gapTick,
+                           gapTick + Stopwatch.Frequency / 100,
+                           Stopwatch.Frequency) &&
+                       !EpbManager.ShouldMergeDaqRecoveryEvents(
+                           now,
+                           now.AddSeconds(2),
+                           gapTick,
+                           gapTick + Stopwatch.Frequency * 2,
+                           Stopwatch.Frequency),
+                    "双DAQ同步故障批次合并窗口错误地拆分同时事件或合并独立事件");
+                var barrier = new DaqRecoveryBatchBarrier(
+                    Guid.NewGuid(),
+                    17,
+                    new[] { "Dev1", "Dev2" });
+                using var timeout = new CancellationTokenSource(2000);
+                var dev1 = barrier.SignalReadyAndWaitAsync("Dev1", timeout.Token);
+                await Task.Delay(20).ConfigureAwait(false);
+                Assert(!dev1.IsCompleted, "Dev1在Dev2尚未验证时提前通过共同恢复屏障");
+                var dev2 = barrier.SignalReadyAndWaitAsync("Dev2", timeout.Token);
+                Assert(await dev1.ConfigureAwait(false) &&
+                       await dev2.ConfigureAwait(false),
+                    "双DAQ均完成验证后共同恢复屏障仍未释放");
+                Assert(!barrier.MarkTerminal("Dev1") &&
+                       barrier.MarkTerminal("Dev2"),
+                    "双DAQ批次屏障没有等待两台设备分别形成终态");
+            });
+        }
+
+        private static void SameDaqBatchSharesHydraulicOwnership()
+        {
+            RunAsync(async () =>
+            {
+                var coordinator = new HydraulicRecoveryOwnershipCoordinator();
+                const string owner = "DAQ_BATCH:shared";
+                var dev1 = await coordinator.AcquireAsync(
+                    1, owner, RecoveryOwnerPriority.Daq, 1000, CancellationToken.None);
+                var dev2 = await coordinator.AcquireAsync(
+                    1, owner, RecoveryOwnerPriority.Daq, 1000, CancellationToken.None);
+                Assert(coordinator.ActiveCount == 1 &&
+                       !dev1.Token.IsCancellationRequested &&
+                       !dev2.Token.IsCancellationRequested,
+                    "同一双DAQ批次的第二个设备错误抢占并取消第一个设备");
+                dev1.Dispose();
+                Assert(coordinator.ActiveCount == 1,
+                    "共享所有权首个租约释放后提前移除了批次所有者");
+                dev2.Dispose();
+                Assert(coordinator.ActiveCount == 0,
+                    "共享所有权全部租约释放后仍残留所有者");
+            });
         }
 
         private static void FutureSlotEligibilityIsAtomic()
@@ -303,10 +596,14 @@ namespace AdaptiveControlTests
             }
 
             Assert(!EpbManager.ShouldPublishUnattendedBatchRecycle(
-                       300,
+                       2,
+                       "IsolatedInfrastructureRecovery",
+                       "DaqCallbackStale") &&
+                   EpbManager.ShouldPublishUnattendedBatchRecycle(
+                       3,
                        "IsolatedInfrastructureRecovery",
                        "DaqCallbackStale"),
-                "可恢复DAQ采样抖动被错误升级为进程回收");
+                "可恢复DAQ采样故障没有在两次局部尝试后有界升级");
 
             Assert(EpbManager.RequiresImmediateProcessRecycle("DaqPersistenceWriteStall") &&
                    EpbManager.ShouldPublishUnattendedBatchRecycle(

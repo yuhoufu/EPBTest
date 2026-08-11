@@ -29,8 +29,8 @@ class FieldGateValidatorTests(unittest.TestCase):
             f"2026-08-08 10:00:00.000\tINFO\tFIELD\tFieldMetric SESSION Phase=Start RunId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa Channels=4,9 Closed=False Detail=BatchFormal ProductVersion=V2.12.0.29 AssemblyVersion=2.12.0.29 ProcessId=1234 ExecutablePath=D:\\EPBTest\\MTTFTest.exe ExeSha256={sha} ConfigSha256={sha} GitCommit={commit} GitDirty=False BuildUtc=2026-08-08T00:00:00Z AsyncLogDropped=0 PackageVerified=True PackageCode=Verified PackageFiles=96\n"
             "2026-08-08 10:00:00.100\tINFO\tFIELD\tFieldMetric STATE RunId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa Device=Dev1 Channel=4 State=Running Reason=Running Revision=1 CorrelationId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa RunEpoch=1 Enabled=True Formal=True Timer=True Runner=True Energized=False\n"
             "2026-08-08 10:00:00.100\tINFO\tFIELD\tFieldMetric STATE RunId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa Device=Dev2 Channel=9 State=Running Reason=Running Revision=1 CorrelationId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa RunEpoch=1 Enabled=True Formal=True Timer=True Runner=True Energized=False\n"
-            "2026-08-08 10:00:01.000\tINFO\tFIELD\tFieldMetric DAQ Phase=Running Device=Dev1 ControlDepth=0 ControlOldestMs=0.0 ControlProcessMs=1.0 SubscriberMaxMs=1.0 ProcessingDepth=0 ProcessingCapacity=64 ProcessingOldestMs=0.0 ProcessingInFlight=0 RawDepth=0 RawCapacity=64 RawInFlight=0 PersistenceState=Recovered PersistenceDepth=1 PersistenceOldestMs=5.0 CallbackAgeMs=10.0 ControlProcessedAgeMs=10.0 Produced=100 Processed=100 Allocated=100 Accepted=100 Observed=100 Published=100 RawTransferred=100 Persisted=99 TerminallyHandled=99 SuppressBoundary=0 SuppressThrough=0 Suppressed=0 SuppressedCumulative=0 SuppressedFirst=0 SuppressedLast=0 SuppressedRanges=0 FirstPermanentGap=0 PendingProcessingGap=0 PendingRawGap=0 Discontinuities=0 DurabilityBlocked=False Discarded=0 OverCapacityDropped=0 AsyncLogDropped=0\n"
-            "2026-08-08 10:00:01.000\tINFO\tFIELD\tFieldMetric DAQ Phase=Running Device=Dev2 ControlDepth=0 ControlOldestMs=0.0 ControlProcessMs=1.0 SubscriberMaxMs=1.0 ProcessingDepth=0 ProcessingCapacity=64 ProcessingOldestMs=0.0 ProcessingInFlight=0 RawDepth=0 RawCapacity=64 RawInFlight=0 PersistenceState=Recovered PersistenceDepth=1 PersistenceOldestMs=5.0 CallbackAgeMs=10.0 ControlProcessedAgeMs=10.0 Produced=100 Processed=100 Allocated=100 Accepted=100 Observed=100 Published=100 RawTransferred=100 Persisted=99 TerminallyHandled=99 SuppressBoundary=0 SuppressThrough=0 Suppressed=0 SuppressedCumulative=0 SuppressedFirst=0 SuppressedLast=0 SuppressedRanges=0 FirstPermanentGap=0 PendingProcessingGap=0 PendingRawGap=0 Discontinuities=0 DurabilityBlocked=False Discarded=0 OverCapacityDropped=0 AsyncLogDropped=0\n"
+            "2026-08-08 10:00:01.000\tINFO\tFIELD\tFieldMetric DAQ Phase=Running Device=Dev1 ControlDepth=0 ControlOldestMs=0.0 ControlProcessMs=1.0 SubscriberMaxMs=1.0 ProcessingDepth=0 ProcessingCapacity=64 ProcessingOldestMs=0.0 ProcessingInFlight=0 RawDepth=0 RawCapacity=64 RawInFlight=0 PersistenceState=Recovered PersistenceDepth=1 PersistenceOldestMs=5.0 CallbackAgeMs=10.0 CallbackGapEvents=0 LastCallbackGapMs=0.0 ControlProcessedAgeMs=10.0 Produced=100 Processed=100 Allocated=100 Accepted=100 Observed=100 Published=100 RawTransferred=100 Persisted=99 TerminallyHandled=99 SuppressBoundary=0 SuppressThrough=0 Suppressed=0 SuppressedCumulative=0 SuppressedFirst=0 SuppressedLast=0 SuppressedRanges=0 FirstPermanentGap=0 PendingProcessingGap=0 PendingRawGap=0 Discontinuities=0 DurabilityBlocked=False Discarded=0 OverCapacityDropped=0 AsyncLogDropped=0\n"
+            "2026-08-08 10:00:01.000\tINFO\tFIELD\tFieldMetric DAQ Phase=Running Device=Dev2 ControlDepth=0 ControlOldestMs=0.0 ControlProcessMs=1.0 SubscriberMaxMs=1.0 ProcessingDepth=0 ProcessingCapacity=64 ProcessingOldestMs=0.0 ProcessingInFlight=0 RawDepth=0 RawCapacity=64 RawInFlight=0 PersistenceState=Recovered PersistenceDepth=1 PersistenceOldestMs=5.0 CallbackAgeMs=10.0 CallbackGapEvents=0 LastCallbackGapMs=0.0 ControlProcessedAgeMs=10.0 Produced=100 Processed=100 Allocated=100 Accepted=100 Observed=100 Published=100 RawTransferred=100 Persisted=99 TerminallyHandled=99 SuppressBoundary=0 SuppressThrough=0 Suppressed=0 SuppressedCumulative=0 SuppressedFirst=0 SuppressedLast=0 SuppressedRanges=0 FirstPermanentGap=0 PendingProcessingGap=0 PendingRawGap=0 Discontinuities=0 DurabilityBlocked=False Discarded=0 OverCapacityDropped=0 AsyncLogDropped=0\n"
             "2026-08-08 10:00:02.000\tINFO\tFIELD\tFieldMetric DO_OFF Device=Dev1 Channel=4 CommandId=a Result=True Late=False QueueWaitMs=1 NIWriteMs=5 WorkerMs=6 TotalMs=7\n"
             "2026-08-08 10:00:02.000\tINFO\tFIELD\tFieldMetric DO_OFF Device=Dev2 Channel=9 CommandId=b Result=True Late=False QueueWaitMs=1 NIWriteMs=5 WorkerMs=6 TotalMs=7\n"
             "2026-08-08 10:00:10.000\tINFO\tFIELD\tFieldMetric UI DelayP95Ms=5 DelayMaxMs=10 FlushP95Ms=2 FlushMaxMs=3 AppendMaxMs=1 TrimMaxMs=1 ScrollMaxMs=1 RenderedBatches=2 RenderedLines=4 Pending=0 Dropped=0 FilePending=0 FileDropped=0\n"
@@ -50,7 +50,8 @@ class FieldGateValidatorTests(unittest.TestCase):
         daq_payload = (
             "ControlDepth=0 ControlOldestMs=0.0 ControlProcessMs=1.0 "
             "SubscriberMaxMs=1.0 PersistenceState=Recovered PersistenceDepth=1 "
-            "PersistenceOldestMs=5.0 CallbackAgeMs=10.0 ControlProcessedAgeMs=10.0 "
+            "PersistenceOldestMs=5.0 CallbackAgeMs=10.0 CallbackGapEvents=0 "
+            "LastCallbackGapMs=0.0 ControlProcessedAgeMs=10.0 "
             "ProcessingDepth=0 ProcessingCapacity=64 ProcessingOldestMs=0.0 "
             "ProcessingInFlight=0 RawDepth=0 RawCapacity=64 RawInFlight=0 "
             "Produced=100 Processed=100 Allocated=100 Accepted=100 Observed=100 "
@@ -108,6 +109,245 @@ class FieldGateValidatorTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
+    def test_authorized_process_restart_chain_is_not_manual_session_stitching(self) -> None:
+        root_run = "a" * 32
+        child_run = "c" * 32
+        sha = "a" * 64
+        commit = "b" * 40
+        with (self.root / "log" / "run.log").open("a", encoding="utf-8") as stream:
+            stream.write(
+                f"2026-08-08 10:00:00.050\tINFO\tFIELD\tFieldMetric RECOVERY_CHAIN "
+                f"RootRunId={root_run} ParentRunId=none CurrentRunId={root_run} "
+                "RestartGeneration=0 SameRun=False RecoveryContinuation=False "
+                "RecoveryMode=ManualAuthorization "
+                "FaultCorrelationId=none RecoveryNonceSha256=none\n"
+                "2026-08-08 10:00:00.060\tINFO\tFIELD\tFieldMetric DAQ_LIVENESS "
+                f"Result=Configured IntervalMs=20 ThresholdMs=100 ProcessId=1234 RunId={root_run}\n"
+                f"2026-08-08 11:00:01.000\tINFO\tFIELD\tFieldMetric RECOVERY_CHAIN "
+                f"RootRunId={root_run} ParentRunId={root_run} CurrentRunId={child_run} "
+                "RestartGeneration=1 SameRun=False RecoveryContinuation=True "
+                "RecoveryMode=ProcessRestart "
+                f"FaultCorrelationId={'d' * 32} RecoveryNonceSha256={'e' * 64}\n"
+                f"2026-08-08 11:00:01.100\tINFO\tFIELD\tFieldMetric SESSION Phase=Start "
+                f"RunId={child_run} Channels=4,9 Closed=False Detail=BatchFormal "
+                "ProductVersion=V2.12.0.29 AssemblyVersion=2.12.0.29 ProcessId=5678 "
+                f"ExecutablePath=D:\\EPBTest\\MTTFTest.exe ExeSha256={sha} ConfigSha256={sha} "
+                f"GitCommit={commit} GitDirty=False BuildUtc=2026-08-08T00:00:00Z "
+                "AsyncLogDropped=0 PackageVerified=True PackageCode=Verified PackageFiles=96\n"
+                f"2026-08-08 11:00:02.000\tINFO\tFIELD\tFieldMetric SESSION Phase=Stop "
+                f"RunId={child_run} Channels=4,9 Closed=True Detail=SystemFault "
+                "ProductVersion=V2.12.0.29 ExeSha256=unused ConfigSha256=unused "
+                "GitCommit=unused GitDirty=False BuildUtc=unused AsyncLogDropped=0\n"
+            )
+
+        _, result = self.run_gate([
+            "--minimum-hours", "0",
+            "--performance-gates", "optional",
+        ])
+        check = next(
+            item for item in result["checks"]
+            if item["name"] == "验收区间内重启均属于同一授权运行链"
+        )
+        self.assertTrue(check["passed"], check["evidence"])
+        self.assertEqual(root_run, result["metrics"]["selected_root_run_id"])
+        self.assertEqual([root_run, child_run], result["metrics"]["selected_run_chain"])
+        self.assertEqual(1, result["metrics"]["selected_restart_count"])
+
+        run_log = self.root / "log" / "run.log"
+        text = run_log.read_text(encoding="utf-8")
+        run_log.write_text(text.replace("e" * 64, "none", 1), encoding="utf-8")
+        _, invalid = self.run_gate([
+            "--minimum-hours", "0",
+            "--performance-gates", "optional",
+        ])
+        invalid_check = next(
+            item for item in invalid["checks"]
+            if item["name"] == "验收区间内重启均属于同一授权运行链"
+        )
+        self.assertFalse(invalid_check["passed"])
+        self.assertIn("missingProcessRestartNonceHash", invalid_check["evidence"])
+
+    def test_v32_restart_chain_requires_registered_attempt_outcome(self) -> None:
+        root_run = "a" * 32
+        child_run = "c" * 32
+        nonce_hash = "e" * 64
+        sha = "a" * 64
+        commit = "b" * 40
+        run_log = self.root / "log" / "run.log"
+        run_log.write_text(
+            run_log.read_text(encoding="utf-8").replace(
+                "V2.12.0.29", "V2.12.0.32"
+            ).replace("2.12.0.29", "2.12.0.32"),
+            encoding="utf-8",
+        )
+        with run_log.open("a", encoding="utf-8") as stream:
+            stream.write(
+                f"2026-08-08 10:00:00.050\tINFO\tFIELD\tFieldMetric RECOVERY_CHAIN "
+                f"RootRunId={root_run} ParentRunId=none CurrentRunId={root_run} "
+                "RestartGeneration=0 SameRun=False RecoveryContinuation=False "
+                "RecoveryMode=ManualAuthorization "
+                "FaultCorrelationId=none RecoveryNonceSha256=none\n"
+                "2026-08-08 10:00:00.060\tINFO\tFIELD\tFieldMetric DAQ_LIVENESS "
+                f"Result=Configured IntervalMs=20 ThresholdMs=100 ProcessId=1234 RunId={root_run}\n"
+                f"2026-08-08 10:59:59.500\tINFO\tFIELD\tFieldMetric PROCESS_RESTART "
+                f"Result=Registered RootRunId={root_run} CurrentRunId={root_run} "
+                f"RestartGeneration=0 AttemptInWindow=1 RecoveryNonceSha256={nonce_hash} "
+                f"FaultCorrelationId={'d' * 32} CorrelationId={'d' * 32} ReasonCode=PendingHandoff\n"
+                f"2026-08-08 10:59:59.600\tINFO\tFIELD\tFieldMetric PROCESS_RESTART "
+                f"Result=ChildCreated RootRunId={root_run} CurrentRunId={root_run} "
+                f"RestartGeneration=0 AttemptInWindow=1 RecoveryNonceSha256={nonce_hash} "
+                f"FaultCorrelationId={'d' * 32} CorrelationId={'d' * 32} ReasonCode=HandoffLaunched\n"
+                f"2026-08-08 11:00:01.000\tINFO\tFIELD\tFieldMetric RECOVERY_CHAIN "
+                f"RootRunId={root_run} ParentRunId={root_run} CurrentRunId={child_run} "
+                "RestartGeneration=1 SameRun=False RecoveryContinuation=True "
+                "RecoveryMode=ProcessRestart "
+                f"FaultCorrelationId={'d' * 32} RecoveryNonceSha256={nonce_hash}\n"
+                "2026-08-08 11:00:01.050\tINFO\tFIELD\tFieldMetric DAQ_LIVENESS "
+                f"Result=Configured IntervalMs=20 ThresholdMs=100 ProcessId=5678 RunId={child_run}\n"
+                f"2026-08-08 11:00:01.100\tINFO\tFIELD\tFieldMetric SESSION Phase=Start "
+                f"RunId={child_run} Channels=4,9 Closed=False Detail=BatchFormal "
+                "ProductVersion=V2.12.0.32 AssemblyVersion=2.12.0.32 ProcessId=5678 "
+                f"ExecutablePath=D:\\EPBTest\\MTTFTest.exe ExeSha256={sha} ConfigSha256={sha} "
+                f"GitCommit={commit} GitDirty=False BuildUtc=2026-08-08T00:00:00Z "
+                "AsyncLogDropped=0 PackageVerified=True PackageCode=Verified PackageFiles=96\n"
+                f"2026-08-08 11:00:02.000\tINFO\tFIELD\tFieldMetric SESSION Phase=Stop "
+                f"RunId={child_run} Channels=4,9 Closed=True Detail=SystemFault "
+                "ProductVersion=V2.12.0.32 ExeSha256=unused ConfigSha256=unused "
+                "GitCommit=unused GitDirty=False BuildUtc=unused AsyncLogDropped=0\n"
+            )
+
+        _, result = self.run_gate([
+            "--expected-version", "V2.12.0.32",
+            "--minimum-hours", "0",
+            "--performance-gates", "optional",
+        ])
+        check = next(
+            item for item in result["checks"]
+            if item["name"] == "验收区间内重启均属于同一授权运行链"
+        )
+        self.assertTrue(check["passed"], check["evidence"])
+        self.assertIn("processRestartRecords=2", check["evidence"])
+        liveness_check = next(
+            item for item in result["checks"]
+            if item["name"] == "独立DAQ存活监督保持20ms扫描和100ms安全上限"
+        )
+        self.assertTrue(liveness_check["passed"], liveness_check["evidence"])
+
+        text = run_log.read_text(encoding="utf-8")
+        run_log.write_text(
+            text.replace(
+                "ThresholdMs=100 ProcessId=1234",
+                "ThresholdMs=500 ProcessId=1234",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        _, relaxed = self.run_gate([
+            "--expected-version", "V2.12.0.32",
+            "--minimum-hours", "0",
+            "--performance-gates", "optional",
+        ])
+        relaxed_check = next(
+            item for item in relaxed["checks"]
+            if item["name"] == "独立DAQ存活监督保持20ms扫描和100ms安全上限"
+        )
+        self.assertFalse(relaxed_check["passed"])
+
+        run_log.write_text(
+            text.replace(
+                "CallbackGapEvents=0 LastCallbackGapMs=0.0 ",
+                "",
+            ),
+            encoding="utf-8",
+        )
+        _, missing_gap_evidence = self.run_gate([
+            "--expected-version", "V2.12.0.32",
+            "--minimum-hours", "0",
+            "--performance-gates", "optional",
+        ])
+        gap_check = next(
+            item for item in missing_gap_evidence["checks"]
+            if item["name"] == "DAQ历史回调空窗证据可在回调恢复后追溯"
+        )
+        self.assertFalse(gap_check["passed"])
+
+        run_log.write_text(
+            "\n".join(
+                line for line in text.splitlines()
+                if not ("PROCESS_RESTART" in line and "Result=ChildCreated" in line)
+            ) + "\n",
+            encoding="utf-8",
+        )
+        _, invalid = self.run_gate([
+            "--expected-version", "V2.12.0.32",
+            "--minimum-hours", "0",
+            "--performance-gates", "optional",
+        ])
+        invalid_check = next(
+            item for item in invalid["checks"]
+            if item["name"] == "验收区间内重启均属于同一授权运行链"
+        )
+        self.assertFalse(invalid_check["passed"])
+        self.assertIn("missingAttemptOutcome", invalid_check["evidence"])
+
+    def test_v32_in_process_recovery_chain_does_not_require_process_nonce(self) -> None:
+        root_run = "a" * 32
+        child_run = "c" * 32
+        sha = "a" * 64
+        commit = "b" * 40
+        run_log = self.root / "log" / "run.log"
+        run_log.write_text(
+            run_log.read_text(encoding="utf-8").replace(
+                "V2.12.0.29", "V2.12.0.32"
+            ).replace("2.12.0.29", "2.12.0.32"),
+            encoding="utf-8",
+        )
+        with run_log.open("a", encoding="utf-8") as stream:
+            stream.write(
+                f"2026-08-08 10:00:00.050\tINFO\tFIELD\tFieldMetric RECOVERY_CHAIN "
+                f"RootRunId={root_run} ParentRunId=none CurrentRunId={root_run} "
+                "RestartGeneration=0 SameRun=False RecoveryContinuation=False "
+                "RecoveryMode=ManualAuthorization "
+                "FaultCorrelationId=none RecoveryNonceSha256=none\n"
+                "2026-08-08 10:00:00.060\tINFO\tFIELD\tFieldMetric DAQ_LIVENESS "
+                f"Result=Configured IntervalMs=20 ThresholdMs=100 ProcessId=1234 RunId={root_run}\n"
+                f"2026-08-08 11:00:01.000\tINFO\tFIELD\tFieldMetric RECOVERY_CHAIN "
+                f"RootRunId={root_run} ParentRunId={root_run} CurrentRunId={child_run} "
+                "RestartGeneration=1 SameRun=False RecoveryContinuation=True "
+                "RecoveryMode=InProcess "
+                f"FaultCorrelationId={'d' * 32} RecoveryNonceSha256=none\n"
+                f"2026-08-08 11:00:01.100\tINFO\tFIELD\tFieldMetric SESSION Phase=Start "
+                f"RunId={child_run} Channels=4,9 Closed=False Detail=BatchFormal "
+                "ProductVersion=V2.12.0.32 AssemblyVersion=2.12.0.32 ProcessId=1234 "
+                f"ExecutablePath=D:\\EPBTest\\MTTFTest.exe ExeSha256={sha} ConfigSha256={sha} "
+                f"GitCommit={commit} GitDirty=False BuildUtc=2026-08-08T00:00:00Z "
+                "AsyncLogDropped=0 PackageVerified=True PackageCode=Verified PackageFiles=96\n"
+                "2026-08-08 11:00:01.150\tINFO\tFIELD\tFieldMetric DAQ_LIVENESS "
+                f"Result=Configured IntervalMs=20 ThresholdMs=100 ProcessId=1234 RunId={child_run}\n"
+                f"2026-08-08 11:00:02.000\tINFO\tFIELD\tFieldMetric SESSION Phase=Stop "
+                f"RunId={child_run} Channels=4,9 Closed=True Detail=SystemFault "
+                "ProductVersion=V2.12.0.32 ExeSha256=unused ConfigSha256=unused "
+                "GitCommit=unused GitDirty=False BuildUtc=unused AsyncLogDropped=0\n"
+            )
+
+        _, result = self.run_gate([
+            "--expected-version", "V2.12.0.32",
+            "--minimum-hours", "0",
+            "--performance-gates", "optional",
+        ])
+        chain_check = next(
+            item for item in result["checks"]
+            if item["name"] == "验收区间内重启均属于同一授权运行链"
+        )
+        self.assertTrue(chain_check["passed"], chain_check["evidence"])
+        self.assertIn("inprocess", chain_check["evidence"].lower())
+        self.assertIn("processRestartRecords=0", chain_check["evidence"])
+        liveness_check = next(
+            item for item in result["checks"]
+            if item["name"] == "独立DAQ存活监督保持20ms扫描和100ms安全上限"
+        )
+        self.assertTrue(liveness_check["passed"], liveness_check["evidence"])
+
     def run_gate(
         self,
         extra_arguments: list[str] | None = None,
@@ -117,6 +357,8 @@ class FieldGateValidatorTests(unittest.TestCase):
             sys.executable,
             str(SCRIPT),
             str(self.root),
+            "--expected-version",
+            "V2.12.0.29",
             "--minimum-hours",
             "1",
             "--performance-gates",
@@ -530,7 +772,7 @@ class FieldGateValidatorTests(unittest.TestCase):
         process, result = self.run_gate()
         self.assertEqual(2, process.returncode)
         failures = {item["name"] for item in result["checks"] if not item["passed"]}
-        self.assertIn("正式圈证据全部属于当前RunId", failures)
+        self.assertIn("正式圈证据全部属于同一授权运行链", failures)
 
     def test_second_unsealed_run_inside_older_window_blocks_fallback(self) -> None:
         run_log = self.root / "log" / "run.log"
@@ -827,6 +1069,21 @@ class FieldGateValidatorTests(unittest.TestCase):
         self.assertEqual(2, process.returncode)
         failures = {item["name"] for item in result["checks"] if not item["passed"]}
         self.assertIn("停止Raw发布与持久化边界闭合", failures)
+
+    def test_frozen_prefix_with_terminally_handled_tail_passes(self) -> None:
+        run_log = self.root / "log" / "run.log"
+        text = run_log.read_text(encoding="utf-8")
+        text = text.replace(
+            "Device=Dev2 RawDrained=True Boundary=100 FinalBoundary=100 BoundaryStable=True Published=100 Persisted=100 Depth=0",
+            "Device=Dev2 RawDrained=True Boundary=100 FinalBoundary=105 BoundaryStable=True Published=105 Persisted=100 Depth=0 "
+            "SuppressAfter=100 SuppressThrough=9223372036854775807 TerminallyHandled=105 Head=0 InFlight=0",
+            1,
+        )
+        run_log.write_text(text, encoding="utf-8")
+        process, result = self.run_gate()
+        self.assertEqual(0, process.returncode, process.stderr + process.stdout)
+        checks = {item["name"]: item for item in result["checks"]}
+        self.assertEqual("PASS", checks["停止Raw发布与持久化边界闭合"]["status"])
 
     def test_running_terminal_state_fails_strict_terminal_gate(self) -> None:
         run_log = self.root / "log" / "run.log"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate a sealed EPB project directory against V2.12.0.29 field red lines."""
+"""Validate a sealed EPB project directory against V2.12.0.32 field red lines."""
 
 from __future__ import annotations
 
@@ -74,11 +74,19 @@ class HostResourceThresholds:
 @dataclass
 class ValidationSession:
     run_id: str
+    root_run_id: str
+    run_ids: tuple[str, ...]
+    restart_count: int
+    recovery_chain_valid: bool
+    recovery_chain_evidence: str
+    segments: tuple[tuple[datetime, datetime], ...]
     started: datetime
     ended: datetime
     start_record: dict[str, str]
     terminal_record: dict[str, str]
     terminal_count: int
+    process_ids: tuple[int, ...]
+    run_process_ids: tuple[tuple[str, int], ...]
 
     @property
     def duration_hours(self) -> float:
@@ -302,13 +310,299 @@ def select_validation_session(
     )
     if not matching:
         return None, sessions
+    ended = record_timestamp(matching[0])
+    chain_records = [
+        item for item in field
+        if item.get("Kind") == "RECOVERY_CHAIN"
+        and record_timestamp(item) is not None
+        and record_timestamp(item) <= ended
+    ]
+    nodes: dict[str, tuple[str, str | None, int]] = {}
+    recovery_modes: dict[str, str] = {}
+    conflicts: list[str] = []
+    current_version = normalized_version(expected_version)
+    for item in chain_records:
+        current = normalized_guid(item.get("CurrentRunId"))
+        root = normalized_guid(item.get("RootRunId"))
+        parent = normalized_guid(item.get("ParentRunId"))
+        try:
+            generation = int(item.get("RestartGeneration", ""))
+        except (TypeError, ValueError):
+            generation = -1
+        if current is None or root is None or generation < 0:
+            continue
+        mode = str(item.get("RecoveryMode") or "").strip().lower()
+        if current_version == "2.12.0.32":
+            if mode not in {
+                "samerun", "manualauthorization", "processrestart", "inprocess"
+            }:
+                conflicts.append(f"{current}:invalidRecoveryMode={mode or 'missing'}")
+            else:
+                previous_mode = recovery_modes.get(current)
+                # A multi-channel batch emits a transition once and then SameRun for
+                # repeated Starting events. Preserve the substantive transition mode.
+                if mode != "samerun":
+                    if previous_mode not in {None, "samerun", mode}:
+                        conflicts.append(
+                            f"{current}:recoveryMode={previous_mode}!={mode}"
+                        )
+                    recovery_modes[current] = mode
+                elif previous_mode is None:
+                    recovery_modes[current] = mode
+        elif generation > 0:
+            # V2.12.0.29 legacy logs did not emit RecoveryMode; every child was a
+            # process handoff and therefore keeps the legacy nonce requirement.
+            recovery_modes[current] = "processrestart"
+
+        if generation > 0:
+            nonce_hash = str(item.get("RecoveryNonceSha256") or "")
+            fault_correlation = normalized_guid(item.get("FaultCorrelationId"))
+            effective_mode = recovery_modes.get(current, mode)
+            if fault_correlation is None:
+                conflicts.append(f"{current}:missingFaultCorrelation")
+            if effective_mode == "processrestart" and re.fullmatch(
+                r"[0-9a-fA-F]{64}", nonce_hash
+            ) is None:
+                conflicts.append(f"{current}:missingProcessRestartNonceHash")
+            if current_version == "2.12.0.32" and effective_mode not in {
+                "processrestart", "inprocess"
+            }:
+                conflicts.append(
+                    f"{current}:invalidContinuationMode={effective_mode or 'missing'}"
+                )
+        node = (root, parent, generation)
+        previous = nodes.get(current)
+        if previous is not None and previous != node:
+            conflicts.append(f"{current}:{previous}!={node}")
+        nodes[current] = node
+
+    root_run_id = run_id
+    run_ids = (run_id,)
+    chain_valid = True
+    chain_notes: list[str] = []
+    latest_node = nodes.get(run_id)
+    if latest_node is not None:
+        root_run_id = latest_node[0]
+        relevant = {
+            current: node for current, node in nodes.items()
+            if node[0] == root_run_id
+        }
+        by_generation: dict[int, str] = {}
+        for current, (_, _, generation) in relevant.items():
+            if generation in by_generation and by_generation[generation] != current:
+                chain_valid = False
+                chain_notes.append(f"duplicateGeneration={generation}")
+            by_generation[generation] = current
+        maximum_generation = max(by_generation, default=0)
+        expected_generations = list(range(maximum_generation + 1))
+        if sorted(by_generation) != expected_generations:
+            chain_valid = False
+            chain_notes.append(
+                f"generations={sorted(by_generation)} expected={expected_generations}"
+            )
+        ordered = tuple(
+            by_generation[generation]
+            for generation in expected_generations
+            if generation in by_generation
+        )
+        if not ordered or ordered[0] != root_run_id or ordered[-1] != run_id:
+            chain_valid = False
+            chain_notes.append(f"ordered={ordered} root={root_run_id} latest={run_id}")
+        for generation, current in enumerate(ordered):
+            _, parent, recorded_generation = relevant[current]
+            expected_parent = None if generation == 0 else ordered[generation - 1]
+            if recorded_generation != generation or parent != expected_parent:
+                chain_valid = False
+                chain_notes.append(
+                    f"link={current}:parent={parent},expected={expected_parent},"
+                    f"generation={recorded_generation}/{generation}"
+                )
+            if current_version == "2.12.0.32":
+                mode = recovery_modes.get(current, "")
+                allowed_modes = (
+                    {"manualauthorization", "samerun"}
+                    if generation == 0
+                    else {"processrestart", "inprocess"}
+                )
+                if mode not in allowed_modes:
+                    chain_valid = False
+                    chain_notes.append(
+                        f"mode={current}:{mode or 'missing'},expected={sorted(allowed_modes)}"
+                    )
+        if ordered:
+            run_ids = ordered
+    elif any(normalized_guid(item.get("CurrentRunId")) == run_id for item in chain_records):
+        chain_valid = False
+        chain_notes.append("latestRecoveryChainRecordInvalid")
+
+    if conflicts:
+        chain_valid = False
+        chain_notes.extend(conflicts)
+
+    starts_by_run = {
+        current: [item for item in starts if normalized_guid(item.get("RunId")) == current]
+        for current in run_ids
+    }
+    terminals_by_run = {
+        current: [item for item in terminals if normalized_guid(item.get("RunId")) == current]
+        for current in run_ids
+    }
+    if any(len(items) != 1 for items in starts_by_run.values()):
+        chain_valid = False
+        chain_notes.append(
+            "startCounts=" + str({key: len(value) for key, value in starts_by_run.items()})
+        )
+    if any(len(items) != 1 for items in terminals_by_run.values()):
+        chain_valid = False
+        chain_notes.append(
+            "terminalCounts=" + str({key: len(value) for key, value in terminals_by_run.items()})
+        )
+    if any(
+        normalized_version(item.get("ProductVersion")) != normalized_version(expected_version)
+        for items in starts_by_run.values() for item in items
+    ):
+        chain_valid = False
+        chain_notes.append("versionMismatchWithinChain")
+
+    run_process_ids = tuple(
+        (current, process_id)
+        for current in run_ids
+        for items in [starts_by_run.get(current, [])]
+        if len(items) == 1
+        for process_id in [integer_value(items[0], "ProcessId")]
+        if process_id is not None and process_id > 0
+    )
+    process_ids = tuple(sorted({process_id for _, process_id in run_process_ids}))
+    if len(run_process_ids) != len(run_ids):
+        chain_valid = False
+        chain_notes.append("processIdentityMissingWithinChain")
+
+    segments: list[tuple[datetime, datetime]] = []
+    for current in run_ids:
+        current_starts = starts_by_run.get(current, [])
+        current_terminals = terminals_by_run.get(current, [])
+        if len(current_starts) != 1 or len(current_terminals) != 1:
+            continue
+        segment_start = record_timestamp(current_starts[0])
+        segment_end = record_timestamp(current_terminals[0])
+        if segment_start is None or segment_end is None or segment_end < segment_start:
+            chain_valid = False
+            chain_notes.append(f"invalidSegment={current}:{segment_start}->{segment_end}")
+            continue
+        segments.append((segment_start, segment_end))
+    restart_gaps = [
+        max(0.0, (current[0] - previous[1]).total_seconds())
+        for previous, current in zip(segments, segments[1:])
+    ]
+    if any(gap > 300.0 for gap in restart_gaps):
+        chain_valid = False
+        chain_notes.append(f"restartGapsSeconds={restart_gaps}>300")
+    if any(current[0] < previous[1] for previous, current in zip(segments, segments[1:])):
+        chain_valid = False
+        chain_notes.append("overlappingRunSegments")
+
+    chain_start_records = [item for items in starts_by_run.values() for item in items]
+    chain_started = min(
+        (record_timestamp(item) for item in chain_start_records),
+        default=started,
+    )
+    process_restart_notes: list[str] = []
+    process_restart_records = [
+        item for item in field
+        if item.get("Kind") == "PROCESS_RESTART"
+        and record_timestamp(item) is not None
+        and chain_started <= record_timestamp(item) <= ended
+        and normalized_guid(item.get("RootRunId")) == root_run_id
+    ]
+    registered_by_nonce: dict[str, list[dict[str, str]]] = defaultdict(list)
+    for item in process_restart_records:
+        nonce_hash = str(item.get("RecoveryNonceSha256") or "").lower()
+        if item.get("Result", "").lower() == "registered":
+            registered_by_nonce[nonce_hash].append(item)
+    process_restart_run_ids = {
+        current for current, mode in recovery_modes.items()
+        if mode == "processrestart"
+    }
+    chain_nonce_hashes = {
+        str(item.get("RecoveryNonceSha256") or "").lower()
+        for item in chain_records
+        if normalized_guid(item.get("RootRunId")) == root_run_id
+        and normalized_guid(item.get("CurrentRunId")) in process_restart_run_ids
+        and re.fullmatch(
+            r"[0-9a-fA-F]{64}",
+            str(item.get("RecoveryNonceSha256") or ""),
+        ) is not None
+    }
+    startup_retry_nonce_hashes = {
+        str(item.get("RecoveryNonceSha256") or "").lower()
+        for item in field
+        if item.get("Kind") == "RECOVERY_STARTUP"
+        and item.get("Result", "").lower() in {"retryscheduled", "recovered"}
+        and record_timestamp(item) is not None
+        and chain_started <= record_timestamp(item) <= ended
+    }
+    for nonce_hash, registered in registered_by_nonce.items():
+        if re.fullmatch(r"[0-9a-f]{64}", nonce_hash) is None:
+            process_restart_notes.append("registeredNonceHashMissing")
+            continue
+        if len(registered) != 1:
+            process_restart_notes.append(
+                f"nonce={nonce_hash}:registeredCount={len(registered)}"
+            )
+        outcomes = [
+            item.get("Result", "").lower()
+            for item in process_restart_records
+            if str(item.get("RecoveryNonceSha256") or "").lower() == nonce_hash
+            and item.get("Result", "").lower() != "registered"
+        ]
+        if not any(
+            result in {"childcreated", "attemptfailed", "rejected", "terminalsafestop"}
+            for result in outcomes
+        ):
+            process_restart_notes.append(
+                f"nonce={nonce_hash}:missingAttemptOutcome"
+            )
+        if "childcreated" in outcomes and (
+            nonce_hash not in chain_nonce_hashes
+            and nonce_hash not in startup_retry_nonce_hashes
+        ):
+            process_restart_notes.append(
+                f"nonce={nonce_hash}:childCreatedWithoutConsumeOutcome"
+            )
+    process_evidence_required = (
+        current_version == "2.12.0.32" and bool(process_restart_run_ids)
+    )
+    if process_evidence_required and not registered_by_nonce:
+        process_restart_notes.append("processRestartRegistrationEvidenceMissing")
+    if process_restart_notes:
+        chain_valid = False
+        chain_notes.extend(process_restart_notes)
+    evidence = (
+        f"root={root_run_id}, runs={list(run_ids)}, restarts={max(0, len(run_ids) - 1)}, "
+        f"valid={chain_valid}, restartGapsSeconds={restart_gaps}, "
+        f"recoveryModes={recovery_modes}, processIds={list(process_ids)}, "
+        f"processRestartRecords={len(process_restart_records)}, "
+        f"notes={chain_notes or ['none']}"
+    )
+    root_start = next(
+        (item for item in chain_start_records if normalized_guid(item.get("RunId")) == root_run_id),
+        start,
+    )
     return ValidationSession(
         run_id=run_id,
-        started=started,
-        ended=record_timestamp(matching[0]),
-        start_record=start,
+        root_run_id=root_run_id,
+        run_ids=run_ids,
+        restart_count=max(0, len(run_ids) - 1),
+        recovery_chain_valid=chain_valid,
+        recovery_chain_evidence=evidence,
+        segments=tuple(segments),
+        started=chain_started,
+        ended=ended,
+        start_record=root_start,
         terminal_record=matching[0],
         terminal_count=len(matching),
+        process_ids=process_ids,
+        run_process_ids=run_process_ids,
     ), sessions
 
 
@@ -547,6 +841,40 @@ def heartbeat_summary(
         "expected_samples": expected_samples,
         "coverage": coverage,
         "maximum_gap_seconds": max(gaps),
+    }
+
+
+def heartbeat_summary_for_segments(
+    records: list[dict[str, str]],
+    segments: tuple[tuple[datetime, datetime], ...],
+    expected_interval_seconds: float,
+) -> dict[str, float | int | None]:
+    if not segments:
+        return heartbeat_summary(
+            records,
+            datetime.min,
+            datetime.min,
+            expected_interval_seconds,
+        )
+    summaries = [
+        heartbeat_summary(records, started, ended, expected_interval_seconds)
+        for started, ended in segments
+    ]
+    samples = sum(int(item["samples"] or 0) for item in summaries)
+    expected = sum(int(item["expected_samples"] or 0) for item in summaries)
+    segment_records = sum(
+        1 for record in records
+        if (timestamp := record_timestamp(record)) is not None
+        and any(started <= timestamp <= ended for started, ended in segments)
+    )
+    return {
+        "samples": samples,
+        "records": segment_records,
+        "expected_samples": expected,
+        "coverage": min(1.0, samples / max(1, expected)),
+        "maximum_gap_seconds": max(
+            float(item["maximum_gap_seconds"] or 0.0) for item in summaries
+        ),
     }
 
 
@@ -874,8 +1202,9 @@ def validate_performance_metrics(
     root: Path,
     final_production: bool,
     host_thresholds: HostResourceThresholds,
+    expected_version: str,
 ) -> None:
-    expected_run_id = session.run_id if session else None
+    expected_run_ids = set(session.run_ids) if session else set()
     expected_channels = session_channels(session)
     field = parse_key_value_records(logs, "FieldMetric ")
     daq = [item for item in field if item.get("Kind") == "DAQ" and item.get("Phase") == "Running"]
@@ -890,11 +1219,11 @@ def validate_performance_metrics(
     foreign_cycle_run_ids = sorted({
         normalized_guid(item.get("RunId")) or f"invalid:{item.get('RunId', '')}"
         for item in cycle_candidates
-        if normalized_guid(item.get("RunId")) != expected_run_id
+        if normalized_guid(item.get("RunId")) not in expected_run_ids
     })
     cycles = [
         item for item in cycle_candidates
-        if normalized_guid(item.get("RunId")) == expected_run_id
+        if normalized_guid(item.get("RunId")) in expected_run_ids
     ]
     host = parse_key_value_records(logs, "HostRuntime ")
     validate_host_runtime_metrics(
@@ -918,6 +1247,89 @@ def validate_performance_metrics(
         "host_runtime": len(host),
     }
     metrics["field_metric_devices"] = devices
+
+    all_liveness_configuration = [
+        item for item in field
+        if item.get("Kind") == "DAQ_LIVENESS"
+        and item.get("Result", "").lower() == "configured"
+    ]
+    liveness_required = normalized_version(expected_version) == "2.12.0.32"
+    liveness_configuration = [
+        item for item in all_liveness_configuration
+        if not liveness_required
+        or normalized_guid(item.get("RunId")) in expected_run_ids
+    ]
+    liveness_values = [
+        (
+            integer_value(item, "IntervalMs"),
+            finite_float_value(item, "ThresholdMs"),
+            integer_value(item, "ProcessId"),
+            normalized_guid(item.get("RunId")),
+        )
+        for item in liveness_configuration
+    ]
+    configured_process_ids = {
+        process_id for _, _, process_id, _ in liveness_values
+        if process_id is not None and process_id > 0
+    }
+    configured_run_process_ids = {
+        (run_id, process_id)
+        for _, _, process_id, run_id in liveness_values
+        if run_id is not None and process_id is not None and process_id > 0
+    }
+    required_process_ids = set(session.process_ids) if session else set()
+    required_run_process_ids = set(session.run_process_ids) if session else set()
+    liveness_valid = (
+        bool(liveness_values)
+        and all(
+            interval is not None and 0 < interval <= 20
+            and threshold is not None and 0 < threshold <= 100
+            and process_id is not None and process_id > 0
+            and (not liveness_required or run_id is not None)
+            for interval, threshold, process_id, run_id in liveness_values
+        )
+        and (
+            session is None
+            or bool(required_run_process_ids)
+            and required_run_process_ids.issubset(configured_run_process_ids)
+        )
+    )
+    metrics["daq_liveness_configuration"] = {
+        "records": len(liveness_values),
+        "values": liveness_values,
+        "required_process_ids": sorted(required_process_ids),
+        "configured_process_ids": sorted(configured_process_ids),
+        "required_run_process_ids": sorted(required_run_process_ids),
+        "configured_run_process_ids": sorted(configured_run_process_ids),
+    }
+    checks.append(Check(
+        "独立DAQ存活监督保持20ms扫描和100ms安全上限",
+        liveness_valid,
+        f"records={len(liveness_values)}, values={liveness_values}, "
+        f"requiredRunProcessIds={sorted(required_run_process_ids)}, "
+        f"configuredRunProcessIds={sorted(configured_run_process_ids)}",
+        required=liveness_required,
+    ))
+    gap_evidence_errors: list[str] = []
+    for item in daq:
+        gap_events = integer_value(item, "CallbackGapEvents")
+        last_gap_ms = finite_float_value(item, "LastCallbackGapMs")
+        if gap_events is None or gap_events < 0 or last_gap_ms is None or last_gap_ms < 0:
+            gap_evidence_errors.append(
+                f"{item.get('_Timestamp', 'unknown')}/{item.get('Device', 'missing')}:"
+                f"Events={item.get('CallbackGapEvents', 'missing')},"
+                f"LastMs={item.get('LastCallbackGapMs', 'missing')}"
+            )
+    metrics["daq_callback_gap_evidence"] = {
+        "records": len(daq),
+        "invalid_records": len(gap_evidence_errors),
+    }
+    checks.append(Check(
+        "DAQ历史回调空窗证据可在回调恢复后追溯",
+        bool(daq) and not gap_evidence_errors,
+        f"records={len(daq)}, invalid={gap_evidence_errors[:10]}",
+        required=liveness_required,
+    ))
     checks.append(Check(
         "结构化性能证据覆盖Dev1/Dev2",
         set(devices) == {"Dev1", "Dev2"},
@@ -925,9 +1337,9 @@ def validate_performance_metrics(
         required=required,
     ))
     checks.append(Check(
-        "正式圈证据全部属于当前RunId",
-        expected_run_id is not None and bool(cycle_candidates) and not foreign_cycle_run_ids,
-        f"expectedRunId={expected_run_id}, candidates={len(cycle_candidates)}, "
+        "正式圈证据全部属于同一授权运行链",
+        bool(expected_run_ids) and bool(cycle_candidates) and not foreign_cycle_run_ids,
+        f"expectedRunIds={sorted(expected_run_ids)}, candidates={len(cycle_candidates)}, "
         f"foreign={foreign_cycle_run_ids}",
         required=required,
     ))
@@ -947,10 +1359,9 @@ def validate_performance_metrics(
         heartbeat_metrics: dict[str, dict[str, dict[str, float | int | None]]] = {}
         for kind, streams, interval_seconds, maximum_gap_seconds in heartbeat_specs:
             summaries = {
-                stream: heartbeat_summary(
+                stream: heartbeat_summary_for_segments(
                     records,
-                    session.started,
-                    session.ended,
+                    session.segments,
                     interval_seconds,
                 )
                 for stream, records in streams.items()
@@ -1367,16 +1778,40 @@ def validate_performance_metrics(
         depth = integer_value(item, "Depth")
         discarded = integer_value(item, "Discarded")
         over_capacity = integer_value(item, "OverCapacityDropped")
+        suppress_after = integer_value(item, "SuppressAfter")
+        suppress_through = integer_value(item, "SuppressThrough")
+        terminally_handled = integer_value(item, "TerminallyHandled")
+        pending_head = integer_value(item, "Head")
+        in_flight = integer_value(item, "InFlight")
         require_recovered = boolean(item.get("RequireRecovered"))
         reasons: list[str] = []
         if boolean(item.get("Closed")) is not True:
             reasons.append("Closed!=True")
         if boolean(item.get("RawDrained")) is not True:
             reasons.append("RawDrained!=True")
+        persistence_drained = boolean(item.get("PersistenceDrained"))
+        if persistence_drained is False:
+            reasons.append("PersistenceDrained!=True")
         if boundary is None or boundary < 0:
             reasons.append("Boundary缺失或<0")
-        if final_boundary is None or final_boundary != boundary:
-            reasons.append("FinalBoundary!=Boundary")
+        if final_boundary is None or boundary is None or final_boundary < boundary:
+            reasons.append("FinalBoundary缺失或<Boundary")
+        elif final_boundary > boundary:
+            suppression_covers_tail = (
+                suppress_after == boundary and
+                suppress_through is not None and
+                suppress_through >= final_boundary and
+                terminally_handled is not None and
+                terminally_handled >= final_boundary and
+                published is not None and
+                published >= final_boundary and
+                (pending_head is not None and
+                 (pending_head <= 0 or pending_head > final_boundary)) and
+                (in_flight is not None and
+                 (in_flight <= 0 or in_flight > final_boundary))
+            )
+            if not suppression_covers_tail:
+                reasons.append("增长尾段缺少完整Suppressed/TerminallyHandled证据")
         if boolean(item.get("BoundaryStable")) is not True:
             reasons.append("BoundaryStable!=True")
         if published is None or boundary is None or published < boundary:
@@ -2118,7 +2553,7 @@ def serialized_check(check: Check) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("data_directory", type=Path)
-    parser.add_argument("--expected-version", default="V2.12.0.29")
+    parser.add_argument("--expected-version", default="V2.12.0.32")
     parser.add_argument("--expected-exe-sha256")
     parser.add_argument("--expected-config-sha256")
     parser.add_argument("--expected-git-commit")
@@ -2377,6 +2812,9 @@ def main() -> int:
         "performance_gates_required": performance_required,
         "session_marker_count": len(session_records),
         "selected_run_id": session.run_id if session else None,
+        "selected_root_run_id": session.root_run_id if session else None,
+        "selected_run_chain": list(session.run_ids) if session else [],
+        "selected_restart_count": session.restart_count if session else 0,
         "selected_session_started": session.started.isoformat(sep=" ") if session else None,
         "selected_session_ended": session.ended.isoformat(sep=" ") if session else None,
         "minimum_formal_cycles_per_channel": args.minimum_formal_cycles_per_channel,
@@ -2422,11 +2860,17 @@ def main() -> int:
             and record_timestamp(item) is not None
             and session.started <= record_timestamp(item) <= session.ended
         ]
+        overlapping_ids = [
+            normalized_guid(item.get("RunId")) for item in overlapping_starts
+        ]
+        start_counts = Counter(value for value in overlapping_ids if value is not None)
         checks.append(Check(
-            "验收区间没有重启或第二个RunId",
-            len(overlapping_starts) == 1,
+            "验收区间内重启均属于同一授权运行链",
+            session.recovery_chain_valid and
+            set(start_counts) == set(session.run_ids) and
+            all(count == 1 for count in start_counts.values()),
             f"startMarkersInWindow={len(overlapping_starts)}, "
-            f"runIds={sorted({item.get('RunId', '') for item in overlapping_starts})}",
+            f"startCounts={dict(start_counts)}, {session.recovery_chain_evidence}",
             required=performance_required,
         ))
         closed = boolean(session.terminal_record.get("Closed")) is True
@@ -2440,7 +2884,8 @@ def main() -> int:
         checks.append(Check(
             "同一RunId只有一个会话终态",
             session.terminal_count == 1,
-            f"runId={session.run_id}, terminalMarkers={session.terminal_count}",
+            f"currentRunId={session.run_id}, rootRunId={session.root_run_id}, "
+            f"terminalMarkers={session.terminal_count}",
             required=performance_required,
         ))
         identity = session.start_record
@@ -2594,6 +3039,7 @@ def main() -> int:
         root,
         args.acceptance_stage == "FinalProduction",
         host_thresholds,
+        args.expected_version,
     )
     validate_recovery_stability(
         scoped_logs,

@@ -54,6 +54,8 @@ namespace AdaptiveControlTests
             Run("恢复连续性故障后重新建立干净窗口", RecoveryVerifierResetsOnRealDiscontinuity, ref passed);
             Run("控制积压先追最新而回调故障才重建", DaqFastResyncRecreatePolicy, ref passed);
             Run("DAQ软件恢复持续局部退避且仅双重硬件证据报警", DaqSelfMaintenancePolicy, ref passed);
+            Run("独立DAQ存活监督在带电100ms陈旧时触发且恢复期间去重", IndependentDaqLivenessSupervisorPolicy, ref passed);
+            Run("后台冻结边界结果逐项报告Published与Raw未闭合谓词", BackgroundDrainResultExplainsPendingPredicate, ref passed);
             Run("恢复阶段只在终态导出完整重证据", IncidentSnapshotHeavyEvidencePolicy, ref passed);
             Run("百次事故症状共用容量2取证门且终态精确一次", IncidentEvidenceQueueIsBoundedAndCoalesced, ref passed);
             Run("DAQ恢复先恢复安全电源再做机械定位", DaqRecoveryPrerequisiteOrder, ref passed);
@@ -783,6 +785,70 @@ namespace AdaptiveControlTests
                 "DAQ自维护未保持局部退避或丢失通用三次阈值");
         }
 
+        private static void IndependentDaqLivenessSupervisorPolicy()
+        {
+            var stale = new DaqFreshnessSnapshot
+            {
+                Device = "Dev1",
+                Generation = 7,
+                LastCallbackMonotonicTicks = Stopwatch.GetTimestamp(),
+                CallbackAgeMs = 120,
+                LastProducedSequence = 100,
+                LastProcessedSequence = 100
+            };
+            var trip = EpbManager.EvaluateDaqLiveness(true, true, false, stale, 0, 100);
+            Assert(trip.Trip && trip.Code == "DaqCallbackStale",
+                "带电DAQ回调陈旧未由独立监督器触发");
+            Assert(!EpbManager.EvaluateDaqLiveness(true, false, false, stale, 0, 100).Trip,
+                "未带电设备被独立监督器错误断言为故障");
+            Assert(!EpbManager.EvaluateDaqLiveness(true, true, true, stale, 0, 100).Trip,
+                "既有恢复上下文期间重复发布DAQ存活故障");
+            stale.CallbackAgeMs = 99;
+            Assert(!EpbManager.EvaluateDaqLiveness(true, true, false, stale, 0, 100).Trip,
+                "100ms门槛以内的新鲜回调被错误停机");
+            stale.CallbackGapEventCount = 4;
+            stale.LastCallbackGapIntervalMs = 120;
+            var recoveredBeforeWatchdog = EpbManager.EvaluateDaqLiveness(
+                true,
+                true,
+                false,
+                stale,
+                observedGapEventCount: 3,
+                staleThresholdMs: 100);
+            Assert(recoveredBeforeWatchdog.Trip &&
+                   recoveredBeforeWatchdog.Code == "DaqCallbackGap",
+                "DAQ回调先恢复、监督器后执行时丢失了带电期间120ms历史空窗");
+            Assert(!EpbManager.EvaluateDaqLiveness(
+                       true,
+                       true,
+                       false,
+                       stale,
+                       observedGapEventCount: 4,
+                       staleThresholdMs: 100).Trip,
+                "已经消费的DAQ历史空窗事件被重复发布");
+        }
+
+        private static void BackgroundDrainResultExplainsPendingPredicate()
+        {
+            var pending = new DaqBackgroundDrainResult
+            {
+                Dev1Boundary = 100,
+                Dev2Boundary = 200,
+                Dev1Published = 100,
+                Dev1RawTransferred = 99,
+                Dev2Published = 199,
+                Dev2RawTransferred = 200,
+                Completed = false
+            };
+            Assert(pending.PendingPredicate == "Dev1.RawTransferred,Dev2.Published",
+                "后台排空结果没有指出真实未闭合谓词");
+            pending.Dev1RawTransferred = 100;
+            pending.Dev2Published = 200;
+            pending.Completed = true;
+            Assert(pending.PendingPredicate == "none",
+                "边界全部闭合后仍报告伪未决谓词");
+        }
+
         private static void IncidentSnapshotHeavyEvidencePolicy()
         {
             Assert(!EpbManager.ShouldIncludeFullDaqIncidentEvidence("00-trigger") &&
@@ -1174,9 +1240,10 @@ namespace AdaptiveControlTests
         {
             var latch = new DaqIncidentLatch();
             var run1 = Guid.NewGuid();
+            var firstSeen = DateTime.UtcNow;
             latch.BeginRun(run1, new[] { "Dev1", "Dev2" });
             var first = latch.Observe(run1, "Dev1", 5, "ControlLatencyExceeded", "late",
-                DateTime.UtcNow, new[] { 5, 4 }, primaryChannel: 5);
+                firstSeen, new[] { 5, 4 }, primaryChannel: 5);
             Assert(first.IsFirst && first.Context.PrimaryChannel == 5, "首事故或触发通道不正确");
             var derived = latch.Observe(run1, "Dev1", 5, "DaqSampleStale", "stale",
                 DateTime.UtcNow, new[] { 6 });
@@ -1190,8 +1257,34 @@ namespace AdaptiveControlTests
                    !latch.TryStartSnapshot(run1, "Dev1", out _), "同事故启动了多个主快照");
 
             var otherDevice = latch.Observe(run1, "Dev2", 2, "DaqSampleStale", "stale",
-                DateTime.UtcNow, new[] { 8 });
+                firstSeen.AddSeconds(1), new[] { 8 });
             Assert(otherDevice.Context.CorrelationId != first.Context.CorrelationId, "跨设备事故被错误合并");
+            latch.Complete("Dev1", first.Context.CorrelationId);
+            latch.Complete("Dev2", otherDevice.Context.CorrelationId);
+            var simultaneousCorrelation = Guid.NewGuid();
+            var simultaneousDev1 = latch.Observe(
+                run1, "Dev1", 6, "DaqCallbackStale", "shared pause",
+                DateTime.UtcNow, new[] { 4, 5 }, correlationId: simultaneousCorrelation);
+            var simultaneousDev2 = latch.Observe(
+                run1, "Dev2", 3, "DaqCallbackStale", "shared pause",
+                DateTime.UtcNow, new[] { 8, 9 }, correlationId: simultaneousCorrelation);
+            Assert(simultaneousDev1.Context.CorrelationId == simultaneousCorrelation &&
+                   simultaneousDev2.Context.CorrelationId == simultaneousCorrelation,
+                "同一扫描双DAQ异常没有复用批次级关联身份");
+            latch.Complete("Dev1", simultaneousCorrelation);
+            latch.Complete("Dev2", simultaneousCorrelation);
+            var automaticallyMergedDev1 = latch.Observe(
+                run1, "Dev1", 7, "DaqSampleStale", "cycle watchdog",
+                firstSeen.AddSeconds(3), new[] { 4, 5 });
+            var automaticallyMergedDev2 = latch.Observe(
+                run1, "Dev2", 4, "DaqCallbackGap", "liveness watchdog",
+                firstSeen.AddSeconds(3).AddMilliseconds(20), new[] { 8, 9 });
+            Assert(automaticallyMergedDev1.Context.CorrelationId ==
+                   automaticallyMergedDev2.Context.CorrelationId,
+                "两个入口在100ms内发现的双DAQ公共空窗没有从第一刻合并批次身份");
+            Assert(EpbManager.BuildDaqRecoveryTerminalKey("Dev1", simultaneousCorrelation) !=
+                   EpbManager.BuildDaqRecoveryTerminalKey("Dev2", simultaneousCorrelation),
+                "共享批次关联号错误地吞并了两台DAQ各自必须完成的终态");
             var run2 = Guid.NewGuid();
             latch.BeginRun(run2, new[] { "Dev1" });
             var newRun = latch.Observe(run2, "Dev1", 6, "DaqSampleStale", "stale",
@@ -1416,7 +1509,7 @@ namespace AdaptiveControlTests
             Directory.CreateDirectory(root);
             try
             {
-                const string version = "V2.12.0.29";
+                const string version = "V2.12.0.32";
                 const string commit = "0123456789abcdef0123456789abcdef01234567";
                 const string buildUtc = "2026-08-09T13:00:00.0000000Z";
                 const string configSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";

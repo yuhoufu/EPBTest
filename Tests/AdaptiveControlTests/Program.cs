@@ -4184,6 +4184,16 @@ namespace AdaptiveControlTests
             };
             Assert(!powerMissing.CanReleaseAcquisition,
                 "程控电源关闭未确认时不应允许释放DAQ");
+            Assert(EpbManager.CanDiscardHistoricalStopChecksForExplicitRestart(
+                       pressureOnly,
+                       explicitlyStopped: true) &&
+                   !EpbManager.CanDiscardHistoricalStopChecksForExplicitRestart(
+                       pressureOnly,
+                       explicitlyStopped: false) &&
+                   !EpbManager.CanDiscardHistoricalStopChecksForExplicitRestart(
+                       powerMissing,
+                       explicitlyStopped: true),
+                "显式停止后的重启放宽未限定为已确认电机断能和电源关闭");
 
             var motorMissing = new StopSafetyResult
             {
@@ -4223,7 +4233,30 @@ namespace AdaptiveControlTests
                 "DAQ停止后同一冻结边界的Raw/SQLite前缀被误拒绝");
             Assert(!EpbManager.IsFrozenStopPersistenceBoundaryClosed(
                     100, 101, true, 101, 101, 0),
-                "Raw只排到旧A时，更新B的SQLite水位仍伪装成最终收口");
+                "没有抑制终态证据时，增长的停止尾段被错误视为完整收口");
+            Assert(EpbManager.IsFrozenStopPersistenceBoundaryClosed(
+                    100, 105, true, 105, 100, 0,
+                    suppressAfterSequence: 100,
+                    suppressThroughSequence: long.MaxValue,
+                    lastTerminallyHandledSequence: 105),
+                "冻结前缀已落盘且截止后有限尾段已终态处理时仍未闭合");
+            Assert(!EpbManager.IsFrozenStopPersistenceBoundaryClosed(
+                    100, 105, true, 105, 100, 0,
+                    suppressAfterSequence: 100,
+                    suppressThroughSequence: 104,
+                    lastTerminallyHandledSequence: 105),
+                "抑制窗口没有覆盖完整尾段时错误放行");
+            Assert(!EpbManager.IsFrozenStopPersistenceBoundaryClosed(
+                    100, 105, true, 105, 100, 0,
+                    suppressAfterSequence: 100,
+                    suppressThroughSequence: long.MaxValue,
+                    lastTerminallyHandledSequence: 104),
+                "截止后尾段尚未全部终态处理时错误放行");
+            Assert(!EpbManager.IsFrozenStopPersistenceBoundaryClosed(
+                    100, 100, true, 100, 100, 0,
+                    pendingHeadSequence: 0,
+                    inFlightSequence: 100),
+                "队列Depth为0但截止批次仍在同步写调用中时错误放行");
             Assert(!EpbManager.IsFrozenStopPersistenceBoundaryClosed(
                     100, 100, false, 100, 100, 0),
                 "冻结边界的Raw链未排空却被持久化水位单独放行");
