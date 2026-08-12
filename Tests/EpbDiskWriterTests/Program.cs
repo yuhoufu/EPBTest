@@ -64,6 +64,9 @@ namespace EpbDiskWriterTests
                 Run("设备多通道批次事务写入", DeviceBatchWritesMultipleChannels);
                 Run("Latest并发导出原子且无临时残留", ConcurrentLatestExportsAreAtomic);
                 Run("Latest每通道计数收敛且Unlimited不删除", LatestPackageRetentionModes);
+                Run("暂停最近10圈重复请求只生成一个证据包", PauseLatestExportIsIdempotent);
+                Run("暂停后停止相同10圈不重复导出", PauseThenStopDoesNotDuplicateLatestPackage);
+                Run("仅停止包含最后未完整圈及零样本圈", StopLatestExportIncludesInterruptedCycle);
                 Run("不同数据根目录的写盘器可同时映射且保持隔离", DifferentRootsUseIndependentMappingScopes);
                 Run("Raw首次Flush不再主动丢弃缓存", RawFirstFlushPersistsBufferedData);
                 Run("Raw硬容量背压后全部批次落盘", RawCapacityBackpressurePreservesAllBatches);
@@ -1287,6 +1290,81 @@ namespace EpbDiskWriterTests
                     Assert(Directory.GetDirectories(channel).Length == 4,
                         "Latest Unlimited模式错误删除停止包");
                 }
+            });
+        }
+
+        private static void PauseLatestExportIsIdempotent()
+        {
+            WithRoot(root =>
+            {
+                var policy = NewPolicy(root);
+                using var writer = new EpbDiskWriter(policy);
+                var start = DateTime.UtcNow;
+                for (var cycle = 1; cycle <= 12; cycle++)
+                    WriteCompletedCycle(writer, 1, cycle, 2, start.AddSeconds(cycle));
+
+                writer.ExportLatestCyclesOnceNow(1, 10);
+                writer.ExportLatestCyclesOnceNow(1, 10);
+
+                var packages = Directory.GetDirectories(
+                    Path.Combine(policy.IndexAndExportPath, "Latest", "EPB1"));
+                Assert(packages.Length == 1, $"暂停重复导出生成了{packages.Length}个包");
+                Assert(Directory.GetFiles(packages[0], "*.csv").Length == 10, "暂停包不是最近10圈");
+                Assert(!File.Exists(CsvPath(packages[0], 1, 2)), "暂停包错误包含第2圈");
+                Assert(File.Exists(CsvPath(packages[0], 1, 3)), "暂停包缺少第3圈");
+                Assert(File.Exists(CsvPath(packages[0], 1, 12)), "暂停包缺少第12圈");
+            });
+        }
+
+        private static void PauseThenStopDoesNotDuplicateLatestPackage()
+        {
+            WithRoot(root =>
+            {
+                var policy = NewPolicy(root);
+                using var writer = new EpbDiskWriter(policy);
+                var start = DateTime.UtcNow;
+                for (var cycle = 1; cycle <= 10; cycle++)
+                    WriteCompletedCycle(writer, 2, cycle, 2, start.AddSeconds(cycle));
+
+                writer.ExportLatestCyclesOnceNow(2, 10);
+                writer.ExportLatestCyclesForStopNow(2, 10, 10);
+
+                var packages = Directory.GetDirectories(
+                    Path.Combine(policy.IndexAndExportPath, "Latest", "EPB2"));
+                Assert(packages.Length == 1, $"暂停后停止重复生成了{packages.Length}个相同包");
+            });
+        }
+
+        private static void StopLatestExportIncludesInterruptedCycle()
+        {
+            WithRoot(root =>
+            {
+                var policy = NewPolicy(root);
+                using var writer = new EpbDiskWriter(policy);
+                var start = DateTime.UtcNow;
+                for (var cycle = 1; cycle <= 10; cycle++)
+                    WriteCompletedCycle(writer, 3, cycle, 2, start.AddSeconds(cycle));
+
+                writer.BeginCycle(3, 11, start.AddSeconds(11));
+                WriteSamples(writer, 3, 1, start.AddSeconds(11));
+                writer.AbortCycle(3, 11, writer.GetCurrentCycleSampleCount(3), start.AddSeconds(12), "canceled");
+                writer.ExportLatestCyclesForStopNow(3, 10, 11);
+
+                var package = Directory.GetDirectories(
+                    Path.Combine(policy.IndexAndExportPath, "Latest", "EPB3")).Single();
+                Assert(Directory.GetFiles(package, "*.csv").Length == 10, "停止包不是最近10圈");
+                Assert(!File.Exists(CsvPath(package, 3, 1)), "停止包未淘汰最早完整圈");
+                AssertCsvCycle(package, 3, 11, 1);
+
+                writer.BeginCycle(4, 1, start);
+                writer.AbortCycle(4, 1, 0, start.AddMilliseconds(1), "canceled");
+                writer.ExportLatestCyclesForStopNow(4, 10, 1);
+                var emptyPackage = Directory.GetDirectories(
+                    Path.Combine(policy.IndexAndExportPath, "Latest", "EPB4")).Single();
+                Assert(File.ReadAllLines(CsvPath(emptyPackage, 4, 1)).Length == 1,
+                    "零样本停止圈CSV应保留表头");
+                Assert(new FileInfo(BinPath(emptyPackage, 4, 1)).Length == 0,
+                    "零样本停止圈BIN应为空但必须存在");
             });
         }
 
