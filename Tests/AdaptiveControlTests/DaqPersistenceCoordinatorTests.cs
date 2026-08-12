@@ -988,6 +988,38 @@ namespace AdaptiveControlTests
             }
         }
 
+        internal static void CutoffInstallIsImmutableAndRejectsExpansion()
+        {
+            using var coordinator = new DaqPersistenceCoordinator(
+                () => null,
+                Config.NullLogger.Instance,
+                8, 4, 1, 1000, 100, 2000, 1);
+            var accepted = 100L;
+            var correlation = Guid.NewGuid();
+            var runId = Guid.NewGuid();
+            var frozen = coordinator.InstallCutoff(
+                "Dev1", DateTime.UtcNow, () => accepted, correlation, runId, 7);
+            Assert(frozen == 100, "首次截止没有冻结 LastAccepted=100");
+            var snapshot = coordinator.GetSnapshot("Dev1");
+            Assert(snapshot.SuppressAfterSequence == 100,
+                "SuppressAfter 没有与 FrozenBoundary 同次安装");
+
+            accepted = 130;
+            var contradicted = false;
+            try
+            {
+                coordinator.InstallCutoff(
+                    "Dev1", DateTime.UtcNow, () => accepted, correlation, runId, 7);
+            }
+            catch (InvalidOperationException ex)
+            {
+                contradicted = ex.Message.Contains("RecoveryBoundaryContradiction");
+            }
+            Assert(contradicted, "重复截止仍可把 FrozenBoundary 从100扩大到130");
+            Assert(coordinator.GetSnapshot("Dev1").SuppressAfterSequence == 100,
+                "边界矛盾改变了已安装的 FrozenBoundary");
+        }
+
         internal static void ActiveCycleLimitPublishesLifecycleIdentity()
         {
             const int epbId = 8;

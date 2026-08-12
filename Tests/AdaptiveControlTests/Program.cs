@@ -305,6 +305,7 @@ namespace AdaptiveControlTests
                 Run("写盘超时保留原批次且存储恢复后按序补写", DaqPersistenceCoordinatorTests.RecoveryTimeoutRetainsBatchUntilStorageReturns);
                 Run("同步写永久阻塞由独立看门狗单次升级且解除后收口", DaqPersistenceCoordinatorTests.WriteStallWatchdogPublishesOnceAndRetainsBatch);
                 Run("主动截止不撤销已写入耐久前缀且不阻塞健康后续流量", DaqPersistenceCoordinatorTests.DurablePrefixAllowsHealthyLaterTrafficButRejectsSuppression);
+                Run("冻结边界与SuppressAfter原子安装且禁止扩大", DaqPersistenceCoordinatorTests.CutoffInstallIsImmutableAndRejectsExpansion);
                 Run("活动圈上限事件携带EPB圈号和限制", DaqPersistenceCoordinatorTests.ActiveCycleLimitPublishesLifecycleIdentity);
                 Run("持久化诊断观察者异常不重复写盘", DaqPersistenceCoordinatorTests.DiagnosticObserverFailureDoesNotRetryWrite);
                 Run("映射故障进程内自愈不触发DAQ停机", DaqPersistenceCoordinatorTests.MappingFailureRecoversBeforeSafetyPause);

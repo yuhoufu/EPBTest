@@ -38,6 +38,7 @@ namespace EpbDiskWriterTests
 
                 Run("重启后写指针连续", RestartRestoresWritePosition);
                 Run("running 圈重启后不覆盖", RestartAfterRunningCycle);
+                Run("Watchdog强制接管只作废旧running圈", WatchdogTakeoverAbortsInterruptedCycles);
                 Run("串圈数据整圈拒绝且无半成品", MixedCycleIsRejectedAtomically);
                 Run("样本序号跳变被拒绝", SampleIndexJumpIsRejected);
                 Run("旧时间戳回退仍可完整导出", LegacyTimestampRollbackStillExports);
@@ -350,6 +351,35 @@ namespace EpbDiskWriterTests
                     writer.ExportLatestCyclesTo(1, 10, exportDir, true);
                     AssertCsvCycle(exportDir, 1, 1, 3);
                     AssertCsvCycle(exportDir, 1, 2, 2);
+                }
+            });
+        }
+
+        private static void WatchdogTakeoverAbortsInterruptedCycles()
+        {
+            WithRoot(root =>
+            {
+                var policy = NewPolicy(root);
+                using (var writer = new EpbDiskWriter(policy))
+                {
+                    writer.BeginCycle(1, 7, DateTime.UtcNow);
+                    WriteSamples(writer, 1, 3, DateTime.UtcNow);
+                }
+
+                using (var writer = new EpbDiskWriter(policy))
+                {
+                    var affected = writer.AbortInterruptedCyclesForSoftwareRecovery(DateTime.UtcNow);
+                    Assert(affected == 1, "Watchdog 接管没有且只作废一个事故圈");
+                    Assert(writer.AbortInterruptedCyclesForSoftwareRecovery(DateTime.UtcNow) == 0,
+                        "Watchdog 接管重复调用再次修改事故圈");
+                    using var connection = new SQLiteConnection(
+                        "Data Source=" + Path.Combine(root, "index", "index.db") + ";Version=3;");
+                    connection.Open();
+                    using var command = connection.CreateCommand();
+                    command.CommandText = "SELECT status FROM epb_cycles WHERE epb_id=1 AND cycle_number=7;";
+                    Assert(string.Equals(Convert.ToString(command.ExecuteScalar()),
+                            "AbortedBySoftwareRecovery", StringComparison.OrdinalIgnoreCase),
+                        "Watchdog 接管事故圈终态不正确");
                 }
             });
         }
