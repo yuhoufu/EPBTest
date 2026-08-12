@@ -6979,6 +6979,7 @@ namespace Controller
                     "落盘");
             var rawStorageFlushed = true;
             var rawStorageFlushError = string.Empty;
+            var recentCycleExportError = string.Empty;
             if (ShouldStopAcquisitionBeforeFinalPersistence(context.Source))
             {
                 var flushRaw = Volatile.Read(ref _pausePersistenceFlush);
@@ -7025,6 +7026,41 @@ namespace Controller
                         "停止数据边界已闭合，但仍有活动圈终态未提交；禁止同进程重启。",
                         "落盘");
                 }
+                else
+                {
+                    var exportChannels = channels
+                        .Concat(stopCycles.Keys)
+                        .Distinct()
+                        .OrderBy(channel => channel)
+                        .ToArray();
+                    if (exportChannels.Length > 0)
+                    {
+                        try
+                        {
+                            var recorder = Recorder ?? throw new InvalidOperationException("Recorder不可用");
+                            await Task.Run(() =>
+                            {
+                                foreach (var channel in exportChannels)
+                                {
+                                    stopCycles.TryGetValue(channel, out var interruptedCycle);
+                                    if (recorder is IStopRecentCycleEvidenceExporter stopExporter)
+                                        stopExporter.FlushRecentForStop(channel, 10, interruptedCycle);
+                                    else
+                                        recorder.FlushRecent(channel, 10);
+                                }
+                            }, CancellationToken.None).ConfigureAwait(false);
+                        }
+                        catch (Exception ex)
+                        {
+                            recentCycleExportError = ex.GetBaseException().Message;
+                            persistenceBoundaryConfirmed = false;
+                            _log.Error(
+                                $"停止时最近10圈证据导出失败，禁止把停止视为完整收尾：{recentCycleExportError}",
+                                "落盘",
+                                ex);
+                        }
+                    }
+                }
             }
             if (!persistenceBoundaryConfirmed)
                 _log.Error(
@@ -7059,7 +7095,13 @@ namespace Controller
                 PersistenceError = persistenceBoundaryConfirmed
                     ? string.Empty
                     : string.Join("; ",
-                        new[] { rawStorageFlushed ? null : $"RawStorage:{rawStorageFlushError}" }
+                        new[]
+                            {
+                                rawStorageFlushed ? null : $"RawStorage:{rawStorageFlushError}",
+                                string.IsNullOrWhiteSpace(recentCycleExportError)
+                                    ? null
+                                    : $"RecentCycles:{recentCycleExportError}"
+                            }
                             .Concat(persistenceBoundaries
                                 .Where(item => !item.Closed)
                                 .Select(item =>

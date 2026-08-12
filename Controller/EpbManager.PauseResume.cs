@@ -528,10 +528,12 @@ namespace Controller
 
             try
             {
+                var recorder = Recorder ??
+                               throw new InvalidOperationException("暂停时Recorder不可用。");
                 await Task.Run(() =>
                 {
                     foreach (var channel in selected)
-                        Recorder?.FlushRecent(channel, 10);
+                        recorder.FlushRecent(channel, 10);
                 }, token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
@@ -540,10 +542,11 @@ namespace Controller
             }
             catch (Exception ex)
             {
-                _log.Warn(
-                    $"暂停时最近10圈证据导出失败：{ex.Message}；" +
-                    "不升级全局停机，正式圈索引和后台写盘保持运行。",
-                    "落盘");
+                _log.Error(
+                    $"暂停时最近10圈证据导出失败：{ex.Message}；暂停不能标记为完整完成。",
+                    "落盘",
+                    ex);
+                throw new InvalidOperationException("暂停时最近10圈证据导出失败。", ex);
             }
         }
 

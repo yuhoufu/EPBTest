@@ -1351,16 +1351,51 @@ public sealed class EpbDiskWriter : IDisposable
     /// <param name="epbId">EPB 通道号（1..12）。</param>
     /// <param name="latestN">需要导出的“最近圈数”（默认 10）。</param>
     public void ExportLatestCyclesNow(int epbId, int latestN = 10)
+        => ExportLatestCyclePackageNow(epbId, latestN, null, false);
+
+    /// <summary>
+    ///     为暂停导出最近正式圈。同一通道已经存在内容完全相同且校验通过的 Latest 包时复用，
+    ///     避免“暂停后停止”重复生成同一批证据。
+    /// </summary>
+    public void ExportLatestCyclesOnceNow(int epbId, int latestN = 10)
+        => ExportLatestCyclePackageNow(epbId, latestN, null, true);
+
+    /// <summary>
+    ///     为停止导出最近圈；若停止截断了活动圈，强制把该终态半圈纳入最近 N 圈。
+    /// </summary>
+    public void ExportLatestCyclesForStopNow(
+        int epbId,
+        int latestN = 10,
+        int interruptedCycleNumber = 0)
+        => ExportLatestCyclePackageNow(
+            epbId,
+            latestN,
+            interruptedCycleNumber > 0 ? (int?)interruptedCycleNumber : null,
+            true);
+
+    private void ExportLatestCyclePackageNow(
+        int epbId,
+        int latestN,
+        int? requiredTerminalCycleNumber,
+        bool reuseMatchingPackage)
     {
         var published = false;
         lock (_latestExportGates[epbId])
         {
             latestN = Math.Max(1, latestN);
-            var latestList = GetLatestCycles(epbId, latestN, includeRunningCycle: false);
+            var latestList = requiredTerminalCycleNumber.HasValue
+                ? GetLatestCyclesForStop(epbId, latestN, requiredTerminalCycleNumber.Value)
+                : GetLatestCycles(epbId, latestN, includeRunningCycle: false);
+            if (requiredTerminalCycleNumber.HasValue &&
+                latestList.All(cycle => cycle.CycleNumber != requiredTerminalCycleNumber.Value))
+                throw new InvalidDataException(
+                    $"EPB[{epbId}] 停止圈 {requiredTerminalCycleNumber.Value} 尚未封为可导出终态。");
             if (latestList.Count == 0) return;
 
             var dir = Path.Combine(_indexDir, "Latest", $"EPB{epbId}");
             Directory.CreateDirectory(dir);
+            if (reuseMatchingPackage && HasMatchingLatestPackage(dir, epbId, latestList))
+                return;
             var sequence = Interlocked.Increment(ref _latestExportSequence);
             var name = $"{DateTime.Now:yyyyMMdd_HHmmss_fff}-{sequence:D6}";
             var staging = Path.Combine(dir, $".{name}.tmp-{Guid.NewGuid():N}");
@@ -1382,6 +1417,58 @@ public sealed class EpbDiskWriter : IDisposable
             }
         }
         if (published) QueueLatestPackageRetention(epbId);
+    }
+
+    private static bool HasMatchingLatestPackage(
+        string root,
+        int epbId,
+        IReadOnlyCollection<CycleInfo> cycles)
+    {
+        IEnumerable<string> directories;
+        try
+        {
+            directories = Directory.EnumerateDirectories(root, "*", SearchOption.TopDirectoryOnly)
+                .Where(path => LatestPackageNamePattern.IsMatch(Path.GetFileName(path)))
+                .OrderByDescending(Path.GetFileName, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+        catch
+        {
+            return false;
+        }
+
+        foreach (var directory in directories)
+        {
+            try
+            {
+                if (Directory.GetFiles(directory, "*.csv", SearchOption.TopDirectoryOnly).Length != cycles.Count ||
+                    Directory.GetFiles(directory, "*.bin", SearchOption.TopDirectoryOnly).Length != cycles.Count)
+                    continue;
+                var matches = true;
+                foreach (var cycle in cycles)
+                {
+                    var csv = Path.Combine(directory, $"EPB{epbId}_Cycle_{cycle.CycleNumber:D6}.csv");
+                    var bin = Path.Combine(directory, $"EPB{epbId}_Cycle_{cycle.CycleNumber:D6}.bin");
+                    var validation = ValidateAlarmCycleSnapshotPair(
+                        csv,
+                        bin,
+                        epbId,
+                        cycle.CycleNumber,
+                        cycle.SampleCount == 0);
+                    if (!validation.IsValid || validation.SampleCount != cycle.SampleCount)
+                    {
+                        matches = false;
+                        break;
+                    }
+                }
+                if (matches) return true;
+            }
+            catch
+            {
+                // 损坏或不完整的旧包不能作为去重证据，继续创建新的原子包。
+            }
+        }
+        return false;
     }
 
     private void QueueLatestPackageRetention(int epbId)
@@ -1508,7 +1595,12 @@ public sealed class EpbDiskWriter : IDisposable
         {
             var csv = Path.Combine(directory, $"EPB{epbId}_Cycle_{cycle.CycleNumber:D6}.csv");
             var bin = Path.Combine(directory, $"EPB{epbId}_Cycle_{cycle.CycleNumber:D6}.bin");
-            var validation = ValidateAlarmCycleSnapshotPair(csv, bin, epbId, cycle.CycleNumber);
+            var validation = ValidateAlarmCycleSnapshotPair(
+                csv,
+                bin,
+                epbId,
+                cycle.CycleNumber,
+                cycle.SampleCount == 0);
             if (!validation.IsValid || validation.SampleCount != cycle.SampleCount)
                 throw new InvalidDataException(validation.ValidationError);
         }
@@ -1753,6 +1845,10 @@ public sealed class EpbDiskWriter : IDisposable
             if (cycle.SampleCount <= 0) cycle.SampleCount = recovered.Count;
             return recovered;
         }
+
+        if (cycle.SampleCount == 0 &&
+            !string.Equals(cycle.Status, "running", StringComparison.OrdinalIgnoreCase))
+            return new List<SampleRecord>();
 
         throw new InvalidDataException(
             $"{ringFailure.Message}；未在 {_indexDir} 中找到可恢复的完整 BIN 快照。",
@@ -2777,6 +2873,47 @@ SELECT epb_id, cycle_number, start_time, end_time, start_position, sample_count,
         }
     }
 
+    private List<CycleInfo> GetLatestCyclesForStop(
+        int epbId,
+        int latestN,
+        int requiredTerminalCycleNumber)
+    {
+        lock (_dbGate)
+        {
+            latestN = Math.Max(1, latestN);
+            var list = new List<CycleInfo>();
+            using var cmd = _conn.CreateCommand();
+            cmd.CommandText = $@"
+SELECT epb_id, cycle_number, start_time, end_time, start_position, sample_count, status
+  FROM {TABLE_CYCLES}
+ WHERE epb_id=@e
+   AND cycle_number > 0
+   AND (status IN ('completed','alarm')
+        OR (cycle_number=@required AND status <> 'running'))
+ ORDER BY cycle_number DESC
+ LIMIT @n";
+            cmd.Parameters.AddWithValue("@e", epbId);
+            cmd.Parameters.AddWithValue("@required", requiredTerminalCycleNumber);
+            cmd.Parameters.AddWithValue("@n", latestN);
+            using var rd = cmd.ExecuteReader();
+            while (rd.Read())
+            {
+                list.Add(new CycleInfo
+                {
+                    EpbId = rd.GetInt32(0),
+                    CycleNumber = rd.GetInt32(1),
+                    StartTimeUtc = DateTime.Parse(rd.GetString(2)),
+                    EndTimeUtc = rd.IsDBNull(3) ? (DateTime?)null : DateTime.Parse(rd.GetString(3)),
+                    StartRecordIndex = rd.GetInt64(4),
+                    SampleCount = rd.GetInt32(5),
+                    Status = rd.GetString(6)
+                });
+            }
+            list.Sort((a, b) => a.CycleNumber.CompareTo(b.CycleNumber));
+            return list;
+        }
+    }
+
     #endregion
 }
 
@@ -2954,6 +3091,14 @@ public interface ICycleAttemptEvidenceExporter
 }
 
 /// <summary>
+/// 停止流程使用的可选扩展：把已封口但可能不完整的当前圈纳入最近圈证据包。
+/// </summary>
+public interface IStopRecentCycleEvidenceExporter
+{
+    void FlushRecentForStop(int epbId, int lastNCycles, int interruptedCycleNumber);
+}
+
+/// <summary>
 /// 报警触发圈已经被正式圈收尾先行封存时，从不可变的圈级索引回读 CSV/BIN。
 /// 该路径只处理“未取得当前圈封存权”的竞态；真正的原子封存失败不得被回读掩盖。
 /// </summary>
@@ -3025,7 +3170,7 @@ public interface IRecoverableCycleRecorder
 /// <summary>
 ///     将 EpbDiskWriter 适配为 IEpbCycleRecorder，避免 EpbManager 直接依赖具体类。
 /// </summary>
-public sealed class DiskWriterRecorderAdapter : IEpbCycleRecorder, ICountedBatchedEpbCycleRecorder, ICycleEvidenceExporter, ICycleAttemptEvidenceExporter, IActiveCycleLimitConfigurator, IRecoverableCycleRecorder
+public sealed class DiskWriterRecorderAdapter : IEpbCycleRecorder, ICountedBatchedEpbCycleRecorder, ICycleEvidenceExporter, ICycleAttemptEvidenceExporter, IStopRecentCycleEvidenceExporter, IActiveCycleLimitConfigurator, IRecoverableCycleRecorder
 {
     private readonly EpbDiskWriter _writer;
 
@@ -3093,7 +3238,13 @@ public sealed class DiskWriterRecorderAdapter : IEpbCycleRecorder, ICountedBatch
     /// <param name="epbId">EPB 通道号（1..12）。</param>
     /// <param name="lastNCycles">要导出的圈数（最近 N 圈）。</param>
     public void FlushRecent(int epbId, int lastNCycles)
-        => _writer.ExportLatestCyclesNow(epbId, Math.Max(1, lastNCycles));
+        => _writer.ExportLatestCyclesOnceNow(epbId, Math.Max(1, lastNCycles));
+
+    public void FlushRecentForStop(int epbId, int lastNCycles, int interruptedCycleNumber)
+        => _writer.ExportLatestCyclesForStopNow(
+            epbId,
+            Math.Max(1, lastNCycles),
+            interruptedCycleNumber);
 
     public void FlushRecentTo(int epbId, int lastNCycles, string exportDir, bool includeRunningCycle)
         => _writer.ExportLatestCyclesTo(epbId, Math.Max(1, lastNCycles), exportDir, includeRunningCycle);
