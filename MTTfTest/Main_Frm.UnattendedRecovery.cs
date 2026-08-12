@@ -9,15 +9,30 @@ namespace MtEmbTest
     public partial class Main_Frm
     {
         private RecoveryStartupIntent _recoveryStartupIntent;
+        private WatchdogRecoveryIntent _watchdogRecoveryIntent;
 
         internal Main_Frm(RecoveryStartupIntent recoveryStartupIntent) : this()
         {
             _recoveryStartupIntent = recoveryStartupIntent;
         }
 
+        internal Main_Frm(
+            RecoveryStartupIntent recoveryStartupIntent,
+            WatchdogRecoveryIntent watchdogRecoveryIntent) : this(recoveryStartupIntent)
+        {
+            _watchdogRecoveryIntent = watchdogRecoveryIntent;
+        }
+
         protected override void OnShown(EventArgs e)
         {
             base.OnShown(e);
+            if (_watchdogRecoveryIntent != null)
+            {
+                var watchdogIntent = _watchdogRecoveryIntent;
+                _watchdogRecoveryIntent = null;
+                BeginInvoke((Action)(async () => await ResumeWatchdogRunAsync(watchdogIntent)));
+                return;
+            }
             if (_recoveryStartupIntent == null)
             {
                 BeginInvoke((Action)(async () => await PrepareGracefulPauseResumeAsync()));
@@ -26,6 +41,44 @@ namespace MtEmbTest
             var intent = _recoveryStartupIntent;
             _recoveryStartupIntent = null;
             BeginInvoke((Action)(async () => await ResumeUnattendedRunAsync(intent)));
+        }
+
+        private async Task ResumeWatchdogRunAsync(WatchdogRecoveryIntent intent)
+        {
+            try
+            {
+                if (!UnattendedRunCheckpointStore.TryConsumeWatchdogRecovery(
+                        intent.SessionId,
+                        Cfg,
+                        out var checkpoint,
+                        out var error))
+                {
+                    ProjectLogHub.Write(
+                        ProjectLogLevel.Error,
+                        "独立看门狗恢复已拒绝：" + error + "；所有输出保持关闭。",
+                        "独立看门狗");
+                    BeginInvoke((Action)(() => Close()));
+                    return;
+                }
+
+                await WatchdogRuntime.AttachRecoverySessionAsync(
+                    intent,
+                    checkpoint.SelectedChannels).ConfigureAwait(true);
+                var monitor = new FrmEpbMainMonitor { Name = "实时监视" };
+                OpenChildForm(monitor);
+                await monitor.ResumeFromWatchdogCheckpointAsync(checkpoint, intent)
+                    .ConfigureAwait(true);
+            }
+            catch (Exception ex)
+            {
+                ProjectLogHub.Write(
+                    ProjectLogLevel.Error,
+                    "独立看门狗恢复进程安全接管或启动失败；保持本轮授权，等待 Watchdog 退避重试：" + ex.Message,
+                    "独立看门狗",
+                    ex);
+                WatchdogRuntime.RequestExternalRecovery("WatchdogRecoveryStartupFailed:" + ex.GetBaseException().Message);
+                BeginInvoke((Action)(() => Close()));
+            }
         }
 
         private async Task PrepareGracefulPauseResumeAsync()

@@ -27,6 +27,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EpbDiskWriterTests", "Tests
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PowerSupplyDebugger", "PowerSupplyDebugger\PowerSupplyDebugger.csproj", "{271E7877-7910-4414-AF23-DB5B192E74E8}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Watchdog.Protocol", "Watchdog.Protocol\Watchdog.Protocol.csproj", "{9B2A88C4-F717-4CB8-86E1-0F6FDD5D9837}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MTTFTest.Watchdog", "MTTFTest.Watchdog\MTTFTest.Watchdog.csproj", "{DA67689F-B6CB-4F88-A728-8C405E321AEA}"
+EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Tests", "Tests", "{0AB3BF05-4346-4AA6-1389-037BE0695223}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PowerSupplyDebugger.Tests", "Tests\PowerSupplyDebugger.Tests\PowerSupplyDebugger.Tests.csproj", "{549DB25A-6585-41A5-8A36-A234D24D8A72}"

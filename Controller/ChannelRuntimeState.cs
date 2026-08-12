@@ -205,6 +205,25 @@ namespace Controller
         }
     }
 
+    public sealed class WatchdogDeviceStorageSnapshot
+    {
+        public string Device { get; set; } = string.Empty;
+        public long CallbackGapCount { get; set; }
+        public int Generation { get; set; }
+        public long FrozenBoundary { get; set; }
+        public long Persisted { get; set; }
+        public long Head { get; set; }
+        public long InFlight { get; set; }
+        public int QueueDepth { get; set; }
+        public string PersistenceState { get; set; } = string.Empty;
+    }
+
+    public sealed class WatchdogStorageSnapshot
+    {
+        public WatchdogDeviceStorageSnapshot Dev1 { get; set; }
+        public WatchdogDeviceStorageSnapshot Dev2 { get; set; }
+    }
+
     public sealed class StopSafetyResult
     {
         public StopSource Source { get; set; } = StopSource.UnknownLegacy;

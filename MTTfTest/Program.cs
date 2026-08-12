@@ -37,8 +37,12 @@ namespace MtEmbTest
         [STAThread]
         static void Main(string[] args)
         {
-            var recoveryIntent = RecoveryProcessBootstrap.Parse(args);
-            UnattendedRecoveryCoordinator.SetRecoveryProcessMode(recoveryIntent != null);
+            var watchdogRecoveryIntent = WatchdogRecoveryIntent.Parse(args);
+            var recoveryIntent = watchdogRecoveryIntent == null
+                ? RecoveryProcessBootstrap.Parse(args)
+                : null;
+            UnattendedRecoveryCoordinator.SetRecoveryProcessMode(
+                recoveryIntent != null || watchdogRecoveryIntent != null);
             using var recoveryHandoff = RecoveryProcessBootstrap.AttachHandoff(recoveryIntent);
             if (recoveryIntent != null && recoveryHandoff == null)
             {
@@ -99,10 +103,11 @@ namespace MtEmbTest
             Application.SetCompatibleTextRenderingDefault(false);
             try
             {
-                Application.Run(new Main_Frm(recoveryIntent));
+                Application.Run(new Main_Frm(recoveryIntent, watchdogRecoveryIntent));
             }
             finally
             {
+                WatchdogRuntime.ShutdownLocalClient();
                 ProjectLogHub.Flush(true);
                 ProjectLogHub.Shutdown();
             }

@@ -379,6 +379,45 @@ namespace Controller
             }
         }
 
+        /// <summary>
+        /// 在与 Enqueue 最终提交相同的接纳锁内，读取调用方提供的 LastAccepted 并安装
+        /// SuppressAfter。返回值就是本次恢复不可扩大的 FrozenBoundary。
+        /// </summary>
+        internal long InstallCutoff(
+            string device,
+            DateTime cutoffUtc,
+            Func<long> captureLastAccepted,
+            Guid correlationId,
+            Guid runId = default,
+            long runEpoch = 0)
+        {
+            if (captureLastAccepted == null)
+                throw new ArgumentNullException(nameof(captureLastAccepted));
+            var q = GetQueue(device);
+            lock (q.SuppressionGate)
+            {
+                var frozenBoundary = Math.Max(0, captureLastAccepted());
+                var existingCutoff = Interlocked.Read(ref q.SuppressAfterSequence);
+                var existingTicks = Interlocked.Read(ref q.SuppressAfterUtcTicks);
+                if (existingTicks != 0 && existingCutoff != frozenBoundary)
+                    throw new InvalidOperationException(
+                        $"RecoveryBoundaryContradiction Device={device} " +
+                        $"Existing={existingCutoff} Requested={frozenBoundary}");
+
+                Interlocked.Exchange(ref q.SuppressAfterSequence, frozenBoundary);
+                Interlocked.Exchange(ref q.SuppressThroughSequence, long.MaxValue);
+                Interlocked.Exchange(ref q.SuppressAfterUtcTicks, cutoffUtc.ToUniversalTime().Ticks);
+                Interlocked.Exchange(ref q.SuppressedBatchCount, 0);
+                var previous = GetCorrelationIdentity(q);
+                SetCorrelation(
+                    q,
+                    correlationId != Guid.Empty ? correlationId : previous?.Value ?? Guid.NewGuid(),
+                    runId != Guid.Empty ? runId : previous?.RunId ?? Guid.Empty,
+                    runEpoch > 0 ? runEpoch : previous?.RunEpoch ?? 0);
+                return frozenBoundary;
+            }
+        }
+
         internal void ResumeAdmission(string device, long closeSuppressionThroughSequence)
         {
             var q = GetQueue(device);

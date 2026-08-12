@@ -2426,12 +2426,22 @@ namespace MTEmbTest
                 {
                     LogInfo("批量启动取消。");
                     if (unattendedRecovery) throw;
+                    WatchdogRuntime.NotifyRunStopped(new MTTFTest.Watchdog.Protocol.WatchdogStopSummary
+                    {
+                        Detail = "BatchStartCancelled"
+                    });
+                    WatchdogRuntime.ShutdownLocalClient();
                 }
                 catch (Exception ex)
                 {
                     LogInfo($"批量启动失败：{ex.Message}");
                     if (unattendedRecovery)
                         throw new InvalidOperationException("无人值守恢复批量启动失败。", ex);
+                    WatchdogRuntime.NotifyRunStopped(new MTTFTest.Watchdog.Protocol.WatchdogStopSummary
+                    {
+                        Detail = "BatchStartFailed:" + ex.GetBaseException().Message
+                    });
+                    WatchdogRuntime.ShutdownLocalClient();
                 }
 
                 #endregion
@@ -2500,6 +2510,7 @@ namespace MTEmbTest
             }
 
             Interlocked.Exchange(ref _operatorStopRequested, 1);
+            WatchdogRuntime.NotifyManualStop("操作员点击停止试验");
             ClearGracefulPauseCheckpoint("ManualStopRequested");
             BtnStop.Enabled = false;
             BtnStop.Cursor = Cursors.WaitCursor;
@@ -2523,6 +2534,8 @@ namespace MTEmbTest
                     safety.CanRestartInProcess
                         ? "停止试验完成；可以关闭软件或重新开始。"
                         : "停止试验已执行；未确认项已记录，不阻止关闭软件或下一次完整学习启动。");
+                WatchdogRuntime.NotifyRunStopped(ToWatchdogStopSummary(safety));
+                WatchdogRuntime.ShutdownLocalClient();
             }
             catch (Exception ex)
             {
@@ -2641,6 +2654,8 @@ namespace MTEmbTest
                     LogInfo("[安全警告] 电机DO和程控电源均已确认关闭；仅压力安全证据因采样陈旧/不可用未确认，按现场策略继续退出。" +
                             (string.IsNullOrWhiteSpace(safety.PressureError) ? string.Empty : " " + safety.PressureError));
 
+                if (Volatile.Read(ref _watchdogTakeoverExit) == 0)
+                    WatchdogRuntime.NotifyApplicationClosing();
                 Interlocked.Exchange(ref _closingReentry, 2);
                 _ = BeginInvoke((Action)Close);
                 return;

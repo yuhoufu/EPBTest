@@ -2633,8 +2633,8 @@ CREATE INDEX IF NOT EXISTS idx_cycles_epb ON {TABLE_CYCLES}(epb_id, cycle_number
 
     /// <summary>
     /// 上一进程崩溃、断电或被强制结束时，SQLite 中可能留下 running 圈。
-    /// 仅收口超过宽限期的孤儿圈：短时间重启仍须保留原始 running 证据和既有导出兼容性，
-    /// 但跨班次历史残留不能永久污染数据库状态。
+    /// 仅收口超过宽限期的孤儿圈：短时间普通重启仍须保留原始 running 证据和既有导出兼容性，
+    /// 独立 Watchdog 的强制接管通过 AbortInterruptedCyclesForSoftwareRecovery 显式作废本轮事故圈。
     /// </summary>
     private void RecoverInterruptedCyclesOnStartup()
     {
@@ -2650,6 +2650,25 @@ UPDATE {TABLE_CYCLES}
             cmd.Parameters.AddWithValue("@now", DateTime.Now.ToString("o"));
             cmd.Parameters.AddWithValue("@staleBefore", DateTime.Now.AddHours(-2).ToString("o"));
             cmd.ExecuteNonQuery();
+        }
+    }
+
+    /// <summary>
+    /// Watchdog 恢复新进程在开始学习前调用。此时尚未创建本进程圈，数据库中全部
+    /// running 记录均属于被终止旧进程；一次 UPDATE 保证每圈只得到一个作废终态。
+    /// </summary>
+    public int AbortInterruptedCyclesForSoftwareRecovery(DateTime recoveryUtc)
+    {
+        lock (_dbGate)
+        {
+            using var cmd = _conn.CreateCommand();
+            cmd.CommandText = $@"
+UPDATE {TABLE_CYCLES}
+   SET status='AbortedBySoftwareRecovery',
+       end_time=COALESCE(end_time, @now)
+ WHERE status='running';";
+            cmd.Parameters.AddWithValue("@now", recoveryUtc.ToLocalTime().ToString("o"));
+            return cmd.ExecuteNonQuery();
         }
     }
 

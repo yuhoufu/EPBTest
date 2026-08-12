@@ -64,6 +64,8 @@ namespace MTEmbTest
         public string InProcessRecoveryFingerprint { get; set; }
         public List<string> InProcessRecoveryHistory { get; set; } = new List<string>();
         public string LastInProcessRecoveryResult { get; set; }
+        /// <summary>本轮按试验生命周期启动的独立看门狗会话；不绑定程序版本。</summary>
+        public string WatchdogSessionId { get; set; }
     }
 
     internal static class UnattendedRunCheckpointStore
@@ -167,9 +169,74 @@ namespace MTEmbTest
                 checkpoint.GracefulPaused = false;
                 checkpoint.RecoveryChainPendingStart = false;
                 checkpoint.RecoveryNonce = string.Empty;
+                checkpoint.WatchdogSessionId = string.Empty;
                 checkpoint.LastReason = string.IsNullOrWhiteSpace(reason) ? "AuthorizationRevoked" : reason;
                 checkpoint.UpdatedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
                 SaveUnsafe(checkpoint);
+            }
+        }
+
+        internal static void BindWatchdogSession(string sessionId)
+        {
+            if (string.IsNullOrWhiteSpace(sessionId)) return;
+            lock (Sync)
+            {
+                var checkpoint = LoadUnsafe() ?? new UnattendedRunCheckpoint();
+                checkpoint.SchemaVersion = CurrentSchemaVersion;
+                checkpoint.WatchdogSessionId = sessionId.Trim();
+                checkpoint.LastReason = "WatchdogSessionAttached";
+                checkpoint.UpdatedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+                SaveUnsafe(checkpoint);
+            }
+        }
+
+        internal static bool TryConsumeWatchdogRecovery(
+            string sessionId,
+            GlobalConfig config,
+            out UnattendedRunCheckpoint checkpoint,
+            out string error)
+        {
+            checkpoint = null;
+            error = string.Empty;
+            if (string.IsNullOrWhiteSpace(sessionId))
+            {
+                error = "WatchdogSessionIdMissing";
+                return false;
+            }
+            lock (Sync)
+            {
+                var current = LoadUnsafe();
+                if (current == null || !current.Armed || IsRunRevokedInMemory(current.RunId))
+                {
+                    error = "本轮试验已撤权或没有可恢复检查点。";
+                    return false;
+                }
+                if (!string.Equals(current.WatchdogSessionId, sessionId, StringComparison.Ordinal))
+                {
+                    error = "WatchdogSessionMismatch";
+                    return false;
+                }
+                if (config?.Test == null ||
+                    !string.Equals(current.StoreDir, config.Test.StoreDir, StringComparison.OrdinalIgnoreCase) ||
+                    !string.Equals(current.TestName, config.Test.TestName, StringComparison.OrdinalIgnoreCase))
+                {
+                    error = "当前项目无法与本轮试验检查点对应。";
+                    return false;
+                }
+
+                // Watchdog 恢复不以版本、哈希、构建时间或重试预算为许可条件。
+                // 唯一授权边界是仍 Armed 的同一 Session；人工停止会先清除此字段。
+                current.RestartPending = false;
+                current.InProcessRecoveryPending = false;
+                current.RecoveryNonce = string.Empty;
+                current.RecoveryChainPendingStart = true;
+                current.RestartHistoryUtc ??= new List<string>();
+                current.RestartHistoryUtc.Add(DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture));
+                current.LastReason = "WatchdogRecoveryInstanceValidated";
+                current.UpdatedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+                SaveUnsafe(current);
+                checkpoint = current;
+                return true;
             }
         }
 
@@ -896,6 +963,7 @@ namespace MTEmbTest
             checkpoint.GracefulPaused = false;
             checkpoint.RecoveryChainPendingStart = false;
             checkpoint.RecoveryNonce = string.Empty;
+            checkpoint.WatchdogSessionId = string.Empty;
             checkpoint.LastReason = reason;
             checkpoint.UpdatedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
             SaveUnsafe(checkpoint);
@@ -1467,6 +1535,24 @@ namespace MTEmbTest
             string expectedRunId = null)
         {
             if (Interlocked.CompareExchange(ref _restartStarted, 1, 0) != 0) return;
+            if (WatchdogRuntime.IsAttached)
+            {
+                try
+                {
+                    ProjectLogHub.Write(
+                        ProjectLogLevel.Warning,
+                        $"进程内恢复已到达外部接管边界，交由独立 Watchdog 整批恢复。" +
+                        $"CorrelationId={correlationId};Reason={reason}",
+                        "独立看门狗");
+                    WatchdogRuntime.RequestExternalRecovery(
+                        $"{reason};CorrelationId={correlationId};ExpectedRunId={expectedRunId}");
+                    return;
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref _restartStarted, 0);
+                }
+            }
             var handoffCommitted = false;
             var checkpointAtStart = UnattendedRunCheckpointStore.Load();
             var guardedRunId = string.IsNullOrWhiteSpace(expectedRunId)

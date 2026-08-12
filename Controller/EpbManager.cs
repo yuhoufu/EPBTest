@@ -162,6 +162,7 @@ namespace Controller
         private readonly bool _requirePowerSupply;
         private PowerSupplyTelemetryCsvRecorder _powerTelemetryRecorder;
         private readonly TaskSupervisor _taskSupervisor;
+        private readonly RecoveryTaskRegistry _recoveryTaskRegistry = new RecoveryTaskRegistry();
         private long _energizedChannelsMask;
         private readonly long _dev1ChannelMask;
         private readonly long _dev2ChannelMask;
@@ -481,9 +482,37 @@ namespace Controller
             public Dictionary<int, long> CutoffParticipantVersions;
             public Dictionary<int, int> CutoffCycles;
             public long CutoffPersistenceBoundary;
+            public DaqCutoffSnapshot CutoffSnapshot;
+            public int BoundaryContradiction;
+            public string BoundaryContradictionReason;
             public int CutoffCyclesFinalized;
             public readonly object CutoffCyclesFinalizationGate = new object();
             public TaskCompletionSource<bool> CutoffCyclesFinalizationCompletion;
+        }
+
+        /// <summary>
+        /// 一次 DAQ 恢复只能生成一个不可扩大的截止快照。字典在构造时复制，
+        /// 后续 Finalizer、StopAll 和重试均只能复用该 FrozenBoundary。
+        /// </summary>
+        private sealed class DaqCutoffSnapshot
+        {
+            public DaqCutoffSnapshot(
+                string device,
+                DateTime cutoffUtc,
+                long frozenBoundary,
+                IReadOnlyDictionary<int, int> cycles)
+            {
+                Device = device ?? string.Empty;
+                CutoffUtc = cutoffUtc;
+                FrozenBoundary = Math.Max(0, frozenBoundary);
+                Cycles = (cycles ?? new Dictionary<int, int>())
+                    .ToDictionary(pair => pair.Key, pair => pair.Value);
+            }
+
+            public string Device { get; }
+            public DateTime CutoffUtc { get; }
+            public long FrozenBoundary { get; }
+            public IReadOnlyDictionary<int, int> Cycles { get; }
         }
 
         internal static ChannelRuntimeState NormalizeRuntimeStateForEnabled(
@@ -756,32 +785,60 @@ namespace Controller
             if (cycles == null || cycles.Count == 0) return true;
             if (!TrySealSoftwareRecoveryCycleWindows(cycles, cutoffUtc, reason, canMutate)) return false;
 
+            var devices = cycles.Keys
+                .Select(channel => _acq.GetDeviceForEpbChannel(channel))
+                .Where(device => !string.IsNullOrWhiteSpace(device))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            // 先冻结本次调用要证明的边界，再排 Raw。旧实现排空后动态读取 Published，
+            // 会把恢复 suppression 尾段误纳入正式义务，形成永远无法 Persist 的边界。
+            var boundaries = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+            foreach (var device in devices)
+            {
+                if (canMutate != null && !canMutate()) return false;
+                var boundary = _acq.GetLastDiskPublishedSequence(device);
+                if (_daqAutoRecovery.TryGetValue(device, out var recovery) &&
+                    recovery?.CutoffSnapshot != null &&
+                    recovery.CutoffSnapshot.Cycles.Any(pair =>
+                        cycles.TryGetValue(pair.Key, out var requestedCycle) &&
+                        requestedCycle == pair.Value))
+                {
+                    boundary = recovery.CutoffSnapshot.FrozenBoundary;
+                    _log.Info(
+                        $"通用圈 Finalizer 复用 DAQ 冻结边界 Device={device} " +
+                        $"FrozenBoundary={boundary} Reason={reason}",
+                        "落盘");
+                }
+                boundaries[device] = Math.Max(0, boundary);
+            }
+
             var deadline = Stopwatch.GetTimestamp() +
                            (long)(Math.Max(1, timeoutMs) / 1000.0 * Stopwatch.Frequency);
             var rawTimeoutMs = (int)Math.Max(
                 1,
                 (deadline - Stopwatch.GetTimestamp()) * 1000.0 / Stopwatch.Frequency);
-            if (!await _acq.DrainBackgroundPipelinesAsync(rawTimeoutMs, token)
-                    .ConfigureAwait(false))
+            var rawDrain = await _acq.DrainBackgroundPipelinesToBoundariesDetailedAsync(
+                    boundaries.TryGetValue("Dev1", out var dev1Boundary) ? dev1Boundary : 0,
+                    boundaries.TryGetValue("Dev2", out var dev2Boundary) ? dev2Boundary : 0,
+                    rawTimeoutMs,
+                    token)
+                .ConfigureAwait(false);
+            if (!rawDrain.Completed)
             {
                 _log.Warn(
-                    $"软件恢复截止 Raw 管线排空超时；保持圈事务开放且禁止重入。" +
-                    $"Channels=[{string.Join(",", cycles.Keys)}] Reason={reason}",
+                    $"软件恢复截止 Raw 固定边界排空超时；保持圈事务开放且禁止重入。" +
+                    $"Dev1Boundary={dev1Boundary} Dev2Boundary={dev2Boundary} " +
+                    $"Pending={rawDrain.PendingPredicate} Channels=[{string.Join(",", cycles.Keys)}] Reason={reason}",
                     "落盘");
                 return false;
             }
 
             if (canMutate != null && !canMutate()) return false;
 
-            var devices = cycles.Keys
-                .Select(channel => _acq.GetDeviceForEpbChannel(channel))
-                .Where(device => !string.IsNullOrWhiteSpace(device))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToArray();
             foreach (var device in devices)
             {
                 if (canMutate != null && !canMutate()) return false;
-                var boundary = _acq.GetLastDiskPublishedSequence(device);
+                var boundary = boundaries[device];
                 var remainingMs = (int)Math.Max(
                     1,
                     (deadline - Stopwatch.GetTimestamp()) * 1000.0 / Stopwatch.Frequency);
@@ -1662,6 +1719,7 @@ namespace Controller
         internal void ObserveBackgroundTask(Task task, string operation, int channel = 0)
         {
             _taskSupervisor.Observe(task, operation, _activeBatchId, channel);
+            _recoveryTaskRegistry.Track(task, operation, Interlocked.Read(ref _runEpoch));
         }
 
         internal TaskSupervisorEntry[] CaptureBackgroundTasks()
@@ -3148,10 +3206,34 @@ namespace Controller
                     () => IsCurrentRecovery(context)))
                 return false;
 
-            // CutoffPersistenceBoundary 在首次恢复登记时已经冻结。这里只排该设备的
+            // CutoffSnapshot 在首次恢复登记时已经冻结。这里只排该设备的
             // 冻结前缀；另一设备传 0，既不等待健康设备的新流量，也绝不重新抓取一个
             // 更大的 LastAccepted/Published 边界。
-            var boundary = Interlocked.Read(ref context.CutoffPersistenceBoundary);
+            var cutoff = context.CutoffSnapshot;
+            if (cutoff == null)
+            {
+                MarkRecoveryBoundaryContradiction(context, "FrozenSnapshotMissing");
+                return false;
+            }
+            var boundary = cutoff.FrozenBoundary;
+            var legacyBoundary = Interlocked.Read(ref context.CutoffPersistenceBoundary);
+            if (legacyBoundary != boundary)
+            {
+                MarkRecoveryBoundaryContradiction(
+                    context,
+                    $"FrozenBoundaryChanged Snapshot={boundary} Context={legacyBoundary}");
+                return false;
+            }
+            var suppression = _persistence.GetSnapshot(context.Device);
+            if ((suppression.SuppressAfterSequence > 0 && suppression.SuppressAfterSequence != boundary) ||
+                (suppression.FirstSuppressedSequence > 0 && suppression.FirstSuppressedSequence <= boundary))
+            {
+                MarkRecoveryBoundaryContradiction(
+                    context,
+                    $"SuppressionMismatch Frozen={boundary} SuppressAfter={suppression.SuppressAfterSequence} " +
+                    $"FirstSuppressed={suppression.FirstSuppressedSequence}");
+                return false;
+            }
             var dev1Boundary = string.Equals(
                 context.Device,
                 "Dev1",
@@ -3226,6 +3308,21 @@ namespace Controller
                 $"Boundary={boundary} Cycles=[{string.Join(",", (context.CutoffCycles ?? new Dictionary<int, int>()).Values.Where(value => value != 0))}]。",
                 "落盘");
             return true;
+        }
+
+        private void MarkRecoveryBoundaryContradiction(
+            DaqAutoRecoveryContext context,
+            string detail)
+        {
+            if (context == null) return;
+            context.BoundaryContradictionReason = detail ?? "Unknown";
+            Interlocked.Exchange(ref context.BoundaryContradiction, 1);
+            _log.Error(
+                $"RecoveryBoundaryContradiction Device={context.Device} " +
+                $"CorrelationId={context.CorrelationId:N} RunId={context.RunId:N} " +
+                $"RunEpoch={context.RunEpoch} Detail={context.BoundaryContradictionReason}；" +
+                "事故圈保持作废语义，禁止扩大边界或继续同类重试。",
+                "落盘");
         }
 
         private DaqRecoveryResult CreateDaqRecoveryTimeoutResult(string device)
@@ -3364,17 +3461,22 @@ namespace Controller
                                 out var cycle)
                                 ? cycle
                                 : 0);
-                        var frozenBoundary = _acq.GetLastAcceptedSequence(device);
-                        Interlocked.Exchange(
-                            ref context.CutoffPersistenceBoundary,
-                            frozenBoundary);
-                        _persistence.SuppressAfter(
+                        var frozenBoundary = _persistence.InstallCutoff(
                             device,
                             context.CutoffUtc,
-                            frozenBoundary,
+                            () => _acq.GetLastAcceptedSequence(device),
                             context.CorrelationId,
                             context.RunId,
                             context.RunEpoch);
+                        var snapshot = new DaqCutoffSnapshot(
+                            device,
+                            context.CutoffUtc,
+                            frozenBoundary,
+                            context.CutoffCycles);
+                        context.CutoffSnapshot = snapshot;
+                        Interlocked.Exchange(
+                            ref context.CutoffPersistenceBoundary,
+                            snapshot.FrozenBoundary);
                     },
                     () =>
                     {
@@ -3511,6 +3613,24 @@ namespace Controller
                         _daqPersistenceRecoveryTimeoutMs,
                         context.Cancellation.Token).ConfigureAwait(false))
                 {
+                    if (Volatile.Read(ref context.BoundaryContradiction) != 0)
+                    {
+                        await EscalateDaqAutoRecoveryAsync(
+                                device,
+                                "RecoveryBoundaryContradiction",
+                                context.BoundaryContradictionReason,
+                                context.CorrelationId,
+                                new DaqRecoveryResult
+                                {
+                                    Device = device,
+                                    Recovered = false,
+                                    FailureKind = "RecoveryBoundaryContradiction",
+                                    FailureReason = context.BoundaryContradictionReason,
+                                    Classification = FaultClassification.SystemFault
+                                })
+                            .ConfigureAwait(false);
+                        return;
+                    }
                     await EscalateDaqAutoRecoveryAsync(
                             device,
                             "DaqPersistenceBoundaryPending",
@@ -4321,6 +4441,24 @@ namespace Controller
                             context.Cancellation.Token).ConfigureAwait(false))
                     {
                         Interlocked.Exchange(ref context.MaintenanceScheduled, 0);
+                        if (Volatile.Read(ref context.BoundaryContradiction) != 0)
+                        {
+                            await EscalateDaqAutoRecoveryAsync(
+                                    context.Device,
+                                    "RecoveryBoundaryContradiction",
+                                    context.BoundaryContradictionReason,
+                                    context.CorrelationId,
+                                    new DaqRecoveryResult
+                                    {
+                                        Device = context.Device,
+                                        Recovered = false,
+                                        FailureKind = "RecoveryBoundaryContradiction",
+                                        FailureReason = context.BoundaryContradictionReason,
+                                        Classification = FaultClassification.SystemFault
+                                    })
+                                .ConfigureAwait(false);
+                            return;
+                        }
                         ScheduleDaqSelfMaintenance(
                             context,
                             "DaqPersistenceBoundaryPending",
@@ -6804,9 +6942,17 @@ namespace Controller
                     {
                         try
                         {
+                            var stoppedState = context.Source == StopSource.ManualUi ||
+                                               context.Source == StopSource.ApplicationClosing ||
+                                               context.Source == StopSource.ProgramExit ||
+                                               context.Source == StopSource.UnknownLegacy
+                                ? ChannelRuntimeState.ManualStopped
+                                : context.Source == StopSource.AlarmInterlock
+                                    ? ChannelRuntimeState.InterlockStopped
+                                    : ChannelRuntimeState.SystemFault;
                             PublishChannelRuntimeState(
                                 channel,
-                                ChannelRuntimeState.ManualStopped,
+                                stoppedState,
                                 "StopAll",
                                 context.Source == StopSource.ManualUi
                                     ? $"人工停止，启动/自动恢复已取消。{context.Reason ?? string.Empty}"
@@ -6841,6 +6987,19 @@ namespace Controller
                     $"StopAll等待恢复所有者退出超过{RecoveryOwnershipTakeoverTimeoutMs}ms；" +
                     "运行代次已失效，后续提交将被拒绝。",
                     "EPB");
+            var pendingRecoveryTasks = await _recoveryTaskRegistry.DrainThroughEpochAsync(
+                    runEpoch,
+                    RecoveryOwnershipTakeoverTimeoutMs)
+                .ConfigureAwait(false);
+            if (pendingRecoveryTasks.Length > 0)
+            {
+                stopSafetyErrors.Add(
+                    "RecoveryTasksPending=" + string.Join(",", pendingRecoveryTasks));
+                _log.Warn(
+                    "StopAll 等待统一恢复任务表超时；旧 RunEpoch 已撤权，禁止其写入新 Run。" +
+                    string.Join(",", pendingRecoveryTasks),
+                    "EPB");
+            }
 
             // OFF 提交和电源 Disable 已与恢复所有权等待并行。这里只对账实际物理完成，
             // 不再补发第二个 OFF；未在期限内完成由电源关闭证据兜底并保留 Unconfirmed。

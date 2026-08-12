@@ -199,6 +199,7 @@
     <Compile Include="Models\TestConfig.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="UnattendedRecovery.cs" />
+    <Compile Include="WatchdogRuntime.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <EmbeddedResource Include="AxisRangeDialog.resx">
       <DependentUpon>AxisRangeDialog.cs</DependentUpon>
@@ -347,7 +348,21 @@
       <Project>{3d810ee2-a0ef-4d1f-84cd-2ddcf63fb434}</Project>
       <Name>Timing</Name>
     </ProjectReference>
+    <ProjectReference Include="..\Watchdog.Protocol\Watchdog.Protocol.csproj">
+      <Project>{9B2A88C4-F717-4CB8-86E1-0F6FDD5D9837}</Project>
+      <Name>Watchdog.Protocol</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\MTTFTest.Watchdog\MTTFTest.Watchdog.csproj">
+      <Project>{DA67689F-B6CB-4F88-A728-8C405E321AEA}</Project>
+      <Name>MTTFTest.Watchdog</Name>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <Private>false</Private>
+    </ProjectReference>
   </ItemGroup>
+  <Target Name="CopyWatchdogSidecar" AfterTargets="Build">
+    <Copy SourceFiles="$(ProjectDir)..\MTTFTest.Watchdog\bin\$(Configuration)\MTTFTest.Watchdog.exe" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(ProjectDir)..\MTTFTest.Watchdog\bin\$(Configuration)\MTTFTest.Watchdog.pdb" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" Condition="Exists('$(ProjectDir)..\MTTFTest.Watchdog\bin\$(Configuration)\MTTFTest.Watchdog.pdb')" />
+  </Target>
   <ItemGroup>
     <BootstrapperPackage Include=".NETFramework,Version=v4.8">
       <Visible>False</Visible>

@@ -370,6 +370,44 @@ namespace Controller
         }
 
         /// <summary>
+        /// 独立进程看门狗只读取逻辑存活证据，不获得任何硬件控制对象。
+        /// 返回值为新快照，调用方不得据此直接操作 DAQ/DO/电源。
+        /// </summary>
+        public LogicalQuiescenceSnapshot CaptureWatchdogLogicalSnapshot()
+        {
+            return CaptureLogicalQuiescenceSnapshot();
+        }
+
+        public Guid WatchdogRunId => _activeBatchId;
+        public long WatchdogRunEpoch => Interlocked.Read(ref _runEpoch);
+
+        public WatchdogStorageSnapshot CaptureWatchdogStorageSnapshot()
+        {
+            WatchdogDeviceStorageSnapshot Capture(string device)
+            {
+                var persistence = _persistence.GetSnapshot(device);
+                var freshness = _acq.GetDaqFreshnessSnapshot(device, 100);
+                var frozen = _daqAutoRecovery.TryGetValue(device, out var recovery) &&
+                             recovery?.CutoffSnapshot != null
+                    ? recovery.CutoffSnapshot.FrozenBoundary
+                    : 0;
+                return new WatchdogDeviceStorageSnapshot
+                {
+                    Device = device,
+                    CallbackGapCount = freshness.CallbackGapEventCount,
+                    Generation = (int)Math.Min(int.MaxValue, _acq.GetCurrentGeneration(device)),
+                    FrozenBoundary = frozen,
+                    Persisted = persistence.Sequence,
+                    Head = persistence.PendingHeadSequence,
+                    InFlight = persistence.InFlightSequence,
+                    QueueDepth = persistence.QueueDepth,
+                    PersistenceState = persistence.State.ToString()
+                };
+            }
+            return new WatchdogStorageSnapshot { Dev1 = Capture("Dev1"), Dev2 = Capture("Dev2") };
+        }
+
+        /// <summary>
         /// 显式停止后的新批次只要求电机断能命令和程控电源关闭已确认；上一批次的
         /// 压力证据、写盘、连续性和逻辑清场结果不再作为新批次许可条件。
         /// 新批次仍会重新执行实时 DAQ、电源、液压和完整学习预检。

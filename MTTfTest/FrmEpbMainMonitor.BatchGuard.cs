@@ -150,6 +150,25 @@ namespace MTEmbTest
                     }
                 }
 
+                if (!unattendedRecovery && !WatchdogRuntime.IsAttached)
+                {
+                    var watchdogChannels = Enumerable.Range(1, 12)
+                        .Where(channel => EpbGroup[channel - 1]?.CtrlJoinTest?.Checked == true)
+                        .ToArray();
+                    var watchdog = await WatchdogRuntime.StartSessionAsync(watchdogChannels)
+                        .ConfigureAwait(true);
+                    if (watchdog.Attached)
+                    {
+                        UnattendedRunCheckpointStore.BindWatchdogSession(watchdog.SessionId);
+                        WatchdogRuntime.SetHeartbeatProvider(CreateWatchdogHeartbeat);
+                        LogInfo("本轮独立进程看门狗已启动并完成握手。");
+                    }
+                    else
+                    {
+                        LogInfo("[警告] " + watchdog.Warning);
+                    }
+                }
+
                 var startTask = StartNewBatchAsync(unattendedRecovery);
 
                 if (unattendedRecovery)
