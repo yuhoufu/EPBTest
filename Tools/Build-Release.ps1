@@ -10,8 +10,15 @@ $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 Set-Location -LiteralPath $repo
 
-$expectedProductVersion = '2.12.0.32'
-$expectedProductLabel = 'V2.12.0.32'
+$releaseProjectPath = Join-Path $repo 'MTTfTest\MTTfTest.csproj'
+[xml]$releaseProjectXml = Get-Content -LiteralPath $releaseProjectPath -Raw
+$expectedProductVersion = ([string]$releaseProjectXml.Project.PropertyGroup.ApplicationVersion |
+    Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+    Select-Object -First 1).Trim()
+if ([string]::IsNullOrWhiteSpace($expectedProductVersion)) {
+    throw 'MTTfTest.csproj 未声明 ApplicationVersion。'
+}
+$expectedProductLabel = 'V' + $expectedProductVersion
 $expectedAssemblyName = 'MTTFTest'
 $expectedPublishedConfigs = @(
     'Config/AIConfig.xml',
@@ -178,14 +185,16 @@ Assert-LegacyCompileItems -ProjectRelativePath 'Controller\Controller.csproj' -R
     'ReleasePackageVerifier.cs',
     'UiCurveContinuityPolicy.cs',
     'UiLogDisplayPolicy.cs',
-    'TaskSupervisor.cs'
+    'TaskSupervisor.cs',
+    'RecoveryTaskRegistry.cs'
 )
 Assert-LegacyCompileItems -ProjectRelativePath 'IO.NI\IO.NI.csproj' -RequiredItems @(
     'CoalescingTaskSupervisor.cs',
     'HostRuntimeProbe.cs'
 )
 Assert-LegacyCompileItems -ProjectRelativePath 'MTTfTest\MTTfTest.csproj' -RequiredItems @(
-    'Editors\ToggleButton.cs'
+    'Editors\ToggleButton.cs',
+    'WatchdogRuntime.cs'
 )
 
 $mainProjectPath = Join-Path $repo 'MTTfTest\MTTfTest.csproj'
@@ -257,6 +266,13 @@ $checksumPath = Join-Path $output 'SHA256SUMS.txt'
 if ($LASTEXITCODE -ne 0) { throw "Release 构建失败：$LASTEXITCODE" }
 
 $exePath = Join-Path $output 'MTTFTest.exe'
+$watchdogExePath = Join-Path $output 'MTTFTest.Watchdog.exe'
+$watchdogProtocolPath = Join-Path $output 'MTTFTest.Watchdog.Protocol.dll'
+foreach ($requiredSidecar in @($watchdogExePath, $watchdogProtocolPath)) {
+    if (-not (Test-Path -LiteralPath $requiredSidecar -PathType Leaf)) {
+        throw "Release 构建缺少独立看门狗文件：$requiredSidecar"
+    }
+}
 $actualProductVersion = (Get-Item -LiteralPath $exePath).VersionInfo.ProductVersion
 if ($actualProductVersion -ne $expectedProductVersion) {
     throw "版本身份不一致：期望 $expectedProductVersion，实际 $actualProductVersion"

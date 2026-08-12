@@ -5,8 +5,6 @@
 
 $ErrorActionPreference = 'Stop'
 
-$expectedProductVersion = '2.12.0.32'
-$expectedProductLabel = 'V2.12.0.32'
 $expectedAssemblyName = 'MTTFTest'
 $expectedPublishedConfigs = @(
     'Config/AIConfig.xml',
@@ -171,7 +169,9 @@ if (-not (Test-Path -LiteralPath $release -PathType Container)) {
 $identityPath = Join-Path $release 'build-identity.json'
 $checksumPath = Join-Path $release 'SHA256SUMS.txt'
 $exePath = Join-Path $release 'MTTFTest.exe'
-foreach ($required in @($identityPath, $checksumPath, $exePath)) {
+$watchdogExePath = Join-Path $release 'MTTFTest.Watchdog.exe'
+$watchdogProtocolPath = Join-Path $release 'MTTFTest.Watchdog.Protocol.dll'
+foreach ($required in @($identityPath, $checksumPath, $exePath, $watchdogExePath, $watchdogProtocolPath)) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
         throw "Release 缺少必要文件：$required"
     }
@@ -179,13 +179,13 @@ foreach ($required in @($identityPath, $checksumPath, $exePath)) {
 
 $identityJson = Get-Content -LiteralPath $identityPath -Raw -Encoding UTF8
 $identity = $identityJson | ConvertFrom-Json
-if ($identity.productVersion -ne $expectedProductLabel) {
-    throw "identity 产品版本错误：$($identity.productVersion)"
-}
 $identityFileVersion = Get-RequiredJsonProperty $identity 'fileVersion' 'identity'
 $identityAssemblyName = Get-RequiredJsonProperty $identity 'assemblyName' 'identity'
-if ($identityFileVersion -ne $expectedProductVersion) {
-    throw "identity 文件版本错误：$identityFileVersion"
+$expectedProductVersion = [string]$identityFileVersion
+$expectedProductLabel = 'V' + $expectedProductVersion
+if ([string]::IsNullOrWhiteSpace($expectedProductVersion) -or
+    $identity.productVersion -ne $expectedProductLabel) {
+    throw "identity 产品版本与文件版本不自洽：Product=$($identity.productVersion) File=$identityFileVersion"
 }
 if ($identityAssemblyName -ne $expectedAssemblyName) {
     throw "identity 程序集名称错误：$identityAssemblyName"
