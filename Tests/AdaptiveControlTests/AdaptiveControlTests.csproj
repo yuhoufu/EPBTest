@@ -56,6 +56,7 @@
     <Compile Include="ProjectLogStoreTests.cs" />
     <Compile Include="PswTcpClientTimeoutTests.cs" />
     <Compile Include="RecoveryCoordinationTests.cs" />
+    <Compile Include="RecoveryHardeningTests.cs" />
     <Compile Include="NonRecoverableAlarmPolicyTests.cs" />
   </ItemGroup>
   <ItemGroup>
@@ -92,6 +93,10 @@
     <ProjectReference Include="..\..\Timing\Timing.csproj">
       <Project>{3D810EE2-A0EF-4D1F-84CD-2DDCF63FB434}</Project>
       <Name>Timing</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\..\Watchdog.Protocol\Watchdog.Protocol.csproj">
+      <Project>{9B2A88C4-F717-4CB8-86E1-0F6FDD5D9837}</Project>
+      <Name>MTTFTest.Watchdog.Protocol</Name>
     </ProjectReference>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />

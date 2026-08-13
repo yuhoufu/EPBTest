@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.Specialized;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
@@ -72,6 +73,10 @@ namespace EpbDiskWriterTests
                 Run("Raw首次Flush不再主动丢弃缓存", RawFirstFlushPersistsBufferedData);
                 Run("Raw硬容量背压后全部批次落盘", RawCapacityBackpressurePreservesAllBatches);
                 Run("Raw写入失败保留FIFO并可重试", RawWriteFailureRetainsFifoForRetry);
+                Run("程序级三种存储格式均可导出", ProgramStorageLevelsExportSingleOrPair);
+                Run("非法程序级存储配置回退并告警", InvalidProgramStorageConfigFallsBack);
+                Run("旧CSV+BIN包在单格式策略下仍可校验", LegacyPairRemainsCompatibleWithSinglePolicy);
+                Run("报警终态回读按CsvOnly请求单格式", AlarmFinalizedRecoveryHonorsSingleFormat);
                 Console.WriteLine($"PASS {_passed}/{_passed}");
                 return 0;
             }
@@ -1597,6 +1602,235 @@ namespace EpbDiskWriterTests
                 Assert(File.Exists(path) && new FileInfo(path).Length == 20 && context.RawQueueDepth == 0,
                     "存储恢复后Raw保留批次未成功补写");
             });
+        }
+
+        private static void ProgramStorageLevelsExportSingleOrPair()
+        {
+            foreach (var level in new[]
+                     {
+                         StorageFormatLevel.CsvOnly,
+                         StorageFormatLevel.BinOnly,
+                         StorageFormatLevel.CsvAndBin
+                     })
+            {
+                WithRoot(root =>
+                {
+                    var data = Path.Combine(root, "Data");
+                    var index = Path.Combine(root, "Index");
+                    using (var writer = new EpbDiskWriter(new DataRetentionPolicy
+                    {
+                        DataStorePath = data,
+                        IndexAndExportPath = index,
+                        FileSizeMb = 1,
+                        LatestStorageLevel = level
+                    }))
+                    {
+                        WriteCompletedCycle(writer, 1, 1, 3, DateTime.UtcNow);
+                        writer.ExportLatestCyclesNow(1, 1);
+                    }
+
+                    var package = Directory.EnumerateDirectories(
+                            Path.Combine(index, "Latest", "EPB1"), "*", SearchOption.TopDirectoryOnly)
+                        .Single();
+                    var csv = File.Exists(Path.Combine(package, "EPB1_Cycle_000001.csv"));
+                    var bin = File.Exists(Path.Combine(package, "EPB1_Cycle_000001.bin"));
+                    Assert(csv == (level == StorageFormatLevel.CsvOnly || level == StorageFormatLevel.CsvAndBin),
+                        $"Latest CSV 格式错误：{level}");
+                    Assert(bin == (level == StorageFormatLevel.BinOnly || level == StorageFormatLevel.CsvAndBin),
+                        $"Latest BIN 格式错误：{level}");
+                    var evidence = EpbDiskWriter.ValidateAlarmCycleSnapshotFiles(
+                        csv ? Path.Combine(package, "EPB1_Cycle_000001.csv") : null,
+                        bin ? Path.Combine(package, "EPB1_Cycle_000001.bin") : null,
+                        1,
+                        1,
+                        false,
+                        level);
+                    Assert(evidence.IsValid && evidence.SampleCount == 3,
+                        $"单格式校验失败：{level} {evidence.ValidationError}");
+                });
+            }
+
+            WithRoot(root =>
+            {
+                var alarmDir = Path.Combine(root, "Alarm");
+                using var writer = new EpbDiskWriter(new DataRetentionPolicy
+                {
+                    DataStorePath = Path.Combine(root, "Data"),
+                    IndexAndExportPath = Path.Combine(root, "Index"),
+                    FileSizeMb = 1,
+                    AlarmStorageLevel = StorageFormatLevel.CsvOnly
+                });
+                writer.BeginCycle(2, 1, DateTime.UtcNow);
+                WriteSamples(writer, 2, 2, DateTime.UtcNow);
+                var evidence = writer.SealAndExportAlarmCycle(2, 1, alarmDir, DateTime.UtcNow);
+                Assert(evidence.IsValid && evidence.StorageFormat == "CsvOnly" &&
+                       File.Exists(evidence.CsvPath) && string.IsNullOrEmpty(evidence.BinPath),
+                    "Alarm CsvOnly 封存未生成单格式有效证据");
+                var alarmAdapter = new DiskWriterRecorderAdapter(writer);
+                alarmAdapter.FlushRecentForAlarm(2, 1, alarmDir, includeRunningCycle: false);
+                Assert(!Directory.EnumerateFiles(alarmDir, "*.bin", SearchOption.TopDirectoryOnly).Any(),
+                    "Alarm=CsvOnly 时最近圈报警目录仍生成 BIN");
+            });
+
+            WithRoot(root =>
+            {
+                var learningDir = Path.Combine(root, "Learning");
+                using var writer = new EpbDiskWriter(new DataRetentionPolicy
+                {
+                    DataStorePath = Path.Combine(root, "Data"),
+                    IndexAndExportPath = Path.Combine(root, "Index"),
+                    FileSizeMb = 1,
+                    LearningStorageLevel = StorageFormatLevel.BinOnly
+                });
+                var learning = writer.BeginLearningCycle(3, DateTime.UtcNow);
+                WriteSamples(writer, 3, 2, DateTime.UtcNow);
+                var evidence = writer.SealAndExportCycle(
+                    3, learning, learningDir, DateTime.UtcNow, "learning_completed");
+                Assert(evidence.IsValid && evidence.StorageFormat == "BinOnly" &&
+                       File.Exists(evidence.BinPath) && string.IsNullOrEmpty(evidence.CsvPath),
+                    "Learning BinOnly 封存未生成 BIN 证据");
+            });
+        }
+
+        private static void InvalidProgramStorageConfigFallsBack()
+        {
+            var warnings = new List<string>();
+            var settings = new NameValueCollection
+            {
+                ["LatestStorageLevel"] = "None",
+                ["AlarmStorageLevel"] = "bogus",
+                ["LearningStorageLevel"] = "",
+                ["HistoricalEnabled"] = "maybe",
+                ["HistoricalRetainCyclesPerChannel"] = "0"
+            };
+            var policy = ProgramStoragePolicy.Load(warnings.Add, settings);
+            Assert(policy.Latest == StorageFormatLevel.CsvOnly &&
+                   policy.Alarm == StorageFormatLevel.CsvOnly &&
+                   policy.Learning == StorageFormatLevel.BinOnly &&
+                   policy.HistoricalEnabled && policy.HistoricalRetainCyclesPerChannel == 12,
+                "非法程序级配置未回退到安全默认");
+            Assert(warnings.Count >= 4, "非法程序级配置未记录足够告警");
+        }
+
+        private static void LegacyPairRemainsCompatibleWithSinglePolicy()
+        {
+            WithRoot(root =>
+            {
+                var csv = Path.Combine(root, "EPB1_Cycle_000001.csv");
+                var bin = Path.Combine(root, "EPB1_Cycle_000001.bin");
+                var ts = DateTime.UtcNow.ToLocalTime().ToBinary();
+                File.WriteAllText(csv,
+                    "Timestamp,RelativeTimeSeconds,Cycle,SampleIndex,EpbCurrent,GroupPressure\n" +
+                    $"{DateTime.FromBinary(ts):yyyy-MM-dd HH:mm:ss.fffffff},0.0000000,1,0,1.000,2.0\n",
+                    Encoding.UTF8);
+                using (var stream = File.Create(bin))
+                using (var writer = new BinaryWriter(stream))
+                {
+                    writer.Write(ts);
+                    writer.Write(1);
+                    writer.Write(0);
+                    writer.Write(1.0);
+                    writer.Write(2.0);
+                }
+                var evidence = EpbDiskWriter.ValidateAlarmCycleSnapshotFiles(
+                    csv, bin, 1, 1, false, StorageFormatLevel.CsvOnly);
+                Assert(evidence.IsValid && evidence.SampleCount == 1 &&
+                       evidence.StorageFormat == "CsvAndBin",
+                    "旧CSV+BIN包未在单格式策略下保持兼容");
+            });
+        }
+
+        private static void AlarmFinalizedRecoveryHonorsSingleFormat()
+        {
+            WithRoot(root =>
+            {
+                var csv = Path.Combine(root, "EPB1_Cycle_000007.csv");
+                var ts = DateTime.UtcNow.ToLocalTime().ToBinary();
+                File.WriteAllText(csv,
+                    "Timestamp,RelativeTimeSeconds,Cycle,SampleIndex,EpbCurrent,GroupPressure\n" +
+                    $"{DateTime.FromBinary(ts):yyyy-MM-dd HH:mm:ss.fffffff},0.0000000,7,0,1.000,2.0\n",
+                    Encoding.UTF8);
+                var recorder = new FakeAlarmAttemptRecorder(csv);
+                var original = new AlarmCycleSnapshotEvidence
+                {
+                    StorageFormat = StorageFormatLevel.CsvOnly.ToString(),
+                    ValidationError = "not claimed"
+                };
+                var recovered = AlarmCycleSnapshotRecovery.TryExportFinalizedCycle(
+                    recorder,
+                    1,
+                    7,
+                    root,
+                    original);
+                Assert(recorder.LastSaveCsv && !recorder.LastSaveBin,
+                    "报警终态回读没有按CsvOnly请求单格式");
+                Assert(recovered.IsValid && recovered.SampleCount == 1 &&
+                       recovered.StorageFormat == StorageFormatLevel.CsvOnly.ToString(),
+                    "报警终态CSV-only回读校验失败");
+            });
+
+            WithRoot(root =>
+            {
+                var data = Path.Combine(root, "Data");
+                var index = Path.Combine(root, "Index");
+                using (var writer = new EpbDiskWriter(new DataRetentionPolicy
+                {
+                    DataStorePath = data,
+                    IndexAndExportPath = index,
+                    FileSizeMb = 1,
+                    LatestStorageLevel = StorageFormatLevel.BinOnly
+                }))
+                {
+                    WriteCompletedCycle(writer, 1, 1, 2, DateTime.UtcNow);
+                    var generic = Path.Combine(root, "Generic");
+                    writer.ExportLatestCyclesTo(1, 1, generic, false);
+                    Assert(File.Exists(Path.Combine(generic, "EPB1_Cycle_000001.csv")) &&
+                           File.Exists(Path.Combine(generic, "EPB1_Cycle_000001.bin")),
+                        "Latest=BinOnly 错误影响通用 FlushRecentTo 双格式导出");
+                }
+            });
+        }
+
+        private sealed class FakeAlarmAttemptRecorder : IEpbCycleRecorder, ICycleAttemptEvidenceExporter
+        {
+            private readonly string _csvPath;
+            public bool LastSaveCsv { get; private set; }
+            public bool LastSaveBin { get; private set; }
+
+            public FakeAlarmAttemptRecorder(string csvPath) { _csvPath = csvPath; }
+            public void BeginCycle(int epbId, int cycleNumber, DateTime utcNow) { }
+            public int BeginLearningCycle(int epbId, DateTime utcNow) => -1;
+            public void WriteBatch(int epbId, DateTime[] tsUtc, double[] currents, double[] groupPressures) { }
+            public int GetCurrentCycleSampleCount(int epbId) => 1;
+            public void CompleteCycle(int epbId, int cycleNumber, int finalN, DateTime utcNow) { }
+            public void AlarmCycle(int epbId, int cycleNumber, int finalN, DateTime utcNow) { }
+            public AlarmCycleSnapshotEvidence SealAndExportAlarmCycle(
+                int epbId, int cycleNumber, string exportDir, DateTime fallbackEndUtc) => null;
+            public AlarmCycleSnapshotEvidence SealAndExportCycle(
+                int epbId, int cycleNumber, string exportDir, DateTime fallbackEndUtc, string status) => null;
+            public void AbortCycle(int epbId, int cycleNumber, int finalN, DateTime utcNow, string status) { }
+            public void FlushRecent(int epbId, int lastNCycles) { }
+            public int GetLastCycleNumber(int ch) => 0;
+            public void FlushRecentTo(int epbId, int lastNCycles, string exportDir, bool includeRunningCycle) { }
+
+            public CycleSnapshotEvidence ExportCycleAttemptTo(
+                int epbId,
+                int cycleNumber,
+                string exportDir,
+                bool saveCsv,
+                bool saveBin)
+            {
+                LastSaveCsv = saveCsv;
+                LastSaveBin = saveBin;
+                return new CycleSnapshotEvidence
+                {
+                    EpbId = epbId,
+                    CycleNumber = cycleNumber,
+                    SampleCount = 1,
+                    CsvPath = saveCsv ? _csvPath : null,
+                    BinPath = saveBin ? Path.Combine(exportDir, "missing.bin") : null
+                };
+            }
         }
 
         private static void WithRoot(Action<string> action)

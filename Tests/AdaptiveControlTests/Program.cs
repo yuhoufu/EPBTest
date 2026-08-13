@@ -35,6 +35,13 @@ namespace AdaptiveControlTests
                     return 0;
                 }
                 if (args.Length == 1 &&
+                    args[0].Equals("--recovery-hardening", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += RecoveryHardeningTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
                     args[0].Equals("--daq-realtime", StringComparison.OrdinalIgnoreCase))
                 {
                     _passed += DaqRealtimeControlTests.RunAll();
@@ -109,6 +116,7 @@ namespace AdaptiveControlTests
                     args[0].Equals("--incident-10358-029", StringComparison.OrdinalIgnoreCase))
                 {
                     _passed += RecoveryCoordinationTests.RunAll();
+                    _passed += RecoveryHardeningTests.RunAll();
                     _passed += ProjectLogStoreTests.RunRealtimeIsolationRegression();
                     _passed += HydraulicGroupCoordinatorTests.RunRecoveryEvidenceRegression();
                     Run("峰值偏差只比较同一证据时间窗", PeakEvidenceMismatchRequiresComparableWindow);
