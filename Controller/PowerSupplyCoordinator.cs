@@ -13,6 +13,23 @@ using PowerSupply.Core;
 
 namespace Controller
 {
+    [Flags]
+    public enum PowerSupplyTelemetryEventFlags
+    {
+        None = 0,
+        Connected = 1 << 0,
+        Disconnected = 1 << 1,
+        OutputStateChanged = 1 << 2,
+        SetpointChanged = 1 << 3,
+        LimitStateChanged = 1 << 4,
+        ProtectionTripped = 1 << 5,
+        CommunicationError = 1 << 6,
+        FreshnessLost = 1 << 7,
+        FreshnessRestored = 1 << 8,
+        ThresholdCrossed = 1 << 9,
+        Lifecycle = 1 << 10
+    }
+
     public sealed class PowerSupplyFault
     {
         public DateTime TimestampUtc { get; set; }
@@ -33,6 +50,9 @@ namespace Controller
         public int ElectricalGroupId { get; set; }
         public PswSnapshot Snapshot { get; set; }
         public string Error { get; set; } = string.Empty;
+        /// <summary>Typed edge/status markers used by durable telemetry sampling.</summary>
+        public PowerSupplyTelemetryEventFlags EventFlags { get; set; }
+        public string EventCode { get; set; } = string.Empty;
     }
 
     public sealed class PowerSupplyRuntimeState
@@ -85,7 +105,25 @@ namespace Controller
         private readonly ConcurrentDictionary<int, Task> _monitorTasks = new ConcurrentDictionary<int, Task>();
         private readonly ConcurrentDictionary<int, GroupOperationState> _operations =
             new ConcurrentDictionary<int, GroupOperationState>();
+        private readonly ConcurrentDictionary<int, TelemetryEdgeState> _telemetryEdges =
+            new ConcurrentDictionary<int, TelemetryEdgeState>();
         private int _disposed;
+
+        private sealed class TelemetryEdgeState
+        {
+            internal readonly object Sync = new object();
+            internal bool Initialized;
+            internal bool Connected;
+            internal bool OutputEnabled;
+            internal bool LimitActive;
+            internal bool ProtectionTripped;
+            internal bool Fresh;
+            internal bool ThresholdActive;
+            internal double SetVoltage;
+            internal double SetCurrent;
+            internal double? Ovp;
+            internal double? Ocp;
+        }
 
         private sealed class GroupOperationState
         {
@@ -173,7 +211,13 @@ namespace Controller
                     await client.SetOutputAsync(false, operationToken).ConfigureAwait(false);
                     snapshot = await client.ReadSnapshotAsync(operationToken).ConfigureAwait(false);
                     _latest[group.Id] = snapshot;
-                    AppendTelemetry(group.Id, snapshot, "PlannedOutputOff");
+                    AppendTelemetry(
+                        group.Id,
+                        snapshot,
+                        "PlannedOutputOff",
+                        PowerSupplyTelemetryEventFlags.OutputStateChanged |
+                        PowerSupplyTelemetryEventFlags.Lifecycle,
+                        "PlannedOutputOff");
                     if (snapshot.OutputEnabled)
                         throw new InvalidOperationException(
                             $"{supply.DisplayName} 启动前 OUTP ON，发送 OUTP OFF 后回读仍为 ON；已阻止带载改参。");
@@ -203,7 +247,12 @@ namespace Controller
                     .ConfigureAwait(false);
                 _latest[group.Id] = enabled;
                 _activeGroups[group.Id] = 0;
-                AppendTelemetry(group.Id, enabled, null);
+                AppendTelemetry(
+                    group.Id,
+                    enabled,
+                    null,
+                    PowerSupplyTelemetryEventFlags.Lifecycle,
+                    "OutputEnabled");
                 await StartMonitorAsync(group.Id).ConfigureAwait(false);
                 _log.Info(
                     $"{supply.DisplayName} 已接管：Group={group.Id} {supply.Host}:{supply.Port} " +
@@ -228,7 +277,12 @@ namespace Controller
                         : await client.ConnectAsync(operationToken).ConfigureAwait(false);
                     ValidateIdentity(supply, snapshot);
                     _latest[group.Id] = snapshot;
-                    AppendTelemetry(group.Id, snapshot, "RecoveryRevalidation");
+                    AppendTelemetry(
+                        group.Id,
+                        snapshot,
+                        "RecoveryRevalidation",
+                        PowerSupplyTelemetryEventFlags.Lifecycle,
+                        "RecoveryRevalidation");
                     if (snapshot.ProtectionTripped)
                         throw new InvalidOperationException($"{supply.DisplayName} 保护已触发，禁止恢复。");
                     if (!snapshot.OutputEnabled)
@@ -332,7 +386,13 @@ namespace Controller
                     await client.SetOutputAsync(false, linked.Token).ConfigureAwait(false);
                     var snapshot = await client.ReadSnapshotAsync(linked.Token).ConfigureAwait(false);
                     _latest[electricalGroupId] = snapshot;
-                    AppendTelemetry(electricalGroupId, snapshot, null);
+                    AppendTelemetry(
+                        electricalGroupId,
+                        snapshot,
+                        null,
+                        PowerSupplyTelemetryEventFlags.OutputStateChanged |
+                        PowerSupplyTelemetryEventFlags.Lifecycle,
+                        "PlannedOutputOff");
                     if (snapshot.OutputEnabled)
                         throw new InvalidOperationException($"电源组 {electricalGroupId} OUTP OFF 回读仍为 ON。");
                 }
@@ -664,7 +724,9 @@ namespace Controller
                         nearLimit
                             ? $"NearCurrentLimit I={snapshot.MeasuredCurrent:F3}A " +
                               $"Warn={supply.CurrentA.Value * _config.NearLimitWarnRatio:F3}A"
-                            : null);
+                            : null,
+                        PowerSupplyTelemetryEventFlags.None,
+                        null);
 
                     var operation = Operation(groupId);
                     bool expectedOn;
@@ -717,7 +779,13 @@ namespace Controller
                 }
                 catch (Exception ex)
                 {
-                    AppendTelemetry(groupId, null, ex.Message);
+                    AppendTelemetry(
+                        groupId,
+                        null,
+                        ex.Message,
+                        PowerSupplyTelemetryEventFlags.CommunicationError |
+                        PowerSupplyTelemetryEventFlags.FreshnessLost,
+                        "CommunicationError");
                     if ((DateTime.UtcNow - lastSuccess).TotalMilliseconds >= _config.TelemetryStaleMs)
                     {
                         RaiseFault(groupId, "TelemetryStale",
@@ -829,16 +897,90 @@ namespace Controller
             }
         }
 
-        private void AppendTelemetry(int groupId, PswSnapshot snapshot, string error)
+        private void AppendTelemetry(
+            int groupId,
+            PswSnapshot snapshot,
+            string error,
+            PowerSupplyTelemetryEventFlags explicitFlags = PowerSupplyTelemetryEventFlags.None,
+            string explicitEventCode = null)
         {
+            var supply = RequiredSupply(groupId);
+            var edge = _telemetryEdges.GetOrAdd(groupId, _ => new TelemetryEdgeState());
+            var eventFlags = explicitFlags;
+            var eventCode = explicitEventCode ?? string.Empty;
+            var connected = snapshot != null && snapshot.IsConnected;
+            var fresh = snapshot != null &&
+                        (DateTime.UtcNow - snapshot.TimestampUtc.ToUniversalTime()).TotalMilliseconds <=
+                        _config.TelemetryStaleMs;
+            var limitActive = snapshot != null &&
+                              (snapshot.IsConstantCurrent || snapshot.IsCurrentLimited || snapshot.IsPowerLimited);
+            var thresholdActive = snapshot != null &&
+                                  ((supply.CurrentA.HasValue &&
+                                    snapshot.MeasuredCurrent >= supply.CurrentA.Value * _config.NearLimitWarnRatio) ||
+                                   (snapshot.OutputEnabled &&
+                                    snapshot.MeasuredVoltage < supply.MinimumOutputVoltageV));
+            lock (edge.Sync)
+            {
+                if (!edge.Initialized)
+                {
+                    if (connected) eventFlags |= PowerSupplyTelemetryEventFlags.Connected;
+                    if (!fresh) eventFlags |= PowerSupplyTelemetryEventFlags.FreshnessLost;
+                }
+                else
+                {
+                    if (connected != edge.Connected)
+                        eventFlags |= connected
+                            ? PowerSupplyTelemetryEventFlags.Connected
+                            : PowerSupplyTelemetryEventFlags.Disconnected;
+                    if (snapshot != null && snapshot.OutputEnabled != edge.OutputEnabled)
+                        eventFlags |= PowerSupplyTelemetryEventFlags.OutputStateChanged;
+                    if (snapshot != null &&
+                        (Math.Abs(snapshot.SetVoltage - edge.SetVoltage) > 0.000001 ||
+                         Math.Abs(snapshot.SetCurrent - edge.SetCurrent) > 0.000001 ||
+                         !NullableDoubleEqual(snapshot.Ovp, edge.Ovp) ||
+                         !NullableDoubleEqual(snapshot.Ocp, edge.Ocp)))
+                        eventFlags |= PowerSupplyTelemetryEventFlags.SetpointChanged;
+                    if (limitActive != edge.LimitActive)
+                        eventFlags |= PowerSupplyTelemetryEventFlags.LimitStateChanged;
+                    if (!edge.ProtectionTripped && snapshot != null && snapshot.ProtectionTripped)
+                        eventFlags |= PowerSupplyTelemetryEventFlags.ProtectionTripped;
+                    if (fresh != edge.Fresh)
+                        eventFlags |= fresh
+                            ? PowerSupplyTelemetryEventFlags.FreshnessRestored
+                            : PowerSupplyTelemetryEventFlags.FreshnessLost;
+                    if (thresholdActive != edge.ThresholdActive)
+                        eventFlags |= PowerSupplyTelemetryEventFlags.ThresholdCrossed;
+                }
+
+                edge.Initialized = true;
+                edge.Connected = connected;
+                edge.OutputEnabled = snapshot != null && snapshot.OutputEnabled;
+                edge.LimitActive = limitActive;
+                edge.ProtectionTripped = snapshot != null && snapshot.ProtectionTripped;
+                edge.Fresh = fresh;
+                edge.ThresholdActive = thresholdActive;
+                if (snapshot != null)
+                {
+                    edge.SetVoltage = snapshot.SetVoltage;
+                    edge.SetCurrent = snapshot.SetCurrent;
+                    edge.Ovp = snapshot.Ovp;
+                    edge.Ocp = snapshot.Ocp;
+                }
+            }
+            if (snapshot == null && !string.IsNullOrWhiteSpace(error))
+                eventFlags |= PowerSupplyTelemetryEventFlags.CommunicationError;
+            if (eventFlags != PowerSupplyTelemetryEventFlags.None && string.IsNullOrWhiteSpace(eventCode))
+                eventCode = eventFlags.ToString();
             var item = new PowerSupplyTelemetry
             {
                 TimestampUtc = DateTime.UtcNow,
                 MonotonicTicks = Stopwatch.GetTimestamp(),
-                SupplyId = RequiredSupply(groupId).Id,
+                SupplyId = supply.Id,
                 ElectricalGroupId = groupId,
                 Snapshot = snapshot,
-                Error = error ?? string.Empty
+                Error = error ?? string.Empty,
+                EventFlags = eventFlags,
+                EventCode = eventCode ?? string.Empty
             };
             _telemetry.Enqueue(item);
             TrimTelemetry();
@@ -848,6 +990,12 @@ namespace Controller
                 ex => _log?.Warn(
                     $"电源遥测观察者异常已隔离：{ex.Message}",
                     "程控电源"));
+        }
+
+        private static bool NullableDoubleEqual(double? left, double? right)
+        {
+            if (left.HasValue != right.HasValue) return false;
+            return !left.HasValue || Math.Abs(left.Value - right.Value) <= 0.000001;
         }
 
         private void TrimTelemetry()
