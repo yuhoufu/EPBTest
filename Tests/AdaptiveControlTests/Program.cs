@@ -35,6 +35,20 @@ namespace AdaptiveControlTests
                     return 0;
                 }
                 if (args.Length == 1 &&
+                    args[0].Equals("--telemetry-storage", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += PowerSupplyTelemetryRecorderTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
+                    args[0].Equals("--historical-storage", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += HistoricalStorageBudgetTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
                     args[0].Equals("--recovery-hardening", StringComparison.OrdinalIgnoreCase))
                 {
                     _passed += RecoveryHardeningTests.RunAll();
@@ -42,9 +56,27 @@ namespace AdaptiveControlTests
                     return 0;
                 }
                 if (args.Length == 1 &&
+                    args[0].Equals("--watchdog-journal", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += WatchdogJournalStorageTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
                     args[0].Equals("--daq-realtime", StringComparison.OrdinalIgnoreCase))
                 {
                     _passed += DaqRealtimeControlTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
+                    args[0].Equals("--incident-session", StringComparison.OrdinalIgnoreCase))
+                {
+                    Run("Incident SessionKey/60秒窗口合并", IncidentSessionPolicyTests.SessionKeyAndWindowMerge);
+                    Run("Incident 重证据门禁不抑制摘要", IncidentSessionPolicyTests.HeavyGatesPreserveSummary);
+                    Run("Incident phase receipt 与终态 manifest", IncidentSessionPolicyTests.TerminalManifestAndRetention);
+                    Run("Incident 配置与storm阈值", IncidentSessionPolicyTests.ConfigDefaultsAndStormLevels);
+                    Run("Incident 保留10个且跳过active/legacy/corrupt", IncidentSessionPolicyTests.RetentionKeepsLatestTenAndSkipsUnsafe);
                     Console.WriteLine($"PASS {_passed}/{_passed}");
                     return 0;
                 }
@@ -134,6 +166,9 @@ namespace AdaptiveControlTests
                 }
 
                 _passed += CycleAttemptLifecycleTests.RunAll();
+                _passed += PowerSupplyTelemetryRecorderTests.RunAll();
+                _passed += HistoricalStorageBudgetTests.RunAll();
+                _passed += WatchdogJournalStorageTests.RunAll();
                 Run("正常夹紧", NormalClamp);
                 Run("学习尾部提前量后预测夹紧", LearnedTailLeadPredictsClamp);
                 Run("低斜率不提前误触发", LowSlopeDoesNotPredictEarly);
@@ -226,6 +261,8 @@ namespace AdaptiveControlTests
                 Run("学习资格局部故障不穿透整批等待", FaultIsolatedPhaseKeepsHealthySiblingRunning);
                 Run("人工停止仍可取消整个学习资格阶段", PhaseOwnerCancellationStillEscapesIsolation);
                 Run("作废学习尝试完整回滚自适应模型", DiscardedLearningAttemptRestoresAdaptiveProfile);
+                Run("SaveWithReceipt失败立即回滚runner事务", SaveWithReceiptFailureRestoresRunnerTransaction);
+                Run("回滚致命且receipt失败仍保留原异常", FatalPersistenceReceiptFailurePreservesOriginal);
                 Run("正式圈异常不得复用上一圈成功结果", FormalCycleRejectsStaleSuccessOutcome);
                 Run("正式圈必须控制与落盘均成功才计数", FormalCycleRequiresPersistenceCommitToCount);
                 Run("正向低平台连续8圈确认且正常圈清零", ForwardStallStreakRequiresFiveCycles);
@@ -314,6 +351,7 @@ namespace AdaptiveControlTests
                 Run("同步写永久阻塞由独立看门狗单次升级且解除后收口", DaqPersistenceCoordinatorTests.WriteStallWatchdogPublishesOnceAndRetainsBatch);
                 Run("主动截止不撤销已写入耐久前缀且不阻塞健康后续流量", DaqPersistenceCoordinatorTests.DurablePrefixAllowsHealthyLaterTrafficButRejectsSuppression);
                 Run("冻结边界与SuppressAfter原子安装且禁止扩大", DaqPersistenceCoordinatorTests.CutoffInstallIsImmutableAndRejectsExpansion);
+                Run("持久化抑制证据按恢复窗口拆分并累计", DaqPersistenceCoordinatorTests.SuppressionEvidenceResetsPerWindowAndAccumulates);
                 Run("活动圈上限事件携带EPB圈号和限制", DaqPersistenceCoordinatorTests.ActiveCycleLimitPublishesLifecycleIdentity);
                 Run("持久化诊断观察者异常不重复写盘", DaqPersistenceCoordinatorTests.DiagnosticObserverFailureDoesNotRetryWrite);
                 Run("映射故障进程内自愈不触发DAQ停机", DaqPersistenceCoordinatorTests.MappingFailureRecoversBeforeSafetyPause);
@@ -2446,6 +2484,123 @@ namespace AdaptiveControlTests
 
             baseline.ForwardEmptyHistoryA.Add(99);
             Assert(!working.ForwardEmptyHistoryA.Contains(99), "模型恢复后仍与快照共享可变历史集合");
+        }
+
+        private static void SaveWithReceiptFailureRestoresRunnerTransaction()
+        {
+            var dir = CreateTempDir();
+            try
+            {
+                var store = new EpbAdaptiveProfileStore(dir);
+                var baseline = StableProfile();
+                baseline.Channel = 1;
+                store.Save(baseline);
+
+                var runner = new TransactionalRunner(baseline);
+                var modelBeforeLogicalCycle = runner.CaptureAdaptiveProfile();
+                var changed = runner.CaptureAdaptiveProfile();
+                changed.AddSuccessfulCycle(2.4, 2.3, 3100, 2800);
+                runner.ReplaceModel(changed);
+
+                var injected = false;
+                EpbAdaptiveProfileStore.SaveWithReceiptFailureInjection = stage =>
+                {
+                    if (stage == "AfterReplaceBeforeReadback" && !injected)
+                    {
+                        injected = true;
+                        throw new IOException("injected model readback failure");
+                    }
+                };
+                try
+                {
+                    var threw = false;
+                    try { store.SaveWithReceipt(changed); }
+                    catch (IOException) { threw = true; }
+                    Assert(threw, "SaveWithReceipt故障未向事务层抛出");
+                    EpbManager.RestoreRunnerAdaptiveProfile(runner, modelBeforeLogicalCycle);
+                }
+                finally { EpbAdaptiveProfileStore.SaveWithReceiptFailureInjection = null; }
+
+                var restored = runner.CaptureAdaptiveProfile();
+                Assert(restored.ValidSampleCount == modelBeforeLogicalCycle.ValidSampleCount &&
+                       restored.ValidCutoffSampleCount == modelBeforeLogicalCycle.ValidCutoffSampleCount &&
+                       restored.ForwardEmptyHistoryA.SequenceEqual(modelBeforeLogicalCycle.ForwardEmptyHistoryA),
+                    "SaveWithReceipt失败后runner仍保留未提交学习模型");
+                Assert(File.Exists(store.FilePath), "SaveWithReceipt失败后模型文件缺失");
+                var reloaded = new EpbAdaptiveProfileStore(dir).GetOrCreate(1);
+                Assert(reloaded.ValidSampleCount == baseline.ValidSampleCount,
+                    "SaveWithReceipt失败后磁盘模型未回滚");
+            }
+            finally
+            {
+                try { Directory.Delete(dir, true); } catch { }
+            }
+        }
+
+        private static void FatalPersistenceReceiptFailurePreservesOriginal()
+        {
+            var dir = CreateTempDir();
+            try
+            {
+                var store = new EpbAdaptiveProfileStore(dir);
+                var baseline = StableProfile();
+                baseline.Channel = 1;
+                store.Save(baseline);
+                var beforeBytes = File.ReadAllBytes(store.FilePath);
+
+                var changed = baseline.Clone();
+                changed.AddSuccessfulCycle(2.4, 2.3, 3100, 2800);
+                EpbAdaptiveProfilePersistenceFatalException fatal = null;
+                EpbAdaptiveProfileStore.SaveWithReceiptFailureInjection = stage =>
+                {
+                    if (stage == "AfterReplaceBeforeReadback")
+                        throw new IOException("injected model readback failure");
+                    if (stage == "BeforeRollback")
+                        throw new IOException("injected model rollback failure");
+                };
+                try
+                {
+                    store.SaveWithReceipt(changed);
+                }
+                catch (EpbAdaptiveProfilePersistenceFatalException ex)
+                {
+                    fatal = ex;
+                }
+                finally
+                {
+                    EpbAdaptiveProfileStore.SaveWithReceiptFailureInjection = null;
+                }
+
+                Assert(fatal != null, "模型回滚失败未抛出致命持久化异常");
+                Assert(fatal.IsFatal && fatal.WriteFailure is IOException &&
+                       fatal.RollbackFailure is IOException,
+                    "致命持久化异常未保留写入/回滚故障证据");
+                Assert(fatal is OperationCanceledException &&
+                       !EpbCycleRunner.IsSoftwareRecoveryException(fatal),
+                    "致命持久化异常被错误分类为可自愈重试");
+                Assert(File.Exists(fatal.BackupPath),
+                    "回滚失败后未保留可供恢复的模型备份");
+                Assert(File.ReadAllBytes(fatal.BackupPath).SequenceEqual(beforeBytes),
+                    "回滚失败后保留的备份不是提交前模型字节");
+
+                Exception receiptFailure = null;
+                var returned = EpbManager.PreserveLearningPersistenceFailure(
+                    fatal,
+                    () => throw new IOException("injected failed-receipt write"),
+                    ex => receiptFailure = ex);
+                Assert(object.ReferenceEquals(returned, fatal),
+                    "失败receipt异常覆盖了原始模型持久化致命异常");
+                Assert(receiptFailure is IOException,
+                    "失败receipt写入异常未被独立记录");
+                Assert(!EpbManager.IsFormalCycleCountable(false, true),
+                    "模型持久化致命后仍被视为Successful正式圈");
+
+            }
+            finally
+            {
+                EpbAdaptiveProfileStore.SaveWithReceiptFailureInjection = null;
+                try { Directory.Delete(dir, true); } catch { }
+            }
         }
 
         private static void FormalCycleRequiresPersistenceCommitToCount()
@@ -5559,6 +5714,42 @@ namespace AdaptiveControlTests
             var path = Path.Combine(Path.GetTempPath(), "EPBAdaptiveTests", Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(path);
             return path;
+        }
+
+        private sealed class TransactionalRunner : IEpbCycleRunner
+        {
+            private EpbAdaptiveProfile _profile;
+
+            public TransactionalRunner(EpbAdaptiveProfile profile)
+            {
+                _profile = profile?.Clone() ?? new EpbAdaptiveProfile { Channel = 1 };
+            }
+
+            public void ReplaceModel(EpbAdaptiveProfile profile) => _profile = profile?.Clone();
+            public Controller.Adaptive.EpbCycleOutcome LastCycleOutcome { get; } = new Controller.Adaptive.EpbCycleOutcome();
+            public Controller.Adaptive.FormalCycleFaultCommitResult CommitFormalCycleFaultEvidence(Guid testRunId, int cycleNumber)
+                => new Controller.Adaptive.FormalCycleFaultCommitResult();
+            public Task<Controller.Adaptive.EpbCycleOutcome> RunOneAdaptiveLearningAsync(int targetPeriodMs, CancellationToken token)
+                => Task.FromResult(LastCycleOutcome);
+            public EpbAdaptiveProfile CaptureAdaptiveProfile() => _profile?.Clone();
+            public void RestoreAdaptiveProfile(EpbAdaptiveProfile snapshot) => _profile = snapshot?.Clone();
+            public bool UseNoHeadPhase { get; set; }
+            public bool EnableTailCompensation { get; set; }
+            public int TailMinMs { get; set; }
+            public Task<bool> LearnOneAlignedAsync(int periodMs, int tailBaseMs, int phaseMs, int tailMinMs, CancellationToken token)
+                => Task.FromResult(false);
+            public Task<bool> RunOneAlignedAsync(int periodMs, int tailBaseMs, int phaseMs, int tailMinMs, DateTime deadlineUtc, CancellationToken token)
+                => Task.FromResult(false);
+            public void BeginLearnAggregation() { }
+            public Task<EpbCycleRunner.LearnSample> LearnOneAlignedCoreAsync(int periodMs, int tailBaseMs, int phaseMs, int tailMinMs, CancellationToken token)
+                => Task.FromResult<EpbCycleRunner.LearnSample>(null);
+            public void ApplyLearnSample(EpbCycleRunner.LearnSample sample) { }
+            public void FinalizeLearnAggregation() { }
+            public int DefaultPreReleaseDetectTimeoutMs => 3000;
+            public Task<bool> PreReleaseAsync(int? keepMs, CancellationToken token) => Task.FromResult(false);
+            public Task<bool> PreReleaseAsync(int? keepMs, int? detectTimeoutMs, CancellationToken token) => Task.FromResult(false);
+            public void BeginSafetyMarginLearning() { }
+            public void FinalizeSafetyMarginLearning() { }
         }
 
         private sealed class CollectingLogger : Config.IAppLogger

@@ -10,6 +10,7 @@ using System.Threading.Tasks;
 using System.Threading;
 using System.Security.Cryptography;
 using System.Text;
+using Config;
 using DataOperation;
 
 namespace EpbDiskWriterTests
@@ -77,6 +78,17 @@ namespace EpbDiskWriterTests
                 Run("非法程序级存储配置回退并告警", InvalidProgramStorageConfigFallsBack);
                 Run("旧CSV+BIN包在单格式策略下仍可校验", LegacyPairRemainsCompatibleWithSinglePolicy);
                 Run("报警终态回读按CsvOnly请求单格式", AlarmFinalizedRecoveryHonorsSingleFormat);
+                Run("Learning保留配置严格解析", LearningRetentionPolicyParsing);
+                Run("Learning运行链manifest原子发布与哈希校验", LearningRunManifestAtomicAndHash);
+                Run("Learning模型保存失败不推进模型且manifest不可清理", LearningModelSaveFailureIsNotEligible);
+                Run("Learning 3+3保留规划", LearningRetentionPlannerConverges3Plus3);
+                Run("Learning失败链受protected root保护", FailedLearningChainIsSkippedWhenProtected);
+                Run("Housekeeping大目录扫描不在调用线程", HousekeepingScanRunsOffCallerThread);
+                Run("SaveWithReceipt读回失败磁盘与内存均回滚", SaveWithReceiptReadbackFailureRollsBackDiskAndMemory);
+                Run("SaveWithReceipt回滚失败抛致命并保留备份", SaveWithReceiptRollbackFailureIsFatalAndKeepsBackup);
+                Run("Housekeeping实际删除收敛且保护未知/当前/临时", HousekeepingProcessConvergesAndProtects);
+                Run("Unlimited重启后4+4学习链仍全部保留", UnlimitedRetentionNeverDeletesAfterRestart);
+                Run("旧staging对应Root重新激活后不得删除", ReactivatedRootPreservesOwnedStaging);
                 Console.WriteLine($"PASS {_passed}/{_passed}");
                 return 0;
             }
@@ -1791,6 +1803,563 @@ namespace EpbDiskWriterTests
             });
         }
 
+        private static void LearningRetentionPolicyParsing()
+        {
+            var warnings = new List<string>();
+            var invalid = new NameValueCollection
+            {
+                ["LearningRetentionMode"] = "None",
+                ["LearningSuccessfulRunRetainCount"] = "0",
+                ["LearningFailedRunRetainCount"] = "-1"
+            };
+            var policy = ProgramStoragePolicy.Load(warnings.Add, invalid);
+            Assert(policy.LearningRetentionMode == LearningRetentionMode.Count &&
+                   policy.LearningSuccessfulRunRetainCount == 3 &&
+                   policy.LearningFailedRunRetainCount == 3 && warnings.Count >= 3,
+                "Learning非法/0配置未严格回退");
+            var unlimited = ProgramStoragePolicy.Load(null, new NameValueCollection
+            {
+                ["LearningRetentionMode"] = "Unlimited",
+                ["LearningSuccessfulRunRetainCount"] = "100",
+                ["LearningFailedRunRetainCount"] = "1"
+            });
+            Assert(unlimited.LearningRetentionMode == LearningRetentionMode.Unlimited &&
+                   unlimited.LearningSuccessfulRunRetainCount == 100 &&
+                   unlimited.LearningFailedRunRetainCount == 1,
+                "Unlimited/有效计数未解析");
+        }
+
+        private static void LearningRunManifestAtomicAndHash()
+        {
+            WithRoot(root =>
+            {
+                var chain = Path.Combine(root, "LearningCycles", Guid.NewGuid().ToString("N"));
+                var executionId = Guid.NewGuid();
+                var evidence = Path.Combine(chain, "Executions", executionId.ToString("N"), "EPB01", "Learning_0001");
+                Directory.CreateDirectory(evidence);
+                var evidenceFile = Path.Combine(evidence, "EPB01.csv");
+                File.WriteAllText(evidenceFile, "h\nrow\n");
+                WriteTestAttemptReceipt(chain, evidence, "Learning", 1, 1, 1, "Successful");
+                var identity = new RunChainIdentity(executionId, Guid.Parse(Path.GetFileName(chain)), Guid.Empty, 1, 7);
+                var manifest = LearningRunManifestStore.BuildFromDirectory(
+                    chain, identity, "2.13.0.3", "cfg", new[] { 1 }, 1, 0,
+                    "Successful", string.Empty, "modelhash", "receipt");
+                manifest.ModelCommitReceipts = new List<string> { "EPB01:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" };
+                Assert(LearningRunManifestStore.PublishAtomic(chain, manifest, out var path) && File.Exists(path),
+                    "manifest未原子发布");
+                Assert(LearningRunManifestStore.TryReadValidated(path, out var loaded, out var reason),
+                    "manifest校验失败：" + reason);
+                var receiptPath = LearningRunManifestStore.AttemptReceiptPath(evidence);
+                File.AppendAllText(receiptPath, "tamper\n");
+                Assert(!LearningRunManifestStore.TryReadValidated(path, out _, out reason) &&
+                       reason == "ManifestArtifactHashMismatch", "manifest未发现证据篡改");
+            });
+        }
+
+        private static void LearningModelSaveFailureIsNotEligible()
+        {
+            WithRoot(root =>
+            {
+                // A file occupying the would-be model directory forces the
+                // atomic SaveWithReceipt path to fail before replacing any
+                // model file.  The original marker remains untouched.
+                var blockedRoot = Path.Combine(root, "blocked-model-root");
+                File.WriteAllText(blockedRoot, "marker");
+                var store = new EpbAdaptiveProfileStore(blockedRoot);
+                var profile = new EpbAdaptiveProfile
+                {
+                    Channel = 1,
+                    ValidSampleCount = 5,
+                    UpdatedUtc = DateTime.UtcNow,
+                    ForwardClampMedianMs = 10,
+                    ReverseReleaseMedianMs = 10
+                };
+                var threw = false;
+                try { store.SaveWithReceipt(profile); }
+                catch { threw = true; }
+                Assert(threw && File.ReadAllText(blockedRoot) == "marker" &&
+                       !File.Exists(Path.Combine(blockedRoot, "EpbAdaptiveProfiles.xml")),
+                    "模型保存故障未保持旧文件/未显式失败");
+
+                var chain = Path.Combine(root, "LearningCycles", Guid.NewGuid().ToString("N"));
+                var executionId = Guid.NewGuid();
+                var evidence = Path.Combine(chain, "Executions", executionId.ToString("N"),
+                    "EPB01", "Learning_0001");
+                Directory.CreateDirectory(evidence);
+                File.WriteAllText(Path.Combine(evidence, "e.csv"), "h\nrow\n");
+                WriteTestAttemptReceipt(chain, evidence, "Learning", 1, 1, 1, "Successful");
+                var id = Guid.Parse(Path.GetFileName(chain));
+                var manifest = LearningRunManifestStore.BuildFromDirectory(
+                    chain, new RunChainIdentity(executionId, id), "2.13.0.3", "",
+                    new[] { 1 }, 1, 0, "Successful", string.Empty,
+                    "sha256:model", "sha256:receipt");
+                // Deliberately omit the per-channel receipt: a successful
+                // learning chain must not become an eligible retention target.
+                LearningRunManifestStore.PublishAtomic(chain, manifest, out var path);
+                Assert(!LearningRunManifestStore.TryReadValidated(path, out _, out var reason) &&
+                       reason == "ManifestSuccessEvidenceIncomplete",
+                    "缺少模型commit receipt仍被判为Successful/可清理");
+            });
+        }
+
+        private static void LearningRetentionPlannerConverges3Plus3()
+        {
+            WithRoot(root =>
+            {
+                var now = DateTime.UtcNow;
+                for (var i = 0; i < 4; i++)
+                {
+                    var chain = Path.Combine(root, i.ToString("x32"));
+                    var evidence = Path.Combine(chain, "Executions", Guid.NewGuid().ToString("N"), "EPB01", "Learning_0001");
+                    Directory.CreateDirectory(evidence);
+                    File.WriteAllText(Path.Combine(evidence, "e.csv"), "h\nrow\n");
+                    WriteTestAttemptReceipt(chain, evidence, "Learning", 1, 1, 1, "Successful");
+                    var id = Guid.Parse(Path.GetFileName(chain));
+                    var m = LearningRunManifestStore.BuildFromDirectory(chain,
+                        new RunChainIdentity(id, id), "2.13.0.3", "", new[] { 1 }, 1, 0,
+                        "Successful", string.Empty, "model", "receipt");
+                    m.ModelCommitReceipts = new List<string> { "EPB01:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" };
+                    LearningRunManifestStore.PublishAtomic(chain, m, out _);
+                    File.SetLastWriteTimeUtc(LearningRunManifestStore.ManifestPath(chain), now.AddMinutes(i));
+                }
+                for (var i = 4; i < 8; i++)
+                {
+                    var chain = Path.Combine(root, i.ToString("x32"));
+                    var evidence = Path.Combine(chain, "Executions", Guid.NewGuid().ToString("N"), "EPB01", "Learning_0001");
+                    Directory.CreateDirectory(evidence);
+                    File.WriteAllText(Path.Combine(evidence, "e.csv"), "h\nrow\n");
+                    WriteTestAttemptReceipt(chain, evidence, "Learning", 1, 1, 1, "Failed");
+                    var id = Guid.Parse(Path.GetFileName(chain));
+                    var m = LearningRunManifestStore.BuildFromDirectory(chain,
+                        new RunChainIdentity(id, id), "2.13.0.3", "", new[] { 1 }, 1, 0,
+                        "Failed", "fault");
+                    LearningRunManifestStore.PublishAtomic(chain, m, out _);
+                    File.SetLastWriteTimeUtc(LearningRunManifestStore.ManifestPath(chain), now.AddMinutes(i));
+                }
+                var candidates = LearningRetentionPlanner.FindCandidates(root, 3, 3, null);
+                Assert(candidates.Count == 2, "4成功+4失败未收敛为各保留3条");
+            });
+        }
+
+        private static void FailedLearningChainIsSkippedWhenProtected()
+        {
+            WithRoot(root =>
+            {
+                var chain = Path.Combine(root, Guid.NewGuid().ToString("N"));
+                var evidence = Path.Combine(chain, "Executions", Guid.NewGuid().ToString("N"), "EPB01", "Learning_0001");
+                Directory.CreateDirectory(evidence);
+                File.WriteAllText(Path.Combine(evidence, "e.csv"), "h\nrow\n");
+                WriteTestAttemptReceipt(chain, evidence, "Learning", 1, 1, 1, "Failed");
+                var id = Guid.Parse(Path.GetFileName(chain));
+                var manifest = LearningRunManifestStore.BuildFromDirectory(
+                    chain, new RunChainIdentity(id, id, Guid.Empty, 0, 3), "2.13.0.3", "",
+                    new[] { 1 }, 1, 0, "Failed", "fault");
+                LearningRunManifestStore.PublishAtomic(chain, manifest, out _);
+                var candidates = Controller.LearningRetentionPlanner.FindCandidates(
+                    root, 0, 0, null, null,
+                    path => string.Equals(Path.GetFullPath(path), Path.GetFullPath(chain),
+                        StringComparison.OrdinalIgnoreCase));
+                Assert(candidates.Count == 0 && Directory.Exists(chain),
+                    "受保护失败Learning链仍被扫描为可删除候选");
+            });
+        }
+
+        private static void HousekeepingScanRunsOffCallerThread()
+        {
+            WithRoot(root =>
+            {
+                var callerThread = Thread.CurrentThread.ManagedThreadId;
+                var callbackSeen = new ManualResetEventSlim(false);
+                var sameThread = 0;
+                for (var i = 0; i < 256; i++)
+                    Directory.CreateDirectory(Path.Combine(root, i.ToString("x32", CultureInfo.InvariantCulture)));
+                try
+                {
+                    using (var service = new Controller.DataHousekeepingService(
+                        root,
+                        new Controller.DataHousekeepingOptions
+                        {
+                            IsCurrentPath = path =>
+                            {
+                                if (Thread.CurrentThread.ManagedThreadId == callerThread)
+                                    Interlocked.Exchange(ref sameThread, 1);
+                                callbackSeen.Set();
+                                return false;
+                            },
+                            BatchInterval = TimeSpan.Zero
+                        }))
+                    {
+                        Assert(callbackSeen.Wait(TimeSpan.FromSeconds(5)),
+                            "Housekeeping worker未执行目录扫描");
+                        Assert(Volatile.Read(ref sameThread) == 0,
+                            "Housekeeping目录扫描仍发生在调用线程");
+                    }
+                }
+                finally { callbackSeen.Dispose(); }
+            });
+        }
+
+        private static void SaveWithReceiptReadbackFailureRollsBackDiskAndMemory()
+        {
+            WithRoot(root =>
+            {
+                var store = new EpbAdaptiveProfileStore(root);
+                var original = new EpbAdaptiveProfile
+                {
+                    Channel = 1,
+                    ValidSampleCount = 5,
+                    UpdatedUtc = DateTime.UtcNow,
+                    ForwardClampMedianMs = 10,
+                    ReverseReleaseMedianMs = 11
+                };
+                store.Save(original);
+                var modelPath = store.FilePath;
+                var beforeBytes = File.ReadAllBytes(modelPath);
+                var changed = original.Clone();
+                changed.ForwardClampMedianMs = 99;
+                var injected = false;
+                EpbAdaptiveProfileStore.SaveWithReceiptFailureInjection = stage =>
+                {
+                    if (stage == "AfterReplaceBeforeReadback" && !injected)
+                    {
+                        injected = true;
+                        throw new IOException("injected readback failure");
+                    }
+                };
+                try
+                {
+                    var threw = false;
+                    try { store.SaveWithReceipt(changed); }
+                    catch (IOException) { threw = true; }
+                    Assert(threw && beforeBytes.SequenceEqual(File.ReadAllBytes(modelPath)),
+                        "SaveWithReceipt读回故障未回滚原始磁盘字节");
+                    var inMemory = store.GetOrCreate(1);
+                    Assert(Math.Abs(inMemory.ForwardClampMedianMs - original.ForwardClampMedianMs) < 1e-9,
+                        "SaveWithReceipt读回故障未回滚内存模型");
+                }
+                finally { EpbAdaptiveProfileStore.SaveWithReceiptFailureInjection = null; }
+            });
+        }
+
+        private static void SaveWithReceiptRollbackFailureIsFatalAndKeepsBackup()
+        {
+            WithRoot(root =>
+            {
+                var store = new EpbAdaptiveProfileStore(root);
+                var original = new EpbAdaptiveProfile
+                {
+                    Channel = 1,
+                    ValidSampleCount = 7,
+                    UpdatedUtc = DateTime.UtcNow,
+                    ForwardClampMedianMs = 12,
+                    ReverseReleaseMedianMs = 13
+                };
+                store.Save(original);
+                var beforeBytes = File.ReadAllBytes(store.FilePath);
+                var changed = original.Clone();
+                changed.ForwardClampMedianMs = 99;
+
+                EpbAdaptiveProfileStore.SaveWithReceiptFailureInjection = stage =>
+                {
+                    if (stage == "AfterReplaceBeforeReadback" || stage == "BeforeRollback")
+                        throw new IOException("injected " + stage + " failure");
+                };
+                try
+                {
+                    EpbAdaptiveProfilePersistenceFatalException fatal = null;
+                    try { store.SaveWithReceipt(changed); }
+                    catch (EpbAdaptiveProfilePersistenceFatalException ex) { fatal = ex; }
+                    Assert(fatal != null && fatal.IsFatal,
+                        "SaveWithReceipt回滚失败未抛专用致命异常");
+                    Assert(fatal is OperationCanceledException,
+                        "磁盘回滚致命异常未使用不可重试的owner-stop语义");
+                    Assert(!string.IsNullOrWhiteSpace(fatal.BackupPath) &&
+                           File.Exists(fatal.BackupPath),
+                        "回滚失败后未保留原始模型备份");
+                    Assert(fatal.WriteFailure is IOException &&
+                           fatal.RollbackFailure is IOException,
+                        "致命异常未保留写入/回滚两段故障原因");
+                    Assert(store.GetOrCreate(1).ForwardClampMedianMs == original.ForwardClampMedianMs,
+                        "回滚失败后内存模型仍推进");
+                    Assert(beforeBytes.SequenceEqual(File.ReadAllBytes(fatal.BackupPath)),
+                        "故障注入后保留备份未保持原始模型字节");
+                    // The active file may still contain the replaced bytes when
+                    // rollback itself is fault-injected; only the preserved
+                    // backup is authoritative for operator recovery.
+                    Assert(File.Exists(store.FilePath), "回滚失败后当前模型文件意外丢失");
+                }
+                finally { EpbAdaptiveProfileStore.SaveWithReceiptFailureInjection = null; }
+            });
+        }
+
+        private static void HousekeepingProcessConvergesAndProtects()
+        {
+            WithRoot(root =>
+            {
+                var now = DateTime.UtcNow;
+                var learningRoot = Path.Combine(root, "LearningCycles");
+                Directory.CreateDirectory(learningRoot);
+                var chains = new List<string>();
+                for (var i = 0; i < 8; i++)
+                {
+                    var chain = Path.Combine(learningRoot, i.ToString("x32"));
+                    var evidence = Path.Combine(chain, "Executions", Guid.NewGuid().ToString("N"), "EPB01", "Learning_0001");
+                    Directory.CreateDirectory(evidence);
+                    File.WriteAllText(Path.Combine(evidence, "e.csv"), "h\nrow\n");
+                    var id = Guid.Parse(Path.GetFileName(chain));
+                    var status = i < 4 ? "Successful" : "Failed";
+                    WriteTestAttemptReceipt(chain, evidence, "Learning", 1, 1, 1, status);
+                    var manifest = LearningRunManifestStore.BuildFromDirectory(
+                        chain, new RunChainIdentity(id, id), "2.13.0.3", "", new[] { 1 }, 1, 0,
+                        status, status == "Failed" ? "fault" : string.Empty,
+                        i < 4 ? "model" : string.Empty, i < 4 ? "receipt" : string.Empty);
+                    if (i < 4)
+                        manifest.ModelCommitReceipts = new List<string> { "EPB01:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" };
+                    LearningRunManifestStore.PublishAtomic(chain, manifest, out _);
+                    File.SetLastWriteTimeUtc(LearningRunManifestStore.ManifestPath(chain), now.AddMinutes(i));
+                    chains.Add(chain);
+                }
+                var unknown = Path.Combine(learningRoot, "f0000000000000000000000000000000");
+                Directory.CreateDirectory(unknown);
+                File.WriteAllText(Path.Combine(unknown, "legacy.bin"), "legacy");
+                var current = chains[3];
+                var tmp = Path.Combine(learningRoot, "e0000000000000000000000000000000");
+                var tmpEvidence = Path.Combine(tmp, "Executions", Guid.NewGuid().ToString("N"), "EPB01", "Learning_0001");
+                Directory.CreateDirectory(tmpEvidence);
+                File.WriteAllText(Path.Combine(tmpEvidence, "x.tmp"), "tmp");
+                var tmpManifest = LearningRunManifestStore.BuildFromDirectory(
+                    tmp, new RunChainIdentity(Guid.NewGuid(), Guid.Parse(Path.GetFileName(tmp))),
+                    "2.13.0.3", "", new[] { 1 }, 1, 0, "Failed", "tmp");
+                LearningRunManifestStore.PublishAtomic(tmp, tmpManifest, out _);
+                var badHash = Path.Combine(learningRoot, "d0000000000000000000000000000000");
+                var badEvidence = Path.Combine(badHash, "Executions", Guid.NewGuid().ToString("N"), "EPB01", "Learning_0001");
+                Directory.CreateDirectory(badEvidence);
+                var badFile = Path.Combine(badEvidence, "bad.csv");
+                File.WriteAllText(badFile, "h\nrow\n");
+                var badManifest = LearningRunManifestStore.BuildFromDirectory(
+                    badHash, new RunChainIdentity(Guid.NewGuid(), Guid.Parse(Path.GetFileName(badHash))),
+                    "2.13.0.3", "", new[] { 1 }, 1, 0, "Failed", "bad");
+                LearningRunManifestStore.PublishAtomic(badHash, badManifest, out _);
+                File.AppendAllText(badFile, "tampered\n");
+
+                using (var service = new Controller.DataHousekeepingService(
+                    learningRoot,
+                    new Controller.DataHousekeepingOptions
+                    {
+                        DryRun = false,
+                        AutoScanOnStart = false,
+                        BatchInterval = TimeSpan.Zero,
+                        IsCurrentPath = path => string.Equals(
+                            Path.GetFullPath(path), Path.GetFullPath(current), StringComparison.OrdinalIgnoreCase)
+                    }))
+                {
+                    var candidates = LearningRetentionPlanner.FindCandidates(learningRoot, 3, 3,
+                                 path => string.Equals(Path.GetFullPath(path), Path.GetFullPath(current), StringComparison.OrdinalIgnoreCase))
+                        .ToArray();
+                    using (var busyService = new Controller.DataHousekeepingService(
+                        learningRoot,
+                        new Controller.DataHousekeepingOptions
+                        {
+                            BatchInterval = TimeSpan.Zero,
+                            AutoScanOnStart = false,
+                            BusyStateProvider = () => new Controller.HousekeepingBusyState { StopBusy = true }
+                        }))
+                    {
+                        Assert(!busyService.ProcessOne(candidates[0]) && Directory.Exists(candidates[0]),
+                            "Housekeeping忙碌窗口未延期候选");
+                    }
+                    foreach (var candidate in candidates)
+                        Assert(service.ProcessOne(candidate), "Housekeeping未处理候选：" + candidate);
+                }
+                Assert(Directory.Exists(badHash), "Housekeeping误删哈希损坏目录");
+                var remaining = Directory.EnumerateDirectories(learningRoot, "*", SearchOption.TopDirectoryOnly)
+                    .Where(path => !Path.GetFileName(path).StartsWith(".retention-staging-", StringComparison.OrdinalIgnoreCase))
+                    .ToArray();
+                var terminalRemaining = remaining.Where(path =>
+                    !string.Equals(Path.GetFileName(path), Path.GetFileName(unknown), StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(Path.GetFileName(path), Path.GetFileName(tmp), StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(Path.GetFileName(path), Path.GetFileName(badHash), StringComparison.OrdinalIgnoreCase))
+                    .ToArray();
+                Assert(terminalRemaining.Length == 6,
+                    "Housekeeping实际删除后未保留3成功+3失败：" + terminalRemaining.Length +
+                    " [" + string.Join(",", terminalRemaining.Select(Path.GetFileName)) + "]");
+                Assert(Directory.Exists(unknown) && Directory.Exists(current) && Directory.Exists(tmp),
+                    "Housekeeping误删Unknown/current/tmp目录");
+            });
+        }
+
+        private static void UnlimitedRetentionNeverDeletesAfterRestart()
+        {
+            WithRoot(root =>
+            {
+                var now = DateTime.UtcNow;
+                for (var i = 0; i < 8; i++)
+                {
+                    var chain = Path.Combine(root, i.ToString("x32", CultureInfo.InvariantCulture));
+                    var evidence = Path.Combine(
+                        chain, "Executions", Guid.NewGuid().ToString("N"), "EPB01", "Learning_0001");
+                    Directory.CreateDirectory(evidence);
+                    File.WriteAllText(Path.Combine(evidence, "e.csv"), "h\nrow\n");
+                    var status = i < 4 ? "Successful" : "Failed";
+                    WriteTestAttemptReceipt(chain, evidence, "Learning", 1, 1, 1, status);
+                    var id = Guid.Parse(Path.GetFileName(chain));
+                    var manifest = LearningRunManifestStore.BuildFromDirectory(
+                        chain, new RunChainIdentity(id, id), "2.13.0.3", "",
+                        new[] { 1 }, 1, 0, status,
+                        status == "Failed" ? "fault" : string.Empty,
+                        status == "Successful" ? "model" : string.Empty,
+                        status == "Successful" ? "receipt" : string.Empty);
+                    if (status == "Successful")
+                        manifest.ModelCommitReceipts = new List<string>
+                        {
+                            "EPB01:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        };
+                    Assert(LearningRunManifestStore.PublishAtomic(chain, manifest, out _),
+                        "Unlimited测试链manifest发布失败");
+                    File.SetLastWriteTimeUtc(
+                        LearningRunManifestStore.ManifestPath(chain), now.AddMinutes(i));
+                }
+
+                var options = new Controller.DataHousekeepingOptions
+                {
+                    AutoScanOnStart = false,
+                    RetentionEnabled = false,
+                    BatchInterval = TimeSpan.Zero
+                };
+                using (var initial = new Controller.DataHousekeepingService(root, options))
+                {
+                    Assert(initial.EnqueueNewManifestChains() == 0 &&
+                           !initial.Enqueue(Path.Combine(root, "00000000000000000000000000000000")) &&
+                           !initial.ProcessOne(Path.Combine(root, "00000000000000000000000000000000")),
+                        "Unlimited服务仍接受扫描/候选删除命令");
+                }
+
+                // Simulate a process restart.  AutoScanOnStart is deliberately
+                // true here; RetentionEnabled must still suppress the worker's
+                // startup scan and any deletion.
+                using (var restarted = new Controller.DataHousekeepingService(
+                    root,
+                    new Controller.DataHousekeepingOptions
+                    {
+                        AutoScanOnStart = true,
+                        RetentionEnabled = false,
+                        BatchInterval = TimeSpan.Zero
+                    }))
+                {
+                    Thread.Sleep(250);
+                    Assert(restarted.Statistics.Queued == 0,
+                        "Unlimited重启构造错误投递startup扫描");
+                }
+
+                var remaining = Directory.EnumerateDirectories(root, "*", SearchOption.TopDirectoryOnly)
+                    .Where(path => !Path.GetFileName(path).StartsWith(".retention-staging-", StringComparison.OrdinalIgnoreCase))
+                    .ToArray();
+                Assert(remaining.Length == 8,
+                    "Unlimited重启后4+4链数量变化：" + remaining.Length);
+            });
+        }
+
+        private static void ReactivatedRootPreservesOwnedStaging()
+        {
+            WithRoot(root =>
+            {
+                var rootId = Guid.NewGuid();
+                var rootIdText = rootId.ToString("N");
+                var chain = Path.Combine(root, rootIdText);
+                var evidence = Path.Combine(
+                    chain, "Executions", Guid.NewGuid().ToString("N"), "EPB01", "Learning_0001");
+                Directory.CreateDirectory(evidence);
+                File.WriteAllText(Path.Combine(evidence, "a.csv"), "h\nrow-a\n");
+                File.WriteAllText(Path.Combine(evidence, "b.csv"), "h\nrow-b\n");
+                WriteTestAttemptReceipt(chain, evidence, "Learning", 1, 1, 1, "Failed");
+                var manifest = LearningRunManifestStore.BuildFromDirectory(
+                    chain,
+                    new RunChainIdentity(rootId, rootId),
+                    "2.13.0.3",
+                    string.Empty,
+                    new[] { 1 },
+                    1,
+                    0,
+                    "Failed",
+                    "fault");
+                Assert(LearningRunManifestStore.PublishAtomic(chain, manifest, out _),
+                    "staging身份测试manifest发布失败");
+
+                var reactivated = false;
+                Func<string, bool> currentPath = path =>
+                {
+                    var full = Path.GetFullPath(path);
+                    if (!string.Equals(Path.GetFileName(full), rootIdText,
+                            StringComparison.OrdinalIgnoreCase))
+                        return false;
+
+                    // Once the first one-file batch has completed, the next
+                    // batch callback sees fewer source artifacts.  Recreate the
+                    // original RootRunId at that boundary and mark it current.
+                    if (!reactivated)
+                    {
+                        var activeStaging = Directory.EnumerateDirectories(
+                                root, ".retention-staging-*", SearchOption.TopDirectoryOnly)
+                            .FirstOrDefault();
+                        var remaining = activeStaging == null
+                            ? int.MaxValue
+                            : Directory.EnumerateFiles(activeStaging, "*", SearchOption.AllDirectories)
+                                .Count(file => !file.EndsWith(".retention.json", StringComparison.OrdinalIgnoreCase));
+                        if (remaining <= 2)
+                        {
+                            Directory.CreateDirectory(full);
+                            reactivated = true;
+                        }
+                    }
+                    return reactivated;
+                };
+
+                string staging;
+                using (var service = new Controller.DataHousekeepingService(
+                    root,
+                    new Controller.DataHousekeepingOptions
+                    {
+                        AutoScanOnStart = false,
+                        BatchInterval = TimeSpan.Zero,
+                        MaxFilesPerBatch = 1,
+                        IsCurrentPath = currentPath
+                    }))
+                {
+                    Assert(!service.ProcessOne(chain),
+                        "Root重新激活后staging仍被报告为已完成删除");
+                    staging = Directory.EnumerateDirectories(
+                            root, ".retention-staging-*", SearchOption.TopDirectoryOnly)
+                        .SingleOrDefault();
+                    Assert(reactivated && staging != null,
+                        "第一删除批次后未重建Root或未保留staging");
+                    Assert(Directory.Exists(chain),
+                        "Root重新激活目录未保留");
+                }
+
+                // Simulate restart: startup continuation must re-check the
+                // sidecar/source identity before enqueueing old staging.
+                using (var restarted = new Controller.DataHousekeepingService(
+                    root,
+                    new Controller.DataHousekeepingOptions
+                    {
+                        AutoScanOnStart = true,
+                        BatchInterval = TimeSpan.Zero,
+                        MaxFilesPerBatch = 1,
+                        // Recovery/checkpoint identity is loaded before the
+                        // startup scan command is allowed to run.
+                        ProtectedRootIds = new[] { rootId },
+                        IsCurrentPath = path => false
+                    }))
+                {
+                    Thread.Sleep(250);
+                    Assert(Directory.Exists(staging),
+                        "重启auto scan误删已重新激活Root对应的旧staging");
+                    Assert(restarted.Statistics.Skipped > 0,
+                        "重启续扫未记录受保护/当前staging跳过");
+                }
+            });
+        }
+
         private sealed class FakeAlarmAttemptRecorder : IEpbCycleRecorder, ICycleAttemptEvidenceExporter
         {
             private readonly string _csvPath;
@@ -1852,6 +2421,54 @@ namespace EpbDiskWriterTests
                     // 测试退出时的临时目录清理失败不覆盖断言结果。
                 }
             }
+        }
+
+        private static void WriteTestAttemptReceipt(
+            string chain,
+            string evidence,
+            string phase,
+            int ordinal,
+            int attempt,
+            int internalCycle,
+            string status)
+        {
+            var artifacts = Directory.EnumerateFiles(evidence, "*", SearchOption.AllDirectories)
+                .Where(path => !string.Equals(Path.GetFileName(path),
+                    LearningRunManifestStore.AttemptReceiptFileName,
+                    StringComparison.OrdinalIgnoreCase))
+                .Select(path =>
+                {
+                    var info = new FileInfo(path);
+                    var relative = Path.GetFullPath(path)
+                        .Substring(Path.GetFullPath(chain).TrimEnd(Path.DirectorySeparatorChar,
+                            Path.AltDirectorySeparatorChar).Length)
+                        .TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                        .Replace(Path.DirectorySeparatorChar, '/');
+                    return new LearningArtifact
+                    {
+                        RelativePath = relative,
+                        Format = info.Extension.TrimStart('.').ToUpperInvariant(),
+                        Sha256 = LearningRunManifestStore.ComputeSha256(path),
+                        Bytes = info.Length,
+                        SampleCount = 1,
+                        StartedUtc = info.CreationTimeUtc,
+                        CompletedUtc = info.LastWriteTimeUtc
+                    };
+                }).ToList();
+            LearningRunManifestStore.WriteAttemptReceiptAtomic(
+                evidence,
+                new LearningAttemptReceipt
+                {
+                    Phase = phase,
+                    LogicalOrdinal = ordinal,
+                    Attempt = attempt,
+                    InternalCycle = internalCycle,
+                    Status = status,
+                    SampleCount = 1,
+                    StartedUtc = DateTime.UtcNow.AddSeconds(-1),
+                    CompletedUtc = DateTime.UtcNow,
+                    Artifacts = artifacts
+                });
         }
 
         private static void Run(string name, Action test)

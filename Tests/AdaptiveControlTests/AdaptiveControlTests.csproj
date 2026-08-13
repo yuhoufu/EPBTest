@@ -50,13 +50,17 @@
     <Compile Include="CycleAttemptLifecycleTests.cs" />
     <Compile Include="DaqPersistenceCoordinatorTests.cs" />
     <Compile Include="DaqRealtimeControlTests.cs" />
+    <Compile Include="IncidentSessionPolicyTests.cs" />
     <Compile Include="HydraulicGroupCoordinatorTests.cs" />
     <Compile Include="PowerSupplyCoordinatorTests.cs" />
+    <Compile Include="PowerSupplyTelemetryRecorderTests.cs" />
+    <Compile Include="HistoricalStorageBudgetTests.cs" />
     <Compile Include="PreallocatedSpscRingTests.cs" />
     <Compile Include="ProjectLogStoreTests.cs" />
     <Compile Include="PswTcpClientTimeoutTests.cs" />
     <Compile Include="RecoveryCoordinationTests.cs" />
     <Compile Include="RecoveryHardeningTests.cs" />
+    <Compile Include="WatchdogJournalStorageTests.cs" />
     <Compile Include="NonRecoverableAlarmPolicyTests.cs" />
   </ItemGroup>
   <ItemGroup>
@@ -98,7 +102,16 @@
       <Project>{9B2A88C4-F717-4CB8-86E1-0F6FDD5D9837}</Project>
       <Name>MTTFTest.Watchdog.Protocol</Name>
     </ProjectReference>
+    <ProjectReference Include="..\..\MTTFTest.Watchdog\MTTFTest.Watchdog.csproj">
+      <Project>{DA67689F-B6CB-4F88-A728-8C405E321AEA}</Project>
+      <Name>MTTFTest.Watchdog</Name>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
   </ItemGroup>
+  <Target Name="CopyWatchdogSidecarForTests" AfterTargets="Build">
+    <Copy SourceFiles="$(ProjectDir)..\..\MTTFTest.Watchdog\bin\$(Configuration)\MTTFTest.Watchdog.exe"
+          DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
+  </Target>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <Import Project="..\..\packages\Stub.System.Data.SQLite.Core.NetFramework.1.0.119.0\build\net46\Stub.System.Data.SQLite.Core.NetFramework.targets" Condition="Exists('..\..\packages\Stub.System.Data.SQLite.Core.NetFramework.1.0.119.0\build\net46\Stub.System.Data.SQLite.Core.NetFramework.targets')" />
 </Project>

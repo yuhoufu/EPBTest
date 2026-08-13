@@ -1020,6 +1020,154 @@ namespace AdaptiveControlTests
                 "边界矛盾改变了已安装的 FrozenBoundary");
         }
 
+        internal static void SuppressionEvidenceResetsPerWindowAndAccumulates()
+        {
+            var recorder = new OrderedRecorder();
+            using var coordinator = new DaqPersistenceCoordinator(
+                () => recorder,
+                Config.NullLogger.Instance,
+                8, 4, 1, 1000, 100, 2000, 1);
+
+            foreach (var device in new[] { "Dev1", "Dev2" })
+            {
+                var accepted = 100L;
+                var firstCorrelation = Guid.NewGuid();
+                var firstRun = Guid.NewGuid();
+                var secondCorrelation = Guid.NewGuid();
+                var secondRun = Guid.NewGuid();
+                var firstUsesSuppressAfter = device == "Dev1";
+
+                if (firstUsesSuppressAfter)
+                {
+                    coordinator.SuppressAfter(
+                        device, DateTime.UtcNow, accepted, firstCorrelation, firstRun, 1);
+                }
+                else
+                {
+                    Assert(
+                        coordinator.InstallCutoff(
+                            device,
+                            DateTime.UtcNow,
+                            () => accepted,
+                            firstCorrelation,
+                            firstRun,
+                            1) == accepted,
+                        $"{device}首次截止未冻结边界");
+                }
+
+                Assert(coordinator.Enqueue(NewBatch(device, 101)),
+                    $"{device}首次窗口抑制批次未被处理");
+                var first = coordinator.GetSnapshot(device);
+                Assert(first.SuppressedBatchCount == 1 &&
+                       first.FirstSuppressedSequence == 101 &&
+                       first.LastSuppressedSequence == 101 &&
+                       first.SuppressedRangeCount == 1 &&
+                       first.CumulativeSuppressedBatchCount == 1 &&
+                       first.CumulativeFirstSuppressedSequence == 101 &&
+                       first.CumulativeLastSuppressedSequence == 101 &&
+                       first.CumulativeSuppressedRangeCount == 1,
+                    $"{device}首次窗口未留下完整的当前/累计抑制证据");
+
+                // Reinstalling the still-active cutoff is idempotent: evidence from the
+                // current window must survive the retry.
+                if (firstUsesSuppressAfter)
+                {
+                    coordinator.SuppressAfter(
+                        device, DateTime.UtcNow, accepted, firstCorrelation, firstRun, 1);
+                }
+                else
+                {
+                    Assert(
+                        coordinator.InstallCutoff(
+                            device,
+                            DateTime.UtcNow,
+                            () => accepted,
+                            firstCorrelation,
+                            firstRun,
+                            1) == accepted,
+                        $"{device}重复截止未返回原冻结边界");
+                }
+                var duplicate = coordinator.GetSnapshot(device);
+                Assert(duplicate.SuppressedBatchCount == 1 &&
+                       duplicate.FirstSuppressedSequence == 101 &&
+                       duplicate.LastSuppressedSequence == 101 &&
+                       duplicate.SuppressedRangeCount == 1,
+                    $"{device}重复安装活动截止擦除了当前窗口证据");
+
+                // Permanent-gap teardown may tighten an active boundary, but this must keep
+                // the same window's evidence intact. A later boundary is never allowed to
+                // expand the immutable prefix (covered by CutoffInstallIsImmutable... above).
+                coordinator.SuppressAfter(
+                    device, DateTime.UtcNow, 99, firstCorrelation, firstRun, 1);
+                var tightened = coordinator.GetSnapshot(device);
+                Assert(tightened.SuppressAfterSequence == 99 &&
+                       tightened.SuppressedBatchCount == 1 &&
+                       tightened.FirstSuppressedSequence == 101 &&
+                       tightened.LastSuppressedSequence == 101 &&
+                       tightened.SuppressedRangeCount == 1,
+                    $"{device}活动截止收紧时擦除了当前窗口证据");
+
+                // A sequence strictly beyond the finite resume floor closes the first window.
+                coordinator.ResumeAdmission(device, 101);
+                Assert(coordinator.Enqueue(NewBatch(device, 102)),
+                    $"{device}首次窗口关闭批次未被接纳");
+                Assert(coordinator.WaitForPersistedAsync(
+                        device, 102, 2000, CancellationToken.None)
+                    .GetAwaiter().GetResult(),
+                    $"{device}首次窗口关闭批次未真实写入");
+
+                accepted = 102;
+                if (firstUsesSuppressAfter)
+                {
+                    // Exercise the other installation path on the second window.
+                    Assert(
+                        coordinator.InstallCutoff(
+                            device,
+                            DateTime.UtcNow,
+                            () => accepted,
+                            secondCorrelation,
+                            secondRun,
+                            2) == accepted,
+                        $"{device}第二窗口截止未冻结边界");
+                }
+                else
+                {
+                    coordinator.SuppressAfter(
+                        device, DateTime.UtcNow, accepted, secondCorrelation, secondRun, 2);
+                }
+
+                Assert(coordinator.Enqueue(NewBatch(device, 103)),
+                    $"{device}第二窗口抑制批次未被处理");
+                var second = coordinator.GetSnapshot(device);
+                Assert(second.SuppressAfterSequence == 102 &&
+                       second.SuppressedBatchCount == 1 &&
+                       second.FirstSuppressedSequence == 103 &&
+                       second.LastSuppressedSequence == 103 &&
+                       second.SuppressedRangeCount == 1 &&
+                       second.FirstSuppressedSequence > second.SuppressAfterSequence &&
+                       second.CumulativeSuppressedBatchCount == 2 &&
+                       second.CumulativeFirstSuppressedSequence == 101 &&
+                       second.CumulativeLastSuppressedSequence == 103 &&
+                       second.CumulativeSuppressedRangeCount == 2,
+                    $"{device}第二窗口未重置当前证据或累计证据不完整");
+
+                coordinator.ResumeAdmission(device, 103);
+                Assert(coordinator.Enqueue(NewBatch(device, 104)),
+                    $"{device}第二窗口关闭批次未被接纳");
+                Assert(coordinator.WaitForPersistedAsync(
+                        device, 104, 2000, CancellationToken.None)
+                    .GetAwaiter().GetResult(),
+                    $"{device}第二窗口关闭批次未真实写入");
+                var closed = coordinator.GetSnapshot(device);
+                Assert(closed.SuppressedBatchCount == 1 &&
+                       closed.FirstSuppressedSequence == 103 &&
+                       closed.LastSuppressedSequence == 103 &&
+                       closed.SuppressedRangeCount == 1 &&
+                       closed.CumulativeSuppressedRangeCount == 2,
+                    $"{device}窗口关闭后最近窗口/累计抑制证据被清除");
+            }
+        }
+
         internal static void ActiveCycleLimitPublishesLifecycleIdentity()
         {
             const int epbId = 8;

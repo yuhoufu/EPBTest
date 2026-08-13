@@ -55,9 +55,14 @@ namespace AdaptiveControlTests
             Run("控制积压先追最新而回调故障才重建", DaqFastResyncRecreatePolicy, ref passed);
             Run("DAQ软件恢复持续局部退避且仅双重硬件证据报警", DaqSelfMaintenancePolicy, ref passed);
             Run("独立DAQ存活监督在带电100ms陈旧时触发且恢复期间去重", IndependentDaqLivenessSupervisorPolicy, ref passed);
+            Run("DAQ存活日志转换按批次关联与参与设备有界去重", DaqLivenessLogTransitionDedup, ref passed);
+            Run("未带电DAQ回调空窗只记录一次且不触发恢复", UnenergizedDaqGapObservationPolicy, ref passed);
             Run("后台冻结边界结果逐项报告Published与Raw未闭合谓词", BackgroundDrainResultExplainsPendingPredicate, ref passed);
             Run("恢复阶段只在终态导出完整重证据", IncidentSnapshotHeavyEvidencePolicy, ref passed);
             Run("百次事故症状共用容量2取证门且终态精确一次", IncidentEvidenceQueueIsBoundedAndCoalesced, ref passed);
+            Run("同一批次双DAQ各自导出trigger和terminal且队列有界", DualDeviceIncidentEvidenceRootsRemainIndependent, ref passed);
+            Run("DAQ事故根目录只由RunId和关联号决定", DaqIncidentEvidenceDirectoryIdentity, ref passed);
+            Run("恢复边界矛盾只锁存首个原因并只允许一次", RecoveryBoundaryContradictionFirstWins, ref passed);
             Run("DAQ恢复先恢复安全电源再做机械定位", DaqRecoveryPrerequisiteOrder, ref passed);
             Run("DAQ截止在所有权等待前按暂停冻结抑制取消断电排序", DaqCutoffPreOwnershipSafetyOrder, ref passed);
             Run("Stop在恢复等待前先撤权暂停断电并启动电源关闭", StopPreRecoveryWaitSafetyOrder, ref passed);
@@ -828,6 +833,190 @@ namespace AdaptiveControlTests
                 "已经消费的DAQ历史空窗事件被重复发布");
         }
 
+        private static void DaqLivenessLogTransitionDedup()
+        {
+            var gate = new DaqLivenessLogTransitionGate();
+            var runId = Guid.NewGuid();
+            var correlationId = Guid.NewGuid();
+            gate.BeginSession(runId, 11);
+
+            Assert(gate.TryAccept(
+                       runId,
+                       11,
+                       correlationId,
+                       new[] { "dev2", "DEV1" },
+                       "BatchMerged"),
+                "首次BatchMerged转换没有被接受");
+            Assert(!gate.TryAccept(
+                       runId,
+                       11,
+                       correlationId,
+                       new[] { "Dev1", "Dev2" },
+                       "BatchMerged"),
+                "同一Run/RunEpoch/关联号/参与设备集重复记录了BatchMerged");
+            Assert(gate.TryAccept(
+                       runId,
+                       11,
+                       correlationId,
+                       new[] { "Dev1" },
+                       "BatchMerged"),
+                "参与设备集变化后未允许新的BatchMerged转换");
+
+            Assert(gate.TryAccept(
+                       runId,
+                       11,
+                       correlationId,
+                       new[] { "Dev1" },
+                       "Trip",
+                       "DEV1:7"),
+                "新的Trip转换没有被接受");
+            Assert(!gate.TryAccept(
+                       runId,
+                       11,
+                       correlationId,
+                       new[] { "dev1" },
+                       "Trip",
+                       "DEV1:7"),
+                "同一Trip转换重复记录");
+            Assert(gate.TryAccept(
+                       runId,
+                       11,
+                       correlationId,
+                       new[] { "Dev1" },
+                       "Trip",
+                       "DEV1:8"),
+                "新代次Trip转换被错误去重");
+
+            for (var index = 0; index < 100; index++)
+                gate.TryAccept(
+                    runId,
+                    11,
+                    Guid.NewGuid(),
+                    new[] { "Dev1" },
+                    "BatchMerged");
+            Assert(gate.Count <= 32, $"存活日志去重状态无界：{gate.Count}");
+
+            Assert(gate.TryAccept(
+                       Guid.NewGuid(),
+                       12,
+                       correlationId,
+                       new[] { "Dev1", "Dev2" },
+                       "BatchMerged"),
+                "新批次未清空旧转换去重状态");
+        }
+
+        private static void UnenergizedDaqGapObservationPolicy()
+        {
+            var freshness = new DaqFreshnessSnapshot
+            {
+                Device = "Dev2",
+                Generation = 9,
+                LastCallbackMonotonicTicks = Stopwatch.GetTimestamp(),
+                CallbackAgeMs = 1,
+                CallbackGapEventCount = 12,
+                LastCallbackGapIntervalMs = 150,
+                LastProducedSequence = 200,
+                LastProcessedSequence = 200
+            };
+
+            var baseline = EpbManager.EvaluateUnenergizedDaqGap(
+                batchActive: true,
+                deviceEnergized: false,
+                recoveryActive: false,
+                freshness,
+                hasObservedBaseline: false,
+                observedGapEventCount: 0,
+                staleThresholdMs: 100);
+            Assert(!baseline.Emit,
+                "未带电设备首次观察到历史空窗时不应追溯记录INFO");
+
+            var noNewGap = EpbManager.EvaluateUnenergizedDaqGap(
+                true,
+                false,
+                false,
+                freshness,
+                hasObservedBaseline: true,
+                observedGapEventCount: 12,
+                staleThresholdMs: 100);
+            Assert(!noNewGap.Emit,
+                "已消费的未带电回调空窗被重复记录");
+
+            freshness.CallbackGapEventCount = 13;
+            var observed = EpbManager.EvaluateUnenergizedDaqGap(
+                true,
+                false,
+                false,
+                freshness,
+                hasObservedBaseline: true,
+                observedGapEventCount: 12,
+                staleThresholdMs: 100);
+            Assert(observed.Emit && observed.Code == "ObservedUnenergizedGap",
+                "新的未带电回调空窗没有生成低严重度INFO决策");
+            Assert(!EpbManager.EvaluateUnenergizedDaqGap(
+                       true,
+                       false,
+                       false,
+                       freshness,
+                       hasObservedBaseline: true,
+                       observedGapEventCount: 13,
+                       staleThresholdMs: 100).Emit,
+                "同一未带电回调空窗第二次仍生成INFO决策");
+            Assert(!EpbManager.EvaluateUnenergizedDaqGap(
+                       true,
+                       false,
+                       true,
+                       freshness,
+                       hasObservedBaseline: true,
+                       observedGapEventCount: 12,
+                       staleThresholdMs: 100).Emit,
+                "恢复期间未带电回调空窗错误生成INFO决策");
+
+            freshness.CallbackGapEventCount = 1;
+            freshness.LastCallbackGapIntervalMs = 120;
+            freshness.CallbackAgeMs = 1;
+            var energizedTrip = EpbManager.EvaluateDaqLiveness(
+                batchActive: true,
+                deviceEnergized: true,
+                recoveryActive: false,
+                freshness,
+                observedGapEventCount: 0,
+                staleThresholdMs: 100);
+            Assert(energizedTrip.Trip && energizedTrip.Code == "DaqCallbackGap",
+                "带电且尚无空窗基线时真实回调空窗未触发Trip");
+        }
+
+        private static void RecoveryBoundaryContradictionFirstWins()
+        {
+            var gate = new object();
+            var committed = 0;
+            var reason = string.Empty;
+            var accepted = 0;
+            var contenders = Enumerable.Range(0, 32)
+                .Select(index => Task.Run(() =>
+                {
+                    if (EpbManager.TryCaptureFirstBoundaryContradiction(
+                            gate,
+                            ref committed,
+                            ref reason,
+                            "reason-" + index))
+                        Interlocked.Increment(ref accepted);
+                }))
+                .ToArray();
+            Task.WaitAll(contenders);
+            Assert(accepted == 1 &&
+                   Volatile.Read(ref committed) == 1 &&
+                   !string.IsNullOrWhiteSpace(reason) &&
+                   reason.StartsWith("reason-", StringComparison.Ordinal),
+                $"并发边界矛盾未保持首个原因：Accepted={accepted} Reason={reason}");
+            Assert(!EpbManager.TryCaptureFirstBoundaryContradiction(
+                       gate,
+                       ref committed,
+                       ref reason,
+                       "second") &&
+                   reason.StartsWith("reason-", StringComparison.Ordinal),
+                "后续边界矛盾覆盖了首个原因或重复获准记录");
+        }
+
         private static void BackgroundDrainResultExplainsPendingPredicate()
         {
             var pending = new DaqBackgroundDrainResult
@@ -1011,6 +1200,108 @@ namespace AdaptiveControlTests
                 "未终态反例补交terminal失败");
             Assert(unfinished.DrainAsync(2000).GetAwaiter().GetResult(),
                 "未终态反例补交terminal后仍未收口");
+        }
+
+        private static void DualDeviceIncidentEvidenceRootsRemainIndependent()
+        {
+            var exported = new ConcurrentQueue<DaqIncidentEvidenceBatch>();
+            var queue = new DaqIncidentEvidenceQueue(batch => exported.Enqueue(batch));
+            var runId = Guid.NewGuid();
+            var correlationId = Guid.NewGuid();
+            var started = DateTime.UtcNow;
+
+            foreach (var device in new[] { "Dev1", "Dev2" })
+            {
+                var contextKey = EpbManager.DaqIncidentEvidenceContextKey(
+                    runId,
+                    correlationId,
+                    device);
+                var trigger = new DaqIncidentEvidenceSubmission
+                {
+                    ContextKey = contextKey,
+                    RunId = runId,
+                    CorrelationId = correlationId,
+                    Device = device,
+                    StartedUtc = started,
+                    PhaseKey = "00-trigger",
+                    PhaseDirectoryName = $"00-trigger-{device}",
+                    IncidentJson = "{}",
+                    IsTrigger = true
+                };
+                Assert(SpinWait.SpinUntil(
+                           () => queue.Submit(trigger),
+                           2000),
+                    $"{device} trigger未进入取证门");
+                Assert(queue.Submit(new DaqIncidentEvidenceSubmission
+                    {
+                        ContextKey = contextKey,
+                        RunId = runId,
+                        CorrelationId = correlationId,
+                        Device = device,
+                        StartedUtc = started,
+                        PhaseKey = "90-recovered",
+                        PhaseDirectoryName = $"90-recovered-{device}",
+                        IncidentJson = "{}",
+                        IsTerminal = true
+                    }),
+                    $"{device} terminal未进入取证门");
+                Assert(queue.RunningCount <= 1 &&
+                       queue.PendingCount <= 1 &&
+                       queue.ActiveJobCount <= 2,
+                    $"双DAQ取证门超出容量：Running={queue.RunningCount} " +
+                    $"Pending={queue.PendingCount} Active={queue.ActiveJobCount}");
+            }
+
+            Assert(queue.DrainAsync(5000).GetAwaiter().GetResult(),
+                "双DAQ取证队列未排空");
+            var submissions = exported
+                .SelectMany(batch => batch.OrderedSubmissions())
+                .ToArray();
+            foreach (var device in new[] { "Dev1", "Dev2" })
+            {
+                Assert(submissions.Count(item =>
+                           item.Device == device && item.IsTrigger) == 1,
+                    $"{device} trigger导出次数不是1");
+                Assert(submissions.Count(item =>
+                           item.Device == device && item.IsTerminal) == 1,
+                    $"{device} terminal导出次数不是1");
+            }
+            Assert(queue.ContextCount == 0 &&
+                   queue.RunningCount == 0 &&
+                   queue.PendingCount == 0 &&
+                   queue.ActiveJobCount == 0,
+                "双DAQ终态后取证根上下文或容量未收口");
+        }
+
+        private static void DaqIncidentEvidenceDirectoryIdentity()
+        {
+            var root = Path.Combine(Path.GetTempPath(), "EPBTest", "IncidentSnapshots");
+            var runId = Guid.NewGuid();
+            var correlationId = Guid.NewGuid();
+            var dev1 = EpbManager.DaqIncidentEvidenceDirectoryPath(
+                root,
+                runId,
+                correlationId);
+            var dev2 = EpbManager.DaqIncidentEvidenceDirectoryPath(
+                root,
+                runId,
+                correlationId);
+            Assert(dev1 == dev2 &&
+                   dev1.EndsWith(
+                       EpbManager.DaqIncidentEvidenceDirectoryName(runId, correlationId),
+                       StringComparison.Ordinal),
+                "同一Run/关联号未生成同一确定性事故根目录");
+
+            var differentRun = EpbManager.DaqIncidentEvidenceDirectoryPath(
+                root,
+                Guid.NewGuid(),
+                correlationId);
+            var differentCorrelation = EpbManager.DaqIncidentEvidenceDirectoryPath(
+                root,
+                runId,
+                Guid.NewGuid());
+            Assert(differentRun != dev1 && differentCorrelation != dev1,
+                "不同Run或关联号错误复用了事故根目录");
         }
 
         private static void DaqRecoveryPrerequisiteOrder()
@@ -1477,6 +1768,9 @@ namespace AdaptiveControlTests
             Assert(RuntimeBuildIdentity.FormatProductVersion(new Version(2, 12, 0, 22)) ==
                    "V2.12.0.22",
                 "四段现场补丁版本被截断，事故身份无法区分候选");
+            Assert(RuntimeBuildIdentity.FormatProductVersion(new Version(2, 13, 0, 3)) ==
+                   "V2.13.0.3",
+                "V2.13.0.3产品入口版本未保留到Learning manifest身份");
             Assert(json.Contains("\"gitCommit\"") && json.Contains("\"gitDirty\"") &&
                    json.Contains("\"processId\"") && json.Contains("\"buildUtc\"") &&
                    json.Contains("\"releaseConfigSha256\"") &&

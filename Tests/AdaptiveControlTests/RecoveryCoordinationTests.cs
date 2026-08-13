@@ -34,11 +34,22 @@ namespace AdaptiveControlTests
             Run("双DAQ同一扫描恢复在两台均验证前禁止单边重入", SimultaneousDaqRecoveryUsesBatchBarrier, ref passed);
             Run("进程回收失败按5秒/15秒退避且受RunId与三次预算门禁", ProcessRestartRetryIsBoundedAndRunScoped, ref passed);
             Run("自动恢复保留根RunId且多通道Starting幂等", UnattendedRunChainIdentityIsStable, ref passed);
+            Run("恢复RunEpoch不会固定为0且单调", RecoveryRunEpochIsNonZeroAndMonotonic, ref passed);
             Run("基础设施异常重新登记仍沿用首次60秒硬期限", InfrastructureRecoveryDeadlineIsMonotonic, ref passed);
             Run("DAQ重新使能或重入提交异常必须立即安全回滚", DaqRejoinFailureRequiresImmediateRollback, ref passed);
             Run("自动重启子进程必须确认全部授权通道已启动", UnattendedChildStartRequiresCompleteCohort, ref passed);
             Run("自动重启按耐久成功圈续跑且不得重启已完成通道", UnattendedRestartUsesDurableRemainingCycles, ref passed);
             return passed;
+        }
+
+        private static void RecoveryRunEpochIsNonZeroAndMonotonic()
+        {
+            Assert(EpbManager.NormalizeRecoveryRunEpoch(0, 0) == 1,
+                "恢复RunEpoch在初始值时仍为0");
+            Assert(EpbManager.NormalizeRecoveryRunEpoch(4, 2) == 4,
+                "恢复RunEpoch未保留更大的已授权代次");
+            Assert(EpbManager.NormalizeRecoveryRunEpoch(2, 9) == 9,
+                "恢复RunEpoch未保持当前代次单调性");
         }
 
         private static void UnattendedRestartUsesDurableRemainingCycles()
