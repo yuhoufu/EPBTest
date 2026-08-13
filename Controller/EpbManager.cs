@@ -174,6 +174,9 @@ namespace Controller
         private readonly EpbAdaptiveProfileStore _adaptiveProfileStore;
         private readonly EpbProgramSafetySettings _programSafetySettings;
         private readonly HashSet<int> _adaptiveChannels;
+        private readonly bool _historicalStorageEnabled;
+        private readonly int _historicalRetainCyclesPerChannel;
+        private readonly StorageFormatLevel _alarmStorageLevel;
 
 
         // —— 回调（采样） —— //
@@ -198,6 +201,8 @@ namespace Controller
         private readonly DaqIncidentLatch _daqIncidentLatch = new();
         private readonly ConcurrentDictionary<int, byte> _manualStopRequestedChannels = new();
         private readonly ConcurrentDictionary<int, byte> _nonRecoverableChannelFaultLatch = new();
+        private readonly ConcurrentDictionary<int, string> _nonRecoverableChannelFaultReasons =
+            new();
         private readonly ConcurrentDictionary<int, CancellationTokenSource>
             _recoverableChannelRestartJobs = new();
 
@@ -430,7 +435,10 @@ namespace Controller
         private readonly ConcurrentDictionary<string, long> _daqLivenessObservedGapEvents =
             new(StringComparer.OrdinalIgnoreCase);
         private int _daqLivenessWatchdogBusy;
-        private readonly ConcurrentDictionary<long, byte> _daqClockAbortedCycles = new();
+        // 事故圈作废标记必须带完整运行身份；仅用(channel,cycle)会让旧Run的迟到
+        // Finalizer在圈号复用后误伤新Run正式圈。
+        private readonly ConcurrentDictionary<string, byte> _daqClockAbortedCycles =
+            new(StringComparer.OrdinalIgnoreCase);
         private readonly object _stopSafetyGate = new();
         private Task<StopSafetyResult> _stopSafetyTask;
         private StopSource _stopSafetyTaskSource = StopSource.UnknownLegacy;
@@ -483,6 +491,14 @@ namespace Controller
             public Dictionary<int, int> CutoffCycles;
             public long CutoffPersistenceBoundary;
             public DaqCutoffSnapshot CutoffSnapshot;
+            public Task[] PowerDisableTasks = Array.Empty<Task>();
+            // 保留电源组到关闭任务的映射；仅保存 Task[] 会丢失“哪一组”卡在
+            // DisableCore/Gate 的证据，而 runtime telemetry 可能尚未反映 pending。
+            public Dictionary<int, Task> PowerDisableTasksByGroup =
+                new Dictionary<int, Task>();
+            public long PowerDisableStartedTicks;
+            public long PowerDisableStartedUtcTicks;
+            public int PowerDisableDeadlineLogged;
             public int BoundaryContradiction;
             public string BoundaryContradictionReason;
             public int CutoffCyclesFinalized;
@@ -522,21 +538,70 @@ namespace Controller
             return enabled ? requested : ChannelRuntimeState.NotEnabled;
         }
 
-        private static long DaqAbortedCycleKey(int channel, int cycleNumber)
+        internal static string FormatDaqRecoveryCycleKey(
+            Guid runId,
+            long runEpoch,
+            int channel,
+            int cycleNumber)
+            => $"{runId:N}:{runEpoch}:{channel}:{cycleNumber}";
+
+        private static string DaqAbortedCycleKey(Guid runId, long runEpoch, int channel, int cycleNumber)
+            => FormatDaqRecoveryCycleKey(runId, runEpoch, channel, cycleNumber);
+
+        private void MarkDaqClockCycleAborted(
+            Guid runId,
+            long runEpoch,
+            int channel,
+            int cycleNumber)
         {
-            return ((long)channel << 32) | (uint)cycleNumber;
+            if (runId == Guid.Empty || runEpoch <= 0 || channel < 1 || cycleNumber <= 0) return;
+            _daqClockAbortedCycles[DaqAbortedCycleKey(runId, runEpoch, channel, cycleNumber)] = 0;
         }
 
-        private void MarkDaqClockCycleAborted(int channel, int cycleNumber)
+        private static string FormatDaqRecoveryCycleIdentity(Guid runId, long runEpoch, int channel, int cycle)
+            => $"RunId={runId:N};RunEpoch={runEpoch};EPB={channel};Cycle={cycle}";
+
+        private void MarkDaqRecoveryCyclesAborted(DaqAutoRecoveryContext context)
         {
-            _daqClockAbortedCycles[DaqAbortedCycleKey(channel, cycleNumber)] = 0;
+            if (context == null) return;
+            foreach (var pair in (context.CutoffCycles ?? new Dictionary<int, int>())
+                         .Where(item => item.Key >= 1 && item.Value > 0))
+            {
+                MarkDaqClockCycleAborted(context.RunId, context.RunEpoch, pair.Key, pair.Value);
+                var identity = FormatDaqRecoveryCycleIdentity(
+                    context.RunId,
+                    context.RunEpoch,
+                    pair.Key,
+                    pair.Value);
+                _log.Info(
+                    $"DaqRecoveryCycleAbortLatched {identity} " +
+                    $"Device={context.Device} CorrelationId={context.CorrelationId:N}",
+                    "落盘");
+            }
         }
 
-        private bool TryConsumeDaqClockCycleAbort(int channel, int cycleNumber)
+        private bool TryConsumeDaqClockCycleAbort(
+            Guid runId,
+            long runEpoch,
+            int channel,
+            int cycleNumber)
         {
+            if (runId == Guid.Empty || runEpoch <= 0 || channel < 1 || cycleNumber <= 0)
+                return false;
             return _daqClockAbortedCycles.TryRemove(
-                DaqAbortedCycleKey(channel, cycleNumber),
-                out _);
+                DaqAbortedCycleKey(runId, runEpoch, channel, cycleNumber), out _);
+        }
+
+        private bool IsDaqClockCycleAborted(
+            Guid runId,
+            long runEpoch,
+            int channel,
+            int cycleNumber)
+        {
+            if (runId == Guid.Empty || runEpoch <= 0 || channel < 1 || cycleNumber <= 0)
+                return false;
+            return _daqClockAbortedCycles.ContainsKey(
+                DaqAbortedCycleKey(runId, runEpoch, channel, cycleNumber));
         }
 
         private bool DiscardCurrentCycleForSoftwareRecovery(
@@ -586,7 +651,11 @@ namespace Controller
                     if (!committed && !context.IsDurablyCommitted) return false;
 
                     _formalPersistenceRecoveryPendingCycles.TryRemove(channel, out _);
-                    MarkDaqClockCycleAborted(channel, context.Cycle);
+                    MarkDaqClockCycleAborted(
+                        context.RunId,
+                        context.RunEpoch,
+                        channel,
+                        context.Cycle);
                     _log.Warn(
                         $"EPB[{channel}] Cycle={context.Cycle} Attempt={context.AttemptId} " +
                         $"因软件自愈作废；不计正式完成数。Reason={reason}",
@@ -646,7 +715,11 @@ namespace Controller
                         "AbortedBySoftwareRecovery");
                 _formalPersistenceRecoveryPendingCycles.TryRemove(channel, out _);
                 // 正式圈回调稍后收尾时只消费此标记，不得把已作废圈再次封账。
-                MarkDaqClockCycleAborted(channel, cycleNumber);
+                MarkDaqClockCycleAborted(
+                    _activeBatchId,
+                    Interlocked.Read(ref _runEpoch),
+                    channel,
+                    cycleNumber);
                 _log.Warn(
                     $"EPB[{channel}] Cycle={cycleNumber} 因软件自愈作废；" +
                     $"不计正式完成数。Reason={reason}",
@@ -914,7 +987,11 @@ namespace Controller
                             continue;
                         }
                         _formalPersistenceRecoveryPendingCycles.TryRemove(pair.Key, out _);
-                        MarkDaqClockCycleAborted(pair.Key, pair.Value);
+                        MarkDaqClockCycleAborted(
+                            _activeBatchId,
+                            Interlocked.Read(ref _runEpoch),
+                            pair.Key,
+                            pair.Value);
                         QueuePendingWarningSnapshotsForCycle(pair.Key, pair.Value);
                         continue;
                     }
@@ -939,7 +1016,11 @@ namespace Controller
                     }
                     _currentAttemptIdByChannel.TryRemove(pair.Key, out _);
                     _formalPersistenceRecoveryPendingCycles.TryRemove(pair.Key, out _);
-                    MarkDaqClockCycleAborted(pair.Key, pair.Value);
+                    MarkDaqClockCycleAborted(
+                        _activeBatchId,
+                        Interlocked.Read(ref _runEpoch),
+                        pair.Key,
+                        pair.Value);
                     QueuePendingWarningSnapshotsForCycle(pair.Key, pair.Value);
                 }
                 catch (Exception ex)
@@ -1363,6 +1444,12 @@ namespace Controller
             //_readCurrent = acq.ReadCurrent;
             _readCurrent = acq.ReadCurrentFast;
             _log = log ?? NullLogger.Instance;
+            var startupStoragePolicy = ProgramStoragePolicy.Load(
+                message => _log.Warn(message, "Storage"));
+            _historicalStorageEnabled = startupStoragePolicy.HistoricalEnabled;
+            _historicalRetainCyclesPerChannel = startupStoragePolicy.HistoricalRetainCyclesPerChannel;
+            _alarmStorageLevel = startupStoragePolicy.Alarm;
+            _log.Info(startupStoragePolicy.ToStartupLogLine(), "Storage");
             _taskSupervisor = new TaskSupervisor(_log);
             _acq = acq;
             _dev1ChannelMask = BuildDaqChannelMask("Dev1");
@@ -1802,6 +1889,7 @@ namespace Controller
             // 若上一次因报警触发过停机，这里允许重新启动
             _manualStopRequestedChannels.TryRemove(channel, out _);
             _nonRecoverableChannelFaultLatch.TryRemove(channel, out _);
+            _nonRecoverableChannelFaultReasons.TryRemove(channel, out _);
             _alarmStopLatch.BeginRun(channel);
 
             //var rcfg = _cfg.Test?.EpbCycleRunner ?? new EpbCycleRunnerConfig();
@@ -2031,9 +2119,20 @@ namespace Controller
                 var persistenceCommitted = false;
                 try
                 {
-                    if (TryConsumeDaqClockCycleAbort(channel, cycleNumber))
+                    if (TryConsumeDaqClockCycleAbort(
+                            cycleAttempt.RunId,
+                            cycleAttempt.RunEpoch,
+                            channel,
+                            cycleNumber))
                     {
-                        CommitExternallyAbortedCycleAttempt(cycleAttempt);
+                        // 标记在恢复入口即锁存，Runner 可能先于 DAQ Finalizer 退出；此处
+                        // 必须使用真正的 AbortRecorderOnce，而不是仅清理内存身份，确保
+                        // 事故圈恰好写入一次 AbortedBySoftwareRecovery。
+                        AbortFormalCycleAttempt(
+                            cycleAttempt,
+                            recorder,
+                            DateTime.UtcNow,
+                            "AbortedBySoftwareRecovery");
                         _log.Warn(
                             $"EPB[{channel}] 单通道周期 {cycleNumber} 已由DAQ流程封存，跳过重复终态提交。",
                             "落盘");
@@ -2362,9 +2461,15 @@ namespace Controller
                 faultCode,
                 hardwareLatched);
             if (recoveryPolicy == FaultRecoveryPolicy.Recoverable)
+            {
                 _nonRecoverableChannelFaultLatch.TryRemove(channel, out _);
+                _nonRecoverableChannelFaultReasons.TryRemove(channel, out _);
+            }
             else
+            {
                 _nonRecoverableChannelFaultLatch[channel] = 0;
+                _nonRecoverableChannelFaultReasons[channel] = reason ?? faultCode;
+            }
 
             if (immediateCurrentHardFault)
             {
@@ -2966,16 +3071,106 @@ namespace Controller
         }
 
         private void OnDaqDeviceFaultDetected(DaqDeviceFault deviceFault)
-            => OnDaqDeviceFaultDetected(deviceFault, Guid.Empty);
+            => PublishDaqRecoveryIncident(deviceFault, Guid.Empty, fromSafetyEvent: false);
 
         private void OnDaqDeviceFaultDetected(
             DaqDeviceFault deviceFault,
             Guid batchCorrelationId)
+            => PublishDaqRecoveryIncident(deviceFault, batchCorrelationId, fromSafetyEvent: false);
+
+        private void OnDaqDeviceFaultSafetyDetected(DaqDeviceFault deviceFault)
+            => PublishDaqRecoveryIncident(deviceFault, Guid.Empty, fromSafetyEvent: true);
+
+        private void OnDaqDeviceFaultSafetyDetected(
+            DaqDeviceFault deviceFault,
+            Guid batchCorrelationId)
+            => PublishDaqRecoveryIncident(deviceFault, batchCorrelationId, fromSafetyEvent: true);
+
+        /// <summary>
+        /// 唯一的 DAQ 事故发布入口。采集器可能先同步发布安全事件、随后异步发布
+        /// publication；独立 liveness 扫描也可能在二者之间发现同一代次。事故锁存的
+        /// IsFirst 是幂等提交点：只有首个事件登记恢复次数并创建上下文，后续事件只
+        /// 合并诊断，不能重复消耗恢复预算或生成另一套安全动作。
+        /// </summary>
+        private void PublishDaqRecoveryIncident(
+            DaqDeviceFault deviceFault,
+            Guid batchCorrelationId,
+            bool fromSafetyEvent)
         {
-            if (deviceFault == null) return;
+            if (deviceFault == null || string.IsNullOrWhiteSpace(deviceFault.Device)) return;
             var affected = GetDaqGroupChannels(deviceFault.Device);
             if (affected.Length == 0)
                 affected = GetAllDaqDeviceChannels(deviceFault.Device);
+            if (affected.Length == 0) return;
+
+            // 若首个事件已将上下文提交到当前 Run，任何重复 event 都不再进行观察、
+            // 尝试次数注册或 Begin；检查放在 Observe 前可避免无谓日志副作用。
+            if (_daqAutoRecovery.TryGetValue(deviceFault.Device, out var existingRecovery) &&
+                existingRecovery != null &&
+                existingRecovery.RunId == _activeBatchId &&
+                existingRecovery.RunEpoch == Interlocked.Read(ref _runEpoch) &&
+                existingRecovery.Terminal.Current == DaqRecoveryTerminal.None)
+            {
+                _log.Info(
+                    $"DaqDeviceFaultDuplicateSuppressed Device={deviceFault.Device} " +
+                    $"Generation={deviceFault.Generation} RunId={_activeBatchId:N} " +
+                    $"RunEpoch={Interlocked.Read(ref _runEpoch)} " +
+                    $"CorrelationId={existingRecovery.CorrelationId:N} " +
+                    $"Source={(fromSafetyEvent ? "Safety" : "Publication")}",
+                    "AI");
+                return;
+            }
+
+            DaqIncidentObservation observation;
+            try
+            {
+                observation = ObserveDaqIncident(
+                    deviceFault.Device,
+                    deviceFault.Code,
+                    deviceFault.Reason,
+                    deviceFault.TimestampUtc,
+                    affected,
+                    deviceFault.Generation,
+                    correlationId: batchCorrelationId);
+            }
+            catch (Exception ex)
+            {
+                _log.Error(
+                    $"DAQ故障无法登记事故身份，拒绝进入无主暂停。Device={deviceFault.Device} " +
+                    $"Error={ex.Message}",
+                    "AI",
+                    ex);
+                return;
+            }
+
+            if (!observation.IsFirst)
+            {
+                // 首个安全回调若在创建 RecoveryOwner 前就被异常中断，后到的
+                // publication 仍须补建同一事故恢复；正常路径已存在 owner 时此
+                // 分支只做诊断合并，不重复注册 attempt。
+                if (!HasCurrentDaqRecoveryOwner(deviceFault.Device))
+                {
+                    ObserveBackgroundTask(
+                        BeginDaqAutoRecoveryAsync(
+                            deviceFault.Device,
+                            deviceFault.Code,
+                            deviceFault.Reason,
+                            observation.Context.CorrelationId,
+                            restartDaq: true,
+                            deviceFault.TimestampUtc),
+                        "BeginDaqAutoRecoveryFromMergedFault",
+                        observation.Context.PrimaryChannel);
+                }
+                _log.Info(
+                    $"DaqDeviceFaultDuplicateMerged Device={deviceFault.Device} " +
+                    $"Generation={deviceFault.Generation} RunId={_activeBatchId:N} " +
+                    $"RunEpoch={Interlocked.Read(ref _runEpoch)} " +
+                    $"CorrelationId={observation.Context.CorrelationId:N} " +
+                    $"Source={(fromSafetyEvent ? "Safety" : "Publication")}",
+                    "AI");
+                return;
+            }
+
             if (!_daqClockRecoveryAttempts.TryRegister(
                     deviceFault.Device,
                     Stopwatch.GetTimestamp(),
@@ -2990,30 +3185,33 @@ namespace Controller
                     "保持安全断能，并由有界恢复门槛转入整批回收。",
                     "AI");
             }
-            var observation = ObserveDaqIncident(
-                deviceFault.Device,
-                deviceFault.Code,
-                deviceFault.Reason,
-                deviceFault.TimestampUtc,
-                affected,
-                deviceFault.Generation,
-                correlationId: batchCorrelationId);
-            ObserveBackgroundTask(BeginDaqAutoRecoveryAsync(
-                deviceFault.Device,
-                deviceFault.Code,
-                deviceFault.Reason,
-                observation.Context.CorrelationId,
-                restartDaq: true,
-                deviceFault.TimestampUtc,
-                recoveryAttempt: attempt),
-                "BeginDaqAutoRecoveryFromDeviceFault");
+
+            // BeginDaqAutoRecoveryAsync 在第一次 await 前完成 TryAdd、RunEpoch 校验、
+            // 冻结边界和所有安全动作，因此 RecoveryOwner 在任何可能阻塞的 DO/电源
+            // I/O 之前已经可观察；安全事件和 publication 统一走此入口。
+            ObserveBackgroundTask(
+                BeginDaqAutoRecoveryAsync(
+                    deviceFault.Device,
+                    deviceFault.Code,
+                    deviceFault.Reason,
+                    observation.Context.CorrelationId,
+                    restartDaq: true,
+                    deviceFault.TimestampUtc,
+                    recoveryAttempt: attempt),
+                fromSafetyEvent
+                    ? "BeginDaqAutoRecoveryFromSafetyFault"
+                    : "BeginDaqAutoRecoveryFromDeviceFault",
+                observation.Context.PrimaryChannel);
         }
 
-        private void OnDaqDeviceFaultSafetyDetected(DaqDeviceFault deviceFault)
+        private bool HasCurrentDaqRecoveryOwner(string device)
         {
-            if (deviceFault == null) return;
-            // DAQ数据链故障全部先按可恢复软件故障处理；硬件报警必须等待独立探测证据。
-            ExecuteDaqDeviceFaultSafetyFirst(deviceFault.Device, backgroundQueue: true);
+            return !string.IsNullOrWhiteSpace(device) &&
+                   _daqAutoRecovery.TryGetValue(device, out var context) &&
+                   context != null &&
+                   context.RunId == _activeBatchId &&
+                   context.RunEpoch == Interlocked.Read(ref _runEpoch) &&
+                   context.Terminal.Current == DaqRecoveryTerminal.None;
         }
 
         private void OnDaqPersistenceStateChanged(DaqPersistenceStateChanged update)
@@ -3417,6 +3615,12 @@ namespace Controller
                 CompleteCancelledRecovery(context, "DaqCutoffPhaseRejected");
                 return;
             }
+            // 在第一次 Pause/DO/电源调用之前锁定当前圈的“事故身份”。这样即使 Runner
+            // 的迟到完成回调先于持久化 Finalizer 返回，也只能走 AbortedBySoftwareRecovery
+            // 分支，不能把事故圈晚到写成正式 completed。后续截止阶段只允许补充尚未
+            // 观察到的当前圈，绝不替换已经冻结的 (RunId,RunEpoch,Channel,Cycle)。
+            context.CutoffCycles = CaptureSoftwareRecoveryCycles(affected);
+            MarkDaqRecoveryCyclesAborted(context);
             try
             {
                 var cutoffSafetyDiagnostics = new List<string>();
@@ -3454,13 +3658,16 @@ namespace Controller
                         context.CutoffParticipantVersions = affected.ToDictionary(
                             channel => channel,
                             CaptureHydraulicParticipantVersion);
-                        context.CutoffCycles = affected.ToDictionary(
-                            channel => channel,
-                            channel => _currentCycleNumberByChannel.TryGetValue(
-                                channel,
-                                out var cycle)
-                                ? cycle
-                                : 0);
+                        foreach (var pair in CaptureSoftwareRecoveryCycles(affected))
+                        {
+                            if (context.CutoffCycles.ContainsKey(pair.Key)) continue;
+                            context.CutoffCycles[pair.Key] = pair.Value;
+                            MarkDaqClockCycleAborted(
+                                context.RunId,
+                                context.RunEpoch,
+                                pair.Key,
+                                pair.Value);
+                        }
                         var frozenBoundary = _persistence.InstallCutoff(
                             device,
                             context.CutoffUtc,
@@ -3497,10 +3704,26 @@ namespace Controller
                             "DaqCutoffAdmissionRejected",
                             "DaqCutoffSubmissionException");
                     },
-                    () => StartElectricalGroupSafetyDisables(
-                        affected,
-                        $"DAQ截止安全断电 Device={device} CorrelationId={context.CorrelationId:N}",
-                        "DaqCutoffPowerDisable"),
+                    () =>
+                    {
+                        var powerDisableTasks = StartElectricalGroupSafetyDisables(
+                            affected,
+                            $"DAQ截止安全断电 Device={device} CorrelationId={context.CorrelationId:N}",
+                            "DaqCutoffPowerDisable");
+                        context.PowerDisableTasks = powerDisableTasks.Values
+                            .Where(task => task != null)
+                            .ToArray();
+                        context.PowerDisableTasksByGroup = powerDisableTasks
+                            .Where(pair => pair.Key > 0 && pair.Value != null)
+                            .ToDictionary(pair => pair.Key, pair => (Task)pair.Value);
+                        Interlocked.Exchange(
+                            ref context.PowerDisableStartedTicks,
+                            Stopwatch.GetTimestamp());
+                        Interlocked.Exchange(
+                            ref context.PowerDisableStartedUtcTicks,
+                            DateTime.UtcNow.Ticks);
+                        StartDaqPowerDisableDeadline(context);
+                    },
                     () => ScheduleRejectedOffFallbacks(
                         cutoffOffFallbacks,
                         "DaqCutoffImmediateOffFallback"),
@@ -4041,7 +4264,7 @@ namespace Controller
                             device,
                             _acq.GetLastAcceptedSequence(device));
                         LogDaqRecoveryFieldMetric(context, "Recovered", "RejoinAndCommit");
-                        _daqAutoRecovery.TryRemove(device, out _);
+                        TryRemoveExactDaqRecoveryContext(context);
                         context.Completion.TrySetResult(result);
                     }
                 }
@@ -4241,7 +4464,7 @@ namespace Controller
                     context.Phase.MarkTerminal();
                     MarkDaqRecoveryTerminal(context.CorrelationId, context.Device);
                     MarkDaqRecoveryBatchTerminal(context);
-                    _daqAutoRecovery.TryRemove(device, out _);
+                    TryRemoveExactDaqRecoveryContext(context);
                 }
                 var primary = context.AffectedChannels.OrderBy(x => x).FirstOrDefault();
                 var result = recoveryResult ?? new DaqRecoveryResult { Device = device };
@@ -4588,6 +4811,31 @@ namespace Controller
                 }
             }
             var deenergized = !IsDaqDeviceControlActive(context.Device);
+            if (deenergized && _powerSupply != null)
+            {
+                var energizedGroups = (context.AffectedChannels ?? Array.Empty<int>())
+                    .Select(GetElectricalGroupId)
+                    .Where(id => id > 0)
+                    .Distinct()
+                    .Where(id =>
+                    {
+                        var state = _powerSupply.GetRuntimeState(id);
+                        return state.ExpectedOutputEnabled ||
+                               state.TelemetryOutputEnabled ||
+                               state.Active;
+                    })
+                    .OrderBy(id => id)
+                    .ToArray();
+                if (energizedGroups.Length > 0)
+                {
+                    deenergized = false;
+                    _log.Error(
+                        $"DAQ恢复电源组仍报告带电，禁止重建 Device={context.Device} " +
+                        $"Groups=[{string.Join(",", energizedGroups)}] " +
+                        $"CorrelationId={context.CorrelationId:N}",
+                        "程控电源");
+                }
+            }
             if (!deenergized)
                 _log.Error(
                     $"DAQ恢复断电确认失败 Device={context.Device} " +
@@ -6419,28 +6667,42 @@ namespace Controller
                             }
                             else if (recorder is ICycleAttemptEvidenceExporter exporter)
                             {
+                                var saveAlarmCsv = _alarmStorageLevel == StorageFormatLevel.CsvOnly ||
+                                                    _alarmStorageLevel == StorageFormatLevel.CsvAndBin;
+                                var saveAlarmBin = _alarmStorageLevel == StorageFormatLevel.BinOnly ||
+                                                    _alarmStorageLevel == StorageFormatLevel.CsvAndBin;
                                 var frozen = exporter.ExportCycleAttemptTo(
                                     ch,
                                     alarmCycleNumber,
                                     subDir,
-                                    true,
-                                    true);
+                                    saveAlarmCsv,
+                                    saveAlarmBin);
                                 alarmEvidence = frozen == null
                                     ? new AlarmCycleSnapshotEvidence
                                     {
+                                        StorageFormat = _alarmStorageLevel.ToString(),
                                         ValidationError = "冻结故障圈导出器未返回证据。"
                                     }
-                                    : EpbDiskWriter.ValidateAlarmCycleSnapshotPair(
+                                    : EpbDiskWriter.ValidateAlarmCycleSnapshotFiles(
                                         frozen.CsvPath,
                                         frozen.BinPath,
                                         ch,
-                                        alarmCycleNumber);
+                                        alarmCycleNumber,
+                                        false,
+                                        _alarmStorageLevel);
                                 alarmEvidence.WasClaimed = false;
                                 alarmEvidence.FinalStatus = "FrozenAbortedCycle";
                             }
                             if (alarmEvidence?.IsValid == true)
                             {
-                                recorder.FlushRecentTo(ch, lastN, subDir, includeRunningCycle: false);
+                                if (recorder is IAlarmRecentCycleEvidenceExporter alarmRecentExporter)
+                                    alarmRecentExporter.FlushRecentForAlarm(
+                                        ch,
+                                        lastN,
+                                        subDir,
+                                        includeRunningCycle: false);
+                                else
+                                    recorder.FlushRecentTo(ch, lastN, subDir, includeRunningCycle: false);
                                 exportedCycleChannels.Add(ch);
                             }
                             else
@@ -6450,7 +6712,14 @@ namespace Controller
                         }
                         else
                         {
-                            recorder.FlushRecentTo(ch, sameGroupLastN, subDir, includeRunningCycle: true);
+                            if (recorder is IAlarmRecentCycleEvidenceExporter alarmRecentExporter)
+                                alarmRecentExporter.FlushRecentForAlarm(
+                                    ch,
+                                    sameGroupLastN,
+                                    subDir,
+                                    includeRunningCycle: true);
+                            else
+                                recorder.FlushRecentTo(ch, sameGroupLastN, subDir, includeRunningCycle: true);
                             if (System.IO.Directory.EnumerateFiles(
                                     subDir,
                                     "*.*",
@@ -6472,12 +6741,17 @@ namespace Controller
                 var alarmSubDir = System.IO.Path.Combine(snapshotDir, $"EPB{alarmChannel:D2}_ALARM");
                 alarmEvidence ??= new AlarmCycleSnapshotEvidence
                 {
-                    CsvPath = System.IO.Path.Combine(
-                        alarmSubDir,
-                        $"EPB{alarmChannel}_Cycle_{alarmCycleNumber:D6}.csv"),
-                    BinPath = System.IO.Path.Combine(
-                        alarmSubDir,
-                        $"EPB{alarmChannel}_Cycle_{alarmCycleNumber:D6}.bin"),
+                    CsvPath = _alarmStorageLevel == StorageFormatLevel.BinOnly
+                        ? null
+                        : System.IO.Path.Combine(
+                            alarmSubDir,
+                            $"EPB{alarmChannel}_Cycle_{alarmCycleNumber:D6}.csv"),
+                    BinPath = _alarmStorageLevel == StorageFormatLevel.CsvOnly
+                        ? null
+                        : System.IO.Path.Combine(
+                            alarmSubDir,
+                            $"EPB{alarmChannel}_Cycle_{alarmCycleNumber:D6}.bin"),
+                    StorageFormat = _alarmStorageLevel.ToString(),
                     ValidationError = "报警圈未完成原子封存。"
                 };
 

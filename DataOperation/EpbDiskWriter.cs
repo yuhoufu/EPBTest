@@ -25,6 +25,19 @@ namespace DataOperation;
 /// </summary>
 public sealed class DataRetentionPolicy
 {
+    /// <summary>Latest 导出格式。直接 new 策略时保留旧双格式兼容；EXE 配置解析默认为 CsvOnly。</summary>
+    public StorageFormatLevel LatestStorageLevel { get; set; } = StorageFormatLevel.CsvAndBin;
+
+    /// <summary>硬报警圈证据格式。直接 new 策略时保留旧双格式兼容；EXE 配置解析默认为 CsvOnly。</summary>
+    public StorageFormatLevel AlarmStorageLevel { get; set; } = StorageFormatLevel.CsvAndBin;
+
+    /// <summary>学习/资格圈封存格式。直接 new 策略时保留旧双格式兼容；EXE 配置解析结果默认为 BinOnly。</summary>
+    public StorageFormatLevel LearningStorageLevel { get; set; } = StorageFormatLevel.CsvAndBin;
+
+    /// <summary>历史滚动快照开关及每通道保留上限（由上层配置解析后传入）。</summary>
+    public bool HistoricalEnabled { get; set; } = true;
+    public int HistoricalRetainCyclesPerChannel { get; set; } = 12;
+
     /// <summary>是否使用内存映射写入（默认 true）。</summary>
     public bool UseMemoryMapped { get; set; } = true;
 
@@ -189,6 +202,9 @@ public sealed class EpbDiskWriter : IDisposable
     private readonly string _mappingScope;
     private readonly long _fileBytes;
     private readonly DataRetentionPolicy _policy;
+
+    public StorageFormatLevel AlarmStorageLevel =>
+        NormalizeStorageLevel(_policy.AlarmStorageLevel, StorageFormatLevel.CsvAndBin);
 
     private readonly MemoryMappedFile[] _mmfs = new MemoryMappedFile[EPB_COUNT + 1]; // 1..12
     private readonly MemoryMappedViewAccessor[] _views = new MemoryMappedViewAccessor[EPB_COUNT + 1];
@@ -673,13 +689,17 @@ public sealed class EpbDiskWriter : IDisposable
         var normalizedStatus = NormalizeSealStatus(status);
 
         var stem = $"EPB{epbId}_Cycle_{cycleNumber:D6}";
-        var csvPath = Path.Combine(exportDir, stem + ".csv");
-        var binPath = Path.Combine(exportDir, stem + ".bin");
+        var storage = GetSealStorage(normalizedStatus);
+        var saveCsv = HasCsv(storage);
+        var saveBin = HasBin(storage);
+        var csvPath = saveCsv ? Path.Combine(exportDir, stem + ".csv") : null;
+        var binPath = saveBin ? Path.Combine(exportDir, stem + ".bin") : null;
         var evidence = new AlarmCycleSnapshotEvidence
         {
             CsvPath = csvPath,
             BinPath = binPath,
-            FinalStatus = normalizedStatus
+            FinalStatus = normalizedStatus,
+            StorageFormat = storage.ToString()
         };
         var s = GetState(epbId);
         Exception terminalCommitFailure = null;
@@ -717,31 +737,45 @@ public sealed class EpbDiskWriter : IDisposable
                 if (records.Count > 0)
                     endUtc = DateTime.FromBinary(records[records.Count - 1].TimestampBinary).ToUniversalTime();
                 Directory.CreateDirectory(exportDir);
-                var csvTemp = GetTempPath(csvPath);
-                var binTemp = GetTempPath(binPath);
                 try
                 {
-                    using (var sw = new StreamWriter(csvTemp, false, Encoding.UTF8))
-                        WriteCsvRecords(sw, records, new ExportFormatOptions());
-                    using (var fs = new FileStream(binTemp, FileMode.Create, FileAccess.Write, FileShare.Read))
-                    using (var bw = new BinaryWriter(fs))
-                        WriteBinRecords(bw, records);
-                    CommitPair(csvTemp, csvPath, binTemp, binPath);
+                    if (saveCsv && saveBin)
+                    {
+                        ExportCyclePair(epbId, cycle, csvPath, binPath, new ExportFormatOptions(), records);
+                    }
+                    else if (saveCsv)
+                    {
+                        WriteAtomically(csvPath, tempPath =>
+                        {
+                            using (var sw = new StreamWriter(tempPath, false, Encoding.UTF8))
+                                WriteCsvRecords(sw, records, new ExportFormatOptions());
+                        });
+                    }
+                    else
+                    {
+                        WriteAtomically(binPath, tempPath =>
+                        {
+                            using (var fs = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.Read))
+                            using (var bw = new BinaryWriter(fs))
+                                WriteBinRecords(bw, records);
+                        });
+                    }
                 }
                 finally
                 {
-                    TryDeleteFile(csvTemp);
-                    TryDeleteFile(binTemp);
+                    // WriteAtomically/ExportCyclePair remove their own temporary files.
                 }
 
-                evidence = ValidateAlarmCycleSnapshotPair(
+                evidence = ValidateAlarmCycleSnapshotFiles(
                     csvPath,
                     binPath,
                     epbId,
                     cycleNumber,
-                    allowEmpty);
+                    allowEmpty,
+                    storage);
                 evidence.WasClaimed = true;
                 evidence.FinalStatus = normalizedStatus;
+                evidence.StorageFormat = storage.ToString();
                 if (!evidence.IsValid)
                     throw new InvalidDataException(evidence.ValidationError);
 
@@ -823,6 +857,33 @@ public sealed class EpbDiskWriter : IDisposable
         }
     }
 
+    private StorageFormatLevel GetSealStorage(string normalizedStatus)
+    {
+        if (string.Equals(normalizedStatus, "alarm", StringComparison.OrdinalIgnoreCase))
+            return NormalizeStorageLevel(_policy.AlarmStorageLevel, StorageFormatLevel.CsvOnly);
+        if (normalizedStatus.StartsWith("learning_", StringComparison.OrdinalIgnoreCase) ||
+            normalizedStatus.StartsWith("qualification_", StringComparison.OrdinalIgnoreCase))
+            return NormalizeStorageLevel(_policy.LearningStorageLevel, StorageFormatLevel.BinOnly);
+        return StorageFormatLevel.CsvAndBin;
+    }
+
+    private static StorageFormatLevel NormalizeStorageLevel(
+        StorageFormatLevel value,
+        StorageFormatLevel fallback)
+    {
+        return Enum.IsDefined(typeof(StorageFormatLevel), value) ? value : fallback;
+    }
+
+    private static bool HasCsv(StorageFormatLevel value)
+    {
+        return value == StorageFormatLevel.CsvOnly || value == StorageFormatLevel.CsvAndBin;
+    }
+
+    private static bool HasBin(StorageFormatLevel value)
+    {
+        return value == StorageFormatLevel.BinOnly || value == StorageFormatLevel.CsvAndBin;
+    }
+
     /// <summary>逐条校验圈快照 CSV/BIN 对的数量、圈号、序号和时间范围。</summary>
     public static AlarmCycleSnapshotEvidence ValidateAlarmCycleSnapshotPair(
         string csvPath,
@@ -831,6 +892,134 @@ public sealed class EpbDiskWriter : IDisposable
         int cycleNumber)
     {
         return ValidateAlarmCycleSnapshotPair(csvPath, binPath, epbId, cycleNumber, false);
+    }
+
+    /// <summary>
+    /// 校验按程序级格式保存的单格式或双格式圈证据。
+    /// 旧 CSV+BIN 包始终按双格式兼容校验；单格式包只校验实际存在的文件。
+    /// </summary>
+    public static AlarmCycleSnapshotEvidence ValidateAlarmCycleSnapshotFiles(
+        string csvPath,
+        string binPath,
+        int epbId,
+        int cycleNumber,
+        bool allowEmpty = false,
+        StorageFormatLevel? expectedFormat = null)
+    {
+        var hasCsv = !string.IsNullOrWhiteSpace(csvPath) && File.Exists(csvPath);
+        var hasBin = !string.IsNullOrWhiteSpace(binPath) && File.Exists(binPath);
+        var inferred = hasCsv && hasBin
+            ? StorageFormatLevel.CsvAndBin
+            : hasCsv
+                ? StorageFormatLevel.CsvOnly
+                : hasBin ? StorageFormatLevel.BinOnly : StorageFormatLevel.CsvAndBin;
+        if (!hasCsv && !hasBin)
+            return new AlarmCycleSnapshotEvidence
+            {
+                CsvPath = csvPath,
+                BinPath = binPath,
+                StorageFormat = (expectedFormat ?? inferred).ToString(),
+                ValidationError = $"EPB[{epbId}] Cycle={cycleNumber} 圈快照文件不存在。"
+            };
+
+        // Existing pair packages remain valid even when the new policy is single-format.
+        if (hasCsv && hasBin)
+        {
+            var pair = ValidateAlarmCycleSnapshotPair(csvPath, binPath, epbId, cycleNumber, allowEmpty);
+            pair.StorageFormat = StorageFormatLevel.CsvAndBin.ToString();
+            return pair;
+        }
+
+        var evidence = new AlarmCycleSnapshotEvidence
+        {
+            CsvPath = csvPath,
+            BinPath = binPath,
+            StorageFormat = inferred.ToString()
+        };
+        try
+        {
+            if (hasBin)
+            {
+                var length = new FileInfo(binPath).Length;
+                if ((!allowEmpty && length <= 0) || length % SampleRecord.Size != 0)
+                    throw new InvalidDataException(
+                        $"BIN 长度 {length} 不是 {SampleRecord.Size} 字节记录的整数倍。");
+                var count = checked((int)(length / SampleRecord.Size));
+                DateTime? first = null;
+                DateTime? last = null;
+                using (var fs = new FileStream(binPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                using (var br = new BinaryReader(fs))
+                {
+                    for (var i = 0; i < count; i++)
+                    {
+                        var ts = br.ReadInt64();
+                        var actualCycle = br.ReadInt32();
+                        var sampleIndex = br.ReadInt32();
+                        br.ReadDouble();
+                        br.ReadDouble();
+                        if (actualCycle != cycleNumber || sampleIndex != i)
+                            throw new InvalidDataException(
+                                $"BIN 圈号/样本序号不一致：ExpectedCycle={cycleNumber} ActualCycle={actualCycle} " +
+                                $"ExpectedIndex={i} ActualIndex={sampleIndex}。");
+                        var utc = DateTime.FromBinary(ts).ToUniversalTime();
+                        if (last.HasValue && utc < last.Value)
+                            throw new InvalidDataException($"BIN 时间戳回退：Index={i}。");
+                        first ??= utc;
+                        last = utc;
+                    }
+                }
+                evidence.SampleCount = count;
+                evidence.FirstSampleUtc = first;
+                evidence.LastSampleUtc = last;
+            }
+            else
+            {
+                var count = 0;
+                DateTime? first = null;
+                DateTime? last = null;
+                using (var sr = new StreamReader(csvPath, Encoding.UTF8, true))
+                {
+                    var header = sr.ReadLine();
+                    if (!string.Equals(header, CSV_HEADER, StringComparison.Ordinal))
+                        throw new InvalidDataException("CSV 表头不符合报警证据格式。");
+                    string line;
+                    while ((line = sr.ReadLine()) != null)
+                    {
+                        if (string.IsNullOrWhiteSpace(line)) continue;
+                        var fields = line.Split(',');
+                        if (fields.Length < 4 ||
+                            !int.TryParse(fields[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out var actualCycle) ||
+                            !int.TryParse(fields[3], NumberStyles.Integer, CultureInfo.InvariantCulture, out var sampleIndex))
+                            throw new InvalidDataException($"CSV 第 {count + 2} 行无法解析圈号或样本序号。");
+                        if (actualCycle != cycleNumber || sampleIndex != count)
+                            throw new InvalidDataException(
+                                $"CSV 证据不连续：ExpectedCycle={cycleNumber} ActualCycle={actualCycle} " +
+                                $"ExpectedIndex={count} ActualIndex={sampleIndex}。");
+                        if (DateTime.TryParse(fields[0], CultureInfo.CurrentCulture,
+                                DateTimeStyles.AllowWhiteSpaces, out var local))
+                        {
+                            var utc = local.ToUniversalTime();
+                            if (last.HasValue && utc < last.Value)
+                                throw new InvalidDataException($"CSV 时间戳回退：Index={count}。");
+                            first ??= utc;
+                            last = utc;
+                        }
+                        count++;
+                    }
+                }
+                evidence.SampleCount = count;
+                evidence.FirstSampleUtc = first;
+                evidence.LastSampleUtc = last;
+            }
+            evidence.IsValid = true;
+            evidence.ValidationError = string.Empty;
+        }
+        catch (Exception ex)
+        {
+            evidence.IsValid = false;
+            evidence.ValidationError = $"EPB[{epbId}] Cycle={cycleNumber} 圈快照证据校验失败：{ex.Message}";
+        }
+        return evidence;
     }
 
     private static AlarmCycleSnapshotEvidence ValidateAlarmCycleSnapshotPair(
@@ -843,7 +1032,8 @@ public sealed class EpbDiskWriter : IDisposable
         var evidence = new AlarmCycleSnapshotEvidence
         {
             CsvPath = csvPath,
-            BinPath = binPath
+            BinPath = binPath,
+            StorageFormat = StorageFormatLevel.CsvAndBin.ToString()
         };
         try
         {
@@ -1403,8 +1593,9 @@ public sealed class EpbDiskWriter : IDisposable
             Directory.CreateDirectory(staging);
             try
             {
-                ExportCycleList(epbId, latestList, staging);
-                ValidateExportDirectory(epbId, latestList, staging);
+                var latestStorage = NormalizeStorageLevel(_policy.LatestStorageLevel, StorageFormatLevel.CsvOnly);
+                ExportCycleList(epbId, latestList, staging, latestStorage);
+                ValidateExportDirectory(epbId, latestList, staging, latestStorage);
                 Directory.Move(staging, final);
                 published = true;
             }
@@ -1419,11 +1610,14 @@ public sealed class EpbDiskWriter : IDisposable
         if (published) QueueLatestPackageRetention(epbId);
     }
 
-    private static bool HasMatchingLatestPackage(
+    private bool HasMatchingLatestPackage(
         string root,
         int epbId,
         IReadOnlyCollection<CycleInfo> cycles)
     {
+        var storage = NormalizeStorageLevel(_policy.LatestStorageLevel, StorageFormatLevel.CsvOnly);
+        var requireCsv = HasCsv(storage);
+        var requireBin = HasBin(storage);
         IEnumerable<string> directories;
         try
         {
@@ -1441,20 +1635,25 @@ public sealed class EpbDiskWriter : IDisposable
         {
             try
             {
-                if (Directory.GetFiles(directory, "*.csv", SearchOption.TopDirectoryOnly).Length != cycles.Count ||
-                    Directory.GetFiles(directory, "*.bin", SearchOption.TopDirectoryOnly).Length != cycles.Count)
+                if (requireCsv && Directory.GetFiles(directory, "*.csv", SearchOption.TopDirectoryOnly).Length < cycles.Count ||
+                    requireBin && Directory.GetFiles(directory, "*.bin", SearchOption.TopDirectoryOnly).Length < cycles.Count)
                     continue;
                 var matches = true;
                 foreach (var cycle in cycles)
                 {
-                    var csv = Path.Combine(directory, $"EPB{epbId}_Cycle_{cycle.CycleNumber:D6}.csv");
-                    var bin = Path.Combine(directory, $"EPB{epbId}_Cycle_{cycle.CycleNumber:D6}.bin");
-                    var validation = ValidateAlarmCycleSnapshotPair(
+                    var csv = requireCsv
+                        ? Path.Combine(directory, $"EPB{epbId}_Cycle_{cycle.CycleNumber:D6}.csv")
+                        : null;
+                    var bin = requireBin
+                        ? Path.Combine(directory, $"EPB{epbId}_Cycle_{cycle.CycleNumber:D6}.bin")
+                        : null;
+                    var validation = ValidateAlarmCycleSnapshotFiles(
                         csv,
                         bin,
                         epbId,
                         cycle.CycleNumber,
-                        cycle.SampleCount == 0);
+                        cycle.SampleCount == 0,
+                        storage);
                     if (!validation.IsValid || validation.SampleCount != cycle.SampleCount)
                     {
                         matches = false;
@@ -1559,7 +1758,7 @@ public sealed class EpbDiskWriter : IDisposable
         }
     }
 
-    private static bool IsValidLatestPackage(string directory, int epbId)
+    private bool IsValidLatestPackage(string directory, int epbId)
     {
         try
         {
@@ -1572,6 +1771,11 @@ public sealed class EpbDiskWriter : IDisposable
                 .Select(Path.GetFileNameWithoutExtension)
                 .Where(x => x.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var storage = NormalizeStorageLevel(_policy.LatestStorageLevel, StorageFormatLevel.CsvOnly);
+            if (storage == StorageFormatLevel.CsvOnly)
+                return csv.Count > 0;
+            if (storage == StorageFormatLevel.BinOnly)
+                return bin.Count > 0;
             return csv.Count > 0 && csv.SetEquals(bin);
         }
         catch
@@ -1586,21 +1790,28 @@ public sealed class EpbDiskWriter : IDisposable
         catch { }
     }
 
-    private static void ValidateExportDirectory(
+    private void ValidateExportDirectory(
         int epbId,
         IEnumerable<CycleInfo> cycles,
-        string directory)
+        string directory,
+        StorageFormatLevel storage)
     {
+        storage = NormalizeStorageLevel(storage, StorageFormatLevel.CsvAndBin);
         foreach (var cycle in cycles)
         {
-            var csv = Path.Combine(directory, $"EPB{epbId}_Cycle_{cycle.CycleNumber:D6}.csv");
-            var bin = Path.Combine(directory, $"EPB{epbId}_Cycle_{cycle.CycleNumber:D6}.bin");
-            var validation = ValidateAlarmCycleSnapshotPair(
+            var csv = HasCsv(storage)
+                ? Path.Combine(directory, $"EPB{epbId}_Cycle_{cycle.CycleNumber:D6}.csv")
+                : null;
+            var bin = HasBin(storage)
+                ? Path.Combine(directory, $"EPB{epbId}_Cycle_{cycle.CycleNumber:D6}.bin")
+                : null;
+            var validation = ValidateAlarmCycleSnapshotFiles(
                 csv,
                 bin,
                 epbId,
                 cycle.CycleNumber,
-                cycle.SampleCount == 0);
+                cycle.SampleCount == 0,
+                storage);
             if (!validation.IsValid || validation.SampleCount != cycle.SampleCount)
                 throw new InvalidDataException(validation.ValidationError);
         }
@@ -1612,6 +1823,22 @@ public sealed class EpbDiskWriter : IDisposable
     ///     可选择是否包含当前 <c>status='running'</c> 的圈（用于“报警快照：当前圈+之前9圈”）。
     /// </summary>
     public void ExportLatestCyclesTo(int epbId, int latestN, string exportDir, bool includeRunningCycle)
+        => ExportLatestCyclesTo(
+            epbId,
+            latestN,
+            exportDir,
+            includeRunningCycle,
+            StorageFormatLevel.CsvAndBin);
+
+    /// <summary>
+    /// 导出最近圈并显式指定证据格式。通用调用默认双格式；报警适配器使用 AlarmStorageLevel。
+    /// </summary>
+    public void ExportLatestCyclesTo(
+        int epbId,
+        int latestN,
+        string exportDir,
+        bool includeRunningCycle,
+        StorageFormatLevel storage)
     {
         latestN = Math.Max(1, latestN);
         if (string.IsNullOrWhiteSpace(exportDir))
@@ -1624,7 +1851,7 @@ public sealed class EpbDiskWriter : IDisposable
             var latestList = GetLatestCycles(epbId, latestN, includeRunningCycle);
             if (latestList.Count == 0) return;
             Directory.CreateDirectory(fullDirectory);
-            ExportCycleList(epbId, latestList, fullDirectory);
+            ExportCycleList(epbId, latestList, fullDirectory, storage);
         }
     }
 
@@ -1773,14 +2000,35 @@ public sealed class EpbDiskWriter : IDisposable
 
     private void ExportCycleList(int epbId, IEnumerable<CycleInfo> cycles, string exportDir)
     {
+        // Generic recent-cycle exports are shared by incident/diagnostic paths and
+        // retain the legacy pair regardless of the Latest package preference.
+        ExportCycleList(epbId, cycles, exportDir, StorageFormatLevel.CsvAndBin);
+    }
+
+    private void ExportCycleList(
+        int epbId,
+        IEnumerable<CycleInfo> cycles,
+        string exportDir,
+        StorageFormatLevel storage)
+    {
+        storage = NormalizeStorageLevel(storage, StorageFormatLevel.CsvAndBin);
         var failures = new List<Exception>();
         foreach (var cy in cycles)
         {
             try
             {
-                var csv = Path.Combine(exportDir, $"EPB{epbId}_Cycle_{cy.CycleNumber:D6}.csv");
-                var bin = Path.Combine(exportDir, $"EPB{epbId}_Cycle_{cy.CycleNumber:D6}.bin");
-                ExportCyclePair(epbId, cy, csv, bin, new ExportFormatOptions());
+                var csv = HasCsv(storage)
+                    ? Path.Combine(exportDir, $"EPB{epbId}_Cycle_{cy.CycleNumber:D6}.csv")
+                    : null;
+                var bin = HasBin(storage)
+                    ? Path.Combine(exportDir, $"EPB{epbId}_Cycle_{cy.CycleNumber:D6}.bin")
+                    : null;
+                if (HasCsv(storage) && HasBin(storage))
+                    ExportCyclePair(epbId, cy, csv, bin, new ExportFormatOptions());
+                else if (HasCsv(storage))
+                    ExportCycleToCsv(epbId, cy, csv);
+                else
+                    ExportCycleToBin(epbId, cy, bin);
             }
             catch (Exception ex)
             {
@@ -1801,6 +2049,19 @@ public sealed class EpbDiskWriter : IDisposable
         ExportFormatOptions fmt)
     {
         var records = ReadValidatedCycleRecords(epbId, cycle);
+        ExportCyclePair(epbId, cycle, csvPath, binPath, fmt, records);
+    }
+
+    private void ExportCyclePair(
+        int epbId,
+        CycleInfo cycle,
+        string csvPath,
+        string binPath,
+        ExportFormatOptions fmt,
+        IReadOnlyList<SampleRecord> records)
+    {
+        if (string.IsNullOrWhiteSpace(csvPath) || string.IsNullOrWhiteSpace(binPath))
+            throw new ArgumentException("双格式导出必须同时提供 CSV 和 BIN 路径。");
         var csvTemp = GetTempPath(csvPath);
         var binTemp = GetTempPath(binPath);
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(csvPath)) ?? ".");
@@ -2959,6 +3220,8 @@ public sealed class AlarmCycleSnapshotEvidence
     public DateTime? LastSampleUtc { get; set; }
     public string CsvPath { get; set; }
     public string BinPath { get; set; }
+    /// <summary>实际生成/校验的格式：CsvOnly、BinOnly 或 CsvAndBin。</summary>
+    public string StorageFormat { get; set; }
     public string FinalStatus { get; set; }
     public string ValidationError { get; set; }
 }
@@ -3118,6 +3381,19 @@ public interface IStopRecentCycleEvidenceExporter
 }
 
 /// <summary>
+/// Optional alarm-only recent-cycle exporter. Legacy recorders remain pair-format;
+/// the disk writer adapter can apply the independent AlarmStorageLevel policy.
+/// </summary>
+public interface IAlarmRecentCycleEvidenceExporter
+{
+    void FlushRecentForAlarm(
+        int epbId,
+        int lastNCycles,
+        string exportDir,
+        bool includeRunningCycle);
+}
+
+/// <summary>
 /// 报警触发圈已经被正式圈收尾先行封存时，从不可变的圈级索引回读 CSV/BIN。
 /// 该路径只处理“未取得当前圈封存权”的竞态；真正的原子封存失败不得被回读掩盖。
 /// </summary>
@@ -3137,17 +3413,24 @@ public static class AlarmCycleSnapshotRecovery
 
         try
         {
+            var storage = ParseStorageFormat(originalEvidence?.StorageFormat);
+            var saveCsv = storage == StorageFormatLevel.CsvOnly ||
+                          storage == StorageFormatLevel.CsvAndBin;
+            var saveBin = storage == StorageFormatLevel.BinOnly ||
+                          storage == StorageFormatLevel.CsvAndBin;
             var persisted = exporter.ExportCycleAttemptTo(
                 epbId,
                 cycleNumber,
                 exportDir,
-                true,
-                true);
-            var recovered = EpbDiskWriter.ValidateAlarmCycleSnapshotPair(
+                saveCsv,
+                saveBin);
+            var recovered = EpbDiskWriter.ValidateAlarmCycleSnapshotFiles(
                 persisted.CsvPath,
                 persisted.BinPath,
                 epbId,
-                cycleNumber);
+                cycleNumber,
+                false,
+                storage);
             recovered.WasClaimed = false;
             recovered.FinalStatus = persisted.IsCompleteCycle
                 ? "CompletedTriggerCycle"
@@ -3171,6 +3454,17 @@ public static class AlarmCycleSnapshotRecovery
             return evidence;
         }
     }
+
+    private static StorageFormatLevel ParseStorageFormat(string value)
+    {
+        if (!string.IsNullOrWhiteSpace(value) &&
+            Enum.TryParse(value, true, out StorageFormatLevel parsed) &&
+            Enum.IsDefined(typeof(StorageFormatLevel), parsed))
+            return parsed;
+        // A missing field denotes a legacy evidence object and therefore retains
+        // the old CSV+BIN recovery contract.
+        return StorageFormatLevel.CsvAndBin;
+    }
 }
 
 public interface IActiveCycleLimitConfigurator
@@ -3189,7 +3483,7 @@ public interface IRecoverableCycleRecorder
 /// <summary>
 ///     将 EpbDiskWriter 适配为 IEpbCycleRecorder，避免 EpbManager 直接依赖具体类。
 /// </summary>
-public sealed class DiskWriterRecorderAdapter : IEpbCycleRecorder, ICountedBatchedEpbCycleRecorder, ICycleEvidenceExporter, ICycleAttemptEvidenceExporter, IStopRecentCycleEvidenceExporter, IActiveCycleLimitConfigurator, IRecoverableCycleRecorder
+public sealed class DiskWriterRecorderAdapter : IEpbCycleRecorder, ICountedBatchedEpbCycleRecorder, ICycleEvidenceExporter, ICycleAttemptEvidenceExporter, IStopRecentCycleEvidenceExporter, IAlarmRecentCycleEvidenceExporter, IActiveCycleLimitConfigurator, IRecoverableCycleRecorder
 {
     private readonly EpbDiskWriter _writer;
 
@@ -3267,6 +3561,14 @@ public sealed class DiskWriterRecorderAdapter : IEpbCycleRecorder, ICountedBatch
 
     public void FlushRecentTo(int epbId, int lastNCycles, string exportDir, bool includeRunningCycle)
         => _writer.ExportLatestCyclesTo(epbId, Math.Max(1, lastNCycles), exportDir, includeRunningCycle);
+
+    public void FlushRecentForAlarm(int epbId, int lastNCycles, string exportDir, bool includeRunningCycle)
+        => _writer.ExportLatestCyclesTo(
+            epbId,
+            Math.Max(1, lastNCycles),
+            exportDir,
+            includeRunningCycle,
+            _writer.AlarmStorageLevel);
 
     public CycleSnapshotEvidence ExportCompletedCycleTo(
         int epbId,

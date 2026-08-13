@@ -124,6 +124,82 @@ namespace Controller
             }), "DaqRecoveryWatchdog");
         }
 
+        private void StartDaqPowerDisableDeadline(DaqAutoRecoveryContext context)
+        {
+            if (context == null || _powerSupply == null ||
+                ((context.PowerDisableTasksByGroup == null ||
+                  context.PowerDisableTasksByGroup.Count == 0) &&
+                 (context.PowerDisableTasks == null ||
+                  context.PowerDisableTasks.Length == 0)))
+                return;
+            ObserveBackgroundTask(Task.Run(async () =>
+            {
+                try
+                {
+                    await Task.Delay(
+                            PowerDisableHardDeadlineMs,
+                            context.Cancellation.Token)
+                        .ConfigureAwait(false);
+                    if (!IsCurrentRecovery(context)) return;
+
+                    var pendingGroups = (context.PowerDisableTasksByGroup ??
+                                         new Dictionary<int, Task>())
+                        .Where(pair => pair.Key > 0 &&
+                                       pair.Value != null &&
+                                       !pair.Value.IsCompleted)
+                        .Select(pair => pair.Key)
+                        .ToHashSet();
+                    // Backward-compatible safety for contexts built by an older call
+                    // site that only filled Task[].  New cutoff contexts always carry
+                    // the group map, so no group identity is invented here.
+                    var pendingTaskCount = pendingGroups.Count > 0
+                        ? pendingGroups.Count
+                        : (context.PowerDisableTasks ?? Array.Empty<Task>())
+                            .Count(task => task != null && !task.IsCompleted);
+                    var energizedGroups = (context.PowerDisableTasksByGroup ??
+                                           new Dictionary<int, Task>())
+                        .Where(pair => pair.Key > 0)
+                        .Select(pair => pair.Key)
+                        .Where(id =>
+                        {
+                            var state = _powerSupply.GetRuntimeState(id);
+                            return pendingGroups.Contains(id) ||
+                                   state.ExpectedOutputEnabled ||
+                                   state.TelemetryOutputEnabled ||
+                                   state.Active;
+                        })
+                        .OrderBy(id => id)
+                        .ToArray();
+                    if (energizedGroups.Length == 0 && pendingTaskCount == 0) return;
+
+                    if (Interlocked.Exchange(ref context.PowerDisableDeadlineLogged, 1) == 0)
+                    {
+                        _log.Error(
+                            $"DaqPowerDisableDeadlineExceeded Device={context.Device} " +
+                            $"RunId={context.RunId:N} RunEpoch={context.RunEpoch} " +
+                            $"CorrelationId={context.CorrelationId:N} " +
+                            $"PendingTasks={pendingTaskCount} " +
+                            $"EnergizedGroups=[{string.Join(",", energizedGroups)}] " +
+                            $"DeadlineMs={PowerDisableHardDeadlineMs} " +
+                            "ExternalRecoveryRequired=true；禁止继续在本进程重建DAQ。",
+                            "程控电源");
+                    }
+
+                    TryEscalateSoftwareRecoveryCircuitOpen(
+                        "DaqPowerDisableDeadline",
+                        $"Device={context.Device}; PendingTasks={pendingTaskCount}; " +
+                        $"EnergizedGroups=[{string.Join(",", energizedGroups)}]; " +
+                        "ExternalRecoveryRequired=true",
+                        context.AffectedChannels,
+                        context.RunId,
+                        context.RunEpoch,
+                        SoftwareRecoveryEscalationAttempts,
+                        "ExternalRecoveryRequired");
+                }
+                catch (OperationCanceledException) { }
+            }), "DaqPowerDisableDeadline");
+        }
+
         private async Task CancelAllDaqRecoveriesAsync(string reason)
         {
             DaqAutoRecoveryContext[] contexts;

@@ -29,6 +29,10 @@ namespace Controller
         private readonly int _timerRuntimeSilenceThresholdMs;
         private readonly ConcurrentDictionary<int, byte> _timerRuntimeRecoveries =
             new ConcurrentDictionary<int, byte>();
+        // 以 RunId/RunEpoch/Device/Correlation/Channel 组成一次性孤儿暂停身份。
+        // 旧任务迟到或新 Run 复用通道号时，不能再次创建第二个恢复 owner。
+        private readonly ConcurrentDictionary<string, byte> _orphanPauseRecoveryAttempts =
+            new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
         private int _timerRuntimeWatchdogBusy;
 
         private void AttachTimerRuntimeObserver(int channel, HighPrecisionTimer timer)
@@ -52,7 +56,12 @@ namespace Controller
                 "Timer");
 
             var current = _channelRuntimeStateStore.Get(channel);
-            if (current == null || !IsDisplayedAsRunning(current.State)) return;
+            if (current == null) return;
+            var pauseTransitionOwned =
+                (current.State == ChannelRuntimeState.PausePending ||
+                 current.State == ChannelRuntimeState.Recovering) &&
+                update.State == HighPrecisionTimerRuntimeState.Paused;
+            if (!IsDisplayedAsRunning(current.State) && !pauseTransitionOwned) return;
 
             if (ShouldAutoRecoverTimerAnomaly(
                     current.State,
@@ -80,7 +89,7 @@ namespace Controller
                     ChannelRuntimeState.PausePending,
                     "TimerPausePending",
                     $"控制定时器已收到暂停请求。Reason={update.Reason}",
-                    correlationId: _activeBatchId);
+                    correlationId: ResolveTimerRecoveryCorrelation(channel));
             }
             else if (update.State == HighPrecisionTimerRuntimeState.Paused)
             {
@@ -89,8 +98,18 @@ namespace Controller
                     ChannelRuntimeState.Paused,
                     "TimerPaused",
                     $"控制定时器已暂停。Reason={update.Reason}",
-                    correlationId: _activeBatchId);
+                    correlationId: ResolveTimerRecoveryCorrelation(channel));
             }
+        }
+
+        private Guid ResolveTimerRecoveryCorrelation(int channel)
+        {
+            var device = _acq.GetDeviceForEpbChannel(channel);
+            return !string.IsNullOrWhiteSpace(device) &&
+                   _daqAutoRecovery.TryGetValue(device, out var context) &&
+                   context != null && context.CorrelationId != Guid.Empty
+                ? context.CorrelationId
+                : _activeBatchId;
         }
 
         private void InspectTimerRuntimeHealth(object state)
@@ -107,6 +126,8 @@ namespace Controller
                     var channel = pair.Key;
                     var timer = pair.Value;
                     var runtime = _channelRuntimeStateStore.Get(channel);
+                    if (TryRecoverOrphanDaqPause(channel, timer, runtime, nowUtc))
+                        continue;
                     var decision = EvaluateTimerRuntimeHealth(
                         runtime?.State ?? ChannelRuntimeState.NotEnabled,
                         timer,
@@ -150,6 +171,126 @@ namespace Controller
             {
                 Volatile.Write(ref _timerRuntimeWatchdogBusy, 0);
             }
+        }
+
+        private bool TryRecoverOrphanDaqPause(
+            int channel,
+            HighPrecisionTimer timer,
+            ChannelRuntimeStateChangedEvent runtime,
+            DateTime nowUtc)
+        {
+            if (timer == null || runtime == null || !IsBatchSessionActive ||
+                CurrentBatchPauseState != BatchPauseState.Running ||
+                !IsChannelEnabled(channel) || IsAlarmStopRequested(channel) ||
+                _channelPausedUtc.ContainsKey(channel) ||
+                _manualStopRequestedChannels.ContainsKey(channel))
+                return false;
+            if (timer.RuntimeState != HighPrecisionTimerRuntimeState.PausePending &&
+                timer.RuntimeState != HighPrecisionTimerRuntimeState.Paused)
+                return false;
+            if (!IsIntentionalOrOwnedTimerPauseReason(timer.PauseReason) ||
+                timer.PauseReason.IndexOf("Daq", StringComparison.OrdinalIgnoreCase) < 0)
+                return false;
+            var pausedUtc = timer.PauseUtc;
+            if (!pausedUtc.HasValue ||
+                (nowUtc - pausedUtc.Value.ToUniversalTime()).TotalMilliseconds <
+                Math.Max(1000, _timerRuntimeSilenceThresholdMs))
+                return false;
+
+            var device = _acq.GetDeviceForEpbChannel(channel);
+            if (string.IsNullOrWhiteSpace(device)) return false;
+            if (_daqAutoRecovery.TryGetValue(device, out var existing) &&
+                existing != null && existing.Terminal.Current == DaqRecoveryTerminal.None)
+                return false;
+
+            var runId = _activeBatchId;
+            var runEpoch = Interlocked.Read(ref _runEpoch);
+            var correlationId = runtime.CorrelationId == Guid.Empty
+                ? runId
+                : runtime.CorrelationId;
+            var key =
+                $"{runId:N}:{runEpoch}:{device}:{correlationId:N}:{channel}";
+            if (!_orphanPauseRecoveryAttempts.TryAdd(key, 0)) return true;
+
+            var reason =
+                $"孤儿DAQ暂停：EPB[{channel}] Timer={timer.RuntimeState} " +
+                $"PauseReason={timer.PauseReason} PauseUtc={pausedUtc:O} " +
+                $"RunId={runId:N} RunEpoch={runEpoch} Device={device} " +
+                $"CorrelationId={correlationId:N}";
+            _log?.Error(
+                $"TimerOrphanPauseDetected Code=OrphanPauseRecoveryRequired {reason}",
+                "Timer");
+
+            try
+            {
+                ObserveBackgroundTask(
+                    BeginDaqAutoRecoveryAsync(
+                        device,
+                        "DaqOrphanPause",
+                        reason,
+                        correlationId,
+                        restartDaq: true,
+                        pausedUtc.Value),
+                    "DaqOrphanPauseRecovery",
+                    channel);
+
+                // 补建也可能在安全事务或恢复 owner 上永久等待。独立于恢复任务的
+                // 一次性期限观察者将其升级为 SystemFault/UnattendedBatchRecycle，
+                // 由主程序转发 ExternalRecoveryRequired 给进程看门狗。
+                ObserveBackgroundTask(Task.Run(async () =>
+                {
+                    try
+                    {
+                        await Task.Delay(
+                                Math.Max(_daqPersistenceRecoveryTimeoutMs,
+                                    _timerRuntimeSilenceThresholdMs),
+                                _batchSessionCts?.Token ?? CancellationToken.None)
+                            .ConfigureAwait(false);
+                        if (!IsBatchSessionActive || runId != _activeBatchId ||
+                            runEpoch != Interlocked.Read(ref _runEpoch)) return;
+                        var current = _channelRuntimeStateStore.Get(channel);
+                        if (current == null ||
+                            (current.State != ChannelRuntimeState.PausePending &&
+                             current.State != ChannelRuntimeState.Paused &&
+                             current.State != ChannelRuntimeState.Recovering)) return;
+                        if (!_daqAutoRecovery.TryGetValue(device, out var recovery) ||
+                            recovery == null || recovery.Terminal.Current != DaqRecoveryTerminal.None)
+                            return;
+                        TryEscalateSoftwareRecoveryCircuitOpen(
+                            "TimerOrphanPauseDeadline",
+                            $"{reason}; ExternalRecoveryRequired=true; " +
+                            $"DeadlineMs={_daqPersistenceRecoveryTimeoutMs}",
+                            recovery.AffectedChannels,
+                            runId,
+                            runEpoch,
+                            SoftwareRecoveryEscalationAttempts,
+                            "ExternalRecoveryRequired");
+                    }
+                    catch (OperationCanceledException) { }
+                    finally
+                    {
+                        _orphanPauseRecoveryAttempts.TryRemove(key, out _);
+                    }
+                }), "DaqOrphanPauseDeadline", channel);
+            }
+            catch (Exception ex)
+            {
+                _orphanPauseRecoveryAttempts.TryRemove(key, out _);
+                _log?.Error(
+                    $"Timer孤儿暂停补建投递失败；ExternalRecoveryRequired=true " +
+                    $"{reason} Error={ex.Message}",
+                    "Timer",
+                    ex);
+                TryEscalateSoftwareRecoveryCircuitOpen(
+                    "TimerOrphanPauseDispatchFailed",
+                    reason + "; ExternalRecoveryRequired=true; Error=" + ex.Message,
+                    new[] { channel },
+                    runId,
+                    runEpoch,
+                    SoftwareRecoveryEscalationAttempts,
+                    "ExternalRecoveryRequired");
+            }
+            return true;
         }
 
         internal static TimerRuntimeHealthDecision EvaluateTimerRuntimeHealth(

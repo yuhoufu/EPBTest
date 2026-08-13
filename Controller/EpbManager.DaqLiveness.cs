@@ -215,13 +215,16 @@ namespace Controller
                     $"RunEpoch={Interlocked.Read(ref _runEpoch)} ThresholdMs={_daqLivenessStaleThresholdMs:F0}",
                     "FIELD");
 
-                // 同一扫描中的设备先全部启动安全断能，再发布恢复，避免第一台的诊断工作
-                // 延迟另一台取得 OFF/电源关闭执行机会。
-                foreach (var incident in incidents)
-                    OnDaqDeviceFaultSafetyDetected(incident);
+                // 同一扫描中的设备直接通过统一事故入口提交，显式传递共享批次
+                // CorrelationId。安全事件与 publication 事件仍由入口幂等合并；这里
+                // 不再先用随机 correlation 提交、再用 batchCorrelation 补发，避免
+                // 双DAQ恢复上下文被拆成两个事故身份。
                 foreach (var incident in incidents)
                 {
-                    OnDaqDeviceFaultDetected(incident, batchCorrelation);
+                    PublishDaqRecoveryIncident(
+                        incident,
+                        batchCorrelation,
+                        fromSafetyEvent: true);
                     // 只有恢复上下文创建成功后才锁存代次并消费历史空窗；否则异常
                     // 会被外层隔离，下一次扫描仍可重试同一安全事件。
                     _daqLivenessLatchedGeneration[incident.Device] = incident.Generation;

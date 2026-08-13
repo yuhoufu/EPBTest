@@ -1592,9 +1592,17 @@ namespace Controller
                 var persistenceCommitted = false;
                 try
                 {
-                    if (TryConsumeDaqClockCycleAbort(channel, cycleNumber))
+                    if (TryConsumeDaqClockCycleAbort(
+                            cycleAttempt.RunId,
+                            cycleAttempt.RunEpoch,
+                            channel,
+                            cycleNumber))
                     {
-                        CommitExternallyAbortedCycleAttempt(cycleAttempt);
+                        AbortFormalCycleAttempt(
+                            cycleAttempt,
+                            recorder,
+                            DateTime.UtcNow,
+                            "AbortedBySoftwareRecovery");
                         _log?.Warn(
                             $"EPB[{channel}] 恢复正式周期 {cycleNumber} 已由DAQ流程封存，" +
                             "跳过重复终态提交。",

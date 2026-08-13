@@ -24,6 +24,9 @@
     <Reference Include="System" /><Reference Include="System.Core" />
     <Reference Include="System.Web.Extensions" />
   </ItemGroup>
-  <ItemGroup><Compile Include="WatchdogProtocol.cs" /></ItemGroup>
+  <ItemGroup>
+    <Compile Include="WatchdogProtocol.cs" />
+    <Compile Include="WatchdogPolicy.cs" />
+  </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>

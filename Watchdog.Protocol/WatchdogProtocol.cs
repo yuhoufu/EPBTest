@@ -18,6 +18,7 @@ namespace MTTFTest.Watchdog.Protocol
         public const string Attach = "Attach";
         public const string Attached = "Attached";
         public const string Heartbeat = "Heartbeat";
+        public const string HeartbeatAck = "HeartbeatAck";
         public const string Ping = "Ping";
         public const string Pong = "Pong";
         public const string ExternalRecoveryRequired = "ExternalRecoveryRequired";
@@ -37,6 +38,11 @@ namespace MTTFTest.Watchdog.Protocol
         public string SessionId { get; set; }
         public string CorrelationId { get; set; }
         public string Reason { get; set; }
+        /// <summary>
+        /// Heartbeat sequence acknowledged by the sidecar.  It is deliberately
+        /// additive so old binaries can continue to deserialize the protocol.
+        /// </summary>
+        public long AckSequence { get; set; }
         public WatchdogRunSession Session { get; set; }
         public WatchdogHeartbeat Heartbeat { get; set; }
         public WatchdogStopSummary StopSummary { get; set; }
@@ -69,10 +75,25 @@ namespace MTTFTest.Watchdog.Protocol
         public int[] EligibleChannels { get; set; } = Array.Empty<int>();
         public int[] CompletedChannels { get; set; } = Array.Empty<int>();
         public int[] AlarmedChannels { get; set; } = Array.Empty<int>();
+        /// <summary>结构化硬件锁存通道；Watchdog只排除这一集合。</summary>
+        public int[] PermanentAlarmedChannels { get; set; } = Array.Empty<int>();
+        /// <summary>主程序已完成资格筛选、允许恢复的通道。</summary>
+        public int[] RecoveryEligibleChannels { get; set; } = Array.Empty<int>();
         public int[] ManuallyDisabledChannels { get; set; } = Array.Empty<int>();
         public bool RecoveryActive { get; set; }
         public string RecoveryCode { get; set; }
         public string RecoveryStage { get; set; }
+        public string RecoveryIncident { get; set; }
+        public string RecoveryContext { get; set; }
+        public int StageOrdinal { get; set; }
+        public bool OrphanPaused { get; set; }
+        public bool PowerDisablePending { get; set; }
+        /// <summary>
+        /// UTC DateTime ticks.  A process-local Stopwatch value cannot be
+        /// compared across the main process and the sidecar.
+        /// </summary>
+        public long PauseSince { get; set; }
+        public long PowerDisableSince { get; set; }
         public long RecoveryProgressVersion { get; set; }
         public long StageStartedMonotonic { get; set; }
         public long Dev1CallbackGapCount { get; set; }

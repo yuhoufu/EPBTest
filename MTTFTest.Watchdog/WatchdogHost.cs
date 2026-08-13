@@ -23,6 +23,11 @@ namespace MTTFTest.Watchdog
         public bool ManualStopRequested { get; set; }
         public string State { get; set; }
         public string LastReason { get; set; }
+        public long LastHeartbeatSequence { get; set; }
+        public long LastHeartbeatAckSequence { get; set; }
+        public long LastHeartbeatUtcTicks { get; set; }
+        public bool OrphanPauseTriggered { get; set; }
+        public bool PowerDisableTriggered { get; set; }
         public string UpdatedUtc { get; set; }
         public WatchdogHeartbeat LastHeartbeat { get; set; }
     }
@@ -68,11 +73,14 @@ namespace MTTFTest.Watchdog
         private readonly WatchdogArguments _args;
         private readonly object _gate = new object();
         private readonly CancellationTokenSource _stop = new CancellationTokenSource();
+        private readonly object _journalGate = new object();
         private StreamWriter _writer;
         private WatchdogJournal _journal;
         private long _lastHeartbeatTimestamp = Stopwatch.GetTimestamp();
         private long _lastProgressTimestamp = Stopwatch.GetTimestamp();
         private long _lastProgressVersion;
+        private long _lastHeartbeatSequence;
+        private long _lastHeartbeatAckSequence;
         private int _takeoverStarted;
         private int _relaunchStarted;
         private bool _attached;
@@ -166,6 +174,13 @@ namespace MTTFTest.Watchdog
             switch (message.Type)
             {
                 case WatchdogMessageType.Attach:
+                    if (IsSessionRevoked())
+                    {
+                        _journal.ManualStopRequested = true;
+                        Record("SessionRevoked", "AttachRevocationMarker");
+                        _stop.Cancel();
+                        break;
+                    }
                     if (message.Session != null)
                     {
                         _journal.CurrentPid = message.Session.ProcessId;
@@ -176,6 +191,10 @@ namespace MTTFTest.Watchdog
                     _attached = true;
                     _takeoverStarted = 0;
                     _relaunchStarted = 0;
+                    _lastProgressVersion = 0;
+                    Interlocked.Exchange(ref _lastProgressTimestamp, Stopwatch.GetTimestamp());
+                    _journal.OrphanPauseTriggered = false;
+                    _journal.PowerDisableTriggered = false;
                     Interlocked.Exchange(ref _lastHeartbeatTimestamp, Stopwatch.GetTimestamp());
                     Record("Attached", message.Session?.RecoveryProcess == true ? "RecoveryProcess" : "MainProcess");
                     Send(WatchdogMessageType.Attached, "Attached", message.CorrelationId);
@@ -186,6 +205,9 @@ namespace MTTFTest.Watchdog
                     _journal.CurrentPid = message.Heartbeat.ProcessId;
                     _journal.CurrentProcessStartUtcTicks = message.Heartbeat.ProcessStartUtcTicks;
                     _journal.LastHeartbeat = message.Heartbeat;
+                    _lastHeartbeatSequence = message.Heartbeat.Sequence;
+                    _journal.LastHeartbeatSequence = message.Heartbeat.Sequence;
+                    _journal.LastHeartbeatUtcTicks = DateTime.UtcNow.Ticks;
                     Interlocked.Exchange(ref _lastHeartbeatTimestamp, Stopwatch.GetTimestamp());
                     if (message.Heartbeat.RecoveryProgressVersion != _lastProgressVersion)
                     {
@@ -193,6 +215,15 @@ namespace MTTFTest.Watchdog
                         Interlocked.Exchange(ref _lastProgressTimestamp, Stopwatch.GetTimestamp());
                     }
                     SaveJournal();
+                    _lastHeartbeatAckSequence = message.Heartbeat.Sequence;
+                    _journal.LastHeartbeatAckSequence = _lastHeartbeatAckSequence;
+                    Send(new WatchdogMessage
+                    {
+                        Type = WatchdogMessageType.HeartbeatAck,
+                        SessionId = _args.SessionId,
+                        AckSequence = message.Heartbeat.Sequence,
+                        CorrelationId = message.CorrelationId
+                    });
                     if (_journal.ManualStopRequested && !message.Heartbeat.RunActive)
                         _stop.Cancel();
                     break;
@@ -208,6 +239,11 @@ namespace MTTFTest.Watchdog
                 case WatchdogMessageType.ManualStopRequested:
                     _journal.ManualStopRequested = true;
                     Record("ManualStopRequested", message.Reason);
+                    // 人工停止已由主程序先写入跨进程撤权标记。Watchdog 此时的
+                    // 唯一职责是永久放弃本 Session 的 Kill/重启资格，不应再等待
+                    // StopAll 的持久化或逻辑收口；否则 StopAll 自身卡住会遗留一个
+                    // 没有任何作用的后台 sidecar。主程序继续独立执行幂等 StopAll。
+                    _stop.Cancel();
                     break;
                 case WatchdogMessageType.RunStopped:
                 case WatchdogMessageType.RunCompleted:
@@ -229,19 +265,47 @@ namespace MTTFTest.Watchdog
                 {
                     await Task.Delay(250, token).ConfigureAwait(false);
                     if (!_attached || _journal.ManualStopRequested) continue;
+                    if (IsSessionRevoked())
+                    {
+                        _journal.ManualStopRequested = true;
+                        Record("SessionRevoked", "RevocationMarker");
+                        _stop.Cancel();
+                        continue;
+                    }
                     var heartbeatAge = ElapsedSeconds(Interlocked.Read(ref _lastHeartbeatTimestamp));
                     if (heartbeatAge >= 3 && heartbeatAge < 5)
                         Send(WatchdogMessageType.Ping, "HeartbeatSuspect", null);
-                    if (heartbeatAge >= 5 || !IsCurrentProcessAlive())
-                    {
-                        BeginTakeover(heartbeatAge >= 5 ? "HeartbeatUnresponsive" : "ProcessExitedUnexpectedly");
-                        continue;
-                    }
                     var heartbeat = _journal.LastHeartbeat;
-                    if (heartbeat?.RecoveryActive == true &&
-                        heartbeat.EligibleChannels != null && heartbeat.EligibleChannels.Length > 0 &&
-                        ElapsedSeconds(Interlocked.Read(ref _lastProgressTimestamp)) >= 60)
-                        BeginTakeover("ExternalRecoveryStageStalled");
+                    var eligibleChannels = GetRecoveryEligibleChannels(heartbeat);
+                    var processAlive = IsCurrentProcessAlive();
+                    var stageSinceUtc = heartbeat?.PowerDisablePending == true && heartbeat.PowerDisableSince > 0
+                        ? heartbeat.PowerDisableSince
+                        : heartbeat?.PauseSince ?? 0;
+                    var stageAgeSeconds = stageSinceUtc > 0
+                        ? Math.Max(0, (DateTime.UtcNow.Ticks - stageSinceUtc) / (double)TimeSpan.TicksPerSecond)
+                        : ElapsedSeconds(Interlocked.Read(ref _lastProgressTimestamp));
+                    var shouldTakeover = WatchdogTakeoverPolicy.ShouldTakeover(
+                        IsSessionRevoked(),
+                        _journal.ManualStopRequested,
+                        Interlocked.CompareExchange(ref _takeoverStarted, 0, 0) != 0,
+                        processAlive,
+                        heartbeatAge,
+                        heartbeat?.RecoveryActive == true,
+                        heartbeat?.OrphanPaused == true,
+                        heartbeat?.PowerDisablePending == true,
+                        stageAgeSeconds,
+                        eligibleChannels.Length > 0);
+                    if (shouldTakeover)
+                    {
+                        var reason = !processAlive || heartbeatAge >= 5
+                            ? (heartbeatAge >= 5 ? "HeartbeatUnresponsive" : "ProcessExitedUnexpectedly")
+                            : heartbeat?.PowerDisablePending == true && stageAgeSeconds >= 5
+                                ? "PowerDisablePendingTimeout"
+                                : heartbeat?.OrphanPaused == true && stageAgeSeconds >= 5
+                                    ? "OrphanPausedTimeout"
+                                    : "ExternalRecoveryStageStalled";
+                        BeginTakeover(reason);
+                    }
                 }
                 catch (OperationCanceledException) { break; }
                 catch (Exception ex) { Record("MonitorError", ex.Message); }
@@ -250,7 +314,8 @@ namespace MTTFTest.Watchdog
 
         private void BeginTakeover(string reason)
         {
-            if (_journal.ManualStopRequested || Interlocked.CompareExchange(ref _takeoverStarted, 1, 0) != 0) return;
+            if (_journal.ManualStopRequested || IsSessionRevoked() ||
+                Interlocked.CompareExchange(ref _takeoverStarted, 1, 0) != 0) return;
             Record("TakeoverRequested", reason);
             Send(WatchdogMessageType.RequestStopAll, reason, Guid.NewGuid().ToString("N"));
             _ = Task.Run(() => TakeoverAsync(reason));
@@ -259,19 +324,22 @@ namespace MTTFTest.Watchdog
         private async Task TakeoverAsync(string reason)
         {
             var deadline = DateTime.UtcNow.AddSeconds(15);
-            while (!_journal.ManualStopRequested && DateTime.UtcNow < deadline)
+            while (!_journal.ManualStopRequested && !IsSessionRevoked() && DateTime.UtcNow < deadline)
             {
                 if (!IsCurrentProcessAlive()) break;
                 await Task.Delay(250).ConfigureAwait(false);
             }
-            if (_journal.ManualStopRequested) return;
-            if (IsCurrentProcessAlive())
+            if (_journal.ManualStopRequested || IsSessionRevoked()) return;
+            if (!IsSessionRevoked() && !_journal.ManualStopRequested && IsCurrentProcessAlive())
             {
                 try
                 {
                     using (var process = Process.GetProcessById(_journal.CurrentPid))
                     {
-                        if (MatchesCurrentProcess(process))
+                        if (WatchdogProcessIdentityPolicy.CanKillOldProcess(
+                                IsSessionRevoked(),
+                                _journal.ManualStopRequested,
+                                MatchesCurrentProcess(process)))
                         {
                             process.Kill();
                             process.WaitForExit(5000);
@@ -286,31 +354,48 @@ namespace MTTFTest.Watchdog
 
         private void BeginRelaunchAfterExit()
         {
-            if (_journal.ManualStopRequested) return;
+            if (_journal.ManualStopRequested || IsSessionRevoked()) return;
             _ = Task.Run(async () =>
             {
                 var deadline = DateTime.UtcNow.AddSeconds(15);
-                while (DateTime.UtcNow < deadline && IsCurrentProcessAlive())
+                while (DateTime.UtcNow < deadline && !IsSessionRevoked() && IsCurrentProcessAlive())
                     await Task.Delay(250).ConfigureAwait(false);
-                if (IsCurrentProcessAlive())
+                if (!IsSessionRevoked() && !_journal.ManualStopRequested && IsCurrentProcessAlive())
                 {
-                    try { Process.GetProcessById(_journal.CurrentPid).Kill(); } catch { }
+                    try
+                    {
+                        using (var process = Process.GetProcessById(_journal.CurrentPid))
+                        {
+                            var canKill = WatchdogProcessIdentityPolicy.CanKillOldProcess(
+                                IsSessionRevoked(),
+                                _journal.ManualStopRequested,
+                                MatchesCurrentProcess(process));
+                            if (canKill)
+                            {
+                                process.Kill();
+                                process.WaitForExit(5000);
+                                Record("OldProcessTerminated", "StopCompleted");
+                            }
+                        }
+                    }
+                    catch (Exception ex) { Record("OldProcessTerminationFailed", ex.Message); }
                 }
-                await RelaunchLoopAsync("StopCompleted").ConfigureAwait(false);
+                if (!_journal.ManualStopRequested && !IsSessionRevoked())
+                    await RelaunchLoopAsync("StopCompleted").ConfigureAwait(false);
             });
         }
 
         private async Task RelaunchLoopAsync(string reason)
         {
             if (Interlocked.CompareExchange(ref _relaunchStarted, 1, 0) != 0) return;
-            while (!_journal.ManualStopRequested && !_stop.IsCancellationRequested)
+            while (!_journal.ManualStopRequested && !IsSessionRevoked() && !_stop.IsCancellationRequested)
             {
                 _journal.RecoveryAttempt++;
                 var attempt = _journal.RecoveryAttempt;
                 var delay = attempt == 1 ? 5 : attempt == 2 ? 15 : attempt == 3 ? 30 : 60;
                 Record("RecoveryBackoff", $"Attempt={attempt};DelaySeconds={delay};Reason={reason}");
                 await Task.Delay(TimeSpan.FromSeconds(delay)).ConfigureAwait(false);
-                if (_journal.ManualStopRequested) return;
+                if (_journal.ManualStopRequested || IsSessionRevoked()) return;
                 try
                 {
                     var previousPid = _journal.CurrentPid;
@@ -319,6 +404,7 @@ namespace MTTFTest.Watchdog
                     // 与人工禁用和已完成通道一起排除。
                     var excluded = (_journal.LastHeartbeat?.ManuallyDisabledChannels ?? Array.Empty<int>())
                         .Concat(_journal.LastHeartbeat?.CompletedChannels ?? Array.Empty<int>())
+                        .Concat(_journal.LastHeartbeat?.PermanentAlarmedChannels ?? Array.Empty<int>())
                         .Distinct()
                         .OrderBy(channel => channel)
                         .ToArray();
@@ -334,13 +420,16 @@ namespace MTTFTest.Watchdog
                         UseShellExecute = false
                     });
                     if (started == null) throw new InvalidOperationException("Process.Start returned null.");
-                    _journal.CurrentPid = started.Id;
-                    _journal.CurrentProcessStartUtcTicks = started.StartTime.ToUniversalTime().Ticks;
+                        _journal.CurrentPid = started.Id;
+                        _journal.CurrentProcessStartUtcTicks = started.StartTime.ToUniversalTime().Ticks;
+                        _journal.OrphanPauseTriggered = false;
+                        _journal.PowerDisableTriggered = false;
                     _attached = false;
                     Interlocked.Exchange(ref _lastHeartbeatTimestamp, Stopwatch.GetTimestamp());
                     Record("RecoveryProcessLaunched", $"PID={started.Id};Attempt={attempt}");
                     var attachDeadline = DateTime.UtcNow.AddSeconds(20);
-                    while (!_attached && !_journal.ManualStopRequested && DateTime.UtcNow < attachDeadline && !started.HasExited)
+                    while (!_attached && !_journal.ManualStopRequested && !IsSessionRevoked() &&
+                           DateTime.UtcNow < attachDeadline && !started.HasExited)
                         await Task.Delay(250).ConfigureAwait(false);
                     if (_attached)
                     {
@@ -362,19 +451,76 @@ namespace MTTFTest.Watchdog
             catch { return false; }
         }
 
+        private static int[] GetRecoveryEligibleChannels(WatchdogHeartbeat heartbeat)
+        {
+            if (heartbeat == null) return Array.Empty<int>();
+            // New clients publish the post-policy set.  Older clients only
+            // have EligibleChannels, which remains a compatibility fallback.
+            return heartbeat.RecoveryEligibleChannels != null && heartbeat.RecoveryEligibleChannels.Length > 0
+                ? heartbeat.RecoveryEligibleChannels
+                : heartbeat.EligibleChannels ?? Array.Empty<int>();
+        }
+
+        private bool IsSessionRevoked()
+        {
+            try
+            {
+                var directory = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "MTTFTest", "Watchdog");
+                return File.Exists(Path.Combine(directory, "session-" + SafeName(_args.SessionId) + ".revoked"));
+            }
+            catch { return false; }
+        }
+
         private bool MatchesCurrentProcess(Process process)
         {
-            try { return process.StartTime.ToUniversalTime().Ticks == _journal.CurrentProcessStartUtcTicks; }
+            try
+            {
+                return WatchdogProcessIdentityPolicy.Matches(
+                    _journal.CurrentPid,
+                    _journal.CurrentProcessStartUtcTicks,
+                    process.Id,
+                    process.StartTime.ToUniversalTime().Ticks);
+            }
             catch { return false; }
         }
 
         private void Send(string type, string reason, string correlationId)
         {
+            Send(new WatchdogMessage
+            {
+                Type = type,
+                SessionId = _args.SessionId,
+                Reason = reason,
+                CorrelationId = correlationId
+            });
+        }
+
+        private void Send(WatchdogMessage message)
+        {
+            StreamWriter writer;
             lock (_gate)
             {
-                if (_writer == null) return;
-                try { _writer.WriteLine(WatchdogProtocol.Serialize(new WatchdogMessage { Type = type, SessionId = _args.SessionId, Reason = reason, CorrelationId = correlationId })); }
-                catch { }
+                writer = _writer;
+            }
+            if (writer == null) return;
+            try
+            {
+                lock (_gate)
+                {
+                    if (!ReferenceEquals(_writer, writer)) return;
+                    writer.WriteLine(WatchdogProtocol.Serialize(message));
+                }
+            }
+            catch (Exception ex)
+            {
+                // A failed write is a transport state transition, not a
+                // best-effort notification.  The main process has its own
+                // ACK monitor; recording here makes the sidecar failure
+                // diagnosable even when the pipe is already gone.
+                Record("SendFailed", (message?.Type ?? "Unknown") + ":" + ex.GetBaseException().Message);
+                lock (_gate) if (ReferenceEquals(_writer, writer)) _writer = null;
             }
         }
 
@@ -389,15 +535,18 @@ namespace MTTFTest.Watchdog
         {
             try
             {
-                _journal.UpdatedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+                lock (_journalGate)
+                    _journal.UpdatedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
                 var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MTTFTest", "Watchdog");
                 Directory.CreateDirectory(directory);
                 var path = Path.Combine(directory, "session-" + SafeName(_args.SessionId) + ".json");
-                var temporary = path + ".tmp";
-                File.WriteAllText(temporary, Json.Serialize(_journal), new UTF8Encoding(false));
+                var temporary = path + ".tmp-" + Guid.NewGuid().ToString("N");
+                string content;
+                lock (_journalGate) content = Json.Serialize(_journal);
+                File.WriteAllText(temporary, content, new UTF8Encoding(false));
                 if (File.Exists(path)) File.Replace(temporary, path, null); else File.Move(temporary, path);
             }
-            catch { }
+            catch (Exception ex) { WriteEmergencyLog("JournalSaveFailed: " + ex); }
         }
 
         private static double ElapsedSeconds(long since) => (Stopwatch.GetTimestamp() - since) / (double)Stopwatch.Frequency;

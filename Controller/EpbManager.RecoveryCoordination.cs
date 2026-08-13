@@ -139,6 +139,8 @@ namespace Controller
         private const int RecoveryStageTimeoutMs = 15_000;
         private const int RecoveryMechanicalReleaseTimeoutMs = 20_000;
         internal const int RecoveryGroupHardDeadlineMs = 60_000;
+        // 电源OFF是物理安全动作，必须比数据恢复硬期限更短并独立留证。
+        internal const int PowerDisableHardDeadlineMs = 5_000;
         internal const int SoftwareRecoveryEscalationAttempts = 3;
         public const int UnattendedProcessRestartBudget = 3;
 
@@ -1315,10 +1317,11 @@ namespace Controller
                 return;
             }
 
-            var lifecycleKey = DaqAbortedCycleKey(channel, update.CycleNumber);
+            var expectedRunEpoch = Interlocked.Read(ref _runEpoch);
+            var lifecycleKey = ((long)channel << 32) |
+                               (uint)update.CycleNumber;
             if (!_activeCycleLimitRecoveries.TryAdd(lifecycleKey, 0)) return;
 
-            var expectedRunEpoch = Interlocked.Read(ref _runEpoch);
             var hydraulicGroupId = GetHydraulicGroupForChannel(channel);
             HydraulicRecoveryOwnershipCoordinator.HydraulicRecoveryOwnershipLease lease = null;
             try

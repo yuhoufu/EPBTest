@@ -61,6 +61,14 @@ namespace MtEmbTest
                     return;
                 }
 
+                // 恢复进程不会再次经过“点击开始”的 BatchGuard；必须在重新附着
+                // 原 Watchdog Session 前恢复封存目录，保证多次接管后的 Journal
+                // 仍落到当前项目数据目录，而不是只留在 LocalAppData。
+                WatchdogRuntime.ConfigureJournalExportPath(
+                    System.IO.Path.Combine(
+                        checkpoint.StoreDir ?? string.Empty,
+                        checkpoint.TestName ?? string.Empty,
+                        "WatchdogSessions"));
                 await WatchdogRuntime.AttachRecoverySessionAsync(
                     intent,
                     checkpoint.SelectedChannels).ConfigureAwait(true);

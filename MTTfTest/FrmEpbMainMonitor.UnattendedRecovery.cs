@@ -28,6 +28,35 @@ namespace MTEmbTest
             WatchdogRuntime.StopAllRequested -= OnWatchdogStopAllRequested;
             WatchdogRuntime.StopAllRequested += OnWatchdogStopAllRequested;
             WatchdogRuntime.SetHeartbeatProvider(CreateWatchdogHeartbeat);
+            WatchdogRuntime.TransportLost -= OnWatchdogTransportLost;
+            WatchdogRuntime.TransportLost += OnWatchdogTransportLost;
+            WatchdogRuntime.TransportError -= OnWatchdogTransportError;
+            WatchdogRuntime.TransportError += OnWatchdogTransportError;
+        }
+
+        private void OnWatchdogTransportLost(string reason, string detail)
+        {
+            ProjectLogHub.Write(
+                ProjectLogLevel.Error,
+                $"FIELD WatchdogTransportLost Reason={reason};Detail={detail}",
+                "独立看门狗");
+        }
+
+        private void OnWatchdogTransportError(string reason, string detail)
+        {
+            ProjectLogHub.Write(
+                ProjectLogLevel.Warning,
+                $"FIELD WatchdogTransportError Reason={reason};Detail={detail}",
+                "独立看门狗");
+        }
+
+        private int[] CapturePermanentAlarmedChannels()
+        {
+            return (_epb?.CaptureWatchdogPermanentAlarmedChannels() ?? Array.Empty<int>())
+                .Where(channel => channel >= 1 && channel <= 12)
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
         }
 
         private WatchdogHeartbeat CreateWatchdogHeartbeat()
@@ -41,11 +70,28 @@ namespace MTEmbTest
                                             x.State == ChannelRuntimeState.InterlockStopped ||
                                             x.State == ChannelRuntimeState.StartBlocked)
                 .Select(x => x.Channel).Distinct().OrderBy(x => x).ToArray();
+            var permanentAlarmed = CapturePermanentAlarmedChannels();
             var manuallyDisabled = states.Where(x => !x.Enabled ||
                                                       x.State == ChannelRuntimeState.ManualStopped ||
                                                       x.State == ChannelRuntimeState.NotEnabled)
                 .Select(x => x.Channel).Distinct().OrderBy(x => x).ToArray();
-            var eligible = enabled.Except(completed).Except(alarmed).Except(manuallyDisabled).ToArray();
+            var recoveryEvidence = CaptureWatchdogRecoveryEvidence();
+            // AlarmedChannels is diagnostic only.  The sidecar must not infer
+            // permanence from a UI state; the controller publishes the
+            // structured hardware latch through the controller-owned snapshot API.
+            // RecoveryEligibleChannels is the complete candidate set for a
+            // process takeover: all selected enabled channels minus durable
+            // completion, permanent hardware latches and explicit manual
+            // exclusions.  ExpectedRecoveryChannels in the DAQ snapshot is
+            // only the context that triggered recovery, not a reason to drop
+            // unrelated healthy channels from the new process.
+            var eligible = enabled
+                .Except(completed)
+                .Except(permanentAlarmed)
+                .Except(manuallyDisabled)
+                .Distinct()
+                .OrderBy(x => x)
+                .ToArray();
             var recovering = states.Where(x => x.State == ChannelRuntimeState.Recovering ||
                                                 x.State == ChannelRuntimeState.Paused ||
                                                 x.State == ChannelRuntimeState.PausePending ||
@@ -55,12 +101,23 @@ namespace MTEmbTest
             var storage = _epb?.CaptureWatchdogStorageSnapshot();
             var gracefulPaused = _epb?.CurrentBatchPauseState == BatchPauseState.Paused ||
                                  _epb?.CurrentBatchPauseState == BatchPauseState.PausePending;
-            var progressSignature = string.Join("|", recovering.Select(state =>
-                $"{state.Channel}:{state.State}:{state.ReasonCode}:{state.Revision}")) +
-                $"|D={logical?.DaqRecoveryCount ?? 0}|S={logical?.SoftwareRecoveryCount ?? 0}" +
-                $"|O={logical?.RecoveryOwnerCount ?? 0}" +
-                $"|P1={storage?.Dev1?.Persisted ?? 0}|Q1={storage?.Dev1?.QueueDepth ?? 0}" +
-                $"|P2={storage?.Dev2?.Persisted ?? 0}|Q2={storage?.Dev2?.QueueDepth ?? 0}";
+            var orphanPaused = !gracefulPaused && recoveryEvidence.OrphanPaused;
+            var powerDisablePending = !gracefulPaused && recoveryEvidence.PowerDisablePending;
+            var pauseSince = recoveryEvidence.PauseSince;
+            var recoveryIncident = recoveryEvidence.Incident;
+            var recoveryContext = recoveryEvidence.Context;
+            var stageOrdinal = recoveryEvidence.StageOrdinal;
+            var progressSignature = RecoveryProgressSignature.Build(
+                recovering.Select(state =>
+                    $"{state.Channel}:{state.State}:{state.ReasonCode}:{state.Revision}"),
+                logical?.DaqRecoveryCount ?? 0,
+                logical?.SoftwareRecoveryCount ?? 0,
+                logical?.RecoveryOwnerCount ?? 0,
+                stageOrdinal,
+                recoveryIncident,
+                recoveryContext,
+                orphanPaused,
+                powerDisablePending);
             lock (_watchdogProgressGate)
             {
                 if (!string.Equals(
@@ -84,16 +141,23 @@ namespace MTEmbTest
                 Phase = phase,
                 EnabledChannels = enabled,
                 EligibleChannels = eligible,
+                RecoveryEligibleChannels = eligible,
                 CompletedChannels = completed,
                 AlarmedChannels = alarmed,
+                PermanentAlarmedChannels = permanentAlarmed,
                 ManuallyDisabledChannels = manuallyDisabled,
-                RecoveryActive = !gracefulPaused &&
-                                 (recovering.Length > 0 || (logical?.DaqRecoveryCount ?? 0) > 0 ||
-                                  (logical?.SoftwareRecoveryCount ?? 0) > 0),
+                RecoveryActive = !gracefulPaused && recoveryEvidence.Active,
                 RecoveryCode = gracefulPaused
                     ? "ManualGracefulPause"
                     : recovering.FirstOrDefault()?.ReasonCode ?? string.Empty,
                 RecoveryStage = recovering.FirstOrDefault()?.State.ToString() ?? string.Empty,
+                RecoveryIncident = recoveryIncident,
+                RecoveryContext = recoveryContext,
+                StageOrdinal = stageOrdinal,
+                OrphanPaused = orphanPaused,
+                PowerDisablePending = powerDisablePending,
+                PauseSince = pauseSince,
+                PowerDisableSince = recoveryEvidence.PowerDisableSince,
                 RecoveryProgressVersion = Interlocked.Read(ref _watchdogRecoveryProgressVersion),
                 StageStartedMonotonic = Interlocked.Read(ref _watchdogStageStartedTicks),
                 DaqRecoveryCount = logical?.DaqRecoveryCount ?? 0,
@@ -135,6 +199,46 @@ namespace MTEmbTest
                 RunActive = _epb?.IsBatchSessionActive ?? false
             };
         }
+
+        private sealed class WatchdogRecoveryEvidence
+        {
+            public bool OrphanPaused;
+            public bool PowerDisablePending;
+            public long PauseSince;
+            public long PowerDisableSince;
+            public string Incident = string.Empty;
+            public string Context = string.Empty;
+            public int StageOrdinal;
+            public bool Active;
+        }
+
+        private WatchdogRecoveryEvidence CaptureWatchdogRecoveryEvidence()
+        {
+            var result = new WatchdogRecoveryEvidence();
+            try
+            {
+                var snapshot = _epb?.CaptureWatchdogRecoverySnapshot();
+                if (snapshot == null) return result;
+                result.OrphanPaused = snapshot.OrphanPaused;
+                result.PowerDisablePending = snapshot.PowerDisablePending;
+                result.PauseSince = snapshot.PauseSinceUtcTicks;
+                result.PowerDisableSince = snapshot.PowerDisableSinceUtcTicks;
+                result.Incident = snapshot.RecoveryIncident ?? string.Empty;
+                result.Context = snapshot.RecoveryContext ?? string.Empty;
+                result.StageOrdinal = snapshot.StageOrdinal;
+                result.Active = snapshot.ActiveRecovery;
+            }
+            catch (Exception ex)
+            {
+                ProjectLogHub.Write(
+                    ProjectLogLevel.Warning,
+                    "读取结构化Watchdog恢复快照失败；不根据界面状态猜测孤儿暂停或电源待断。",
+                    "独立看门狗",
+                    ex);
+            }
+            return result;
+        }
+
 
         private void OnWatchdogStopAllRequested(string reason, string correlationId)
         {
@@ -349,7 +453,6 @@ namespace MTEmbTest
         private void UpdateUnattendedRunAuthorization(ChannelRuntimeStateChangedEvent state)
         {
             if (state == null || _cfg?.Test == null) return;
-            Interlocked.Increment(ref _watchdogRecoveryProgressVersion);
             if (state.State == ChannelRuntimeState.Starting)
             {
                 var pending = UnattendedRunCheckpointStore.Load();
@@ -373,13 +476,23 @@ namespace MTEmbTest
             if (checkpoint == null || !checkpoint.Armed || checkpoint.SelectedChannels == null) return;
             lock (_channelRuntimeStates)
             {
-                if (checkpoint.SelectedChannels.All(channel =>
+                var permanent = new HashSet<int>(CapturePermanentAlarmedChannels());
+                var manuallyExcluded = new HashSet<int>(
+                    _channelRuntimeStates.Values
+                        .Where(current => !current.Enabled ||
+                                          current.State == ChannelRuntimeState.ManualStopped ||
+                                          current.State == ChannelRuntimeState.NotEnabled)
+                        .Select(current => current.Channel));
+                var completionSet = checkpoint.SelectedChannels
+                    .Where(channel => !permanent.Contains(channel) && !manuallyExcluded.Contains(channel))
+                    .ToArray();
+                if (completionSet.Length > 0 && completionSet.All(channel =>
                         _channelRuntimeStates.TryGetValue(channel, out var current) &&
                         current.State == ChannelRuntimeState.Completed))
                     UnattendedRunCheckpointStore.DisarmIfRunMatches(
                         state.RunId.ToString("N"),
                         "FormalRunCompleted");
-                if (checkpoint.SelectedChannels.All(channel =>
+                if (completionSet.Length > 0 && completionSet.All(channel =>
                         _channelRuntimeStates.TryGetValue(channel, out var finished) &&
                         finished.State == ChannelRuntimeState.Completed))
                 {
@@ -548,6 +661,8 @@ namespace MTEmbTest
         protected override void OnFormClosing(System.Windows.Forms.FormClosingEventArgs e)
         {
             WatchdogRuntime.StopAllRequested -= OnWatchdogStopAllRequested;
+            WatchdogRuntime.TransportLost -= OnWatchdogTransportLost;
+            WatchdogRuntime.TransportError -= OnWatchdogTransportError;
             // Watchdog recovery children may close after a failed takeover and must leave
             // the session armed so the sidecar can retry. Manual stop/application closing
             // have already revoked authorization through their explicit lifecycle paths.

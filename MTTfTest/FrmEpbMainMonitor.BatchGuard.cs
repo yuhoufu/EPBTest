@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -152,6 +153,16 @@ namespace MTEmbTest
 
                 if (!unattendedRecovery && !WatchdogRuntime.IsAttached)
                 {
+                    try
+                    {
+                        WatchdogRuntime.ConfigureJournalExportPath(
+                            Path.Combine(_cfg.Test.StoreDir, _cfg.Test.TestName, "WatchdogSessions"));
+                    }
+                    catch (Exception exportPathError)
+                    {
+                        LogInfo("独立看门狗Journal封存路径配置失败；不阻止试验启动：" +
+                            exportPathError.GetBaseException().Message);
+                    }
                     var watchdogChannels = Enumerable.Range(1, 12)
                         .Where(channel => EpbGroup[channel - 1]?.CtrlJoinTest?.Checked == true)
                         .ToArray();

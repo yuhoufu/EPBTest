@@ -224,6 +224,37 @@ namespace Controller
         public WatchdogDeviceStorageSnapshot Dev2 { get; set; }
     }
 
+    /// <summary>
+    /// Controller 权威恢复快照。独立 Watchdog 只消费此快照，不从 UI 文本或通道
+    /// AlarmStopped 状态推断永久性、恢复阶段或电源关闭进度。
+    /// </summary>
+    public sealed class WatchdogRecoverySnapshot
+    {
+        public bool ActiveRecovery { get; set; }
+        public bool OrphanPaused { get; set; }
+        public bool PowerDisablePending { get; set; }
+        public Guid RunId { get; set; }
+        public long RunEpoch { get; set; }
+        public string IncidentId { get; set; } = string.Empty;
+        public string RecoveryIncident { get; set; } = string.Empty;
+        public string RecoveryContext { get; set; } = string.Empty;
+        public string Device { get; set; } = string.Empty;
+        public Guid CorrelationId { get; set; }
+        public string Stage { get; set; } = string.Empty;
+        public int StageOrdinal { get; set; }
+        public DateTime StartedUtc { get; set; }
+        public long PauseSinceUtcTicks { get; set; }
+        public long PowerDisableSinceUtcTicks { get; set; }
+        public int[] ExpectedChannels { get; set; } = Array.Empty<int>();
+        public int[] ExpectedRecoveryChannels { get; set; } = Array.Empty<int>();
+        public int[] OrphanPausedChannels { get; set; } = Array.Empty<int>();
+        public int[] PowerDisablePendingGroups { get; set; } = Array.Empty<int>();
+        public DateTime? PowerDisableSinceUtc { get; set; }
+        public int[] PermanentAlarmedChannels { get; set; } = Array.Empty<int>();
+        public IReadOnlyDictionary<int, string> PermanentAlarmReasons { get; set; } =
+            new Dictionary<int, string>();
+    }
+
     public sealed class StopSafetyResult
     {
         public StopSource Source { get; set; } = StopSource.UnknownLegacy;

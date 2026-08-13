@@ -465,6 +465,30 @@ namespace Controller
             DateTime endUtc)
         {
             if (recorder == null) return true;
+            // DAQ恢复入口会在硬件安全动作前锁存事故圈。任何迟到的旧Runner/兼容
+            // 回调都只能重复确认 AbortedBySoftwareRecovery，不能把同一圈改写为
+            // 正式 completed；持久化作废由当前 attempt 或恢复 Finalizer 的唯一所有者负责。
+            if (IsDaqClockCycleAborted(
+                    _activeBatchId,
+                    Interlocked.Read(ref _runEpoch),
+                    channel,
+                    cycleNumber))
+            {
+                if (_cycleAttempts.TryGetCurrent(channel, out var recoveryAttempt) &&
+                    recoveryAttempt.Cycle == cycleNumber)
+                {
+                    AbortFormalCycleAttempt(
+                        recoveryAttempt,
+                        recorder,
+                        endUtc,
+                        "AbortedBySoftwareRecovery");
+                }
+                _log.Warn(
+                    $"EPB[{channel}] 迟到圈完成回调被DAQ恢复事故标记拦截。" +
+                    $"Cycle={cycleNumber} Status=AbortedBySoftwareRecovery；跳过正式完成。",
+                    "落盘");
+                return false;
+            }
             try
             {
                 finalSampleCount = FinalizeCyclePersistence(
@@ -1744,6 +1768,7 @@ namespace Controller
 
         private void QueueRollingHistoricalSnapshot(int channel, int cycleNumber)
         {
+            if (!_historicalStorageEnabled) return;
             if (!(Recorder is ICycleEvidenceExporter exporter)) return;
             ObserveBackgroundTask(Task.Run(() =>
             {
@@ -1756,10 +1781,7 @@ namespace Controller
                         $"EPB{channel:D2}");
                     var dir = Path.Combine(root, $"Cycle_{cycleNumber:D6}");
                     exporter.ExportCompletedCycleTo(channel, cycleNumber, dir, false, true);
-                    var snapshotCount = AlarmConfig?.WarningSnapshots?.HardAlarmLastNCycles
-                                        ?? AlarmConfig?.Behavior?.SnapshotLastNCycles
-                                        ?? 10;
-                    var keep = Math.Max(3, snapshotCount + 2);
+                    var keep = Math.Max(1, _historicalRetainCyclesPerChannel);
                     foreach (var old in new DirectoryInfo(root).EnumerateDirectories("Cycle_*")
                                  .OrderByDescending(x => x.Name).Skip(keep))
                     {

@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -380,6 +381,133 @@ namespace Controller
 
         public Guid WatchdogRunId => _activeBatchId;
         public long WatchdogRunEpoch => Interlocked.Read(ref _runEpoch);
+
+        /// <summary>
+        /// Controller 权威的永久卡钳报警集合；看门狗不得从 UI 文本或 AlarmStopped
+        /// 状态推断永久性。返回新数组，调用方不能修改控制层状态。
+        /// </summary>
+        public int[] CaptureWatchdogPermanentAlarmedChannels()
+        {
+            return _nonRecoverableChannelFaultLatch.Keys
+                .Where(channel => channel >= 1 && channel <= 12)
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
+        }
+
+        public IReadOnlyDictionary<int, string> CaptureWatchdogPermanentAlarmReasons()
+        {
+            return _nonRecoverableChannelFaultReasons
+                .Where(pair => _nonRecoverableChannelFaultLatch.ContainsKey(pair.Key))
+                .OrderBy(pair => pair.Key)
+                .ToDictionary(pair => pair.Key, pair => pair.Value ?? string.Empty);
+        }
+
+        public WatchdogRecoverySnapshot CaptureWatchdogRecoverySnapshot()
+        {
+            var permanent = CaptureWatchdogPermanentAlarmedChannels();
+            var reasons = CaptureWatchdogPermanentAlarmReasons();
+            var current = _daqAutoRecovery.Values
+                .Where(context => context != null &&
+                                  context.RunId == _activeBatchId &&
+                                  context.RunEpoch == Interlocked.Read(ref _runEpoch) &&
+                                  context.Terminal.Current == DaqRecoveryTerminal.None)
+                .OrderBy(context => context.StartedUtc)
+                .FirstOrDefault();
+            var orphan = _timers
+                .Where(pair =>
+                {
+                    var timer = pair.Value;
+                    var state = _channelRuntimeStateStore.Get(pair.Key);
+                    var device = _acq.GetDeviceForEpbChannel(pair.Key);
+                    var hasOwner = !string.IsNullOrWhiteSpace(device) &&
+                                   _daqAutoRecovery.TryGetValue(device, out var owner) &&
+                                   owner != null &&
+                                   owner.Terminal.Current == DaqRecoveryTerminal.None &&
+                                   owner.RunId == _activeBatchId &&
+                                   owner.RunEpoch == Interlocked.Read(ref _runEpoch);
+                    return timer != null &&
+                           (timer.RuntimeState == Timing.HighPrecisionTimerRuntimeState.Paused ||
+                            timer.RuntimeState == Timing.HighPrecisionTimerRuntimeState.PausePending) &&
+                           (timer.PauseReason ?? string.Empty).IndexOf("Daq", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                           !hasOwner &&
+                           state != null &&
+                           IsChannelEnabled(pair.Key) &&
+                           state.State != ChannelRuntimeState.Completed &&
+                           state.State != ChannelRuntimeState.NotEnabled &&
+                           state.State != ChannelRuntimeState.AlarmStopped &&
+                           state.State != ChannelRuntimeState.InterlockStopped &&
+                           state.State != ChannelRuntimeState.SystemFault &&
+                           state.State != ChannelRuntimeState.ManualStopped &&
+                           !_channelPausedUtc.ContainsKey(pair.Key) &&
+                           !_manualStopRequestedChannels.ContainsKey(pair.Key);
+                })
+                .Select(pair => pair.Key)
+                .OrderBy(channel => channel)
+                .ToArray();
+            var powerGroups = current == null || _powerSupply == null
+                ? Array.Empty<int>()
+                : current.AffectedChannels
+                    .Select(GetElectricalGroupId)
+                    .Where(id => id > 0)
+                    .Distinct()
+                    .Where(id =>
+                    {
+                        var state = _powerSupply.GetRuntimeState(id);
+                        var taskPending = current.PowerDisableTasksByGroup != null &&
+                                           current.PowerDisableTasksByGroup.TryGetValue(id, out var task) &&
+                                           task != null && !task.IsCompleted;
+                        return taskPending ||
+                               state.ExpectedOutputEnabled ||
+                               state.TelemetryOutputEnabled ||
+                               state.Active;
+                    })
+                    .OrderBy(id => id)
+                    .ToArray();
+            // Orphan pauses are independently actionable even when another DAQ device
+            // currently owns a recovery context.  Do not hide them behind `current`.
+            var orphanPaused = orphan.Length > 0;
+            var pauseSinceUtcTicks = orphan.Length == 0
+                ? 0L
+                : _timers
+                    .Where(pair => orphan.Contains(pair.Key))
+                    .Select(pair => pair.Value.PauseUtc?.ToUniversalTime().Ticks ?? 0L)
+                    .Where(ticks => ticks > 0)
+                    .DefaultIfEmpty(0L)
+                    .Min();
+            var powerDisableSinceUtcTicks = powerGroups.Length == 0 || current == null
+                ? 0L
+                : Interlocked.Read(ref current.PowerDisableStartedUtcTicks);
+            return new WatchdogRecoverySnapshot
+            {
+                ActiveRecovery = current != null || orphan.Length > 0,
+                OrphanPaused = orphanPaused,
+                PowerDisablePending = powerGroups.Length > 0,
+                RunId = _activeBatchId,
+                RunEpoch = Interlocked.Read(ref _runEpoch),
+                IncidentId = current == null ? string.Empty : current.CorrelationId.ToString("N"),
+                RecoveryIncident = current == null ? string.Empty : current.CorrelationId.ToString("N"),
+                RecoveryContext = current == null ? string.Empty : current.Device,
+                Device = current?.Device ?? string.Empty,
+                CorrelationId = current?.CorrelationId ?? Guid.Empty,
+                Stage = current?.ValidationPhase ?? (orphan.Length == 0 ? string.Empty : "OrphanPause"),
+                StageOrdinal = current == null ? (orphan.Length == 0 ? 0 : 5) : (int)current.Phase.Current,
+                StartedUtc = current?.StartedUtc ?? DateTime.UtcNow,
+                PauseSinceUtcTicks = pauseSinceUtcTicks,
+                PowerDisableSinceUtcTicks = powerDisableSinceUtcTicks,
+                ExpectedChannels = current?.AffectedChannels?.ToArray() ?? orphan,
+                ExpectedRecoveryChannels = current?.AffectedChannels?.ToArray() ?? orphan,
+                OrphanPausedChannels = orphan,
+                PowerDisablePendingGroups = powerGroups,
+                PowerDisableSinceUtc = powerDisableSinceUtcTicks <= 0
+                    ? (DateTime?)null
+                    : new DateTime(
+                        powerDisableSinceUtcTicks,
+                        DateTimeKind.Utc),
+                PermanentAlarmedChannels = permanent,
+                PermanentAlarmReasons = reasons
+            };
+        }
 
         public WatchdogStorageSnapshot CaptureWatchdogStorageSnapshot()
         {
@@ -1405,9 +1533,17 @@ namespace Controller
                             var persistenceCommitted = false;
                             try
                             {
-                                if (TryConsumeDaqClockCycleAbort(ch, cycleNumber))
+                                if (TryConsumeDaqClockCycleAbort(
+                                        cycleAttempt.RunId,
+                                        cycleAttempt.RunEpoch,
+                                        ch,
+                                        cycleNumber))
                                 {
-                                    CommitExternallyAbortedCycleAttempt(cycleAttempt);
+                                    AbortFormalCycleAttempt(
+                                        cycleAttempt,
+                                        recorder,
+                                        DateTime.UtcNow,
+                                        "AbortedBySoftwareRecovery");
                                     _log?.Warn(
                                         $"EPB[{ch}] 周期 {cycleNumber} 已由DAQ时钟恢复流程封存，" +
                                         "跳过周期尾重复记账。",

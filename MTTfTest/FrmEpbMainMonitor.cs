@@ -1003,6 +1003,9 @@ namespace MTEmbTest
                 // 1) 创建写盘器（使用 DataRetentionPolicy）
                 var latestRetention = _cfg.Test.DataStorageRetention?.Latest
                                       ?? new LatestSnapshotRetentionConfig();
+                var programStorage = ProgramStoragePolicy.Load(
+                    message => logger?.Warn(message, "Storage"));
+                logger?.Info(programStorage.ToStartupLogLine(), "Storage");
                 var policy = new DataRetentionPolicy
                 {
                     DataStorePath = Path.Combine(Environment.CurrentDirectory, "DataStore"), // 数据根目录
@@ -1013,6 +1016,11 @@ namespace MTEmbTest
                     RetainLatestStopPackagesPerChannel = latestRetention.RetainStopPackagesPerChannel,
                     RetainAllLatestStopPackages =
                         latestRetention.RetentionMode == StorageRetentionMode.Unlimited,
+                    LatestStorageLevel = programStorage.Latest,
+                    AlarmStorageLevel = programStorage.Alarm,
+                    LearningStorageLevel = programStorage.Learning,
+                    HistoricalEnabled = programStorage.HistoricalEnabled,
+                    HistoricalRetainCyclesPerChannel = programStorage.HistoricalRetainCyclesPerChannel,
                     RetentionWarningSink = message => logger?.Warn(message, "Storage")
                 };
                 _diskWriter = new EpbDiskWriter(policy);
@@ -1163,9 +1171,24 @@ namespace MTEmbTest
                 // 1) 计算每帧毫秒跨度（旧工程做法） 数据落盘中使用  On 2025/09/09
                 _daqTimeSpanMs = 1000.0 / ClsGlobal.DaqFrequency; // 设置单个试验的采用周期
 
-                // 2) 准备落盘目录并启动定时落盘 On 2025/09/09
-                PrepareDataStoreDirectory();
-                //InitDaqLogTimer(500); // 建议 100~500ms；与旧工程默认相当
+                // 2) 仅在程序级 Raw 开关显式启用时准备时间戳目录和原始落盘定时器。
+                //    禁用时不创建 W\DataStore 下的空日期目录；未来可通过该开关恢复显式 Raw 路径。
+                var rawLoggingEnabled = ProgramStoragePolicy.ParseBoolean(
+                    ConfigurationManager.AppSettings["RawDataLoggingEnabled"],
+                    false,
+                    "RawDataLoggingEnabled",
+                    message => logger?.Warn(message, "Storage"));
+                if (rawLoggingEnabled)
+                {
+                    PrepareDataStoreDirectory();
+                    InitDaqLogTimer(500);
+                    logger?.Info("Raw 原始数据落盘已显式启用。", "Storage");
+                }
+                else
+                {
+                    _dataStorePath = string.Empty;
+                    logger?.Info("Raw 原始数据落盘未启用；不创建 DataStore\\时间戳空目录。", "Storage");
+                }
             }
 
             catch (Exception ex)
@@ -1360,9 +1383,10 @@ namespace MTEmbTest
 
                 if (record.Status == EpbTestStatus.Completed) // 已完成
                 {
-                    _epb.StopChannel(record.Id); // 停止该通道试验
-
-                    // ====  UI 提示 =====================================================
+                    // EpbManager 已在自然完成事务中执行最终断能、移除运行对象、
+                    // 释放液压租约并发布 Completed。这里仅更新UI，不再调用
+                    // StopChannel；旧调用会把已完成通道重新覆盖为ManualStopped，
+                    // 使看门狗无法区分自然完成与人工单通道停止。
                     LogInfo($"EPB-{record.Id} 已完成试验。");
                 }
             }

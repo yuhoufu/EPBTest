@@ -682,8 +682,18 @@ namespace Controller
             json.AppendLine($"  \"staggerMs\": {assignment?.StaggerMs ?? 0},");
             json.AppendLine($"  \"plannedPhaseMs\": {assignment?.PhaseMs ?? 0},");
             json.AppendLine($"  \"reason\": \"{EscapeJson(reason)}\",");
+            var legacyCsvAndBinComplete = snapshotEvidence.IsValid &&
+                                          (string.IsNullOrWhiteSpace(snapshotEvidence.StorageFormat) ||
+                                           string.Equals(snapshotEvidence.StorageFormat,
+                                               StorageFormatLevel.CsvAndBin.ToString(),
+                                               StringComparison.OrdinalIgnoreCase));
             json.AppendLine(
-                $"  \"alarmCycleCsvAndBinComplete\": {snapshotEvidence.IsValid.ToString().ToLowerInvariant()},");
+                $"  \"alarmCycleCsvAndBinComplete\": {legacyCsvAndBinComplete.ToString().ToLowerInvariant()},");
+            json.AppendLine(
+                $"  \"alarmCycleEvidenceComplete\": {snapshotEvidence.IsValid.ToString().ToLowerInvariant()},");
+            var storageFormat = snapshotEvidence.StorageFormat ?? "Unknown";
+            json.AppendLine(
+                $"  \"alarmCycleStorageFormat\": \"{EscapeJson(storageFormat)}\",");
             json.AppendLine($"  \"evidenceSampleCount\": {snapshotEvidence.SampleCount},");
             json.AppendLine(
                 $"  \"evidenceFirstSampleUtc\": {JsonDate(snapshotEvidence.FirstSampleUtc)},");
