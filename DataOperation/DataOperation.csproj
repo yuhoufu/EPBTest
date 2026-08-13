@@ -67,6 +67,7 @@
     <Reference Include="Microsoft.CSharp" />
     <Reference Include="System.Data" />
     <Reference Include="System.Net.Http" />
+    <Reference Include="System.Runtime.Serialization" />
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
@@ -85,6 +86,7 @@
     <Compile Include="ClsXmlOperation.cs" />
     <Compile Include="EpbDiskWriter.cs" />
     <Compile Include="StorageFormatPolicy.cs" />
+    <Compile Include="LearningRunManifest.cs" />
     <Compile Include="OwnedDaqRawBatch.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>

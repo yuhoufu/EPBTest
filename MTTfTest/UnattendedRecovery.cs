@@ -14,6 +14,7 @@ using System.Web.Script.Serialization;
 using System.Xml;
 using Config;
 using Controller;
+using DataOperation;
 
 namespace MTEmbTest
 {
@@ -52,6 +53,8 @@ namespace MTEmbTest
         public string ParentRunId { get; set; }
         public string RunId { get; set; }
         public int RestartGeneration { get; set; }
+        /// <summary>单调恢复代次；用于 manifest/证据身份，禁止固定为0。</summary>
+        public long RunEpoch { get; set; }
         /// <summary>恢复子进程已消费 nonce，等待新执行 RunId 首次 Arm。</summary>
         public bool RecoveryChainPendingStart { get; set; }
         public string ActiveFaultCorrelationId { get; set; }
@@ -84,7 +87,8 @@ namespace MTEmbTest
             GlobalConfig config,
             IEnumerable<int> channels,
             Guid runId,
-            bool requireRecoveryPending = false)
+            bool requireRecoveryPending = false,
+            long runEpoch = 0)
         {
             if (config?.Test == null)
                 return default;
@@ -136,6 +140,15 @@ namespace MTEmbTest
                 checkpoint.ParentRunId = transition.ParentRunId;
                 checkpoint.RunId = transition.CurrentRunId;
                 checkpoint.RestartGeneration = transition.RestartGeneration;
+                var requestedEpoch = Math.Max(0, runEpoch);
+                if (transition.RecoveryContinuation)
+                    checkpoint.RunEpoch = Math.Max(
+                        checkpoint.RunEpoch + 1,
+                        requestedEpoch);
+                else if (transition.NewAuthorizationChain)
+                    checkpoint.RunEpoch = Math.Max(1, requestedEpoch);
+                else
+                    checkpoint.RunEpoch = Math.Max(checkpoint.RunEpoch, requestedEpoch);
                 if (transition.NewAuthorizationChain)
                 {
                     RevokedRuns.Clear();
@@ -729,6 +742,7 @@ namespace MTEmbTest
                 checkpoint.ParentRunId = string.Empty;
                 checkpoint.RunId = runId.ToString("N");
                 checkpoint.RestartGeneration = 0;
+                checkpoint.RunEpoch = Math.Max(1, checkpoint.RunEpoch);
                 checkpoint.RestartHistoryUtc = new List<string>();
                 checkpoint.AdaptiveProfilesSha256 = ComputeFileHash(Path.Combine(
                     ConfigLoader.GetProjectConfigDir(config.Test.StoreDir, config.Test.TestName),
@@ -1120,10 +1134,15 @@ namespace MTEmbTest
             }
         }
 
-        internal static void Arm(GlobalConfig config, IEnumerable<int> channels, Guid runId)
+        internal static void Arm(
+            GlobalConfig config,
+            IEnumerable<int> channels,
+            Guid runId,
+            long runEpoch = 0)
         {
             CancelRestartRetrySequence();
-            var transition = UnattendedRunCheckpointStore.Arm(config, channels, runId);
+            var transition = UnattendedRunCheckpointStore.Arm(
+                config, channels, runId, runEpoch: runEpoch);
             if (string.IsNullOrWhiteSpace(transition.CurrentRunId)) return;
             var checkpoint = UnattendedRunCheckpointStore.Load();
             ProjectLogHub.Write(
@@ -1143,7 +1162,8 @@ namespace MTEmbTest
         internal static void ConfirmRecoveryBatchStarted(
             GlobalConfig config,
             IEnumerable<int> channels,
-            Guid runId)
+            Guid runId,
+            long runEpoch = 0)
         {
             if (runId == Guid.Empty)
                 throw new InvalidOperationException("自动恢复完成确认缺少新执行 RunId。");
@@ -1152,7 +1172,8 @@ namespace MTEmbTest
                 config,
                 channels,
                 runId,
-                requireRecoveryPending: true);
+                requireRecoveryPending: true,
+                runEpoch: runEpoch);
             var checkpoint = UnattendedRunCheckpointStore.Load();
             ProjectLogHub.Write(
                 ProjectLogLevel.Info,
@@ -1470,6 +1491,18 @@ namespace MTEmbTest
                 var startResult = await manager.StartBatchSynchronizedWithResultAsync(
                         selected,
                         learnCycles,
+                        new RunChainIdentity(
+                            Guid.NewGuid(),
+                            Guid.TryParse(checkpoint.RootRunId, out var rootRunId) && rootRunId != Guid.Empty
+                                ? rootRunId
+                                : (Guid.TryParse(checkpoint.RunId, out var fallbackRootRunId)
+                                    ? fallbackRootRunId
+                                    : Guid.Empty),
+                            Guid.TryParse(checkpoint.RunId, out var parentRunId)
+                                ? parentRunId
+                                : Guid.Empty,
+                            Math.Max(0, checkpoint.RestartGeneration + 1),
+                            Math.Max(1, checkpoint.RunEpoch + 1)),
                         CancellationToken.None)
                     .ConfigureAwait(false);
                 var startValidation = EpbManager.ValidateUnattendedBatchStartResult(

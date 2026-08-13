@@ -176,7 +176,13 @@ namespace Controller
         private readonly HashSet<int> _adaptiveChannels;
         private readonly bool _historicalStorageEnabled;
         private readonly int _historicalRetainCyclesPerChannel;
+        private readonly long _historicalMinimumFreeBytes;
         private readonly StorageFormatLevel _alarmStorageLevel;
+        private readonly LearningRetentionMode _learningRetentionMode;
+        private readonly int _learningSuccessfulRunRetainCount;
+        private readonly int _learningFailedRunRetainCount;
+        private DataHousekeepingService _dataHousekeeping;
+        private IncidentHousekeepingService _incidentHousekeeping;
 
 
         // —— 回调（采样） —— //
@@ -423,6 +429,18 @@ namespace Controller
         // Dev2 的升级/恢复。
         private readonly ConcurrentDictionary<string, DateTime> _daqRecoveryTerminalCorrelations = new(
             StringComparer.OrdinalIgnoreCase);
+        // Batch-scoped correlation IDs are the only safe signal that both DAQ
+        // devices are expected in one Incident root.  The first device may
+        // publish before the second recovery context is created, so retain the
+        // marker until terminal manifest publication observes both devices.
+        private readonly ConcurrentDictionary<string, byte> _sharedDaqIncidentCorrelations =
+            new(StringComparer.OrdinalIgnoreCase);
+        // Freeze the DAQ devices selected for the active run before any fault
+        // callback can arrive.  This lets a direct Dev1 safety callback carry
+        // Dev2 in ExpectedDevices even when the liveness watchdog has not yet
+        // created Dev2's recovery context.
+        private readonly ConcurrentDictionary<string, string[]> _daqIncidentExpectedDevicesByRun =
+            new(StringComparer.OrdinalIgnoreCase);
         private readonly object _daqRecoveryCommitGate = new();
         private long _runEpoch;
         private long _recoveryEpoch;
@@ -434,6 +452,8 @@ namespace Controller
             new(StringComparer.OrdinalIgnoreCase);
         private readonly ConcurrentDictionary<string, long> _daqLivenessObservedGapEvents =
             new(StringComparer.OrdinalIgnoreCase);
+        private readonly DaqLivenessLogTransitionGate _daqLivenessLogTransitions =
+            new DaqLivenessLogTransitionGate();
         private int _daqLivenessWatchdogBusy;
         // 事故圈作废标记必须带完整运行身份；仅用(channel,cycle)会让旧Run的迟到
         // Finalizer在圈号复用后误伤新Run正式圈。
@@ -1431,7 +1451,8 @@ namespace Controller
             bool adaptiveShadowMode = true,
             IPowerSupplyCoordinator powerSupply = null,
             bool requirePowerSupply = false,
-            IDaqHardwareProbe daqHardwareProbe = null)
+            IDaqHardwareProbe daqHardwareProbe = null,
+            IEnumerable<Guid> protectedLearningRootIds = null)
         {
             _do = doController ?? throw new ArgumentNullException(nameof(doController));
             _ao = aoController ?? throw new ArgumentNullException(nameof(aoController));
@@ -1448,8 +1469,55 @@ namespace Controller
                 message => _log.Warn(message, "Storage"));
             _historicalStorageEnabled = startupStoragePolicy.HistoricalEnabled;
             _historicalRetainCyclesPerChannel = startupStoragePolicy.HistoricalRetainCyclesPerChannel;
+            _historicalMinimumFreeBytes = startupStoragePolicy.HistoricalMinimumFreeBytes;
             _alarmStorageLevel = startupStoragePolicy.Alarm;
+            _learningRetentionMode = startupStoragePolicy.LearningRetentionMode;
+            _learningSuccessfulRunRetainCount = startupStoragePolicy.LearningSuccessfulRunRetainCount;
+            _learningFailedRunRetainCount = startupStoragePolicy.LearningFailedRunRetainCount;
             _log.Info(startupStoragePolicy.ToStartupLogLine(), "Storage");
+            try
+            {
+                var learningRoot = System.IO.Path.Combine(
+                    cfg.Test.StoreDir, cfg.Test.TestName, "LearningCycles");
+                _dataHousekeeping = new DataHousekeepingService(
+                    learningRoot,
+                    new DataHousekeepingOptions
+                    {
+                        // Unlimited must never schedule a startup scan.  Keep
+                        // the service object for lifecycle symmetry, but gate
+                        // every scan/enqueue/process path through RetentionEnabled.
+                        AutoScanOnStart = _learningRetentionMode == LearningRetentionMode.Count,
+                        RetentionEnabled = _learningRetentionMode == LearningRetentionMode.Count,
+                        IsCurrentPath = path => IsCurrentLearningChainPath(path),
+                        ProtectedRootIds = protectedLearningRootIds,
+                        BusyStateProvider = GetHousekeepingBusyState,
+                        WarningSink = message => _log.Warn(message, "Housekeeping")
+                    });
+                _log.Info(
+                    $"Learning在线保留器已启动：Mode={_learningRetentionMode} " +
+                    $"Successful={_learningSuccessfulRunRetainCount} Failed={_learningFailedRunRetainCount}",
+                    "Storage");
+                if (_learningRetentionMode == LearningRetentionMode.Count)
+                    _dataHousekeeping.EnqueueNewManifestChains(
+                        _learningSuccessfulRunRetainCount,
+                        _learningFailedRunRetainCount);
+                var incidentRoot = System.IO.Path.Combine(
+                    cfg.Test.StoreDir, cfg.Test.TestName, "IncidentSnapshots");
+                var incidentPolicy = IncidentSessionPolicy.FromAppSettings(
+                    System.Configuration.ConfigurationManager.AppSettings,
+                    message => _log.Warn(message, "Housekeeping"));
+                _incidentHousekeeping = new IncidentHousekeepingService(
+                    incidentPolicy.Options.CompleteRetentionPerDevice,
+                    () => GetHousekeepingBusyState().IsBusy,
+                    message => _log.Warn(message, "Housekeeping"));
+                // Resume any terminal roots left by a previous process. Unknown,
+                // active, legacy or corrupt roots are skipped by the planner.
+                _incidentHousekeeping.Enqueue(incidentRoot);
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"Learning在线保留器初始化失败，保持数据不清理：{ex.Message}", "Storage");
+            }
             _taskSupervisor = new TaskSupervisor(_log);
             _acq = acq;
             _dev1ChannelMask = BuildDaqChannelMask("Dev1");
@@ -1817,11 +1885,11 @@ namespace Controller
         internal async Task<bool> DrainBackgroundTasksAsync(int timeoutMs)
         {
             var boundedTimeoutMs = Math.Max(1, timeoutMs);
-            var results = await Task.WhenAll(
-                    _taskSupervisor.DrainAsync(boundedTimeoutMs),
-                    DrainDaqIncidentEvidenceAsync(boundedTimeoutMs))
+            // Incident evidence is an independent diagnostic persistence
+            // worker. It must not extend StopAll/release-hardware waits or
+            // enter the control/recovery TaskSupervisor drain boundary.
+            return await _taskSupervisor.DrainAsync(boundedTimeoutMs)
                 .ConfigureAwait(false);
-            return results.All(value => value);
         }
 
         // （保留你已有的 StartChannelAsync / Pause/Resume/Stop 等实现，不改对外签名）
@@ -3098,6 +3166,11 @@ namespace Controller
             bool fromSafetyEvent)
         {
             if (deviceFault == null || string.IsNullOrWhiteSpace(deviceFault.Device)) return;
+            if (batchCorrelationId != Guid.Empty)
+            {
+                var sharedKey = $"{_activeBatchId:N}:{Interlocked.Read(ref _runEpoch)}:{batchCorrelationId:N}";
+                _sharedDaqIncidentCorrelations.TryAdd(sharedKey, 0);
+            }
             var affected = GetDaqGroupChannels(deviceFault.Device);
             if (affected.Length == 0)
                 affected = GetAllDaqDeviceChannels(deviceFault.Device);
@@ -3141,6 +3214,21 @@ namespace Controller
                     "AI",
                     ex);
                 return;
+            }
+
+            // DaqIncidentLatch may reuse an already-created per-device
+            // correlation (for example when a publication follows a safety
+            // callback). Preserve the explicit shared-batch marker under that
+            // effective correlation too, so storage/ExpectedDevices resolve to
+            // the same shared root for both devices.
+            if (batchCorrelationId != Guid.Empty &&
+                observation.Context != null &&
+                observation.Context.CorrelationId != Guid.Empty)
+            {
+                _sharedDaqIncidentCorrelations.TryAdd(
+                    $"{_activeBatchId:N}:{Interlocked.Read(ref _runEpoch)}:" +
+                    $"{observation.Context.CorrelationId:N}",
+                    0);
             }
 
             if (!observation.IsFirst)
@@ -3513,14 +3601,37 @@ namespace Controller
             string detail)
         {
             if (context == null) return;
-            context.BoundaryContradictionReason = detail ?? "Unknown";
-            Interlocked.Exchange(ref context.BoundaryContradiction, 1);
+            var contradictionReason = string.Empty;
+            if (!TryCaptureFirstBoundaryContradiction(
+                    context.ValidationFailureLogGate,
+                    ref context.BoundaryContradiction,
+                    ref context.BoundaryContradictionReason,
+                    detail))
+                return;
+            contradictionReason = context.BoundaryContradictionReason;
             _log.Error(
                 $"RecoveryBoundaryContradiction Device={context.Device} " +
                 $"CorrelationId={context.CorrelationId:N} RunId={context.RunId:N} " +
-                $"RunEpoch={context.RunEpoch} Detail={context.BoundaryContradictionReason}；" +
+                $"RunEpoch={context.RunEpoch} Detail={contradictionReason}；" +
                 "事故圈保持作废语义，禁止扩大边界或继续同类重试。",
                 "落盘");
+        }
+
+        internal static bool TryCaptureFirstBoundaryContradiction(
+            object gate,
+            ref int committed,
+            ref string reason,
+            string detail)
+        {
+            if (gate == null) throw new ArgumentNullException(nameof(gate));
+            lock (gate)
+            {
+                if (Volatile.Read(ref committed) != 0)
+                    return false;
+                reason = string.IsNullOrWhiteSpace(detail) ? "Unknown" : detail;
+                Volatile.Write(ref committed, 1);
+                return true;
+            }
         }
 
         private DaqRecoveryResult CreateDaqRecoveryTimeoutResult(string device)
@@ -5342,9 +5453,15 @@ namespace Controller
             var devices = (channels ?? Array.Empty<int>())
                 .Select(_acq.GetDeviceForEpbChannel)
                 .Where(device => !string.IsNullOrWhiteSpace(device))
+                .Select(IncidentSessionPolicy.NormalizeDevice)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToArray();
             _daqIncidentLatch.BeginRun(runId, devices);
+            var runKey = $"{runId:N}:{Interlocked.Read(ref _runEpoch)}";
+            foreach (var key in _daqIncidentExpectedDevicesByRun.Keys)
+                if (!string.Equals(key, runKey, StringComparison.OrdinalIgnoreCase))
+                    _daqIncidentExpectedDevicesByRun.TryRemove(key, out _);
+            _daqIncidentExpectedDevicesByRun[runKey] = devices;
             foreach (var device in devices)
                 _acq.ResetControlSafetyLatch(device);
         }
@@ -5547,6 +5664,72 @@ namespace Controller
                     catch { }
                 }
             }), "HydraulicHardFaultHandling");
+        }
+
+        private HousekeepingBusyState GetHousekeepingBusyState()
+        {
+            bool stopBusy;
+            lock (_stopSafetyGate)
+                stopBusy = _stopSafetyTask != null && !_stopSafetyTask.IsCompleted;
+            var alarmBusy = _alarmSnapshotGate.CurrentCount == 0 ||
+                            _alarmCycleFinalizationRetries.Count > 0 ||
+                            Enumerable.Range(1, 12).Any(channel => IsAlarmStopRequested(channel));
+            var state = new HousekeepingBusyState
+            {
+                // A running batch is not itself a stop window.  Retention only
+                // defers while physical stop, alarm finalization, or recovery
+                // ownership is actually in flight.
+                StopBusy = stopBusy,
+                RecoveryBusy = _daqAutoRecovery.Values.Any(item =>
+                            item != null && item.Terminal.Current == DaqRecoveryTerminal.None),
+                AlarmBusy = alarmBusy
+            };
+            state.RecoveryBusy |= _recoveryOwnership.ActiveCount > 0 ||
+                                  _recoveryTaskRegistry.ActiveCount > 0 ||
+                                  _recoverableChannelRestartJobs.Count > 0 ||
+                                  _hydraulicSoftwareRecoveryGroups.Count > 0 ||
+                                  _powerSoftwareRecoveryGroups.Count > 0;
+            try
+            {
+                foreach (var device in new[] { "Dev1", "Dev2" })
+                {
+                    var snapshot = _persistence?.GetSnapshot(device);
+                    if (snapshot == null) continue;
+                    state.DaqQueueNonEmpty |= snapshot.QueueDepth > 0;
+                    state.DaqQueueAgeMs = Math.Max(state.DaqQueueAgeMs, snapshot.OldestBatchAgeMs);
+                }
+            }
+            catch { state.DaqQueueNonEmpty = true; }
+            return state;
+        }
+
+        /// <summary>
+        /// Recovery/UI may inject a pending logical root before a scan starts.
+        /// The controller never reads the checkpoint itself; it only forwards the
+        /// explicit protection decision to the low-priority retention worker.
+        /// </summary>
+        public void ProtectLearningRoot(Guid rootRunId)
+        {
+            _dataHousekeeping?.ProtectRoot(rootRunId);
+        }
+
+        public void ReleaseLearningRoot(Guid rootRunId)
+        {
+            _dataHousekeeping?.UnprotectRoot(rootRunId);
+        }
+
+        private bool IsCurrentLearningChainPath(string path)
+        {
+            var root = _activeRunChainIdentity?.EffectiveRootRunId ?? Guid.Empty;
+            if (root == Guid.Empty) return false;
+            var expected = System.IO.Path.GetFullPath(System.IO.Path.Combine(
+                _cfg.Test.StoreDir, _cfg.Test.TestName, "LearningCycles", root.ToString("N")))
+                .TrimEnd(System.IO.Path.DirectorySeparatorChar, System.IO.Path.AltDirectorySeparatorChar);
+            var full = System.IO.Path.GetFullPath(path ?? string.Empty)
+                .TrimEnd(System.IO.Path.DirectorySeparatorChar, System.IO.Path.AltDirectorySeparatorChar);
+            return string.Equals(full, expected, StringComparison.OrdinalIgnoreCase) ||
+                   full.StartsWith(expected + System.IO.Path.DirectorySeparatorChar,
+                       StringComparison.OrdinalIgnoreCase);
         }
 
         private bool IsChannelEnergized(int channel)
@@ -5959,16 +6142,25 @@ namespace Controller
             var path = System.IO.Path.Combine(
                 directory,
                 $"{DateTime.Now:yyyyMMdd_HHmmss}_{runId:N}.csv");
-            var next = new PowerSupplyTelemetryCsvRecorder(path, _log);
+            var next = new PowerSupplyTelemetryCsvRecorder(
+                path,
+                _log,
+                null,
+                runId.ToString("N"),
+                Interlocked.Read(ref _runEpoch));
             var previous = Interlocked.Exchange(ref _powerTelemetryRecorder, next);
-            previous?.Dispose();
+            // Detach immediately; sealing/spill replay continues on the
+            // recorder's private background shutdown worker so StopAll does
+            // not wait on slow telemetry storage.
+            previous?.DetachAndShutdown();
             _log.Info($"程控电源连续遥测文件：{path}", "程控电源");
         }
 
         private void EndPowerSupplyTelemetryRecording()
         {
             var recorder = Interlocked.Exchange(ref _powerTelemetryRecorder, null);
-            recorder?.Dispose();
+            // StopAll must not inherit the recorder's bounded drain waits.
+            recorder?.DetachAndShutdown();
         }
 
         private void OnPowerSupplyFaultRaised(PowerSupplyFault fault)
@@ -6425,6 +6617,11 @@ namespace Controller
         private void SaveAdaptiveProfile(EpbAdaptiveProfile profile)
         {
             if (profile == null || _adaptiveProfileStore == null) return;
+            // Learning/qualification transactions defer persistence until the
+            // corresponding evidence has been durably sealed.  This keeps an
+            // aborted or unsealed sample out of the project model while
+            // retaining the runner's in-memory algorithm state.
+            if (_deferredAdaptivePersistence.ContainsKey(profile.Channel)) return;
             try
             {
                 _adaptiveProfileStore.Save(profile);
@@ -6433,6 +6630,27 @@ namespace Controller
             {
                 _log.Warn($"EPB[{profile.Channel}] 保存自适应模型失败：{ex.Message}", "EPB");
             }
+        }
+
+        private string SaveAdaptiveProfileWithReceipt(EpbAdaptiveProfile profile)
+        {
+            if (profile == null) throw new ArgumentNullException(nameof(profile));
+            if (_adaptiveProfileStore == null)
+                throw new InvalidOperationException("自适应模型存储未初始化。");
+            var receipt = _adaptiveProfileStore.SaveWithReceipt(profile);
+            _learningModelReceipts[profile.Channel] = receipt;
+            return receipt;
+        }
+
+        private void BeginLearningProfileTransaction(int channel)
+        {
+            if (channel >= 1 && channel <= 12)
+                _deferredAdaptivePersistence[channel] = 0;
+        }
+
+        private void EndLearningProfileTransaction(int channel)
+        {
+            _deferredAdaptivePersistence.TryRemove(channel, out _);
         }
 
         private EpbControlMode ReadEpbControlMode(EpbControlMode fallback)
@@ -6981,6 +7199,8 @@ namespace Controller
             }
             try { _timerRuntimeWatchdog?.Dispose(); } catch { }
             try { _daqLivenessWatchdog?.Dispose(); } catch { }
+            try { _dataHousekeeping?.Dispose(); } catch { }
+            try { _incidentHousekeeping?.Dispose(); } catch { }
             try { _powerSupply?.Dispose(); } catch { }
             try { _acq?.Dispose(); } catch { }
             try { _ao?.ResetAll(); } catch { }
@@ -7079,7 +7299,16 @@ namespace Controller
                 {
                     // 撤权本身只做内存/令牌变更；BatchPauseState 日志和观察者延后到
                     // 整组 OFF 与电源 Disable 已启动之后。
-                    EndBatchSession(cancel: true, publishIdleState: false);
+                    var terminalStatus = context.Source == StopSource.TargetCompleted
+                        ? "Successful"
+                        : context.Source == StopSource.AlarmInterlock
+                            ? "Failed"
+                            : "Cancelled";
+                    EndBatchSession(
+                        cancel: true,
+                        publishIdleState: false,
+                        terminalStatus: terminalStatus,
+                        terminalReason: context.Reason);
                     // EndBatchSession 取消 Runner，但既有 DAQ 恢复上下文只认 run epoch。
                     // 先使其提交资格失效；CancelAll 随后负责终态清理和完成通知。
                     Interlocked.Increment(ref _runEpoch);

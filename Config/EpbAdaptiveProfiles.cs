@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Xml.Serialization;
 
 namespace Config
@@ -724,10 +725,45 @@ namespace Config
     }
 
     /// <summary>
+    /// The model file was replaced but the pre-transaction bytes could not be
+    /// restored.  This is a fatal persistence boundary: callers must stop the
+    /// learning transaction and retain <see cref="BackupPath"/> for recovery.
+    /// It intentionally derives from <see cref="OperationCanceledException"/>
+    /// so the existing learning orchestration does not route this condition
+    /// through its ordinary software self-healing retry loop.
+    /// </summary>
+    public sealed class EpbAdaptiveProfilePersistenceFatalException : OperationCanceledException
+    {
+        public EpbAdaptiveProfilePersistenceFatalException(
+            string message,
+            string backupPath,
+            Exception writeFailure,
+            Exception rollbackFailure)
+            : base(message, rollbackFailure)
+        {
+            BackupPath = backupPath ?? string.Empty;
+            WriteFailure = writeFailure;
+            RollbackFailure = rollbackFailure;
+        }
+
+        public string BackupPath { get; }
+        public Exception WriteFailure { get; }
+        public Exception RollbackFailure { get; }
+        public bool IsFatal => true;
+    }
+
+    /// <summary>
     /// 项目级 EPB 自适应模型存储。写入采用同目录临时文件 + Replace，避免半写文件。
     /// </summary>
     public sealed class EpbAdaptiveProfileStore
     {
+        /// <summary>
+        /// Optional deterministic fault hook used by disk durability tests.
+        /// The callback is invoked after the atomic replace/copy and before the
+        /// read-back.  Production leaves it null.
+        /// </summary>
+        public static Action<string> SaveWithReceiptFailureInjection { get; set; }
+
         private readonly object _gate = new object();
         private readonly string _path;
         private readonly IAppLogger _log;
@@ -776,6 +812,171 @@ namespace Config
                 _document.ModelVersion = EpbAdaptiveProfile.CurrentModelVersion;
                 SaveDocumentAtomic(_document);
             }
+        }
+
+        /// <summary>
+        /// Persist one channel profile and return a read-back receipt.  The
+        /// existing Save API remains unchanged for formal-cycle callers; this
+        /// stricter path is used by learning finalization so a caller can prove
+        /// that the model reached disk before publishing a successful manifest.
+        /// </summary>
+        public string SaveWithReceipt(EpbAdaptiveProfile profile)
+        {
+            if (profile == null) throw new ArgumentNullException(nameof(profile));
+            lock (_gate)
+            {
+                var before = new EpbAdaptiveProfiles
+                {
+                    ModelVersion = _document.ModelVersion,
+                    Profiles = (_document.Profiles ?? new List<EpbAdaptiveProfile>())
+                        .Where(item => item != null)
+                        .Select(item => item.Clone())
+                        .ToList()
+                };
+                var diskBackup = _path + ".save-with-receipt." + Guid.NewGuid().ToString("N") + ".bak";
+                var hadDiskFile = File.Exists(_path);
+                var keepDiskBackup = false;
+                try
+                {
+                    if (hadDiskFile) File.Copy(_path, diskBackup, true);
+                    var index = _document.Profiles.FindIndex(item => item.Channel == profile.Channel);
+                    if (index >= 0) _document.Profiles[index] = profile.Clone();
+                    else _document.Profiles.Add(profile.Clone());
+                    _document.ModelVersion = EpbAdaptiveProfile.CurrentModelVersion;
+                    SaveDocumentAtomic(_document);
+
+                    SaveWithReceiptFailureInjection?.Invoke("AfterReplaceBeforeReadback");
+
+                    // Deserialize the bytes that are now on disk, rather than
+                    // trusting the in-memory document that was just updated.
+                    var persisted = LoadDocument();
+                    var readback = persisted.Profiles.FirstOrDefault(item =>
+                        item != null && item.Channel == profile.Channel);
+                    if (!ProfilesMatch(readback, profile))
+                        throw new InvalidDataException(
+                            $"EPB[{profile.Channel}] 自适应模型写入后读回不一致。");
+                    _document = persisted;
+                    using (var stream = File.OpenRead(_path))
+                    using (var sha = SHA256.Create())
+                        return "sha256:" + BitConverter.ToString(sha.ComputeHash(stream))
+                            .Replace("-", string.Empty).ToLowerInvariant();
+                }
+                catch (Exception writeFailure)
+                {
+                    // A Replace may have succeeded even when deserialize/readback
+                    // fails.  Restore the exact pre-transaction bytes on disk and
+                    // verify the restoration before rethrowing.
+                    try
+                    {
+                        // Tests and field diagnostics can force the rollback
+                        // boundary to fail.  Never swallow that second failure:
+                        // the backup must remain available for operator recovery.
+                        SaveWithReceiptFailureInjection?.Invoke("BeforeRollback");
+                        // Keep the shorter alias for existing fault-injection
+                        // harnesses that label the same boundary simply
+                        // "Rollback".
+                        SaveWithReceiptFailureInjection?.Invoke("Rollback");
+                        RestoreDiskSnapshot(diskBackup, hadDiskFile);
+                    }
+                    catch (Exception restoreEx)
+                    {
+                        keepDiskBackup = hadDiskFile && File.Exists(diskBackup);
+                        _log.Warn(
+                            $"自适应模型读回失败后磁盘回滚复核失败：{restoreEx.Message}；文件={_path}",
+                            "EPB");
+                        _document = before;
+                        throw new EpbAdaptiveProfilePersistenceFatalException(
+                            $"EPB[{profile.Channel}] 自适应模型写入失败且磁盘回滚失败；" +
+                            $"必须停止当前学习事务并保留备份：{diskBackup}",
+                            diskBackup,
+                            writeFailure,
+                            restoreEx);
+                    }
+                    // SaveDocumentAtomic may fail after the working document
+                    // was modified.  Restore that snapshot so a failed learning
+                    // transaction cannot advance the model in memory.
+                    _document = before;
+                    throw;
+                }
+                finally
+                {
+                    // A failed rollback is itself a durable incident.  Keep the
+                    // exact pre-transaction backup instead of deleting the only
+                    // known-good copy in cleanup.
+                    if (!keepDiskBackup)
+                    {
+                        try { if (File.Exists(diskBackup)) File.Delete(diskBackup); } catch { }
+                    }
+                }
+            }
+        }
+
+        private void RestoreDiskSnapshot(string backupPath, bool hadDiskFile)
+        {
+            if (!hadDiskFile)
+            {
+                if (File.Exists(_path)) File.Delete(_path);
+                if (File.Exists(_path))
+                    throw new IOException("回滚后模型文件仍存在。");
+                return;
+            }
+            if (!File.Exists(backupPath))
+                throw new FileNotFoundException("模型回滚备份不存在。", backupPath);
+            var restoreTemp = _path + ".rollback." + Guid.NewGuid().ToString("N") + ".tmp";
+            try
+            {
+                File.Copy(backupPath, restoreTemp, true);
+                if (File.Exists(_path))
+                {
+                    try { File.Replace(restoreTemp, _path, null, true); }
+                    catch (IOException) { File.Copy(restoreTemp, _path, true); }
+                    catch (PlatformNotSupportedException) { File.Copy(restoreTemp, _path, true); }
+                }
+                else File.Move(restoreTemp, _path);
+                if (!FilesEqual(backupPath, _path))
+                    throw new InvalidDataException("模型文件回滚后字节校验不一致。");
+            }
+            finally
+            {
+                try { if (File.Exists(restoreTemp)) File.Delete(restoreTemp); } catch { }
+            }
+        }
+
+        private static bool FilesEqual(string left, string right)
+        {
+            try
+            {
+                var leftInfo = new FileInfo(left);
+                var rightInfo = new FileInfo(right);
+                if (!leftInfo.Exists || !rightInfo.Exists || leftInfo.Length != rightInfo.Length)
+                    return false;
+                using (var a = File.OpenRead(left))
+                using (var b = File.OpenRead(right))
+                {
+                    var leftBuffer = new byte[8192];
+                    var rightBuffer = new byte[8192];
+                    int leftRead;
+                    while ((leftRead = a.Read(leftBuffer, 0, leftBuffer.Length)) > 0)
+                    {
+                        var rightRead = b.Read(rightBuffer, 0, rightBuffer.Length);
+                        if (rightRead != leftRead || !leftBuffer.Take(leftRead).SequenceEqual(rightBuffer.Take(rightRead)))
+                            return false;
+                    }
+                    return b.ReadByte() < 0;
+                }
+            }
+            catch { return false; }
+        }
+
+        private static bool ProfilesMatch(EpbAdaptiveProfile actual, EpbAdaptiveProfile expected)
+        {
+            return actual != null && expected != null &&
+                   actual.Channel == expected.Channel &&
+                   actual.ModelVersion == expected.ModelVersion &&
+                   actual.ValidSampleCount == expected.ValidSampleCount &&
+                   actual.UpdatedUtc == expected.UpdatedUtc &&
+                   Math.Abs(actual.ForwardClampMedianMs - expected.ForwardClampMedianMs) <= 1e-9 &&
+                   Math.Abs(actual.ReverseReleaseMedianMs - expected.ReverseReleaseMedianMs) <= 1e-9;
         }
 
         private EpbAdaptiveProfiles LoadDocument()

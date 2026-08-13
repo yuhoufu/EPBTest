@@ -43,6 +43,12 @@ namespace Controller
         public long FirstSuppressedSequence { get; set; }
         public long LastSuppressedSequence { get; set; }
         public long SuppressedRangeCount { get; set; }
+        /// <summary>Earliest sequence suppressed by this device during the process lifetime.</summary>
+        public long CumulativeFirstSuppressedSequence { get; set; }
+        /// <summary>Latest sequence suppressed by this device during the process lifetime.</summary>
+        public long CumulativeLastSuppressedSequence { get; set; }
+        /// <summary>Number of suppression ranges across all recovery windows in this process.</summary>
+        public long CumulativeSuppressedRangeCount { get; set; }
         public long DiscardedGenerationBatchCount { get; set; }
         public long OverCapacityDroppedBatchCount { get; set; }
         public bool DurabilityBlocked { get; set; }
@@ -115,6 +121,11 @@ namespace Controller
             public long FirstSuppressedSequence;
             public long LastSuppressedSequence;
             public long SuppressedRangeCount;
+            // First/Last/Range above describe only the current (or most recent) recovery
+            // window. These fields intentionally survive every window for process-level audit.
+            public long CumulativeFirstSuppressedSequence;
+            public long CumulativeLastSuppressedSequence;
+            public long CumulativeSuppressedRangeCount;
             public long DiscardedGenerationBatchCount;
             public long OverCapacityDroppedBatchCount;
         }
@@ -353,14 +364,29 @@ namespace Controller
             var q = GetQueue(device);
             lock (q.SuppressionGate)
             {
-                Interlocked.Exchange(
-                    ref q.SuppressAfterSequence,
-                    Math.Max(0, lastSequenceThatMustBePhysicallyPersisted));
+                // A cutoff remains immutable while its recovery window is active. Repeating
+                // the same installation (for example, a retry after an observer timeout) must
+                // not erase evidence already collected for that window. Only a closed prior
+                // window starts a fresh set of per-window counters.
+                var existingTicks = Interlocked.Read(ref q.SuppressAfterUtcTicks);
+                var existingCutoff = Interlocked.Read(ref q.SuppressAfterSequence);
+                var requestedCutoff = Math.Max(0, lastSequenceThatMustBePhysicallyPersisted);
+                if (existingTicks == 0)
+                {
+                    BeginSuppressionWindowUnderGate(q);
+                    Interlocked.Exchange(ref q.SuppressAfterSequence, requestedCutoff);
+                }
+                else if (requestedCutoff < existingCutoff)
+                {
+                    // StopAll may discover a tighter permanent-gap boundary while a recovery
+                    // window is active. Tighten it in place, but never expand the immutable
+                    // physical prefix and never reset evidence already recorded in this window.
+                    Interlocked.Exchange(ref q.SuppressAfterSequence, requestedCutoff);
+                }
                 Interlocked.Exchange(ref q.SuppressThroughSequence, long.MaxValue);
                 Interlocked.Exchange(
                     ref q.SuppressAfterUtcTicks,
                     cutoffUtc.ToUniversalTime().Ticks);
-                Interlocked.Exchange(ref q.SuppressedBatchCount, 0);
                 var previous = GetCorrelationIdentity(q);
                 var effectiveCorrelation = correlationId != Guid.Empty
                     ? correlationId
@@ -404,10 +430,11 @@ namespace Controller
                         $"RecoveryBoundaryContradiction Device={device} " +
                         $"Existing={existingCutoff} Requested={frozenBoundary}");
 
+                if (existingTicks == 0)
+                    BeginSuppressionWindowUnderGate(q);
                 Interlocked.Exchange(ref q.SuppressAfterSequence, frozenBoundary);
                 Interlocked.Exchange(ref q.SuppressThroughSequence, long.MaxValue);
                 Interlocked.Exchange(ref q.SuppressAfterUtcTicks, cutoffUtc.ToUniversalTime().Ticks);
-                Interlocked.Exchange(ref q.SuppressedBatchCount, 0);
                 var previous = GetCorrelationIdentity(q);
                 SetCorrelation(
                     q,
@@ -463,6 +490,9 @@ namespace Controller
             long firstSuppressedSequence;
             long lastSuppressedSequence;
             long suppressedRangeCount;
+            long cumulativeFirstSuppressedSequence;
+            long cumulativeLastSuppressedSequence;
+            long cumulativeSuppressedRangeCount;
             lock (q.SuppressionGate)
             {
                 identity = GetCorrelationIdentity(q);
@@ -476,6 +506,12 @@ namespace Controller
                 firstSuppressedSequence = Interlocked.Read(ref q.FirstSuppressedSequence);
                 lastSuppressedSequence = Interlocked.Read(ref q.LastSuppressedSequence);
                 suppressedRangeCount = Interlocked.Read(ref q.SuppressedRangeCount);
+                cumulativeFirstSuppressedSequence = Interlocked.Read(
+                    ref q.CumulativeFirstSuppressedSequence);
+                cumulativeLastSuppressedSequence = Interlocked.Read(
+                    ref q.CumulativeLastSuppressedSequence);
+                cumulativeSuppressedRangeCount = Interlocked.Read(
+                    ref q.CumulativeSuppressedRangeCount);
             }
             var pendingHeadSequence = q.Queue.TryPeek(out var pendingHead)
                 ? pendingHead.Sequence
@@ -514,6 +550,9 @@ namespace Controller
                 FirstSuppressedSequence = firstSuppressedSequence,
                 LastSuppressedSequence = lastSuppressedSequence,
                 SuppressedRangeCount = suppressedRangeCount,
+                CumulativeFirstSuppressedSequence = cumulativeFirstSuppressedSequence,
+                CumulativeLastSuppressedSequence = cumulativeLastSuppressedSequence,
+                CumulativeSuppressedRangeCount = cumulativeSuppressedRangeCount,
                 DiscardedGenerationBatchCount = Interlocked.Read(ref q.DiscardedGenerationBatchCount),
                 OverCapacityDroppedBatchCount = Interlocked.Read(ref q.OverCapacityDroppedBatchCount),
                 DurabilityBlocked = Volatile.Read(ref q.UnresolvedWriteFailure) != 0 ||
@@ -1114,6 +1153,12 @@ namespace Controller
                 FirstSuppressedSequence = Interlocked.Read(ref q.FirstSuppressedSequence),
                 LastSuppressedSequence = Interlocked.Read(ref q.LastSuppressedSequence),
                 SuppressedRangeCount = Interlocked.Read(ref q.SuppressedRangeCount),
+                CumulativeFirstSuppressedSequence = Interlocked.Read(
+                    ref q.CumulativeFirstSuppressedSequence),
+                CumulativeLastSuppressedSequence = Interlocked.Read(
+                    ref q.CumulativeLastSuppressedSequence),
+                CumulativeSuppressedRangeCount = Interlocked.Read(
+                    ref q.CumulativeSuppressedRangeCount),
                 DiscardedGenerationBatchCount = Interlocked.Read(ref q.DiscardedGenerationBatchCount),
                 OverCapacityDroppedBatchCount = Interlocked.Read(ref q.OverCapacityDroppedBatchCount),
                 DurabilityBlocked = Volatile.Read(ref q.UnresolvedWriteFailure) != 0 ||
@@ -1242,17 +1287,37 @@ namespace Controller
         }
 
         // Caller holds q.SuppressionGate.
+        private static void BeginSuppressionWindowUnderGate(DeviceQueue q)
+        {
+            Interlocked.Exchange(ref q.SuppressedBatchCount, 0);
+            Interlocked.Exchange(ref q.FirstSuppressedSequence, 0);
+            Interlocked.Exchange(ref q.LastSuppressedSequence, 0);
+            Interlocked.Exchange(ref q.SuppressedRangeCount, 0);
+        }
+
+        // Caller holds q.SuppressionGate.
         private static void RecordSuppressedUnderGate(DeviceQueue q, long sequence)
         {
             Interlocked.Increment(ref q.SuppressedBatchCount);
             Interlocked.Increment(ref q.CumulativeSuppressedBatchCount);
             var previous = Interlocked.Read(ref q.LastSuppressedSequence);
-            if (Interlocked.Read(ref q.FirstSuppressedSequence) == 0)
+            var firstInWindow = Interlocked.Read(ref q.FirstSuppressedSequence) == 0;
+            if (firstInWindow)
                 Interlocked.Exchange(ref q.FirstSuppressedSequence, sequence);
-            if (previous == 0 || sequence != previous + 1)
+            if (firstInWindow || sequence != previous + 1)
                 Interlocked.Increment(ref q.SuppressedRangeCount);
             if (sequence > previous)
                 Interlocked.Exchange(ref q.LastSuppressedSequence, sequence);
+
+            var cumulativePrevious = Interlocked.Read(ref q.CumulativeLastSuppressedSequence);
+            if (Interlocked.Read(ref q.CumulativeFirstSuppressedSequence) == 0)
+                Interlocked.Exchange(ref q.CumulativeFirstSuppressedSequence, sequence);
+            // A window boundary is always a new cumulative range, even if its first sequence
+            // is numerically adjacent to the previous window's final sequence.
+            if (firstInWindow || sequence != cumulativePrevious + 1)
+                Interlocked.Increment(ref q.CumulativeSuppressedRangeCount);
+            if (sequence > cumulativePrevious)
+                Interlocked.Exchange(ref q.CumulativeLastSuppressedSequence, sequence);
         }
 
         private static void UpdateAcceptedGeneration(DeviceQueue q, long generation)

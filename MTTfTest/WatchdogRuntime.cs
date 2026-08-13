@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Configuration;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
@@ -59,6 +61,7 @@ namespace MTEmbTest
         public bool Attached { get; set; }
         public string Warning { get; set; }
         public string SessionId { get; set; }
+        public string JournalPolicyLog { get; set; }
     }
 
     internal static class WatchdogRuntime
@@ -88,6 +91,9 @@ namespace MTEmbTest
         private static int _reconnectAttempt;
         private static int _sessionClosing;
         private static string _journalExportDirectory;
+        private static WatchdogJournalPolicy _journalPolicy = new WatchdogJournalPolicy();
+        private static WatchdogJournalStore _clientJournal;
+        private static long _clientEventSequence;
 
         internal static event Action<string, string> StopAllRequested;
         internal static event Action<string, string> TransportLost;
@@ -97,17 +103,29 @@ namespace MTEmbTest
 
         internal static void ConfigureJournalExportPath(string directory)
         {
+            string resolved = null;
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(directory))
+                    resolved = WatchdogJournalPaths.ValidateProjectDirectory(directory);
+            }
+            catch
+            {
+                lock (Gate) _journalExportDirectory = null;
+                throw;
+            }
             lock (Gate)
             {
-                _journalExportDirectory = string.IsNullOrWhiteSpace(directory)
-                    ? null
-                    : Path.GetFullPath(directory);
+                _journalExportDirectory = resolved;
             }
         }
 
         internal static async Task<WatchdogAttachResult> StartSessionAsync(int[] selectedChannels)
         {
             ShutdownLocalClient();
+            var policyWarnings = new List<string>();
+            var policy = WatchdogJournalPolicy.Load(ConfigurationManager.AppSettings, policyWarnings.Add);
+            string journalDirectory;
             lock (Gate)
             {
                 _sessionClosing = 0;
@@ -118,14 +136,57 @@ namespace MTEmbTest
                 _selectedChannels = (selectedChannels ?? Array.Empty<int>()).ToArray();
                 _recoveryProcess = false;
                 _recoveryAttempt = 0;
+                Interlocked.Exchange(ref _clientEventSequence, 0);
+                _journalPolicy = policy;
+                journalDirectory = _journalExportDirectory;
             }
+            if (string.IsNullOrWhiteSpace(journalDirectory))
+                return new WatchdogAttachResult
+                {
+                    Warning = "独立看门狗项目Journal路径缺失或非法；已拒绝启动不可审计的Sidecar，本轮仅使用进程内恢复。"
+                };
             var sessionId = Guid.NewGuid().ToString("N");
             var pipeName = "MTTFTest.Watchdog." + sessionId;
             var executable = Process.GetCurrentProcess().MainModule?.FileName ?? Assembly.GetEntryAssembly()?.Location;
             var watchdog = Path.Combine(Path.GetDirectoryName(executable) ?? Environment.CurrentDirectory, "MTTFTest.Watchdog.exe");
             lock (Gate) { _mainExecutable = executable; _watchdogExecutable = watchdog; }
-            if (!File.Exists(watchdog))
-                return new WatchdogAttachResult { Warning = "未找到 MTTFTest.Watchdog.exe，本轮仅使用进程内恢复。" };
+            try
+            {
+                using (var current = Process.GetCurrentProcess())
+                {
+                    var createdJournal = new WatchdogJournalStore(
+                        journalDirectory,
+                        sessionId,
+                        "client",
+                        policy,
+                        current.Id,
+                        current.StartTime.ToUniversalTime().Ticks);
+                    lock (Gate) _clientJournal = createdJournal;
+                }
+                RecordClientEvent("JournalConfigured", policy.ToStartupLogLine());
+                foreach (var warning in policyWarnings) RecordClientEvent("PolicyWarning", warning);
+                if (!File.Exists(watchdog))
+                {
+                    _clientJournal.RecordError("未找到 MTTFTest.Watchdog.exe，本轮仅使用进程内恢复。Path=" + watchdog);
+                    _clientJournal.Flush(TimeSpan.FromSeconds(1));
+                    var missingJournal = _clientJournal;
+                    lock (Gate) _clientJournal = null;
+                    try { missingJournal.Dispose(); } catch { }
+                    return new WatchdogAttachResult
+                    {
+                        Warning = "未找到 MTTFTest.Watchdog.exe，本轮仅使用进程内恢复。",
+                        JournalPolicyLog = policy.ToStartupLogLine()
+                    };
+                }
+            }
+            catch (Exception ex)
+            {
+                return new WatchdogAttachResult
+                {
+                    Warning = "独立看门狗项目Journal初始化失败；已拒绝启动不可审计的Sidecar，本轮仅使用进程内恢复：" +
+                              ex.GetBaseException().Message
+                };
+            }
 
             Exception lastError = null;
             for (var attempt = 0; attempt < 2; attempt++)
@@ -137,19 +198,30 @@ namespace MTEmbTest
                         var sidecar = Process.Start(new ProcessStartInfo
                         {
                             FileName = watchdog,
-                            Arguments = string.Format(CultureInfo.InvariantCulture,
-                                "--parent-pid {0} --parent-start-ticks {1} --session {2} --pipe {3} --executable {4}",
-                                current.Id, current.StartTime.ToUniversalTime().Ticks,
-                                Quote(sessionId), Quote(pipeName), Quote(executable)),
+                            Arguments = BuildSidecarArguments(
+                                current.Id,
+                                current.StartTime.ToUniversalTime().Ticks,
+                                sessionId,
+                                pipeName,
+                                executable,
+                                journalDirectory,
+                                policy),
                             WorkingDirectory = Path.GetDirectoryName(executable) ?? Environment.CurrentDirectory,
                             UseShellExecute = false,
                             CreateNoWindow = true,
                             WindowStyle = ProcessWindowStyle.Hidden
                         });
                         lock (Gate) _watchdogProcess = sidecar;
+                        RecordClientEvent("SidecarLaunched", "PID=" + (sidecar?.Id ?? 0));
                     }
                     await ConnectAsync(sessionId, pipeName, selectedChannels, false, 0).ConfigureAwait(false);
-                    return new WatchdogAttachResult { Attached = true, SessionId = sessionId };
+                    return new WatchdogAttachResult
+                    {
+                        Attached = true,
+                        SessionId = sessionId,
+                        Warning = policyWarnings.Count == 0 ? null : string.Join(" | ", policyWarnings),
+                        JournalPolicyLog = policy.ToStartupLogLine()
+                    };
                 }
                 catch (Exception ex)
                 {
@@ -165,6 +237,15 @@ namespace MTEmbTest
                     if (attempt == 0) await Task.Delay(500).ConfigureAwait(false);
                 }
             }
+            try { _clientJournal?.RecordError("Sidecar startup failed: " + lastError); } catch { }
+            try { _clientJournal?.Flush(TimeSpan.FromSeconds(1)); } catch { }
+            WatchdogJournalStore failedJournal;
+            lock (Gate)
+            {
+                failedJournal = _clientJournal;
+                _clientJournal = null;
+            }
+            try { failedJournal?.Dispose(); } catch { }
             return new WatchdogAttachResult
             {
                 Warning = "独立看门狗启动或握手失败，本轮仅使用进程内恢复：" + lastError?.GetBaseException().Message
@@ -195,10 +276,13 @@ namespace MTEmbTest
             }
         }
 
-        internal static Task AttachRecoverySessionAsync(WatchdogRecoveryIntent intent, int[] selectedChannels)
+        internal static async Task AttachRecoverySessionAsync(WatchdogRecoveryIntent intent, int[] selectedChannels)
         {
             if (intent == null) throw new ArgumentNullException(nameof(intent));
             ShutdownLocalClient();
+            var warnings = new List<string>();
+            var policy = WatchdogJournalPolicy.Load(ConfigurationManager.AppSettings, warnings.Add);
+            string journalDirectory;
             lock (Gate)
             {
                 _sessionClosing = 0;
@@ -209,13 +293,40 @@ namespace MTEmbTest
                 _selectedChannels = (selectedChannels ?? Array.Empty<int>()).ToArray();
                 _recoveryProcess = true;
                 _recoveryAttempt = intent.RecoveryAttempt;
+                Interlocked.Exchange(ref _clientEventSequence, 0);
                 _mainExecutable = Process.GetCurrentProcess().MainModule?.FileName ??
                                   Assembly.GetEntryAssembly()?.Location;
                 _watchdogExecutable = Path.Combine(
                     Path.GetDirectoryName(_mainExecutable) ?? Environment.CurrentDirectory,
                     "MTTFTest.Watchdog.exe");
+                _journalPolicy = policy;
+                journalDirectory = _journalExportDirectory;
             }
-            return ConnectAsync(intent.SessionId, intent.PipeName, selectedChannels, true, intent.RecoveryAttempt);
+            if (string.IsNullOrWhiteSpace(journalDirectory))
+                throw new InvalidOperationException("Watchdog 恢复进程缺少项目Journal路径。");
+            using (var process = Process.GetCurrentProcess())
+            {
+                var createdJournal = new WatchdogJournalStore(
+                        journalDirectory,
+                        intent.SessionId,
+                        "client",
+                        policy,
+                        process.Id,
+                        process.StartTime.ToUniversalTime().Ticks);
+                lock (Gate) _clientJournal = createdJournal;
+            }
+            RecordClientEvent("RecoveryClientJournalAttached", policy.ToStartupLogLine());
+            foreach (var warning in warnings) RecordClientEvent("PolicyWarning", warning);
+            try
+            {
+                await ConnectAsync(intent.SessionId, intent.PipeName, selectedChannels, true, intent.RecoveryAttempt)
+                    .ConfigureAwait(false);
+            }
+            catch
+            {
+                ShutdownLocalClient();
+                throw;
+            }
         }
 
         private static async Task ConnectAsync(
@@ -248,6 +359,7 @@ namespace MTEmbTest
                 Session = CreateRunSession(selectedChannels, recoveryProcess, recoveryAttempt)
             }))
                 throw new IOException("Watchdog Attach 消息发送失败。");
+            RecordClientEvent("AttachSent", recoveryProcess ? "RecoveryProcess" : "MainProcess");
             var timeout = Task.Delay(5000);
             if (await Task.WhenAny(attached.Task, timeout).ConfigureAwait(false) != attached.Task || !attached.Task.Result)
                 throw new TimeoutException("Watchdog Attached 握手超时。");
@@ -329,7 +441,11 @@ namespace MTEmbTest
                     if (line == null) break;
                     var message = WatchdogProtocol.Deserialize(line);
                     if (message == null || !string.Equals(message.SessionId, sessionId, StringComparison.Ordinal)) continue;
-                    if (message.Type == WatchdogMessageType.Attached) _attached?.TrySetResult(true);
+                    if (message.Type == WatchdogMessageType.Attached)
+                    {
+                        _attached?.TrySetResult(true);
+                        RecordClientEvent("Attached", "HandshakeCompleted");
+                    }
                     else if (message.Type == WatchdogMessageType.HeartbeatAck)
                     {
                         if (message.AckSequence >= Interlocked.Read(ref _lastHeartbeatAckSequence))
@@ -364,33 +480,38 @@ namespace MTEmbTest
         {
             Volatile.Write(ref _sessionClosing, 1);
             WriteSessionRevocationMarker(reason);
+            RecordClientEvent("ManualStopRequested", reason);
             SendSimple(WatchdogMessageType.ManualStopRequested, reason);
-            ExportJournalSnapshot();
+            FlushClientJournal();
         }
         internal static void NotifyRunStopped(WatchdogStopSummary summary)
         {
             Volatile.Write(ref _sessionClosing, 1);
             WriteSessionRevocationMarker("RunStopped");
+            RecordClientEvent("RunStopped", summary?.Detail);
             Send(new WatchdogMessage { Type = WatchdogMessageType.RunStopped, SessionId = SessionId, StopSummary = summary });
-            ExportJournalSnapshot();
+            FlushClientJournal();
         }
         internal static void NotifyStopCompleted(WatchdogStopSummary summary, string reason)
         {
+            RecordClientEvent("StopCompleted", summary?.Detail ?? reason);
             Send(new WatchdogMessage { Type = WatchdogMessageType.StopCompleted, SessionId = SessionId, Reason = reason, StopSummary = summary });
         }
         internal static void NotifyRunCompleted()
         {
             Volatile.Write(ref _sessionClosing, 1);
             WriteSessionRevocationMarker("FormalRunCompleted");
+            RecordClientEvent("RunCompleted", "FormalRunCompleted");
             SendSimple(WatchdogMessageType.RunCompleted, "FormalRunCompleted");
-            ExportJournalSnapshot();
+            FlushClientJournal();
         }
         internal static void NotifyApplicationClosing()
         {
             Volatile.Write(ref _sessionClosing, 1);
             WriteSessionRevocationMarker("ApplicationClosing");
+            RecordClientEvent("ApplicationClosing", "ApplicationClosing");
             SendSimple(WatchdogMessageType.ApplicationClosing, "ApplicationClosing");
-            ExportJournalSnapshot();
+            FlushClientJournal();
         }
 
         private static async Task TransportMonitorAsync(CancellationToken token)
@@ -440,6 +561,8 @@ namespace MTEmbTest
             bool recovery;
             int attempt;
             int[] channels;
+            WatchdogJournalPolicy policy;
+            string journalDirectory;
             lock (Gate)
             {
                 session = _sessionId;
@@ -449,6 +572,8 @@ namespace MTEmbTest
                 recovery = _recoveryProcess;
                 attempt = _recoveryAttempt;
                 channels = _selectedChannels?.ToArray() ?? Array.Empty<int>();
+                policy = _journalPolicy;
+                journalDirectory = _journalExportDirectory;
             }
             if (string.IsNullOrWhiteSpace(session) || string.IsNullOrWhiteSpace(pipeName) ||
                 Volatile.Read(ref _sessionClosing) != 0)
@@ -472,17 +597,21 @@ namespace MTEmbTest
                     sidecar = Process.Start(new ProcessStartInfo
                     {
                         FileName = watchdog,
-                        Arguments = string.Format(CultureInfo.InvariantCulture,
-                            "--parent-pid {0} --parent-start-ticks {1} --session {2} --pipe {3} --executable {4}",
+                        Arguments = BuildSidecarArguments(
                             Process.GetCurrentProcess().Id,
                             Process.GetCurrentProcess().StartTime.ToUniversalTime().Ticks,
-                            Quote(session), Quote(pipeName), Quote(executable)),
+                            session,
+                            pipeName,
+                            executable,
+                            journalDirectory,
+                            policy),
                         WorkingDirectory = Path.GetDirectoryName(executable) ?? Environment.CurrentDirectory,
                         UseShellExecute = false,
                         CreateNoWindow = true,
                         WindowStyle = ProcessWindowStyle.Hidden
                     });
                     lock (Gate) _watchdogProcess = sidecar;
+                    RecordClientEvent("SidecarRelaunched", "PID=" + (sidecar?.Id ?? 0));
                 }
 
                 // The previous monitor owns the canceled transport token.  Let
@@ -504,6 +633,7 @@ namespace MTEmbTest
 
         private static void RaiseTransportLost(string reason, string detail)
         {
+            RecordClientEvent("TransportLost", (reason ?? string.Empty) + ":" + (detail ?? string.Empty));
             try { TransportLost?.Invoke(reason, detail); }
             catch { }
         }
@@ -518,12 +648,14 @@ namespace MTEmbTest
         private static void RaiseTransportError(string reason, Exception error)
         {
             var detail = error?.GetBaseException().Message ?? string.Empty;
+            RecordClientEvent("TransportError", (reason ?? string.Empty) + ":" + detail);
             try { TransportError?.Invoke(reason, detail); }
             catch { }
         }
 
         private static void RaiseTransportError(string reason, string detail)
         {
+            RecordClientEvent("TransportEvent", (reason ?? string.Empty) + ":" + (detail ?? string.Empty));
             try { TransportError?.Invoke(reason, detail ?? string.Empty); }
             catch { }
         }
@@ -541,28 +673,20 @@ namespace MTEmbTest
         private static void WriteSessionRevocationMarker(string reason)
         {
             string session;
-            lock (Gate) session = _sessionId;
+            lock (Gate)
+            {
+                session = _sessionId;
+            }
             if (string.IsNullOrWhiteSpace(session)) return;
             try
             {
-                var directory = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "MTTFTest", "Watchdog");
-                Directory.CreateDirectory(directory);
-                var path = Path.Combine(directory, "session-" + SafeName(session) + ".revoked");
-                var temporary = path + ".tmp-" + Guid.NewGuid().ToString("N");
-                File.WriteAllText(temporary,
-                    DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture) + " " + (reason ?? string.Empty),
-                    new UTF8Encoding(false));
-                if (File.Exists(path)) File.Replace(temporary, path, null); else File.Move(temporary, path);
+                WatchdogControlMarker.WriteLocal(session, reason);
             }
-            catch (Exception ex) { RaiseTransportError("SessionRevocationMarker", ex); }
-        }
-
-        private static string SafeName(string value)
-        {
-            foreach (var invalid in Path.GetInvalidFileNameChars()) value = (value ?? string.Empty).Replace(invalid, '_');
-            return value;
+            catch (Exception ex) { RaiseTransportError("SessionRevocationMarkerLocal", ex); }
+            WatchdogJournalStore journal;
+            lock (Gate) journal = _clientJournal;
+            try { journal?.PublishRevocation(reason); }
+            catch (Exception ex) { RaiseTransportError("SessionRevocationMarkerProject", ex); }
         }
         private static void SendSimple(string type, string reason) => Send(new WatchdogMessage { Type = type, SessionId = SessionId, Reason = reason, CorrelationId = Guid.NewGuid().ToString("N") });
 
@@ -597,6 +721,7 @@ namespace MTEmbTest
         internal static void ShutdownLocalClient()
         {
             Volatile.Write(ref _sessionClosing, 1);
+            WatchdogJournalStore journal;
             lock (Gate)
             {
                 try { _lifetime?.Cancel(); } catch { }
@@ -605,34 +730,72 @@ namespace MTEmbTest
                 _sessionId = null; _pipeName = null; _heartbeatProvider = null;
                 try { _watchdogProcess?.Dispose(); } catch { }
                 _watchdogProcess = null;
+                journal = _clientJournal;
+                _clientJournal = null;
             }
+            try { journal?.Flush(TimeSpan.FromSeconds(1)); } catch { }
+            try { journal?.Dispose(); } catch { }
         }
 
-        private static void ExportJournalSnapshot()
+        private static void FlushClientJournal()
         {
+            WatchdogJournalStore journal;
+            lock (Gate) journal = _clientJournal;
+            try { journal?.Flush(TimeSpan.FromSeconds(1)); }
+            catch (Exception ex) { RaiseTransportError("JournalFlush", ex); }
+        }
+
+        private static void RecordClientEvent(string eventType, string detail)
+        {
+            WatchdogJournalStore journal;
             string session;
-            string exportDirectory;
+            int recoveryAttempt;
             lock (Gate)
             {
+                journal = _clientJournal;
                 session = _sessionId;
-                exportDirectory = _journalExportDirectory;
+                recoveryAttempt = _recoveryAttempt;
             }
-            if (string.IsNullOrWhiteSpace(session) || string.IsNullOrWhiteSpace(exportDirectory)) return;
+            if (journal == null) return;
             try
             {
-                var localDirectory = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "MTTFTest", "Watchdog");
-                Directory.CreateDirectory(exportDirectory);
-                foreach (var suffix in new[] { ".json", ".revoked" })
-                {
-                    var source = Path.Combine(localDirectory, "session-" + SafeName(session) + suffix);
-                    if (!File.Exists(source)) continue;
-                    var destination = Path.Combine(exportDirectory, "session-" + SafeName(session) + suffix);
-                    File.Copy(source, destination, true);
-                }
+                using (var process = Process.GetCurrentProcess())
+                    journal.Record(new WatchdogJournalEvent
+                    {
+                        EventSequence = Interlocked.Increment(ref _clientEventSequence),
+                        EventType = eventType ?? string.Empty,
+                        State = Volatile.Read(ref _sessionClosing) == 0 ? "Active" : "Closing",
+                        Reason = detail ?? string.Empty,
+                        SessionId = session,
+                        ProcessId = process.Id,
+                        ProcessStartUtcTicks = process.StartTime.ToUniversalTime().Ticks,
+                        AckSequence = Interlocked.Read(ref _lastHeartbeatAckSequence),
+                        RecoveryAttempt = recoveryAttempt
+                    });
             }
-            catch (Exception ex) { RaiseTransportError("JournalExport", ex); }
+            catch { }
+        }
+
+        private static string BuildSidecarArguments(
+            int parentPid,
+            long parentStartTicks,
+            string session,
+            string pipe,
+            string executable,
+            string journalDirectory,
+            WatchdogJournalPolicy policy)
+        {
+            policy = policy ?? new WatchdogJournalPolicy();
+            return string.Format(CultureInfo.InvariantCulture,
+                "--parent-pid {0} --parent-start-ticks {1} --session {2} --pipe {3} --executable {4} " +
+                "--journal-directory {5} --journal-retention-days {6} --journal-retain-sessions {7} " +
+                "--journal-max-total-bytes {8} --journal-max-session-bytes {9} " +
+                "--journal-heartbeat-checkpoint-seconds {10} --journal-emergency-spool-max-bytes {11}",
+                parentPid, parentStartTicks, Quote(session), Quote(pipe), Quote(executable),
+                Quote(WatchdogJournalPaths.ValidateProjectDirectory(journalDirectory)),
+                policy.RetentionDays, policy.RetainSessionCount, policy.MaxTotalBytes,
+                policy.MaxSessionBytes, policy.HeartbeatCheckpointSeconds,
+                policy.EmergencySpoolMaxBytes);
         }
 
         private static string Quote(string value) => "\"" + (value ?? string.Empty).Replace("\"", "\\\"") + "\"";

@@ -15,8 +15,8 @@ using System.Threading.Tasks;
 using System.Windows.Forms;
 using Config;
 using Controller;
-using Controller.Alarm;
 using DataOperation;
+using Controller.Alarm;
 using DevExpress.UITemplates.Collection.Editors;
 using DevExpress.XtraEditors;
 using IO.NI;
@@ -432,6 +432,10 @@ namespace MTEmbTest
 
         private DateTime runBegin;
 
+        // Supplied by the recovery coordinator before EpbManager/housekeeping
+        // construction.  Controller never reads the checkpoint file itself.
+        private Guid _protectedLearningRootId;
+
 
         private DataOperation.TestConfig testConfig;
         private TwoDeviceAiAcquirer twoDeviceAiAcquirer;
@@ -664,6 +668,11 @@ namespace MTEmbTest
                 DisplayName = displayName,
                 Type = signalType
             };
+        }
+
+        internal FrmEpbMainMonitor(Guid protectedLearningRootId) : this()
+        {
+            _protectedLearningRootId = protectedLearningRootId;
         }
 
         /// <summary>
@@ -1107,7 +1116,10 @@ namespace MTEmbTest
                     _ao,
                     twoDeviceAiAcquirer,
                     logger,
-                    safetyMarginMode);
+                    safetyMarginMode,
+                    protectedLearningRootIds: _protectedLearningRootId == Guid.Empty
+                        ? null
+                        : new[] { _protectedLearningRootId });
 
                 // ★ 新增：订阅 EPB 单圈完成事件，用于更新 _uiEpbRecords
                 _epb.ChannelCycleCompleted += OnEpbChannelCycleCompleted;
@@ -2431,9 +2443,27 @@ namespace MTEmbTest
                 LogInfo($"准备启动卡钳：{string.Join(",", channels)}；自学习 {learnCycles} 圈。");
                 try
                 {
+                    RunChainIdentity chainIdentity = null;
+                    if (unattendedRecovery)
+                    {
+                        var checkpoint = UnattendedRunCheckpointStore.Load();
+                        if (checkpoint == null ||
+                            !Guid.TryParse(checkpoint.RunId, out var recoveredRunId) ||
+                            recoveredRunId == Guid.Empty)
+                            throw new InvalidOperationException("无人值守恢复缺少有效父RunId，拒绝创建无身份学习链。");
+                        Guid.TryParse(checkpoint.RootRunId, out var rootRunId);
+                        Guid.TryParse(checkpoint.ParentRunId, out var parentRunId);
+                        chainIdentity = new RunChainIdentity(
+                            Guid.NewGuid(),
+                            rootRunId == Guid.Empty ? recoveredRunId : rootRunId,
+                            parentRunId == Guid.Empty ? recoveredRunId : parentRunId,
+                            Math.Max(0, checkpoint.RestartGeneration + 1),
+                            Math.Max(1, checkpoint.RunEpoch + 1));
+                    }
                     var startResult = await _epb.StartBatchSynchronizedWithResultAsync(
                         channels, // 批量要跑的通道
                         learnCycles, // 自学习圈数（按你期望）
+                        chainIdentity,
                         _batchCts.Token // 取消令牌（Stop 按钮用）
                     );
                     completedStart = startResult;

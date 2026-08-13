@@ -22,6 +22,12 @@ namespace MTEmbTest
         private void AttachUnattendedRecovery()
         {
             if (_epb == null || _cfg == null) return;
+            // Keep any checkpoint-authorized root out of retention even if a
+            // worker scan raced monitor construction.  This is an explicit UI /
+            // recovery-coordinator decision; Controller does not inspect files.
+            var pending = UnattendedRunCheckpointStore.Load();
+            if (pending?.Armed == true && Guid.TryParse(pending.RootRunId, out var pendingRoot))
+                _epb.ProtectLearningRoot(pendingRoot);
             UnattendedRecoveryCoordinator.Attach(_epb, _cfg);
             UnattendedRecoveryCoordinator.RegisterQuiesceAndFlush(
                 QuiesceAndFlushForUnattendedRestartAsync);
@@ -467,7 +473,7 @@ namespace MTEmbTest
                 var selected = Enumerable.Range(1, 12)
                     .Where(channel => EpbGroup[channel - 1]?.CtrlJoinTest?.Checked == true)
                     .ToArray();
-                UnattendedRecoveryCoordinator.Arm(_cfg, selected, state.RunId);
+                UnattendedRecoveryCoordinator.Arm(_cfg, selected, state.RunId, state.RunEpoch);
                 return;
             }
 
@@ -634,7 +640,8 @@ namespace MTEmbTest
             UnattendedRecoveryCoordinator.ConfirmRecoveryBatchStarted(
                 _cfg,
                 startResult.StartedChannels,
-                startResult.TestRunId);
+                startResult.TestRunId,
+                _epb.WatchdogRunEpoch);
             try
             {
                 // 新 Run 身份已原子提交；从这里开始只允许观察性动作。日志或 UI

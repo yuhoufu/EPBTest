@@ -8,6 +8,11 @@ namespace MtEmbTest
 {
     public partial class Main_Frm
     {
+        private static Guid ProtectedRoot(UnattendedRunCheckpoint checkpoint)
+        {
+            return Guid.TryParse(checkpoint?.RootRunId, out var root) ? root : Guid.Empty;
+        }
+
         private RecoveryStartupIntent _recoveryStartupIntent;
         private WatchdogRecoveryIntent _watchdogRecoveryIntent;
 
@@ -72,7 +77,7 @@ namespace MtEmbTest
                 await WatchdogRuntime.AttachRecoverySessionAsync(
                     intent,
                     checkpoint.SelectedChannels).ConfigureAwait(true);
-                var monitor = new FrmEpbMainMonitor { Name = "实时监视" };
+                var monitor = new FrmEpbMainMonitor(ProtectedRoot(checkpoint)) { Name = "实时监视" };
                 OpenChildForm(monitor);
                 await monitor.ResumeFromWatchdogCheckpointAsync(checkpoint, intent)
                     .ConfigureAwait(true);
@@ -99,7 +104,7 @@ namespace MtEmbTest
                         out _))
                     return;
 
-                var monitor = new FrmEpbMainMonitor { Name = "实时监视" };
+                var monitor = new FrmEpbMainMonitor(ProtectedRoot(checkpoint)) { Name = "实时监视" };
                 OpenChildForm(monitor);
                 await monitor.PrepareGracefulPauseCheckpointAsync(checkpoint);
             }
@@ -134,7 +139,7 @@ namespace MtEmbTest
                     return;
                 }
 
-                var monitor = new FrmEpbMainMonitor { Name = "实时监视" };
+                var monitor = new FrmEpbMainMonitor(ProtectedRoot(checkpoint)) { Name = "实时监视" };
                 OpenChildForm(monitor);
                 await monitor.ResumeFromUnattendedCheckpointAsync(checkpoint);
             }

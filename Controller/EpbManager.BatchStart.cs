@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Config;
@@ -68,6 +69,25 @@ namespace Controller
     /// </summary>
     public partial class EpbManager
     {
+        /// <summary>
+        /// Keep a learning/qualification runner transactionally aligned with
+        /// the persisted profile.  SaveWithReceipt can fail after replacing
+        /// the file and roll the store back; callers must therefore restore the
+        /// runner immediately before any retry/failure handling runs.
+        /// </summary>
+        internal static void RestoreRunnerAdaptiveProfile(
+            IEpbCycleRunner runner,
+            EpbAdaptiveProfile modelBeforeLogicalCycle)
+        {
+            if (runner == null || modelBeforeLogicalCycle == null) return;
+            runner.RestoreAdaptiveProfile(modelBeforeLogicalCycle);
+        }
+
+        internal static long NormalizeRecoveryRunEpoch(long suppliedRunEpoch, long currentRunEpoch)
+        {
+            return Math.Max(1, Math.Max(suppliedRunEpoch, currentRunEpoch));
+        }
+
         // 字段区
         private ConcurrentDictionary<int, EpbCycleRunner> _runnerCache => _runnerRuntime.Cache;
         private ConcurrentDictionary<int, HighPrecisionTimer> _timerCache => _timerRuntime.Cache;
@@ -79,6 +99,19 @@ namespace Controller
         private long _learningRetryGeneration;
         private long _softwareHydraulicRetryGeneration;
         private ElectricalStaggerPlan _activeStaggerPlan;
+        private RunChainIdentity _activeRunChainIdentity;
+        private int _learningManifestPublished;
+        private string _learningManifestReason = string.Empty;
+        private int[] _activePlannedChannels = Array.Empty<int>();
+        private int _activePlannedLearningCycles;
+        private int _activePlannedQualificationCycles;
+        // During a learning/qualification logical cycle the runner is allowed
+        // to update its in-memory adaptive profile, but disk persistence is
+        // deferred until the evidence directory has been durably sealed.
+        private readonly ConcurrentDictionary<int, byte> _deferredAdaptivePersistence =
+            new ConcurrentDictionary<int, byte>();
+        private readonly ConcurrentDictionary<int, string> _learningModelReceipts =
+            new ConcurrentDictionary<int, string>();
 
         /// <summary>
         /// 复用活动错峰计划前必须确认它覆盖本次恢复通道。单通道无人值守恢复会
@@ -105,6 +138,122 @@ namespace Controller
         private readonly ConcurrentDictionary<int, DateTime> _activeFormalT0ByPressureGroup =
             new ConcurrentDictionary<int, DateTime>();
         private Guid _activeBatchId;
+
+        private void InitializeRunChainIdentity(RunChainIdentity supplied, Guid runId)
+        {
+            var normalized = (supplied ?? new RunChainIdentity(runId)).Normalize(runId);
+            // Manual starts always own a new chain.  Recovery callers explicitly
+            // pass RootRunId/ParentRunId and are the only path allowed to join an
+            // existing chain.
+            if (supplied == null)
+                normalized = new RunChainIdentity(runId, runId, Guid.Empty, 0,
+                    Interlocked.Read(ref _runEpoch));
+            else if (normalized.RunEpoch <= 0)
+                normalized = new RunChainIdentity(
+                    normalized.RunId,
+                    normalized.EffectiveRootRunId,
+                    normalized.ParentRunId,
+                    normalized.RestartGeneration,
+                    NormalizeRecoveryRunEpoch(normalized.RunEpoch, Interlocked.Read(ref _runEpoch)));
+            _activeRunChainIdentity = normalized;
+            Interlocked.Exchange(ref _learningManifestPublished, 0);
+            _learningManifestReason = string.Empty;
+            _learningModelReceipts.Clear();
+        }
+
+        private Guid ActiveLearningChainId =>
+            _activeRunChainIdentity?.EffectiveRootRunId != Guid.Empty
+                ? _activeRunChainIdentity.EffectiveRootRunId
+                : _activeBatchId;
+
+        private string LearningExecutionDirectory(Guid runId)
+        {
+            var root = Path.Combine(_cfg.Test.StoreDir, _cfg.Test.TestName,
+                "LearningCycles", ActiveLearningChainId.ToString("N"),
+                "Executions", runId.ToString("N"));
+            return root;
+        }
+
+        private void PublishLearningRunManifest(string finalStatus, string reason)
+        {
+            if (Interlocked.Exchange(ref _learningManifestPublished, 1) != 0) return;
+            var identity = _activeRunChainIdentity?.Normalize(_activeBatchId) ??
+                           new RunChainIdentity(_activeBatchId, _activeBatchId, Guid.Empty, 0,
+                               Interlocked.Read(ref _runEpoch));
+            var chainDirectory = Path.Combine(_cfg.Test.StoreDir, _cfg.Test.TestName,
+                "LearningCycles", identity.EffectiveRootRunId.ToString("N"));
+            try
+            {
+                // Product identity belongs to the entry/runtime build, not the
+                // Controller library (whose assembly version is intentionally
+                // independent and may remain 1.0.0.0).
+                var appVersion = RuntimeBuildIdentity.Capture().ProductVersion ?? string.Empty;
+                var modelHash = string.Empty;
+                var modelReceipt = string.Empty;
+                var modelConfirmed = _adaptiveProfileStore != null &&
+                                     File.Exists(_adaptiveProfileStore.FilePath) &&
+                                     (_activePlannedChannels ?? Array.Empty<int>()).All(channel =>
+                                     {
+                                         try { return _adaptiveProfileStore.GetOrCreate(channel)?.IsStable == true; }
+                                         catch { return false; }
+                                     }) &&
+                                     (_activePlannedChannels ?? Array.Empty<int>()).All(channel =>
+                                         _learningModelReceipts.TryGetValue(channel, out var receipt) &&
+                                         !string.IsNullOrWhiteSpace(receipt));
+                if (modelConfirmed)
+                {
+                    modelHash = LearningRunManifestStore.ComputeSha256(_adaptiveProfileStore.FilePath);
+                    modelReceipt = "sha256:" + modelHash;
+                }
+                else if (string.Equals(finalStatus, "Successful", StringComparison.OrdinalIgnoreCase))
+                {
+                    // A successful terminal status is only eligible for automatic
+                    // retention once the persisted model and its read-back receipt
+                    // are both confirmed.  If that proof is unavailable we must
+                    // publish an explicitly non-terminal/unknown execution rather
+                    // than manufacturing a Failed result that could be retained or
+                    // cleaned as a normal failure.
+                    finalStatus = "Unknown";
+                    reason = string.IsNullOrWhiteSpace(reason)
+                        ? "ModelPersistenceUnconfirmed"
+                        : reason + ";ModelPersistenceUnconfirmed";
+                }
+                var manifest = LearningRunManifestStore.BuildFromDirectory(
+                    chainDirectory,
+                    identity,
+                    appVersion,
+                    string.Empty,
+                    _activePlannedChannels ?? Enumerable.Empty<int>(),
+                    _activePlannedLearningCycles,
+                    _activePlannedQualificationCycles,
+                    finalStatus,
+                    reason,
+                    modelHash,
+                    modelReceipt);
+                manifest.ModelCommitReceipts = _learningModelReceipts
+                    .Where(pair => !string.IsNullOrWhiteSpace(pair.Value))
+                    .OrderBy(pair => pair.Key)
+                    .Select(pair => $"EPB{pair.Key:D2}:{pair.Value}")
+                    .ToList();
+                if (string.Equals(finalStatus, "Successful", StringComparison.OrdinalIgnoreCase) &&
+                    !LearningRunManifestStore.HasPlannedEvidence(manifest))
+                {
+                    manifest.FinalStatus = "Unknown";
+                    manifest.Reason = string.IsNullOrWhiteSpace(manifest.Reason)
+                        ? "LearningEvidenceIncomplete"
+                        : manifest.Reason + ";LearningEvidenceIncomplete";
+                }
+                LearningRunManifestStore.PublishAtomic(chainDirectory, manifest, out _);
+                if (_learningRetentionMode == LearningRetentionMode.Count)
+                    _dataHousekeeping?.Enqueue(chainDirectory);
+                _log?.Info($"Learning运行链manifest已原子发布：Chain={identity.RunChainId:N} Status={finalStatus}", "落盘");
+            }
+            catch (Exception ex)
+            {
+                _learningManifestReason = ex.Message;
+                _log?.Warn($"Learning运行链manifest发布失败，保留Unknown不清理：{ex.Message}", "落盘");
+            }
+        }
 
         /// <summary>当前是否已有批量学习或正式试验会话。</summary>
         public bool IsBatchSessionActive => Volatile.Read(ref _batchSessionActive) != 0;
@@ -273,8 +422,29 @@ namespace Controller
                     learnCycles,
                     qualificationCycles: 0,
                     reuseStableProfiles: false,
-                    token)
+                    token,
+                    chainIdentity: null)
                 .ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Recovery-safe entry point.  The recovery coordinator supplies the
+        /// parent/root execution identity explicitly; EpbManager never reads a
+        /// checkpoint file to infer the retention chain.
+        /// </summary>
+        public Task<BatchStartResult> StartBatchSynchronizedWithResultAsync(
+            int[] channels,
+            int learnCycles,
+            RunChainIdentity chainIdentity,
+            CancellationToken token)
+        {
+            return StartBatchCoreAsync(
+                channels,
+                learnCycles,
+                qualificationCycles: 0,
+                reuseStableProfiles: false,
+                token,
+                chainIdentity);
         }
 
         /// <summary>
@@ -283,6 +453,15 @@ namespace Controller
         public Task<BatchStartResult> StartBatchFromGracefulCheckpointAsync(
             int[] channels,
             int qualificationCycles,
+            CancellationToken token)
+        {
+            return StartBatchFromGracefulCheckpointAsync(channels, qualificationCycles, null, token);
+        }
+
+        public Task<BatchStartResult> StartBatchFromGracefulCheckpointAsync(
+            int[] channels,
+            int qualificationCycles,
+            RunChainIdentity chainIdentity,
             CancellationToken token)
         {
             if (qualificationCycles < 1 || qualificationCycles > 2)
@@ -306,14 +485,16 @@ namespace Controller
                     learnCycles,
                     qualificationCycles: 0,
                     reuseStableProfiles: false,
-                    token);
+                    token,
+                    chainIdentity);
             }
             return StartBatchCoreAsync(
                 selected,
                 learnCycles: 0,
                 qualificationCycles,
                 reuseStableProfiles: true,
-                token);
+                token,
+                chainIdentity);
         }
 
         /// <summary>
@@ -552,7 +733,8 @@ namespace Controller
             int learnCycles,
             int qualificationCycles,
             bool reuseStableProfiles,
-            CancellationToken token)
+            CancellationToken token,
+            RunChainIdentity chainIdentity = null)
         {
             return await _batchLifecycleGate.RunAsync(
                     () => StartBatchCoreUnderLifecycleGateAsync(
@@ -560,6 +742,7 @@ namespace Controller
                         learnCycles,
                         qualificationCycles,
                         reuseStableProfiles,
+                        chainIdentity,
                         token),
                     token)
                 .ConfigureAwait(false);
@@ -570,12 +753,16 @@ namespace Controller
             int learnCycles,
             int qualificationCycles,
             bool reuseStableProfiles,
+            RunChainIdentity chainIdentity,
             CancellationToken token)
         {
             if (channels == null || channels.Length == 0)
                 throw new ArgumentException("channels 不能为空", nameof(channels));
 
             var selected = channels.Distinct().OrderBy(x => x).ToArray();
+            _activePlannedChannels = selected.ToArray();
+            _activePlannedLearningCycles = Math.Max(0, learnCycles);
+            _activePlannedQualificationCycles = Math.Max(0, qualificationCycles);
             if (!reuseStableProfiles && learnCycles < 5)
                 throw new InvalidOperationException("严格完整曲线控制要求 LearnCycle 至少为5圈。");
             if (reuseStableProfiles)
@@ -586,6 +773,10 @@ namespace Controller
             try
             {
                 _activeBatchId = Guid.NewGuid();
+                InitializeRunChainIdentity(chainIdentity, _activeBatchId);
+                _daqLivenessLogTransitions.BeginSession(
+                    _activeBatchId,
+                    Interlocked.Read(ref _runEpoch));
                 Interlocked.Exchange(ref _idleSessionClosureScheduled, 0);
                 BeginDaqIncidentRun(_activeBatchId, selected);
                 InvalidateStopSafetyCache();
@@ -771,6 +962,18 @@ namespace Controller
 
                 EnsureAdaptiveProfilesReady(activeChannels);
 
+                // Learning/qualification and the model commit are complete before
+                // the formal timers are armed.  Publish this terminal execution
+                // now; later alarm/stop events must not rewrite a successful
+                // learning result.
+                PublishLearningRunManifest(
+                    startFaults.Count == 0 ? "Successful" : "Unknown",
+                    startFaults.Count == 0 ? string.Empty : "OneOrMoreChannelsIsolated");
+                if (_learningRetentionMode == LearningRetentionMode.Count)
+                    _dataHousekeeping?.EnqueueNewManifestChains(
+                        _learningSuccessfulRunRetainCount,
+                        _learningFailedRunRetainCount);
+
                 foreach (var channel in activeChannels)
                     PublishChannelRuntimeState(
                         channel,
@@ -800,7 +1003,15 @@ namespace Controller
                     _log?.Info($"批量启动已取消：{ex.Message}", "EPB");
                 else
                     _log?.Error($"批量启动异常：{ex}", "EPB", ex);
-                EndBatchSession(cancel: true);
+                if (_activeBatchId != Guid.Empty && Volatile.Read(ref _learningManifestPublished) == 0)
+                    PublishLearningRunManifest(
+                        // A failed/cancelled execution may still be recoverable
+                        // through its RootRunId.  Keep it Active/Unknown until
+                        // the recovery coordinator explicitly closes the chain;
+                        // Unknown is never admitted to retention.
+                        "Unknown",
+                        (expectedCancellation ? "Cancelled" : "Failed") + ":" + ex.Message);
+                EndBatchSession(cancel: true, terminalStatus: expectedCancellation ? "Cancelled" : "Failed", terminalReason: ex.Message);
 
                 foreach (var channel in selected)
                 {
@@ -1174,6 +1385,9 @@ namespace Controller
                 _daqRecoveryBatchAliases.Clear();
                 _daqLivenessLatchedGeneration.Clear();
                 _daqLivenessObservedGapEvents.Clear();
+                _daqLivenessLogTransitions.BeginSession(
+                    Guid.Empty,
+                    Interlocked.Read(ref _runEpoch) + 1);
                 Interlocked.Increment(ref _runEpoch);
                 Interlocked.Exchange(ref _formalPhaseCommitted, 0);
                 var linked = CancellationTokenSource.CreateLinkedTokenSource(externalToken);
@@ -1188,8 +1402,11 @@ namespace Controller
             }
         }
 
-        private void EndBatchSession(bool cancel, bool publishIdleState = true)
+        private void EndBatchSession(bool cancel, bool publishIdleState = true,
+            string terminalStatus = null, string terminalReason = null)
         {
+            // Learning terminal state is published immediately before formal
+            // timers are armed.  Do not rewrite it when a later formal run stops.
             var cts = Interlocked.Exchange(ref _batchSessionCts, null);
             if (cts != null)
             {
@@ -1208,6 +1425,10 @@ namespace Controller
             _activeStaggerPlan = null;
             _activeFormalT0ByPressureGroup.Clear();
             _activeBatchId = Guid.Empty;
+            _activeRunChainIdentity = null;
+            _activePlannedChannels = Array.Empty<int>();
+            _activePlannedLearningCycles = 0;
+            _activePlannedQualificationCycles = 0;
             if (publishIdleState)
                 MarkBatchIdle(cancel ? "批次已取消" : "批次已结束");
         }
@@ -1931,8 +2152,12 @@ namespace Controller
             if (runner == null) throw new ArgumentNullException(nameof(runner));
             var modelBeforeLogicalCycle = runner.CaptureAdaptiveProfile();
             var learningCycleNumber = 0;
+            BeginLearningProfileTransaction(channel);
 
-            var attempts = await SoftwareSelfHealingLoop.RunAsync(
+            int attempts;
+            try
+            {
+                attempts = await SoftwareSelfHealingLoop.RunAsync(
                     async (attempt, attemptToken) =>
                     {
                         await EnsurePowerSupplyReadyForChannelsAsync(new[] { channel }, attemptToken)
@@ -1990,7 +2215,7 @@ namespace Controller
                                             softwareAttempt: attempt)
                                         .ConfigureAwait(false);
                                     learningCycleNumber = 0;
-                                    runner.RestoreAdaptiveProfile(modelBeforeLogicalCycle);
+                                    RestoreRunnerAdaptiveProfile(runner, modelBeforeLogicalCycle);
                                     await AbortHydraulicLeaseForChannelAsync(
                                             channel,
                                             "LearningDaqStaleBeforeRecoveryGeneration")
@@ -2061,9 +2286,56 @@ namespace Controller
                             // 旧时序模型也只在证据可靠封存后提交，避免作废圈进入聚合。
                             if (pendingLegacySample != null)
                                 runner.ApplyLearnSample(pendingLegacySample);
+
+                            // The runner's adaptive callback is deferred during
+                            // the logical cycle.  Commit only after evidence is
+                            // durable and verify the persisted profile by readback.
+                            try
+                            {
+                                SaveAdaptiveProfileWithReceipt(runner.CaptureAdaptiveProfile());
+                                UpdateLearningAttemptReceiptStatus(
+                                    channel, learningOrdinal, attempt, "Successful", string.Empty,
+                                    qualification: false);
+                            }
+                            catch (EpbAdaptiveProfilePersistenceFatalException fatalEx)
+                            {
+                                // A rollback failure is a non-retryable
+                                // persistence boundary.  Restore runner state,
+                                // then make the failed receipt best-effort only;
+                                // receipt I/O must never replace the original
+                                // fatal exception or re-enter self-healing.
+                                RestoreRunnerAdaptiveProfile(runner, modelBeforeLogicalCycle);
+                                TryUpdateLearningAttemptReceiptStatusBestEffort(
+                                    channel,
+                                    learningOrdinal,
+                                    attempt,
+                                    "ModelCommitFatal:" + fatalEx.Message,
+                                    qualification: false,
+                                    failureKind: "Fatal",
+                                    originalFailure: fatalEx);
+                                throw;
+                            }
+                            catch (Exception saveEx)
+                            {
+                                // SaveWithReceipt may have rolled the store back
+                                // after replace/readback failure, but the runner
+                                // has already advanced its in-memory model.  Roll
+                                // that state back immediately, before receipt
+                                // bookkeeping or software self-healing observes
+                                // the failed attempt.
+                                RestoreRunnerAdaptiveProfile(runner, modelBeforeLogicalCycle);
+                                TryUpdateLearningAttemptReceiptStatusBestEffort(
+                                    channel, learningOrdinal, attempt,
+                                    "ModelCommitFailed:" + saveEx.Message,
+                                    qualification: false,
+                                    failureKind: "Failure",
+                                    originalFailure: saveEx);
+                                throw;
+                            }
                         }
                         catch (SoftwareSelfHealingRetryException)
                         {
+                            RestoreRunnerAdaptiveProfile(runner, modelBeforeLogicalCycle);
                             // 与资格圈相同：软件瞬态的学习尝试也必须先封存，才能开始
                             // 下一负圈。清零只清控制层变量，不能代替 Recorder 圈终态提交。
                             if (!IsAlarmStopRequested(channel))
@@ -2080,6 +2352,7 @@ namespace Controller
                         }
                         catch (OperationCanceledException)
                         {
+                            RestoreRunnerAdaptiveProfile(runner, modelBeforeLogicalCycle);
                             if (!IsAlarmStopRequested(channel))
                                 await SealLearningCycleAsync(
                                         channel,
@@ -2094,6 +2367,10 @@ namespace Controller
                         }
                         catch (Exception ex) when (EpbCycleRunner.IsSoftwareRecoveryException(ex))
                         {
+                            // Includes ordinary IOException from model
+                            // SaveWithReceipt/readback.  Restore before sealing
+                            // evidence and converting to a bounded retry.
+                            RestoreRunnerAdaptiveProfile(runner, modelBeforeLogicalCycle);
                             if (!IsAlarmStopRequested(channel))
                                 await SealLearningCycleAsync(
                                         channel,
@@ -2111,6 +2388,7 @@ namespace Controller
                         }
                         catch
                         {
+                            RestoreRunnerAdaptiveProfile(runner, modelBeforeLogicalCycle);
                             if (!IsAlarmStopRequested(channel))
                                 await SealLearningCycleAsync(
                                         channel,
@@ -2135,7 +2413,7 @@ namespace Controller
                     },
                     async (attempt, ex, attemptToken) =>
                     {
-                        runner.RestoreAdaptiveProfile(modelBeforeLogicalCycle);
+                        RestoreRunnerAdaptiveProfile(runner, modelBeforeLogicalCycle);
                         await AbortHydraulicLeaseForChannelAsync(
                                 channel,
                                 "LearningPersistenceSelfHealing")
@@ -2157,6 +2435,11 @@ namespace Controller
                     GetDaqSelfMaintenanceDelayMs,
                     token)
                 .ConfigureAwait(false);
+            }
+            finally
+            {
+                EndLearningProfileTransaction(channel);
+            }
 
             if (attempts > 1)
                 PublishChannelRuntimeState(
@@ -2182,14 +2465,12 @@ namespace Controller
             if (cycleNumber == 0 || recorder == null) return;
 
             var exportDir = System.IO.Path.Combine(
-                _cfg.Test.StoreDir,
-                _cfg.Test.TestName,
-                "LearningCycles",
-                runId.ToString("N"),
+                LearningExecutionDirectory(runId),
                 $"EPB{channel:D2}",
-                $"Learning_{learningOrdinal:D4}");
-            if (softwareAttempt > 1)
-                exportDir = System.IO.Path.Combine(exportDir, $"Attempt_{softwareAttempt:D4}");
+                (status?.IndexOf("qualification", StringComparison.OrdinalIgnoreCase) >= 0
+                    ? $"Qualification_{learningOrdinal:D4}"
+                    : $"Learning_{learningOrdinal:D4}"),
+                $"Attempt_{Math.Max(1, softwareAttempt):D4}");
 
             var cutoffUtc = DateTime.UtcNow;
             var cutoffCycles = new Dictionary<int, int>
@@ -2285,11 +2566,161 @@ namespace Controller
                 return;
             }
 
+            // Seal is the evidence boundary.  Publish a receipt in the same
+            // evidence directory before the model commit; successful status is
+            // upgraded only after SaveWithReceipt/read-back succeeds.
+            WriteLearningAttemptReceipt(
+                exportDir,
+                channel,
+                learningOrdinal,
+                softwareAttempt,
+                cycleNumber,
+                status,
+                evidence.SampleCount,
+                cutoffUtc,
+                DateTime.UtcNow,
+                evidence.ValidationError);
+
             _log?.Info(
                 $"EPB[{channel}] 学习圈已封存：Run={runId:N} LearnCycle={learningOrdinal} " +
                 $"InternalCycle={cycleNumber} Status={status} Samples={evidence.SampleCount} " +
                 $"Dir={exportDir}",
                 "落盘");
+        }
+
+        private void WriteLearningAttemptReceipt(
+            string exportDir,
+            int channel,
+            int logicalOrdinal,
+            int attempt,
+            int internalCycle,
+            string status,
+            long sampleCount,
+            DateTime startedUtc,
+            DateTime completedUtc,
+            string reason)
+        {
+            var chainRoot = Path.Combine(
+                _cfg.Test.StoreDir,
+                _cfg.Test.TestName,
+                "LearningCycles",
+                ActiveLearningChainId.ToString("N"));
+            var artifacts = new List<LearningArtifact>();
+            if (Directory.Exists(exportDir))
+            {
+                foreach (var file in Directory.EnumerateFiles(exportDir, "*", SearchOption.AllDirectories))
+                {
+                    if (string.Equals(Path.GetFileName(file), LearningRunManifestStore.AttemptReceiptFileName,
+                            StringComparison.OrdinalIgnoreCase) ||
+                        Path.GetFileName(file).IndexOf(".tmp", StringComparison.OrdinalIgnoreCase) >= 0)
+                        continue;
+                    var info = new FileInfo(file);
+                    var fullChain = chainRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                    var relative = Path.GetFullPath(file).Substring(fullChain.Length)
+                        .TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                        .Replace(Path.DirectorySeparatorChar, '/');
+                    artifacts.Add(new LearningArtifact
+                    {
+                        RelativePath = relative,
+                        Format = info.Extension.TrimStart('.').ToUpperInvariant(),
+                        Sha256 = LearningRunManifestStore.ComputeSha256(file),
+                        Bytes = info.Length,
+                        SampleCount = string.Equals(info.Extension, ".csv", StringComparison.OrdinalIgnoreCase)
+                            ? Math.Max(0, File.ReadLines(file).LongCount() - 1)
+                            : sampleCount,
+                        StartedUtc = info.CreationTimeUtc,
+                        CompletedUtc = info.LastWriteTimeUtc
+                    });
+                }
+            }
+            LearningRunManifestStore.WriteAttemptReceiptAtomic(
+                exportDir,
+                new LearningAttemptReceipt
+                {
+                    Phase = status?.IndexOf("qualification", StringComparison.OrdinalIgnoreCase) >= 0
+                        ? "Qualification" : "Learning",
+                    LogicalOrdinal = logicalOrdinal,
+                    Attempt = Math.Max(1, attempt),
+                    InternalCycle = internalCycle,
+                    Status = status?.IndexOf("completed", StringComparison.OrdinalIgnoreCase) >= 0
+                        ? "EvidenceCompleted" : (status ?? "Unknown"),
+                    SampleCount = Math.Max(0, sampleCount),
+                    StartedUtc = startedUtc,
+                    CompletedUtc = completedUtc,
+                    Reason = reason ?? string.Empty,
+                    Artifacts = artifacts
+                });
+        }
+
+        private void UpdateLearningAttemptReceiptStatus(
+            int channel,
+            int logicalOrdinal,
+            int attempt,
+            string status,
+            string reason,
+            bool qualification)
+        {
+            var phase = qualification ? "Qualification" : "Learning";
+            var dir = Path.Combine(
+                LearningExecutionDirectory(_activeBatchId),
+                $"EPB{channel:D2}",
+                $"{phase}_{logicalOrdinal:D4}",
+                $"Attempt_{Math.Max(1, attempt):D4}");
+            var path = LearningRunManifestStore.AttemptReceiptPath(dir);
+            if (!LearningRunManifestStore.TryReadAttemptReceipt(path, out var receipt)) return;
+            receipt.Status = status ?? "Unknown";
+            receipt.Reason = reason ?? string.Empty;
+            receipt.CompletedUtc = DateTime.UtcNow;
+            LearningRunManifestStore.WriteAttemptReceiptAtomic(dir, receipt);
+        }
+
+        private void TryUpdateLearningAttemptReceiptStatusBestEffort(
+            int channel,
+            int logicalOrdinal,
+            int attempt,
+            string reason,
+            bool qualification,
+            string failureKind,
+            Exception originalFailure)
+        {
+            PreserveLearningPersistenceFailure(
+                originalFailure,
+                () => UpdateLearningAttemptReceiptStatus(
+                    channel, logicalOrdinal, attempt, "Failed", reason, qualification),
+                receiptEx =>
+                {
+                    // Receipt persistence is diagnostic after the model commit
+                    // boundary.  It must not mask the original save/fatal error.
+                    try
+                    {
+                        _log?.Warn(
+                            $"学习{(qualification ? "资格" : "学习")}圈失败receipt更新失败（保留原{failureKind}异常）：" +
+                            receiptEx.Message,
+                            "落盘");
+                    }
+                    catch { }
+                });
+        }
+
+        /// <summary>
+        /// Execute failed-receipt persistence without ever replacing the
+        /// original model commit exception.  The callback is intentionally
+        /// internal so focused tests can inject a receipt I/O failure and
+        /// assert that the fatal identity remains intact.
+        /// </summary>
+        internal static Exception PreserveLearningPersistenceFailure(
+            Exception originalFailure,
+            Action receiptUpdate,
+            Action<Exception> receiptFailureSink = null)
+        {
+            if (originalFailure == null) throw new ArgumentNullException(nameof(originalFailure));
+            try { receiptUpdate?.Invoke(); }
+            catch (Exception receiptEx)
+            {
+                try { receiptFailureSink?.Invoke(receiptEx); }
+                catch { }
+            }
+            return originalFailure;
         }
 
         #endregion

@@ -54,6 +54,7 @@
       <HintPath>..\packages\System.Runtime.CompilerServices.Unsafe.4.5.2\lib\netstandard2.0\System.Runtime.CompilerServices.Unsafe.dll</HintPath>
     </Reference>
     <Reference Include="System.Xml.Linq" />
+    <Reference Include="System.Runtime.Serialization" />
     <Reference Include="System.Data.DataSetExtensions" />
     <Reference Include="Microsoft.CSharp" />
     <Reference Include="System.Data" />
@@ -80,6 +81,9 @@
     <Compile Include="FaultIsolatedPhaseWork.cs" />
     <Compile Include="DoControlTrace.cs" />
     <Compile Include="DaqIncidentLatch.cs" />
+    <Compile Include="IncidentSessionPolicy.cs" />
+    <Compile Include="IncidentSessionManifest.cs" />
+    <Compile Include="IncidentSessionRetention.cs" />
     <Compile Include="DaqPersistenceCoordinator.cs" />
     <Compile Include="DaqRecoveryTerminalGate.cs" />
     <Compile Include="ReleasePackageVerifier.cs" />
@@ -116,6 +120,7 @@
     <Compile Include="UiLogDisplayPolicy.cs" />
     <Compile Include="PowerSupplyCoordinator.cs" />
     <Compile Include="PowerSupplyTelemetryCsvRecorder.cs" />
+    <Compile Include="DataHousekeepingService.cs" />
     <Compile Include="PressureCalibrationCoordinator.cs" />
     <Compile Include="StopContext.cs" />
     <Compile Include="StartupPositioning.cs" />

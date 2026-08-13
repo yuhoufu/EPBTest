@@ -8,6 +8,105 @@ using IO.NI;
 
 namespace Controller
 {
+    internal readonly struct DaqUnenergizedGapDecision
+    {
+        internal DaqUnenergizedGapDecision(bool emit, string code, string reason)
+        {
+            Emit = emit;
+            Code = code ?? string.Empty;
+            Reason = reason ?? string.Empty;
+        }
+
+        internal bool Emit { get; }
+        internal string Code { get; }
+        internal string Reason { get; }
+    }
+
+    /// <summary>
+    /// Bounded, run-scoped gate for DAQ liveness transition logs.  The watchdog can
+    /// observe one shared recovery on every timer tick while the recovery owner is
+    /// still being created; only the first transition log is useful evidence.
+    /// </summary>
+    internal sealed class DaqLivenessLogTransitionGate
+    {
+        private const int MaximumEntries = 32;
+        private readonly object _gate = new object();
+        private readonly Queue<string> _order = new Queue<string>(MaximumEntries);
+        private readonly HashSet<string> _emitted =
+            new HashSet<string>(StringComparer.Ordinal);
+        private Guid _runId;
+        private long _runEpoch;
+
+        internal int Count
+        {
+            get { lock (_gate) return _emitted.Count; }
+        }
+
+        internal void BeginSession(Guid runId, long runEpoch)
+        {
+            lock (_gate)
+            {
+                _runId = runId;
+                _runEpoch = runEpoch;
+                _order.Clear();
+                _emitted.Clear();
+            }
+        }
+
+        internal bool TryAccept(
+            Guid runId,
+            long runEpoch,
+            Guid correlationId,
+            IEnumerable<string> participants,
+            string result,
+            string transitionToken = null)
+        {
+            var key = BuildKey(
+                runId,
+                runEpoch,
+                correlationId,
+                participants,
+                result,
+                transitionToken);
+            lock (_gate)
+            {
+                if (_runId != runId || _runEpoch != runEpoch)
+                {
+                    _runId = runId;
+                    _runEpoch = runEpoch;
+                    _order.Clear();
+                    _emitted.Clear();
+                }
+
+                if (!_emitted.Add(key)) return false;
+                _order.Enqueue(key);
+                while (_order.Count > MaximumEntries)
+                    _emitted.Remove(_order.Dequeue());
+                return true;
+            }
+        }
+
+        internal static string BuildKey(
+            Guid runId,
+            long runEpoch,
+            Guid correlationId,
+            IEnumerable<string> participants,
+            string result,
+            string transitionToken = null)
+        {
+            var devices = (participants ?? Enumerable.Empty<string>())
+                .Where(device => !string.IsNullOrWhiteSpace(device))
+                .Select(device => device.Trim().ToUpperInvariant())
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(device => device, StringComparer.Ordinal)
+                .ToArray();
+            return $"{runId:N}|{runEpoch}|{correlationId:N}|" +
+                   $"{(result ?? string.Empty).Trim().ToUpperInvariant()}|" +
+                   $"{string.Join(",", devices)}|" +
+                   $"{(transitionToken ?? string.Empty).Trim()}";
+        }
+    }
+
     internal readonly struct DaqLivenessDecision
     {
         internal DaqLivenessDecision(bool trip, string code, string reason)
@@ -53,6 +152,40 @@ namespace Controller
                 $"独立DAQ存活监督发现回调超过{threshold:F0}ms未更新；" +
                 $"CallbackAge={freshness.CallbackAgeMs:F1}ms " +
                 $"Generation={freshness.Generation} Produced={freshness.LastProducedSequence} " +
+                    $"Processed={freshness.LastProcessedSequence}");
+        }
+
+        internal static DaqUnenergizedGapDecision EvaluateUnenergizedDaqGap(
+            bool batchActive,
+            bool deviceEnergized,
+            bool recoveryActive,
+            DaqFreshnessSnapshot freshness,
+            bool hasObservedBaseline,
+            long observedGapEventCount,
+            double staleThresholdMs)
+        {
+            if (!batchActive || deviceEnergized || recoveryActive || freshness == null)
+                return new DaqUnenergizedGapDecision(false, string.Empty, string.Empty);
+
+            // A key's first observation establishes a baseline.  It may represent a
+            // callback gap from before this batch (or before the watchdog was started)
+            // and must not create an INFO event retroactively.
+            if (!hasObservedBaseline ||
+                freshness.CallbackGapEventCount <= observedGapEventCount)
+                return new DaqUnenergizedGapDecision(false, string.Empty, string.Empty);
+
+            var threshold = Math.Max(50, staleThresholdMs);
+            if (freshness.LastCallbackGapIntervalMs <= threshold)
+                return new DaqUnenergizedGapDecision(false, string.Empty, string.Empty);
+
+            return new DaqUnenergizedGapDecision(
+                true,
+                "ObservedUnenergizedGap",
+                $"未带电DAQ观察到超过{threshold:F0}ms的回调空窗；" +
+                $"GapEvent={freshness.CallbackGapEventCount} " +
+                $"GapIntervalMs={freshness.LastCallbackGapIntervalMs:F1} " +
+                $"Generation={freshness.Generation} " +
+                $"Produced={freshness.LastProducedSequence} " +
                 $"Processed={freshness.LastProcessedSequence}");
         }
 
@@ -83,17 +216,51 @@ namespace Controller
                     freshnessByDevice[device] = freshness;
                     var recoveryActive = _daqAutoRecovery.TryGetValue(device, out var recovery) &&
                                          recovery.Terminal.Current == DaqRecoveryTerminal.None;
+                    var deviceEnergized = IsDaqDeviceControlActive(device);
                     if (_daqIncidentLatch.TryGet(
                             _activeBatchId,
                             device,
                             out var existingIncident))
                         existingIncidents[device] = existingIncident;
                     var gapKey = BuildDaqLivenessGapKey(device, freshness?.Generation ?? 0);
-                    var observedGapEvents = _daqLivenessObservedGapEvents.TryGetValue(
+                    var hasObservedGapBaseline = _daqLivenessObservedGapEvents.TryGetValue(
                         gapKey,
-                        out var observed)
-                        ? observed
-                        : 0;
+                        out var observedGapEvents);
+                    if (!hasObservedGapBaseline && !deviceEnergized && freshness != null)
+                    {
+                        // The first key observation is a baseline.  In particular, a
+                        // callback gap that happened before the batch or before this
+                        // generation was observed must not be reported retroactively.
+                        observedGapEvents = freshness.CallbackGapEventCount;
+                        _daqLivenessObservedGapEvents.TryAdd(gapKey, observedGapEvents);
+                    }
+
+                    var unenergizedGap = EvaluateUnenergizedDaqGap(
+                        IsBatchSessionActive,
+                        deviceEnergized,
+                        recoveryActive,
+                        freshness,
+                        hasObservedGapBaseline,
+                        observedGapEvents,
+                        _daqLivenessStaleThresholdMs);
+                    if (unenergizedGap.Emit)
+                    {
+                        _log.Info(
+                            $"FieldMetric DAQ_LIVENESS Result={unenergizedGap.Code} " +
+                            $"Device={device} {unenergizedGap.Reason} " +
+                            $"RunId={_activeBatchId:N} " +
+                            $"RunEpoch={Interlocked.Read(ref _runEpoch)} " +
+                            $"ThresholdMs={_daqLivenessStaleThresholdMs:F0} " +
+                            "Energized=false RecoveryActive=false",
+                            "FIELD");
+                        _daqLivenessObservedGapEvents.AddOrUpdate(
+                            gapKey,
+                            freshness.CallbackGapEventCount,
+                            (_, current) => Math.Max(
+                                current,
+                                freshness.CallbackGapEventCount));
+                    }
+
                     var decision = EvaluateDaqLiveness(
                         IsBatchSessionActive,
                         IsDaqDeviceControlActive(device),
@@ -207,13 +374,29 @@ namespace Controller
                     _activeBatchId,
                     Interlocked.Read(ref _runEpoch),
                     correlationAliases);
-                _log.Error(
-                    $"FieldMetric DAQ_LIVENESS Result={(incidents.Count > 0 ? "Trip" : "BatchMerged")} " +
-                    $"Devices={string.Join(",", participantDevices.OrderBy(x => x))} " +
-                    $"TriggeredDevices={string.Join(",", incidents.Select(x => x.Device))} " +
-                    $"BatchCorrelationId={batchCorrelation:N} RunId={_activeBatchId:N} " +
-                    $"RunEpoch={Interlocked.Read(ref _runEpoch)} ThresholdMs={_daqLivenessStaleThresholdMs:F0}",
-                    "FIELD");
+                var livenessResult = incidents.Count > 0 ? "Trip" : "BatchMerged";
+                var transitionToken = livenessResult == "Trip"
+                    ? string.Join(
+                        ",",
+                        incidents
+                            .OrderBy(incident => incident.Device, StringComparer.OrdinalIgnoreCase)
+                            .Select(incident =>
+                                $"{incident.Device.Trim().ToUpperInvariant()}:{incident.Generation}"))
+                    : null;
+                if (_daqLivenessLogTransitions.TryAccept(
+                        _activeBatchId,
+                        Interlocked.Read(ref _runEpoch),
+                        batchCorrelation,
+                        participantDevices,
+                        livenessResult,
+                        transitionToken))
+                    _log.Error(
+                        $"FieldMetric DAQ_LIVENESS Result={livenessResult} " +
+                        $"Devices={string.Join(",", participantDevices.OrderBy(x => x))} " +
+                        $"TriggeredDevices={string.Join(",", incidents.Select(x => x.Device))} " +
+                        $"BatchCorrelationId={batchCorrelation:N} RunId={_activeBatchId:N} " +
+                        $"RunEpoch={Interlocked.Read(ref _runEpoch)} ThresholdMs={_daqLivenessStaleThresholdMs:F0}",
+                        "FIELD");
 
                 // 同一扫描中的设备直接通过统一事故入口提交，显式传递共享批次
                 // CorrelationId。安全事件与 publication 事件仍由入口幂等合并；这里

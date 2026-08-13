@@ -152,10 +152,13 @@ namespace Controller
                         $"DurabilityBlocked={persistence.DurabilityBlocked} " +
                         $"Suppressed={persistence.SuppressedBatchCount} " +
                         $"SuppressedCumulative={persistence.CumulativeSuppressedBatchCount} " +
-                        $"SuppressedFirst={persistence.FirstSuppressedSequence} " +
-                        $"SuppressedLast={persistence.LastSuppressedSequence} " +
-                        $"SuppressedRanges={persistence.SuppressedRangeCount} " +
-                        $"Discarded={persistence.DiscardedGenerationBatchCount} " +
+                         $"SuppressedFirst={persistence.FirstSuppressedSequence} " +
+                         $"SuppressedLast={persistence.LastSuppressedSequence} " +
+                         $"SuppressedRanges={persistence.SuppressedRangeCount} " +
+                         $"SuppressedCumulativeFirst={persistence.CumulativeFirstSuppressedSequence} " +
+                         $"SuppressedCumulativeLast={persistence.CumulativeLastSuppressedSequence} " +
+                         $"SuppressedCumulativeRanges={persistence.CumulativeSuppressedRangeCount} " +
+                         $"Discarded={persistence.DiscardedGenerationBatchCount} " +
                         $"OverCapacityDropped={persistence.OverCapacityDroppedBatchCount} " +
                         $"AsyncLogDropped={Config.ProjectLogHub.DroppedAsyncRecords}",
                         "FIELD");

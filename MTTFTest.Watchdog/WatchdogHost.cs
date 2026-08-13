@@ -14,6 +14,7 @@ namespace MTTFTest.Watchdog
 {
     internal sealed class WatchdogJournal
     {
+        public int SchemaVersion { get; set; } = WatchdogJournalPolicy.CurrentSchemaVersion;
         public string SessionId { get; set; }
         public string ExecutablePath { get; set; }
         public string PipeName { get; set; }
@@ -29,6 +30,9 @@ namespace MTTFTest.Watchdog
         public bool OrphanPauseTriggered { get; set; }
         public bool PowerDisableTriggered { get; set; }
         public string UpdatedUtc { get; set; }
+        public string StartedUtc { get; set; }
+        public long EventSequence { get; set; }
+        public long DroppedEventCount { get; set; }
         public WatchdogHeartbeat LastHeartbeat { get; set; }
     }
 
@@ -39,6 +43,8 @@ namespace MTTFTest.Watchdog
         public string SessionId;
         public string PipeName;
         public string ExecutablePath;
+        public string JournalDirectory;
+        public WatchdogJournalPolicy JournalPolicy;
 
         public static WatchdogArguments Parse(string[] args)
         {
@@ -57,23 +63,53 @@ namespace MTTFTest.Watchdog
                 ParentStartTicks = ticks,
                 SessionId = Read("--session"),
                 PipeName = Read("--pipe"),
-                ExecutablePath = Read("--executable")
+                ExecutablePath = Read("--executable"),
+                JournalDirectory = Read("--journal-directory"),
+                JournalPolicy = new WatchdogJournalPolicy
+                {
+                    RetentionDays = ReadInt(Read("--journal-retention-days"), WatchdogJournalPolicy.DefaultRetentionDays),
+                    RetainSessionCount = ReadInt(Read("--journal-retain-sessions"), WatchdogJournalPolicy.DefaultRetainSessionCount),
+                    MaxTotalBytes = ReadLong(Read("--journal-max-total-bytes"), WatchdogJournalPolicy.DefaultMaxTotalBytes),
+                    MaxSessionBytes = ReadLong(Read("--journal-max-session-bytes"), WatchdogJournalPolicy.DefaultMaxSessionBytes),
+                    HeartbeatCheckpointSeconds = ReadInt(Read("--journal-heartbeat-checkpoint-seconds"), WatchdogJournalPolicy.DefaultHeartbeatCheckpointSeconds),
+                    EmergencySpoolMaxBytes = ReadLong(Read("--journal-emergency-spool-max-bytes"), WatchdogJournalPolicy.DefaultEmergencySpoolMaxBytes)
+                }
             };
             if (pid <= 0 || ticks <= 0 || string.IsNullOrWhiteSpace(result.SessionId) ||
-                string.IsNullOrWhiteSpace(result.PipeName) || string.IsNullOrWhiteSpace(result.ExecutablePath))
+                string.IsNullOrWhiteSpace(result.PipeName) || string.IsNullOrWhiteSpace(result.ExecutablePath) ||
+                string.IsNullOrWhiteSpace(result.JournalDirectory))
                 throw new ArgumentException("Watchdog startup arguments are incomplete.");
             result.ExecutablePath = Path.GetFullPath(result.ExecutablePath);
+            result.JournalDirectory = WatchdogJournalPaths.ValidateProjectDirectory(result.JournalDirectory);
+            result.JournalPolicy.Normalize();
             return result;
         }
+
+        internal static string ReadRaw(string[] args, string name)
+        {
+            for (var i = 0; i + 1 < (args?.Length ?? 0); i++)
+                if (string.Equals(args[i], name, StringComparison.OrdinalIgnoreCase))
+                    return args[i + 1];
+            return string.Empty;
+        }
+
+        private static int ReadInt(string value, int fallback) =>
+            int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) && parsed > 0
+                ? parsed : fallback;
+
+        private static long ReadLong(string value, long fallback) =>
+            long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) && parsed > 0
+                ? parsed : fallback;
     }
 
-    internal sealed class WatchdogHost
+    internal sealed class WatchdogHost : IDisposable
     {
         private static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
         private readonly WatchdogArguments _args;
         private readonly object _gate = new object();
         private readonly CancellationTokenSource _stop = new CancellationTokenSource();
         private readonly object _journalGate = new object();
+        private readonly WatchdogJournalStore _journalStore;
         private StreamWriter _writer;
         private WatchdogJournal _journal;
         private long _lastHeartbeatTimestamp = Stopwatch.GetTimestamp();
@@ -81,13 +117,26 @@ namespace MTTFTest.Watchdog
         private long _lastProgressVersion;
         private long _lastHeartbeatSequence;
         private long _lastHeartbeatAckSequence;
+        private long _eventSequence;
+        private long _lastHeartbeatCheckpointTimestamp;
         private int _takeoverStarted;
         private int _relaunchStarted;
+        private int _heartbeatSuspectLogged;
+        private int _terminalPublished;
         private bool _attached;
 
         private WatchdogHost(WatchdogArguments args)
         {
             _args = args;
+            using (var process = Process.GetCurrentProcess())
+                _journalStore = new WatchdogJournalStore(
+                    args.JournalDirectory,
+                    args.SessionId,
+                    "sidecar",
+                    args.JournalPolicy,
+                    process.Id,
+                    process.StartTime.ToUniversalTime().Ticks);
+            var startedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
             _journal = new WatchdogJournal
             {
                 SessionId = args.SessionId,
@@ -96,9 +145,11 @@ namespace MTTFTest.Watchdog
                 CurrentPid = args.ParentPid,
                 CurrentProcessStartUtcTicks = args.ParentStartTicks,
                 State = "Starting",
-                UpdatedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture)
+                UpdatedUtc = startedUtc,
+                StartedUtc = startedUtc
             };
             SaveJournal();
+            RecordEvent("Starting", "SidecarStarted");
         }
 
         public static int Run(string[] rawArgs)
@@ -110,7 +161,11 @@ namespace MTTFTest.Watchdog
                 try { owns = singleton.WaitOne(0, false); }
                 catch (AbandonedMutexException) { owns = true; }
                 if (!owns) return 0;
-                try { return new WatchdogHost(args).RunAsync().GetAwaiter().GetResult(); }
+                try
+                {
+                    using (var host = new WatchdogHost(args))
+                        return host.RunAsync().GetAwaiter().GetResult();
+                }
                 finally { try { singleton.ReleaseMutex(); } catch { } }
             }
         }
@@ -178,6 +233,7 @@ namespace MTTFTest.Watchdog
                     {
                         _journal.ManualStopRequested = true;
                         Record("SessionRevoked", "AttachRevocationMarker");
+                        PublishTerminal("SessionRevoked", "AttachRevocationMarker");
                         _stop.Cancel();
                         break;
                     }
@@ -202,6 +258,7 @@ namespace MTTFTest.Watchdog
                 case WatchdogMessageType.Heartbeat:
                     if (message.Heartbeat == null) break;
                     _attached = true;
+                    Interlocked.Exchange(ref _heartbeatSuspectLogged, 0);
                     _journal.CurrentPid = message.Heartbeat.ProcessId;
                     _journal.CurrentProcessStartUtcTicks = message.Heartbeat.ProcessStartUtcTicks;
                     _journal.LastHeartbeat = message.Heartbeat;
@@ -214,9 +271,10 @@ namespace MTTFTest.Watchdog
                         _lastProgressVersion = message.Heartbeat.RecoveryProgressVersion;
                         Interlocked.Exchange(ref _lastProgressTimestamp, Stopwatch.GetTimestamp());
                     }
-                    SaveJournal();
                     _lastHeartbeatAckSequence = message.Heartbeat.Sequence;
                     _journal.LastHeartbeatAckSequence = _lastHeartbeatAckSequence;
+                    SaveJournal();
+                    RecordHeartbeatCheckpoint();
                     Send(new WatchdogMessage
                     {
                         Type = WatchdogMessageType.HeartbeatAck,
@@ -239,6 +297,7 @@ namespace MTTFTest.Watchdog
                 case WatchdogMessageType.ManualStopRequested:
                     _journal.ManualStopRequested = true;
                     Record("ManualStopRequested", message.Reason);
+                    PublishTerminal("ManualStopRequested", message.Reason);
                     // 人工停止已由主程序先写入跨进程撤权标记。Watchdog 此时的
                     // 唯一职责是永久放弃本 Session 的 Kill/重启资格，不应再等待
                     // StopAll 的持久化或逻辑收口；否则 StopAll 自身卡住会遗留一个
@@ -251,6 +310,7 @@ namespace MTTFTest.Watchdog
                 case WatchdogMessageType.ShutdownExpected:
                     _journal.ManualStopRequested = true;
                     Record(message.Type, message.Reason);
+                    PublishTerminal(message.Type, message.Reason);
                     _stop.Cancel();
                     break;
             }
@@ -269,12 +329,17 @@ namespace MTTFTest.Watchdog
                     {
                         _journal.ManualStopRequested = true;
                         Record("SessionRevoked", "RevocationMarker");
+                        PublishTerminal("SessionRevoked", "RevocationMarker");
                         _stop.Cancel();
                         continue;
                     }
                     var heartbeatAge = ElapsedSeconds(Interlocked.Read(ref _lastHeartbeatTimestamp));
                     if (heartbeatAge >= 3 && heartbeatAge < 5)
+                    {
+                        if (Interlocked.CompareExchange(ref _heartbeatSuspectLogged, 1, 0) == 0)
+                            RecordEvent("HeartbeatSuspect", $"HeartbeatAgeSeconds={heartbeatAge:F3}");
                         Send(WatchdogMessageType.Ping, "HeartbeatSuspect", null);
+                    }
                     var heartbeat = _journal.LastHeartbeat;
                     var eligibleChannels = GetRecoveryEligibleChannels(heartbeat);
                     var processAlive = IsCurrentProcessAlive();
@@ -463,14 +528,7 @@ namespace MTTFTest.Watchdog
 
         private bool IsSessionRevoked()
         {
-            try
-            {
-                var directory = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "MTTFTest", "Watchdog");
-                return File.Exists(Path.Combine(directory, "session-" + SafeName(_args.SessionId) + ".revoked"));
-            }
-            catch { return false; }
+            return WatchdogControlMarker.IsRevoked(_args.JournalDirectory, _args.SessionId);
         }
 
         private bool MatchesCurrentProcess(Process process)
@@ -526,27 +584,78 @@ namespace MTTFTest.Watchdog
 
         private void Record(string state, string reason)
         {
-            _journal.State = state;
-            _journal.LastReason = reason ?? string.Empty;
+            lock (_journalGate)
+            {
+                _journal.State = state;
+                _journal.LastReason = reason ?? string.Empty;
+            }
             SaveJournal();
+            RecordEvent(state, reason);
         }
 
         private void SaveJournal()
         {
-            try
+            string content;
+            lock (_journalGate)
             {
-                lock (_journalGate)
-                    _journal.UpdatedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
-                var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MTTFTest", "Watchdog");
-                Directory.CreateDirectory(directory);
-                var path = Path.Combine(directory, "session-" + SafeName(_args.SessionId) + ".json");
-                var temporary = path + ".tmp-" + Guid.NewGuid().ToString("N");
-                string content;
-                lock (_journalGate) content = Json.Serialize(_journal);
-                File.WriteAllText(temporary, content, new UTF8Encoding(false));
-                if (File.Exists(path)) File.Replace(temporary, path, null); else File.Move(temporary, path);
+                _journal.UpdatedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+                _journal.EventSequence = Interlocked.Read(ref _eventSequence);
+                _journal.DroppedEventCount = _journalStore.DroppedEventCount;
+                content = Json.Serialize(_journal);
             }
-            catch (Exception ex) { WriteEmergencyLog("JournalSaveFailed: " + ex); }
+            _journalStore.PublishSnapshot(content);
+        }
+
+        private void RecordHeartbeatCheckpoint()
+        {
+            var now = Stopwatch.GetTimestamp();
+            var previous = Interlocked.Read(ref _lastHeartbeatCheckpointTimestamp);
+            if (previous != 0 &&
+                (now - previous) / (double)Stopwatch.Frequency < _args.JournalPolicy.HeartbeatCheckpointSeconds)
+                return;
+            if (Interlocked.CompareExchange(ref _lastHeartbeatCheckpointTimestamp, now, previous) != previous)
+                return;
+            RecordEvent("HeartbeatCheckpoint", "Periodic", true);
+        }
+
+        private void RecordEvent(string eventType, string reason, bool checkpoint = false)
+        {
+            WatchdogJournalEvent value;
+            lock (_journalGate)
+            {
+                var heartbeat = _journal.LastHeartbeat;
+                value = new WatchdogJournalEvent
+                {
+                    EventSequence = Interlocked.Increment(ref _eventSequence),
+                    EventType = eventType ?? string.Empty,
+                    State = _journal.State,
+                    Reason = reason ?? string.Empty,
+                    ProcessId = _journal.CurrentPid,
+                    ProcessStartUtcTicks = _journal.CurrentProcessStartUtcTicks,
+                    HeartbeatSequence = _journal.LastHeartbeatSequence,
+                    AckSequence = _journal.LastHeartbeatAckSequence,
+                    RecoveryAttempt = _journal.RecoveryAttempt,
+                    ManualStopRequested = _journal.ManualStopRequested,
+                    RunId = heartbeat?.RunId,
+                    RunEpoch = heartbeat?.RunEpoch ?? 0,
+                    OrphanPaused = heartbeat?.OrphanPaused == true,
+                    PowerDisablePending = heartbeat?.PowerDisablePending == true,
+                    RecoveryStage = heartbeat?.RecoveryStage,
+                    RecoveryIncident = heartbeat?.RecoveryIncident,
+                    RecoveryContext = heartbeat?.RecoveryContext,
+                    EnabledChannels = heartbeat?.EnabledChannels ?? Array.Empty<int>(),
+                    EligibleChannels = GetRecoveryEligibleChannels(heartbeat),
+                    CompletedChannels = heartbeat?.CompletedChannels ?? Array.Empty<int>(),
+                    PermanentAlarmedChannels = heartbeat?.PermanentAlarmedChannels ?? Array.Empty<int>()
+                };
+            }
+            _journalStore.Record(value, checkpoint);
+        }
+
+        private void PublishTerminal(string state, string reason)
+        {
+            if (Interlocked.CompareExchange(ref _terminalPublished, 1, 0) != 0) return;
+            _journalStore.PublishTerminal(state, reason);
         }
 
         private static double ElapsedSeconds(long since) => (Stopwatch.GetTimestamp() - since) / (double)Stopwatch.Frequency;
@@ -557,15 +666,34 @@ namespace MTTFTest.Watchdog
             return value;
         }
 
-        internal static void WriteEmergencyLog(string message)
+        internal static void WriteEmergencyLog(string message, string[] rawArgs = null)
         {
             try
             {
-                var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MTTFTest", "Watchdog");
-                Directory.CreateDirectory(directory);
-                File.AppendAllText(Path.Combine(directory, "watchdog-error.log"), DateTime.UtcNow.ToString("O") + " " + message + Environment.NewLine);
+                var directory = WatchdogArguments.ReadRaw(rawArgs, "--journal-directory");
+                var session = WatchdogArguments.ReadRaw(rawArgs, "--session");
+                if (string.IsNullOrWhiteSpace(directory) || !Guid.TryParseExact(session, "N", out _)) return;
+                using (var process = Process.GetCurrentProcess())
+                using (var store = new WatchdogJournalStore(
+                           directory,
+                           session,
+                           "sidecar",
+                           new WatchdogJournalPolicy(),
+                           process.Id,
+                           process.StartTime.ToUniversalTime().Ticks))
+                {
+                    store.RecordError(message);
+                    store.Flush(TimeSpan.FromSeconds(1));
+                }
             }
             catch { }
+        }
+
+        public void Dispose()
+        {
+            try { _journalStore.Flush(TimeSpan.FromSeconds(2)); } catch { }
+            try { _journalStore.Dispose(); } catch { }
+            try { _stop.Dispose(); } catch { }
         }
     }
 }

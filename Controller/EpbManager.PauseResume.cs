@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Config;
 using Timing;
 
 namespace Controller
@@ -704,7 +705,11 @@ namespace Controller
             var runId = _activeBatchId;
             var modelBeforeLogicalCycle = runner.CaptureAdaptiveProfile();
             var cycleNumber = 0;
-            var attempts = await SoftwareSelfHealingLoop.RunAsync(
+            BeginLearningProfileTransaction(channel);
+            int attempts;
+            try
+            {
+                attempts = await SoftwareSelfHealingLoop.RunAsync(
                     async (attempt, attemptToken) =>
                     {
                         await EnsurePowerSupplyReadyForChannelsAsync(new[] { channel }, attemptToken)
@@ -756,7 +761,7 @@ namespace Controller
                                         softwareAttempt: attempt)
                                     .ConfigureAwait(false);
                                 cycleNumber = 0;
-                                runner.RestoreAdaptiveProfile(modelBeforeLogicalCycle);
+                                RestoreRunnerAdaptiveProfile(runner, modelBeforeLogicalCycle);
                                 await WaitForDaqRecoveryAsync(channel, attemptToken).ConfigureAwait(false);
                                 throw new SoftwareSelfHealingRetryException(
                                     $"EPB[{channel}] 资格圈遇到DAQ陈旧数据；已作废并等待恢复后重做。");
@@ -775,9 +780,49 @@ namespace Controller
                                     softwareAttempt: attempt)
                                 .ConfigureAwait(false);
                             cycleNumber = 0;
+                            try
+                            {
+                                SaveAdaptiveProfileWithReceipt(runner.CaptureAdaptiveProfile());
+                                UpdateLearningAttemptReceiptStatus(
+                                    channel, qualificationOrdinal, attempt, "Successful", string.Empty,
+                                    qualification: true);
+                            }
+                            catch (EpbAdaptiveProfilePersistenceFatalException fatalEx)
+                            {
+                                // Preserve the non-retryable persistence fatal
+                                // identity even when failed-receipt I/O also
+                                // fails.  Runner state is restored first.
+                                RestoreRunnerAdaptiveProfile(runner, modelBeforeLogicalCycle);
+                                TryUpdateLearningAttemptReceiptStatusBestEffort(
+                                    channel,
+                                    qualificationOrdinal,
+                                    attempt,
+                                    "ModelCommitFatal:" + fatalEx.Message,
+                                    qualification: true,
+                                    failureKind: "Fatal",
+                                    originalFailure: fatalEx);
+                                throw;
+                            }
+                            catch (Exception saveEx)
+                            {
+                                // Keep runner memory transactional with the
+                                // store: SaveWithReceipt can restore disk while
+                                // the runner still holds the failed model.
+                                RestoreRunnerAdaptiveProfile(runner, modelBeforeLogicalCycle);
+                                TryUpdateLearningAttemptReceiptStatusBestEffort(
+                                    channel,
+                                    qualificationOrdinal,
+                                    attempt,
+                                    "ModelCommitFailed:" + saveEx.Message,
+                                    qualification: true,
+                                    failureKind: "Failure",
+                                    originalFailure: saveEx);
+                                throw;
+                            }
                         }
                         catch (SoftwareSelfHealingRetryException)
                         {
+                            RestoreRunnerAdaptiveProfile(runner, modelBeforeLogicalCycle);
                             // 软件瞬态也必须把本次负圈封成明确终态。V2.12.0.2 在这里
                             // 直接把局部圈号清零，Recorder.CurrentCycle 仍保持 running，
                             // 后续每次资格重试都会永久失败于“上一圈尚未封存”。
@@ -795,6 +840,7 @@ namespace Controller
                         }
                         catch (OperationCanceledException)
                         {
+                            RestoreRunnerAdaptiveProfile(runner, modelBeforeLogicalCycle);
                             if (!IsAlarmStopRequested(channel))
                                 await SealLearningCycleAsync(
                                         channel,
@@ -809,6 +855,10 @@ namespace Controller
                         }
                         catch
                         {
+                            // Ordinary IOException and other software failures
+                            // must restore the runner before self-healing/failure
+                            // handling, not merely roll back the profile store.
+                            RestoreRunnerAdaptiveProfile(runner, modelBeforeLogicalCycle);
                             if (!IsAlarmStopRequested(channel))
                                 await SealLearningCycleAsync(
                                         channel,
@@ -833,7 +883,7 @@ namespace Controller
                     },
                     async (attempt, ex, attemptToken) =>
                     {
-                        runner.RestoreAdaptiveProfile(modelBeforeLogicalCycle);
+                            RestoreRunnerAdaptiveProfile(runner, modelBeforeLogicalCycle);
                         await AbortHydraulicLeaseForChannelAsync(
                                 channel,
                                 "QualificationPersistenceSelfHealing")
@@ -855,6 +905,11 @@ namespace Controller
                     GetDaqSelfMaintenanceDelayMs,
                     token)
                 .ConfigureAwait(false);
+            }
+            finally
+            {
+                EndLearningProfileTransaction(channel);
+            }
 
             if (attempts > 1)
                 PublishChannelRuntimeState(

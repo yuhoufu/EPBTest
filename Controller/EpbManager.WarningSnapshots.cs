@@ -7,6 +7,7 @@ using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
 using System.IO.Compression;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -18,10 +19,140 @@ using IO.NI;
 
 namespace Controller
 {
+    internal static class HistoricalStorageBudget
+    {
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern bool GetDiskFreeSpaceEx(
+            string directoryName,
+            out ulong freeBytesAvailable,
+            out ulong totalNumberOfBytes,
+            out ulong totalNumberOfFreeBytes);
+
+        internal static bool IsBelowMinimum(long availableFreeBytes, long minimumFreeBytes)
+        {
+            return availableFreeBytes >= 0 && minimumFreeBytes > 0 &&
+                   availableFreeBytes < minimumFreeBytes;
+        }
+
+        internal static bool TryGetAvailableFreeBytes(string path, out long availableFreeBytes)
+        {
+            return TryGetAvailableFreeBytes(path, null, out availableFreeBytes);
+        }
+
+        /// <summary>
+        /// Returns the free bytes for the volume containing <paramref name="path"/>.
+        /// The optional probe exists only for deterministic tests; production uses
+        /// DriveInfo first and GetDiskFreeSpaceEx as a UNC-safe fallback.
+        /// </summary>
+        internal static bool TryGetAvailableFreeBytes(
+            string path,
+            Func<string, long?> probe,
+            out long availableFreeBytes)
+        {
+            availableFreeBytes = -1;
+            string fullPath;
+            try
+            {
+                fullPath = Path.GetFullPath(path ?? string.Empty);
+            }
+            catch
+            {
+                return false;
+            }
+
+            if (probe != null)
+            {
+                try
+                {
+                    var probed = probe(fullPath);
+                    if (probed.HasValue && probed.Value >= 0)
+                    {
+                        availableFreeBytes = probed.Value;
+                        return true;
+                    }
+                }
+                catch
+                {
+                    // Fall through to the real probes when a test/injected probe
+                    // declines the path.
+                }
+            }
+
+            try
+            {
+                var driveRoot = Path.GetPathRoot(fullPath);
+                if (!string.IsNullOrWhiteSpace(driveRoot))
+                {
+                    try
+                    {
+                        availableFreeBytes = new DriveInfo(driveRoot).AvailableFreeSpace;
+                        if (availableFreeBytes >= 0) return true;
+                    }
+                    catch
+                    {
+                        // DriveInfo does not resolve all UNC roots; use the
+                        // Win32 API below, which accepts local and UNC paths.
+                    }
+                }
+
+                ulong freeBytes;
+                ulong totalBytes;
+                ulong totalFreeBytes;
+                if (!GetDiskFreeSpaceEx(
+                        fullPath,
+                        out freeBytes,
+                        out totalBytes,
+                        out totalFreeBytes))
+                    return false;
+                availableFreeBytes = freeBytes > long.MaxValue
+                    ? long.MaxValue
+                    : (long)freeBytes;
+                return availableFreeBytes >= 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        internal static long MeasureDirectoryBytes(string directory)
+        {
+            if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory)) return 0L;
+            long bytes = 0;
+            try
+            {
+                foreach (var path in Directory.EnumerateFiles(
+                             directory,
+                             "*",
+                             SearchOption.AllDirectories))
+                {
+                    try { bytes = checked(bytes + new FileInfo(path).Length); }
+                    catch { }
+                }
+            }
+            catch { }
+            return Math.Max(0L, bytes);
+        }
+    }
+
     internal sealed class DaqIncidentEvidenceSubmission
     {
         internal string ContextKey;
+        // Deterministic Device+faultCode+RunEpoch identity. ContextKey remains
+        // device-scoped for the DAQ queue capacity contract; this field lets the
+        // session policy reject accidental cross-fault merges.
+        internal string SessionKey;
+        // Runtime session instance.  Unlike the deterministic SessionKey this
+        // value changes after a terminal or an out-of-window observation and
+        // is therefore part of the queue identity.
+        internal Guid SessionId;
+        // Storage identity deliberately excludes Device so two devices from
+        // the same RunId/fault/epoch can contribute phases to one shared root;
+        // each device still has an independent queue ContextKey.
+        internal Guid StorageSessionId;
+        internal string[] ExpectedDevices;
         internal Guid RunId;
+        internal long RunEpoch;
         internal Guid CorrelationId;
         internal string Device;
         internal DateTime StartedUtc;
@@ -30,6 +161,7 @@ namespace Controller
         internal string IncidentJson;
         internal bool IsTrigger;
         internal bool IsTerminal;
+        internal bool HeavyEvidenceSuppressed;
         internal Action<string> WriteHeavyEvidence;
     }
 
@@ -69,6 +201,11 @@ namespace Controller
             private DaqIncidentEvidenceSubmission _terminal;
             private bool _triggerExported;
             private bool _terminalExported;
+            private string _sessionKey;
+            private Guid _sessionId;
+            private Guid _storageSessionId;
+            private readonly HashSet<string> _expectedDevices =
+                new(StringComparer.OrdinalIgnoreCase);
 
             internal RootState(string key) { Key = key; }
             internal string Key { get; }
@@ -81,6 +218,31 @@ namespace Controller
                     if (_terminalExported) return false;
                     var phase = (submission.PhaseKey ?? string.Empty).Trim();
                     if (phase.Length == 0) return false;
+                    if (!string.IsNullOrWhiteSpace(submission.SessionKey))
+                    {
+                        if (!string.IsNullOrWhiteSpace(_sessionKey) &&
+                            !string.Equals(_sessionKey, submission.SessionKey,
+                                StringComparison.OrdinalIgnoreCase))
+                            return false;
+                        _sessionKey = submission.SessionKey;
+                    }
+                    if (submission.SessionId != Guid.Empty)
+                    {
+                        if (_sessionId != Guid.Empty && _sessionId != submission.SessionId)
+                            return false;
+                        _sessionId = submission.SessionId;
+                    }
+                    if (submission.StorageSessionId != Guid.Empty)
+                    {
+                        if (_storageSessionId != Guid.Empty && _storageSessionId != submission.StorageSessionId)
+                            return false;
+                        _storageSessionId = submission.StorageSessionId;
+                    }
+                    foreach (var expected in submission.ExpectedDevices ?? Array.Empty<string>())
+                    {
+                        var normalized = IncidentSessionPolicy.NormalizeDevice(expected);
+                        if (!string.IsNullOrWhiteSpace(normalized)) _expectedDevices.Add(normalized);
+                    }
                     if (_phases.Contains(phase)) return true;
                     // terminal 注册后根事故已经冻结；迟到派生症状不得写在终态之后。
                     if (_terminal != null && !submission.IsTerminal) return false;
@@ -102,6 +264,11 @@ namespace Controller
                     _phases.Add(phase);
                     return true;
                 }
+            }
+
+            internal string[] ExpectedDevices
+            {
+                get { lock (_gate) return _expectedDevices.ToArray(); }
             }
 
             internal bool HasQueueableWork
@@ -297,6 +464,11 @@ namespace Controller
                         _contexts.TryRemove(state.Key, out _);
                     else if (exported && state.HasQueueableWork)
                         EnsureQueued(state);
+                    else if (!exported && state.HasQueueableWork)
+                        // No receipt/manifest commit occurred. Requeue the same
+                        // root after releasing the single running slot; this is
+                        // still one worker + one pending job, never a new Task.
+                        EnsureQueued(state);
                     ScheduleWaitingContexts(exported ? null : state);
                 }
             }
@@ -331,12 +503,15 @@ namespace Controller
         private readonly ConcurrentDictionary<string, object> _warningSnapshotCategoryGates =
             new(StringComparer.OrdinalIgnoreCase);
         private readonly ConcurrentQueue<WarningScalarEvidence> _warningScalarQueue = new();
-        private readonly ConcurrentDictionary<Guid, string> _daqIncidentDirectories = new();
         private readonly ConcurrentDictionary<int, int> _formalPersistenceRecoveryAttempts = new();
         private readonly ConcurrentDictionary<int, int> _formalControlRecoveryAttempts = new();
         private readonly ConcurrentDictionary<int, int> _formalPersistenceRecoveryPendingCycles = new();
         private readonly object _daqIncidentEvidenceQueueInitGate = new();
         private DaqIncidentEvidenceQueue _daqIncidentEvidenceQueue;
+        private readonly Lazy<IncidentSessionPolicy> _incidentSessionPolicy =
+            new Lazy<IncidentSessionPolicy>(() => IncidentSessionPolicy.FromAppSettings(
+                System.Configuration.ConfigurationManager.AppSettings,
+                null), true);
         private int _warningSnapshotFreeSpaceWarningActive;
         private int _warningSnapshotWorkerRunning;
         private int _warningScalarWorkerRunning;
@@ -351,6 +526,9 @@ namespace Controller
         private long _warningSnapshotTrackedUsedBytes;
         private long _warningSnapshotTrackedCount;
         private bool _warningSnapshotStorageCounterInitialized;
+        private long _historicalSnapshotWrittenBytes;
+        private long _historicalSnapshotSkippedLowSpace;
+        private long _historicalLastLowSpaceWarningTicks;
         private static readonly Regex WarningEventDirectoryPattern = new(
             @"^\d{8}_\d{9}-Cycle-?\d+-Streak\d+of\d+$",
             RegexOptions.CultureInvariant | RegexOptions.Compiled);
@@ -945,6 +1123,8 @@ namespace Controller
             if (context == null) return;
             var phaseKey = string.IsNullOrWhiteSpace(result) ? "phase" : result.Trim();
             if (!context.SnapshotPhases.TryAdd(phaseKey, 0)) return;
+            var isTrigger = phaseKey.StartsWith("00-trigger", StringComparison.OrdinalIgnoreCase);
+            var isTerminal = phaseKey.StartsWith("90-", StringComparison.OrdinalIgnoreCase);
             // Only cheap scalar state is frozen on the caller. Full diagnostic/cycle evidence
             // is captured by the bounded incident worker; recovery only submits immutable data.
             var capturedUtc = DateTime.UtcNow;
@@ -952,12 +1132,54 @@ namespace Controller
             var includeTimingEvidence = ShouldIncludeDaqTimingEvidence(result);
             // 恢复终态默认只保留紧凑诊断。完整单圈数据已经由正式圈文件保存，
             // 再复制每通道最近 10 圈会把一次恢复放大到数百 MB，并直接拖慢试验。
-            var includeRecentCycleCopies = includeFullEvidence &&
-                                           ReadBooleanAppSetting("DaqIncidentCopyRecentCycles", false);
+            var requestedRecentCycleCopies = includeFullEvidence &&
+                                             ReadBooleanAppSetting("DaqIncidentCopyRecentCycles", false);
             var queue = _persistence.GetSnapshot(context.Device);
             var runEpoch = context.RunEpoch;
             var recoveryEpoch = context.RecoveryEpoch;
             var runId = context.RunId == Guid.Empty ? _activeBatchId : context.RunId;
+            if (!TryGetExpectedIncidentDevices(
+                    runId,
+                    context.CorrelationId,
+                    runEpoch,
+                    context.Device,
+                    out var expectedDevices))
+            {
+                // A shared participant-set lookup failure must not silently
+                // downgrade to a one-device root. Remove the phase admission
+                // marker so a later callback can retry the same phase.
+                context.SnapshotPhases.TryRemove(phaseKey, out _);
+                _log.Warn(
+                    $"DAQ事故expected device集合暂不可用，延期phase：Device={context.Device} " +
+                    $"CorrelationId={context.CorrelationId:N} Phase={phaseKey}",
+                    "落盘");
+                return;
+            }
+            var sessionPolicy = _incidentSessionPolicy.Value;
+            var sessionKey = IncidentSessionPolicy.BuildSessionKey(
+                context.Device,
+                context.TriggerCode,
+                runEpoch);
+            var sessionDecision = sessionPolicy.Observe(new IncidentSessionRequest
+            {
+                Device = context.Device,
+                FaultCode = context.TriggerCode,
+                RunEpoch = runEpoch,
+                OccurredUtc = capturedUtc,
+                IsTrigger = isTrigger,
+                IsTerminal = isTerminal,
+                IsHeavyEvidence = includeTimingEvidence,
+                EstimatedHeavyBytes = includeFullEvidence ? 32L * 1024L * 1024L : 8L * 1024L * 1024L,
+                AvailableFreeBytes = TryGetIncidentAvailableFreeBytes()
+            });
+            var storageSessionId = ResolveDaqIncidentStorageSessionId(
+                runId, context.TriggerCode, runEpoch, context.CorrelationId,
+                sessionDecision.SessionId);
+            // Heavy diagnostics/cycle copies are optional. Trigger, terminal and
+            // summary JSON are always admitted even when a quota gate fires.
+            var allowHeavyEvidence = includeTimingEvidence &&
+                                     sessionDecision.HeavyEvidenceAllowed;
+            var includeRecentCycleCopies = allowHeavyEvidence && requestedRecentCycleCopies;
             var beforeClock = context.BeforeClock ?? new DaqFreshnessSnapshot();
             var afterClock = context.AfterClock ?? _acq.GetDaqFreshnessSnapshot(context.Device, 100);
             var generation = _acq.GetCurrentGeneration(context.Device);
@@ -1048,29 +1270,34 @@ namespace Controller
                 $"  \"firstSuppressedSequence\": {queue.FirstSuppressedSequence},\n" +
                 $"  \"lastSuppressedSequence\": {queue.LastSuppressedSequence},\n" +
                 $"  \"suppressedRangeCount\": {queue.SuppressedRangeCount},\n" +
+                $"  \"cumulativeFirstSuppressedSequence\": {queue.CumulativeFirstSuppressedSequence},\n" +
+                $"  \"cumulativeLastSuppressedSequence\": {queue.CumulativeLastSuppressedSequence},\n" +
+                $"  \"cumulativeSuppressedRangeCount\": {queue.CumulativeSuppressedRangeCount},\n" +
                 $"  \"discardedGenerationBatches\": {queue.DiscardedGenerationBatchCount},\n" +
                 $"  \"validationPhase\": \"{JsonEscape(context.ValidationPhase)}\",\n" +
                 $"  \"timingEvidenceIncluded\": {includeTimingEvidence.ToString().ToLowerInvariant()},\n" +
                 $"  \"fullEvidenceIncluded\": {includeFullEvidence.ToString().ToLowerInvariant()},\n" +
                 $"  \"recentCycleCopiesIncluded\": {includeRecentCycleCopies.ToString().ToLowerInvariant()},\n" +
+                $"  \"sessionKey\": \"{JsonEscape(sessionDecision.SessionKey)}\",\n" +
+                 $"  \"sessionId\": \"{sessionDecision.SessionId:N}\",\n" +
+                 $"  \"storageSessionId\": \"{storageSessionId:N}\",\n" +
+                 $"  \"heavyEvidenceSuppressed\": {sessionDecision.HeavyEvidenceSuppressed.ToString().ToLowerInvariant()},\n" +
                 "  \"validBatchesDroppedByClockModel\": 0,\n" +
                 $"  \"result\": \"{JsonEscape(result)}\",\n" +
                 $"  \"capturedUtc\": \"{capturedUtc:O}\"\n" +
                 "}\n";
-            var isTrigger = phaseKey.StartsWith("00-trigger", StringComparison.OrdinalIgnoreCase);
-            var isTerminal = phaseKey.StartsWith("90-", StringComparison.OrdinalIgnoreCase);
             var safePhase = string.Concat(phaseKey
                 .Select(ch => char.IsLetterOrDigit(ch) || ch == '-' ? ch : '_'));
-            var recorder = includeRecentCycleCopies ? Recorder : null;
+            var recorder = allowHeavyEvidence && includeRecentCycleCopies ? Recorder : null;
             // CaptureDiagnostics 只做有界 ring 的内存快照，不触碰文件。必须在 Submit
             // 时冻结，否则前一份证据写盘稍慢就会让 trigger 前 10 秒记录被 ring 覆盖。
-            var frozenDiagnostics = includeTimingEvidence
+            var frozenDiagnostics = allowHeavyEvidence
                 ? _acq.CaptureDiagnostics(
                     new[] { context.Device },
                     includeFullEvidence ? TimeSpan.FromSeconds(60) : TimeSpan.FromSeconds(10))
                 : null;
             Action<string> writeHeavyEvidence = null;
-            if (includeTimingEvidence)
+            if (allowHeavyEvidence)
             {
                 writeHeavyEvidence = phaseDirectory =>
                 {
@@ -1091,18 +1318,26 @@ namespace Controller
 
             var submission = new DaqIncidentEvidenceSubmission
             {
-                ContextKey = DaqIncidentEvidenceContextKey(runId, context.CorrelationId),
+                ContextKey = DaqIncidentEvidenceSessionContextKey(
+                    context.Device, sessionDecision.SessionKey, sessionDecision.SessionId),
+                SessionKey = sessionDecision.SessionKey,
+                SessionId = sessionDecision.SessionId,
+                StorageSessionId = storageSessionId,
+                ExpectedDevices = expectedDevices,
                 RunId = runId,
+                RunEpoch = runEpoch,
                 CorrelationId = context.CorrelationId,
                 Device = context.Device,
                 StartedUtc = context.StartedUtc,
                 PhaseKey = phaseKey,
                 PhaseDirectoryName = isTrigger || isTerminal
-                    ? $"{safePhase}-{sequence:D3}-{capturedUtc:HHmmss_fff}"
+                    ? $"{safePhase}-{DaqIncidentDeviceToken(context.Device)}-" +
+                      $"{sequence:D3}-{capturedUtc:HHmmss_fff}"
                     : null,
                 IncidentJson = incidentJson,
                 IsTrigger = isTrigger,
                 IsTerminal = isTerminal,
+                HeavyEvidenceSuppressed = sessionDecision.HeavyEvidenceSuppressed,
                 WriteHeavyEvidence = writeHeavyEvidence
             };
             if (!GetDaqIncidentEvidenceQueue().Submit(submission))
@@ -1152,6 +1387,20 @@ namespace Controller
             var capturedUtc = DateTime.UtcNow;
             var control = _acq.GetControlSnapshot(context.Device);
             var runEpoch = Interlocked.Read(ref _runEpoch);
+            var runId = context.RunId == Guid.Empty ? _activeBatchId : context.RunId;
+            if (!TryGetExpectedIncidentDevices(
+                    runId,
+                    context.CorrelationId,
+                    runEpoch,
+                    context.Device,
+                    out var expectedDevices))
+            {
+                _log.Warn(
+                    $"DAQ硬故障expected device集合暂不可用，延期取证：Device={context.Device} " +
+                    $"CorrelationId={context.CorrelationId:N}",
+                    "落盘");
+                return;
+            }
             var powerStates = _powerSupply == null
                 ? Array.Empty<PowerSupplyRuntimeState>()
                 : _cfg.Test.Groups
@@ -1170,19 +1419,40 @@ namespace Controller
                 .OrderBy(code => code, StringComparer.OrdinalIgnoreCase)
                 .ToArray();
             var derivedCodesJson = derivedCodes.Select(code => $"\"{JsonEscape(code)}\"");
-            var contextKey = DaqIncidentEvidenceContextKey(context.RunId, context.CorrelationId);
+            var sessionPolicy = _incidentSessionPolicy.Value;
+            var sessionDecision = sessionPolicy.Observe(new IncidentSessionRequest
+            {
+                Device = context.Device,
+                FaultCode = context.PrimaryCode,
+                RunEpoch = runEpoch,
+                OccurredUtc = capturedUtc,
+                IsTrigger = true,
+                IsHeavyEvidence = true,
+                EstimatedHeavyBytes = 8L * 1024L * 1024L,
+                AvailableFreeBytes = TryGetIncidentAvailableFreeBytes()
+            });
+            var sessionKey = sessionDecision.SessionKey;
+            var storageSessionId = ResolveDaqIncidentStorageSessionId(
+                runId, context.PrimaryCode, runEpoch, context.CorrelationId,
+                sessionDecision.SessionId);
+            var contextKey = DaqIncidentEvidenceSessionContextKey(
+                context.Device, sessionKey, sessionDecision.SessionId);
             var triggerJson = "{\n" +
                 $"  \"runId\": \"{context.RunId:N}\",\n" +
                 $"  \"device\": \"{JsonEscape(context.Device)}\",\n" +
                 $"  \"generation\": {context.Generation},\n" +
                 $"  \"correlationId\": \"{context.CorrelationId:N}\",\n" +
                 $"  \"runEpoch\": {runEpoch},\n" +
+                $"  \"sessionKey\": \"{JsonEscape(sessionKey)}\",\n" +
+                $"  \"sessionId\": \"{sessionDecision.SessionId:N}\",\n" +
+                $"  \"storageSessionId\": \"{storageSessionId:N}\",\n" +
                 $"  \"faultCode\": \"{JsonEscape(context.PrimaryCode)}\",\n" +
                 $"  \"reason\": \"{JsonEscape(context.PrimaryReason)}\",\n" +
                 $"  \"affectedChannels\": [{string.Join(",", affectedChannels)}],\n" +
                 $"  \"timingEvidenceIncluded\": true,\n" +
                 $"  \"fullEvidenceIncluded\": false,\n" +
                 $"  \"recentCycleCopiesIncluded\": false,\n" +
+                $"  \"heavyEvidenceSuppressed\": {sessionDecision.HeavyEvidenceSuppressed.ToString().ToLowerInvariant()},\n" +
                 $"  \"result\": \"00-trigger\",\n" +
                 $"  \"capturedUtc\": \"{capturedUtc:O}\"\n" +
                 "}\n";
@@ -1192,6 +1462,9 @@ namespace Controller
                 $"  \"generation\": {context.Generation},\n" +
                 $"  \"correlationId\": \"{context.CorrelationId:N}\",\n" +
                 $"  \"runEpoch\": {runEpoch},\n" +
+                $"  \"sessionKey\": \"{JsonEscape(sessionKey)}\",\n" +
+                $"  \"sessionId\": \"{sessionDecision.SessionId:N}\",\n" +
+                $"  \"storageSessionId\": \"{storageSessionId:N}\",\n" +
                 $"  \"primaryFault\": \"{JsonEscape(context.PrimaryCode)}\",\n" +
                 $"  \"primaryReason\": \"{JsonEscape(context.PrimaryReason)}\",\n" +
                 $"  \"primaryChannel\": {context.PrimaryChannel},\n" +
@@ -1211,20 +1484,28 @@ namespace Controller
                 "}\n";
 
             var incidentQueue = GetDaqIncidentEvidenceQueue();
-            var frozenTriggerDiagnostics = _acq.CaptureDiagnostics(
-                new[] { context.Device },
-                TimeSpan.FromSeconds(10));
+            var frozenTriggerDiagnostics = sessionDecision.HeavyEvidenceAllowed
+                ? _acq.CaptureDiagnostics(new[] { context.Device }, TimeSpan.FromSeconds(10))
+                : null;
             var triggerAccepted = incidentQueue.Submit(new DaqIncidentEvidenceSubmission
             {
                 ContextKey = contextKey,
-                RunId = context.RunId,
+                SessionKey = sessionKey,
+                SessionId = sessionDecision.SessionId,
+                StorageSessionId = storageSessionId,
+                ExpectedDevices = expectedDevices,
+                RunId = runId,
+                RunEpoch = runEpoch,
                 CorrelationId = context.CorrelationId,
                 Device = context.Device,
                 StartedUtc = context.FirstSeenUtc,
                 PhaseKey = "00-trigger",
-                PhaseDirectoryName = $"00-trigger-001-{capturedUtc:HHmmss_fff}",
+                PhaseDirectoryName =
+                    $"00-trigger-{DaqIncidentDeviceToken(context.Device)}-" +
+                    $"001-{capturedUtc:HHmmss_fff}",
                 IncidentJson = triggerJson,
                 IsTrigger = true,
+                HeavyEvidenceSuppressed = sessionDecision.HeavyEvidenceSuppressed,
                 WriteHeavyEvidence = phaseDirectory =>
                     frozenTriggerDiagnostics?.WriteTo(phaseDirectory)
             });
@@ -1249,7 +1530,12 @@ namespace Controller
                 incidentQueue.Submit(new DaqIncidentEvidenceSubmission
                 {
                     ContextKey = contextKey,
-                    RunId = context.RunId,
+                    SessionKey = sessionKey,
+                    SessionId = sessionDecision.SessionId,
+                    StorageSessionId = storageSessionId,
+                    ExpectedDevices = expectedDevices,
+                    RunId = runId,
+                    RunEpoch = runEpoch,
                     CorrelationId = context.CorrelationId,
                     Device = context.Device,
                     StartedUtc = context.FirstSeenUtc,
@@ -1258,20 +1544,39 @@ namespace Controller
                 });
             }
 
-            var frozenTerminalDiagnostics = _acq.CaptureDiagnostics(
-                new[] { context.Device },
-                TimeSpan.FromSeconds(60));
+            var terminalDecision = sessionPolicy.Observe(new IncidentSessionRequest
+            {
+                Device = context.Device,
+                FaultCode = context.PrimaryCode,
+                RunEpoch = runEpoch,
+                OccurredUtc = capturedUtc,
+                IsTerminal = true,
+                IsHeavyEvidence = true,
+                EstimatedHeavyBytes = 32L * 1024L * 1024L,
+                AvailableFreeBytes = TryGetIncidentAvailableFreeBytes()
+            });
+            var frozenTerminalDiagnostics = terminalDecision.HeavyEvidenceAllowed
+                ? _acq.CaptureDiagnostics(new[] { context.Device }, TimeSpan.FromSeconds(60))
+                : null;
             if (!incidentQueue.Submit(new DaqIncidentEvidenceSubmission
                 {
-                    ContextKey = contextKey,
-                    RunId = context.RunId,
+                ContextKey = contextKey,
+                SessionKey = sessionKey,
+                SessionId = sessionDecision.SessionId,
+                StorageSessionId = storageSessionId,
+                ExpectedDevices = expectedDevices,
+                RunId = runId,
+                RunEpoch = runEpoch,
                     CorrelationId = context.CorrelationId,
                     Device = context.Device,
                     StartedUtc = context.FirstSeenUtc,
                     PhaseKey = "90-hardware-confirmed",
-                    PhaseDirectoryName = $"90-terminal-{capturedUtc:HHmmss_fff}-{Guid.NewGuid():N}",
+                    PhaseDirectoryName =
+                        $"90-terminal-{DaqIncidentDeviceToken(context.Device)}-" +
+                        $"{capturedUtc:HHmmss_fff}-{Guid.NewGuid():N}",
                     IncidentJson = terminalJson,
                     IsTerminal = true,
+                    HeavyEvidenceSuppressed = terminalDecision.HeavyEvidenceSuppressed,
                     WriteHeavyEvidence = phaseDirectory =>
                         frozenTerminalDiagnostics?.WriteTo(phaseDirectory)
                 }))
@@ -1281,9 +1586,270 @@ namespace Controller
                     "落盘");
         }
 
-        private static string DaqIncidentEvidenceContextKey(Guid runId, Guid correlationId)
+        internal static string DaqIncidentEvidenceContextKey(
+            Guid runId,
+            Guid correlationId,
+            string device)
         {
-            return $"{runId:N}:{correlationId:N}";
+            return $"{runId:N}:{correlationId:N}:{DaqIncidentDeviceToken(device)}";
+        }
+
+        internal static string DaqIncidentEvidenceSessionContextKey(
+            string device,
+            string sessionKey,
+            Guid sessionId)
+        {
+            // Keep the queue device-scoped (the V2.13.0.2 one-running/one-
+            // pending contract) while making the runtime session instance the
+            // identity across changing CorrelationIds.
+            return $"{DaqIncidentDeviceToken(device)}:{sessionKey ?? string.Empty}:{sessionId:N}";
+        }
+
+        internal static Guid DaqIncidentStorageSessionId(
+            Guid runId,
+            string faultCode,
+            long runEpoch)
+            => DaqIncidentStorageSessionId(runId, faultCode, runEpoch, Guid.Empty);
+
+        internal static Guid DaqIncidentStorageSessionId(
+            Guid runId,
+            string faultCode,
+            long runEpoch,
+            Guid sessionId)
+        {
+            var identity = $"{runId:N}|{IncidentSessionPolicy.NormalizeFaultCode(faultCode)}|{Math.Max(0, runEpoch)}|{sessionId:N}";
+            using (var sha = SHA256.Create())
+            {
+                var hash = sha.ComputeHash(Encoding.UTF8.GetBytes(identity));
+                var bytes = new byte[16];
+                Buffer.BlockCopy(hash, 0, bytes, 0, bytes.Length);
+                // RFC 4122-compatible variant/version makes logs and tooling
+                // recognize this as a deterministic session identity.
+                bytes[6] = (byte)((bytes[6] & 0x0F) | 0x50);
+                bytes[8] = (byte)((bytes[8] & 0x3F) | 0x80);
+                return new Guid(bytes);
+            }
+        }
+
+        private Guid ResolveDaqIncidentStorageSessionId(
+            Guid runId,
+            string faultCode,
+            long runEpoch,
+            Guid correlationId,
+            Guid sessionId)
+        {
+            // A batch correlation explicitly denotes a shared DAQ incident:
+            // both devices use the same deterministic root even though their
+            // per-device SessionIds (and queue ContextKeys) remain distinct.
+            // Ordinary sessions retain SessionId in the root so a later
+            // out-of-window/terminal observation can never reopen an old tree.
+            var sharedKey = $"{runId:N}:{runEpoch}:{correlationId:N}";
+            if (correlationId != Guid.Empty &&
+                _sharedDaqIncidentCorrelations.ContainsKey(sharedKey))
+                return DaqIncidentStorageSessionId(
+                    runId,
+                    faultCode,
+                    runEpoch,
+                    correlationId);
+            return DaqIncidentStorageSessionId(runId, faultCode, runEpoch, sessionId);
+        }
+
+        private bool TryGetExpectedIncidentDevices(
+            Guid runId,
+            Guid correlationId,
+            long runEpoch,
+            string currentDevice,
+            out string[] expectedDevices)
+        {
+            var normalizedCurrent = IncidentSessionPolicy.NormalizeDevice(currentDevice);
+            var shared = false;
+            // Freeze a conservative baseline before any participant discovery
+            // that can throw (dictionary enumeration, device mapping, etc.).
+            // A shared failure returns false to the caller; it can never
+            // silently fall back to a one-device terminal/retention decision.
+            var sharedBaseline = new[] { normalizedCurrent, "DEV1", "DEV2" }
+                .Where(item => !string.IsNullOrWhiteSpace(item))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(item => item, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            expectedDevices = new[] { normalizedCurrent }
+                .Where(item => !string.IsNullOrWhiteSpace(item))
+                .ToArray();
+            try
+            {
+                var sharedKey = $"{runId:N}:{runEpoch}:{correlationId:N}";
+                shared = correlationId != Guid.Empty &&
+                         _sharedDaqIncidentCorrelations.ContainsKey(sharedKey);
+                // A run may contain both DAQ devices while an ordinary
+                // device-scoped incident belongs only to the device that
+                // raised it.  Adding the whole run's registration here would
+                // make a normal Dev1 root wait forever for an unrelated Dev2
+                // terminal.  Only an explicitly shared batch correlation
+                // freezes the multi-device participant set.
+                var preRegistered = Array.Empty<string>();
+                if (shared)
+                {
+                    var runKey = $"{runId:N}:{runEpoch}";
+                    if (_daqIncidentExpectedDevicesByRun.TryGetValue(runKey, out var registered))
+                        preRegistered = registered ?? Array.Empty<string>();
+                    // Current hardware wiring has two independent DAQ roots;
+                    // an explicit shared correlation means both are expected,
+                    // even when a single-channel run registered only one.
+                    preRegistered = preRegistered
+                        .Concat(new[] { "DEV1", "DEV2" })
+                        .ToArray();
+                }
+                var correlatedDevices = shared
+                    ? _daqAutoRecovery.Values
+                        .Where(context => context != null && context.RunId == runId &&
+                            context.RunEpoch == runEpoch && context.CorrelationId == correlationId &&
+                            !string.IsNullOrWhiteSpace(context.Device))
+                        .Select(context => context.Device)
+                    : Enumerable.Empty<string>();
+                return TryResolveExpectedIncidentDevices(
+                    currentDevice,
+                    shared,
+                    preRegistered,
+                    correlatedDevices,
+                    out expectedDevices);
+            }
+            catch
+            {
+                expectedDevices = shared ? sharedBaseline : new[] { normalizedCurrent };
+                return false;
+            }
+        }
+
+        internal static string[] ResolveExpectedIncidentDevices(
+            string currentDevice,
+            bool sharedCorrelation,
+            IEnumerable<string> registeredDevices,
+            IEnumerable<string> correlatedDevices)
+        {
+            TryResolveExpectedIncidentDevices(
+                currentDevice,
+                sharedCorrelation,
+                registeredDevices,
+                correlatedDevices,
+                out var expected);
+            return expected;
+        }
+
+        internal static bool TryResolveExpectedIncidentDevices(
+            string currentDevice,
+            bool sharedCorrelation,
+            IEnumerable<string> registeredDevices,
+            IEnumerable<string> correlatedDevices,
+            out string[] expectedDevices)
+        {
+            var normalizedCurrent = IncidentSessionPolicy.NormalizeDevice(currentDevice);
+            var devices = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                normalizedCurrent
+            };
+            var baseline = sharedCorrelation
+                ? new[] { normalizedCurrent, "DEV1", "DEV2" }
+                : new[] { normalizedCurrent };
+            expectedDevices = baseline
+                .Where(item => !string.IsNullOrWhiteSpace(item))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(item => item, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (!sharedCorrelation) return true;
+            try
+            {
+                foreach (var expected in registeredDevices ?? Array.Empty<string>())
+                {
+                    var normalized = IncidentSessionPolicy.NormalizeDevice(expected);
+                    if (!string.IsNullOrWhiteSpace(normalized)) devices.Add(normalized);
+                }
+                foreach (var correlated in correlatedDevices ?? Array.Empty<string>())
+                {
+                    var normalized = IncidentSessionPolicy.NormalizeDevice(correlated);
+                    if (!string.IsNullOrWhiteSpace(normalized)) devices.Add(normalized);
+                }
+                expectedDevices = devices
+                    .Where(item => !string.IsNullOrWhiteSpace(item))
+                    .OrderBy(item => item, StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+                return true;
+            }
+            catch
+            {
+                // Preserve the shared baseline for diagnostics, but return
+                // false so callers defer phase admission and cannot publish a
+                // partial shared root.
+                return false;
+            }
+        }
+
+        internal static string DaqIncidentEvidenceDirectoryName(
+            Guid runId,
+            Guid correlationId)
+        {
+            return $"Run-{runId:N}-Incident-{correlationId:N}";
+        }
+
+        internal static string DaqIncidentEvidenceDirectoryPath(
+            string root,
+            Guid runId,
+            Guid correlationId)
+        {
+            return Path.Combine(
+                root ?? string.Empty,
+                DaqIncidentEvidenceDirectoryName(runId, correlationId));
+        }
+
+        internal static string DaqIncidentEvidenceDirectoryName(Guid storageSessionId)
+        {
+            return $"Incident-Session-{storageSessionId:N}";
+        }
+
+        internal static string DaqIncidentEvidenceDirectoryPath(
+            string root,
+            Guid storageSessionId,
+            Guid runId,
+            Guid correlationId)
+        {
+            return storageSessionId == Guid.Empty
+                ? DaqIncidentEvidenceDirectoryPath(root, runId, correlationId)
+                : Path.Combine(root ?? string.Empty, DaqIncidentEvidenceDirectoryName(storageSessionId));
+        }
+
+        private long TryGetIncidentAvailableFreeBytes()
+        {
+            var root = Path.Combine(
+                _cfg?.Test?.StoreDir ?? string.Empty,
+                _cfg?.Test?.TestName ?? string.Empty,
+                "IncidentSnapshots");
+            return TryGetIncidentAvailableFreeBytesForTest(root, null);
+        }
+
+        /// <summary>
+        /// Uses the same DriveInfo/GetDiskFreeSpaceEx probe as historical
+        /// storage.  Returning -1 is intentional: an unknown volume must be
+        /// treated as no heavy-evidence budget, while lightweight incident
+        /// JSON/phase/terminal records continue to be emitted.
+        /// </summary>
+        internal static long TryGetIncidentAvailableFreeBytesForTest(
+            string root,
+            Func<string, long?> probe = null)
+        {
+            return HistoricalStorageBudget.TryGetAvailableFreeBytes(
+                       root,
+                       probe,
+                       out var available)
+                ? available
+                : -1L;
+        }
+
+        private static string DaqIncidentDeviceToken(string device)
+        {
+            var value = string.IsNullOrWhiteSpace(device)
+                ? "UNKNOWN"
+                : device.Trim().ToUpperInvariant();
+            return string.Concat(value.Select(character =>
+                char.IsLetterOrDigit(character) || character == '-' ? character : '_'));
         }
 
         private DaqIncidentEvidenceQueue GetDaqIncidentEvidenceQueue()
@@ -1295,12 +1861,42 @@ namespace Controller
                 return _daqIncidentEvidenceQueue ??=
                     new DaqIncidentEvidenceQueue(
                         ExportDaqIncidentEvidenceBatch,
-                        worker => ObserveBackgroundTask(worker, "DaqIncidentEvidenceWorker"),
+                        ObserveDaqIncidentEvidenceWorker,
                         ex => _log.Error(
                             $"DAQ事故取证worker失败：{ex.Message}",
                             "落盘",
                             ex));
             }
+        }
+
+        /// <summary>
+        /// Incident evidence is diagnostic persistence only. Observe its
+        /// worker privately so failures cannot enter TaskSupervisor,
+        /// watchdog, power-off, or DAQ recovery chains. The bounded queue
+        /// retains failed roots and requeues them after the export exception;
+        /// this observer only records an unexpected task-level fault.
+        /// </summary>
+        private void ObserveDaqIncidentEvidenceWorker(Task worker)
+        {
+            if (worker == null) return;
+            _ = worker.ContinueWith(
+                completed =>
+                {
+                    try
+                    {
+                        if (completed.IsFaulted)
+                            _log.Error(
+                                $"DAQ事故取证worker异常（持久队列将重试）：{completed.Exception}",
+                                "落盘",
+                                completed.Exception);
+                        else if (completed.IsCanceled)
+                            _log.Warn("DAQ事故取证worker被取消（持久队列保留未收口根）。", "落盘");
+                    }
+                    catch { }
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
         }
 
         internal Task<bool> DrainDaqIncidentEvidenceAsync(int timeoutMs)
@@ -1322,13 +1918,15 @@ namespace Controller
                 _cfg.Test.TestName,
                 "IncidentSnapshots");
             Directory.CreateDirectory(root);
-            var incidentDirectory = _daqIncidentDirectories.GetOrAdd(
-                anchor.CorrelationId,
-                _ => Path.Combine(
-                    root,
-                    $"{anchor.StartedUtc.ToLocalTime():yyyyMMdd_HHmmss_fff}-" +
-                    $"{anchor.Device}-{anchor.CorrelationId:N}"));
+            var incidentDirectory = DaqIncidentEvidenceDirectoryPath(
+                root,
+                anchor.StorageSessionId,
+                anchor.RunId,
+                anchor.CorrelationId);
             Directory.CreateDirectory(incidentDirectory);
+            IncidentSessionManifestStore.RegisterExpectedDevices(
+                incidentDirectory,
+                submissions.SelectMany(item => item?.ExpectedDevices ?? Array.Empty<string>()));
             var buildIdentity = _daqIncidentBuildIdentity ??
                                 (_daqIncidentBuildIdentity = RuntimeBuildIdentity.Capture());
             var rootIdentityPath = Path.Combine(incidentDirectory, "build-identity.json");
@@ -1337,39 +1935,59 @@ namespace Controller
             foreach (var submission in submissions)
             {
                 if (submission == null) continue;
-                if (!string.IsNullOrWhiteSpace(submission.PhaseDirectoryName))
+                IncidentPhaseReceipt phaseReceipt = null;
+                var kind = submission.IsTrigger
+                    ? "trigger"
+                    : submission.IsTerminal ? "terminal" : "symptom";
+                // Every phase gets a lightweight JSON + receipt. Derived
+                // symptoms use a compact directory without heavy evidence;
+                // the submission field remains null for compatibility with
+                // the DAQ queue tests that assert no heavy phase allocation.
+                var phaseDirectoryName = submission.PhaseDirectoryName;
+                if (string.IsNullOrWhiteSpace(phaseDirectoryName))
+                {
+                    var safe = string.Concat((submission.PhaseKey ?? "phase")
+                        .Select(ch => char.IsLetterOrDigit(ch) || ch == '-' ? ch : '_'));
+                    phaseDirectoryName = $"phase-{safe}-{DaqIncidentDeviceToken(submission.Device)}";
+                }
+                if (!string.IsNullOrWhiteSpace(phaseDirectoryName))
                 {
                     var phaseDirectory = Path.Combine(
                         incidentDirectory,
-                        submission.PhaseDirectoryName);
+                        phaseDirectoryName);
                     try
                     {
                         Directory.CreateDirectory(phaseDirectory);
-                        var incidentPath = Path.Combine(phaseDirectory, "incident.json");
-                        if (!File.Exists(incidentPath))
-                        {
-                            using var stream = new FileStream(
-                                incidentPath,
-                                FileMode.CreateNew,
-                                FileAccess.Write,
-                                FileShare.Read);
-                            using var writer = new StreamWriter(stream, new UTF8Encoding(false));
-                            writer.Write(submission.IncidentJson ?? "{}\n");
-                        }
+                        Exception heavyError;
+                        phaseReceipt = IncidentSessionManifestStore.WritePhase(
+                            phaseDirectory,
+                            submission.PhaseKey,
+                            kind,
+                            submission.Device,
+                            submission.SessionKey,
+                            submission.IncidentJson,
+                            submission.WriteHeavyEvidence,
+                            submission.HeavyEvidenceSuppressed,
+                            out heavyError);
+                        phaseReceipt.PhaseDirectory = phaseDirectoryName.Replace(
+                            Path.DirectorySeparatorChar, '/');
+                        phaseReceipt.JsonPath = Path.Combine(
+                            phaseReceipt.PhaseDirectory, "incident.json").Replace(
+                                Path.DirectorySeparatorChar, '/');
+                        phaseReceipt.ReceiptPath = Path.Combine(
+                            phaseReceipt.PhaseDirectory, "phase.receipt.json").Replace(
+                                Path.DirectorySeparatorChar, '/');
+                        IncidentSessionManifestStore.RewriteReceipt(phaseDirectory, phaseReceipt);
                         var identityPath = Path.Combine(phaseDirectory, "build-identity.json");
                         if (!File.Exists(identityPath)) buildIdentity.WriteJson(identityPath);
-                        try
-                        {
-                            submission.WriteHeavyEvidence?.Invoke(phaseDirectory);
-                        }
-                        catch (Exception ex)
+                        if (heavyError != null)
                         {
                             _log.Error(
                                 $"DAQ事故重证据导出失败：Phase={submission.PhaseKey} " +
-                                $"Directory={phaseDirectory} Error={ex.Message}",
+                                $"Directory={phaseDirectory} Error={heavyError.Message}",
                                 "落盘",
-                                ex);
-                            TryWriteIncidentEvidenceError(phaseDirectory, submission, ex);
+                                heavyError);
+                            TryWriteIncidentEvidenceError(phaseDirectory, submission, heavyError);
                         }
                     }
                     catch (Exception ex)
@@ -1379,12 +1997,28 @@ namespace Controller
                             $"Directory={phaseDirectory} Error={ex.Message}",
                             "落盘",
                             ex);
+                        // A phase without a committed incident.json and receipt
+                        // is not an export. Let the bounded queue retry it.
+                        throw;
                     }
                 }
-
+                if (phaseReceipt == null)
+                    throw new InvalidOperationException($"DAQ事故phase receipt未生成：{submission.PhaseKey}");
                 try
                 {
                     AppendDaqIncidentManifest(incidentDirectory, submission);
+                    IncidentSessionManifestStore.RecordPhase(
+                        incidentDirectory,
+                        submission.RunId,
+                        submission.CorrelationId,
+                        submission.StartedUtc,
+                        phaseReceipt,
+                        submission.IsTrigger,
+                        submission.IsTerminal);
+                    _incidentSessionPolicy.Value.RecordPersistedBytes(
+                        submission.Device,
+                        phaseReceipt.Bytes,
+                        phaseReceipt.CapturedUtc);
                 }
                 catch (Exception ex)
                 {
@@ -1393,16 +2027,47 @@ namespace Controller
                         $"Directory={incidentDirectory} Error={ex.Message}",
                         "落盘",
                         ex);
+                    throw;
                 }
             }
 
             if (batch.Terminal != null)
             {
-                _daqIncidentDirectories.TryRemove(anchor.CorrelationId, out _);
+                // Keep the shared correlation directory available until all device
+                // roots have had a chance to publish.  The map is reset with each
+                // batch session; removing it after Dev1 terminal could make a late
+                // Dev2 terminal create a second directory for the same correlation.
                 _log.Info(
                     $"DAQ事故取证已收口：{incidentDirectory} " +
                     $"CorrelationId={anchor.CorrelationId:N}",
                     "落盘");
+                try
+                {
+                    // The manifest is published only after all phase receipts in
+                    // this batch have committed. If a shared correlation still
+                    // has another device in flight, the later terminal batch
+                    // publishes the same root atomically.
+                    var published = IncidentSessionManifestStore.PublishTerminalAtomic(incidentDirectory, quiet: true);
+                    if (published && anchor.RunEpoch >= 0)
+                    {
+                        _sharedDaqIncidentCorrelations.TryRemove(
+                            $"{anchor.RunId:N}:{anchor.RunEpoch}:{anchor.CorrelationId:N}",
+                            out _);
+                        // Retention is eligible only after the terminal
+                        // manifest has actually committed. A shared root that
+                        // is still waiting for another device remains in the
+                        // evidence queue and must not trigger a scan/delete.
+                        _incidentHousekeeping?.Enqueue(root);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _log.Error(
+                        $"DAQ事故终态manifest发布失败：Directory={incidentDirectory} Error={ex.Message}",
+                        "落盘",
+                        ex);
+                    throw;
+                }
             }
         }
 
@@ -1421,10 +2086,27 @@ namespace Controller
             var line = "{" +
                        $"\"phase\":\"{JsonEscape(submission.PhaseKey)}\"," +
                        $"\"kind\":\"{kind}\"," +
+                       $"\"device\":\"{JsonEscape(submission.Device)}\"," +
+                       $"\"sessionKey\":\"{JsonEscape(submission.SessionKey)}\"," +
                        $"\"payload\":{payload}" +
                        "}";
+            var path = Path.Combine(incidentDirectory, "manifest.jsonl");
+            // A failed terminal-manifest publication may retry an already
+            // committed phase. Keep the JSONL idempotent; phase receipts remain
+            // the authoritative commit markers.
+            if (File.Exists(path))
+            {
+                var marker = $"\"phase\":\"{JsonEscape(submission.PhaseKey)}\",\"kind\":\"{kind}\",\"device\":\"{JsonEscape(submission.Device)}\"";
+                try
+                {
+                    if (File.ReadLines(path).Any(item =>
+                            item.IndexOf(marker, StringComparison.Ordinal) >= 0))
+                        return;
+                }
+                catch { /* append below; receipt remains authoritative */ }
+            }
             using var stream = new FileStream(
-                Path.Combine(incidentDirectory, "manifest.jsonl"),
+                path,
                 FileMode.Append,
                 FileAccess.Write,
                 FileShare.Read);
@@ -1779,8 +2461,15 @@ namespace Controller
                         _cfg.Test.TestName,
                         "HistoricalSnapshots",
                         $"EPB{channel:D2}");
+                    if (!ShouldWriteHistoricalSnapshot(root, channel, cycleNumber)) return;
                     var dir = Path.Combine(root, $"Cycle_{cycleNumber:D6}");
                     exporter.ExportCompletedCycleTo(channel, cycleNumber, dir, false, true);
+                    var writtenBytes = HistoricalStorageBudget.MeasureDirectoryBytes(dir);
+                    var totalBytes = Interlocked.Add(ref _historicalSnapshotWrittenBytes, writtenBytes);
+                    _log.Info(
+                        $"HistoricalSnapshotWritten EPB={channel} Cycle={cycleNumber} " +
+                        $"Bytes={writtenBytes} TotalBytes={totalBytes} Retain={_historicalRetainCyclesPerChannel}",
+                        "落盘");
                     var keep = Math.Max(1, _historicalRetainCyclesPerChannel);
                     foreach (var old in new DirectoryInfo(root).EnumerateDirectories("Cycle_*")
                                  .OrderByDescending(x => x.Name).Skip(keep))
@@ -1796,6 +2485,64 @@ namespace Controller
                 }
             }), "RollingHistoricalSnapshot", channel);
         }
+
+        private bool ShouldWriteHistoricalSnapshot(string root, int channel, int cycleNumber)
+        {
+            if (!HistoricalStorageBudget.TryGetAvailableFreeBytes(root, out var freeBytes))
+            {
+                // Unknown free space must not bypass the safety budget.  Treat
+                // it conservatively as a skipped historical copy; formal cycle
+                // commit/index/control/alarm paths remain untouched because this
+                // guard runs only in the background snapshot task.
+                var unknownSkipped = Interlocked.Increment(ref _historicalSnapshotSkippedLowSpace);
+                var unknownNowTicks = DateTime.UtcNow.Ticks;
+                var unknownLastTicks = Interlocked.Read(ref _historicalLastLowSpaceWarningTicks);
+                if (unknownLastTicks == 0 ||
+                    unknownNowTicks - unknownLastTicks >= TimeSpan.FromMinutes(1).Ticks)
+                {
+                    if (Interlocked.CompareExchange(
+                            ref _historicalLastLowSpaceWarningTicks,
+                            unknownNowTicks,
+                            unknownLastTicks) == unknownLastTicks)
+                    {
+                        _log.Warn(
+                            $"HistoricalSnapshotSkippedSpaceUnknown EPB={channel} Cycle={cycleNumber} " +
+                            $"MinimumFreeBytes={_historicalMinimumFreeBytes} SkippedTotal={unknownSkipped}；" +
+                            "无法读取目标卷剩余空间，仅跳过新的历史副本，正式圈/索引/控制/报警不受影响。",
+                            "落盘");
+                    }
+                }
+                return false;
+            }
+
+            if (!HistoricalStorageBudget.IsBelowMinimum(freeBytes, _historicalMinimumFreeBytes))
+                return true;
+
+            var skipped = Interlocked.Increment(ref _historicalSnapshotSkippedLowSpace);
+            var nowTicks = DateTime.UtcNow.Ticks;
+            var lastTicks = Interlocked.Read(ref _historicalLastLowSpaceWarningTicks);
+            if (lastTicks == 0 || nowTicks - lastTicks >= TimeSpan.FromMinutes(1).Ticks)
+            {
+                if (Interlocked.CompareExchange(
+                        ref _historicalLastLowSpaceWarningTicks,
+                        nowTicks,
+                        lastTicks) == lastTicks)
+                {
+                    _log.Warn(
+                        $"HistoricalSnapshotSkippedLowSpace EPB={channel} Cycle={cycleNumber} " +
+                        $"FreeBytes={freeBytes} MinimumFreeBytes={_historicalMinimumFreeBytes} " +
+                        $"SkippedTotal={skipped}；仅跳过新的历史副本，正式圈/索引/控制/报警不受影响。",
+                        "落盘");
+                }
+            }
+            return false;
+        }
+
+        internal long HistoricalSnapshotWrittenBytes =>
+            Interlocked.Read(ref _historicalSnapshotWrittenBytes);
+
+        internal long HistoricalSnapshotSkippedLowSpace =>
+            Interlocked.Read(ref _historicalSnapshotSkippedLowSpace);
 
         private string GetWarningSnapshotDirectory(
             WarningSnapshotRequest request,

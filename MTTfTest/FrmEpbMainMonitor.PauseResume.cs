@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using Controller;
+using DataOperation;
 
 namespace MTEmbTest
 {
@@ -374,6 +375,14 @@ namespace MTEmbTest
                 await _epb.StartBatchFromGracefulCheckpointAsync(
                         channels,
                         qualificationCycles: 2,
+                        new RunChainIdentity(
+                            Guid.NewGuid(),
+                            Guid.TryParse(checkpoint.RootRunId, out var rootRunId) && rootRunId != Guid.Empty
+                                ? rootRunId
+                                : (Guid.TryParse(checkpoint.RunId, out var pauseRunId) ? pauseRunId : Guid.Empty),
+                            Guid.TryParse(checkpoint.RunId, out var parentRunId) ? parentRunId : Guid.Empty,
+                            Math.Max(0, checkpoint.RestartGeneration + 1),
+                            Math.Max(1, checkpoint.RunEpoch + 1)),
                         _batchCts.Token)
                     .ConfigureAwait(true);
                 ClearGracefulPauseCheckpoint("GracefulCheckpointResumed");
@@ -431,6 +440,16 @@ namespace MTEmbTest
                     var startResult = await _epb.StartBatchSynchronizedWithResultAsync(
                             channels,
                             learnCycles,
+                            new RunChainIdentity(
+                                Guid.NewGuid(),
+                                Guid.TryParse(checkpoint.RootRunId, out var rootRunId) && rootRunId != Guid.Empty
+                                    ? rootRunId
+                                    : (Guid.TryParse(checkpoint.RunId, out var parentRunId) ? parentRunId : Guid.Empty),
+                                Guid.TryParse(checkpoint.RunId, out var fallbackParentRunId)
+                                    ? fallbackParentRunId
+                                    : Guid.Empty,
+                                Math.Max(0, checkpoint.RestartGeneration + 1),
+                                Math.Max(1, checkpoint.RunEpoch + 1)),
                             _batchCts.Token)
                         .ConfigureAwait(true);
                     foreach (var channel in channels)

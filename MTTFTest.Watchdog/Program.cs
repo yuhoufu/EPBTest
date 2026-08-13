@@ -9,7 +9,7 @@ namespace MTTFTest.Watchdog
             try { return WatchdogHost.Run(args); }
             catch (Exception ex)
             {
-                WatchdogHost.WriteEmergencyLog(ex.ToString());
+                WatchdogHost.WriteEmergencyLog(ex.ToString(), args);
                 return 2;
             }
         }
