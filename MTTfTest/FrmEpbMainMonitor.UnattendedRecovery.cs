@@ -19,6 +19,12 @@ namespace MTEmbTest
         private string _watchdogProgressSignature = string.Empty;
         private long _watchdogStageStartedTicks = System.Diagnostics.Stopwatch.GetTimestamp();
 
+        internal void PrepareForWatchdogRetryExit()
+        {
+            // Watchdog 恢复子进程失败退出时保留授权；不得发布普通关闭终态。
+            Interlocked.Exchange(ref _watchdogTakeoverExit, 1);
+        }
+
         private void AttachUnattendedRecovery()
         {
             if (_epb == null || _cfg == null) return;
@@ -104,6 +110,7 @@ namespace MTEmbTest
                                                 x.State == ChannelRuntimeState.ResumeChecking)
                 .ToArray();
             var logical = _epb?.CaptureWatchdogLogicalSnapshot();
+            var stop = _epb?.CaptureStopSafetyProgress();
             var storage = _epb?.CaptureWatchdogStorageSnapshot();
             var gracefulPaused = _epb?.CurrentBatchPauseState == BatchPauseState.Paused ||
                                  _epb?.CurrentBatchPauseState == BatchPauseState.PausePending;
@@ -115,7 +122,11 @@ namespace MTEmbTest
             var stageOrdinal = recoveryEvidence.StageOrdinal;
             var progressSignature = RecoveryProgressSignature.Build(
                 recovering.Select(state =>
-                    $"{state.Channel}:{state.State}:{state.ReasonCode}:{state.Revision}"),
+                        $"{state.Channel}:{state.State}:{state.ReasonCode}:{state.Revision}")
+                    .Concat(new[]
+                    {
+                        $"Stop:{stop?.ProgressVersion ?? 0}:{stop?.Stage}:{stop?.Active}:{stop?.PhysicalSafe}"
+                    }),
                 logical?.DaqRecoveryCount ?? 0,
                 logical?.SoftwareRecoveryCount ?? 0,
                 logical?.RecoveryOwnerCount ?? 0,
@@ -152,7 +163,11 @@ namespace MTEmbTest
                 AlarmedChannels = alarmed,
                 PermanentAlarmedChannels = permanentAlarmed,
                 ManuallyDisabledChannels = manuallyDisabled,
-                RecoveryActive = !gracefulPaused && recoveryEvidence.Active,
+                RecoveryActive = !gracefulPaused &&
+                                 (recoveryEvidence.Active ||
+                                  (logical?.DaqRecoveryCount ?? 0) > 0 ||
+                                  (logical?.SoftwareRecoveryCount ?? 0) > 0 ||
+                                  (logical?.RecoveryOwnerCount ?? 0) > 0),
                 RecoveryCode = gracefulPaused
                     ? "ManualGracefulPause"
                     : recovering.FirstOrDefault()?.ReasonCode ?? string.Empty,
@@ -169,6 +184,20 @@ namespace MTEmbTest
                 DaqRecoveryCount = logical?.DaqRecoveryCount ?? 0,
                 SoftwareRecoveryCount = logical?.SoftwareRecoveryCount ?? 0,
                 RecoveryOwnerCount = logical?.RecoveryOwnerCount ?? 0,
+                StopAllActive = stop?.Active == true,
+                StopStage = stop?.Stage.ToString() ?? string.Empty,
+                StopStartedUtc = stop?.StartedUtc.Ticks ?? 0,
+                StopStageStartedUtc = stop?.StageStartedUtc.Ticks ?? 0,
+                StopProgressVersion = stop?.ProgressVersion ?? 0,
+                StopPhysicalSafe = stop?.PhysicalSafe == true,
+                TimerCount = logical?.TimerCount ?? 0,
+                RunnerCount = logical?.RunnerCount ?? 0,
+                EnergizedChannelCount = logical?.EnergizedChannelCount ?? 0,
+                CompletedCycleCount = (_cfg?.Test?.EpbRecords ?? Enumerable.Empty<Config.EpbTestRecord>())
+                    .Sum(record => (long)Math.Max(0, record.RunCount)),
+                ExpectedCyclePeriodMs = Math.Max(1, _cfg?.Test?.PeriodMs ?? 1),
+                StopCtsCount = logical?.StopCtsCount ?? 0,
+                CyclePauseCtsCount = logical?.CycleCtsCount ?? 0,
                 Dev1CallbackGapCount = storage?.Dev1?.CallbackGapCount ?? 0,
                 Dev2CallbackGapCount = storage?.Dev2?.CallbackGapCount ?? 0,
                 Dev1Generation = storage?.Dev1?.Generation ?? 0,
@@ -294,6 +323,10 @@ namespace MTEmbTest
                 PersistenceConfirmed = safety?.PersistenceBoundaryConfirmed == true,
                 ContinuityConfirmed = safety?.DataContinuityCompromised == false,
                 LogicalQuiescenceConfirmed = safety?.LogicalQuiescenceConfirmed == true,
+                RequiresProcessRestart = safety?.RequiresProcessRestart == true,
+                TimedOut = safety?.TimedOut == true,
+                Outcome = safety?.Outcome.ToString() ?? string.Empty,
+                LastStage = safety?.LastStage.ToString() ?? string.Empty,
                 Detail = safety == null ? "StopSafetyResultUnavailable" :
                     $"CanRestart={safety.CanRestartInProcess};Motor={safety.MotorError};Power={safety.PowerError};" +
                     $"Pressure={safety.PressureError};Persistence={safety.PersistenceError};Logical={safety.LogicalError}"
@@ -552,6 +585,40 @@ namespace MTEmbTest
                 $"Logical={safety.LogicalQuiescenceConfirmed};AbortedOrphanCycles={abortedOrphanCycles}",
                 "独立看门狗");
             await ResumeFromUnattendedCheckpointAsync(checkpoint).ConfigureAwait(true);
+        }
+
+        internal async Task PrepareSafeIdleAfterWatchdogAsync(string sessionId, int previousPid)
+        {
+            UnattendedRecoveryCoordinator.Disarm("ManualStopWatchdogIdleRestart");
+            UnattendedRunCheckpointStore.ClearGracefulPause("ManualStopWatchdogIdleRestart");
+            for (var attempt = 0; attempt < 100 && (_epb == null || _cfg == null); attempt++)
+                await Task.Delay(100).ConfigureAwait(true);
+            if (_epb == null || _cfg?.Test == null)
+                throw new InvalidOperationException("空闲重启硬件与控制对象初始化超时。");
+            if (_do == null || !_do.AllOff())
+                throw new InvalidOperationException("空闲重启无法写入全部 DO OFF。");
+            _ao?.ResetAll();
+            var safety = await _epb.StopAllAsync(new StopContext
+            {
+                Source = StopSource.ManualUi,
+                Reason = "人工停止超时后的 Watchdog 空闲重启安全预检",
+                Initiator = "WatchdogIdleRestart",
+                CorrelationId = Guid.NewGuid().ToString("N"),
+                RequestedUtc = DateTime.UtcNow
+            }, CancellationToken.None).ConfigureAwait(true);
+            if (!safety.MotorOffCommandSucceeded || !safety.PowerOffConfirmed)
+            {
+                BtnStartTest.Enabled = false;
+                throw new InvalidOperationException(
+                    "空闲重启全断能预检未通过，开始试验保持禁用。" +
+                    $" Motor={safety.MotorError}; Power={safety.PowerError}");
+            }
+            Interlocked.Exchange(ref _operatorStopRequested, 1);
+            ProjectLogHub.Write(
+                ProjectLogLevel.Info,
+                $"人工停止超时后已安全重启到空闲模式。Session={sessionId};PreviousPid={previousPid};AutoResume=false",
+                "独立看门狗");
+            ApplyBatchPauseState(BatchPauseState.Idle);
         }
 
         internal async Task ResumeFromUnattendedCheckpointAsync(UnattendedRunCheckpoint checkpoint)

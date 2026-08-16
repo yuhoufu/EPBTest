@@ -4,12 +4,35 @@ using System.Linq;
 
 namespace MTTFTest.Watchdog.Protocol
 {
+    public static class WatchdogLifecyclePolicy
+    {
+        public static bool IsTerminalMessage(string messageType)
+        {
+            return string.Equals(messageType, WatchdogMessageType.RunStopped, StringComparison.Ordinal) ||
+                   string.Equals(messageType, WatchdogMessageType.RunCompleted, StringComparison.Ordinal) ||
+                   string.Equals(messageType, WatchdogMessageType.ApplicationClosing, StringComparison.Ordinal) ||
+                   string.Equals(messageType, WatchdogMessageType.ShutdownExpected, StringComparison.Ordinal);
+        }
+
+        public static bool IsRetryableFailure(string messageType)
+        {
+            return string.Equals(messageType, WatchdogMessageType.BatchStartFailed, StringComparison.Ordinal) ||
+                   string.Equals(messageType, WatchdogMessageType.RecoveryAttemptFailed, StringComparison.Ordinal);
+        }
+    }
+
     /// <summary>
     /// Pure takeover decision helpers.  The process host supplies evidence and
     /// performs no policy inference from UI text or persistence counters.
     /// </summary>
     public static class WatchdogTakeoverPolicy
     {
+        public static double SelectFormalProgressTimeoutSeconds(int expectedCyclePeriodMs)
+        {
+            var periodSeconds = Math.Max(1, expectedCyclePeriodMs) / 1000.0;
+            return Math.Min(3600, Math.Max(90, periodSeconds * 4 + 30));
+        }
+
         public static bool ShouldTakeover(
             bool sessionRevoked,
             bool manualStopRequested,
@@ -20,19 +43,31 @@ namespace MTTFTest.Watchdog.Protocol
             bool orphanPaused,
             bool powerDisablePending,
             double stageAgeSeconds,
-            bool hasRecoveryEligibleChannels)
+            bool hasRecoveryEligibleChannels,
+            bool stopAllActive = false,
+            bool logicalResidue = false,
+            bool inconsistentRecoveryEvidence = false,
+            bool formalProgressStalled = false)
         {
-            if (sessionRevoked || manualStopRequested || alreadyTakingOver)
+            if (sessionRevoked || alreadyTakingOver)
                 return false;
             if (!processAlive || heartbeatAgeSeconds >= 5)
                 return true;
-            if (!hasRecoveryEligibleChannels)
+            if (stopAllActive && stageAgeSeconds >= 5)
+                return true;
+            if (logicalResidue && stageAgeSeconds >= 5)
+                return true;
+            if (inconsistentRecoveryEvidence)
+                return true;
+            if (formalProgressStalled && hasRecoveryEligibleChannels)
+                return true;
+            if (!hasRecoveryEligibleChannels && !manualStopRequested)
                 return false;
             if (orphanPaused && stageAgeSeconds >= 5)
                 return true;
             if (powerDisablePending && stageAgeSeconds >= 5)
                 return true;
-            return recoveryActive && stageAgeSeconds >= 60;
+            return recoveryActive && stageAgeSeconds >= 15;
         }
     }
 
@@ -70,7 +105,10 @@ namespace MTTFTest.Watchdog.Protocol
     {
         public static bool IsRevoked(bool markerExists, bool manualStopRequested, bool explicitLifecycleEnd)
         {
-            return markerExists || manualStopRequested || explicitLifecycleEnd;
+            // ManualStopIntent keeps the sidecar's kill authority alive until
+            // StopCompleted or the 15-second manual deadline. It is not a
+            // session revocation marker in protocol v2.
+            return markerExists || explicitLifecycleEnd;
         }
     }
 
@@ -87,7 +125,7 @@ namespace MTTFTest.Watchdog.Protocol
             bool manualStopRequested,
             bool currentIdentityMatches)
         {
-            return !sessionRevoked && !manualStopRequested && currentIdentityMatches;
+            return !sessionRevoked && currentIdentityMatches;
         }
     }
 }

@@ -35,7 +35,13 @@ namespace MtEmbTest
             {
                 var watchdogIntent = _watchdogRecoveryIntent;
                 _watchdogRecoveryIntent = null;
-                BeginInvoke((Action)(async () => await ResumeWatchdogRunAsync(watchdogIntent)));
+                BeginInvoke((Action)(async () =>
+                {
+                    if (watchdogIntent.StartIdle)
+                        await EnterWatchdogSafeIdleAsync(watchdogIntent);
+                    else
+                        await ResumeWatchdogRunAsync(watchdogIntent);
+                }));
                 return;
             }
             if (_recoveryStartupIntent == null)
@@ -48,8 +54,36 @@ namespace MtEmbTest
             BeginInvoke((Action)(async () => await ResumeUnattendedRunAsync(intent)));
         }
 
+        private async Task EnterWatchdogSafeIdleAsync(WatchdogRecoveryIntent intent)
+        {
+            UnattendedRecoveryCoordinator.Disarm("ManualStopWatchdogIdleRestart");
+            UnattendedRunCheckpointStore.ClearGracefulPause("ManualStopWatchdogIdleRestart");
+            var monitor = new FrmEpbMainMonitor { Name = "实时监视" };
+            OpenChildForm(monitor);
+            try
+            {
+                await monitor.PrepareSafeIdleAfterWatchdogAsync(intent.SessionId, intent.PreviousPid)
+                    .ConfigureAwait(true);
+            }
+            catch (Exception ex)
+            {
+                ProjectLogHub.Write(
+                    ProjectLogLevel.Error,
+                    "Watchdog 空闲重启安全预检失败；开始试验保持禁用：" + ex.Message,
+                    "独立看门狗",
+                    ex);
+                ShowMainOperatorMessage(
+                    "软件已因人工停止超时重新打开，但全断能预检未通过。\r\n" +
+                    "开始试验已禁用，请检查电源/IO 后重启软件。\r\n" + ex.Message,
+                    "安全空闲模式",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+            }
+        }
+
         private async Task ResumeWatchdogRunAsync(WatchdogRecoveryIntent intent)
         {
+            FrmEpbMainMonitor monitor = null;
             try
             {
                 if (!UnattendedRunCheckpointStore.TryConsumeWatchdogRecovery(
@@ -77,7 +111,7 @@ namespace MtEmbTest
                 await WatchdogRuntime.AttachRecoverySessionAsync(
                     intent,
                     checkpoint.SelectedChannels).ConfigureAwait(true);
-                var monitor = new FrmEpbMainMonitor(ProtectedRoot(checkpoint)) { Name = "实时监视" };
+                monitor = new FrmEpbMainMonitor(ProtectedRoot(checkpoint)) { Name = "实时监视" };
                 OpenChildForm(monitor);
                 await monitor.ResumeFromWatchdogCheckpointAsync(checkpoint, intent)
                     .ConfigureAwait(true);
@@ -89,8 +123,10 @@ namespace MtEmbTest
                     "独立看门狗恢复进程安全接管或启动失败；保持本轮授权，等待 Watchdog 退避重试：" + ex.Message,
                     "独立看门狗",
                     ex);
-                WatchdogRuntime.RequestExternalRecovery("WatchdogRecoveryStartupFailed:" + ex.GetBaseException().Message);
-                BeginInvoke((Action)(() => Close()));
+                monitor?.PrepareForWatchdogRetryExit();
+                WatchdogRuntime.NotifyRecoveryAttemptFailed(
+                    "WatchdogRecoveryStartupFailed:" + ex.GetBaseException().Message);
+                BeginInvoke((Action)System.Windows.Forms.Application.Exit);
             }
         }
 

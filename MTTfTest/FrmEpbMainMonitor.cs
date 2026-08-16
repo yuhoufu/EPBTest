@@ -2491,11 +2491,9 @@ namespace MTEmbTest
                     LogInfo($"批量启动失败：{ex.Message}");
                     if (unattendedRecovery)
                         throw new InvalidOperationException("无人值守恢复批量启动失败。", ex);
-                    WatchdogRuntime.NotifyRunStopped(new MTTFTest.Watchdog.Protocol.WatchdogStopSummary
-                    {
-                        Detail = "BatchStartFailed:" + ex.GetBaseException().Message
-                    });
-                    WatchdogRuntime.ShutdownLocalClient();
+                    WatchdogRuntime.NotifyBatchStartFailed(
+                        "BatchStartFailed:" + ex.GetBaseException().Message);
+                    LogInfo("[自恢复] 启动授权和监控界面保持有效；独立看门狗将安全接管并退避重试。");
                 }
 
                 #endregion
@@ -2564,6 +2562,7 @@ namespace MTEmbTest
             }
 
             Interlocked.Exchange(ref _operatorStopRequested, 1);
+            UnattendedRecoveryCoordinator.Disarm("ManualStopIntent");
             WatchdogRuntime.NotifyManualStop("操作员点击停止试验");
             ClearGracefulPauseCheckpoint("ManualStopRequested");
             BtnStop.Enabled = false;
@@ -2575,7 +2574,7 @@ namespace MTEmbTest
                 try { _batchCts?.Cancel(); }
                 catch (ObjectDisposedException) { }
 
-                var safety = await _epb.StopAllAsync(
+                var stopTask = _epb.StopAllAsync(
                     new StopContext
                     {
                         Source = StopSource.ManualUi,
@@ -2584,28 +2583,62 @@ namespace MTEmbTest
                         CorrelationId = Guid.NewGuid().ToString("N"),
                         RequestedUtc = DateTime.UtcNow
                     });
-                LogInfo(
-                    safety.CanRestartInProcess
+                var stopUiStarted = DateTime.UtcNow;
+                while (!stopTask.IsCompleted)
+                {
+                    await System.Threading.Tasks.Task.WhenAny(
+                        stopTask,
+                        System.Threading.Tasks.Task.Delay(1000));
+                    if (stopTask.IsCompleted) break;
+                    var elapsed = (DateTime.UtcNow - stopUiStarted).TotalSeconds;
+                    var progress = _epb.CaptureStopSafetyProgress();
+                    if (elapsed < 5)
+                        LogInfo(
+                            $"正在安全停止：{progress.Stage}，{progress.Detail} " +
+                            $"({elapsed:F0}/5秒)");
+                    else
+                        LogInfo(
+                            $"正在安全收尾，必要时将自动重启；Watchdog接管倒计时 " +
+                            $"{Math.Max(0, 15 - (int)elapsed)} 秒。阶段={progress.Stage}");
+                }
+                var safety = await stopTask;
+                if (safety.RequiresProcessRestart || safety.TimedOut)
+                {
+                    LogInfo("停止试验超过安全截止，正在等待 Watchdog 终止旧进程并重启到空闲模式。");
+                    BtnStop.Enabled = false;
+                    BtnStartTest.Enabled = false;
+                }
+                else
+                {
+                    LogInfo(safety.CanRestartInProcess
                         ? "停止试验完成；可以关闭软件或重新开始。"
-                        : "停止试验已执行；未确认项已记录，不阻止关闭软件或下一次完整学习启动。");
-                WatchdogRuntime.NotifyRunStopped(ToWatchdogStopSummary(safety));
-                WatchdogRuntime.ShutdownLocalClient();
+                        : "停止试验完成；物理安全已确认，诊断项已记录。");
+                    if (safety.PhysicalSafetyConfirmed)
+                        WatchdogRuntime.NotifyPhysicalStopConfirmed("ManualStopPhysicalSafetyConfirmed");
+                    WatchdogRuntime.NotifyStopCompleted(ToWatchdogStopSummary(safety), "ManualStopCompleted");
+                    WatchdogRuntime.ShutdownLocalClient();
+                }
             }
             catch (Exception ex)
             {
                 // 操作员的停止意图已经成立；关闭或下一次启动会再次执行幂等清场。
-                LogInfo($"停止试验收尾异常，已记录且允许关闭/重新开始：{ex.Message}");
+                LogInfo($"停止试验收尾异常，等待 Watchdog 自动接管：{ex.Message}");
+                BtnStartTest.Enabled = false;
             }
             finally
             {
                 Interlocked.Exchange(ref _stopUiGuard, 0);
                 if (!IsDisposed && BtnStop != null)
                 {
-                    BtnStop.Enabled = true;
+                    BtnStop.Enabled = !(_epb?.RequiresProcessRestart ?? false);
                     BtnStop.Cursor = Cursors.Hand;
                 }
                 if (!IsDisposed && BtnStartTest != null)
+                {
                     ApplyBatchPauseState(_epb?.CurrentBatchPauseState ?? BatchPauseState.Idle);
+                    if (_epb?.RequiresProcessRestart == true)
+                        BtnStartTest.Enabled = false;
+                }
             }
         }
 
@@ -2620,6 +2653,7 @@ namespace MTEmbTest
             if (Volatile.Read(ref _closingReentry) != 2)
             {
                 var wasExplicitlyStopped = Volatile.Read(ref _operatorStopRequested) != 0 ||
+                                           Volatile.Read(ref _watchdogTakeoverExit) != 0 ||
                                            !(_epb?.IsBatchSessionActive ?? false);
                 e.Cancel = true;
                 if (Interlocked.CompareExchange(ref _closingReentry, 1, 0) != 0) return;

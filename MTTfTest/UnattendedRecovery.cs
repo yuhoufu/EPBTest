@@ -1370,6 +1370,29 @@ namespace MTEmbTest
 
         private static async Task RecoverInProcessOrRestartAsync(ControlFault fault)
         {
+            var recovery = RecoverInProcessOrRestartCoreAsync(fault);
+            if (await Task.WhenAny(recovery, Task.Delay(TimeSpan.FromSeconds(30))) == recovery)
+            {
+                await recovery.ConfigureAwait(false);
+                return;
+            }
+
+            EpbManager manager;
+            lock (Sync) manager = _manager;
+            var reason = fault?.Reason ?? "SoftwareRecoveryCircuitOpen";
+            try { manager?.RevokeExecutionForExternalRecovery("InProcessRecovery30sTimeout:" + reason); }
+            catch { }
+            ProjectLogHub.Write(
+                ProjectLogLevel.Error,
+                "同进程无人值守恢复超过30秒，已撤销当前进程上电授权并交由独立Watchdog接管。",
+                "无人值守恢复");
+            WatchdogRuntime.RequestExternalRecovery(
+                "InProcessRecovery30sTimeout:" + reason +
+                ";CorrelationId=" + (fault?.CorrelationId.ToString("N") ?? string.Empty));
+        }
+
+        private static async Task RecoverInProcessOrRestartCoreAsync(ControlFault fault)
+        {
             if (Interlocked.CompareExchange(ref _inProcessRecoveryStarted, 1, 0) != 0) return;
             var recoveryBatchCommitted = false;
             var reason = fault?.Reason ?? "SoftwareRecoveryCircuitOpen";

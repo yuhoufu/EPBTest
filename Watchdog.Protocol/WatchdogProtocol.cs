@@ -6,7 +6,8 @@ namespace MTTFTest.Watchdog.Protocol
 {
     public static class WatchdogProtocol
     {
-        public const int Version = 1;
+        public const int Version = 2;
+        public const int MinimumCompatibleVersion = 1;
         private static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
 
         public static string Serialize(WatchdogMessage message) => Json.Serialize(message);
@@ -22,9 +23,13 @@ namespace MTTFTest.Watchdog.Protocol
         public const string Ping = "Ping";
         public const string Pong = "Pong";
         public const string ExternalRecoveryRequired = "ExternalRecoveryRequired";
+        public const string RecoveryAttemptFailed = "RecoveryAttemptFailed";
+        public const string BatchStartFailed = "BatchStartFailed";
         public const string RequestStopAll = "RequestStopAll";
         public const string StopCompleted = "StopCompleted";
         public const string ManualStopRequested = "ManualStopRequested";
+        public const string ManualStopIntent = "ManualStopIntent";
+        public const string PhysicalStopConfirmed = "PhysicalStopConfirmed";
         public const string RunStopped = "RunStopped";
         public const string RunCompleted = "RunCompleted";
         public const string ApplicationClosing = "ApplicationClosing";
@@ -108,6 +113,19 @@ namespace MTTFTest.Watchdog.Protocol
         public int DaqRecoveryCount { get; set; }
         public int SoftwareRecoveryCount { get; set; }
         public int RecoveryOwnerCount { get; set; }
+        public bool StopAllActive { get; set; }
+        public string StopStage { get; set; }
+        public long StopStartedUtc { get; set; }
+        public long StopStageStartedUtc { get; set; }
+        public long StopProgressVersion { get; set; }
+        public bool StopPhysicalSafe { get; set; }
+        public int TimerCount { get; set; }
+        public int RunnerCount { get; set; }
+        public int EnergizedChannelCount { get; set; }
+        public long CompletedCycleCount { get; set; }
+        public int ExpectedCyclePeriodMs { get; set; }
+        public int StopCtsCount { get; set; }
+        public int CyclePauseCtsCount { get; set; }
         public string MotorState { get; set; }
         public string PowerState { get; set; }
         public string PressureState { get; set; }
@@ -128,6 +146,10 @@ namespace MTTFTest.Watchdog.Protocol
         public bool PersistenceConfirmed { get; set; }
         public bool ContinuityConfirmed { get; set; }
         public bool LogicalQuiescenceConfirmed { get; set; }
+        public bool RequiresProcessRestart { get; set; }
+        public bool TimedOut { get; set; }
+        public string Outcome { get; set; }
+        public string LastStage { get; set; }
         public string Detail { get; set; }
     }
 }

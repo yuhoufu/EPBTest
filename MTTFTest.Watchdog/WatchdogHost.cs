@@ -115,6 +115,8 @@ namespace MTTFTest.Watchdog
         private long _lastHeartbeatTimestamp = Stopwatch.GetTimestamp();
         private long _lastProgressTimestamp = Stopwatch.GetTimestamp();
         private long _lastProgressVersion;
+        private long _lastCompletedCycleCount = -1;
+        private long _lastFormalProgressTimestamp = Stopwatch.GetTimestamp();
         private long _lastHeartbeatSequence;
         private long _lastHeartbeatAckSequence;
         private long _eventSequence;
@@ -123,6 +125,10 @@ namespace MTTFTest.Watchdog
         private int _relaunchStarted;
         private int _heartbeatSuspectLogged;
         private int _terminalPublished;
+        private long _manualStopIntentTimestamp;
+        private int _manualStopEmergencyResent;
+        private int _manualStopTakeoverStarted;
+        private int _physicalStopConfirmed;
         private bool _attached;
 
         private WatchdogHost(WatchdogArguments args)
@@ -211,7 +217,9 @@ namespace MTTFTest.Watchdog
                         WatchdogMessage message;
                         try { message = WatchdogProtocol.Deserialize(line); }
                         catch (Exception ex) { Record("InvalidMessage", ex.Message); continue; }
-                        if (message == null || message.ProtocolVersion != WatchdogProtocol.Version ||
+                        if (message == null ||
+                            message.ProtocolVersion < WatchdogProtocol.MinimumCompatibleVersion ||
+                            message.ProtocolVersion > WatchdogProtocol.Version ||
                             !string.Equals(message.SessionId, _args.SessionId, StringComparison.Ordinal))
                             continue;
                         await HandleMessageAsync(message).ConfigureAwait(false);
@@ -249,6 +257,8 @@ namespace MTTFTest.Watchdog
                     _relaunchStarted = 0;
                     _lastProgressVersion = 0;
                     Interlocked.Exchange(ref _lastProgressTimestamp, Stopwatch.GetTimestamp());
+                    Interlocked.Exchange(ref _lastCompletedCycleCount, -1);
+                    Interlocked.Exchange(ref _lastFormalProgressTimestamp, Stopwatch.GetTimestamp());
                     _journal.OrphanPauseTriggered = false;
                     _journal.PowerDisableTriggered = false;
                     Interlocked.Exchange(ref _lastHeartbeatTimestamp, Stopwatch.GetTimestamp());
@@ -271,6 +281,17 @@ namespace MTTFTest.Watchdog
                         _lastProgressVersion = message.Heartbeat.RecoveryProgressVersion;
                         Interlocked.Exchange(ref _lastProgressTimestamp, Stopwatch.GetTimestamp());
                     }
+                    if (!string.Equals(message.Heartbeat.Phase, "Formal", StringComparison.OrdinalIgnoreCase) ||
+                        message.Heartbeat.CompletedCycleCount !=
+                        Interlocked.Read(ref _lastCompletedCycleCount))
+                    {
+                        Interlocked.Exchange(
+                            ref _lastCompletedCycleCount,
+                            message.Heartbeat.CompletedCycleCount);
+                        Interlocked.Exchange(
+                            ref _lastFormalProgressTimestamp,
+                            Stopwatch.GetTimestamp());
+                    }
                     _lastHeartbeatAckSequence = message.Heartbeat.Sequence;
                     _journal.LastHeartbeatAckSequence = _lastHeartbeatAckSequence;
                     SaveJournal();
@@ -282,27 +303,43 @@ namespace MTTFTest.Watchdog
                         AckSequence = message.Heartbeat.Sequence,
                         CorrelationId = message.CorrelationId
                     });
-                    if (_journal.ManualStopRequested && !message.Heartbeat.RunActive)
-                        _stop.Cancel();
                     break;
                 case WatchdogMessageType.Pong:
                     break;
                 case WatchdogMessageType.ExternalRecoveryRequired:
                     BeginTakeover("ExternalRecoveryRequired:" + message.Reason);
                     break;
-                case WatchdogMessageType.StopCompleted:
-                    Record("StopCompleted", message.StopSummary?.Detail ?? message.Reason);
+                case WatchdogMessageType.BatchStartFailed:
+                    Record("BatchStartFailed", message.Reason);
+                    BeginTakeover("BatchStartFailed:" + message.Reason);
+                    break;
+                case WatchdogMessageType.RecoveryAttemptFailed:
+                    Record("RecoveryAttemptFailed", message.Reason);
+                    _attached = false;
                     BeginRelaunchAfterExit();
                     break;
+                case WatchdogMessageType.StopCompleted:
+                    Record("StopCompleted", message.StopSummary?.Detail ?? message.Reason);
+                    if (_journal.ManualStopRequested)
+                    {
+                        PublishTerminal("ManualStopCompleted", message.StopSummary?.Detail ?? message.Reason);
+                        _stop.Cancel();
+                    }
+                    else
+                        BeginRelaunchAfterExit();
+                    break;
+                case WatchdogMessageType.PhysicalStopConfirmed:
+                    Interlocked.Exchange(ref _physicalStopConfirmed, 1);
+                    Record("PhysicalStopConfirmed", message.Reason);
+                    break;
+                case WatchdogMessageType.ManualStopIntent:
                 case WatchdogMessageType.ManualStopRequested:
                     _journal.ManualStopRequested = true;
-                    Record("ManualStopRequested", message.Reason);
-                    PublishTerminal("ManualStopRequested", message.Reason);
-                    // 人工停止已由主程序先写入跨进程撤权标记。Watchdog 此时的
-                    // 唯一职责是永久放弃本 Session 的 Kill/重启资格，不应再等待
-                    // StopAll 的持久化或逻辑收口；否则 StopAll 自身卡住会遗留一个
-                    // 没有任何作用的后台 sidecar。主程序继续独立执行幂等 StopAll。
-                    _stop.Cancel();
+                    Interlocked.CompareExchange(
+                        ref _manualStopIntentTimestamp,
+                        Stopwatch.GetTimestamp(),
+                        0);
+                    Record("ManualStopIntent", message.Reason);
                     break;
                 case WatchdogMessageType.RunStopped:
                 case WatchdogMessageType.RunCompleted:
@@ -324,7 +361,7 @@ namespace MTTFTest.Watchdog
                 try
                 {
                     await Task.Delay(250, token).ConfigureAwait(false);
-                    if (!_attached || _journal.ManualStopRequested) continue;
+                    if (!_attached) continue;
                     if (IsSessionRevoked())
                     {
                         _journal.ManualStopRequested = true;
@@ -343,12 +380,46 @@ namespace MTTFTest.Watchdog
                     var heartbeat = _journal.LastHeartbeat;
                     var eligibleChannels = GetRecoveryEligibleChannels(heartbeat);
                     var processAlive = IsCurrentProcessAlive();
-                    var stageSinceUtc = heartbeat?.PowerDisablePending == true && heartbeat.PowerDisableSince > 0
-                        ? heartbeat.PowerDisableSince
-                        : heartbeat?.PauseSince ?? 0;
+                    var stageSinceUtc = heartbeat?.StopAllActive == true && heartbeat.StopStageStartedUtc > 0
+                        ? heartbeat.StopStageStartedUtc
+                        : heartbeat?.PowerDisablePending == true && heartbeat.PowerDisableSince > 0
+                            ? heartbeat.PowerDisableSince
+                            : heartbeat?.PauseSince ?? 0;
                     var stageAgeSeconds = stageSinceUtc > 0
                         ? Math.Max(0, (DateTime.UtcNow.Ticks - stageSinceUtc) / (double)TimeSpan.TicksPerSecond)
                         : ElapsedSeconds(Interlocked.Read(ref _lastProgressTimestamp));
+                    if (_journal.ManualStopRequested)
+                    {
+                        var manualAge = ElapsedSeconds(Interlocked.Read(ref _manualStopIntentTimestamp));
+                        if (manualAge >= 5 &&
+                            Interlocked.CompareExchange(ref _manualStopEmergencyResent, 1, 0) == 0)
+                        {
+                            Record("ManualStopEmergencyResent", $"AgeSeconds={manualAge:F3}");
+                            Send(WatchdogMessageType.RequestStopAll,
+                                "ManualStopNoProgress5s", Guid.NewGuid().ToString("N"));
+                        }
+                        if (manualAge >= 15)
+                        {
+                            BeginManualStopTakeover("ManualStopTimeout15s");
+                            continue;
+                        }
+                    }
+                    var logicalResidue = heartbeat != null && !heartbeat.RunActive &&
+                        (heartbeat.TimerCount > 0 || heartbeat.RunnerCount > 0 ||
+                         heartbeat.StopCtsCount > 0 || heartbeat.CyclePauseCtsCount > 0 ||
+                         heartbeat.DaqRecoveryCount > 0 || heartbeat.SoftwareRecoveryCount > 0 ||
+                         heartbeat.RecoveryOwnerCount > 0);
+                    var inconsistentRecovery = heartbeat != null && !heartbeat.RecoveryActive &&
+                        (heartbeat.DaqRecoveryCount > 0 || heartbeat.SoftwareRecoveryCount > 0 ||
+                         heartbeat.RecoveryOwnerCount > 0);
+                    var formalProgressStalled = heartbeat != null &&
+                        heartbeat.RunActive &&
+                        string.Equals(heartbeat.Phase, "Formal", StringComparison.OrdinalIgnoreCase) &&
+                        (heartbeat.TimerCount > 0 || heartbeat.RunnerCount > 0 ||
+                         heartbeat.EnergizedChannelCount > 0) &&
+                        ElapsedSeconds(Interlocked.Read(ref _lastFormalProgressTimestamp)) >=
+                        WatchdogTakeoverPolicy.SelectFormalProgressTimeoutSeconds(
+                            heartbeat.ExpectedCyclePeriodMs);
                     var shouldTakeover = WatchdogTakeoverPolicy.ShouldTakeover(
                         IsSessionRevoked(),
                         _journal.ManualStopRequested,
@@ -359,15 +430,23 @@ namespace MTTFTest.Watchdog
                         heartbeat?.OrphanPaused == true,
                         heartbeat?.PowerDisablePending == true,
                         stageAgeSeconds,
-                        eligibleChannels.Length > 0);
+                        eligibleChannels.Length > 0,
+                        heartbeat?.StopAllActive == true,
+                        logicalResidue,
+                        inconsistentRecovery,
+                        formalProgressStalled);
                     if (shouldTakeover)
                     {
                         var reason = !processAlive || heartbeatAge >= 5
                             ? (heartbeatAge >= 5 ? "HeartbeatUnresponsive" : "ProcessExitedUnexpectedly")
-                            : heartbeat?.PowerDisablePending == true && stageAgeSeconds >= 5
+                            : heartbeat?.StopAllActive == true && stageAgeSeconds >= 5
+                                ? "StopStageNoProgress5s"
+                                : heartbeat?.PowerDisablePending == true && stageAgeSeconds >= 5
                                 ? "PowerDisablePendingTimeout"
                                 : heartbeat?.OrphanPaused == true && stageAgeSeconds >= 5
                                     ? "OrphanPausedTimeout"
+                                    : formalProgressStalled
+                                        ? "FormalProgressStalled"
                                     : "ExternalRecoveryStageStalled";
                         BeginTakeover(reason);
                     }
@@ -384,6 +463,66 @@ namespace MTTFTest.Watchdog
             Record("TakeoverRequested", reason);
             Send(WatchdogMessageType.RequestStopAll, reason, Guid.NewGuid().ToString("N"));
             _ = Task.Run(() => TakeoverAsync(reason));
+        }
+
+        private void BeginManualStopTakeover(string reason)
+        {
+            if (!_journal.ManualStopRequested || IsSessionRevoked() ||
+                Interlocked.CompareExchange(ref _manualStopTakeoverStarted, 1, 0) != 0)
+                return;
+            Record("ManualStopTakeoverRequested", reason);
+            _ = Task.Run(() => ManualStopTakeoverAsync(reason));
+        }
+
+        private async Task ManualStopTakeoverAsync(string reason)
+        {
+            if (IsCurrentProcessAlive())
+            {
+                try
+                {
+                    using (var process = Process.GetProcessById(_journal.CurrentPid))
+                    {
+                        if (WatchdogProcessIdentityPolicy.CanKillOldProcess(
+                                IsSessionRevoked(),
+                                manualStopRequested: true,
+                                MatchesCurrentProcess(process)))
+                        {
+                            await MiniDumpCapture.TryCaptureAsync(
+                                    process,
+                                    _args.JournalDirectory,
+                                    _args.SessionId,
+                                    TimeSpan.FromSeconds(3),
+                                    message => RecordEvent("MiniDump", message))
+                                .ConfigureAwait(false);
+                            process.Kill();
+                            process.WaitForExit(5000);
+                            Record("ManualStopOldProcessTerminated", reason);
+                        }
+                    }
+                }
+                catch (Exception ex) { Record("ManualStopTerminationFailed", ex.Message); }
+            }
+            LaunchIdleRestart(reason);
+            PublishTerminal("ManualStopIdleRestartLaunched", reason);
+            _stop.Cancel();
+        }
+
+        private void LaunchIdleRestart(string reason)
+        {
+            var arguments = string.Format(
+                CultureInfo.InvariantCulture,
+                "--watchdog-idle-restart {0} --previous-pid {1}",
+                Quote(_args.SessionId),
+                _journal.CurrentPid);
+            var started = Process.Start(new ProcessStartInfo
+            {
+                FileName = _journal.ExecutablePath,
+                Arguments = arguments,
+                WorkingDirectory = Path.GetDirectoryName(_journal.ExecutablePath) ?? Environment.CurrentDirectory,
+                UseShellExecute = false
+            });
+            if (started == null) throw new InvalidOperationException("Idle restart Process.Start returned null.");
+            Record("IdleProcessLaunched", $"PID={started.Id};Reason={reason};AutoResume=false");
         }
 
         private async Task TakeoverAsync(string reason)

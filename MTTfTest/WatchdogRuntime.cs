@@ -21,6 +21,7 @@ namespace MTEmbTest
         public int PreviousPid { get; set; }
         public int RecoveryAttempt { get; set; }
         public int[] ExcludedChannels { get; set; } = Array.Empty<int>();
+        public bool StartIdle { get; set; }
 
         public static WatchdogRecoveryIntent Parse(string[] args)
         {
@@ -31,18 +32,23 @@ namespace MTEmbTest
                         return args[i + 1];
                 return string.Empty;
             }
-            var session = Read("--watchdog-recover");
+            var idleSession = Read("--watchdog-idle-restart");
+            var session = string.IsNullOrWhiteSpace(idleSession)
+                ? Read("--watchdog-recover")
+                : idleSession;
             if (string.IsNullOrWhiteSpace(session)) return null;
             int.TryParse(Read("--previous-pid"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var previousPid);
             int.TryParse(Read("--recovery-attempt"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var attempt);
             var pipe = Read("--watchdog-pipe");
-            if (string.IsNullOrWhiteSpace(pipe)) return null;
+            var startIdle = !string.IsNullOrWhiteSpace(idleSession);
+            if (!startIdle && string.IsNullOrWhiteSpace(pipe)) return null;
             return new WatchdogRecoveryIntent
             {
                 SessionId = session,
                 PipeName = pipe,
                 PreviousPid = previousPid,
                 RecoveryAttempt = Math.Max(1, attempt),
+                StartIdle = startIdle,
                 ExcludedChannels = (Read("--exclude-channels") ?? string.Empty)
                     .Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
                     .Select(value => int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var channel)
@@ -476,14 +482,29 @@ namespace MTEmbTest
         }
 
         internal static void RequestExternalRecovery(string reason) => SendSimple(WatchdogMessageType.ExternalRecoveryRequired, reason);
-        internal static void NotifyManualStop(string reason)
+        internal static void NotifyRecoveryAttemptFailed(string reason)
         {
+            // 可重试恢复子进程退出不是运行终止，不写 revocation marker。
             Volatile.Write(ref _sessionClosing, 1);
-            WriteSessionRevocationMarker(reason);
-            RecordClientEvent("ManualStopRequested", reason);
-            SendSimple(WatchdogMessageType.ManualStopRequested, reason);
+            RecordClientEvent("RecoveryAttemptFailed", reason);
+            SendSimple(WatchdogMessageType.RecoveryAttemptFailed, reason);
             FlushClientJournal();
         }
+        internal static void NotifyBatchStartFailed(string reason)
+        {
+            // 启动预检失败保留原 session/checkpoint；Sidecar 将安全接管并退避重试。
+            RecordClientEvent("BatchStartFailed", reason);
+            SendSimple(WatchdogMessageType.BatchStartFailed, reason);
+            FlushClientJournal();
+        }
+        internal static void NotifyManualStop(string reason)
+        {
+            RecordClientEvent("ManualStopIntent", reason);
+            SendSimple(WatchdogMessageType.ManualStopIntent, reason);
+            FlushClientJournal();
+        }
+        internal static void NotifyPhysicalStopConfirmed(string reason) =>
+            SendSimple(WatchdogMessageType.PhysicalStopConfirmed, reason);
         internal static void NotifyRunStopped(WatchdogStopSummary summary)
         {
             Volatile.Write(ref _sessionClosing, 1);
