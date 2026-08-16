@@ -109,16 +109,152 @@ namespace Controller
 
     internal readonly struct DaqLivenessDecision
     {
-        internal DaqLivenessDecision(bool trip, string code, string reason)
+        internal DaqLivenessDecision(
+            bool trip,
+            string code,
+            string reason,
+            bool warn = false,
+            bool suspect = false,
+            bool recoveredGap = false,
+            int tripConfirmations = 0)
         {
             Trip = trip;
             Code = code ?? string.Empty;
             Reason = reason ?? string.Empty;
+            Warn = warn;
+            Suspect = suspect;
+            RecoveredGap = recoveredGap;
+            TripConfirmations = tripConfirmations;
         }
 
         internal bool Trip { get; }
         internal string Code { get; }
         internal string Reason { get; }
+        internal bool Warn { get; }
+        internal bool Suspect { get; }
+        internal bool RecoveredGap { get; }
+        internal int TripConfirmations { get; }
+    }
+
+    internal sealed class DaqLivenessDeviceState
+    {
+        private long _generation;
+        private long _lastProduced;
+        private long _suspectProduced;
+        private long _observedGapEvents;
+        private int _tripConfirmations;
+        private bool _suspect;
+        private bool _warned;
+
+        internal DaqLivenessDecision Observe(
+            bool batchActive,
+            bool deviceEnergized,
+            bool recoveryActive,
+            DaqFreshnessSnapshot freshness,
+            double warnMs,
+            double suspectMs,
+            double tripMs)
+        {
+            if (!batchActive || !deviceEnergized || recoveryActive || freshness == null)
+            {
+                ResetTransient(freshness);
+                return new DaqLivenessDecision(false, string.Empty, string.Empty);
+            }
+
+            if (_generation != freshness.Generation)
+            {
+                _generation = freshness.Generation;
+                _lastProduced = freshness.LastProducedSequence;
+                _observedGapEvents = freshness.CallbackGapEventCount;
+                _suspect = false;
+                _warned = false;
+                _tripConfirmations = 0;
+            }
+
+            var sequenceAdvanced = freshness.LastProducedSequence > _lastProduced;
+            _lastProduced = Math.Max(_lastProduced, freshness.LastProducedSequence);
+            var newGap = freshness.CallbackGapEventCount > _observedGapEvents;
+            _observedGapEvents = Math.Max(_observedGapEvents, freshness.CallbackGapEventCount);
+
+            if (sequenceAdvanced)
+            {
+                var recovered = newGap && freshness.LastCallbackGapIntervalMs >= suspectMs;
+                _suspect = false;
+                _tripConfirmations = 0;
+                _warned = false;
+                if (recovered)
+                    return new DaqLivenessDecision(
+                        false,
+                        "RecoveredGap",
+                        $"DAQ回调已恢复；历史空窗={freshness.LastCallbackGapIntervalMs:F1}ms，" +
+                        "仅作废受影响在途圈，不重建DAQ。",
+                        warn: true,
+                        recoveredGap: true);
+            }
+
+            if (freshness.CallbackAgeMs < suspectMs)
+            {
+                _suspect = false;
+                _tripConfirmations = 0;
+            }
+
+            if (freshness.CallbackAgeMs < warnMs)
+            {
+                _warned = false;
+                return new DaqLivenessDecision(false, string.Empty, string.Empty);
+            }
+
+            if (freshness.CallbackAgeMs < suspectMs)
+            {
+                var emit = !_warned;
+                _warned = true;
+                return new DaqLivenessDecision(
+                    false,
+                    emit ? "DaqLivenessWarn" : string.Empty,
+                    emit ? $"DAQ回调年龄={freshness.CallbackAgeMs:F1}ms。" : string.Empty,
+                    warn: emit);
+            }
+
+            if (!_suspect)
+            {
+                _suspect = true;
+                _suspectProduced = freshness.LastProducedSequence;
+                _tripConfirmations = 0;
+            }
+            if (freshness.LastProducedSequence != _suspectProduced)
+            {
+                _suspect = false;
+                _tripConfirmations = 0;
+                return new DaqLivenessDecision(false, string.Empty, string.Empty);
+            }
+
+            if (freshness.CallbackAgeMs >= tripMs)
+                _tripConfirmations++;
+            else
+                _tripConfirmations = 0;
+            var trip = _tripConfirmations >= 3;
+            return new DaqLivenessDecision(
+                trip,
+                trip ? "DaqCallbackStale" : "DaqLivenessSuspect",
+                $"CallbackAge={freshness.CallbackAgeMs:F1}ms Generation={freshness.Generation} " +
+                $"Produced={freshness.LastProducedSequence} Confirmations={_tripConfirmations}/3",
+                warn: !_warned,
+                suspect: true,
+                tripConfirmations: _tripConfirmations);
+        }
+
+        private void ResetTransient(DaqFreshnessSnapshot freshness)
+        {
+            if (freshness != null)
+            {
+                _generation = freshness.Generation;
+                _lastProduced = freshness.LastProducedSequence;
+                _observedGapEvents = freshness.CallbackGapEventCount;
+            }
+            _suspect = false;
+            _warned = false;
+            _tripConfirmations = 0;
+        }
     }
 
     public sealed partial class EpbManager
@@ -133,26 +269,26 @@ namespace Controller
         {
             if (!batchActive || !deviceEnergized || recoveryActive || freshness == null)
                 return new DaqLivenessDecision(false, string.Empty, string.Empty);
-            var threshold = Math.Max(50, staleThresholdMs);
+            var tripThreshold = Math.Max(2000, staleThresholdMs);
             if (freshness.CallbackGapEventCount > observedGapEventCount &&
-                freshness.LastCallbackGapIntervalMs > threshold)
+                freshness.CallbackAgeMs < 1000)
                 return new DaqLivenessDecision(
-                    true,
-                    "DaqCallbackGap",
-                    $"独立DAQ存活监督发现带电期间发生{freshness.LastCallbackGapIntervalMs:F1}ms回调空窗；" +
-                    $"GapEvent={freshness.CallbackGapEventCount} Generation={freshness.Generation} " +
-                    $"Produced={freshness.LastProducedSequence} " +
-                    $"Processed={freshness.LastProcessedSequence}");
+                    false,
+                    "RecoveredGap",
+                    $"已恢复历史空窗={freshness.LastCallbackGapIntervalMs:F1}ms，不事后重建DAQ。",
+                    warn: freshness.LastCallbackGapIntervalMs >= 100,
+                    recoveredGap: freshness.LastCallbackGapIntervalMs >= 1000);
             if (freshness.LastCallbackMonotonicTicks > 0 &&
-                freshness.CallbackAgeMs <= threshold)
+                freshness.CallbackAgeMs < tripThreshold)
                 return new DaqLivenessDecision(false, string.Empty, string.Empty);
             return new DaqLivenessDecision(
-                true,
-                "DaqCallbackStale",
-                $"独立DAQ存活监督发现回调超过{threshold:F0}ms未更新；" +
+                false,
+                "DaqLivenessSuspect",
+                $"独立DAQ存活监督发现回调达到{tripThreshold:F0}ms；需连续3次确认；" +
                 $"CallbackAge={freshness.CallbackAgeMs:F1}ms " +
                 $"Generation={freshness.Generation} Produced={freshness.LastProducedSequence} " +
-                    $"Processed={freshness.LastProcessedSequence}");
+                    $"Processed={freshness.LastProcessedSequence}",
+                suspect: true);
         }
 
         internal static DaqUnenergizedGapDecision EvaluateUnenergizedDaqGap(
@@ -212,7 +348,7 @@ namespace Controller
                 {
                     var freshness = _acq.GetDaqFreshnessSnapshot(
                         device,
-                        _daqLivenessStaleThresholdMs);
+                        _daqLivenessSuspectThresholdMs);
                     freshnessByDevice[device] = freshness;
                     var recoveryActive = _daqAutoRecovery.TryGetValue(device, out var recovery) &&
                                          recovery.Terminal.Current == DaqRecoveryTerminal.None;
@@ -242,7 +378,7 @@ namespace Controller
                         freshness,
                         hasObservedGapBaseline,
                         observedGapEvents,
-                        _daqLivenessStaleThresholdMs);
+                        _daqLivenessWarnThresholdMs);
                     if (unenergizedGap.Emit)
                     {
                         _log.Info(
@@ -250,7 +386,7 @@ namespace Controller
                             $"Device={device} {unenergizedGap.Reason} " +
                             $"RunId={_activeBatchId:N} " +
                             $"RunEpoch={Interlocked.Read(ref _runEpoch)} " +
-                            $"ThresholdMs={_daqLivenessStaleThresholdMs:F0} " +
+                            $"WarnMs={_daqLivenessWarnThresholdMs:F0} " +
                             "Energized=false RecoveryActive=false",
                             "FIELD");
                         _daqLivenessObservedGapEvents.AddOrUpdate(
@@ -261,13 +397,29 @@ namespace Controller
                                 freshness.CallbackGapEventCount));
                     }
 
-                    var decision = EvaluateDaqLiveness(
-                        IsBatchSessionActive,
-                        IsDaqDeviceControlActive(device),
-                        recoveryActive,
-                        freshness,
-                        observedGapEvents,
-                        _daqLivenessStaleThresholdMs);
+                    var decision = _daqLivenessStates.GetOrAdd(
+                            device,
+                            _ => new DaqLivenessDeviceState())
+                        .Observe(
+                            IsBatchSessionActive,
+                            IsDaqDeviceControlActive(device),
+                            recoveryActive,
+                            freshness,
+                            _daqLivenessWarnThresholdMs,
+                            _daqLivenessSuspectThresholdMs,
+                            _daqLivenessTripThresholdMs);
+                    if (decision.Warn && !string.IsNullOrWhiteSpace(decision.Code))
+                    {
+                        var level = decision.RecoveredGap ? "RecoveredGap" :
+                            decision.Suspect ? "Suspect" : "Warn";
+                        _log.Warn(
+                            $"FieldMetric DAQ_LIVENESS Result={level} Device={device} " +
+                            $"{decision.Reason} RunId={_activeBatchId:N} " +
+                            $"RunEpoch={Interlocked.Read(ref _runEpoch)}",
+                            "FIELD");
+                    }
+                    if (decision.RecoveredGap)
+                        AbortCurrentCyclesForRecoveredDaqGap(device, freshness);
                     if (!decision.Trip)
                     {
                         if (freshness != null)
@@ -395,7 +547,10 @@ namespace Controller
                         $"Devices={string.Join(",", participantDevices.OrderBy(x => x))} " +
                         $"TriggeredDevices={string.Join(",", incidents.Select(x => x.Device))} " +
                         $"BatchCorrelationId={batchCorrelation:N} RunId={_activeBatchId:N} " +
-                        $"RunEpoch={Interlocked.Read(ref _runEpoch)} ThresholdMs={_daqLivenessStaleThresholdMs:F0}",
+                        $"RunEpoch={Interlocked.Read(ref _runEpoch)} " +
+                        $"WarnMs={_daqLivenessWarnThresholdMs:F0} " +
+                        $"SuspectMs={_daqLivenessSuspectThresholdMs:F0} " +
+                        $"TripMs={_daqLivenessTripThresholdMs:F0}",
                         "FIELD");
 
                 // 同一扫描中的设备直接通过统一事故入口提交，显式传递共享批次
@@ -435,7 +590,7 @@ namespace Controller
             long firstGapTicks,
             long secondGapTicks,
             long stopwatchFrequency,
-            double mergeWindowMs = 100)
+            double mergeWindowMs = 250)
         {
             var window = Math.Max(1, mergeWindowMs);
             if (firstGapTicks > 0 && secondGapTicks > 0 && stopwatchFrequency > 0)
@@ -456,7 +611,9 @@ namespace Controller
             _log.Info(
                 $"FieldMetric DAQ_LIVENESS Result=Configured " +
                 $"IntervalMs={_daqLivenessWatchdogIntervalMs} " +
-                $"ThresholdMs={_daqLivenessStaleThresholdMs:F0} " +
+                $"WarnMs={_daqLivenessWarnThresholdMs:F0} " +
+                $"SuspectMs={_daqLivenessSuspectThresholdMs:F0} " +
+                $"TripMs={_daqLivenessTripThresholdMs:F0} " +
                 $"ProcessId={Process.GetCurrentProcess().Id} " +
                 $"RunId={runId:N} RunEpoch={Interlocked.Read(ref _runEpoch)}",
                 "FIELD");
@@ -470,11 +627,36 @@ namespace Controller
         {
             var device = _acq.GetDeviceForEpbChannel(channel);
             if (string.IsNullOrWhiteSpace(device) || IsDaqDeviceControlActive(device)) return;
-            var freshness = _acq.GetDaqFreshnessSnapshot(device, _daqLivenessStaleThresholdMs);
+            var freshness = _acq.GetDaqFreshnessSnapshot(device, _daqLivenessSuspectThresholdMs);
             if (freshness == null) return;
             _daqLivenessObservedGapEvents[BuildDaqLivenessGapKey(
                 device,
                 freshness.Generation)] = freshness.CallbackGapEventCount;
+        }
+
+        private void AbortCurrentCyclesForRecoveredDaqGap(
+            string device,
+            DaqFreshnessSnapshot freshness)
+        {
+            var runId = _activeBatchId;
+            var runEpoch = Interlocked.Read(ref _runEpoch);
+            foreach (var pair in _currentCycleNumberByChannel.ToArray())
+            {
+                if (!string.Equals(
+                        _acq.GetDeviceForEpbChannel(pair.Key),
+                        device,
+                        StringComparison.OrdinalIgnoreCase))
+                    continue;
+                MarkDaqClockCycleAborted(runId, runEpoch, pair.Key, pair.Value);
+                _daqRecoveredGapAbortedCycles[
+                    DaqAbortedCycleKey(runId, runEpoch, pair.Key, pair.Value)] = 0;
+                _log.Warn(
+                    $"AbortedByDaqGap RunId={runId:N};RunEpoch={runEpoch};" +
+                    $"EPB={pair.Key};Cycle={pair.Value};Device={device};" +
+                    $"GapMs={freshness?.LastCallbackGapIntervalMs:F1};" +
+                    "Action=AbortCurrentCycleAndRequireFresh500ms;DaqRestart=false",
+                    "落盘");
+            }
         }
     }
 }

@@ -177,19 +177,34 @@ namespace Controller
             evidenceTailLagMs = double.PositiveInfinity;
             if (capture == null || !capture.IsMatched || !capture.IsCutoffCovered)
                 return false;
+            if (capture.Generation > 0 && !capture.IsGenerationMatched)
+                return false;
             var peak = capture.Peak;
             if (peak.SampleCount <= 0 || peak.MaxAmp <= 0 ||
-                double.IsNaN(peak.MaxAmp) || double.IsInfinity(peak.MaxAmp) ||
-                capture.LogicalCutoffUtc == default ||
-                peak.LastSampleAt == default || peak.LastSampleAt == DateTime.MinValue)
+                double.IsNaN(peak.MaxAmp) || double.IsInfinity(peak.MaxAmp))
                 return false;
 
-            var lastSampleUtc = peak.LastSampleAt.Kind == DateTimeKind.Utc
-                ? peak.LastSampleAt
-                : peak.LastSampleAt.ToUniversalTime();
-            evidenceTailLagMs = (capture.LogicalCutoffUtc - lastSampleUtc).TotalMilliseconds;
+            evidenceTailLagMs = ResolvePeakEvidenceTailLagMs(capture);
             return evidenceTailLagMs >= 0 &&
                    evidenceTailLagMs <= Math.Max(0, maximumTailLagMs);
+        }
+
+        internal static double ResolvePeakEvidenceTailLagMs(PeakCaptureResult capture)
+        {
+            if (capture == null) return double.PositiveInfinity;
+            if (!double.IsNaN(capture.EvidenceTailLagMs) &&
+                !double.IsInfinity(capture.EvidenceTailLagMs))
+                return capture.EvidenceTailLagMs;
+
+            // 兼容旧文件/测试构造的结果；生产捕获始终写入单调时钟尾差。
+            if (capture.LogicalCutoffUtc == default ||
+                capture.Peak.LastSampleAt == default ||
+                capture.Peak.LastSampleAt == DateTime.MinValue)
+                return double.PositiveInfinity;
+            var lastSampleUtc = capture.Peak.LastSampleAt.Kind == DateTimeKind.Utc
+                ? capture.Peak.LastSampleAt
+                : capture.Peak.LastSampleAt.ToUniversalTime();
+            return (capture.LogicalCutoffUtc - lastSampleUtc).TotalMilliseconds;
         }
 
         internal bool ResetTransientRunState()
@@ -1462,8 +1477,7 @@ namespace Controller
                             capture.Peak.SampleCount > 0)
                         {
                             fullRatePeakA = capture.Peak.MaxAmp;
-                            evidenceAgeMs = (capture.LogicalCutoffUtc -
-                                             capture.Peak.LastSampleAt.ToUniversalTime()).TotalMilliseconds;
+                            evidenceAgeMs = ResolvePeakEvidenceTailLagMs(capture);
                         }
                     }
                     else

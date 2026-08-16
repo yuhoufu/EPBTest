@@ -998,16 +998,17 @@ namespace Controller
             var attempt = _formalPersistenceRecoveryAttempts.AddOrUpdate(channel, 1, (_, old) => old + 1);
             _formalPersistenceRecoveryPendingCycles[channel] = cycleNumber;
             _currentCycleNumberByChannel.TryAdd(channel, cycleNumber);
-            if (!TryEnsureSoftwareRecoveryOutputOff(channel, "FormalPersistenceSelfHealing"))
-            {
-                return;
-            }
             if (_timers.TryGetValue(channel, out var timer))
             {
                 try { timer.Pause("FormalPersistenceSelfHealing"); } catch { }
             }
             try { CancelCyclePauseCts(channel); } catch { }
+            RemoveTimerRuntime(channel, "FormalPersistenceSelfHealing");
+            RemoveRunnerRuntime(channel, "FormalPersistenceSelfHealing");
             UnmarkHydraulicParticipant(channel);
+            var offConfirmed = TryEnsureSoftwareRecoveryOutputOff(
+                channel,
+                "FormalPersistenceSelfHealing");
             try { ObserveSafetyTask(HydraulicMarkReleaseAsync(channel), "FormalPersistenceRecovery", channel); }
             catch { }
             PublishChannelRuntimeState(
@@ -1019,13 +1020,14 @@ namespace Controller
                 correlationId: _activeBatchId,
                 allowTerminalReset: false);
             _log.Warn(
-                $"EPB[{channel}] 正式圈落盘软件异常；保留圈事务并等待真实耐久收口。" +
+                $"EPB[{channel}] 正式圈落盘软件异常；运行对象已撤销，保留圈事务并等待真实耐久收口。" +
                 $"Cycle={cycleNumber} Stage={stage} Attempt={attempt} Error={cause?.Message}",
                 "落盘");
             ScheduleIsolatedInfrastructureRecovery(
                 new[] { channel },
                 $"FormalPersistence:{stage}:Cycle={cycleNumber}",
-                _activeBatchId);
+                _activeBatchId,
+                offConfirmed ? "FormalPersistence" : "FormalPersistenceOutputOffPending");
         }
 
         private void ReportFormalControlSoftwareRecovery(
@@ -1034,10 +1036,19 @@ namespace Controller
             string reason)
         {
             var attempt = _formalControlRecoveryAttempts.AddOrUpdate(channel, 1, (_, old) => old + 1);
-            if (!TryEnsureSoftwareRecoveryOutputOff(channel, "FormalControlSelfHealing"))
+            // 第一处控制软件异常就是执行权撤销边界：先停 Timer/圈 token/Runner，
+            // 再做 OFF 与有界恢复。Recovering 状态绝不允许旧运行对象继续发起物理圈。
+            if (_timers.TryGetValue(channel, out var timer))
             {
-                return;
+                try { timer.Pause("FormalControlSelfHealing"); } catch { }
             }
+            try { CancelCyclePauseCts(channel); } catch { }
+            RemoveTimerRuntime(channel, "FormalControlSelfHealing");
+            RemoveRunnerRuntime(channel, "FormalControlSelfHealing");
+            UnmarkHydraulicParticipant(channel);
+            var offConfirmed = TryEnsureSoftwareRecoveryOutputOff(
+                channel,
+                "FormalControlSelfHealing");
             try { ObserveSafetyTask(HydraulicMarkReleaseAsync(channel), "FormalControlRecovery", channel); }
             catch { }
             PublishChannelRuntimeState(
@@ -1049,9 +1060,15 @@ namespace Controller
                 correlationId: _activeBatchId,
                 allowTerminalReset: false);
             _log.Warn(
-                $"EPB[{channel}] 正式圈控制软件异常已安全断电并作废。" +
-                $"Cycle={cycleNumber} Attempt={attempt} Reason={reason}",
+                $"EPB[{channel}] 正式圈控制软件异常已撤销执行权并作废；" +
+                $"进入最多{SoftwareRecoveryEscalationAttempts}次的隔离恢复。" +
+                $"Cycle={cycleNumber} Attempt={attempt} OffConfirmed={offConfirmed} Reason={reason}",
                 "EPB");
+            ScheduleIsolatedInfrastructureRecovery(
+                new[] { channel },
+                $"FormalControl:Cycle={cycleNumber}:{reason}",
+                _activeBatchId,
+                offConfirmed ? "FormalControl" : "FormalControlOutputOffPending");
         }
 
         private void CompleteFormalSoftwareRecoveryAfterCommit(int channel)

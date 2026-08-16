@@ -171,6 +171,7 @@ namespace Controller
         public Guid ActiveBatchId { get; set; }
         public int TimerCount { get; set; }
         public int RunnerCount { get; set; }
+        public int EnergizedChannelCount { get; set; }
         public int StopCtsCount { get; set; }
         public int CycleCtsCount { get; set; }
         public int HydraulicParticipantCount { get; set; }
@@ -185,6 +186,7 @@ namespace Controller
                                    !BatchSessionActive &&
                                    ActiveBatchId == Guid.Empty &&
                                    TimerCount == 0 && RunnerCount == 0 &&
+                                   EnergizedChannelCount == 0 &&
                                    StopCtsCount == 0 && CycleCtsCount == 0 &&
                                    HydraulicParticipantCount == 0 &&
                                    HydraulicLeaseCount == 0 &&
@@ -197,6 +199,7 @@ namespace Controller
         {
             return $"LifecycleBusy={BatchLifecycleBusy} Session={BatchSessionActive} " +
                    $"Batch={ActiveBatchId:N} Timers={TimerCount} Runners={RunnerCount} " +
+                   $"Energized={EnergizedChannelCount} " +
                    $"StopCts={StopCtsCount} CycleCts={CycleCtsCount} " +
                    $"Participants={HydraulicParticipantCount} Leases={HydraulicLeaseCount} " +
                    $"DaqRecovery={DaqRecoveryCount} SoftwareRecovery={SoftwareRecoveryCount} " +
@@ -255,8 +258,62 @@ namespace Controller
             new Dictionary<int, string>();
     }
 
+    public enum StopSafetyStage
+    {
+        None = 0,
+        FreezeActiveWork = 10,
+        RevokeExecutionAuthorization = 20,
+        SubmitPhysicalOff = 30,
+        StartPowerDisable = 40,
+        ClearTimerAndRunner = 50,
+        ClearRecoveryOwners = 60,
+        StopAcquisition = 70,
+        ReleaseHydraulics = 80,
+        ClosePersistenceBoundary = 90,
+        VerifyLogicalQuiescence = 100,
+        Completed = 110,
+        TimedOut = 120
+    }
+
+    public enum StopSafetyOutcome
+    {
+        Unknown = 0,
+        CompletedSafe = 1,
+        SafeButRestartRequired = 2,
+        PhysicalSafetyUnconfirmed = 3,
+        Failed = 4
+    }
+
+    public sealed class StopSafetyProgressSnapshot
+    {
+        public Guid TransactionId { get; set; }
+        public Guid RunId { get; set; }
+        public long RunEpoch { get; set; }
+        public long ProgressVersion { get; set; }
+        public StopSafetyStage Stage { get; set; }
+        public DateTime StartedUtc { get; set; }
+        public DateTime StageStartedUtc { get; set; }
+        public bool Active { get; set; }
+        public bool PhysicalOffSubmitted { get; set; }
+        public bool PowerDisableStarted { get; set; }
+        public bool PhysicalSafe { get; set; }
+        public string Detail { get; set; } = string.Empty;
+
+        public StopSafetyProgressSnapshot Clone()
+        {
+            return (StopSafetyProgressSnapshot)MemberwiseClone();
+        }
+    }
+
     public sealed class StopSafetyResult
     {
+        public StopSafetyOutcome Outcome { get; set; } = StopSafetyOutcome.Unknown;
+        public StopSafetyStage LastStage { get; set; } = StopSafetyStage.None;
+        public bool TimedOut { get; set; }
+        public bool RequiresProcessRestart { get; set; }
+        public bool PhysicalOffSubmitted { get; set; }
+        public bool PowerDisableStarted { get; set; }
+        public string StageError { get; set; } = string.Empty;
         public StopSource Source { get; set; } = StopSource.UnknownLegacy;
         public string CorrelationId { get; set; } = string.Empty;
         public Guid RunId { get; set; }
@@ -288,13 +345,22 @@ namespace Controller
         public bool CanCloseApplication => CanReleaseAcquisition && PersistenceBoundaryConfirmed;
         public bool PhysicalSafetyConfirmed => CanReleaseAcquisition && PressureSafeConfirmed;
         public bool FullyConfirmed => PhysicalSafetyConfirmed && PersistenceBoundaryConfirmed;
-        public bool CanRestartInProcess => FullyConfirmed && LogicalQuiescenceConfirmed &&
+        public bool CanRestartInProcess => !RequiresProcessRestart && !TimedOut &&
+                                           Outcome != StopSafetyOutcome.PhysicalSafetyUnconfirmed &&
+                                           FullyConfirmed && LogicalQuiescenceConfirmed &&
                                            !DataContinuityCompromised;
 
         public StopSafetyResult Clone(bool reused = false)
         {
             return new StopSafetyResult
             {
+                Outcome = Outcome,
+                LastStage = LastStage,
+                TimedOut = TimedOut,
+                RequiresProcessRestart = RequiresProcessRestart,
+                PhysicalOffSubmitted = PhysicalOffSubmitted,
+                PowerDisableStarted = PowerDisableStarted,
+                StageError = StageError,
                 Source = Source,
                 CorrelationId = CorrelationId,
                 RunId = RunId,

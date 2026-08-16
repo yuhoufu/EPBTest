@@ -67,6 +67,30 @@ namespace Controller
         public bool ProtectionTripped { get; set; }
     }
 
+    public enum PowerSafetyDisableOutcome
+    {
+        ConfirmedOff = 0,
+        GateTimeout = 1,
+        TelemetryStopTimeout = 2,
+        ConnectionFailed = 3,
+        CommandFailed = 4,
+        ReadbackFailed = 5,
+        PowerOffUnconfirmed = 6,
+        TimedOut = 7
+    }
+
+    public sealed class PowerSafetyDisableResult
+    {
+        public int ElectricalGroupId { get; set; }
+        public long OperationGeneration { get; set; }
+        public PowerSafetyDisableOutcome Outcome { get; set; }
+        public bool ConfirmedOff { get; set; }
+        public bool PreviousOwnerRetired { get; set; }
+        public DateTime StartedUtc { get; set; }
+        public DateTime CompletedUtc { get; set; }
+        public string Error { get; set; } = string.Empty;
+    }
+
     public interface IPowerSupplyCoordinator : IDisposable
     {
         event Action<PowerSupplyTelemetry> TelemetryUpdated;
@@ -75,6 +99,9 @@ namespace Controller
         Task RevalidateEnabledAsync(IEnumerable<int> selectedChannels, CancellationToken token);
         Task DisableGroupAsync(int electricalGroupId, string reason, CancellationToken token);
         Task DisableAllAsync(string reason, CancellationToken token);
+        Task<PowerSafetyDisableResult[]> DisableAllForSafetyAsync(
+            string reason,
+            CancellationToken token);
         Task ResetFaultAsync(int electricalGroupId, CancellationToken token);
         bool HasFreshPowerFaultEvidence(int electricalGroupId);
         bool HasEnergizationPermit(int electricalGroupId, out string reason);
@@ -134,6 +161,8 @@ namespace Controller
             internal long Epoch;
             internal bool ExpectedOutputEnabled;
             internal int PlannedTransition;
+            internal long DisableStartedUtcTicks;
+            internal int Retired;
         }
 
         public PowerSupplyCoordinator(
@@ -310,6 +339,7 @@ namespace Controller
                     owner = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
                     shared = owner.Task;
                     operation.ActiveDisableTask = shared;
+                    operation.DisableStartedUtcTicks = DateTime.UtcNow.Ticks;
                 }
             }
 
@@ -363,7 +393,11 @@ namespace Controller
             // OFF 是安全方向的 owner 操作：它撤销正在执行的 ON/复核，
             // 但不绑定任一调用方的取消令牌。调用方可以停止等待，OFF 本身仍继续到回读终态。
             CancelActiveGroupOperation(electricalGroupId);
-            await operation.Gate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+            var gateHeld = await operation.Gate.WaitAsync(1000, CancellationToken.None)
+                .ConfigureAwait(false);
+            if (!gateHeld)
+                throw new TimeoutException(
+                    $"PowerGateTimeout: 电源组 {electricalGroupId} Gate 获取超过1000ms。");
             CancellationTokenSource linked = null;
             long epoch;
             lock (operation.Sync)
@@ -372,19 +406,39 @@ namespace Controller
                 operation.PlannedTransition = 1;
                 operation.ExpectedOutputEnabled = false;
                 linked = new CancellationTokenSource();
+                linked.CancelAfter(TimeSpan.FromSeconds(8));
                 operation.ActiveOperation = linked;
             }
             try
             {
             // 必须等正在执行的遥测事务完全退出后才能发送 OUTP OFF。仅取消而不等待会让
             // 未完成的 StreamReader.ReadLineAsync 与关电回读并发，造成响应串线和误报。
-            await StopMonitorAsync(electricalGroupId).ConfigureAwait(false);
-            if (_clients.TryGetValue(electricalGroupId, out var client) && client.IsConnected)
+            var monitorStop = StopMonitorAsync(electricalGroupId);
+            if (await Task.WhenAny(monitorStop, Task.Delay(2500, linked.Token)).ConfigureAwait(false) !=
+                monitorStop)
+                throw new TimeoutException(
+                    $"TelemetryStopTimeout: 电源组 {electricalGroupId} 遥测任务未在2500ms内退出。");
+            await monitorStop.ConfigureAwait(false);
+            if (Volatile.Read(ref operation.Retired) != 0)
+                throw new OperationCanceledException("电源 OFF owner 已退休。", linked.Token);
+
+            var supply = RequiredSupply(electricalGroupId);
+            var client = _clients.GetOrAdd(electricalGroupId, _ => _clientFactory(supply));
+            if (!client.IsConnected)
+                await client.ConnectAsync(linked.Token).ConfigureAwait(false);
+            if (!client.IsConnected)
+                throw new InvalidOperationException(
+                    $"PowerOffUnconfirmed: 电源组 {electricalGroupId} 客户端未连接，不能视为已关电。");
             {
                 try
                 {
                     await client.SetOutputAsync(false, linked.Token).ConfigureAwait(false);
                     var snapshot = await client.ReadSnapshotAsync(linked.Token).ConfigureAwait(false);
+                    if (Volatile.Read(ref operation.Retired) != 0)
+                        throw new OperationCanceledException("电源 OFF owner 已退休。", linked.Token);
+                    if (snapshot == null || !snapshot.IsConnected)
+                        throw new InvalidOperationException(
+                            $"PowerOffUnconfirmed: 电源组 {electricalGroupId} 无有效连接回读。");
                     _latest[electricalGroupId] = snapshot;
                     AppendTelemetry(
                         electricalGroupId,
@@ -419,7 +473,7 @@ namespace Controller
                     }
                 }
                 linked?.Dispose();
-                operation.Gate.Release();
+                if (gateHeld) operation.Gate.Release();
             }
         }
 
@@ -442,14 +496,136 @@ namespace Controller
 
         public async Task DisableAllAsync(string reason, CancellationToken token)
         {
-            var groups = _activeGroups.Keys.Concat(_clients.Keys).Distinct().OrderBy(x => x).ToArray();
-            var errors = new ConcurrentQueue<Exception>();
-            await Task.WhenAll(groups.Select(async group =>
+            var results = await DisableAllForSafetyAsync(reason, token).ConfigureAwait(false);
+            var errors = results.Where(item => !item.ConfirmedOff)
+                .Select(item => (Exception)new InvalidOperationException(
+                    $"Group={item.ElectricalGroupId};Outcome={item.Outcome};Error={item.Error}"))
+                .ToArray();
+            if (errors.Length > 0)
+                throw new AggregateException("一个或多个程控电源未确认关闭。", errors);
+        }
+
+        public async Task<PowerSafetyDisableResult[]> DisableAllForSafetyAsync(
+            string reason,
+            CancellationToken token)
+        {
+            ThrowIfDisposed();
+            var groups = _groups.Select(item => item.Id)
+                .Concat(_activeGroups.Keys)
+                .Concat(_clients.Keys)
+                .Distinct()
+                .OrderBy(item => item)
+                .ToArray();
+            var operations = groups.Select(group => DisableGroupForSafetyAsync(group, reason, token))
+                .ToArray();
+            var all = Task.WhenAll(operations);
+            var timeout = Task.Delay(TimeSpan.FromSeconds(10), CancellationToken.None);
+            if (await Task.WhenAny(all, timeout).ConfigureAwait(false) == all)
+                return await all.ConfigureAwait(false);
+
+            return operations.Select((task, index) =>
             {
-                try { await DisableGroupAsync(group, reason, token).ConfigureAwait(false); }
-                catch (Exception ex) { errors.Enqueue(ex); }
-            })).ConfigureAwait(false);
-            if (errors.Count > 0) throw new AggregateException("一个或多个程控电源未确认关闭。", errors);
+                if (task.Status == TaskStatus.RanToCompletion) return task.Result;
+                RetirePowerDisableOwner(groups[index], "DisableAllSafetyTotalDeadline");
+                return new PowerSafetyDisableResult
+                {
+                    ElectricalGroupId = groups[index],
+                    Outcome = PowerSafetyDisableOutcome.TimedOut,
+                    ConfirmedOff = false,
+                    PreviousOwnerRetired = true,
+                    StartedUtc = DateTime.UtcNow.AddSeconds(-10),
+                    CompletedUtc = DateTime.UtcNow,
+                    Error = "全部电源安全关闭超过10秒总截止"
+                };
+            }).ToArray();
+        }
+
+        private async Task<PowerSafetyDisableResult> DisableGroupForSafetyAsync(
+            int groupId,
+            string reason,
+            CancellationToken callerToken)
+        {
+            var started = DateTime.UtcNow;
+            var operation = Operation(groupId);
+            Task task;
+            try { task = DisableGroupAsync(groupId, reason, CancellationToken.None); }
+            catch (Exception ex) { task = Task.FromException(ex); }
+            var completed = await Task.WhenAny(task, Task.Delay(TimeSpan.FromSeconds(8), CancellationToken.None))
+                .ConfigureAwait(false);
+            if (completed != task)
+            {
+                RetirePowerDisableOwner(groupId, "GroupSafetyDeadline");
+                return new PowerSafetyDisableResult
+                {
+                    ElectricalGroupId = groupId,
+                    OperationGeneration = operation.Epoch,
+                    Outcome = PowerSafetyDisableOutcome.TimedOut,
+                    ConfirmedOff = false,
+                    PreviousOwnerRetired = true,
+                    StartedUtc = started,
+                    CompletedUtc = DateTime.UtcNow,
+                    Error = "单组安全关闭超过8秒，旧 owner 已退休"
+                };
+            }
+
+            try
+            {
+                await task.ConfigureAwait(false);
+                var snapshot = GetLatestSnapshot(groupId);
+                var confirmed = snapshot != null && snapshot.IsConnected && !snapshot.OutputEnabled;
+                return new PowerSafetyDisableResult
+                {
+                    ElectricalGroupId = groupId,
+                    OperationGeneration = operation.Epoch,
+                    Outcome = confirmed
+                        ? PowerSafetyDisableOutcome.ConfirmedOff
+                        : PowerSafetyDisableOutcome.PowerOffUnconfirmed,
+                    ConfirmedOff = confirmed,
+                    StartedUtc = started,
+                    CompletedUtc = DateTime.UtcNow,
+                    Error = confirmed ? string.Empty : "OFF owner 完成但缺少已连接的 OUTP OFF 回读"
+                };
+            }
+            catch (Exception ex)
+            {
+                var message = ex.GetBaseException().Message;
+                var outcome = message.IndexOf("PowerGateTimeout", StringComparison.OrdinalIgnoreCase) >= 0
+                    ? PowerSafetyDisableOutcome.GateTimeout
+                    : message.IndexOf("TelemetryStopTimeout", StringComparison.OrdinalIgnoreCase) >= 0
+                        ? PowerSafetyDisableOutcome.TelemetryStopTimeout
+                        : message.IndexOf("connect", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                          message.IndexOf("连接", StringComparison.OrdinalIgnoreCase) >= 0
+                            ? PowerSafetyDisableOutcome.ConnectionFailed
+                            : PowerSafetyDisableOutcome.PowerOffUnconfirmed;
+                return new PowerSafetyDisableResult
+                {
+                    ElectricalGroupId = groupId,
+                    OperationGeneration = operation.Epoch,
+                    Outcome = outcome,
+                    ConfirmedOff = false,
+                    StartedUtc = started,
+                    CompletedUtc = DateTime.UtcNow,
+                    Error = message
+                };
+            }
+        }
+
+        private void RetirePowerDisableOwner(int groupId, string reason)
+        {
+            if (!_operations.TryGetValue(groupId, out var operation)) return;
+            Volatile.Write(ref operation.Retired, 1);
+            lock (operation.Sync)
+            {
+                operation.Epoch++;
+                operation.ExpectedOutputEnabled = false;
+                try { operation.ActiveOperation?.Cancel(); } catch { }
+            }
+            _operations.TryRemove(groupId, out _);
+            if (_clients.TryRemove(groupId, out var client))
+            {
+                try { client.Dispose(); } catch { }
+            }
+            _log.Warn($"电源组 {groupId} 旧 OFF owner 已退休并废弃客户端。Reason={reason}", "程控电源");
         }
 
         public async Task ResetFaultAsync(int electricalGroupId, CancellationToken token)

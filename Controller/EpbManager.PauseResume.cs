@@ -1713,7 +1713,7 @@ namespace Controller
                             committedCycles);
                     if (!nonRecoverableAlarm && committedCycles >= remainingRuns)
                     {
-                        FinalizeChannelAfterNaturalCompletion(channel);
+                        FinalizeChannelAfterNaturalCompletion(channel, cycleNumber);
                         timer.Stop();
                     }
                 }

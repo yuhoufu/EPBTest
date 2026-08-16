@@ -418,6 +418,9 @@ namespace Controller
 
         private void EnsureChannelExecutionPermit(int channel, string stage)
         {
+            if (System.Threading.Volatile.Read(ref _energizationRevoked) != 0)
+                throw new InvalidOperationException(
+                    $"停止安全栅栏已生效，拒绝 EPB{channel:D2} 上电命令。Stage={stage}");
             if (!IsChannelEnabled(channel))
                 throw new ChannelExecutionPermitException(
                     channel,

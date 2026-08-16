@@ -110,6 +110,7 @@
     <Compile Include="EpbManager.FieldMetrics.cs" />
     <Compile Include="EpbManager.TimerRuntimeHealth.cs" />
     <Compile Include="EpbManager.DaqLiveness.cs" />
+    <Compile Include="EpbManager.StopSafetyHardening.cs" />
     <Compile Include="EpbManager.cs" />
     <Compile Include="SafetyMarginControlMode.cs" />
     <Compile Include="HydraulicController.cs" />

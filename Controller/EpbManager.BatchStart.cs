@@ -506,6 +506,7 @@ namespace Controller
             CancellationToken token = default,
             bool discardHistoricalStopChecks = false)
         {
+            ThrowIfProcessRestartRequired();
             context ??= new StopContext
             {
                 Source = StopSource.ManualUi,
@@ -516,28 +517,44 @@ namespace Controller
             };
 
             // 安全停止不能因开始按钮调用方取消而半途退出；token 只控制调用方等待旧启动尾声。
-            var safety = await StopAllAsync(context, CancellationToken.None).ConfigureAwait(false);
-            await _batchLifecycleGate.JoinAsync(token).ConfigureAwait(false);
-            safety = await FinalizeLogicalQuiescenceForRestartAsync(
-                    safety,
-                    "PrepareForFreshRestart",
-                    token)
-                .ConfigureAwait(false);
+            try
+            {
+                using (var deadline = CancellationTokenSource.CreateLinkedTokenSource(token))
+                {
+                    deadline.CancelAfter(TimeSpan.FromSeconds(30));
+                    var safetyTask = StopAllAsync(context, CancellationToken.None);
+                    var completed = await Task.WhenAny(
+                            safetyTask,
+                            Task.Delay(TimeSpan.FromSeconds(30), deadline.Token))
+                        .ConfigureAwait(false);
+                    if (completed != safetyTask)
+                    {
+                        token.ThrowIfCancellationRequested();
+                        Interlocked.Exchange(ref _processRestartRequired, 1);
+                        throw new TimeoutException("重新开始清场超过30秒；当前进程已撤权，必须外部恢复。");
+                    }
+                    var safety = await safetyTask.ConfigureAwait(false);
+                    await _batchLifecycleGate.JoinAsync(deadline.Token).ConfigureAwait(false);
+                    safety = await FinalizeLogicalQuiescenceForRestartAsync(
+                            safety,
+                            "PrepareForFreshRestart",
+                            deadline.Token)
+                        .ConfigureAwait(false);
 
-            var canDiscardHistoricalChecks =
+                var canDiscardHistoricalChecks =
                 CanDiscardHistoricalStopChecksForExplicitRestart(
                     safety,
                     discardHistoricalStopChecks);
-            if (!safety.CanRestartInProcess && !canDiscardHistoricalChecks)
-            {
-                throw new InvalidOperationException(
+                if (!safety.CanRestartInProcess && !canDiscardHistoricalChecks)
+                {
+                    throw new InvalidOperationException(
                     "重新开始清场未通过物理安全与软件逻辑不变量。" +
                     $" Motor={safety.MotorError}; Power={safety.PowerError}; " +
                     $"Pressure={safety.PressureError}; Logical={safety.LogicalError}");
-            }
+                }
 
-            if (!safety.CanRestartInProcess)
-                _log?.Warn(
+                if (!safety.CanRestartInProcess)
+                    _log?.Warn(
                     "操作员已先执行“停止试验”；上一批次的持久化、数据连续性或逻辑清场" +
                     "未确认项只保留为诊断，不再阻止本次完整学习启动。" +
                     $" Motor={safety.MotorError}; Power={safety.PowerError}; " +
@@ -545,10 +562,18 @@ namespace Controller
                     $"DataContinuity={safety.DataContinuityError}; Logical={safety.LogicalError}",
                     "EPB");
 
-            _log?.Info(
+                _log?.Info(
                 "重新开始清场完成：旧批次软件状态、在途启动与瞬态故障已抛弃；开始执行新批次实时预检。",
                 "EPB");
-            return safety;
+                    return safety;
+                }
+            }
+            catch (OperationCanceledException) when (!token.IsCancellationRequested)
+            {
+                Interlocked.Exchange(ref _processRestartRequired, 1);
+                throw new TimeoutException(
+                    "重新开始清场超过30秒；当前进程已撤权，必须外部恢复。");
+            }
         }
 
         /// <summary>
@@ -725,7 +750,8 @@ namespace Controller
             StopSafetyResult safety,
             bool explicitlyStopped)
         {
-            return explicitlyStopped && safety?.CanReleaseAcquisition == true;
+            return explicitlyStopped &&
+                   safety?.CanReleaseAcquisition == true;
         }
 
         private async Task<BatchStartResult> StartBatchCoreAsync(
@@ -756,6 +782,7 @@ namespace Controller
             RunChainIdentity chainIdentity,
             CancellationToken token)
         {
+            ThrowIfProcessRestartRequired();
             if (channels == null || channels.Length == 0)
                 throw new ArgumentException("channels 不能为空", nameof(channels));
 
@@ -805,6 +832,10 @@ namespace Controller
                 SaveProgramSafetySnapshot();
                 await EnsurePowerSupplyReadyBeforeStartAsync(selected, sessionToken)
                     .ConfigureAwait(false);
+
+                // 只有实时 DAQ、电源和程序安全预检全部通过，且进程从未发生 Stop 超时，
+                // 才能为这个全新 Run 重新打开 DO 上电总闸。
+                AuthorizeFreshRunAfterSafetyPreflight();
 
                 // DAQ、电源及程序安全预检全部通过后，才允许旧停机锁存转为“启动中”。
                 foreach (var channel in selected)
@@ -1829,7 +1860,7 @@ namespace Controller
                                         committedCycles);
                                 if (!nonRecoverableAlarm && committedCycles >= runs)
                                 {
-                                    FinalizeChannelAfterNaturalCompletion(ch);
+                                    FinalizeChannelAfterNaturalCompletion(ch, cycleNumber);
                                     timer.Stop();
                                 }
                             }
@@ -3212,7 +3243,12 @@ namespace Controller
             }
 
             if (result == null || !result.ShouldLatchAlarm) return false;
-            OnRunnerAlarmRaised(channel, "AdaptiveHardFault " + result.AlarmReason);
+            // 正式圈已在上方完成耐久提交，统一 attempt 会随即清除“当前圈”投影。
+            // 永久报警必须携带这一个不可变的触发圈号，不能再让异步报警链回读瞬时状态。
+            OnRunnerAlarmRaised(
+                channel,
+                "AdaptiveHardFault " + result.AlarmReason,
+                cycleNumber);
             return true;
         }
     }

@@ -447,7 +447,11 @@ namespace Controller
         internal event Action<StopContext> RunAuthorizationRevocationBarrier;
         private readonly System.Threading.Timer _daqLivenessWatchdog;
         private readonly int _daqLivenessWatchdogIntervalMs;
-        private readonly double _daqLivenessStaleThresholdMs;
+        private readonly double _daqLivenessWarnThresholdMs;
+        private readonly double _daqLivenessSuspectThresholdMs;
+        private readonly double _daqLivenessTripThresholdMs;
+        private readonly ConcurrentDictionary<string, DaqLivenessDeviceState> _daqLivenessStates =
+            new(StringComparer.OrdinalIgnoreCase);
         private readonly ConcurrentDictionary<string, long> _daqLivenessLatchedGeneration =
             new(StringComparer.OrdinalIgnoreCase);
         private readonly ConcurrentDictionary<string, long> _daqLivenessObservedGapEvents =
@@ -458,6 +462,8 @@ namespace Controller
         // 事故圈作废标记必须带完整运行身份；仅用(channel,cycle)会让旧Run的迟到
         // Finalizer在圈号复用后误伤新Run正式圈。
         private readonly ConcurrentDictionary<string, byte> _daqClockAbortedCycles =
+            new(StringComparer.OrdinalIgnoreCase);
+        private readonly ConcurrentDictionary<string, byte> _daqRecoveredGapAbortedCycles =
             new(StringComparer.OrdinalIgnoreCase);
         private readonly object _stopSafetyGate = new();
         private Task<StopSafetyResult> _stopSafetyTask;
@@ -1357,7 +1363,7 @@ namespace Controller
         ///     </list>
         ///     注意：这里不会调用 Timer.Stop()；因为调用时机在“最后一圈回调”内，计时器即将自然退出。
         /// </remarks>
-        private void FinalizeChannelAfterNaturalCompletion(int channel)
+        private void FinalizeChannelAfterNaturalCompletion(int channel, int terminalCycleNumber)
         {
             _log.Info(
                 $"EPB[{channel}] 已完成全部目标圈数，开始安全断电、液压释放和最近10圈持久化。",
@@ -1381,19 +1387,13 @@ namespace Controller
             // 5) 停止即存最近10圈：不阻塞当前线程
             try
             {
-                var recorder = Recorder;
-                if (recorder != null)
-                    ObserveBackgroundTask(Task.Run(() =>
-                    {
-                        try
-                        {
-                            recorder.FlushRecent(channel, 10);
-                        }
-                        catch (Exception ex)
-                        {
-                            _log.Warn($"EPB[{channel}] 停止导出失败：{ex.Message}", "落盘");
-                        }
-                    }), "FlushRecentAfterNaturalCompletion", channel);
+                ObserveBackgroundTask(
+                    EnsureLatestStopSnapshotAsync(
+                        channel,
+                        terminalCycleNumber,
+                        "NaturalCompletion"),
+                    "FlushRecentAfterNaturalCompletion",
+                    channel);
             }
             catch
             {
@@ -1608,9 +1608,12 @@ namespace Controller
             _daqLivenessWatchdogIntervalMs = ReadIntAppSetting(
                 // 这是带电安全门，不允许现场 App.config 把扫描周期放宽到数百毫秒。
                 "DaqLivenessWatchdogIntervalMs", 20, 10, 20);
-            _daqLivenessStaleThresholdMs = ReadDoubleAppSetting(
-                // 100ms 是已批准上限；配置只能更严格，不能把门槛改成500ms/10s。
-                "DaqLivenessStaleThresholdMs", 100, 50, 100);
+            _daqLivenessWarnThresholdMs = ReadDoubleAppSetting(
+                "DaqLivenessWarnThresholdMs", 100, 100, 100);
+            _daqLivenessSuspectThresholdMs = ReadDoubleAppSetting(
+                "DaqLivenessSuspectThresholdMs", 1000, 1000, 1000);
+            _daqLivenessTripThresholdMs = ReadDoubleAppSetting(
+                "DaqLivenessTripThresholdMs", 2000, 2000, 2000);
             _persistence = new DaqPersistenceCoordinator(
                 () => Recorder,
                 _log,
@@ -1687,7 +1690,9 @@ namespace Controller
             _log.Info(
                 $"FieldMetric DAQ_LIVENESS Result=Configured " +
                 $"IntervalMs={_daqLivenessWatchdogIntervalMs} " +
-                $"ThresholdMs={_daqLivenessStaleThresholdMs:F0} " +
+                $"WarnMs={_daqLivenessWarnThresholdMs:F0} " +
+                $"SuspectMs={_daqLivenessSuspectThresholdMs:F0} " +
+                $"TripMs={_daqLivenessTripThresholdMs:F0} " +
                 $"ProcessId={Process.GetCurrentProcess().Id}",
                 "FIELD");
         }
@@ -2187,12 +2192,21 @@ namespace Controller
                 var persistenceCommitted = false;
                 try
                 {
+                    var abortKey = DaqAbortedCycleKey(
+                        cycleAttempt.RunId,
+                        cycleAttempt.RunEpoch,
+                        channel,
+                        cycleNumber);
+                    var abortedByRecoveredGap =
+                        _daqRecoveredGapAbortedCycles.ContainsKey(abortKey);
                     if (TryConsumeDaqClockCycleAbort(
                             cycleAttempt.RunId,
                             cycleAttempt.RunEpoch,
                             channel,
                             cycleNumber))
                     {
+                        if (abortedByRecoveredGap)
+                            _daqRecoveredGapAbortedCycles.TryRemove(abortKey, out _);
                         // 标记在恢复入口即锁存，Runner 可能先于 DAQ Finalizer 退出；此处
                         // 必须使用真正的 AbortRecorderOnce，而不是仅清理内存身份，确保
                         // 事故圈恰好写入一次 AbortedBySoftwareRecovery。
@@ -2200,7 +2214,9 @@ namespace Controller
                             cycleAttempt,
                             recorder,
                             DateTime.UtcNow,
-                            "AbortedBySoftwareRecovery");
+                            abortedByRecoveredGap
+                                ? "AbortedByDaqGap"
+                                : "AbortedBySoftwareRecovery");
                         _log.Warn(
                             $"EPB[{channel}] 单通道周期 {cycleNumber} 已由DAQ流程封存，跳过重复终态提交。",
                             "落盘");
@@ -2263,7 +2279,7 @@ namespace Controller
                             committedCycles);
                     if (!nonRecoverableAlarm && committedCycles >= _cfg.Test.TestTarget)
                     {
-                        FinalizeChannelAfterNaturalCompletion(channel);
+                        FinalizeChannelAfterNaturalCompletion(channel, cycleNumber);
                         timer.Stop();
                     }
                 }
@@ -2317,6 +2333,8 @@ namespace Controller
 
         private void StopChannelForInternalCleanup(int channel)
         {
+            _currentCycleNumberByChannel.TryGetValue(channel, out var interruptedCycleNumber);
+
             // 该通道停止后不再参与液压判定
             UnmarkHydraulicParticipant(channel);
 
@@ -2346,21 +2364,25 @@ namespace Controller
 
             RemoveRunnerRuntime(channel, nameof(StopChannel));
 
-            // —— 收尾：落盘导出（Stop 场景保留原逻辑）—— //
-            try
-            {
-                Recorder?.FlushRecent(channel, 10);
-            }
-            catch (Exception ex)
-            {
-                _log.Warn($"EPB[{channel}] 停止导出失败：{ex.Message}", "落盘");
-            }
+            // —— 收尾：先把活动圈提交为明确终态，再强制让 Latest 包包含该终态圈。—— //
+            var stopEvidenceComplete = TryFinalizeManualStopCycle(channel, interruptedCycleNumber);
+            if (stopEvidenceComplete)
+                stopEvidenceComplete = EnsureLatestStopSnapshotAsync(
+                        channel,
+                        interruptedCycleNumber > 0 ? interruptedCycleNumber : 0,
+                        "ManualStop")
+                    .GetAwaiter()
+                    .GetResult();
 
             PublishChannelRuntimeState(
                 channel,
-                ChannelRuntimeState.ManualStopped,
-                "ManualStopped",
-                "人工停止");
+                stopEvidenceComplete
+                    ? ChannelRuntimeState.ManualStopped
+                    : ChannelRuntimeState.SystemFault,
+                stopEvidenceComplete ? "ManualStopped" : "StopEvidenceIncomplete",
+                stopEvidenceComplete
+                    ? "人工停止"
+                    : "人工停止安全动作已执行，但圈终态或最近快照未完整落盘");
             TryEndBatchSessionWhenIdle("ChannelStop");
             TryDisableIdlePowerGroup(channel, "通道停止后电源组已无运行通道");
         }
@@ -2488,6 +2510,14 @@ namespace Controller
 
         private void OnRunnerAlarmRaised(int channel, string reason)
         {
+            OnRunnerAlarmRaised(channel, reason, 0);
+        }
+
+        private void OnRunnerAlarmRaised(
+            int channel,
+            string reason,
+            int confirmedTerminalCycleNumber)
+        {
             reason ??= string.Empty;
             var faultCode = ExtractFaultCode(reason);
             var immediateCurrentHardFault = IsImmediateCurrentHardFault(reason);
@@ -2578,12 +2608,20 @@ namespace Controller
                     channelFaultCorrelationId,
                     FaultScope.Channel);
 
-            if (_currentCycleNumberByChannel.TryGetValue(channel, out var frozenCycle))
-                _frozenFaultCycleByChannel[channel] = frozenCycle;
+            _currentCycleNumberByChannel.TryGetValue(channel, out var activeCycleNumber);
+            _frozenFaultCycleByChannel.TryGetValue(channel, out var existingFrozenCycleNumber);
+            var alarmCycleNumber = ResolveAlarmSnapshotCycle(
+                confirmedTerminalCycleNumber,
+                activeCycleNumber,
+                existingFrozenCycleNumber);
 
             // ★同步去重 latch：保证计时器回调能尽快识别“本圈应封为 alarm”，但不在此线程做 IO
             if (!_alarmStopLatch.TryRequestStop(channel))
                 return;
+
+            // 只有取得本次报警停机所有权后才发布冻结圈，避免重复/迟到报警覆盖首发证据。
+            if (alarmCycleNumber != 0)
+                _frozenFaultCycleByChannel[channel] = alarmCycleNumber;
 
             // 通道硬故障只取消本通道。共享压力/电源/DAQ故障由各自组级处理器扩大范围。
             try { CancelStopCts(channel); } catch { }
@@ -2651,12 +2689,131 @@ namespace Controller
                 else
                     CommitCycleAttemptAfterSnapshotEvidence(channel, snapshotEvidence);
 
+                await EnsureLatestStopSnapshotAsync(
+                        channel,
+                        alarmCycleNumber,
+                        "AlarmStop")
+                    .ConfigureAwait(false);
+
                 if (recoveryPolicy == FaultRecoveryPolicy.NonRecoverableDisableChannel)
                     PersistentlyDisableChannel(channel, reason);
 
                 if (recoveryPolicy == FaultRecoveryPolicy.Recoverable)
                     BeginRecoverableChannelRestartLoop(channel, reason, channelFaultCorrelationId);
             }), "ChannelAlarmHandling", channel);
+        }
+
+        internal static int ResolveAlarmSnapshotCycle(
+            int confirmedTerminalCycleNumber,
+            int activeCycleNumber,
+            int frozenCycleNumber)
+        {
+            if (confirmedTerminalCycleNumber != 0) return confirmedTerminalCycleNumber;
+            if (activeCycleNumber != 0) return activeCycleNumber;
+            return frozenCycleNumber;
+        }
+
+        private bool TryFinalizeManualStopCycle(int channel, int interruptedCycleNumber)
+        {
+            if (interruptedCycleNumber == 0) return true;
+            if (!_currentCycleNumberByChannel.TryGetValue(channel, out var current) ||
+                current != interruptedCycleNumber)
+                return true;
+
+            var recorder = Recorder;
+            if (recorder == null)
+            {
+                _log.Error(
+                    $"EPB[{channel}] 人工停止无法提交活动圈终态：Recorder不可用。" +
+                    $"Cycle={interruptedCycleNumber}",
+                    "落盘");
+                return false;
+            }
+
+            try
+            {
+                if (TryGetCycleAttempt(channel, interruptedCycleNumber, out var context))
+                {
+                    context.CancelAttempt();
+                    var committed = AbortFormalCycleAttempt(
+                        context,
+                        recorder,
+                        DateTime.UtcNow,
+                        "canceled");
+                    return committed || context.IsDurablyCommitted;
+                }
+
+                AbortCycleAfterPersistence(
+                    recorder,
+                    channel,
+                    interruptedCycleNumber,
+                    DateTime.UtcNow,
+                    "canceled");
+                ((ICollection<KeyValuePair<int, int>>)_currentCycleNumberByChannel)
+                    .Remove(new KeyValuePair<int, int>(channel, interruptedCycleNumber));
+                _currentAttemptIdByChannel.TryRemove(channel, out _);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _log.Error(
+                    $"EPB[{channel}] 人工停止活动圈终态提交失败。" +
+                    $"Cycle={interruptedCycleNumber} Error={ex.GetBaseException().Message}",
+                    "落盘",
+                    ex);
+                return false;
+            }
+        }
+
+        private async Task<bool> EnsureLatestStopSnapshotAsync(
+            int channel,
+            int requiredTerminalCycleNumber,
+            string reason)
+        {
+            var recorder = Recorder;
+            if (recorder == null)
+            {
+                _log.Error(
+                    $"EPB[{channel}] 停机最近快照无法生成：Recorder不可用。Reason={reason}",
+                    "落盘");
+                return false;
+            }
+
+            Exception lastError = null;
+            var deadline = Stopwatch.GetTimestamp() + 10L * Stopwatch.Frequency;
+            do
+            {
+                try
+                {
+                    if (requiredTerminalCycleNumber > 0 &&
+                        recorder is IStopRecentCycleEvidenceExporter stopExporter)
+                    {
+                        stopExporter.FlushRecentForStop(
+                            channel,
+                            10,
+                            requiredTerminalCycleNumber);
+                    }
+                    else
+                    {
+                        recorder.FlushRecent(channel, 10);
+                    }
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    lastError = ex;
+                    if (Stopwatch.GetTimestamp() >= deadline) break;
+                    await Task.Delay(200).ConfigureAwait(false);
+                }
+            } while (Stopwatch.GetTimestamp() < deadline);
+
+            _log.Error(
+                $"EPB[{channel}] 停机最近快照未能包含要求的终态圈。" +
+                $"RequiredCycle={requiredTerminalCycleNumber} Reason={reason} " +
+                $"Error={lastError?.GetBaseException().Message}",
+                "落盘",
+                lastError);
+            return false;
         }
 
         private void BeginRecoverableChannelRestartLoop(
@@ -6883,33 +7040,54 @@ namespace Controller
                                     }
                                 }
                             }
-                            else if (recorder is ICycleAttemptEvidenceExporter exporter)
+                            else
                             {
-                                var saveAlarmCsv = _alarmStorageLevel == StorageFormatLevel.CsvOnly ||
-                                                    _alarmStorageLevel == StorageFormatLevel.CsvAndBin;
-                                var saveAlarmBin = _alarmStorageLevel == StorageFormatLevel.BinOnly ||
-                                                    _alarmStorageLevel == StorageFormatLevel.CsvAndBin;
-                                var frozen = exporter.ExportCycleAttemptTo(
+                                // 正式圈永久报警发生在 completed 提交之后。此时没有活动 attempt，
+                                // 但 confirmedTerminalCycleNumber 已被同步冻结；优先从不可变终态回读。
+                                alarmEvidence = AlarmCycleSnapshotRecovery.TryExportFinalizedCycle(
+                                    recorder,
                                     ch,
                                     alarmCycleNumber,
                                     subDir,
-                                    saveAlarmCsv,
-                                    saveAlarmBin);
-                                alarmEvidence = frozen == null
-                                    ? new AlarmCycleSnapshotEvidence
+                                    new AlarmCycleSnapshotEvidence
                                     {
-                                        StorageFormat = _alarmStorageLevel.ToString(),
-                                        ValidationError = "冻结故障圈导出器未返回证据。"
-                                    }
-                                    : EpbDiskWriter.ValidateAlarmCycleSnapshotFiles(
-                                        frozen.CsvPath,
-                                        frozen.BinPath,
+                                        StorageFormat = _alarmStorageLevel.ToString()
+                                    });
+                                if (alarmEvidence?.IsValid == true)
+                                {
+                                    _log.Info(
+                                        $"EPB[{ch}] 已完成报警触发圈从持久化索引回读成功。" +
+                                        $"Cycle={alarmCycleNumber}",
+                                        "落盘");
+                                }
+                                else if (recorder is ICycleAttemptEvidenceExporter exporter)
+                                {
+                                    var saveAlarmCsv = _alarmStorageLevel == StorageFormatLevel.CsvOnly ||
+                                                        _alarmStorageLevel == StorageFormatLevel.CsvAndBin;
+                                    var saveAlarmBin = _alarmStorageLevel == StorageFormatLevel.BinOnly ||
+                                                        _alarmStorageLevel == StorageFormatLevel.CsvAndBin;
+                                    var frozen = exporter.ExportCycleAttemptTo(
                                         ch,
                                         alarmCycleNumber,
-                                        false,
-                                        _alarmStorageLevel);
-                                alarmEvidence.WasClaimed = false;
-                                alarmEvidence.FinalStatus = "FrozenAbortedCycle";
+                                        subDir,
+                                        saveAlarmCsv,
+                                        saveAlarmBin);
+                                    alarmEvidence = frozen == null
+                                        ? new AlarmCycleSnapshotEvidence
+                                        {
+                                            StorageFormat = _alarmStorageLevel.ToString(),
+                                            ValidationError = "冻结故障圈导出器未返回证据。"
+                                        }
+                                        : EpbDiskWriter.ValidateAlarmCycleSnapshotFiles(
+                                            frozen.CsvPath,
+                                            frozen.BinPath,
+                                            ch,
+                                            alarmCycleNumber,
+                                            false,
+                                            _alarmStorageLevel);
+                                    alarmEvidence.WasClaimed = false;
+                                    alarmEvidence.FinalStatus = "FrozenAbortedCycle";
+                                }
                             }
                             if (alarmEvidence?.IsValid == true)
                             {
@@ -7111,15 +7289,6 @@ namespace Controller
             {
                 if (_stopSafetyTask != null && !_stopSafetyTask.IsCompleted)
                 {
-                    if (IsFinalExitStopSource(context.Source) &&
-                        !IsFinalExitStopSource(_stopSafetyTaskSource))
-                    {
-                        _stopSafetyTask = ContinueWithFinalExitStopAsync(
-                            _stopSafetyTask,
-                            context,
-                            token);
-                        _stopSafetyTaskSource = context.Source;
-                    }
                     return _stopSafetyTask;
                 }
                 if (_lastStopSafetyResult != null && !IsBatchSessionActive &&
@@ -7130,7 +7299,8 @@ namespace Controller
                         context.Source) &&
                     CaptureLogicalQuiescenceSnapshot().IsQuiescent)
                     return Task.FromResult(_lastStopSafetyResult.Clone(reused: true));
-                _stopSafetyTask = RunStopSafetyAsync(context, token);
+                var generation = Interlocked.Increment(ref _stopSafetyGeneration);
+                _stopSafetyTask = RunBoundedStopSafetyAsync(context, token, generation);
                 _stopSafetyTaskSource = context.Source;
                 return _stopSafetyTask;
             }
@@ -7146,7 +7316,8 @@ namespace Controller
             {
                 _log.Warn($"等待在途停止流程后执行最终退出收口：{ex.GetBaseException().Message}", "EPB");
             }
-            return await RunStopSafetyAsync(context, token).ConfigureAwait(false);
+            var generation = Interlocked.Increment(ref _stopSafetyGeneration);
+            return await RunBoundedStopSafetyAsync(context, token, generation).ConfigureAwait(false);
         }
 
         public Task<bool> ShutdownPersistenceAsync(int timeoutMs = 10000)
@@ -7239,7 +7410,10 @@ namespace Controller
             return powerDisable;
         }
 
-        private async Task<StopSafetyResult> RunStopSafetyAsync(StopContext context, CancellationToken token)
+        private async Task<StopSafetyResult> RunStopSafetyAsync(
+            StopContext context,
+            CancellationToken token,
+            long stopGeneration)
         {
             var startedUtc = DateTime.UtcNow;
             var runId = _activeBatchId;
@@ -7503,6 +7677,12 @@ namespace Controller
                     string.Join(",", pendingRecoveryTasks),
                     "EPB");
             }
+            AdvanceStopSafetyProgress(
+                stopGeneration,
+                StopSafetyStage.ClearRecoveryOwners,
+                pendingRecoveryTasks.Length == 0
+                    ? "DAQ与软件恢复 owner 已退出"
+                    : "恢复 owner 超时，旧 RunEpoch 已隔离");
 
             // OFF 提交和电源 Disable 已与恢复所有权等待并行。这里只对账实际物理完成，
             // 不再补发第二个 OFF；未在期限内完成由电源关闭证据兜底并保留 Unconfirmed。
@@ -7574,6 +7754,10 @@ namespace Controller
 
             // 2. 电源 Disable 已经启动；恢复所有者退出后再接管液压释放和压力确认，
             // 避免两个所有者并发操作同一液压组。
+            AdvanceStopSafetyProgress(
+                stopGeneration,
+                StopSafetyStage.ReleaseHydraulics,
+                "正在释放液压并确认压力安全");
             var pressureTask = ConfirmPressureSafeForStopAsync(context, powerTask);
             var pressure = await pressureTask.ConfigureAwait(false);
             var power = await powerTask.ConfigureAwait(false);
@@ -7588,6 +7772,10 @@ namespace Controller
                     _log.Warn($"退出前停止DAQ失败，将继续按已接收边界排空：{ex.Message}", "AI");
                 }
             }
+            AdvanceStopSafetyProgress(
+                stopGeneration,
+                StopSafetyStage.StopAcquisition,
+                "DAQ 已请求停止，正在冻结最终接纳边界");
             // StopDevice 已等待在途回调退出；此后一次性冻结同一组最终边界，
             // Raw、工程处理和SQLite全部只允许针对这一组值给出闭合证明。
             foreach (var device in new[] { "Dev1", "Dev2" })
@@ -7639,6 +7827,10 @@ namespace Controller
                     "当前圈不计数，仅允许完成安全断能和进程回收，禁止同进程重新开始。" +
                     string.Join("; ", processingDataGaps),
                     "落盘");
+            AdvanceStopSafetyProgress(
+                stopGeneration,
+                StopSafetyStage.ClosePersistenceBoundary,
+                "正在闭合 Raw、SQLite 与最近圈证据边界");
             var rawStorageFlushed = true;
             var rawStorageFlushError = string.Empty;
             var recentCycleExportError = string.Empty;
@@ -7736,6 +7928,10 @@ namespace Controller
             if (ShouldShutdownPersistenceForStop(context.Source, persistenceBoundaryConfirmed))
                 await _persistence.ShutdownAsync(10000).ConfigureAwait(false);
 
+            AdvanceStopSafetyProgress(
+                stopGeneration,
+                StopSafetyStage.VerifyLogicalQuiescence,
+                "正在验证 Timer、Runner、CTS、恢复 owner 与液压代次清场");
             var logicalState = CaptureLogicalQuiescenceSnapshot();
             var result = new StopSafetyResult
             {
@@ -7778,7 +7974,11 @@ namespace Controller
                 LogicalState = logicalState
             };
 
-            lock (_stopSafetyGate) _lastStopSafetyResult = result.Clone();
+            lock (_stopSafetyGate)
+            {
+                if (stopGeneration == Interlocked.Read(ref _stopSafetyGeneration))
+                    _lastStopSafetyResult = result.Clone();
+            }
             var logText =
                 $"StopAll分项结果：CorrelationId={result.CorrelationId}; " +
                 $"MotorDO={(result.MotorOffCommandSucceeded ? "Confirmed" : "Unconfirmed")}; " +
@@ -7988,14 +8188,16 @@ namespace Controller
             StopContext context,
             CancellationToken callerWaitToken)
         {
-            return await ExecuteStopPowerDisableSafetyAsync(
-                    _powerSupply == null
-                        ? null
-                        : physicalToken => _powerSupply.DisableAllAsync(
-                            $"StopAll Source={context.Source} CorrelationId={context.CorrelationId}",
-                            physicalToken),
-                    callerWaitToken)
+            if (_powerSupply == null) return (true, string.Empty);
+            var results = await _powerSupply.DisableAllForSafetyAsync(
+                    $"StopAll Source={context.Source} CorrelationId={context.CorrelationId}",
+                    CancellationToken.None)
                 .ConfigureAwait(false);
+            var failed = results.Where(item => !item.ConfirmedOff).ToArray();
+            return failed.Length == 0
+                ? (true, string.Empty)
+                : (false, string.Join("; ", failed.Select(item =>
+                    $"Group{item.ElectricalGroupId}:{item.Outcome}:{item.Error}")));
         }
 
         /// <summary>
@@ -8322,6 +8524,7 @@ namespace Controller
                 ActiveBatchId = _activeBatchId,
                 TimerCount = _timers.Count + _timerCache.Count,
                 RunnerCount = _runners.Count + _runnerCache.Count,
+                EnergizedChannelCount = Enumerable.Range(1, 12).Count(IsChannelEnergized),
                 StopCtsCount = _stopCtsByChannel.Count,
                 CycleCtsCount = _cyclePauseCtsByChannel.Count,
                 HydraulicParticipantCount = _hydraulicParticipants.Count,

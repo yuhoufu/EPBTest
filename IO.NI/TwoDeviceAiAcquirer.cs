@@ -605,6 +605,10 @@ namespace IO.NI
         public int Channel { get; set; }
         public int CycleNumber { get; set; }
         public DateTime StartUtc { get; set; }
+        public string Device { get; set; }
+        public long Generation { get; set; }
+        public long StartAcceptedSequence { get; set; }
+        public long StartMonotonicTicks { get; set; }
     }
 
     public sealed class PeakCaptureResult
@@ -622,6 +626,15 @@ namespace IO.NI
         public double DrainElapsedMs { get; set; }
         /// <summary>全速率处理水印是否已经越过逻辑截止点。</summary>
         public bool IsCutoffCovered { get; set; }
+        /// <summary>捕获开始和封口时是否仍属于同一 DAQ generation。</summary>
+        public bool IsGenerationMatched { get; set; }
+        public long Generation { get; set; }
+        public long CutoffAcceptedSequence { get; set; }
+        public long ProcessedSequence { get; set; }
+        public long CutoffMonotonicTicks { get; set; }
+        public long ProcessedThroughMonotonicTicks { get; set; }
+        /// <summary>截止点与最后纳入样本的单调时钟尾差；不受系统校时影响。</summary>
+        public double EvidenceTailLagMs { get; set; } = double.PositiveInfinity;
         public string QualityReason { get; set; } = string.Empty;
     }
 
@@ -3251,6 +3264,7 @@ namespace IO.NI
                             current,
                             last,
                             callbackEntrySwTick,
+                            timeline.BatchEndMonotonicTicks,
                             timeline.EffectiveSampleRateHz,
                             timeline.ClockState,
                             timeline.EstimatedSkewPpm,
@@ -4353,14 +4367,31 @@ namespace IO.NI
                                     if (!active) continue;
 
                                     // 逐样本纳入峰值统计（时间转为本地时间）
+                                    var sampleRate = item.EffectiveSampleRateHz > 0 &&
+                                                     !double.IsNaN(item.EffectiveSampleRateHz) &&
+                                                     !double.IsInfinity(item.EffectiveSampleRateHz)
+                                        ? item.EffectiveSampleRateHz
+                                        : _sampleRate;
+                                    var ticksPerSample = Stopwatch.Frequency /
+                                                         Math.Max(1.0, sampleRate);
                                     for (int i = 0; i < n; i++)
                                     {
                                         // tsUtc 与 data 一一对应
                                         var tLocal = tsUtc[i].ToLocalTime();
                                         var amp = data[i];
+                                        var sampleMonotonicTicks = Math.Max(
+                                            1,
+                                            item.BatchEndMonotonicTicks -
+                                            (long)Math.Round((n - 1 - i) * ticksPerSample));
                                         lock (tracker.Sync)
                                         {
-                                            if (tracker.Active) tracker.Update(Math.Abs(amp), tLocal);
+                                            if (tracker.Active)
+                                                tracker.Update(
+                                                    Math.Abs(amp),
+                                                    tLocal,
+                                                    item.Generation,
+                                                    item.Sequence,
+                                                    sampleMonotonicTicks);
                                         }
                                     }
                                 }
@@ -5349,6 +5380,7 @@ namespace IO.NI
                 DateTime current,
                 DateTime last,
                 long enqueuedMonotonicTicks,
+                long batchEndMonotonicTicks,
                 double effectiveSampleRateHz,
                 ClockState clockState,
                 double estimatedSkewPpm,
@@ -5362,6 +5394,7 @@ namespace IO.NI
                 Current = current;
                 Last = last;
                 EnqueuedMonotonicTicks = enqueuedMonotonicTicks;
+                BatchEndMonotonicTicks = batchEndMonotonicTicks;
                 EffectiveSampleRateHz = effectiveSampleRateHz;
                 ClockState = clockState;
                 EstimatedSkewPpm = estimatedSkewPpm;
@@ -5376,6 +5409,7 @@ namespace IO.NI
             public DateTime Current { get; }
             public DateTime Last { get; }
             public long EnqueuedMonotonicTicks { get; }
+            public long BatchEndMonotonicTicks { get; }
             public double EffectiveSampleRateHz { get; }
             public ClockState ClockState { get; }
             public double EstimatedSkewPpm { get; }
@@ -5429,13 +5463,19 @@ namespace IO.NI
             public PeakCaptureToken Token;
             public DateTime ProcessedThroughAt;
             public TaskCompletionSource<bool> CutoffCoveredSignal;
+            public readonly PeakCaptureWatermark Watermark = new PeakCaptureWatermark();
 
             // 逻辑截止时间用于“等待封口但不扩大统计窗口”。
             public DateTime? CutoffLocal; // 仅纳入 tsLocal <= CutoffLocal 的样本
 
 
             /// <summary>进入捕获状态并复位统计。</summary>
-            public void Arm(DateTime t0, PeakCaptureToken token = null)
+            public void Arm(
+                DateTime t0,
+                long generation,
+                long acceptedSequence,
+                long monotonicTicks,
+                PeakCaptureToken token = null)
             {
                 Active = true;
                 StartAt = t0;
@@ -5448,30 +5488,42 @@ namespace IO.NI
                 CutoffLocal = null;
                 CutoffCoveredSignal = NewCutoffCoveredSignal();
                 Token = token;
+                Watermark.Arm(generation, acceptedSequence, monotonicTicks);
             }
 
-            public Task FreezeCutoff(DateTime cutoffLocal)
+            public Task FreezeCutoff(
+                DateTime cutoffLocal,
+                long generation,
+                long acceptedSequence,
+                long monotonicTicks)
             {
                 if (!CutoffLocal.HasValue)
+                {
                     CutoffLocal = cutoffLocal;
-                if (ProcessedThroughAt >= CutoffLocal.Value)
+                    Watermark.Freeze(generation, acceptedSequence, monotonicTicks);
+                }
+                if (Watermark.IsCutoffCovered)
                     CutoffCoveredSignal.TrySetResult(true);
                 return CutoffCoveredSignal.Task;
             }
 
             /// <summary>纳入一个样本（全数据逐点）。</summary>
-            public void Update(double amp, DateTime tsLocal)
+            public void Update(
+                double amp,
+                DateTime tsLocal,
+                long generation,
+                long sequence,
+                long sampleMonotonicTicks)
             {
-                // 捕获开始前已在后台队列中的历史样本不得混入本次输出证据。
-                if (tsLocal < StartAt)
-                    return;
                 if (tsLocal > ProcessedThroughAt)
                     ProcessedThroughAt = tsLocal;
-                if (CutoffLocal.HasValue && ProcessedThroughAt >= CutoffLocal.Value)
+                var include = Watermark.Observe(
+                    generation,
+                    sequence,
+                    sampleMonotonicTicks);
+                if (Watermark.IsCutoffCovered)
                     CutoffCoveredSignal.TrySetResult(true);
-                // 若设置了逻辑截止时间，则仅接受截止内样本
-                if (CutoffLocal.HasValue && tsLocal > CutoffLocal.Value)
-                    return;
+                if (!include) return;
 
                 SampleCount++;
                 if (amp > MaxAmp || SampleCount == 1)
@@ -5534,6 +5586,13 @@ namespace IO.NI
             public double DrainElapsedMs;
             public bool IsCutoffCovered;
             public bool IdentityMatched = true;
+            public bool IsGenerationMatched;
+            public long Generation;
+            public long CutoffAcceptedSequence;
+            public long ProcessedSequence;
+            public long CutoffMonotonicTicks;
+            public long ProcessedThroughMonotonicTicks;
+            public double EvidenceTailLagMs = double.PositiveInfinity;
         }
 
 
@@ -5572,10 +5631,14 @@ namespace IO.NI
         public void BeginEpbCurrentPeak(int epbChannel)
         {
             if (epbChannel < 1 || epbChannel > 12) return;
+            var device = GetDeviceForEpbChannel(epbChannel);
+            var startTicks = Stopwatch.GetTimestamp();
+            var generation = string.IsNullOrWhiteSpace(device) ? 0 : GetCurrentGeneration(device);
+            var acceptedSequence = string.IsNullOrWhiteSpace(device) ? 0 : GetLastAcceptedSequence(device);
             var t = _peakTrackers.GetOrAdd(epbChannel, _ => new PeakTracker());
             lock (t.Sync)
             {
-                t.Arm(DateTime.Now);
+                t.Arm(DateTime.Now, generation, acceptedSequence, startTicks);
             }
             _log?.Info($"EPB[{epbChannel}]（全数据）峰值捕获开始。", "AI");
         }
@@ -5585,16 +5648,32 @@ namespace IO.NI
         {
             if (epbChannel < 1 || epbChannel > 12)
                 throw new ArgumentOutOfRangeException(nameof(epbChannel));
+            var device = GetDeviceForEpbChannel(epbChannel);
+            if (string.IsNullOrWhiteSpace(device))
+                throw new InvalidOperationException($"EPB[{epbChannel}]未映射DAQ设备，不能建立峰值证据窗。");
+            var startTicks = Stopwatch.GetTimestamp();
+            var generation = GetCurrentGeneration(device);
+            var acceptedSequence = GetLastAcceptedSequence(device);
             var token = new PeakCaptureToken
             {
                 CaptureId = Guid.NewGuid(),
                 TestRunId = testRunId,
                 Channel = epbChannel,
                 CycleNumber = cycleNumber,
-                StartUtc = DateTime.UtcNow
+                StartUtc = DateTime.UtcNow,
+                Device = device,
+                Generation = generation,
+                StartAcceptedSequence = acceptedSequence,
+                StartMonotonicTicks = startTicks
             };
             var tracker = _peakTrackers.GetOrAdd(epbChannel, _ => new PeakTracker());
-            lock (tracker.Sync) tracker.Arm(DateTime.Now, token);
+            lock (tracker.Sync)
+                tracker.Arm(
+                    DateTime.Now,
+                    generation,
+                    acceptedSequence,
+                    startTicks,
+                    token);
             _log?.Info(
                 $"EPB[{epbChannel}] 峰值捕获开始 CaptureId={token.CaptureId:N} " +
                 $"Run={testRunId:N} Cycle={cycleNumber}",
@@ -5643,12 +5722,16 @@ namespace IO.NI
                     DrainCompletedUtc = finalized.DrainCompletedUtc,
                     DrainElapsedMs = finalized.DrainElapsedMs,
                     IsCutoffCovered = finalized.IsCutoffCovered,
+                    IsGenerationMatched = finalized.IsGenerationMatched,
+                    Generation = finalized.Generation,
+                    CutoffAcceptedSequence = finalized.CutoffAcceptedSequence,
+                    ProcessedSequence = finalized.ProcessedSequence,
+                    CutoffMonotonicTicks = finalized.CutoffMonotonicTicks,
+                    ProcessedThroughMonotonicTicks = finalized.ProcessedThroughMonotonicTicks,
+                    EvidenceTailLagMs = finalized.EvidenceTailLagMs,
                     QualityReason = "CaptureIdentityMismatchDuringDrain"
                 };
-            var timeMatched = peak.StartAt.ToUniversalTime() >= token.StartUtc.AddMilliseconds(-50) &&
-                              peak.LastSampleAt != DateTime.MinValue &&
-                              peak.LastSampleAt.ToUniversalTime() >= token.StartUtc;
-            var matched = timeMatched && peak.SampleCount > 0;
+            var matched = finalized.IsGenerationMatched && peak.SampleCount > 0;
             return new PeakCaptureResult
             {
                 Token = token,
@@ -5659,8 +5742,17 @@ namespace IO.NI
                 DrainCompletedUtc = finalized.DrainCompletedUtc,
                 DrainElapsedMs = finalized.DrainElapsedMs,
                 IsCutoffCovered = finalized.IsCutoffCovered,
+                IsGenerationMatched = finalized.IsGenerationMatched,
+                Generation = finalized.Generation,
+                CutoffAcceptedSequence = finalized.CutoffAcceptedSequence,
+                ProcessedSequence = finalized.ProcessedSequence,
+                CutoffMonotonicTicks = finalized.CutoffMonotonicTicks,
+                ProcessedThroughMonotonicTicks = finalized.ProcessedThroughMonotonicTicks,
+                EvidenceTailLagMs = finalized.EvidenceTailLagMs,
                 QualityReason = !matched
-                    ? "CaptureWindowInvalid"
+                    ? finalized.IsGenerationMatched
+                        ? "CaptureWindowInvalid"
+                        : "DaqGenerationChanged"
                     : !finalized.IsCutoffCovered
                         ? "CutoffNotCovered"
                         : "Qualified"
@@ -5827,6 +5919,14 @@ namespace IO.NI
             }
 
             var startedTicks = Stopwatch.GetTimestamp();
+            var device = expectedToken?.Device ?? GetDeviceForEpbChannel(epbChannel);
+            var cutoffGeneration = string.IsNullOrWhiteSpace(device)
+                ? 0
+                : GetCurrentGeneration(device);
+            var cutoffAcceptedSequence = string.IsNullOrWhiteSpace(device)
+                ? 0
+                : GetLastAcceptedSequence(device);
+            var cutoffMonotonicTicks = Stopwatch.GetTimestamp();
 
             lock (tracker.Sync)
             {
@@ -5839,14 +5939,20 @@ namespace IO.NI
                         identityMatched: false);
 
                 cutoffLocal = DateTime.Now;
-                coveredTask = tracker.FreezeCutoff(cutoffLocal);
+                coveredTask = tracker.FreezeCutoff(
+                    cutoffLocal,
+                    cutoffGeneration,
+                    cutoffAcceptedSequence,
+                    cutoffMonotonicTicks);
             }
 
-            // cutoffAfterDelay=true 的 delay 是统计窗口本身；冻结窗口后只追加最多100ms
-            // 的在途覆盖等待，避免把500/1000ms统计窗口再次完整等待一遍。
-            var drainWaitMs = cutoffAfterDelay
-                ? Math.Min(100, Math.Max(0, delayMs))
-                : Math.Max(0, delayMs);
+            // delay 在 cutoffAfterDelay=true 时只定义统计窗口；冻结后仍按后台队列
+            // 和 DAQ 批周期给足独立排空预算。100ms 不能作为正确性边界，现场曾出现
+            // 120~250ms 合法排队而被误判的情况。
+            var callbackIntervalMs = _samplesPerChannel * 1000.0 / Math.Max(1.0, _sampleRate);
+            var drainWaitMs = SelectPeakDrainTimeoutMs(
+                cutoffAfterDelay ? 0 : delayMs,
+                callbackIntervalMs);
             if (drainWaitMs > 0 && !coveredTask.IsCompleted)
             {
                 try
@@ -5898,9 +6004,30 @@ namespace IO.NI
                 DrainElapsedMs = (Stopwatch.GetTimestamp() - startedTicks) * 1000.0 /
                                  Stopwatch.Frequency,
                 IsCutoffCovered = cutoffLocal != DateTime.MinValue &&
-                                  processedLocal >= cutoffLocal,
-                IdentityMatched = identityMatched
+                                  tracker.Watermark.IsCutoffCovered,
+                IdentityMatched = identityMatched,
+                IsGenerationMatched = tracker.Watermark.IsGenerationMatched,
+                Generation = tracker.Watermark.Generation,
+                CutoffAcceptedSequence = tracker.Watermark.CutoffAcceptedSequence,
+                ProcessedSequence = tracker.Watermark.ProcessedSequence,
+                CutoffMonotonicTicks = tracker.Watermark.CutoffMonotonicTicks,
+                ProcessedThroughMonotonicTicks = tracker.Watermark.ProcessedThroughMonotonicTicks,
+                EvidenceTailLagMs = tracker.Watermark.GetEvidenceTailLagMs(Stopwatch.Frequency)
             };
+        }
+
+        internal static int SelectPeakDrainTimeoutMs(
+            int requestedDrainMs,
+            double callbackIntervalMs)
+        {
+            var pipelineAllowanceMs = double.IsNaN(callbackIntervalMs) ||
+                                      double.IsInfinity(callbackIntervalMs) ||
+                                      callbackIntervalMs <= 0
+                ? 250
+                : (int)Math.Ceiling(callbackIntervalMs * 4 + 50);
+            return Math.Min(
+                1000,
+                Math.Max(250, Math.Max(Math.Max(0, requestedDrainMs), pipelineAllowanceMs)));
         }
 
 

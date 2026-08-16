@@ -598,8 +598,7 @@ namespace Controller
                         capture.Peak.SampleCount > 0)
                     {
                         fullRatePeakA = capture.Peak.MaxAmp;
-                        evidenceAgeMs = (capture.LogicalCutoffUtc -
-                                         capture.Peak.LastSampleAt.ToUniversalTime()).TotalMilliseconds;
+                        evidenceAgeMs = ResolvePeakEvidenceTailLagMs(capture);
                     }
                 }
             }
