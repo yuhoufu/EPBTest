@@ -73,7 +73,9 @@ namespace MTEmbTest
 
     internal static class UnattendedRunCheckpointStore
     {
-        private const int CurrentSchemaVersion = 5;
+        // v6: RemainingFormalCycles 字段名为兼容旧 JSON 保留，值改为剩余机械耐久圈；
+        // v5 检查点必须拒绝，防止学习/资格圈被再次当作“不计目标”。
+        private const int CurrentSchemaVersion = 6;
         private static readonly object Sync = new object();
         private static readonly ConcurrentDictionary<string, byte> RevokedRuns =
             new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
@@ -164,7 +166,7 @@ namespace MTEmbTest
                     channel =>
                     {
                         var record = config.Test.GetEpbRecord(channel);
-                        return Math.Max(0, record.TotalCount - record.RunCount);
+                        return record.GetRemainingMechanicalCycles(config.Test.TestTarget);
                     });
                 SaveUnsafe(checkpoint);
                 return transition;
@@ -277,11 +279,26 @@ namespace MTEmbTest
                     checkpoint.SelectedChannels == null ||
                     !checkpoint.SelectedChannels.Contains(channel))
                     return;
+                checkpoint.LastReason = "FormalCycleCommitted";
+                checkpoint.UpdatedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+                SaveUnsafe(checkpoint);
+            }
+        }
+
+        internal static void RecordMechanicalCycleCompleted(int channel)
+        {
+            lock (Sync)
+            {
+                var checkpoint = LoadUnsafe();
+                if (checkpoint == null || !checkpoint.Armed || checkpoint.RestartPending ||
+                    checkpoint.SelectedChannels == null ||
+                    !checkpoint.SelectedChannels.Contains(channel))
+                    return;
                 checkpoint.RemainingFormalCycles ??= new Dictionary<string, int>();
                 var key = channel.ToString(CultureInfo.InvariantCulture);
                 if (checkpoint.RemainingFormalCycles.TryGetValue(key, out var remaining))
                     checkpoint.RemainingFormalCycles[key] = Math.Max(0, remaining - 1);
-                checkpoint.LastReason = "FormalCycleCommitted";
+                checkpoint.LastReason = "MechanicalCycleCompleted";
                 checkpoint.UpdatedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
                 SaveUnsafe(checkpoint);
             }
@@ -761,7 +778,7 @@ namespace MTEmbTest
                     channel =>
                     {
                         var record = config.Test.GetEpbRecord(channel);
-                        return Math.Max(0, record.TotalCount - record.RunCount);
+                        return record.GetRemainingMechanicalCycles(config.Test.TestTarget);
                     });
                 SaveUnsafe(checkpoint);
             }
@@ -1123,6 +1140,7 @@ namespace MTEmbTest
                         OnRunAuthorizationRevocationBarrier;
                     _manager.RunAuthorizationRevoking -= OnRunAuthorizationRevoking;
                     _manager.ChannelCycleCompleted -= OnFormalCycleCompleted;
+                    _manager.ChannelMechanicalCycleCompleted -= OnMechanicalCycleCompleted;
                 }
                 _manager = manager;
                 _config = config;
@@ -1131,6 +1149,7 @@ namespace MTEmbTest
                     OnRunAuthorizationRevocationBarrier;
                 manager.RunAuthorizationRevoking += OnRunAuthorizationRevoking;
                 manager.ChannelCycleCompleted += OnFormalCycleCompleted;
+                manager.ChannelMechanicalCycleCompleted += OnMechanicalCycleCompleted;
             }
         }
 
@@ -1141,6 +1160,7 @@ namespace MTEmbTest
             long runEpoch = 0)
         {
             CancelRestartRetrySequence();
+            ReconcileMechanicalProgressForCheckpoint(config, channels);
             var transition = UnattendedRunCheckpointStore.Arm(
                 config, channels, runId, runEpoch: runEpoch);
             if (string.IsNullOrWhiteSpace(transition.CurrentRunId)) return;
@@ -1168,6 +1188,7 @@ namespace MTEmbTest
             if (runId == Guid.Empty)
                 throw new InvalidOperationException("自动恢复完成确认缺少新执行 RunId。");
             CancelRestartRetrySequence();
+            ReconcileMechanicalProgressForCheckpoint(config, channels);
             var transition = UnattendedRunCheckpointStore.Arm(
                 config,
                 channels,
@@ -1187,6 +1208,25 @@ namespace MTEmbTest
                 $"FaultCorrelationId={(string.IsNullOrWhiteSpace(checkpoint?.ActiveFaultCorrelationId) ? "none" : checkpoint.ActiveFaultCorrelationId)} " +
                 $"RecoveryNonceSha256={(string.IsNullOrWhiteSpace(checkpoint?.LastRecoveryNonceSha256) ? "none" : checkpoint.LastRecoveryNonceSha256)}",
                 "FIELD");
+        }
+
+        private static void ReconcileMechanicalProgressForCheckpoint(
+            GlobalConfig config,
+            IEnumerable<int> channels)
+        {
+            EpbManager manager;
+            lock (Sync) manager = _manager;
+            if (manager == null || config?.Test == null) return;
+            foreach (var channel in (channels ?? Enumerable.Empty<int>())
+                         .Where(value => value >= 1 && value <= 12)
+                         .Distinct())
+            {
+                var record = config.Test.GetEpbRecord(channel);
+                if (record == null) continue;
+                record.MechanicalCycleCount = Math.Max(
+                    record.EffectiveMechanicalCycleCount,
+                    manager.GetDurableMechanicalCycleCount(channel));
+            }
         }
 
         internal static void RegisterQuiesceAndFlush(Func<Task> callback)
@@ -1368,6 +1408,14 @@ namespace MTEmbTest
             UnattendedRunCheckpointStore.RecordFormalCycleCommitted(channel);
         }
 
+        private static void OnMechanicalCycleCompleted(
+            int channel,
+            CycleAttemptKind kind,
+            int cycleNumber)
+        {
+            UnattendedRunCheckpointStore.RecordMechanicalCycleCompleted(channel);
+        }
+
         private static async Task RecoverInProcessOrRestartAsync(ControlFault fault)
         {
             var recovery = RecoverInProcessOrRestartCoreAsync(fault);
@@ -1474,10 +1522,16 @@ namespace MTEmbTest
                     .ToArray();
                 var durableRemaining = authorized.ToDictionary(
                     channel => channel,
-                    channel => Math.Max(
-                        0,
-                        config.Test.GetEpbRecord(channel).TotalCount -
-                        manager.GetDurableCompletedFormalCycleCount(channel)));
+                    channel =>
+                    {
+                        var record = config.Test.GetEpbRecord(channel);
+                        var total = record.TotalCount > 0
+                            ? record.TotalCount
+                            : config.Test.TestTarget;
+                        return (int)Math.Max(
+                            0L,
+                            total - manager.GetDurableMechanicalCycleCount(channel));
+                    });
                 var remainingPlan = EpbManager.BuildUnattendedRemainingCyclePlan(
                     authorized,
                     checkpoint.RemainingFormalCycles,
@@ -1534,6 +1588,20 @@ namespace MTEmbTest
                 if (!string.IsNullOrWhiteSpace(startValidation))
                     throw new InvalidOperationException(
                         "同进程无人值守恢复未启动全部授权通道：" + startValidation);
+                if (startResult.StartedChannels.Length == 0 &&
+                    startResult.CompletedDuringStartChannels.Length > 0)
+                {
+                    UnattendedRunCheckpointStore.Disarm(
+                        "MechanicalTargetCompletedDuringRecoveryLearning");
+                    recoveryBatchCommitted = true;
+                    ProjectLogHub.Write(
+                        ProjectLogLevel.Info,
+                        $"同进程恢复的学习/资格阶段已消费全部剩余机械目标圈；" +
+                        $"Channels=[{string.Join(",", startResult.CompletedDuringStartChannels)}]，" +
+                        "已关闭恢复授权且不会再启动正式圈。",
+                        "无人值守恢复");
+                    return;
+                }
                 ConfirmRecoveryBatchStarted(
                     config,
                     startResult.StartedChannels,

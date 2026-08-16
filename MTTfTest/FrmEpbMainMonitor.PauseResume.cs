@@ -41,14 +41,14 @@ namespace MTEmbTest
             try
             {
                 if (InvokeRequired)
-                    BeginInvoke((Action)(() => ApplyBatchPauseState(update.State)));
+                    BeginInvoke((Action)(() => ApplyBatchPauseState(update.State, update.Reason)));
                 else
-                    ApplyBatchPauseState(update.State);
+                    ApplyBatchPauseState(update.State, update.Reason);
             }
             catch { }
         }
 
-        private void ApplyBatchPauseState(BatchPauseState state)
+        private void ApplyBatchPauseState(BatchPauseState state, string reason = null)
         {
             if (BtnStartTest == null || BtnStartTest.IsDisposed) return;
             switch (state)
@@ -57,7 +57,9 @@ namespace MTEmbTest
                     ApplyBatchActionButton("暂停试验", Volatile.Read(ref _batchStartUiGuard) == 0, false);
                     break;
                 case BatchPauseState.PausePending:
-                    ApplyBatchActionButton("正在暂停…", false, true);
+                    ApplyBatchActionButton(SelectPausePendingButtonText(reason), false, true);
+                    if (!string.IsNullOrWhiteSpace(reason))
+                        PostSafetyStatus("暂停处理中：" + reason, false);
                     break;
                 case BatchPauseState.Paused:
                     ApplyBatchActionButton("继续试验", Volatile.Read(ref _batchStartUiGuard) == 0, false);
@@ -94,6 +96,16 @@ namespace MTEmbTest
                     break;
             }
             ApplyAllChannelOperationStates();
+        }
+
+        private static string SelectPausePendingButtonText(string reason)
+        {
+            if (reason?.IndexOf("持久化", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                reason?.IndexOf("数据", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "暂停处理中：保存数据…";
+            if (reason?.IndexOf("断能", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "暂停处理中：确认断能…";
+            return "暂停处理中：等待当前圈…";
         }
 
         private void ApplyBatchActionButton(string text, bool enabled, bool transition)
@@ -338,7 +350,7 @@ namespace MTEmbTest
                 channel =>
                 {
                     var record = _cfg.Test.GetEpbRecord(channel);
-                    return Math.Max(0, record.TotalCount - record.RunCount);
+                    return record.GetRemainingMechanicalCycles(_cfg.Test.TestTarget);
                 });
             var remainingPlan = EpbManager.BuildUnattendedRemainingCyclePlan(
                 checkpointChannels,

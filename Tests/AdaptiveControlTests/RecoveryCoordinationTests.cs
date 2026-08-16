@@ -6,6 +6,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Controller;
+using DataOperation;
 using IO.NI;
 
 namespace AdaptiveControlTests
@@ -34,6 +35,7 @@ namespace AdaptiveControlTests
             Run("双DAQ同一扫描恢复在两台均验证前禁止单边重入", SimultaneousDaqRecoveryUsesBatchBarrier, ref passed);
             Run("进程回收失败按5秒/15秒退避且受RunId与三次预算门禁", ProcessRestartRetryIsBoundedAndRunScoped, ref passed);
             Run("自动恢复保留根RunId且多通道Starting幂等", UnattendedRunChainIdentityIsStable, ref passed);
+            Run("并发清场后学习链身份仍回退到冻结RunId", ClearedLearningChainFallsBackToRunId, ref passed);
             Run("恢复RunEpoch不会固定为0且单调", RecoveryRunEpochIsNonZeroAndMonotonic, ref passed);
             Run("基础设施异常重新登记仍沿用首次60秒硬期限", InfrastructureRecoveryDeadlineIsMonotonic, ref passed);
             Run("DAQ重新使能或重入提交异常必须立即安全回滚", DaqRejoinFailureRequiresImmediateRollback, ref passed);
@@ -50,6 +52,18 @@ namespace AdaptiveControlTests
                 "恢复RunEpoch未保留更大的已授权代次");
             Assert(EpbManager.NormalizeRecoveryRunEpoch(2, 9) == 9,
                 "恢复RunEpoch未保持当前代次单调性");
+        }
+
+        private static void ClearedLearningChainFallsBackToRunId()
+        {
+            var runId = Guid.NewGuid();
+            Assert(EpbManager.ResolveLearningChainId(null, runId) == runId,
+                "活动学习链被并发清空后未回退到已冻结的执行RunId");
+
+            var rootId = Guid.NewGuid();
+            var identity = new RunChainIdentity(runId, rootId, Guid.Empty, 2, 7);
+            Assert(EpbManager.ResolveLearningChainId(identity, runId) == rootId,
+                "恢复执行未保留不可变的根学习链身份");
         }
 
         private static void UnattendedRestartUsesDurableRemainingCycles()
@@ -107,6 +121,16 @@ namespace AdaptiveControlTests
                        new[] { 1, 4, 6 },
                        complete)),
                 "全部授权通道已启动仍被拒绝");
+
+            var completedDuringLearning = new BatchStartResult(
+                runId,
+                new[] { 1 },
+                Array.Empty<ChannelStartFault>(),
+                new[] { 4, 6 });
+            Assert(string.IsNullOrEmpty(EpbManager.ValidateUnattendedBatchStartResult(
+                       new[] { 1, 4, 6 },
+                       completedDuringLearning)),
+                "恢复学习/资格阶段已达到机械目标的通道仍被误判为启动缺失");
 
             var partial = new BatchStartResult(
                 runId,

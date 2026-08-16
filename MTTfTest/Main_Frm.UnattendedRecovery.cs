@@ -3,6 +3,7 @@ using System.Threading.Tasks;
 using System.Windows.Forms;
 using Config;
 using MTEmbTest;
+using MTTFTest.Watchdog.Protocol;
 
 namespace MtEmbTest
 {
@@ -35,6 +36,11 @@ namespace MtEmbTest
             {
                 var watchdogIntent = _watchdogRecoveryIntent;
                 _watchdogRecoveryIntent = null;
+                // The Watchdog-owned transition surface is only a bridge while
+                // the main process/UI is absent.  Do not wait for learning or
+                // formal control to begin: this window is now visible and owns
+                // all subsequent operator feedback.
+                WatchdogRuntime.NotifyMainUiReady("MainWindowShown");
                 BeginInvoke((Action)(async () =>
                 {
                     if (watchdogIntent.StartIdle)
@@ -96,7 +102,22 @@ namespace MtEmbTest
                         ProjectLogLevel.Error,
                         "独立看门狗恢复已拒绝：" + error + "；所有输出保持关闭。",
                         "独立看门狗");
-                    BeginInvoke((Action)(() => Close()));
+                    try
+                    {
+                        await WatchdogRuntime.NotifyRecoveryCheckpointRejectedAsync(
+                                intent,
+                                error)
+                            .ConfigureAwait(true);
+                    }
+                    catch (Exception notifyError)
+                    {
+                        ProjectLogHub.Write(
+                            ProjectLogLevel.Error,
+                            "恢复检查点拒绝回执发送失败：" + notifyError.GetBaseException().Message,
+                            "独立看门狗",
+                            notifyError);
+                    }
+                    BeginInvoke((Action)System.Windows.Forms.Application.Exit);
                     return;
                 }
 
@@ -113,8 +134,47 @@ namespace MtEmbTest
                     checkpoint.SelectedChannels).ConfigureAwait(true);
                 monitor = new FrmEpbMainMonitor(ProtectedRoot(checkpoint)) { Name = "实时监视" };
                 OpenChildForm(monitor);
-                await monitor.ResumeFromWatchdogCheckpointAsync(checkpoint, intent)
-                    .ConfigureAwait(true);
+                var consecutiveHardwareFailures = 0;
+                var previousFingerprint = string.Empty;
+                while (!monitor.IsOperatorStopRequested)
+                {
+                    try
+                    {
+                        await monitor.ResumeFromWatchdogCheckpointAsync(checkpoint, intent)
+                            .ConfigureAwait(true);
+                        monitor.ClearHardwareUnavailable();
+                        return;
+                    }
+                    catch (WatchdogHardwareUnavailableException hardwareError)
+                    {
+                        consecutiveHardwareFailures = string.Equals(
+                            previousFingerprint,
+                            hardwareError.Fingerprint,
+                            StringComparison.Ordinal)
+                            ? consecutiveHardwareFailures + 1
+                            : 1;
+                        previousFingerprint = hardwareError.Fingerprint;
+                        var delaySeconds = RecoveryFailurePolicy.SelectInProcessProbeDelaySeconds(
+                            consecutiveHardwareFailures);
+                        var nextProbeUtc = DateTime.UtcNow.AddSeconds(delaySeconds);
+                        monitor.PublishHardwareUnavailable(
+                            hardwareError.Fingerprint,
+                            hardwareError.Detail,
+                            consecutiveHardwareFailures,
+                            nextProbeUtc);
+                        ProjectLogHub.Write(
+                            consecutiveHardwareFailures >= RecoveryFailureCircuitBreaker.DefaultConsecutiveLimit
+                                ? ProjectLogLevel.Error
+                                : ProjectLogLevel.Warning,
+                            $"Watchdog恢复进程原地等待硬件：Attempt={consecutiveHardwareFailures};" +
+                            $"NextProbeUtc={nextProbeUtc:O};Fingerprint={hardwareError.Fingerprint};" +
+                            "ProcessRelaunch=false;所有输出保持OFF。",
+                            "独立看门狗",
+                            hardwareError);
+                        while (!monitor.IsOperatorStopRequested && DateTime.UtcNow < nextProbeUtc)
+                            await Task.Delay(250).ConfigureAwait(true);
+                    }
+                }
             }
             catch (Exception ex)
             {

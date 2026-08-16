@@ -335,6 +335,43 @@ namespace MTEmbTest
             }
         }
 
+        internal static async Task NotifyRecoveryCheckpointRejectedAsync(
+            WatchdogRecoveryIntent intent,
+            string reason)
+        {
+            if (intent == null) throw new ArgumentNullException(nameof(intent));
+            ShutdownLocalClient();
+            lock (Gate)
+            {
+                _sessionClosing = 0;
+                _transportLostReported = 0;
+                _sendFailureReported = 0;
+                _reconnectAttempt = 0;
+                _transportMonitorStarted = 0;
+                _selectedChannels = Array.Empty<int>();
+                _recoveryProcess = true;
+                _recoveryAttempt = intent.RecoveryAttempt;
+                _mainExecutable = Process.GetCurrentProcess().MainModule?.FileName ??
+                                  Assembly.GetEntryAssembly()?.Location;
+                _watchdogExecutable = Path.Combine(
+                    Path.GetDirectoryName(_mainExecutable) ?? Environment.CurrentDirectory,
+                    "MTTFTest.Watchdog.exe");
+            }
+
+            // TryConsume can reject before the project journal directory is
+            // available.  The sidecar is still authoritative and must receive
+            // an explicit retryable terminal message over the existing pipe.
+            await ConnectAsync(
+                    intent.SessionId,
+                    intent.PipeName,
+                    Array.Empty<int>(),
+                    true,
+                    intent.RecoveryAttempt)
+                .ConfigureAwait(false);
+            NotifyRecoveryAttemptFailed("RecoveryCheckpointRejected:" + (reason ?? "Unknown"));
+            await Task.Delay(100).ConfigureAwait(false);
+        }
+
         private static async Task ConnectAsync(
             string sessionId,
             string pipeName,
@@ -482,6 +519,11 @@ namespace MTEmbTest
         }
 
         internal static void RequestExternalRecovery(string reason) => SendSimple(WatchdogMessageType.ExternalRecoveryRequired, reason);
+        internal static void NotifyMainUiReady(string reason)
+        {
+            RecordClientEvent("MainUiReady", reason ?? "MainWindowShown");
+            SendSimple(WatchdogMessageType.MainUiReady, reason ?? "MainWindowShown");
+        }
         internal static void NotifyRecoveryAttemptFailed(string reason)
         {
             // 可重试恢复子进程退出不是运行终止，不写 revocation marker。

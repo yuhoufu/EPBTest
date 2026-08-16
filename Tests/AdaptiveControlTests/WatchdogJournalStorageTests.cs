@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.IO.Pipes;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -277,7 +278,20 @@ namespace AdaptiveControlTests
                     stopwatch.Stop();
                     Assert(stopwatch.Elapsed < TimeSpan.FromSeconds(2),
                         "故障存储阻塞事件生产者：" + stopwatch.Elapsed);
-                    Assert(store.DroppedEventCount > 0, "有界队列压力下没有记录丢弃计数");
+                    // The worker may drain into the designed LocalAppData spool
+                    // quickly enough that the in-memory queue never overflows.
+                    // Both outcomes are valid: bounded drop accounting or
+                    // successful non-blocking fallback persistence.
+                    store.Flush(TimeSpan.FromSeconds(3));
+                    var spool = WatchdogJournalPaths.LocalSpoolDirectory(project, session);
+                    var spooled = Directory.Exists(spool) &&
+                                  Directory.EnumerateFiles(
+                                          spool,
+                                          "*",
+                                          SearchOption.AllDirectories)
+                                      .Any();
+                    Assert(store.DroppedEventCount > 0 || spooled,
+                        "故障项目盘下既无有界丢弃计数，也无本机spool回退证据");
                 }
             });
         }
@@ -354,6 +368,11 @@ namespace AdaptiveControlTests
                             }));
                             var attached = ReadMessage(reader, TimeSpan.FromSeconds(5));
                             Assert(attached?.Type == WatchdogMessageType.Attached, "Sidecar Attach握手失败");
+                            Thread.Sleep(150);
+                            sidecar.Refresh();
+                            Assert(sidecar.MainWindowHandle == IntPtr.Zero ||
+                                   !IsWindowVisible(sidecar.MainWindowHandle),
+                                "普通首次Attach错误显示了Watchdog恢复过渡窗");
 
                             writer.WriteLine(WatchdogProtocol.Serialize(new WatchdogMessage
                             {
@@ -381,6 +400,25 @@ namespace AdaptiveControlTests
                                 takeover = message.Type == WatchdogMessageType.RequestStopAll;
                             }
                             Assert(takeover, "主进程存活但心跳停止5秒后Sidecar未请求接管");
+                            WaitUntil(() =>
+                            {
+                                sidecar.Refresh();
+                                return sidecar.MainWindowHandle != IntPtr.Zero &&
+                                       IsWindowVisible(sidecar.MainWindowHandle);
+                            }, TimeSpan.FromSeconds(2));
+
+                            writer.WriteLine(WatchdogProtocol.Serialize(new WatchdogMessage
+                            {
+                                Type = WatchdogMessageType.MainUiReady,
+                                SessionId = session,
+                                Reason = "IntegrationTestMainWindowShown"
+                            }));
+                            WaitUntil(() =>
+                            {
+                                sidecar.Refresh();
+                                return sidecar.MainWindowHandle == IntPtr.Zero ||
+                                       !IsWindowVisible(sidecar.MainWindowHandle);
+                            }, TimeSpan.FromSeconds(2));
                             WatchdogControlMarker.WriteLocal(session, "TestCompleted");
                         }
                     }
@@ -476,5 +514,9 @@ namespace AdaptiveControlTests
         {
             if (!condition) throw new InvalidOperationException(message);
         }
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool IsWindowVisible(IntPtr hWnd);
     }
 }

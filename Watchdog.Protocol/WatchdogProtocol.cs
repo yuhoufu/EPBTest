@@ -18,6 +18,7 @@ namespace MTTFTest.Watchdog.Protocol
     {
         public const string Attach = "Attach";
         public const string Attached = "Attached";
+        public const string MainUiReady = "MainUiReady";
         public const string Heartbeat = "Heartbeat";
         public const string HeartbeatAck = "HeartbeatAck";
         public const string Ping = "Ping";
@@ -86,6 +87,25 @@ namespace MTTFTest.Watchdog.Protocol
         public int[] RecoveryEligibleChannels { get; set; } = Array.Empty<int>();
         public int[] ManuallyDisabledChannels { get; set; } = Array.Empty<int>();
         public bool RecoveryActive { get; set; }
+        /// <summary>
+        /// Operator-requested graceful pause is an intentional quiescent mode,
+        /// not an external recovery stage.  The sidecar must never infer a
+        /// stalled recovery from this state while heartbeats remain healthy.
+        /// </summary>
+        public bool ManualPauseActive { get; set; }
+        public bool ManualPausePending { get; set; }
+        /// <summary>控制器发布的人工暂停权威阶段。</summary>
+        public string ManualPauseStage { get; set; }
+        /// <summary>阶段或仍带电通道集合发生收敛时单调递增。</summary>
+        public long ManualPauseProgressVersion { get; set; }
+        /// <summary>人工暂停阶段开始的 UTC DateTime ticks。</summary>
+        public long ManualPauseStageStartedUtc { get; set; }
+        /// <summary>控制器按周期和控制硬时限计算的暂停硬截止 UTC ticks。</summary>
+        public long ManualPauseHardDeadlineUtc { get; set; }
+        /// <summary>控制器明确判定人工暂停不能安全收口。</summary>
+        public bool ManualPauseSafetyFault { get; set; }
+        public string ManualPauseSafetyFaultReason { get; set; }
+        public int[] ManualPauseEnergizedChannels { get; set; } = Array.Empty<int>();
         public string RecoveryCode { get; set; }
         public string RecoveryStage { get; set; }
         public string RecoveryIncident { get; set; }
@@ -126,6 +146,8 @@ namespace MTTFTest.Watchdog.Protocol
         public int ExpectedCyclePeriodMs { get; set; }
         public int StopCtsCount { get; set; }
         public int CyclePauseCtsCount { get; set; }
+        public WatchdogChannelProgress[] ChannelProgress { get; set; } =
+            Array.Empty<WatchdogChannelProgress>();
         public string MotorState { get; set; }
         public string PowerState { get; set; }
         public string PressureState { get; set; }
@@ -134,7 +156,30 @@ namespace MTTFTest.Watchdog.Protocol
         public string ContinuityState { get; set; }
         public string LogicalState { get; set; }
         public bool ManualStopRequested { get; set; }
+        /// <summary>恢复进程保持断能并在原进程低频探测硬件，不允许学习。</summary>
+        public bool HardwareUnavailable { get; set; }
+        public string HardwareFailureFingerprint { get; set; }
+        public string HardwareFailureDetail { get; set; }
+        public int HardwareProbeAttempt { get; set; }
+        public long HardwareNextProbeUtc { get; set; }
         public bool RunActive { get; set; }
+    }
+
+    public sealed class WatchdogChannelProgress
+    {
+        public int Channel { get; set; }
+        public string State { get; set; }
+        public long StateRevision { get; set; }
+        public long StateSinceUtcTicks { get; set; }
+        public bool TimerActive { get; set; }
+        public bool RunnerActive { get; set; }
+        public bool Energized { get; set; }
+        public long LastMechanicalCompletedUtcTicks { get; set; }
+        public long MechanicalCompletedCount { get; set; }
+        public int ConsecutiveSoftwareAbortCount { get; set; }
+        public long DoCommandSequence { get; set; }
+        public long PeakCutoffGeneration { get; set; }
+        public long PeakCutoffSequence { get; set; }
     }
 
     public sealed class WatchdogStopSummary

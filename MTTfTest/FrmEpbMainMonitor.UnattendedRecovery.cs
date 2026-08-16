@@ -10,6 +10,19 @@ using Controller;
 
 namespace MTEmbTest
 {
+    internal sealed class WatchdogHardwareUnavailableException : InvalidOperationException
+    {
+        internal WatchdogHardwareUnavailableException(string fingerprint, string detail)
+            : base(detail)
+        {
+            Fingerprint = fingerprint ?? "HardwareUnavailable";
+            Detail = detail ?? string.Empty;
+        }
+
+        internal string Fingerprint { get; }
+        internal string Detail { get; }
+    }
+
     public partial class FrmEpbMainMonitor
     {
         private const int UnattendedQuiesceTotalTimeoutMs = 30000;
@@ -18,6 +31,56 @@ namespace MTEmbTest
         private readonly object _watchdogProgressGate = new object();
         private string _watchdogProgressSignature = string.Empty;
         private long _watchdogStageStartedTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+        private readonly object _hardwareRecoveryGate = new object();
+        private bool _hardwareRecoveryActive;
+        private string _hardwareFailureFingerprint = string.Empty;
+        private string _hardwareFailureDetail = string.Empty;
+        private int _hardwareProbeAttempt;
+        private DateTime _hardwareNextProbeUtc = DateTime.MinValue;
+
+        internal bool IsOperatorStopRequested =>
+            Volatile.Read(ref _operatorStopRequested) != 0 || IsDisposed || Disposing;
+
+        internal void PublishHardwareUnavailable(
+            string fingerprint,
+            string detail,
+            int attempt,
+            DateTime nextProbeUtc)
+        {
+            lock (_hardwareRecoveryGate)
+            {
+                _hardwareRecoveryActive = true;
+                _hardwareFailureFingerprint = fingerprint ?? "HardwareUnavailable";
+                _hardwareFailureDetail = detail ?? string.Empty;
+                _hardwareProbeAttempt = Math.Max(1, attempt);
+                _hardwareNextProbeUtc = nextProbeUtc;
+            }
+            if (IsDisposed || Disposing) return;
+            void Apply()
+            {
+                ApplyBatchActionButton("硬件不可用，禁止开始", false, false);
+                var state = attempt >= RecoveryFailureCircuitBreaker.DefaultConsecutiveLimit
+                    ? "SafeIdleHardwareUnavailable"
+                    : "HardwareSafetyProbePending";
+                PostSafetyStatus(
+                    $"{state}：所有输出保持 OFF；第{attempt}次安全预检未通过。" +
+                    $" 下一次探测={nextProbeUtc:HH:mm:ss}；{detail}",
+                    true);
+            }
+            if (InvokeRequired) BeginInvoke((Action)Apply); else Apply();
+        }
+
+        internal void ClearHardwareUnavailable()
+        {
+            lock (_hardwareRecoveryGate)
+            {
+                _hardwareRecoveryActive = false;
+                _hardwareFailureFingerprint = string.Empty;
+                _hardwareFailureDetail = string.Empty;
+                _hardwareProbeAttempt = 0;
+                _hardwareNextProbeUtc = DateTime.MinValue;
+            }
+        }
 
         internal void PrepareForWatchdogRetryExit()
         {
@@ -105,17 +168,35 @@ namespace MTEmbTest
                 .OrderBy(x => x)
                 .ToArray();
             var recovering = states.Where(x => x.State == ChannelRuntimeState.Recovering ||
-                                                x.State == ChannelRuntimeState.Paused ||
-                                                x.State == ChannelRuntimeState.PausePending ||
                                                 x.State == ChannelRuntimeState.ResumeChecking)
                 .ToArray();
             var logical = _epb?.CaptureWatchdogLogicalSnapshot();
             var stop = _epb?.CaptureStopSafetyProgress();
             var storage = _epb?.CaptureWatchdogStorageSnapshot();
-            var gracefulPaused = _epb?.CurrentBatchPauseState == BatchPauseState.Paused ||
-                                 _epb?.CurrentBatchPauseState == BatchPauseState.PausePending;
-            var orphanPaused = !gracefulPaused && recoveryEvidence.OrphanPaused;
-            var powerDisablePending = !gracefulPaused && recoveryEvidence.PowerDisablePending;
+            var manualPauseActive =
+                _epb?.CurrentBatchPauseState == BatchPauseState.Paused;
+            var manualPausePending =
+                _epb?.CurrentBatchPauseState == BatchPauseState.PausePending;
+            var manualPauseCommanded =
+                WatchdogTakeoverPolicy.IsManualPauseCommanded(
+                    manualPauseActive,
+                    manualPausePending);
+            var manualPause = _epb?.CaptureManualPauseProgress();
+            bool hardwareUnavailable;
+            string hardwareFingerprint;
+            string hardwareDetail;
+            int hardwareAttempt;
+            DateTime hardwareNextProbeUtc;
+            lock (_hardwareRecoveryGate)
+            {
+                hardwareUnavailable = _hardwareRecoveryActive;
+                hardwareFingerprint = _hardwareFailureFingerprint;
+                hardwareDetail = _hardwareFailureDetail;
+                hardwareAttempt = _hardwareProbeAttempt;
+                hardwareNextProbeUtc = _hardwareNextProbeUtc;
+            }
+            var orphanPaused = !manualPauseCommanded && recoveryEvidence.OrphanPaused;
+            var powerDisablePending = !manualPauseCommanded && recoveryEvidence.PowerDisablePending;
             var pauseSince = recoveryEvidence.PauseSince;
             var recoveryIncident = recoveryEvidence.Incident;
             var recoveryContext = recoveryEvidence.Context;
@@ -147,7 +228,10 @@ namespace MTEmbTest
                     Interlocked.Increment(ref _watchdogRecoveryProgressVersion);
                 }
             }
-            var phase = states.Any(x => x.State == ChannelRuntimeState.Learning) ? "Learning" :
+            var phase = hardwareUnavailable ? "SafeIdleHardwareUnavailable" :
+                manualPausePending ? "ManualPausePending" :
+                manualPauseActive ? "ManualPaused" :
+                states.Any(x => x.State == ChannelRuntimeState.Learning) ? "Learning" :
                 states.Any(x => x.State == ChannelRuntimeState.Running || x.State == ChannelRuntimeState.WarningRunning) ? "Formal" :
                 recovering.Length > 0 ? "Recovering" :
                 (_epb?.IsBatchSessionActive ?? false) ? "Paused" : "Idle";
@@ -163,21 +247,34 @@ namespace MTEmbTest
                 AlarmedChannels = alarmed,
                 PermanentAlarmedChannels = permanentAlarmed,
                 ManuallyDisabledChannels = manuallyDisabled,
-                RecoveryActive = !gracefulPaused &&
+                ManualPauseActive = manualPauseActive,
+                ManualPausePending = manualPausePending,
+                ManualPauseStage = manualPause?.Stage.ToString() ?? string.Empty,
+                ManualPauseProgressVersion = manualPause?.ProgressVersion ?? 0,
+                ManualPauseStageStartedUtc = manualPause?.StageStartedUtc.Ticks ?? 0,
+                ManualPauseHardDeadlineUtc = manualPause?.HardDeadlineUtc.Ticks ?? 0,
+                ManualPauseSafetyFault = manualPause?.SafetyFault == true,
+                ManualPauseSafetyFaultReason = manualPause?.Detail ?? string.Empty,
+                ManualPauseEnergizedChannels = manualPause?.EnergizedChannels ?? Array.Empty<int>(),
+                RecoveryActive = !manualPauseCommanded &&
                                  (recoveryEvidence.Active ||
                                   (logical?.DaqRecoveryCount ?? 0) > 0 ||
                                   (logical?.SoftwareRecoveryCount ?? 0) > 0 ||
                                   (logical?.RecoveryOwnerCount ?? 0) > 0),
-                RecoveryCode = gracefulPaused
+                RecoveryCode = manualPauseCommanded
                     ? "ManualGracefulPause"
                     : recovering.FirstOrDefault()?.ReasonCode ?? string.Empty,
-                RecoveryStage = recovering.FirstOrDefault()?.State.ToString() ?? string.Empty,
+                RecoveryStage = manualPauseCommanded
+                    ? (manualPausePending
+                        ? "ManualPausePending"
+                        : "ManualPaused")
+                    : recovering.FirstOrDefault()?.State.ToString() ?? string.Empty,
                 RecoveryIncident = recoveryIncident,
                 RecoveryContext = recoveryContext,
                 StageOrdinal = stageOrdinal,
                 OrphanPaused = orphanPaused,
                 PowerDisablePending = powerDisablePending,
-                PauseSince = pauseSince,
+                PauseSince = manualPauseCommanded ? 0 : pauseSince,
                 PowerDisableSince = recoveryEvidence.PowerDisableSince,
                 RecoveryProgressVersion = Interlocked.Read(ref _watchdogRecoveryProgressVersion),
                 StageStartedMonotonic = Interlocked.Read(ref _watchdogStageStartedTicks),
@@ -194,10 +291,29 @@ namespace MTEmbTest
                 RunnerCount = logical?.RunnerCount ?? 0,
                 EnergizedChannelCount = logical?.EnergizedChannelCount ?? 0,
                 CompletedCycleCount = (_cfg?.Test?.EpbRecords ?? Enumerable.Empty<Config.EpbTestRecord>())
-                    .Sum(record => (long)Math.Max(0, record.RunCount)),
+                    .Sum(record => Math.Max(record.MechanicalCycleCount, record.RunCount)),
                 ExpectedCyclePeriodMs = Math.Max(1, _cfg?.Test?.PeriodMs ?? 1),
                 StopCtsCount = logical?.StopCtsCount ?? 0,
                 CyclePauseCtsCount = logical?.CycleCtsCount ?? 0,
+                ChannelProgress = (logical?.ChannelProgress ??
+                                   Array.Empty<Controller.WatchdogChannelProgressSnapshot>())
+                    .Select(item => new WatchdogChannelProgress
+                    {
+                        Channel = item.Channel,
+                        State = item.State,
+                        StateRevision = item.StateRevision,
+                        StateSinceUtcTicks = item.StateSinceUtcTicks,
+                        TimerActive = item.TimerActive,
+                        RunnerActive = item.RunnerActive,
+                        Energized = item.Energized,
+                        LastMechanicalCompletedUtcTicks = item.LastMechanicalCompletedUtcTicks,
+                        MechanicalCompletedCount = item.MechanicalCompletedCount,
+                        ConsecutiveSoftwareAbortCount = item.ConsecutiveSoftwareAbortCount,
+                        DoCommandSequence = item.DoCommandSequence,
+                        PeakCutoffGeneration = item.PeakCutoffGeneration,
+                        PeakCutoffSequence = item.PeakCutoffSequence
+                    })
+                    .ToArray(),
                 Dev1CallbackGapCount = storage?.Dev1?.CallbackGapCount ?? 0,
                 Dev2CallbackGapCount = storage?.Dev2?.CallbackGapCount ?? 0,
                 Dev1Generation = storage?.Dev1?.Generation ?? 0,
@@ -231,6 +347,11 @@ namespace MTEmbTest
                                    $"Dev2={storage?.Dev2?.PersistenceState ?? "Unavailable"}",
                 LogicalState = logical?.ToString() ?? "Unavailable",
                 ManualStopRequested = Volatile.Read(ref _operatorStopRequested) != 0,
+                HardwareUnavailable = hardwareUnavailable,
+                HardwareFailureFingerprint = hardwareFingerprint,
+                HardwareFailureDetail = hardwareDetail,
+                HardwareProbeAttempt = hardwareAttempt,
+                HardwareNextProbeUtc = hardwareNextProbeUtc.Ticks,
                 RunActive = _epb?.IsBatchSessionActive ?? false
             };
         }
@@ -563,10 +684,25 @@ namespace MTEmbTest
                 CorrelationId = Guid.NewGuid().ToString("N"),
                 RequestedUtc = DateTime.UtcNow
             }, CancellationToken.None).ConfigureAwait(true);
-            if (!safety.MotorOffCommandSucceeded || !safety.PowerOffConfirmed || !safety.PressureSafeConfirmed)
-                throw new InvalidOperationException(
-                    "安全接管未确认全断能，禁止重新学习。" +
-                    $" Motor={safety.MotorError}; Power={safety.PowerError}; Pressure={safety.PressureError}");
+            var latchRejection = string.Empty;
+            if (!safety.CanRestartInProcess ||
+                !_epb.TryClearRecoveryProcessRestartLatchAfterVerifiedPreflight(
+                    safety,
+                    out latchRejection))
+            {
+                var detail =
+                    "安全接管预检未完整确认，禁止重新学习。" +
+                    $" Motor={safety.MotorError}; Power={safety.PowerError}; " +
+                    $"Pressure={safety.PressureError}; Persistence={safety.PersistenceError}; " +
+                    $"Logical={safety.LogicalError}; Latch={latchRejection}";
+                var fingerprint = RecoveryFailurePolicy.BuildFingerprint(
+                    $"SafetyTakeover|Motor={safety.MotorOffCommandSucceeded}|" +
+                    $"Power={safety.PowerOffConfirmed}|Pressure={safety.PressureSafeConfirmed}|" +
+                    $"Persistence={safety.PersistenceBoundaryConfirmed}|" +
+                    $"Logical={safety.LogicalQuiescenceConfirmed}|{detail}");
+                throw new WatchdogHardwareUnavailableException(fingerprint, detail);
+            }
+            ClearHardwareUnavailable();
 
             var abortedOrphanCycles = _diskWriter?.AbortInterruptedCyclesForSoftwareRecovery(
                 DateTime.UtcNow) ?? 0;
@@ -638,8 +774,8 @@ namespace MTEmbTest
             if (authorized.Length == 0)
                 throw new InvalidOperationException("检查点没有有效的测试通道。所有输出保持关闭。");
 
-            // InitializeEpbRecords 已在控制对象创建前使用 index.db 中 status=completed
-            // 的成功正式圈数回填 RunCount。进程恢复必须以这份耐久事实计算剩余圈，
+            // InitializeEpbRecords 已在控制对象创建前同时回填正式证据圈和 index.db
+            // 的 mechanical_completed 物理完成事实。进程恢复必须以机械耐久事实计算剩余圈，
             // 同时用检查点证明进度没有倒退；不能仅靠旧 XML，也不能让 Remaining=0
             // 的已完成通道在新进程中再多跑一圈。
             var durableRemaining = authorized.ToDictionary(
@@ -647,7 +783,7 @@ namespace MTEmbTest
                 channel =>
                 {
                     var record = _cfg.Test.GetEpbRecord(channel);
-                    return Math.Max(0, record.TotalCount - record.RunCount);
+                    return record.GetRemainingMechanicalCycles(_cfg.Test.TestTarget);
                 });
             var remainingPlan = EpbManager.BuildUnattendedRemainingCyclePlan(
                 authorized,
@@ -704,6 +840,21 @@ namespace MTEmbTest
                 false);
             await Task.Delay(250);
             var startResult = await StartUnattendedBatchAsync(selected).ConfigureAwait(true);
+            if (startResult.StartedChannels.Length == 0 &&
+                startResult.CompletedDuringStartChannels.Length > 0)
+            {
+                UnattendedRunCheckpointStore.Disarm(
+                    "MechanicalTargetCompletedDuringRecoveryLearning");
+                UnattendedRecoveryCoordinator.LogRecoveryStartupRecovered(
+                    startResult.TestRunId,
+                    Array.Empty<int>());
+                PostSafetyStatus(
+                    $"无人值守恢复的学习/资格阶段已完成全部剩余机械目标圈；" +
+                    $"完成通道=[{string.Join(",", startResult.CompletedDuringStartChannels)}]，" +
+                    "保持安全停止并关闭恢复授权。",
+                    false);
+                return;
+            }
             UnattendedRecoveryCoordinator.ConfirmRecoveryBatchStarted(
                 _cfg,
                 startResult.StartedChannels,

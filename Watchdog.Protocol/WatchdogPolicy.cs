@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 
 namespace MTTFTest.Watchdog.Protocol
@@ -21,16 +22,180 @@ namespace MTTFTest.Watchdog.Protocol
         }
     }
 
+    public static class RecoveryTransitionPolicy
+    {
+        public const string OperatorStopButtonText = "停止自动恢复并关闭";
+
+        public static string FormatCountdown(int remainingSeconds)
+        {
+            if (remainingSeconds <= 0) return "正在处理，请稍候…";
+            var remaining = TimeSpan.FromSeconds(remainingSeconds);
+            var clock = remaining.TotalHours >= 1
+                ? string.Format(
+                    CultureInfo.InvariantCulture,
+                    "{0:D2}:{1:D2}:{2:D2}",
+                    (int)remaining.TotalHours,
+                    remaining.Minutes,
+                    remaining.Seconds)
+                : string.Format(
+                    CultureInfo.InvariantCulture,
+                    "{0:D2}:{1:D2}",
+                    (int)remaining.TotalMinutes,
+                    remaining.Seconds);
+            return string.Format(
+                CultureInfo.InvariantCulture,
+                "预计 {0} 后继续（剩余 {1} 秒）",
+                clock,
+                remainingSeconds);
+        }
+
+        public static bool ShouldHide(WatchdogHeartbeat heartbeat)
+        {
+            if (heartbeat == null || !heartbeat.RunActive) return false;
+            return string.Equals(heartbeat.Phase, "Formal", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(heartbeat.Phase, "Learning", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(heartbeat.Phase, "ManualPaused", StringComparison.OrdinalIgnoreCase);
+        }
+
+        public static bool MustSuppressAutomaticRestart(
+            bool transitionOperatorStopStarted,
+            bool sessionRevoked)
+        {
+            return transitionOperatorStopStarted || sessionRevoked;
+        }
+    }
+
+    /// <summary>
+    /// 人工暂停的 Sidecar 安全策略。暂停等待以控制器发布的动态硬截止为准，
+    /// 心跳正常且仍在持续收敛时绝不能使用固定五秒门限误接管。
+    /// </summary>
+    public static class ManualPauseSafetyPolicy
+    {
+        public const double RequiredNoProgressSeconds = 5.0;
+
+        public static int SelectHardDeadlineMilliseconds(int expectedCyclePeriodMs)
+        {
+            var period = Math.Max(1, expectedCyclePeriodMs);
+            var calculated = Math.Max(30000L, period * 2L + 30000L);
+            return (int)Math.Min(300000L, calculated);
+        }
+
+        public static bool ShouldTakeover(
+            bool manualPausePending,
+            bool manualPauseActive,
+            bool controllerSafetyFault,
+            int energizedChannelCount,
+            long hardDeadlineUtcTicks,
+            long nowUtcTicks,
+            double noProgressSeconds)
+        {
+            if (!manualPausePending && !manualPauseActive) return false;
+            if (controllerSafetyFault) return true;
+            // Paused 是已承诺的安全终态；若仍然带电，则无需再等动态圈周期，
+            // 只给遥测/心跳五秒去抖窗口后立即接管。
+            if (manualPauseActive)
+                return energizedChannelCount > 0 &&
+                       noProgressSeconds >= RequiredNoProgressSeconds;
+            if (!manualPausePending) return false;
+            if (energizedChannelCount <= 0) return false;
+            if (hardDeadlineUtcTicks <= 0 || nowUtcTicks < hardDeadlineUtcTicks) return false;
+            return noProgressSeconds >= RequiredNoProgressSeconds;
+        }
+    }
+
+    public sealed class RecoveryFailureDecision
+    {
+        public string Fingerprint { get; internal set; }
+        public int ConsecutiveCount { get; internal set; }
+        public bool ProcessRelaunchAllowed { get; internal set; }
+    }
+
+    /// <summary>
+    /// 对恢复进程失败做同指纹熔断。硬件通信失败应在恢复进程内处理；
+    /// 该门禁负责兜住初始化/附着等仍需进程重拉的故障，防止无界 Process.Start。
+    /// </summary>
+    public sealed class RecoveryFailureCircuitBreaker
+    {
+        public const int DefaultConsecutiveLimit = 3;
+        private readonly int _limit;
+        private string _lastFingerprint = string.Empty;
+        private int _consecutiveCount;
+
+        public RecoveryFailureCircuitBreaker(int limit = DefaultConsecutiveLimit)
+        {
+            _limit = Math.Max(1, limit);
+        }
+
+        public RecoveryFailureDecision Observe(string reason)
+        {
+            var fingerprint = RecoveryFailurePolicy.BuildFingerprint(reason);
+            if (string.Equals(_lastFingerprint, fingerprint, StringComparison.Ordinal))
+                _consecutiveCount++;
+            else
+            {
+                _lastFingerprint = fingerprint;
+                _consecutiveCount = 1;
+            }
+            return new RecoveryFailureDecision
+            {
+                Fingerprint = fingerprint,
+                ConsecutiveCount = _consecutiveCount,
+                ProcessRelaunchAllowed = _consecutiveCount < _limit
+            };
+        }
+
+        public void Reset()
+        {
+            _lastFingerprint = string.Empty;
+            _consecutiveCount = 0;
+        }
+    }
+
+    public static class RecoveryFailurePolicy
+    {
+        public static string BuildFingerprint(string reason)
+        {
+            var normalized = string.Join(" ", (reason ?? "UnknownFailure")
+                .Replace('\r', ' ')
+                .Replace('\n', ' ')
+                .Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries));
+            return normalized.Length <= 1024 ? normalized : normalized.Substring(0, 1024);
+        }
+
+        public static int SelectInProcessProbeDelaySeconds(int consecutiveAttempt)
+        {
+            if (consecutiveAttempt <= 1) return 5;
+            if (consecutiveAttempt == 2) return 15;
+            if (consecutiveAttempt == 3) return 30;
+            return 60;
+        }
+    }
+
     /// <summary>
     /// Pure takeover decision helpers.  The process host supplies evidence and
     /// performs no policy inference from UI text or persistence counters.
     /// </summary>
     public static class WatchdogTakeoverPolicy
     {
+        public static bool IsManualPauseCommanded(bool manualPauseActive, bool manualPausePending)
+        {
+            return manualPauseActive || manualPausePending;
+        }
+
         public static double SelectFormalProgressTimeoutSeconds(int expectedCyclePeriodMs)
         {
             var periodSeconds = Math.Max(1, expectedCyclePeriodMs) / 1000.0;
-            return Math.Min(3600, Math.Max(90, periodSeconds * 4 + 30));
+            return Math.Min(3600, Math.Max(60, periodSeconds * 3));
+        }
+
+        public static bool IsChannelProgressStalled(
+            bool manualPauseActive,
+            bool active,
+            double progressAgeSeconds,
+            int expectedCyclePeriodMs)
+        {
+            return !manualPauseActive && active &&
+                   progressAgeSeconds >= SelectFormalProgressTimeoutSeconds(expectedCyclePeriodMs);
         }
 
         public static bool ShouldTakeover(
@@ -47,7 +212,9 @@ namespace MTTFTest.Watchdog.Protocol
             bool stopAllActive = false,
             bool logicalResidue = false,
             bool inconsistentRecoveryEvidence = false,
-            bool formalProgressStalled = false)
+            bool formalProgressStalled = false,
+            bool manualPauseActive = false,
+            bool manualPauseUnsafe = false)
         {
             if (sessionRevoked || alreadyTakingOver)
                 return false;
@@ -55,6 +222,10 @@ namespace MTTFTest.Watchdog.Protocol
                 return true;
             if (stopAllActive && stageAgeSeconds >= 5)
                 return true;
+            // A healthy manual pause is a commanded safe state.  Recovery
+            // counters and old recovery timestamps are irrelevant here.
+            if (manualPauseActive)
+                return manualPauseUnsafe;
             if (logicalResidue && stageAgeSeconds >= 5)
                 return true;
             if (inconsistentRecoveryEvidence)
@@ -68,6 +239,155 @@ namespace MTTFTest.Watchdog.Protocol
             if (powerDisablePending && stageAgeSeconds >= 5)
                 return true;
             return recoveryActive && stageAgeSeconds >= 15;
+        }
+    }
+
+    /// <summary>
+    /// Per-channel mechanical progress supervision owned by the sidecar.
+    /// DO commands, peak-cutoff watermarks and runtime-state revisions are
+    /// diagnostics only: they must never reset the mechanical-completion
+    /// deadline, otherwise an actively drawing but non-counting channel can
+    /// remain in a fake-running state forever.
+    /// </summary>
+    public sealed class WatchdogChannelProgressTracker
+    {
+        private readonly object _gate = new object();
+        private readonly Dictionary<int, string> _mechanicalSignatures =
+            new Dictionary<int, string>();
+        private readonly Dictionary<int, long> _mechanicalProgressTimestamps =
+            new Dictionary<int, long>();
+        private readonly Dictionary<int, long> _invariantTimestamps =
+            new Dictionary<int, long>();
+
+        public void Reset()
+        {
+            lock (_gate)
+            {
+                _mechanicalSignatures.Clear();
+                _mechanicalProgressTimestamps.Clear();
+                _invariantTimestamps.Clear();
+            }
+        }
+
+        public string Evaluate(
+            WatchdogHeartbeat heartbeat,
+            IEnumerable<int> eligibleChannels,
+            bool manualPauseCommanded,
+            long nowTimestamp,
+            long timestampFrequency)
+        {
+            if (heartbeat == null || manualPauseCommanded || !heartbeat.RunActive)
+                return null;
+
+            var eligible = new HashSet<int>(eligibleChannels ?? Enumerable.Empty<int>());
+            var frequency = Math.Max(1L, timestampFrequency);
+            lock (_gate)
+            {
+                foreach (var item in heartbeat.ChannelProgress ?? Array.Empty<WatchdogChannelProgress>())
+                {
+                    if (item == null || !eligible.Contains(item.Channel))
+                        continue;
+
+                    if (item.ConsecutiveSoftwareAbortCount >= 2)
+                        return $"ChannelConsecutiveSoftwareAbort:EPB={item.Channel};" +
+                               $"Count={item.ConsecutiveSoftwareAbortCount}";
+
+                    var active = item.TimerActive || item.RunnerActive || item.Energized;
+                    var stateAllowsCycles =
+                        string.Equals(item.State, "Running", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(item.State, "WarningRunning", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(item.State, "Learning", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(item.State, "Qualification", StringComparison.OrdinalIgnoreCase) ||
+                        // A fake-running incident can be mislabeled as system
+                        // recovery while Timer/Runner/DO keep moving.  Recovery
+                        // revisions are not proof of a completed mechanical circle.
+                        string.Equals(item.State, "Recovering", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(item.State, "ResumeChecking", StringComparison.OrdinalIgnoreCase);
+
+                    if (active && stateAllowsCycles)
+                    {
+                        // Only a mechanically completed circle is progress.
+                        // DO/Peak/State can keep changing during the exact fake-running
+                        // failure this supervisor is required to catch.
+                        var mechanicalSignature = string.Format(
+                            CultureInfo.InvariantCulture,
+                            "{0}:{1}",
+                            item.MechanicalCompletedCount,
+                            item.LastMechanicalCompletedUtcTicks);
+                        if (!_mechanicalSignatures.TryGetValue(item.Channel, out var previous) ||
+                            !string.Equals(previous, mechanicalSignature, StringComparison.Ordinal))
+                        {
+                            _mechanicalSignatures[item.Channel] = mechanicalSignature;
+                            _mechanicalProgressTimestamps[item.Channel] = nowTimestamp;
+                        }
+
+                        if (!_mechanicalProgressTimestamps.TryGetValue(
+                                item.Channel,
+                                out var progressSince))
+                        {
+                            progressSince = nowTimestamp;
+                            _mechanicalProgressTimestamps[item.Channel] = nowTimestamp;
+                        }
+
+                        var progressAge = (nowTimestamp - progressSince) / (double)frequency;
+                        if (WatchdogTakeoverPolicy.IsChannelProgressStalled(
+                                false,
+                                true,
+                                progressAge,
+                                heartbeat.ExpectedCyclePeriodMs))
+                            return string.Format(
+                                CultureInfo.InvariantCulture,
+                                "ChannelProgressStalled:EPB={0};AgeSeconds={1:F1};" +
+                                "Timer={2};Runner={3};Energized={4};Mechanical={5};" +
+                                "LastMechanicalUtcTicks={6};DO={7};PeakGeneration={8};Peak={9}",
+                                item.Channel,
+                                progressAge,
+                                item.TimerActive,
+                                item.RunnerActive,
+                                item.Energized,
+                                item.MechanicalCompletedCount,
+                                item.LastMechanicalCompletedUtcTicks,
+                                item.DoCommandSequence,
+                                item.PeakCutoffGeneration,
+                                item.PeakCutoffSequence);
+                    }
+                    else
+                    {
+                        // A later transition back into an active cycle state starts
+                        // a fresh deadline; an intentional idle period is not charged.
+                        _mechanicalSignatures.Remove(item.Channel);
+                        _mechanicalProgressTimestamps.Remove(item.Channel);
+                    }
+
+                    var recovering =
+                        string.Equals(item.State, "Recovering", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(item.State, "ResumeChecking", StringComparison.OrdinalIgnoreCase);
+                    var invariantMismatch = recovering && item.TimerActive != item.RunnerActive;
+                    if (!invariantMismatch)
+                    {
+                        _invariantTimestamps.Remove(item.Channel);
+                    }
+                    else
+                    {
+                        if (!_invariantTimestamps.TryGetValue(item.Channel, out var invariantSince))
+                        {
+                            invariantSince = nowTimestamp;
+                            _invariantTimestamps[item.Channel] = nowTimestamp;
+                        }
+                        var invariantAge = (nowTimestamp - invariantSince) / (double)frequency;
+                        if (invariantAge >= 30)
+                            return string.Format(
+                                CultureInfo.InvariantCulture,
+                                "ChannelRecoveryInvariantStalled:EPB={0};AgeSeconds={1:F1};" +
+                                "Timer={2};Runner={3}",
+                                item.Channel,
+                                invariantAge,
+                                item.TimerActive,
+                                item.RunnerActive);
+                    }
+                }
+            }
+            return null;
         }
     }
 

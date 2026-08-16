@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.IO.Pipes;
@@ -107,9 +108,15 @@ namespace MTTFTest.Watchdog
         private static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
         private readonly WatchdogArguments _args;
         private readonly object _gate = new object();
+        private readonly object _processLaunchGate = new object();
         private readonly CancellationTokenSource _stop = new CancellationTokenSource();
         private readonly object _journalGate = new object();
+        private readonly WatchdogChannelProgressTracker _channelProgressTracker =
+            new WatchdogChannelProgressTracker();
+        private readonly RecoveryFailureCircuitBreaker _recoveryFailureCircuitBreaker =
+            new RecoveryFailureCircuitBreaker();
         private readonly WatchdogJournalStore _journalStore;
+        private readonly RecoveryTransitionWindow _transitionWindow;
         private StreamWriter _writer;
         private WatchdogJournal _journal;
         private long _lastHeartbeatTimestamp = Stopwatch.GetTimestamp();
@@ -126,9 +133,18 @@ namespace MTTFTest.Watchdog
         private int _heartbeatSuspectLogged;
         private int _terminalPublished;
         private long _manualStopIntentTimestamp;
+        private long _manualPauseStartedTimestamp;
+        private long _manualPauseProgressTimestamp = Stopwatch.GetTimestamp();
+        private readonly object _manualPauseProgressGate = new object();
+        private string _manualPauseProgressSignature = string.Empty;
         private int _manualStopEmergencyResent;
         private int _manualStopTakeoverStarted;
+        private int _manualPauseSafetyTakeoverStarted;
         private int _physicalStopConfirmed;
+        private int _transitionActive;
+        private int _operatorTransitionStopStarted;
+        private readonly TaskCompletionSource<bool> _operatorStopAcknowledged =
+            new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         private bool _attached;
 
         private WatchdogHost(WatchdogArguments args)
@@ -142,6 +158,7 @@ namespace MTTFTest.Watchdog
                     args.JournalPolicy,
                     process.Id,
                     process.StartTime.ToUniversalTime().Ticks);
+            _transitionWindow = new RecoveryTransitionWindow(OnTransitionOperatorStopRequested);
             var startedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
             _journal = new WatchdogJournal
             {
@@ -256,6 +273,7 @@ namespace MTTFTest.Watchdog
                     _takeoverStarted = 0;
                     _relaunchStarted = 0;
                     _lastProgressVersion = 0;
+                    _channelProgressTracker.Reset();
                     Interlocked.Exchange(ref _lastProgressTimestamp, Stopwatch.GetTimestamp());
                     Interlocked.Exchange(ref _lastCompletedCycleCount, -1);
                     Interlocked.Exchange(ref _lastFormalProgressTimestamp, Stopwatch.GetTimestamp());
@@ -263,7 +281,24 @@ namespace MTTFTest.Watchdog
                     _journal.PowerDisableTriggered = false;
                     Interlocked.Exchange(ref _lastHeartbeatTimestamp, Stopwatch.GetTimestamp());
                     Record("Attached", message.Session?.RecoveryProcess == true ? "RecoveryProcess" : "MainProcess");
+                    if (message.Session?.RecoveryProcess == true)
+                    {
+                        Interlocked.Exchange(ref _transitionActive, 1);
+                        _transitionWindow.Show(
+                            "主程序已重新启动",
+                            "正在连接恢复会话并加载安全检查点",
+                            0,
+                            _journal.RecoveryAttempt);
+                    }
                     Send(WatchdogMessageType.Attached, "Attached", message.CorrelationId);
+                    break;
+                case WatchdogMessageType.MainUiReady:
+                    Record("MainUiReady", message.Reason ?? "MainWindowShown");
+                    if (Interlocked.CompareExchange(ref _transitionActive, 0, 0) != 0)
+                    {
+                        _transitionWindow.Hide();
+                        Interlocked.Exchange(ref _transitionActive, 0);
+                    }
                     break;
                 case WatchdogMessageType.Heartbeat:
                     if (message.Heartbeat == null) break;
@@ -276,11 +311,29 @@ namespace MTTFTest.Watchdog
                     _journal.LastHeartbeatSequence = message.Heartbeat.Sequence;
                     _journal.LastHeartbeatUtcTicks = DateTime.UtcNow.Ticks;
                     Interlocked.Exchange(ref _lastHeartbeatTimestamp, Stopwatch.GetTimestamp());
+                    if (WatchdogTakeoverPolicy.IsManualPauseCommanded(
+                            message.Heartbeat.ManualPauseActive,
+                            message.Heartbeat.ManualPausePending))
+                        Interlocked.CompareExchange(
+                            ref _manualPauseStartedTimestamp,
+                            Stopwatch.GetTimestamp(),
+                            0);
+                    else
+                        Interlocked.Exchange(ref _manualPauseStartedTimestamp, 0);
+                    TrackManualPauseProgress(message.Heartbeat);
+                    if (Interlocked.CompareExchange(ref _transitionActive, 0, 0) != 0 &&
+                        RecoveryTransitionPolicy.ShouldHide(message.Heartbeat))
+                    {
+                        _transitionWindow.Hide();
+                        Interlocked.Exchange(ref _transitionActive, 0);
+                    }
                     if (message.Heartbeat.RecoveryProgressVersion != _lastProgressVersion)
                     {
                         _lastProgressVersion = message.Heartbeat.RecoveryProgressVersion;
                         Interlocked.Exchange(ref _lastProgressTimestamp, Stopwatch.GetTimestamp());
                     }
+                    if (RecoveryTransitionPolicy.ShouldHide(message.Heartbeat))
+                        _recoveryFailureCircuitBreaker.Reset();
                     if (!string.Equals(message.Heartbeat.Phase, "Formal", StringComparison.OrdinalIgnoreCase) ||
                         message.Heartbeat.CompletedCycleCount !=
                         Interlocked.Read(ref _lastCompletedCycleCount))
@@ -316,14 +369,36 @@ namespace MTTFTest.Watchdog
                 case WatchdogMessageType.RecoveryAttemptFailed:
                     Record("RecoveryAttemptFailed", message.Reason);
                     _attached = false;
-                    BeginRelaunchAfterExit();
+                    var failureDecision = _recoveryFailureCircuitBreaker.Observe(message.Reason);
+                    if (!failureDecision.ProcessRelaunchAllowed ||
+                        _journal.RecoveryAttempt >= RecoveryFailureCircuitBreaker.DefaultConsecutiveLimit)
+                        EnterRelaunchCircuitOpen(
+                            failureDecision.Fingerprint,
+                            failureDecision.ConsecutiveCount,
+                            message.Reason);
+                    else
+                        BeginRelaunchAfterExit();
                     break;
                 case WatchdogMessageType.StopCompleted:
                     Record("StopCompleted", message.StopSummary?.Detail ?? message.Reason);
                     if (_journal.ManualStopRequested)
                     {
-                        PublishTerminal("ManualStopCompleted", message.StopSummary?.Detail ?? message.Reason);
-                        _stop.Cancel();
+                        if (Interlocked.CompareExchange(ref _operatorTransitionStopStarted, 0, 0) != 0)
+                            _operatorStopAcknowledged.TrySetResult(true);
+                        else
+                        {
+                            PublishTerminal("ManualStopCompleted", message.StopSummary?.Detail ?? message.Reason);
+                            _stop.Cancel();
+                        }
+                    }
+                    else if (Interlocked.CompareExchange(
+                                 ref _manualPauseSafetyTakeoverStarted,
+                                 0,
+                                 0) != 0)
+                    {
+                        // The manual-pause safety owner must reopen only in
+                        // idle mode.  Generic recovery relaunch would resume
+                        // the test and violate the operator's pause command.
                     }
                     else
                         BeginRelaunchAfterExit();
@@ -331,6 +406,8 @@ namespace MTTFTest.Watchdog
                 case WatchdogMessageType.PhysicalStopConfirmed:
                     Interlocked.Exchange(ref _physicalStopConfirmed, 1);
                     Record("PhysicalStopConfirmed", message.Reason);
+                    if (Interlocked.CompareExchange(ref _operatorTransitionStopStarted, 0, 0) != 0)
+                        _operatorStopAcknowledged.TrySetResult(true);
                     break;
                 case WatchdogMessageType.ManualStopIntent:
                 case WatchdogMessageType.ManualStopRequested:
@@ -347,6 +424,11 @@ namespace MTTFTest.Watchdog
                 case WatchdogMessageType.ShutdownExpected:
                     _journal.ManualStopRequested = true;
                     Record(message.Type, message.Reason);
+                    if (Interlocked.CompareExchange(ref _operatorTransitionStopStarted, 0, 0) != 0)
+                    {
+                        _operatorStopAcknowledged.TrySetResult(true);
+                        break;
+                    }
                     PublishTerminal(message.Type, message.Reason);
                     _stop.Cancel();
                     break;
@@ -380,6 +462,17 @@ namespace MTTFTest.Watchdog
                     var heartbeat = _journal.LastHeartbeat;
                     var eligibleChannels = GetRecoveryEligibleChannels(heartbeat);
                     var processAlive = IsCurrentProcessAlive();
+                    var manualPauseCommanded = heartbeat != null &&
+                        WatchdogTakeoverPolicy.IsManualPauseCommanded(
+                            heartbeat.ManualPauseActive,
+                            heartbeat.ManualPausePending);
+                    var manualPauseAgeSeconds = manualPauseCommanded &&
+                                                Interlocked.Read(ref _manualPauseStartedTimestamp) > 0
+                        ? ElapsedSeconds(Interlocked.Read(ref _manualPauseStartedTimestamp))
+                        : 0;
+                    var manualPauseNoProgressSeconds = manualPauseCommanded
+                        ? ElapsedSeconds(Interlocked.Read(ref _manualPauseProgressTimestamp))
+                        : 0;
                     var stageSinceUtc = heartbeat?.StopAllActive == true && heartbeat.StopStageStartedUtc > 0
                         ? heartbeat.StopStageStartedUtc
                         : heartbeat?.PowerDisablePending == true && heartbeat.PowerDisableSince > 0
@@ -404,12 +497,12 @@ namespace MTTFTest.Watchdog
                             continue;
                         }
                     }
-                    var logicalResidue = heartbeat != null && !heartbeat.RunActive &&
+                    var logicalResidue = heartbeat != null && !manualPauseCommanded && !heartbeat.RunActive &&
                         (heartbeat.TimerCount > 0 || heartbeat.RunnerCount > 0 ||
                          heartbeat.StopCtsCount > 0 || heartbeat.CyclePauseCtsCount > 0 ||
                          heartbeat.DaqRecoveryCount > 0 || heartbeat.SoftwareRecoveryCount > 0 ||
                          heartbeat.RecoveryOwnerCount > 0);
-                    var inconsistentRecovery = heartbeat != null && !heartbeat.RecoveryActive &&
+                    var inconsistentRecovery = heartbeat != null && !manualPauseCommanded && !heartbeat.RecoveryActive &&
                         (heartbeat.DaqRecoveryCount > 0 || heartbeat.SoftwareRecoveryCount > 0 ||
                          heartbeat.RecoveryOwnerCount > 0);
                     var formalProgressStalled = heartbeat != null &&
@@ -420,6 +513,32 @@ namespace MTTFTest.Watchdog
                         ElapsedSeconds(Interlocked.Read(ref _lastFormalProgressTimestamp)) >=
                         WatchdogTakeoverPolicy.SelectFormalProgressTimeoutSeconds(
                             heartbeat.ExpectedCyclePeriodMs);
+                    var channelSupervisionReason = EvaluateChannelSupervision(
+                        heartbeat,
+                        manualPauseCommanded,
+                        eligibleChannels);
+                    var channelSupervisionFailed =
+                        !string.IsNullOrWhiteSpace(channelSupervisionReason);
+                    var manualPauseDeadlineUtc = heartbeat?.ManualPauseHardDeadlineUtc ?? 0;
+                    if (manualPauseCommanded && manualPauseDeadlineUtc <= 0)
+                    {
+                        var fallbackSeconds = ManualPauseSafetyPolicy.SelectHardDeadlineMilliseconds(
+                            heartbeat?.ExpectedCyclePeriodMs ?? 1) / 1000.0;
+                        manualPauseDeadlineUtc = DateTime.UtcNow
+                            .AddSeconds(Math.Max(0, fallbackSeconds - manualPauseAgeSeconds)).Ticks;
+                    }
+                    var manualPauseEnergizedCount =
+                        heartbeat?.ManualPauseEnergizedChannels?.Length > 0
+                            ? heartbeat.ManualPauseEnergizedChannels.Length
+                            : heartbeat?.EnergizedChannelCount ?? 0;
+                    var manualPauseUnsafe = heartbeat != null && ManualPauseSafetyPolicy.ShouldTakeover(
+                        heartbeat.ManualPausePending,
+                        heartbeat.ManualPauseActive,
+                        heartbeat.ManualPauseSafetyFault,
+                        manualPauseEnergizedCount,
+                        manualPauseDeadlineUtc,
+                        DateTime.UtcNow.Ticks,
+                        manualPauseNoProgressSeconds);
                     var shouldTakeover = WatchdogTakeoverPolicy.ShouldTakeover(
                         IsSessionRevoked(),
                         _journal.ManualStopRequested,
@@ -434,7 +553,9 @@ namespace MTTFTest.Watchdog
                         heartbeat?.StopAllActive == true,
                         logicalResidue,
                         inconsistentRecovery,
-                        formalProgressStalled);
+                        formalProgressStalled || channelSupervisionFailed,
+                        manualPauseCommanded,
+                        manualPauseUnsafe);
                     if (shouldTakeover)
                     {
                         var reason = !processAlive || heartbeatAge >= 5
@@ -445,10 +566,18 @@ namespace MTTFTest.Watchdog
                                 ? "PowerDisablePendingTimeout"
                                 : heartbeat?.OrphanPaused == true && stageAgeSeconds >= 5
                                     ? "OrphanPausedTimeout"
+                                    : channelSupervisionFailed
+                                        ? channelSupervisionReason
                                     : formalProgressStalled
-                                        ? "FormalProgressStalled"
+                                        ? "FormalProgressStalledAggregateFallback"
                                     : "ExternalRecoveryStageStalled";
-                        BeginTakeover(reason);
+                        if (manualPauseCommanded)
+                            BeginManualPauseSafetyTakeover(
+                                heartbeat?.ManualPauseSafetyFault == true
+                                    ? "ManualPauseSafetyFault:" + heartbeat.ManualPauseSafetyFaultReason
+                                    : "ManualPauseHardDeadlineExceeded");
+                        else
+                            BeginTakeover(reason);
                     }
                 }
                 catch (OperationCanceledException) { break; }
@@ -461,8 +590,27 @@ namespace MTTFTest.Watchdog
             if (_journal.ManualStopRequested || IsSessionRevoked() ||
                 Interlocked.CompareExchange(ref _takeoverStarted, 1, 0) != 0) return;
             Record("TakeoverRequested", reason);
+            Interlocked.Exchange(ref _transitionActive, 1);
+            _transitionWindow.Show(
+                "检测到异常，正在安全接管",
+                "正在请求原程序关闭全部输出。原因：" + DescribeRecoveryReason(reason),
+                0,
+                _journal.RecoveryAttempt + 1);
             Send(WatchdogMessageType.RequestStopAll, reason, Guid.NewGuid().ToString("N"));
             _ = Task.Run(() => TakeoverAsync(reason));
+        }
+
+        private string EvaluateChannelSupervision(
+            WatchdogHeartbeat heartbeat,
+            bool manualPauseCommanded,
+            int[] eligibleChannels)
+        {
+            return _channelProgressTracker.Evaluate(
+                heartbeat,
+                eligibleChannels,
+                manualPauseCommanded,
+                Stopwatch.GetTimestamp(),
+                Stopwatch.Frequency);
         }
 
         private void BeginManualStopTakeover(string reason)
@@ -474,8 +622,55 @@ namespace MTTFTest.Watchdog
             _ = Task.Run(() => ManualStopTakeoverAsync(reason));
         }
 
+        private void BeginManualPauseSafetyTakeover(string reason)
+        {
+            if (IsSessionRevoked() ||
+                Interlocked.CompareExchange(ref _takeoverStarted, 1, 0) != 0)
+                return;
+            Interlocked.Exchange(ref _manualPauseSafetyTakeoverStarted, 1);
+            Interlocked.Exchange(ref _transitionActive, 1);
+            Record("ManualPauseSafetyTakeoverRequested", reason);
+            _transitionWindow.Show(
+                "人工暂停安全确认异常",
+                "仅执行全断能并安全重开到空闲态，不会自动续跑。原因：" + DescribeRecoveryReason(reason),
+                0,
+                0);
+            Send(WatchdogMessageType.RequestStopAll, "ManualPauseSafety:" + reason, Guid.NewGuid().ToString("N"));
+            _ = Task.Run(() => ManualPauseSafetyTakeoverAsync(reason));
+        }
+
+        private async Task ManualPauseSafetyTakeoverAsync(string reason)
+        {
+            var deadline = DateTime.UtcNow.AddSeconds(15);
+            while (!IsTransitionOperatorStopInProgress() && !IsSessionRevoked() &&
+                   DateTime.UtcNow < deadline && IsCurrentProcessAlive())
+                await Task.Delay(250).ConfigureAwait(false);
+            if (IsTransitionOperatorStopInProgress() || IsSessionRevoked()) return;
+            if (IsCurrentProcessAlive())
+            {
+                try
+                {
+                    using (var process = Process.GetProcessById(_journal.CurrentPid))
+                    {
+                        if (MatchesCurrentProcess(process))
+                        {
+                            process.Kill();
+                            process.WaitForExit(5000);
+                            Record("ManualPauseOldProcessTerminated", reason);
+                        }
+                    }
+                }
+                catch (Exception ex) { Record("ManualPauseTerminationFailed", ex.Message); }
+            }
+            if (IsTransitionOperatorStopInProgress() || IsSessionRevoked()) return;
+            if (!LaunchIdleRestart("ManualPauseSafety:" + reason)) return;
+            PublishTerminal("ManualPauseIdleRestartLaunched", reason);
+            _stop.Cancel();
+        }
+
         private async Task ManualStopTakeoverAsync(string reason)
         {
+            if (IsTransitionOperatorStopInProgress() || IsSessionRevoked()) return;
             if (IsCurrentProcessAlive())
             {
                 try
@@ -502,31 +697,51 @@ namespace MTTFTest.Watchdog
                 }
                 catch (Exception ex) { Record("ManualStopTerminationFailed", ex.Message); }
             }
-            LaunchIdleRestart(reason);
+            if (IsTransitionOperatorStopInProgress() || IsSessionRevoked()) return;
+            if (!LaunchIdleRestart(reason)) return;
             PublishTerminal("ManualStopIdleRestartLaunched", reason);
             _stop.Cancel();
         }
 
-        private void LaunchIdleRestart(string reason)
+        private bool LaunchIdleRestart(string reason)
         {
-            var arguments = string.Format(
-                CultureInfo.InvariantCulture,
-                "--watchdog-idle-restart {0} --previous-pid {1}",
-                Quote(_args.SessionId),
-                _journal.CurrentPid);
-            var started = Process.Start(new ProcessStartInfo
+            Process started;
+            lock (_processLaunchGate)
             {
-                FileName = _journal.ExecutablePath,
-                Arguments = arguments,
-                WorkingDirectory = Path.GetDirectoryName(_journal.ExecutablePath) ?? Environment.CurrentDirectory,
-                UseShellExecute = false
-            });
-            if (started == null) throw new InvalidOperationException("Idle restart Process.Start returned null.");
+                if (RecoveryTransitionPolicy.MustSuppressAutomaticRestart(
+                        IsTransitionOperatorStopInProgress(),
+                        IsSessionRevoked()))
+                {
+                    Record("IdleRestartSuppressed", "OperatorTransitionStopOrSessionRevoked:" + reason);
+                    return false;
+                }
+                var arguments = string.Format(
+                    CultureInfo.InvariantCulture,
+                    "--watchdog-idle-restart {0} --previous-pid {1}",
+                    Quote(_args.SessionId),
+                    _journal.CurrentPid);
+                started = Process.Start(new ProcessStartInfo
+                {
+                    FileName = _journal.ExecutablePath,
+                    Arguments = arguments,
+                    WorkingDirectory = Path.GetDirectoryName(_journal.ExecutablePath) ?? Environment.CurrentDirectory,
+                    UseShellExecute = false
+                });
+                if (started == null) throw new InvalidOperationException("Idle restart Process.Start returned null.");
+                _journal.CurrentPid = started.Id;
+                _journal.CurrentProcessStartUtcTicks = started.StartTime.ToUniversalTime().Ticks;
+            }
             Record("IdleProcessLaunched", $"PID={started.Id};Reason={reason};AutoResume=false");
+            return true;
         }
 
         private async Task TakeoverAsync(string reason)
         {
+            _transitionWindow.Show(
+                "正在确认设备安全状态",
+                "等待原程序完成全断能并退出。原因：" + DescribeRecoveryReason(reason),
+                0,
+                _journal.RecoveryAttempt + 1);
             var deadline = DateTime.UtcNow.AddSeconds(15);
             while (!_journal.ManualStopRequested && !IsSessionRevoked() && DateTime.UtcNow < deadline)
             {
@@ -594,14 +809,27 @@ namespace MTTFTest.Watchdog
             if (Interlocked.CompareExchange(ref _relaunchStarted, 1, 0) != 0) return;
             while (!_journal.ManualStopRequested && !IsSessionRevoked() && !_stop.IsCancellationRequested)
             {
+                if (_journal.RecoveryAttempt >= RecoveryFailureCircuitBreaker.DefaultConsecutiveLimit)
+                {
+                    EnterRelaunchCircuitOpen(
+                        RecoveryFailurePolicy.BuildFingerprint(reason),
+                        _journal.RecoveryAttempt,
+                        reason);
+                    return;
+                }
                 _journal.RecoveryAttempt++;
                 var attempt = _journal.RecoveryAttempt;
                 var delay = attempt == 1 ? 5 : attempt == 2 ? 15 : attempt == 3 ? 30 : 60;
                 Record("RecoveryBackoff", $"Attempt={attempt};DelaySeconds={delay};Reason={reason}");
-                await Task.Delay(TimeSpan.FromSeconds(delay)).ConfigureAwait(false);
+                await DelayWithTransitionCountdownAsync(delay, attempt, reason).ConfigureAwait(false);
                 if (_journal.ManualStopRequested || IsSessionRevoked()) return;
                 try
                 {
+                    _transitionWindow.Show(
+                        "正在启动试验程序",
+                        "正在创建新的主程序进程并恢复安全检查点",
+                        0,
+                        attempt);
                     var previousPid = _journal.CurrentPid;
                     // AlarmStopped/InterlockStopped 可能是可恢复的软件或基础设施故障，
                     // 不能仅凭旧进程运行态永久排除；持久禁用会落为 NotEnabled，
@@ -616,25 +844,45 @@ namespace MTTFTest.Watchdog
                         "--watchdog-recover {0} --watchdog-pipe {1} --previous-pid {2} --recovery-attempt {3} --exclude-channels {4}",
                         Quote(_args.SessionId), Quote(_args.PipeName), previousPid, attempt,
                         Quote(string.Join(",", excluded)));
-                    var started = Process.Start(new ProcessStartInfo
+                    Process started;
+                    lock (_processLaunchGate)
                     {
-                        FileName = _journal.ExecutablePath,
-                        Arguments = arguments,
-                        WorkingDirectory = Path.GetDirectoryName(_journal.ExecutablePath) ?? Environment.CurrentDirectory,
-                        UseShellExecute = false
-                    });
-                    if (started == null) throw new InvalidOperationException("Process.Start returned null.");
+                        if (_journal.ManualStopRequested ||
+                            RecoveryTransitionPolicy.MustSuppressAutomaticRestart(
+                                IsTransitionOperatorStopInProgress(),
+                                IsSessionRevoked()))
+                        {
+                            Record("RecoveryProcessLaunchSuppressed", "OperatorTransitionStopOrSessionRevoked");
+                            return;
+                        }
+                        started = Process.Start(new ProcessStartInfo
+                        {
+                            FileName = _journal.ExecutablePath,
+                            Arguments = arguments,
+                            WorkingDirectory = Path.GetDirectoryName(_journal.ExecutablePath) ?? Environment.CurrentDirectory,
+                            UseShellExecute = false
+                        });
+                        if (started == null) throw new InvalidOperationException("Process.Start returned null.");
                         _journal.CurrentPid = started.Id;
                         _journal.CurrentProcessStartUtcTicks = started.StartTime.ToUniversalTime().Ticks;
                         _journal.OrphanPauseTriggered = false;
                         _journal.PowerDisableTriggered = false;
+                    }
                     _attached = false;
                     Interlocked.Exchange(ref _lastHeartbeatTimestamp, Stopwatch.GetTimestamp());
                     Record("RecoveryProcessLaunched", $"PID={started.Id};Attempt={attempt}");
                     var attachDeadline = DateTime.UtcNow.AddSeconds(20);
                     while (!_attached && !_journal.ManualStopRequested && !IsSessionRevoked() &&
                            DateTime.UtcNow < attachDeadline && !started.HasExited)
+                    {
+                        var remaining = Math.Max(1, (int)Math.Ceiling((attachDeadline - DateTime.UtcNow).TotalSeconds));
+                        _transitionWindow.Show(
+                            "主程序正在加载",
+                            "等待监控界面连接 Watchdog 恢复会话",
+                            remaining,
+                            attempt);
                         await Task.Delay(250).ConfigureAwait(false);
+                    }
                     if (_attached)
                     {
                         Interlocked.Exchange(ref _takeoverStarted, 0);
@@ -643,10 +891,153 @@ namespace MTTFTest.Watchdog
                     }
                     try { if (!started.HasExited) started.Kill(); } catch { }
                     Record("RecoveryAttachFailed", $"Attempt={attempt}");
+                    _transitionWindow.Show(
+                        "本次启动未能连接",
+                        "主程序未在 20 秒内连接，将按退避策略再次尝试",
+                        0,
+                        attempt);
                 }
-                catch (Exception ex) { Record("RecoveryLaunchFailed", ex.Message); }
+                catch (Exception ex)
+                {
+                    Record("RecoveryLaunchFailed", ex.Message);
+                    _transitionWindow.Show(
+                        "本次启动失败",
+                        "将按退避策略重试：" + ex.GetBaseException().Message,
+                        0,
+                        attempt);
+                }
             }
             Interlocked.Exchange(ref _relaunchStarted, 0);
+        }
+
+        private void EnterRelaunchCircuitOpen(string fingerprint, int consecutiveCount, string detail)
+        {
+            Interlocked.Exchange(ref _relaunchStarted, 0);
+            Interlocked.Exchange(ref _transitionActive, 1);
+            Record(
+                "SafeIdleRecoveryBlocked",
+                $"ProcessRelaunchCircuitOpen;Count={consecutiveCount};Fingerprint={fingerprint};Detail={detail}");
+            _transitionWindow.Show(
+                "自动恢复已停止，设备保持安全",
+                $"连续 {Math.Max(RecoveryFailureCircuitBreaker.DefaultConsecutiveLimit, consecutiveCount)} 次恢复失败，" +
+                "已禁止继续创建新进程。请检查设备通信；可点击下方按钮停止并关闭。\r\n" +
+                (detail ?? string.Empty),
+                0,
+                _journal.RecoveryAttempt);
+        }
+
+        private async Task DelayWithTransitionCountdownAsync(int delaySeconds, int attempt, string reason)
+        {
+            var started = Stopwatch.GetTimestamp();
+            while (!_journal.ManualStopRequested && !IsSessionRevoked() && !_stop.IsCancellationRequested)
+            {
+                var elapsed = (Stopwatch.GetTimestamp() - started) / (double)Stopwatch.Frequency;
+                var remaining = Math.Max(0, (int)Math.Ceiling(delaySeconds - elapsed));
+                if (remaining <= 0) return;
+                _transitionWindow.Show(
+                    "系统将在安全退避后自动重启",
+                    "恢复原因：" + DescribeRecoveryReason(reason),
+                    remaining,
+                    attempt);
+                await Task.Delay(Math.Min(1000, remaining * 1000)).ConfigureAwait(false);
+            }
+        }
+
+        private static string DescribeRecoveryReason(string reason)
+        {
+            if (string.IsNullOrWhiteSpace(reason)) return "未知异常";
+            if (reason.StartsWith("Heartbeat", StringComparison.OrdinalIgnoreCase)) return "主程序心跳无响应";
+            if (reason.StartsWith("ProcessExited", StringComparison.OrdinalIgnoreCase)) return "主程序意外退出";
+            if (reason.StartsWith("FormalProgress", StringComparison.OrdinalIgnoreCase)) return "试验控制进度停滞";
+            if (reason.StartsWith("ExternalRecovery", StringComparison.OrdinalIgnoreCase)) return "内部恢复流程停滞";
+            if (reason.StartsWith("PowerDisable", StringComparison.OrdinalIgnoreCase)) return "程控电源断能确认超时";
+            if (reason.StartsWith("Stop", StringComparison.OrdinalIgnoreCase)) return "安全停止流程超时";
+            return reason;
+        }
+
+        private void TrackManualPauseProgress(WatchdogHeartbeat heartbeat)
+        {
+            var commanded = heartbeat != null && WatchdogTakeoverPolicy.IsManualPauseCommanded(
+                heartbeat.ManualPauseActive,
+                heartbeat.ManualPausePending);
+            var signature = commanded
+                ? string.Join("|", new[]
+                {
+                    heartbeat.ManualPauseStage ?? string.Empty,
+                    heartbeat.ManualPauseProgressVersion.ToString(CultureInfo.InvariantCulture),
+                    heartbeat.ManualPauseSafetyFault ? "Fault" : "Healthy",
+                    string.Join(",", (heartbeat.ManualPauseEnergizedChannels ?? Array.Empty<int>())
+                        .Distinct()
+                        .OrderBy(channel => channel))
+                })
+                : string.Empty;
+            lock (_manualPauseProgressGate)
+            {
+                if (string.Equals(signature, _manualPauseProgressSignature, StringComparison.Ordinal)) return;
+                _manualPauseProgressSignature = signature;
+                Interlocked.Exchange(ref _manualPauseProgressTimestamp, Stopwatch.GetTimestamp());
+            }
+        }
+
+        private void OnTransitionOperatorStopRequested()
+        {
+            lock (_processLaunchGate)
+            {
+                if (Interlocked.CompareExchange(ref _operatorTransitionStopStarted, 1, 0) != 0) return;
+                _journal.ManualStopRequested = true;
+            }
+            Interlocked.Exchange(ref _manualStopIntentTimestamp, Stopwatch.GetTimestamp());
+            Record("OperatorCanceledAutomaticRecovery", "TransitionWindowButton");
+            Send(
+                WatchdogMessageType.RequestStopAll,
+                "OperatorCanceledAutomaticRecovery",
+                Guid.NewGuid().ToString("N"));
+            _ = Task.Run(CompleteTransitionOperatorStopAsync);
+        }
+
+        private bool IsTransitionOperatorStopInProgress()
+        {
+            return Interlocked.CompareExchange(ref _operatorTransitionStopStarted, 0, 0) != 0;
+        }
+
+        private async Task CompleteTransitionOperatorStopAsync()
+        {
+            var deadline = DateTime.UtcNow.AddSeconds(15);
+            while (DateTime.UtcNow < deadline && IsCurrentProcessAlive() &&
+                   !_operatorStopAcknowledged.Task.IsCompleted)
+                await Task.Delay(250).ConfigureAwait(false);
+
+            if (IsCurrentProcessAlive())
+            {
+                try
+                {
+                    using (var process = Process.GetProcessById(_journal.CurrentPid))
+                    {
+                        if (WatchdogProcessIdentityPolicy.CanKillOldProcess(
+                                sessionRevoked: false,
+                                manualStopRequested: true,
+                                currentIdentityMatches: MatchesCurrentProcess(process)))
+                        {
+                            process.Kill();
+                            process.WaitForExit(5000);
+                            Record("OperatorStopProcessTerminated", $"PID={process.Id}");
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Record("OperatorStopTerminationFailed", ex.GetBaseException().Message);
+                }
+            }
+
+            const string markerReason = "OperatorCanceledAutomaticRecoveryFromTransitionWindow";
+            try { WatchdogControlMarker.WriteLocal(_args.SessionId, markerReason); }
+            catch (Exception ex) { Record("OperatorStopLocalMarkerFailed", ex.Message); }
+            try { WatchdogControlMarker.WriteProject(_args.JournalDirectory, _args.SessionId, markerReason); }
+            catch (Exception ex) { Record("OperatorStopProjectMarkerFailed", ex.Message); }
+            PublishTerminal("OperatorRecoveryCanceled", markerReason);
+            try { _transitionWindow.Hide(); } catch { }
+            _stop.Cancel();
         }
 
         private bool IsCurrentProcessAlive()
@@ -830,6 +1221,8 @@ namespace MTTFTest.Watchdog
 
         public void Dispose()
         {
+            try { _transitionWindow.Hide(); } catch { }
+            try { _transitionWindow.Dispose(); } catch { }
             try { _journalStore.Flush(TimeSpan.FromSeconds(2)); } catch { }
             try { _journalStore.Dispose(); } catch { }
             try { _stop.Dispose(); } catch { }
