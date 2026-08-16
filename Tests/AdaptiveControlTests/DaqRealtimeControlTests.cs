@@ -792,6 +792,7 @@ namespace AdaptiveControlTests
 
         private static void IndependentDaqLivenessSupervisorPolicy()
         {
+            var state = new DaqLivenessDeviceState();
             var stale = new DaqFreshnessSnapshot
             {
                 Device = "Dev1",
@@ -801,36 +802,41 @@ namespace AdaptiveControlTests
                 LastProducedSequence = 100,
                 LastProcessedSequence = 100
             };
-            var trip = EpbManager.EvaluateDaqLiveness(true, true, false, stale, 0, 100);
-            Assert(trip.Trip && trip.Code == "DaqCallbackStale",
-                "带电DAQ回调陈旧未由独立监督器触发");
+            var warn = state.Observe(true, true, false, stale, 100, 1000, 2000);
+            Assert(!warn.Trip && warn.Warn && warn.Code == "DaqLivenessWarn",
+                "120ms空窗没有保持为仅Warn策略");
             Assert(!EpbManager.EvaluateDaqLiveness(true, false, false, stale, 0, 100).Trip,
                 "未带电设备被独立监督器错误断言为故障");
             Assert(!EpbManager.EvaluateDaqLiveness(true, true, true, stale, 0, 100).Trip,
                 "既有恢复上下文期间重复发布DAQ存活故障");
-            stale.CallbackAgeMs = 99;
-            Assert(!EpbManager.EvaluateDaqLiveness(true, true, false, stale, 0, 100).Trip,
+            stale.CallbackAgeMs = 700;
+            Assert(!state.Observe(true, true, false, stale, 100, 1000, 2000).Trip,
                 "100ms门槛以内的新鲜回调被错误停机");
+            stale.CallbackAgeMs = 1200;
+            var suspect = state.Observe(true, true, false, stale, 100, 1000, 2000);
+            Assert(suspect.Suspect && !suspect.Trip,
+                "1200ms没有进入Suspect或被错误Trip");
+            stale.CallbackAgeMs = 1999;
+            Assert(!state.Observe(true, true, false, stale, 100, 1000, 2000).Trip,
+                "2000ms内恢复窗口被错误Trip");
+            stale.CallbackAgeMs = 2100;
+            Assert(!state.Observe(true, true, false, stale, 100, 1000, 2000).Trip,
+                "Trip首次确认即触发");
+            Assert(!state.Observe(true, true, false, stale, 100, 1000, 2000).Trip,
+                "Trip第二次确认即触发");
+            var trip = state.Observe(true, true, false, stale, 100, 1000, 2000);
+            Assert(trip.Trip && trip.TripConfirmations == 3,
+                "超过2000ms且连续三次确认未触发局部恢复");
+
+            stale.CallbackAgeMs = 10;
+            stale.LastProducedSequence++;
             stale.CallbackGapEventCount = 4;
-            stale.LastCallbackGapIntervalMs = 120;
-            var recoveredBeforeWatchdog = EpbManager.EvaluateDaqLiveness(
-                true,
-                true,
-                false,
-                stale,
-                observedGapEventCount: 3,
-                staleThresholdMs: 100);
-            Assert(recoveredBeforeWatchdog.Trip &&
-                   recoveredBeforeWatchdog.Code == "DaqCallbackGap",
-                "DAQ回调先恢复、监督器后执行时丢失了带电期间120ms历史空窗");
-            Assert(!EpbManager.EvaluateDaqLiveness(
-                       true,
-                       true,
-                       false,
-                       stale,
-                       observedGapEventCount: 4,
-                       staleThresholdMs: 100).Trip,
-                "已经消费的DAQ历史空窗事件被重复发布");
+            stale.LastCallbackGapIntervalMs = 1200;
+            var recoveredBeforeWatchdog = state.Observe(
+                true, true, false, stale, 100, 1000, 2000);
+            Assert(!recoveredBeforeWatchdog.Trip && recoveredBeforeWatchdog.RecoveredGap &&
+                   recoveredBeforeWatchdog.Code == "RecoveredGap",
+                "已恢复1200ms历史空窗被事后重建DAQ");
         }
 
         private static void DaqLivenessLogTransitionDedup()
@@ -981,8 +987,8 @@ namespace AdaptiveControlTests
                 freshness,
                 observedGapEventCount: 0,
                 staleThresholdMs: 100);
-            Assert(energizedTrip.Trip && energizedTrip.Code == "DaqCallbackGap",
-                "带电且尚无空窗基线时真实回调空窗未触发Trip");
+            Assert(!energizedTrip.Trip,
+                "120ms历史空窗被错误触发DAQ重建");
         }
 
         private static void RecoveryBoundaryContradictionFirstWins()
@@ -2420,7 +2426,10 @@ namespace AdaptiveControlTests
                 .ToArray();
             Assert(duplicateReady.Wait(1000), "重复OFF并发调用未准备完成");
             duplicateStart.Set();
-            Assert(SpinWait.SpinUntil(() => worker.CoalescedRequests >= duplicates.Length, 1000),
+            // CI/现场诊断机线程池可能正同时运行高负载长时套件；所有调用已经通过
+            // duplicateReady 证明进入测试任务，给线程池足够时间执行 InvokeHi，
+            // 但仍严格验证最终只产生一个硬件 WorkItem。
+            Assert(SpinWait.SpinUntil(() => worker.CoalescedRequests >= duplicates.Length, 5000),
                 $"重复OFF未全部合并：Coalesced={worker.CoalescedRequests}");
             Assert(worker.PendingWorkItems == 1,
                 $"同通道重复OFF错误扩大队列：Pending={worker.PendingWorkItems}");

@@ -60,6 +60,7 @@
     <Compile Include="PswTcpClientTimeoutTests.cs" />
     <Compile Include="RecoveryCoordinationTests.cs" />
     <Compile Include="RecoveryHardeningTests.cs" />
+    <Compile Include="StopWatchdogHardeningTests.cs" />
     <Compile Include="WatchdogJournalStorageTests.cs" />
     <Compile Include="NonRecoverableAlarmPolicyTests.cs" />
   </ItemGroup>

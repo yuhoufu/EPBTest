@@ -55,38 +55,38 @@ namespace AdaptiveControlTests
                 Device = "Dev1",
                 Generation = 12,
                 CallbackGapEventCount = 5,
-                LastCallbackGapIntervalMs = 1172.0,
-                CallbackAgeMs = 0.15,
-                IsFresh = true
+                LastCallbackGapIntervalMs = 2172.0,
+                CallbackAgeMs = 2172.0,
+                LastProducedSequence = 10,
+                IsFresh = false
             };
-            var productionDecision = EpbManager.EvaluateDaqLiveness(
-                batchActive: true,
-                deviceEnergized: true,
-                recoveryActive: false,
-                freshness,
-                observedGapEventCount: 0,
-                staleThresholdMs: 100);
-            Assert(productionDecision.Trip && productionDecision.Code == "DaqCallbackGap",
-                "生产DAQ存活判据未识别历史1172ms空窗");
-            Assert(!EpbManager.EvaluateDaqLiveness(
-                       true, true, true, freshness, 0, 100).Trip,
+            var liveness = new DaqLivenessDeviceState();
+            Assert(!liveness.Observe(true, true, false, freshness, 100, 1000, 2000).Trip &&
+                   !liveness.Observe(true, true, false, freshness, 100, 1000, 2000).Trip,
+                "生产DAQ存活判据未等待三次确认");
+            var productionDecision = liveness.Observe(
+                true, true, false, freshness, 100, 1000, 2000);
+            Assert(productionDecision.Trip && productionDecision.Code == "DaqCallbackStale",
+                "生产DAQ存活判据未识别持续超过2000ms的停摆");
+            Assert(!liveness.Observe(
+                       true, true, true, freshness, 100, 1000, 2000).Trip,
                 "生产DAQ判据在已有恢复上下文时重复触发");
 
             var coordinator = new FakeRecoveryCoordinator();
             var trigger = new DaqIncident(
                 "Dev1",
-                lastCallbackGapMs: 1172.0,
-                currentCallbackAgeMs: 0.15,
-                thresholdMs: 100.0,
+                lastCallbackGapMs: 2172.0,
+                currentCallbackAgeMs: 2172.0,
+                thresholdMs: 2000.0,
                 affectedChannels: new[] { 4, 5 });
 
             coordinator.Begin(trigger);
 
-            Assert(DaqIncidentPolicy.IsRecoverableGap(
+            Assert(!DaqIncidentPolicy.IsRecoverableGap(
                        trigger.LastCallbackGapMs,
                        trigger.CurrentCallbackAgeMs,
                        trigger.ThresholdMs),
-                "历史DAQ空窗未被识别为恢复触发条件");
+                "持续停摆不应误走已恢复历史空窗的兼容判据");
             Assert(coordinator.Events.SequenceEqual(new[]
                    {
                        "RecoveryContextCreated",
@@ -246,9 +246,9 @@ namespace AdaptiveControlTests
                        recoveryActive: true,
                        orphanPaused: false,
                        powerDisablePending: false,
-                       stageAgeSeconds: 59.9,
+                       stageAgeSeconds: 14.9,
                        hasRecoveryEligibleChannels: true),
-                "Watchdog生产判据提前触发60秒恢复停滞接管");
+                "Watchdog生产判据提前触发15秒恢复停滞接管");
 
             var detector = new FakeOrphanPauseDetector(orphanTimeoutSeconds: 5);
             Assert(!detector.Evaluate(
@@ -309,11 +309,11 @@ namespace AdaptiveControlTests
                        manualStopRequested: false,
                        explicitLifecycleEnd: false),
                 "ManualStop撤权marker未阻止Watchdog自动恢复");
-            Assert(SessionRevocationPolicy.IsRevoked(
+            Assert(!SessionRevocationPolicy.IsRevoked(
                        markerExists: false,
                        manualStopRequested: true,
                        explicitLifecycleEnd: false),
-                "跨进程ManualStop状态未阻止Watchdog自动恢复");
+                "ManualStopIntent错误撤销了Watchdog超时Kill权限");
             Assert(SessionRevocationPolicy.IsRevoked(
                        markerExists: false,
                        manualStopRequested: false,
@@ -646,12 +646,8 @@ namespace AdaptiveControlTests
 
             internal void Begin(DaqIncident incident)
             {
-                if (!DaqIncidentPolicy.IsRecoverableGap(
-                        incident.LastCallbackGapMs,
-                        incident.CurrentCallbackAgeMs,
-                        incident.ThresholdMs))
-                    return;
-
+                // 调用方已经通过100/1000/2000状态机的三次持续故障确认；
+                // 此 fake 只验证确认后的恢复边界与断能启动顺序。
                 Context = new RecoveryContext();
                 Events.Add("RecoveryContextCreated");
                 Events.Add("FrozenBoundaryCaptured");

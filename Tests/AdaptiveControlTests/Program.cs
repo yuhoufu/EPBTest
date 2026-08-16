@@ -42,6 +42,14 @@ namespace AdaptiveControlTests
                     return 0;
                 }
                 if (args.Length == 1 &&
+                    args[0].Equals("--power-supply", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += PowerSupplyCoordinatorTests.RunAll();
+                    _passed += PswTcpClientTimeoutTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
                     args[0].Equals("--historical-storage", StringComparison.OrdinalIgnoreCase))
                 {
                     _passed += HistoricalStorageBudgetTests.RunAll();
@@ -52,6 +60,13 @@ namespace AdaptiveControlTests
                     args[0].Equals("--recovery-hardening", StringComparison.OrdinalIgnoreCase))
                 {
                     _passed += RecoveryHardeningTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
+                    args[0].Equals("--stop-watchdog-hardening", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += StopWatchdogHardeningTests.RunAll();
                     Console.WriteLine($"PASS {_passed}/{_passed}");
                     return 0;
                 }
@@ -169,6 +184,7 @@ namespace AdaptiveControlTests
                 _passed += PowerSupplyTelemetryRecorderTests.RunAll();
                 _passed += HistoricalStorageBudgetTests.RunAll();
                 _passed += WatchdogJournalStorageTests.RunAll();
+                _passed += StopWatchdogHardeningTests.RunAll();
                 Run("正常夹紧", NormalClamp);
                 Run("学习尾部提前量后预测夹紧", LearnedTailLeadPredictsClamp);
                 Run("低斜率不提前误触发", LowSlopeDoesNotPredictEarly);
@@ -334,6 +350,8 @@ namespace AdaptiveControlTests
                 Run("2000Hz样本时间严格递增5000 ticks", TwoKilohertzSampleTimestamps);
                 Run("DAQ追赶回调不造成相邻批时间重叠", CatchUpCallbackDoesNotOverlapBatches);
                 Run("峰值令牌拒绝跨圈和跨运行身份", PeakCaptureTokenRejectsCrossCycleIdentity);
+                Run("峰值证据水印不受正负1.5秒系统校时影响", PeakWatermarkIgnoresWallClockJump);
+                Run("峰值封口允许120至250毫秒后台排空", PeakDrainBudgetCoversObservedQueueDelay);
                 Run("DAQ重叠回调保持时间分配与入队同序", OverlappingCallbacksCommitInTimestampOrder);
                 Run("采集重启重建高精度时基", HighResolutionClockReset);
                 Run("新项目清零且不改旧项目", NewProjectIsIsolatedAndReset);
@@ -1724,6 +1742,50 @@ namespace AdaptiveControlTests
             stale.TestRunId = Guid.NewGuid();
             Assert(!TwoDeviceAiAcquirer.IsPeakCaptureIdentityMatch(active, stale),
                 "跨运行峰值令牌未被拒绝");
+        }
+
+        private static void PeakWatermarkIgnoresWallClockJump()
+        {
+            const long frequency = 10000000;
+            const long start = 50000000;
+            foreach (var wallJumpMs in new[] { -1500, 1500 })
+            {
+                var wallBefore = DateTime.UtcNow;
+                var wallAfter = wallBefore.AddMilliseconds(wallJumpMs);
+                var watermark = new PeakCaptureWatermark();
+                watermark.Arm(7, 100, start);
+                Assert(watermark.Observe(7, 101, start + 100000),
+                    "开始后的同代次样本未纳入证据窗");
+                watermark.Freeze(7, 102, start + 1000000);
+                Assert(!watermark.Observe(8, 999, start + 9999999),
+                    "不同DAQ代次样本混入当前峰值窗");
+                Assert(!watermark.IsCutoffCovered,
+                    "不同代次样本错误推进截止水印");
+                Assert(!watermark.Observe(7, 103, start + 1100000),
+                    "截止后的样本被错误纳入峰值");
+                Assert(watermark.IsCutoffCovered,
+                    $"墙钟跳变{wallJumpMs}ms改变了单调水印覆盖判定：{wallBefore:O}->{wallAfter:O}");
+                Assert(watermark.GetEvidenceTailLagMs(frequency) >= 0,
+                    "单调尾差出现负值");
+            }
+        }
+
+        private static void PeakDrainBudgetCoversObservedQueueDelay()
+        {
+            Assert(TwoDeviceAiAcquirer.SelectPeakDrainTimeoutMs(100, 16) >= 250,
+                "100ms旧参数仍截断合法的120~250ms后台排队");
+            Assert(TwoDeviceAiAcquirer.SelectPeakDrainTimeoutMs(0, 60) >= 290,
+                "排空预算未随DAQ批周期扩展");
+            Assert(TwoDeviceAiAcquirer.SelectPeakDrainTimeoutMs(5000, 16) == 1000,
+                "峰值排空预算缺少有界上限");
+
+            var watermark = new PeakCaptureWatermark();
+            const long frequency = 10000000;
+            watermark.Arm(3, 10, frequency);
+            watermark.Freeze(3, 11, frequency + 1000000);
+            // 模拟后台在220ms后才处理到截止后的下一批；到达延迟不改变样本单调时间。
+            watermark.Observe(3, 12, frequency + 1100000);
+            Assert(watermark.IsCutoffCovered, "220ms后台延迟后的同代次水印未能正常封口");
         }
 
         private static void LegacyShortOffTimeoutIsMigrated()

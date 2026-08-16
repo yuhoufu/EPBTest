@@ -29,8 +29,30 @@ namespace AdaptiveControlTests
             Run("陈旧PSU限流回读不能确认双源过流", StaleTelemetryIsNotFreshFaultEvidence, ref passed);
             Run("停机等待在途遥测完成后再关闭输出", ShutdownWaitsForInFlightTelemetry, ref passed);
             Run("三个并发OFF请求共用一个安全任务", ConcurrentShutdownRequestsShareOneOwner, ref passed);
+            Run("单组断线不误报关闭且不阻塞其他组", SafetyDisableIsStructuredAndIsolated, ref passed);
             Run("电源故障只联动对应组且新预检自动清旧锁存", FaultIsScopedAndFreshPreflightClearsLatch, ref passed);
             return passed;
+        }
+
+        private static void SafetyDisableIsStructuredAndIsolated()
+        {
+            var config = NewConfig();
+            var clients = NewClients(config);
+            clients[1].FailConnect = true;
+            using (var coordinator = NewCoordinator(config, clients))
+            {
+                var results = coordinator.DisableAllForSafetyAsync(
+                        "FaultInjectionDisconnectedGroup",
+                        CancellationToken.None)
+                    .GetAwaiter().GetResult();
+                var failed = results.Single(item => item.ElectricalGroupId == 1);
+                Assert(!failed.ConfirmedOff &&
+                       failed.Outcome != PowerSafetyDisableOutcome.ConfirmedOff,
+                    "客户端未连接被误报为输出已关闭");
+                Assert(results.Where(item => item.ElectricalGroupId != 1)
+                           .All(item => item.ConfirmedOff),
+                    "一个组连接失败阻塞了其他电源组独立关闭");
+            }
         }
 
         private static void InvalidSafetyConfigIsRejected()
@@ -483,11 +505,14 @@ namespace AdaptiveControlTests
             public ManualResetEventSlim SnapshotReadStarted { get; } = new ManualResetEventSlim(false);
             public ManualResetEventSlim AllowSnapshotRead { get; } = new ManualResetEventSlim(false);
             public bool BlockOutputOff { get; set; }
+            public bool FailConnect { get; set; }
             public ManualResetEventSlim OutputOffStarted { get; } = new ManualResetEventSlim(false);
             public ManualResetEventSlim AllowOutputOff { get; } = new ManualResetEventSlim(false);
 
             public Task<PswSnapshot> ConnectAsync(CancellationToken token)
             {
+                if (FailConnect)
+                    throw new InvalidOperationException("Injected connect failure");
                 IsConnected = true;
                 return Task.FromResult(Snapshot());
             }

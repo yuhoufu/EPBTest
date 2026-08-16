@@ -14,6 +14,7 @@ namespace AdaptiveControlTests
             Run("16.9A不计永久过冲且17.0A计数", OvershootBoundaryIsInclusive, ref passed);
             Run("低平台第8个完整提交圈才锁存", LowPlateauLatchesAfterEighthCommit, ref passed);
             Run("过冲第8个完整提交圈才锁存", OvershootLatchesAfterEighthCommit, ref passed);
+            Run("已完成永久报警使用不可变触发圈号", CompletedAlarmKeepsConfirmedTerminalCycle, ref passed);
             Run("反向或落盘失败不得提交异常圈", IncompleteCycleCannotCommitEvidence, ref passed);
             Run("四类客户报警使用持久禁用策略", CustomerFaultsDisableWithoutRecovery, ref passed);
             Run("持久禁用只改Enabled且保留已落盘圈数", PersistentDisablePreservesDiskProgress, ref passed);
@@ -101,6 +102,18 @@ namespace AdaptiveControlTests
             catch (InvalidOperationException) { threw = true; }
             Assert(threw && profile.ConsecutiveForwardStallCount == 0,
                 "不完整圈被伪计为正式低平台圈");
+        }
+
+        private static void CompletedAlarmKeepsConfirmedTerminalCycle()
+        {
+            Assert(EpbManager.ResolveAlarmSnapshotCycle(33552, 0, 0) == 33552,
+                "正式圈提交后活动圈已清除时丢失永久报警触发圈号");
+            Assert(EpbManager.ResolveAlarmSnapshotCycle(33552, 33553, 33551) == 33552,
+                "明确触发圈被迟到活动圈或旧冻结圈覆盖");
+            Assert(EpbManager.ResolveAlarmSnapshotCycle(0, 42, 41) == 42,
+                "运行中报警未优先冻结当前活动圈");
+            Assert(EpbManager.ResolveAlarmSnapshotCycle(0, 0, 41) == 41,
+                "异步报警未保留已冻结圈号");
         }
 
         private static void CustomerFaultsDisableWithoutRecovery()

@@ -780,6 +780,17 @@ namespace EpbDiskWriterTests
                     $"报警最近10圈不完整：CSV={csv.Length}, BIN={bin.Length}");
                 for (var cycle = 1; cycle <= 10; cycle++)
                     AssertCsvCycle(exportDir, 8, cycle, 4);
+
+                // 真实报警停机链在 AlarmSnapshots 成功后，还必须生成一个明确包含
+                // 触发终态圈的 Latest 包，不能只依赖无约束的普通最近圈导出。
+                var stopExporter = (IStopRecentCycleEvidenceExporter)recorder;
+                stopExporter.FlushRecentForStop(8, 10, 10);
+                var latestRoot = Path.Combine(policy.IndexAndExportPath, "Latest", "EPB8");
+                var latestPackage = Directory.GetDirectories(latestRoot).Single();
+                Assert(Directory.GetFiles(latestPackage, "*.csv").Length == 10 &&
+                       Directory.GetFiles(latestPackage, "*.bin").Length == 10,
+                    "报警停机后的Latest最近10圈不完整");
+                AssertCsvCycle(latestPackage, 8, 10, 4);
             });
         }
 
