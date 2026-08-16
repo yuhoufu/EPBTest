@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -38,6 +39,7 @@ namespace AdaptiveControlTests
                     using (var server = new SilentScpiServer())
                     {
                         server.Start();
+                        var phaseLog = new RecordingPswLog();
                         var client = new PswTcpClient(
                             new PswEndpoint
                             {
@@ -47,6 +49,7 @@ namespace AdaptiveControlTests
                                 Port = server.Port,
                                 Terminator = "\\r\\n"
                             },
+                            phaseLog,
                             commandTimeoutMs: 100,
                             connectTimeoutMs: 1000);
                         try
@@ -55,6 +58,15 @@ namespace AdaptiveControlTests
                                 client.ConnectAsync(CancellationToken.None).GetAwaiter().GetResult());
                             Assert(server.WaitForCommand(1000), "模拟电源未收到*IDN?查询");
                             Assert(!client.IsConnected, "查询超时后仍错误报告连接有效");
+                            Assert(phaseLog.Messages.Any(message =>
+                                       message.Contains("PowerCommPhase Phase=ScpiResponseFirstByte") &&
+                                       message.Contains("State=TimedOut") &&
+                                       message.Contains("ElapsedMs=")),
+                                "SCPI首字节超时未记录分阶段耗时与TimedOut终态");
+                            Assert(phaseLog.Messages.Any(message =>
+                                       message.Contains("PowerCommPhase Phase=ConnectSession") &&
+                                       message.Contains("State=TimedOut")),
+                                "连接会话未记录超时总耗时终态");
                         }
                         finally
                         {
@@ -147,6 +159,19 @@ namespace AdaptiveControlTests
                 try { _serverTask?.Wait(2000); } catch { }
                 _commandReceived.Dispose();
                 _release.Dispose();
+            }
+        }
+
+        private sealed class RecordingPswLog : IPswLog
+        {
+            private readonly ConcurrentQueue<string> _messages =
+                new ConcurrentQueue<string>();
+
+            internal string[] Messages => _messages.ToArray();
+
+            public void Write(PswLogEntry entry)
+            {
+                if (entry != null) _messages.Enqueue(entry.Message);
             }
         }
     }

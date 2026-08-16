@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
+using System.Linq;
+using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading;
@@ -14,8 +17,14 @@ namespace PowerSupply.Core
         private readonly IPswLog _log;
         private readonly int _connectTimeoutMs;
         private readonly int _commandTimeoutMs;
+        private readonly object _phaseTraceGate = new object();
+        private readonly Queue<string> _recentPowerPhases = new Queue<string>();
+        private const int RecentPowerPhaseCapacity = 256;
+        private DateTime _lastPowerPhaseAggregateUtc = DateTime.UtcNow;
+        private long _successfulPowerPhaseCount;
+        private double _maximumSuccessfulPowerPhaseMs;
         private TcpClient _client;
-        private StreamReader _reader;
+        private NetworkStream _stream;
         private StreamWriter _writer;
 
         public PswTcpClient(PswEndpoint endpoint, IPswLog log = null, int connectTimeoutMs = 3000, int commandTimeoutMs = 2000)
@@ -28,7 +37,7 @@ namespace PowerSupply.Core
         }
 
         public PswEndpoint Endpoint { get; }
-        public bool IsConnected => _client != null && _client.Connected && _reader != null && _writer != null;
+        public bool IsConnected => _client != null && _client.Connected && _stream != null && _writer != null;
         public string Identity { get; private set; } = string.Empty;
         public bool IsVerifiedPsw { get; private set; }
         public PswCapabilities Capabilities { get; private set; } = new PswCapabilities();
@@ -36,15 +45,72 @@ namespace PowerSupply.Core
         public async Task<PswSnapshot> ConnectAsync(CancellationToken token)
         {
             await _gate.WaitAsync(token).ConfigureAwait(false);
+            var sessionStarted = Stopwatch.GetTimestamp();
+            LogPowerPhase("ConnectSession", "Started", 0, Endpoint.Id.ToString());
             try
             {
                 DisposeTransport();
                 var client = new TcpClient { NoDelay = true };
                 _client = client;
-                await AwaitWithTimeout(client.ConnectAsync(Endpoint.Host, Endpoint.Port), _connectTimeoutMs, token,
-                    $"连接 {Endpoint.Host}:{Endpoint.Port}").ConfigureAwait(false);
+                IPAddress address;
+                if (!IPAddress.TryParse(Endpoint.Host, out address))
+                {
+                    var dnsStarted = Stopwatch.GetTimestamp();
+                    LogPowerPhase("DnsResolve", "Started", 0, Endpoint.Host);
+                    try
+                    {
+                        var addresses = await AwaitWithTimeout(
+                                Dns.GetHostAddressesAsync(Endpoint.Host),
+                                _connectTimeoutMs,
+                                token,
+                                $"DNS {Endpoint.Host}")
+                            .ConfigureAwait(false);
+                        address = addresses.FirstOrDefault(item => item.AddressFamily == AddressFamily.InterNetwork) ??
+                                  addresses.FirstOrDefault();
+                        if (address == null) throw new SocketException((int)SocketError.HostNotFound);
+                        LogPowerPhase(
+                            "DnsResolve",
+                            "Completed",
+                            ElapsedMs(dnsStarted),
+                            address.ToString());
+                    }
+                    catch (Exception ex)
+                    {
+                        LogPowerPhase(
+                            "DnsResolve",
+                            PhaseFailureState(ex),
+                            ElapsedMs(dnsStarted),
+                            FailureDetail(Endpoint.Host, ex));
+                        throw;
+                    }
+                }
+                else
+                {
+                    LogPowerPhase("DnsResolve", "SkippedIpLiteral", 0, address.ToString());
+                }
+                var connectStarted = Stopwatch.GetTimestamp();
+                LogPowerPhase("TcpConnect", "Started", 0, address + ":" + Endpoint.Port);
+                try
+                {
+                    await AwaitWithTimeout(client.ConnectAsync(address, Endpoint.Port), _connectTimeoutMs, token,
+                        $"连接 {Endpoint.Host}:{Endpoint.Port}").ConfigureAwait(false);
+                    LogPowerPhase(
+                        "TcpConnect",
+                        "Completed",
+                        ElapsedMs(connectStarted),
+                        address + ":" + Endpoint.Port);
+                }
+                catch (Exception ex)
+                {
+                    LogPowerPhase(
+                        "TcpConnect",
+                        PhaseFailureState(ex),
+                        ElapsedMs(connectStarted),
+                        FailureDetail(address + ":" + Endpoint.Port, ex));
+                    throw;
+                }
                 var stream = client.GetStream();
-                _reader = new StreamReader(stream, Encoding.ASCII, false, 1024, true);
+                _stream = stream;
                 _writer = new StreamWriter(stream, Encoding.ASCII, 1024, true)
                 {
                     AutoFlush = true,
@@ -56,10 +122,21 @@ namespace PowerSupply.Core
                 Capabilities = PswCapabilities.FromIdentity(Identity);
                 if (IsVerifiedPsw)
                     Capabilities = await ReadProtectionRangesCoreAsync(token).ConfigureAwait(false);
-                return await ReadSnapshotCoreAsync(token).ConfigureAwait(false);
+                var snapshot = await ReadSnapshotCoreAsync(token).ConfigureAwait(false);
+                LogPowerPhase(
+                    "ConnectSession",
+                    "Completed",
+                    ElapsedMs(sessionStarted),
+                    "Identity=" + Identity);
+                return snapshot;
             }
-            catch
+            catch (Exception ex)
             {
+                LogPowerPhase(
+                    "ConnectSession",
+                    PhaseFailureState(ex),
+                    ElapsedMs(sessionStarted),
+                    FailureDetail("Connect", ex));
                 DisposeTransport();
                 throw;
             }
@@ -213,9 +290,8 @@ namespace PowerSupply.Core
         private async Task<string> QueryCoreAsync(string command, CancellationToken token)
         {
             await WriteCoreAsync(command, token).ConfigureAwait(false);
-            var response = await AwaitWithTimeout(_reader.ReadLineAsync(), _commandTimeoutMs, token, command).ConfigureAwait(false);
+            var response = await ReadResponseLineCoreAsync(command, token).ConfigureAwait(false);
             if (response == null) throw new IOException($"{command} 查询期间连接被远端关闭。");
-            Log(PswLogDirection.Receive, response);
             return response.TrimEnd('\r', '\n');
         }
 
@@ -223,9 +299,82 @@ namespace PowerSupply.Core
         {
             EnsureConnected();
             token.ThrowIfCancellationRequested();
-            Log(PswLogDirection.Transmit, command);
-            await AwaitWithTimeout(_writer.WriteLineAsync(command), _commandTimeoutMs, token, command).ConfigureAwait(false);
-            await AwaitWithTimeout(_writer.FlushAsync(), _commandTimeoutMs, token, command).ConfigureAwait(false);
+            var started = Stopwatch.GetTimestamp();
+            LogPowerPhase("ScpiWrite", "Started", 0, command);
+            try
+            {
+                await AwaitWithTimeout(_writer.WriteLineAsync(command), _commandTimeoutMs, token, command).ConfigureAwait(false);
+                await AwaitWithTimeout(_writer.FlushAsync(), _commandTimeoutMs, token, command).ConfigureAwait(false);
+                LogPowerPhase("ScpiWrite", "Completed", ElapsedMs(started), command);
+            }
+            catch (Exception ex)
+            {
+                LogPowerPhase(
+                    "ScpiWrite",
+                    PhaseFailureState(ex),
+                    ElapsedMs(started),
+                    FailureDetail(command, ex));
+                throw;
+            }
+        }
+
+        private async Task<string> ReadResponseLineCoreAsync(string command, CancellationToken token)
+        {
+            EnsureConnected();
+            var started = Stopwatch.GetTimestamp();
+            var firstByteLogged = false;
+            var bytes = new List<byte>(128);
+            LogPowerPhase("ScpiResponse", "WaitStarted", 0, command);
+            try
+            {
+                while (true)
+                {
+                    var remaining = _commandTimeoutMs - (int)Math.Ceiling(ElapsedMs(started));
+                    if (remaining <= 0)
+                        throw new TimeoutException($"{command} 响应超时（{_commandTimeoutMs} ms）。");
+                    var one = new byte[1];
+                    var read = await AwaitWithTimeout(
+                            _stream.ReadAsync(one, 0, 1),
+                            remaining,
+                            token,
+                            command + " response")
+                        .ConfigureAwait(false);
+                    if (read == 0)
+                    {
+                        LogPowerPhase(
+                            firstByteLogged ? "ScpiResponseLine" : "ScpiResponseFirstByte",
+                            "Failed",
+                            ElapsedMs(started),
+                            command + ";Error=RemoteClosedConnection");
+                        return null;
+                    }
+                    if (!firstByteLogged)
+                    {
+                        firstByteLogged = true;
+                        LogPowerPhase("ScpiResponseFirstByte", "Completed", ElapsedMs(started), command);
+                    }
+                    if (one[0] == (byte)'\n') break;
+                    if (one[0] != (byte)'\r') bytes.Add(one[0]);
+                    if (bytes.Count > 65536)
+                        throw new InvalidDataException(command + " 响应行超过 65536 字节。");
+                }
+                var response = Encoding.ASCII.GetString(bytes.ToArray());
+                LogPowerPhase(
+                    "ScpiResponseLine",
+                    "Completed",
+                    ElapsedMs(started),
+                    command + ";Bytes=" + bytes.Count);
+                return response;
+            }
+            catch (Exception ex)
+            {
+                LogPowerPhase(
+                    firstByteLogged ? "ScpiResponseLine" : "ScpiResponseFirstByte",
+                    PhaseFailureState(ex),
+                    ElapsedMs(started),
+                    FailureDetail(command + ";Bytes=" + bytes.Count, ex));
+                throw;
+            }
         }
 
         private async Task<T> ExecuteLockedAsync<T>(Func<CancellationToken, Task<T>> action, CancellationToken token)
@@ -314,13 +463,75 @@ namespace PowerSupply.Core
             catch { }
         }
 
+        private void LogPowerPhase(string phase, string state, double elapsedMs, string detail)
+        {
+            var message =
+                $"PowerCommPhase Phase={phase} State={state} ElapsedMs={elapsedMs:F3} " +
+                $"Endpoint={Endpoint.Host}:{Endpoint.Port} Detail={detail}";
+            var failure = string.Equals(state, "TimedOut", StringComparison.OrdinalIgnoreCase) ||
+                          string.Equals(state, "Canceled", StringComparison.OrdinalIgnoreCase) ||
+                          string.Equals(state, "Failed", StringComparison.OrdinalIgnoreCase);
+            string aggregate = null;
+            string recentTrace = null;
+            lock (_phaseTraceGate)
+            {
+                _recentPowerPhases.Enqueue(DateTime.UtcNow.ToString("O") + " " + message);
+                while (_recentPowerPhases.Count > RecentPowerPhaseCapacity)
+                    _recentPowerPhases.Dequeue();
+                if (!failure)
+                {
+                    _successfulPowerPhaseCount++;
+                    _maximumSuccessfulPowerPhaseMs = Math.Max(_maximumSuccessfulPowerPhaseMs, elapsedMs);
+                    var now = DateTime.UtcNow;
+                    if ((now - _lastPowerPhaseAggregateUtc).TotalSeconds >= 60)
+                    {
+                        aggregate =
+                            $"PowerCommAggregate WindowSeconds={(now - _lastPowerPhaseAggregateUtc).TotalSeconds:F0} " +
+                            $"SuccessPhases={_successfulPowerPhaseCount} MaxElapsedMs={_maximumSuccessfulPowerPhaseMs:F3} " +
+                            $"Endpoint={Endpoint.Host}:{Endpoint.Port}";
+                        _lastPowerPhaseAggregateUtc = now;
+                        _successfulPowerPhaseCount = 0;
+                        _maximumSuccessfulPowerPhaseMs = 0;
+                    }
+                }
+                else
+                    recentTrace = string.Join(" || ", _recentPowerPhases.ToArray());
+            }
+            // 成功阶段只保留内存环形缓冲，并每分钟输出一条聚合；失败立即输出且附带
+            // 最近阶段，避免正常2kHz运行把逐命令日志放大为每分钟数MiB。
+            if (!string.IsNullOrWhiteSpace(aggregate))
+                Log(PswLogDirection.Information, aggregate);
+            if (failure)
+            {
+                Log(PswLogDirection.Error, message);
+                Log(PswLogDirection.Error, "PowerCommRecentTrace " + recentTrace);
+            }
+        }
+
+        private static double ElapsedMs(long startedTicks) =>
+            (Stopwatch.GetTimestamp() - startedTicks) * 1000.0 / Stopwatch.Frequency;
+
+        private static string PhaseFailureState(Exception exception) =>
+            exception is TimeoutException ? "TimedOut" :
+            exception is OperationCanceledException ? "Canceled" : "Failed";
+
+        private static string FailureDetail(string detail, Exception exception)
+        {
+            var error = exception?.GetBaseException();
+            var message = (error?.Message ?? "Unknown")
+                .Replace('\r', ' ')
+                .Replace('\n', ' ');
+            return (detail ?? string.Empty) + ";Error=" +
+                   (error?.GetType().Name ?? "Unknown") + ":" + message;
+        }
+
         private void DisposeTransport()
         {
             try { _writer?.Dispose(); } catch { }
-            try { _reader?.Dispose(); } catch { }
+            try { _stream?.Dispose(); } catch { }
             try { _client?.Close(); } catch { }
             _writer = null;
-            _reader = null;
+            _stream = null;
             _client = null;
         }
 
