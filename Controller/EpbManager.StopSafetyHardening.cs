@@ -19,6 +19,48 @@ namespace Controller
 
         public bool RequiresProcessRestart => Volatile.Read(ref _processRestartRequired) != 0;
 
+        /// <summary>
+        /// 仅供全新 Watchdog 恢复进程使用：硬件暂不可用期间本进程从未获得过上电授权；
+        /// 当一次新的完整 StopAll 预检已证明物理安全、持久化和逻辑清场全部成立时，
+        /// 可清除先前失败探测留下的进程重启锁存。旧运行进程不得调用此入口。
+        /// </summary>
+        public bool TryClearRecoveryProcessRestartLatchAfterVerifiedPreflight(
+            StopSafetyResult safety,
+            out string rejectionReason)
+        {
+            if (safety == null || !safety.CanRestartInProcess || safety.TimedOut)
+            {
+                rejectionReason = "最新安全预检尚未完整确认，不能清除恢复进程锁存。";
+                return false;
+            }
+            lock (_stopSafetyGate)
+            {
+                if (_stopSafetyTask != null && !_stopSafetyTask.IsCompleted)
+                {
+                    rejectionReason = "仍有在途 StopAll，不能清除恢复进程锁存。";
+                    return false;
+                }
+                if (_lastStopSafetyResult == null ||
+                    !string.Equals(
+                        _lastStopSafetyResult.CorrelationId,
+                        safety.CorrelationId,
+                        StringComparison.Ordinal) ||
+                    !_lastStopSafetyResult.CanRestartInProcess)
+                {
+                    rejectionReason = "最新 StopAll 身份或结果不匹配，不能清除恢复进程锁存。";
+                    return false;
+                }
+                if (!CaptureLogicalQuiescenceSnapshot().IsQuiescent)
+                {
+                    rejectionReason = "控制对象尚未完全清场，不能清除恢复进程锁存。";
+                    return false;
+                }
+                Interlocked.Exchange(ref _processRestartRequired, 0);
+            }
+            rejectionReason = string.Empty;
+            return true;
+        }
+
         public void RevokeExecutionForExternalRecovery(string reason)
         {
             Interlocked.Exchange(ref _processRestartRequired, 1);
@@ -239,6 +281,7 @@ namespace Controller
             }
 
             Interlocked.Exchange(ref _processRestartRequired, 1);
+            ObserveLateSafetyTask(coreTask, "StopAllCoreAfterHardDeadline", transactionId);
             AdvanceStopSafetyProgress(
                 generation,
                 StopSafetyStage.TimedOut,
@@ -252,10 +295,20 @@ namespace Controller
             {
                 var allOff = Task.WhenAll(offCompletions);
                 var offDone = await Task.WhenAny(allOff, Task.Delay(1000)).ConfigureAwait(false);
+                if (offDone != allOff)
+                    ObserveLateSafetyTask(
+                        allOff,
+                        "StopAllPhysicalOffAfterObservationDeadline",
+                        transactionId);
                 offConfirmed = offDone == allOff && allOff.Status == TaskStatus.RanToCompletion &&
                                allOff.Result.All(item => item?.Result == true);
             }
             var powerDone = await Task.WhenAny(powerDisableTask, Task.Delay(1000)).ConfigureAwait(false);
+            if (powerDone != powerDisableTask)
+                ObserveLateSafetyTask(
+                    powerDisableTask,
+                    "StopAllPowerDisableAfterObservationDeadline",
+                    transactionId);
             var powerConfirmed = powerDone == powerDisableTask &&
                                  powerDisableTask.Status == TaskStatus.RanToCompletion;
             try
@@ -313,6 +366,32 @@ namespace Controller
                 $"Outcome={timeoutResult.Outcome}; Logical={logical}",
                 "EPB");
             return timeoutResult;
+        }
+
+        private void ObserveLateSafetyTask(Task task, string operation, Guid transactionId)
+        {
+            if (task == null || task.IsCompleted) return;
+            _taskSupervisor.Observe(task, operation, _activeBatchId);
+            var observedUtc = DateTime.UtcNow;
+            var logTask = task.ContinueWith(
+                completed =>
+                {
+                    var status = completed.IsCanceled
+                        ? "Canceled"
+                        : completed.IsFaulted
+                            ? "Faulted"
+                            : "Completed";
+                    var error = completed.Exception?.GetBaseException().Message ?? string.Empty;
+                    _log.Warn(
+                        $"硬截止后的迟到安全任务已终态化：Task={operation}; " +
+                        $"Transaction={transactionId:N}; Status={status}; " +
+                        $"LateMs={(DateTime.UtcNow - observedUtc).TotalMilliseconds:F0}; Error={error}",
+                        "EPB-STOP");
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+            _taskSupervisor.Observe(logTask, operation + ".LateCompletionLog", _activeBatchId);
         }
     }
 }

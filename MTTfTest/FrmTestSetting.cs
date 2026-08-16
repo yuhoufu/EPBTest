@@ -246,9 +246,10 @@ namespace MtEmbTest
                 }
 
                 if (total < 0) total = 0;
-                int left = Math.Max(0, total - record.RunCount);
+                var completed = record.EffectiveMechanicalCycleCount;
+                int left = (int)Math.Max(0L, total - completed);
 
-                view.ProgressLabel.Text = $"{record.RunCount}/{left}";
+                view.ProgressLabel.Text = $"{completed}/{left}";
             }
 
             // 3) 状态灯：参考 FrmEpbMainMonitor.UpdateEpbSummaryPanel

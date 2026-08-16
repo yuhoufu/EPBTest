@@ -25,6 +25,8 @@ namespace Controller
         private int[] _batchPausedChannels = Array.Empty<int>();
         private long _qualificationGeneration;
         private Func<IReadOnlyDictionary<string, long>, CancellationToken, Task> _pausePersistenceFlush;
+        private readonly object _manualPauseProgressGate = new object();
+        private ManualPauseProgressSnapshot _manualPauseProgress = new ManualPauseProgressSnapshot();
 
         public event Action<BatchPauseStateChangedEvent> BatchPauseStateChanged;
 
@@ -46,6 +48,34 @@ namespace Controller
             ? (DateTime?)null
             : _batchPausedUtc;
 
+        public static int SelectManualPauseHardDeadlineMilliseconds(int periodMs)
+        {
+            var period = Math.Max(1, periodMs);
+            var calculated = Math.Max(30000L, period * 2L + 30000L);
+            return (int)Math.Min(300000L, calculated);
+        }
+
+        public ManualPauseProgressSnapshot CaptureManualPauseProgress()
+        {
+            lock (_manualPauseProgressGate)
+            {
+                var energized = _manualPauseProgress.Active
+                    ? _channelRuntimeStateStore.Snapshot()
+                        .Where(state => _manualPauseProgress.Channels.Contains(state.Channel) && state.Energized)
+                        .Select(state => state.Channel)
+                        .Distinct()
+                        .OrderBy(channel => channel)
+                        .ToArray()
+                    : Array.Empty<int>();
+                if (!_manualPauseProgress.EnergizedChannels.SequenceEqual(energized))
+                {
+                    _manualPauseProgress.EnergizedChannels = energized;
+                    _manualPauseProgress.ProgressVersion++;
+                }
+                return _manualPauseProgress.Clone();
+            }
+        }
+
         /// <summary>
         /// 批次优雅暂停：先同时封住所有通道的下一圈，等待在途圈自然结束，
         /// 再确认电机关闭、液压释放、持久化排空并导出最近10圈。
@@ -53,6 +83,8 @@ namespace Controller
         public async Task PauseBatchGracefullyAsync(CancellationToken token = default)
         {
             await _pauseResumeGate.WaitAsync(token).ConfigureAwait(false);
+            var hardDeadlineMs = SelectManualPauseHardDeadlineMilliseconds(PeriodMs);
+            var pauseStartedUtc = DateTime.UtcNow;
             try
             {
                 if (!IsBatchSessionActive)
@@ -71,6 +103,10 @@ namespace Controller
                     throw new InvalidOperationException("正式阶段尚未建立，启动定位或学习阶段不能暂停。");
 
                 var channels = timers.Select(pair => pair.Key).ToArray();
+                BeginManualPauseProgress(
+                    channels,
+                    pauseStartedUtc,
+                    pauseStartedUtc.AddMilliseconds(hardDeadlineMs));
                 SetBatchPauseState(BatchPauseState.PausePending, channels, "等待所有通道完成当前圈");
                 foreach (var channel in channels)
                     PublishChannelRuntimeState(
@@ -83,10 +119,15 @@ namespace Controller
 
                 var pauseAll = Task.WhenAll(timers.Select(pair =>
                     pair.Value.PauseAfterCurrentCycleAsync("BatchGracefulPause")));
-                var timeoutMs = Math.Max(30000, Math.Min(180000, PeriodMs * 2 + 30000));
-                var timeout = Task.Delay(timeoutMs, token);
+                var remainingMs = Math.Max(
+                    1,
+                    (int)Math.Ceiling((_manualPauseProgress.HardDeadlineUtc - DateTime.UtcNow).TotalMilliseconds));
+                var timeout = Task.Delay(remainingMs, token);
                 if (await Task.WhenAny(pauseAll, timeout).ConfigureAwait(false) != pauseAll)
-                    throw new TimeoutException($"优雅暂停等待当前圈结束超时（{timeoutMs}ms）。");
+                {
+                    token.ThrowIfCancellationRequested();
+                    throw new TimeoutException($"优雅暂停等待当前圈结束超过动态硬截止（{hardDeadlineMs}ms）。");
+                }
                 await pauseAll.ConfigureAwait(false);
 
                 var interrupted = channels.Where(channel =>
@@ -100,6 +141,13 @@ namespace Controller
                         $"暂停过程中 EPB[{string.Join(",", interrupted)}] 发生停机或联锁，" +
                         "已取消暂停并升级为立即安全停止。");
 
+                AdvanceManualPauseProgress(
+                    ManualPauseStage.PhysicalOffConfirm,
+                    "当前圈已收口，正在确认电机、电源和液压安全");
+                SetBatchPauseState(
+                    BatchPauseState.PausePending,
+                    channels,
+                    "当前圈已完成，正在确认全断能");
                 await CompletePauseSafetyBoundaryAsync(channels, forceHydraulicGroups: true, token)
                     .ConfigureAwait(false);
                 _batchPausedUtc = DateTime.UtcNow;
@@ -120,11 +168,13 @@ namespace Controller
                         ex => _log?.Warn($"批次暂停观察者异常，已隔离：{ex.Message}", "EPB"));
                 }
 
+                AdvanceManualPauseProgress(ManualPauseStage.Completed, "全部通道已安全暂停");
                 SetBatchPauseState(BatchPauseState.Paused, channels, "全部通道已安全暂停");
                 FlushPersistentLog();
             }
             catch (Exception ex)
             {
+                MarkManualPauseSafetyFault(ex.Message);
                 SetBatchPauseState(BatchPauseState.Stopping, _batchPausedChannels, ex.Message);
                 var continuityCompromised =
                     ex is DaqDataContinuityCompromisedException ||
@@ -490,6 +540,17 @@ namespace Controller
                 await Task.WhenAll(selected.Select(HydraulicMarkReleaseAsync)).ConfigureAwait(false);
             }
 
+            if (CurrentBatchPauseState == BatchPauseState.PausePending)
+            {
+                AdvanceManualPauseProgress(
+                    ManualPauseStage.PersistenceDrain,
+                    "全断能命令已提交，正在排空 Raw、SQLite 与最近圈证据");
+                SetBatchPauseState(
+                    BatchPauseState.PausePending,
+                    selected,
+                    "全断能已提交，正在完成数据持久化边界");
+            }
+
             var flushRaw = Volatile.Read(ref _pausePersistenceFlush);
             if (flushRaw == null)
                 throw new InvalidOperationException("暂停Raw最终落盘回调未注册。");
@@ -610,6 +671,7 @@ namespace Controller
                 {
                     var groupChannels = pair.Value
                         .Where(channel => !quarantined.ContainsKey(channel))
+                        .Where(channel => !IsMechanicalTargetReached(channel))
                         .OrderBy(x => x)
                         .ToArray();
                     if (groupChannels.Length == 0) continue;
@@ -703,6 +765,7 @@ namespace Controller
                 throw new InvalidOperationException($"EPB[{channel}] Runner 已丢失。");
 
             var runId = _activeBatchId;
+            var learningEvidence = CaptureLearningEvidenceContext(runId);
             var modelBeforeLogicalCycle = runner.CaptureAdaptiveProfile();
             var cycleNumber = 0;
             BeginLearningProfileTransaction(channel);
@@ -712,6 +775,13 @@ namespace Controller
                 attempts = await SoftwareSelfHealingLoop.RunAsync(
                     async (attempt, attemptToken) =>
                     {
+                        if (IsMechanicalTargetReached(channel))
+                        {
+                            _log?.Info(
+                                $"EPB[{channel}] 资格重试前已达到机械目标圈，禁止再做一圈。",
+                                "EPB");
+                            return;
+                        }
                         await EnsurePowerSupplyReadyForChannelsAsync(new[] { channel }, attemptToken)
                             .ConfigureAwait(false);
                         if (attempt > 1)
@@ -740,12 +810,20 @@ namespace Controller
 
                             var outcome = await runner.RunOneAdaptiveLearningAsync(PeriodMs, attemptToken)
                                 .ConfigureAwait(false);
+                            if (outcome.MechanicalCycleCompleted)
+                                OnMechanicalCycleCompleted(
+                                    channel,
+                                    CycleAttemptKind.Qualification,
+                                    cycleNumber);
                             if (outcome.Kind == Adaptive.EpbCycleOutcomeKind.Canceled)
                                 throw new OperationCanceledException(attemptToken);
                             if (outcome.Kind == Adaptive.EpbCycleOutcomeKind.SoftwareRecovery)
+                            {
+                                RecordWatchdogSoftwareAbort(channel);
                                 throw new SoftwareSelfHealingRetryException(
                                     $"EPB[{channel}] 资格圈遇到软件瞬态；" +
                                     $"本次尝试作废后重做。Reason={outcome.Reason}");
+                            }
                             if (!outcome.IsSuccess &&
                                 outcome.Reason?.IndexOf(
                                     "DaqSampleStale",
@@ -755,6 +833,7 @@ namespace Controller
                                         channel,
                                         cycleNumber,
                                         runId,
+                                        learningEvidence,
                                         qualificationOrdinal,
                                         "qualification_failed",
                                         requireValidEvidence: true,
@@ -769,11 +848,13 @@ namespace Controller
                             if (!outcome.IsSuccess)
                                 throw new InvalidOperationException(
                                     $"EPB[{channel}] 资格圈失败：{outcome.Stage}/{outcome.Reason}");
+                            _watchdogConsecutiveSoftwareAborts[channel] = 0;
 
                             await SealLearningCycleAsync(
                                     channel,
                                     cycleNumber,
                                     runId,
+                                    learningEvidence,
                                     qualificationOrdinal,
                                     "qualification_completed",
                                     requireValidEvidence: true,
@@ -784,6 +865,7 @@ namespace Controller
                             {
                                 SaveAdaptiveProfileWithReceipt(runner.CaptureAdaptiveProfile());
                                 UpdateLearningAttemptReceiptStatus(
+                                    learningEvidence,
                                     channel, qualificationOrdinal, attempt, "Successful", string.Empty,
                                     qualification: true);
                             }
@@ -794,6 +876,7 @@ namespace Controller
                                 // fails.  Runner state is restored first.
                                 RestoreRunnerAdaptiveProfile(runner, modelBeforeLogicalCycle);
                                 TryUpdateLearningAttemptReceiptStatusBestEffort(
+                                    learningEvidence,
                                     channel,
                                     qualificationOrdinal,
                                     attempt,
@@ -810,6 +893,7 @@ namespace Controller
                                 // the runner still holds the failed model.
                                 RestoreRunnerAdaptiveProfile(runner, modelBeforeLogicalCycle);
                                 TryUpdateLearningAttemptReceiptStatusBestEffort(
+                                    learningEvidence,
                                     channel,
                                     qualificationOrdinal,
                                     attempt,
@@ -831,6 +915,7 @@ namespace Controller
                                         channel,
                                         cycleNumber,
                                         runId,
+                                        learningEvidence,
                                         qualificationOrdinal,
                                         "qualification_failed",
                                         softwareAttempt: attempt)
@@ -846,6 +931,7 @@ namespace Controller
                                         channel,
                                         cycleNumber,
                                         runId,
+                                        learningEvidence,
                                         qualificationOrdinal,
                                         "qualification_canceled",
                                         softwareAttempt: attempt)
@@ -864,6 +950,7 @@ namespace Controller
                                         channel,
                                         cycleNumber,
                                         runId,
+                                        learningEvidence,
                                         qualificationOrdinal,
                                         "qualification_failed",
                                         softwareAttempt: attempt)
@@ -940,6 +1027,55 @@ namespace Controller
                 BatchPauseStateChanged,
                 update,
                 ex => _log?.Warn($"批次暂停状态观察者异常，已隔离：{ex.Message}", "EPB"));
+        }
+
+        private void BeginManualPauseProgress(
+            int[] channels,
+            DateTime startedUtc,
+            DateTime hardDeadlineUtc)
+        {
+            lock (_manualPauseProgressGate)
+            {
+                _manualPauseProgress = new ManualPauseProgressSnapshot
+                {
+                    Active = true,
+                    Stage = ManualPauseStage.CurrentCycleDrain,
+                    ProgressVersion = _manualPauseProgress.ProgressVersion + 1,
+                    StartedUtc = startedUtc,
+                    StageStartedUtc = startedUtc,
+                    HardDeadlineUtc = hardDeadlineUtc,
+                    Channels = channels?.Distinct().OrderBy(channel => channel).ToArray() ?? Array.Empty<int>(),
+                    EnergizedChannels = Array.Empty<int>(),
+                    Detail = "等待所有通道完成当前圈"
+                };
+            }
+        }
+
+        private void AdvanceManualPauseProgress(ManualPauseStage stage, string detail)
+        {
+            lock (_manualPauseProgressGate)
+            {
+                _manualPauseProgress.Active = stage != ManualPauseStage.Completed;
+                _manualPauseProgress.Stage = stage;
+                _manualPauseProgress.StageStartedUtc = DateTime.UtcNow;
+                _manualPauseProgress.ProgressVersion++;
+                _manualPauseProgress.Detail = detail ?? string.Empty;
+                if (stage == ManualPauseStage.Completed)
+                    _manualPauseProgress.EnergizedChannels = Array.Empty<int>();
+            }
+        }
+
+        private void MarkManualPauseSafetyFault(string reason)
+        {
+            lock (_manualPauseProgressGate)
+            {
+                _manualPauseProgress.Active = true;
+                _manualPauseProgress.Stage = ManualPauseStage.SafetyFault;
+                _manualPauseProgress.StageStartedUtc = DateTime.UtcNow;
+                _manualPauseProgress.ProgressVersion++;
+                _manualPauseProgress.SafetyFault = true;
+                _manualPauseProgress.Detail = reason ?? "人工暂停安全边界失败";
+            }
         }
 
         public bool CanAcknowledgeChannelAlarm(int channel, out string rejectionReason)
@@ -1051,10 +1187,7 @@ namespace Controller
                     deadlineLinked.Token,
                     ownership.Token);
                 var recoveryToken = ownershipLinked.Token;
-                var remaining = Math.Max(
-                    0,
-                    _cfg.Test.GetEpbRecord(channel).TotalCount -
-                    _cfg.Test.GetEpbRecord(channel).RunCount);
+                var remaining = GetRemainingMechanicalTargetCycles(channel);
                 if (remaining <= 0)
                     throw new InvalidOperationException($"EPB[{channel}] 已无剩余正式圈数。");
 
@@ -1422,10 +1555,7 @@ namespace Controller
                     var sharedFirstSlot = SelectSharedFormalRejoinSlot(t0, nowUtc, PeriodMs);
                     var remainingByChannel = members.ToDictionary(
                         channel => channel,
-                        channel => Math.Max(
-                            0,
-                            _cfg.Test.GetEpbRecord(channel).TotalCount -
-                            _cfg.Test.GetEpbRecord(channel).RunCount));
+                        GetRemainingMechanicalTargetCycles);
                     var restartMembers = members
                         .Where(channel => remainingByChannel[channel] > 0)
                         .ToArray();
@@ -1510,6 +1640,14 @@ namespace Controller
             bool allowSystemFaultReset,
             bool publishRuntimeStateAndObserver)
         {
+            remainingRuns = GetRemainingMechanicalTargetCycles(channel);
+            if (remainingRuns <= 0)
+            {
+                FinalizeChannelAfterNaturalCompletion(
+                    channel,
+                    Recorder?.GetLastCycleNumber(channel) ?? 0);
+                return;
+            }
             var pressureGroup = channel <= 6 ? 1 : 2;
             _activeFormalT0ByPressureGroup[pressureGroup] = t0;
             var firstCallbackUtc = t0.AddMilliseconds(firstSlot * (double)PeriodMs);
@@ -1635,14 +1773,24 @@ namespace Controller
                 var controlSucceeded = IsFormalControlSucceeded(
                     ok,
                     cycleOutcome.IsSuccess);
+                if (controlSucceeded)
+                    _watchdogConsecutiveSoftwareAborts[channel] = 0;
+                if (cycleOutcome.MechanicalCycleCompleted)
+                    OnMechanicalCycleCompleted(
+                        channel,
+                        CycleAttemptKind.FormalRecovery,
+                        cycleNumber);
                 var controlNeedsSoftwareRecovery =
                     cycleOutcome.Kind ==
                     Adaptive.EpbCycleOutcomeKind.SoftwareRecovery;
                 if (controlNeedsSoftwareRecovery)
+                {
+                    RecordWatchdogSoftwareAbort(channel);
                     ReportFormalControlSoftwareRecovery(
                         channel,
                         cycleNumber,
                         cycleOutcome.Reason);
+                }
 
                 var persistenceCommitted = false;
                 try
@@ -1700,6 +1848,8 @@ namespace Controller
                         "CycleFinalizer",
                         ex);
                 }
+                var mechanicalTargetReached = cycleOutcome.MechanicalCycleCompleted &&
+                                              IsMechanicalTargetReached(channel);
                 if (IsFormalCycleCountable(
                         controlSucceeded,
                         persistenceCommitted))
@@ -1711,11 +1861,16 @@ namespace Controller
                             channel,
                             cycleNumber,
                             committedCycles);
-                    if (!nonRecoverableAlarm && committedCycles >= remainingRuns)
+                    if (!nonRecoverableAlarm && mechanicalTargetReached)
                     {
                         FinalizeChannelAfterNaturalCompletion(channel, cycleNumber);
                         timer.Stop();
                     }
+                }
+                else if (mechanicalTargetReached && !IsAlarmStopRequested(channel))
+                {
+                    FinalizeChannelAfterNaturalCompletion(channel, cycleNumber);
+                    timer.Stop();
                 }
                 ReleaseCyclePauseCts(channel, cyclePauseCts);
                 return controlSucceeded && persistenceCommitted;

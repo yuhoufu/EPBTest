@@ -831,6 +831,8 @@ namespace IO.NI
             public ClockDisciplinedSampleTimeline Timeline { get; }
             public double NominalSampleRateHz { get; set; }
             public DaqCallbackProducerGate ProducerGate { get; } = new DaqCallbackProducerGate();
+            public WallClockStepDetector WallClockStepDetector { get; } =
+                new WallClockStepDetector();
         }
 
         // 动态置零偏移（参数名 -> offset，工程值单位）
@@ -3072,6 +3074,15 @@ namespace IO.NI
 
                 // 回调进入时刻：用于计算“回调间隔/到达延迟”（与数据时间 current 区分）
                 var arrivalUtc = DateTime.UtcNow;
+                var wallClockStep = state.WallClockStepDetector.Observe(
+                    arrivalUtc,
+                    callbackEntrySwTick,
+                    Stopwatch.Frequency);
+                if (wallClockStep != null)
+                    LogWallClockStepDetected(
+                        device,
+                        generation,
+                        wallClockStep);
 
                 var endReadStartSwTick = Stopwatch.GetTimestamp();
                 var raw = reader.EndReadMultiSample(ar); // [ch, n]
@@ -3413,6 +3424,48 @@ namespace IO.NI
                 for (int i = s; i < e; i++) sum += buf[i];
                 return sum / (e - s);
             }
+        }
+
+        private void LogWallClockStepDetected(
+            string device,
+            long generation,
+            WallClockStep step)
+        {
+            if (step == null) return;
+            var isDev1 = string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase);
+            var produced = isDev1 ? _sequenceDev1.LastAllocated : _sequenceDev2.LastAllocated;
+            var accepted = isDev1 ? _sequenceDev1.LastAccepted : _sequenceDev2.LastAccepted;
+            var processed = _callbackTimingDiag.TryGetValue(device, out var diag)
+                ? Interlocked.Read(ref diag.LastProcessedSequence)
+                : 0;
+            var diskPublished = Interlocked.Read(ref isDev1
+                ? ref _diskPublishedSequenceDev1
+                : ref _diskPublishedSequenceDev2);
+            var rawTransferred = Interlocked.Read(ref isDev1
+                ? ref _rawTransferredSequenceDev1
+                : ref _rawTransferredSequenceDev2);
+            var activeCaptures = new List<string>();
+            foreach (var pair in _peakTrackers.OrderBy(item => item.Key))
+            {
+                lock (pair.Value.Sync)
+                {
+                    if (!pair.Value.Active) continue;
+                    activeCaptures.Add(
+                        $"EPB{pair.Key}:Cycle={pair.Value.Token?.CycleNumber ?? 0}:" +
+                        $"Cutoff={pair.Value.Watermark.CutoffAcceptedSequence}:" +
+                        $"Processed={pair.Value.Watermark.ProcessedSequence}");
+                }
+            }
+            var message =
+                $"WallClockStepDetected Direction={step.Direction} " +
+                $"StepMs={step.StepMilliseconds:F3} WallElapsedMs={step.WallElapsedMilliseconds:F3} " +
+                $"MonotonicElapsedMs={step.MonotonicElapsedMilliseconds:F3} " +
+                $"Device={device} Generation={generation} Produced={produced} Accepted={accepted} " +
+                $"Processed={processed} DiskPublished={diskPublished} RawTransferred={rawTransferred} " +
+                $"ActivePeakCaptures=[{string.Join(",", activeCaptures)}]";
+            _backgroundTasks.TryRun(
+                "WallClockStepDetected:" + device,
+                () => _log.Warn(message, "AI-CLOCK"));
         }
 
         private double ConvertFastVoltageToEngineering(double voltage, AiConfigDetailRecord rec)
@@ -5600,6 +5653,14 @@ namespace IO.NI
         // —— 字段：每个 EPB 通道一个峰值跟踪器 —— //
         private readonly ConcurrentDictionary<int, PeakTracker> _peakTrackers =
             new ConcurrentDictionary<int, PeakTracker>();
+        private readonly ConcurrentDictionary<int, EpbPeakCutoffSnapshot> _lastPeakCutoffByChannel =
+            new ConcurrentDictionary<int, EpbPeakCutoffSnapshot>();
+
+        private sealed class EpbPeakCutoffSnapshot
+        {
+            internal long Generation;
+            internal long CutoffAcceptedSequence;
+        }
 
         /// <summary>是否存在任意处于捕获状态的通道（用于快速短路）。</summary>
         private bool AnyPeakArmed
@@ -5679,6 +5740,27 @@ namespace IO.NI
                 $"Run={testRunId:N} Cycle={cycleNumber}",
                 "AI");
             return token;
+        }
+
+        /// <summary>
+        /// Returns the last cutoff watermark actually frozen by the full-rate
+        /// peak-capture pipeline for this EPB channel.  This is deliberately not
+        /// derived from a DO command sequence: the two pipelines can advance
+        /// independently during a partial/fake-running failure.
+        /// </summary>
+        public bool TryGetLastEpbPeakCutoffWatermark(
+            int epbChannel,
+            out long generation,
+            out long cutoffAcceptedSequence)
+        {
+            generation = 0;
+            cutoffAcceptedSequence = 0;
+            if (!_lastPeakCutoffByChannel.TryGetValue(epbChannel, out var snapshot) ||
+                snapshot == null)
+                return false;
+            generation = snapshot.Generation;
+            cutoffAcceptedSequence = snapshot.CutoffAcceptedSequence;
+            return generation > 0 || cutoffAcceptedSequence > 0;
         }
 
         public async Task<PeakCaptureResult> EndEpbCurrentPeakAsync(
@@ -5974,11 +6056,17 @@ namespace IO.NI
                         identityMatched: false);
 
                 tracker.Finish(tracker.CutoffLocal ?? cutoffLocal);
-                return BuildPeakFinalizationResult(
+                var result = BuildPeakFinalizationResult(
                     epbChannel,
                     tracker,
                     startedTicks,
                     identityMatched: true);
+                _lastPeakCutoffByChannel[epbChannel] = new EpbPeakCutoffSnapshot
+                {
+                    Generation = result.Generation,
+                    CutoffAcceptedSequence = result.CutoffAcceptedSequence
+                };
+                return result;
             }
         }
 

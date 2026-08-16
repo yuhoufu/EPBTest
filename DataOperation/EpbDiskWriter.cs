@@ -2884,11 +2884,107 @@ CREATE TABLE IF NOT EXISTS {TABLE_CYCLES}(
   start_position INTEGER NOT NULL,   -- 记录级起始索引（相对 .dat 的“记录号”）
   sample_count INTEGER DEFAULT 0,
   status TEXT DEFAULT 'running',
+  mechanical_completed INTEGER NOT NULL DEFAULT 0,
+  mechanical_completed_at TEXT,
   created_at TEXT DEFAULT (datetime('now')),
   UNIQUE(epb_id, cycle_number)
 );
 CREATE INDEX IF NOT EXISTS idx_cycles_epb ON {TABLE_CYCLES}(epb_id, cycle_number);";
         cmd.ExecuteNonQuery();
+        EnsureCycleColumn("mechanical_completed", "INTEGER NOT NULL DEFAULT 0");
+        EnsureCycleColumn("mechanical_completed_at", "TEXT");
+        BackfillCertainMechanicalCompletionFacts();
+        }
+    }
+
+    private void EnsureCycleColumn(string columnName, string definition)
+    {
+        using var inspect = _conn.CreateCommand();
+        inspect.CommandText = $"PRAGMA table_info({TABLE_CYCLES})";
+        using (var reader = inspect.ExecuteReader())
+        {
+            while (reader.Read())
+            {
+                if (string.Equals(
+                        Convert.ToString(reader["name"], CultureInfo.InvariantCulture),
+                        columnName,
+                        StringComparison.OrdinalIgnoreCase))
+                    return;
+            }
+        }
+
+        using var alter = _conn.CreateCommand();
+        alter.CommandText = $"ALTER TABLE {TABLE_CYCLES} ADD COLUMN {columnName} {definition}";
+        alter.ExecuteNonQuery();
+    }
+
+    private void BackfillCertainMechanicalCompletionFacts()
+    {
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = $@"
+UPDATE {TABLE_CYCLES}
+   SET mechanical_completed=1,
+       mechanical_completed_at=COALESCE(mechanical_completed_at,end_time)
+ WHERE mechanical_completed=0
+   AND status IN ('completed','learning_completed','qualification_completed')";
+        cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>持久化“夹紧+释放已经完成”的物理事实；不依赖该圈最终证据状态。</summary>
+    public void MarkMechanicalCycleCompleted(int epbId, int cycleNumber, DateTime completedUtc)
+    {
+        if (cycleNumber == 0)
+            throw new ArgumentOutOfRangeException(nameof(cycleNumber), "机械完成圈必须有正式或学习圈号。");
+        lock (_dbGate)
+        {
+            using var cmd = _conn.CreateCommand();
+            cmd.CommandText = $@"
+UPDATE {TABLE_CYCLES}
+   SET mechanical_completed=1,
+       mechanical_completed_at=COALESCE(mechanical_completed_at,@completed)
+ WHERE epb_id=@e AND cycle_number=@c";
+            cmd.Parameters.AddWithValue("@completed", completedUtc.ToLocalTime().ToString("o"));
+            cmd.Parameters.AddWithValue("@e", epbId);
+            cmd.Parameters.AddWithValue("@c", cycleNumber);
+            if (cmd.ExecuteNonQuery() != 1)
+                throw new InvalidOperationException(
+                    $"EPB[{epbId}] Cycle={cycleNumber} 机械完成事实没有对应数据库圈边界。");
+        }
+    }
+
+    public long GetMechanicalCycleCompletedCount(int epbId)
+    {
+        lock (_dbGate)
+        {
+            using var cmd = _conn.CreateCommand();
+            cmd.CommandText = $@"
+SELECT COUNT(*) FROM {TABLE_CYCLES}
+ WHERE epb_id=@e AND mechanical_completed=1";
+            cmd.Parameters.AddWithValue("@e", epbId);
+            return Math.Max(0L, Convert.ToInt64(cmd.ExecuteScalar(), CultureInfo.InvariantCulture));
+        }
+    }
+
+    public DateTime? GetLastMechanicalCycleCompletedUtc(int epbId)
+    {
+        lock (_dbGate)
+        {
+            using var cmd = _conn.CreateCommand();
+            cmd.CommandText = $@"
+SELECT mechanical_completed_at FROM {TABLE_CYCLES}
+ WHERE epb_id=@e AND mechanical_completed=1
+       AND mechanical_completed_at IS NOT NULL
+ ORDER BY mechanical_completed_at DESC LIMIT 1";
+            cmd.Parameters.AddWithValue("@e", epbId);
+            var value = cmd.ExecuteScalar();
+            if (value == null || value == DBNull.Value) return null;
+            if (!DateTime.TryParse(
+                    Convert.ToString(value, CultureInfo.InvariantCulture),
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.RoundtripKind | DateTimeStyles.AllowWhiteSpaces,
+                    out var parsed))
+                return null;
+            return parsed.ToUniversalTime();
         }
     }
 
@@ -3480,10 +3576,18 @@ public interface IRecoverableCycleRecorder
     bool TryRecoverStorage(Exception cause, out string detail);
 }
 
+/// <summary>可选的机械完成事实持久化能力；旧测试记录器无需实现。</summary>
+public interface IMechanicalCycleRecorder
+{
+    void MarkMechanicalCycleCompleted(int epbId, int cycleNumber, DateTime completedUtc);
+    long GetMechanicalCycleCompletedCount(int epbId);
+    DateTime? GetLastMechanicalCycleCompletedUtc(int epbId);
+}
+
 /// <summary>
 ///     将 EpbDiskWriter 适配为 IEpbCycleRecorder，避免 EpbManager 直接依赖具体类。
 /// </summary>
-public sealed class DiskWriterRecorderAdapter : IEpbCycleRecorder, ICountedBatchedEpbCycleRecorder, ICycleEvidenceExporter, ICycleAttemptEvidenceExporter, IStopRecentCycleEvidenceExporter, IAlarmRecentCycleEvidenceExporter, IActiveCycleLimitConfigurator, IRecoverableCycleRecorder
+public sealed class DiskWriterRecorderAdapter : IEpbCycleRecorder, ICountedBatchedEpbCycleRecorder, ICycleEvidenceExporter, ICycleAttemptEvidenceExporter, IStopRecentCycleEvidenceExporter, IAlarmRecentCycleEvidenceExporter, IActiveCycleLimitConfigurator, IRecoverableCycleRecorder, IMechanicalCycleRecorder
 {
     private readonly EpbDiskWriter _writer;
 
@@ -3598,6 +3702,15 @@ public sealed class DiskWriterRecorderAdapter : IEpbCycleRecorder, ICountedBatch
     {
         return _writer.GetMaxCycleNumber(ch);
     }
+
+    public void MarkMechanicalCycleCompleted(int epbId, int cycleNumber, DateTime completedUtc)
+        => _writer.MarkMechanicalCycleCompleted(epbId, cycleNumber, completedUtc);
+
+    public long GetMechanicalCycleCompletedCount(int epbId)
+        => _writer.GetMechanicalCycleCompletedCount(epbId);
+
+    public DateTime? GetLastMechanicalCycleCompletedUtc(int epbId)
+        => _writer.GetLastMechanicalCycleCompletedUtc(epbId);
 
 
     public void CompleteCycle(int epbId, int cycleNumber, int finalN, DateTime endUtc)

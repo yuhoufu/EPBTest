@@ -86,6 +86,12 @@ namespace Controller.Adaptive
         public bool IsSuccess =>
             Kind == EpbCycleOutcomeKind.Success || Kind == EpbCycleOutcomeKind.SuccessWithWarning;
 
+        /// <summary>
+        /// 机械夹紧与反向释放已经完成。即使完整峰值/持久化证据随后失败，
+        /// 该圈仍必须进入卡钳实际动作与磨损计数。
+        /// </summary>
+        public bool MechanicalCycleCompleted => Stage == EpbCurrentStage.Released;
+
         public static EpbCycleOutcome Canceled(EpbCurrentStage stage, string reason)
         {
             return new EpbCycleOutcome

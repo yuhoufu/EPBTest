@@ -168,13 +168,11 @@ namespace MTEmbTest
                         .ToArray();
                     var watchdog = await WatchdogRuntime.StartSessionAsync(watchdogChannels)
                         .ConfigureAwait(true);
-                    if (!string.IsNullOrWhiteSpace(watchdog.JournalPolicyLog))
-                        LogInfo(watchdog.JournalPolicyLog);
                     if (watchdog.Attached)
                     {
                         UnattendedRunCheckpointStore.BindWatchdogSession(watchdog.SessionId);
                         WatchdogRuntime.SetHeartbeatProvider(CreateWatchdogHeartbeat);
-                        LogInfo("本轮独立进程看门狗已启动并完成握手。");
+                        LogInfo("独立看门狗已就绪。");
                         if (!string.IsNullOrWhiteSpace(watchdog.Warning))
                             LogInfo("[警告] " + watchdog.Warning);
                     }

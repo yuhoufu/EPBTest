@@ -31,15 +31,21 @@ namespace Controller
 
     public sealed class BatchStartResult
     {
-        public BatchStartResult(Guid testRunId, int[] startedChannels, ChannelStartFault[] faults)
+        public BatchStartResult(
+            Guid testRunId,
+            int[] startedChannels,
+            ChannelStartFault[] faults,
+            int[] completedDuringStartChannels = null)
         {
             TestRunId = testRunId;
             StartedChannels = startedChannels ?? Array.Empty<int>();
             Faults = faults ?? Array.Empty<ChannelStartFault>();
+            CompletedDuringStartChannels = completedDuringStartChannels ?? Array.Empty<int>();
         }
         public Guid TestRunId { get; }
         public int[] StartedChannels { get; }
         public ChannelStartFault[] Faults { get; }
+        public int[] CompletedDuringStartChannels { get; }
         public int[] QuarantinedChannels => Faults.Select(x => x.Channel).Distinct().OrderBy(x => x).ToArray();
     }
 
@@ -161,17 +167,44 @@ namespace Controller
             _learningModelReceipts.Clear();
         }
 
-        private Guid ActiveLearningChainId =>
-            _activeRunChainIdentity?.EffectiveRootRunId != Guid.Empty
-                ? _activeRunChainIdentity.EffectiveRootRunId
-                : _activeBatchId;
-
-        private string LearningExecutionDirectory(Guid runId)
+        private sealed class LearningEvidenceContext
         {
-            var root = Path.Combine(_cfg.Test.StoreDir, _cfg.Test.TestName,
-                "LearningCycles", ActiveLearningChainId.ToString("N"),
-                "Executions", runId.ToString("N"));
-            return root;
+            public Guid RunId { get; set; }
+            public Guid ChainId { get; set; }
+            public string ChainDirectory { get; set; }
+            public string ExecutionDirectory { get; set; }
+        }
+
+        internal static Guid ResolveLearningChainId(RunChainIdentity identity, Guid runId)
+        {
+            var root = identity?.EffectiveRootRunId ?? Guid.Empty;
+            return root != Guid.Empty ? root : runId;
+        }
+
+        private LearningEvidenceContext CaptureLearningEvidenceContext(Guid runId)
+        {
+            // Stop/close clears the mutable active batch fields while the last
+            // learning channels may still be sealing their evidence.  Freeze
+            // both identities and paths once per learning phase so an in-flight
+            // seal can never dereference a concurrently cleared chain object or
+            // fall through to the all-zero directory.
+            var identity = _activeRunChainIdentity;
+            var chainId = ResolveLearningChainId(identity, runId);
+            var chainDirectory = Path.Combine(
+                _cfg.Test.StoreDir,
+                _cfg.Test.TestName,
+                "LearningCycles",
+                chainId.ToString("N"));
+            return new LearningEvidenceContext
+            {
+                RunId = runId,
+                ChainId = chainId,
+                ChainDirectory = chainDirectory,
+                ExecutionDirectory = Path.Combine(
+                    chainDirectory,
+                    "Executions",
+                    runId.ToString("N"))
+            };
         }
 
         private void PublishLearningRunManifest(string finalStatus, string reason)
@@ -284,10 +317,17 @@ namespace Controller
                 .Distinct()
                 .OrderBy(channel => channel)
                 .ToArray();
-            var missing = expected.Except(started).ToArray();
+            var completedDuringStart = (result.CompletedDuringStartChannels ?? Array.Empty<int>())
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
+            var satisfied = started.Concat(completedDuringStart).Distinct().ToArray();
+            var missing = expected.Except(satisfied).ToArray();
             var unexpected = started.Except(expected).ToArray();
+            var unexpectedCompleted = completedDuringStart.Except(expected).ToArray();
             var faults = result.Faults ?? Array.Empty<ChannelStartFault>();
-            if (missing.Length == 0 && unexpected.Length == 0 && faults.Length == 0)
+            if (missing.Length == 0 && unexpected.Length == 0 &&
+                unexpectedCompleted.Length == 0 && faults.Length == 0)
                 return string.Empty;
 
             var faultSummary = string.Join(",", faults
@@ -295,7 +335,9 @@ namespace Controller
                 .Select(fault => $"EPB{fault.Channel}:{fault.Stage}:{fault.Reason}"));
             return
                 $"UnattendedStartIncomplete Missing=[{string.Join(",", missing)}] " +
-                $"Unexpected=[{string.Join(",", unexpected)}] Faults=[{faultSummary}]";
+                $"Unexpected=[{string.Join(",", unexpected)}] " +
+                $"UnexpectedCompleted=[{string.Join(",", unexpectedCompleted)}] " +
+                $"Faults=[{faultSummary}]";
         }
 
         /// <summary>
@@ -376,12 +418,26 @@ namespace Controller
             return Math.Max(0, recorder.GetLastCycleNumber(channel));
         }
 
+        internal long GetDurableMechanicalCycleCount(int channel)
+        {
+            if (channel < 1 || channel > 12)
+                throw new ArgumentOutOfRangeException(nameof(channel));
+            var durable = Recorder as IMechanicalCycleRecorder;
+            if (durable == null)
+                return GetObservedMechanicalCycleCount(channel);
+            return Math.Max(
+                GetObservedMechanicalCycleCount(channel),
+                durable.GetMechanicalCycleCompletedCount(channel));
+        }
+
         /// <summary>
         /// 对外暴露的“EPB 单圈完成”事件。
         /// 参数 1：EPB 通道号（1..12）；
         /// 参数 2：本次试验 Session 内已经完成的圈数（从 1 开始）。
         /// </summary>
         public event Action<int, int> ChannelCycleCompleted;
+        /// <summary>任何实际完成夹紧+释放的机械圈；独立于正式证据是否提交。</summary>
+        public event Action<int, CycleAttemptKind, int> ChannelMechanicalCycleCompleted;
 
 
         #region 对外主入口 Batch Start (Learning + Formal) with Group Anchor + Stagger Phases
@@ -786,7 +842,28 @@ namespace Controller
             if (channels == null || channels.Length == 0)
                 throw new ArgumentException("channels 不能为空", nameof(channels));
 
-            var selected = channels.Distinct().OrderBy(x => x).ToArray();
+            var requested = channels.Distinct().OrderBy(x => x).ToArray();
+            var alreadyTargetCompleted = requested
+                .Where(IsMechanicalTargetReached)
+                .ToArray();
+            var selected = requested
+                .Except(alreadyTargetCompleted)
+                .OrderBy(x => x)
+                .ToArray();
+            if (selected.Length == 0)
+            {
+                foreach (var completedChannel in alreadyTargetCompleted)
+                    PublishChannelRuntimeState(
+                        completedChannel,
+                        ChannelRuntimeState.Completed,
+                        "MechanicalTargetAlreadyCompleted",
+                        "机械目标圈已完成，本次开始请求未执行任何硬件动作");
+                return new BatchStartResult(
+                    Guid.NewGuid(),
+                    Array.Empty<int>(),
+                    Array.Empty<ChannelStartFault>(),
+                    alreadyTargetCompleted);
+            }
             _activePlannedChannels = selected.ToArray();
             _activePlannedLearningCycles = Math.Max(0, learnCycles);
             _activePlannedQualificationCycles = Math.Max(0, qualificationCycles);
@@ -797,6 +874,7 @@ namespace Controller
             var staggerPlan = ElectricalStaggerPlanner.Build(selected, _cfg.Test.Groups, PeriodMs);
             var sessionToken = BeginBatchSession(token);
             var startFaults = new List<ChannelStartFault>();
+            var completedDuringStart = new List<int>(alreadyTargetCompleted);
             try
             {
                 _activeBatchId = Guid.NewGuid();
@@ -991,7 +1069,20 @@ namespace Controller
                 if (activeChannels.Length == 0)
                     throw new InvalidOperationException("全部选中通道均在学习阶段被隔离，未启动正式试验。");
 
-                EnsureAdaptiveProfilesReady(activeChannels);
+                var targetCompletedChannels = activeChannels
+                    .Where(IsMechanicalTargetReached)
+                    .OrderBy(channel => channel)
+                    .ToArray();
+                activeChannels = activeChannels
+                    .Except(targetCompletedChannels)
+                    .OrderBy(channel => channel)
+                    .ToArray();
+
+                // A learning/qualification attempt is a real mechanical circle.
+                // If it consumes the final target circle, do not demand another
+                // model/evidence retry and do not arm a formal timer.
+                if (activeChannels.Length > 0)
+                    EnsureAdaptiveProfilesReady(activeChannels);
 
                 // Learning/qualification and the model commit are complete before
                 // the formal timers are armed.  Publish this terminal execution
@@ -1004,6 +1095,30 @@ namespace Controller
                     _dataHousekeeping?.EnqueueNewManifestChains(
                         _learningSuccessfulRunRetainCount,
                         _learningFailedRunRetainCount);
+
+                var resultRunId = _activeBatchId;
+                foreach (var completedChannel in targetCompletedChannels)
+                {
+                    completedDuringStart.Add(completedChannel);
+                    foreach (var list in groups.Values)
+                        list.Remove(completedChannel);
+                    FinalizeChannelAfterNaturalCompletion(
+                        completedChannel,
+                        Recorder?.GetLastCycleNumber(completedChannel) ?? 0);
+                }
+
+                if (activeChannels.Length == 0)
+                {
+                    _log?.Info(
+                        $"批量启动的学习/资格阶段已消费全部剩余机械目标圈；" +
+                        $"完成通道=[{string.Join(",", completedDuringStart)}]，不再启动正式圈。",
+                        "EPB");
+                    return new BatchStartResult(
+                        resultRunId,
+                        Array.Empty<int>(),
+                        startFaults.ToArray(),
+                        completedDuringStart.ToArray());
+                }
 
                 foreach (var channel in activeChannels)
                     PublishChannelRuntimeState(
@@ -1019,7 +1134,11 @@ namespace Controller
                 MarkBatchRunning(activeChannels, "正式试验运行中");
                 LogFieldSessionMetric("Start", _activeBatchId, activeChannels, false, "BatchFormal");
                 LogDaqLivenessRunBinding(_activeBatchId);
-                return new BatchStartResult(_activeBatchId, activeChannels, startFaults.ToArray());
+                return new BatchStartResult(
+                    resultRunId,
+                    activeChannels,
+                    startFaults.ToArray(),
+                    completedDuringStart.ToArray());
             }
             catch (Exception ex)
             {
@@ -1607,7 +1726,18 @@ namespace Controller
                     var last = Recorder?.GetLastCycleNumber(ch);
                     var baseCycle = last ?? 0;   // 这次试验第1圈就是 baseCycle + 1
 
-                    var runs = EpbTestCycle[ch]; // 正式阶段总圈数（可调）
+                    // 学习/资格以及证据作废但已完整释放的圈都消耗耐久目标。
+                    // 必须在学习结束后重新读取进程内机械事实，不能沿用开始按钮点击前
+                    // 按正式证据圈计算的旧剩余值。
+                    var runs = GetRemainingMechanicalTargetCycles(ch);
+                    EpbTestCycle[ch] = runs;
+                    if (runs <= 0)
+                    {
+                        FinalizeChannelAfterNaturalCompletion(
+                            ch,
+                            Recorder?.GetLastCycleNumber(ch) ?? 0);
+                        continue;
+                    }
                     var successfulCycles = 0;
                     
                     // —— 计时器每圈工作（cycleIndex 从 1 开始） —— //
@@ -1761,14 +1891,28 @@ namespace Controller
                             var controlSucceeded = IsFormalControlSucceeded(
                                 ok,
                                 cycleOutcome.IsSuccess);
+                            if (controlSucceeded)
+                                _watchdogConsecutiveSoftwareAborts[ch] = 0;
+                            var mechanicalTargetReached = false;
+                            if (cycleOutcome.MechanicalCycleCompleted)
+                            {
+                                OnMechanicalCycleCompleted(
+                                    ch,
+                                    CycleAttemptKind.FormalBatch,
+                                    cycleNumber);
+                                mechanicalTargetReached = IsMechanicalTargetReached(ch);
+                            }
                             var controlNeedsSoftwareRecovery =
                                 cycleOutcome.Kind ==
                                 Adaptive.EpbCycleOutcomeKind.SoftwareRecovery;
                             if (controlNeedsSoftwareRecovery)
+                            {
+                                RecordWatchdogSoftwareAbort(ch);
                                 ReportFormalControlSoftwareRecovery(
                                     ch,
                                     cycleNumber,
                                     cycleOutcome.Reason);
+                            }
 
                             if (!ok)
                             {
@@ -1858,11 +2002,18 @@ namespace Controller
                                         ch,
                                         cycleNumber,
                                         committedCycles);
-                                if (!nonRecoverableAlarm && committedCycles >= runs)
+                                if (!nonRecoverableAlarm && mechanicalTargetReached)
                                 {
                                     FinalizeChannelAfterNaturalCompletion(ch, cycleNumber);
                                     timer.Stop();
                                 }
+                            }
+                            else if (mechanicalTargetReached && !IsAlarmStopRequested(ch))
+                            {
+                                // 控制证据可能因软件恢复而作废，但夹紧+释放已经真实发生；
+                                // 达到耐久目标后不得为追求正式证据再额外磨损一卡钳一圈。
+                                FinalizeChannelAfterNaturalCompletion(ch, cycleNumber);
+                                timer.Stop();
                             }
 
                             ReleaseCyclePauseCts(ch, cyclePauseCts);
@@ -1984,6 +2135,7 @@ namespace Controller
             var phaseToken = token;
             var stopCtsByChannel = new Dictionary<int, CancellationTokenSource>();
             var learningRunId = _activeBatchId;
+            var learningEvidence = CaptureLearningEvidenceContext(learningRunId);
             var quarantined = new ConcurrentDictionary<int, string>();
 
             // —— 0) 让所有 Runner 进入“无① + ⑧外壳收尾（学习不等尾）”模式，并开启聚合 —— //
@@ -2036,7 +2188,11 @@ namespace Controller
                     var tk = t0.AddMilliseconds(k * PeriodMs);
 
                     // —— 1.2) 组内通道：液压资格后的共享窗口 + 相位错峰（0/Δ/2Δ） —— //
-                    var enabled = list.Where(ch => !quarantined.ContainsKey(ch)).OrderBy(x => x).ToList();
+                    var enabled = list
+                        .Where(ch => !quarantined.ContainsKey(ch))
+                        .Where(ch => !IsMechanicalTargetReached(ch))
+                        .OrderBy(x => x)
+                        .ToList();
                     if (enabled.Count == 0) continue;
 
                     // —— 1.1) 组锚点任务（屏障） —— //
@@ -2111,6 +2267,7 @@ namespace Controller
                                             phase,
                                             k + 1,
                                             learningRunId,
+                                            learningEvidence,
                                             channelToken)
                                         .ConfigureAwait(false);
                                     }
@@ -2178,6 +2335,7 @@ namespace Controller
             int phaseMs,
             int learningOrdinal,
             Guid runId,
+            LearningEvidenceContext learningEvidence,
             CancellationToken token)
         {
             if (runner == null) throw new ArgumentNullException(nameof(runner));
@@ -2191,6 +2349,13 @@ namespace Controller
                 attempts = await SoftwareSelfHealingLoop.RunAsync(
                     async (attempt, attemptToken) =>
                     {
+                        if (IsMechanicalTargetReached(channel))
+                        {
+                            _log?.Info(
+                                $"EPB[{channel}] 学习重试前已达到机械目标圈，禁止再做一圈。",
+                                "EPB");
+                            return;
+                        }
                         await EnsurePowerSupplyReadyForChannelsAsync(new[] { channel }, attemptToken)
                             .ConfigureAwait(false);
                         if (attempt > 1)
@@ -2229,6 +2394,11 @@ namespace Controller
                                         PeriodMs,
                                         attemptToken)
                                     .ConfigureAwait(false);
+                                if (outcome.MechanicalCycleCompleted)
+                                    OnMechanicalCycleCompleted(
+                                        channel,
+                                        CycleAttemptKind.Learning,
+                                        learningCycleNumber);
 
                                 if (!outcome.IsSuccess &&
                                     outcome.Reason?.IndexOf(
@@ -2240,6 +2410,7 @@ namespace Controller
                                             channel,
                                             learningCycleNumber,
                                             runId,
+                                            learningEvidence,
                                             learningOrdinal,
                                             "learning_failed",
                                             requireValidEvidence: true,
@@ -2247,6 +2418,14 @@ namespace Controller
                                         .ConfigureAwait(false);
                                     learningCycleNumber = 0;
                                     RestoreRunnerAdaptiveProfile(runner, modelBeforeLogicalCycle);
+                                    if (IsMechanicalTargetReached(channel))
+                                    {
+                                        _log?.Info(
+                                            $"EPB[{channel}] DAQ证据作废圈已完成最终机械目标；" +
+                                            "跳过DAQ恢复后的同圈重做。",
+                                            "EPB");
+                                        return;
+                                    }
                                     await AbortHydraulicLeaseForChannelAsync(
                                             channel,
                                             "LearningDaqStaleBeforeRecoveryGeneration")
@@ -2279,18 +2458,27 @@ namespace Controller
                                             PeriodMs,
                                             attemptToken)
                                         .ConfigureAwait(false);
+                                    if (outcome.MechanicalCycleCompleted)
+                                        OnMechanicalCycleCompleted(
+                                            channel,
+                                            CycleAttemptKind.Learning,
+                                            learningCycleNumber);
                                 }
 
                                 if (outcome.Kind == Adaptive.EpbCycleOutcomeKind.Canceled)
                                     throw new OperationCanceledException(attemptToken);
                                 if (outcome.Kind == Adaptive.EpbCycleOutcomeKind.SoftwareRecovery)
+                                {
+                                    RecordWatchdogSoftwareAbort(channel);
                                     throw new SoftwareSelfHealingRetryException(
                                         $"EPB[{channel}] 自适应学习圈遇到软件瞬态；" +
                                         $"本次尝试作废后重做。Reason={outcome.Reason}");
+                                }
                                 if (!outcome.IsSuccess)
                                     throw new InvalidOperationException(
                                         $"EPB[{channel}] 自适应学习圈失败：" +
                                         $"阶段={outcome.Stage}，原因={outcome.Reason}");
+                                _watchdogConsecutiveSoftwareAborts[channel] = 0;
                             }
                             else
                             {
@@ -2301,12 +2489,18 @@ namespace Controller
                                         T8MinMs,
                                         attemptToken)
                                     .ConfigureAwait(false);
+                                OnMechanicalCycleCompleted(
+                                    channel,
+                                    CycleAttemptKind.Learning,
+                                    learningCycleNumber);
+                                _watchdogConsecutiveSoftwareAborts[channel] = 0;
                             }
 
                             await SealLearningCycleAsync(
                                     channel,
                                     learningCycleNumber,
                                     runId,
+                                    learningEvidence,
                                     learningOrdinal,
                                     "learning_completed",
                                     requireValidEvidence: true,
@@ -2325,6 +2519,7 @@ namespace Controller
                             {
                                 SaveAdaptiveProfileWithReceipt(runner.CaptureAdaptiveProfile());
                                 UpdateLearningAttemptReceiptStatus(
+                                    learningEvidence,
                                     channel, learningOrdinal, attempt, "Successful", string.Empty,
                                     qualification: false);
                             }
@@ -2337,6 +2532,7 @@ namespace Controller
                                 // fatal exception or re-enter self-healing.
                                 RestoreRunnerAdaptiveProfile(runner, modelBeforeLogicalCycle);
                                 TryUpdateLearningAttemptReceiptStatusBestEffort(
+                                    learningEvidence,
                                     channel,
                                     learningOrdinal,
                                     attempt,
@@ -2356,7 +2552,7 @@ namespace Controller
                                 // the failed attempt.
                                 RestoreRunnerAdaptiveProfile(runner, modelBeforeLogicalCycle);
                                 TryUpdateLearningAttemptReceiptStatusBestEffort(
-                                    channel, learningOrdinal, attempt,
+                                    learningEvidence, channel, learningOrdinal, attempt,
                                     "ModelCommitFailed:" + saveEx.Message,
                                     qualification: false,
                                     failureKind: "Failure",
@@ -2374,6 +2570,7 @@ namespace Controller
                                         channel,
                                         learningCycleNumber,
                                         runId,
+                                        learningEvidence,
                                         learningOrdinal,
                                         "learning_failed",
                                         softwareAttempt: attempt)
@@ -2389,6 +2586,7 @@ namespace Controller
                                         channel,
                                         learningCycleNumber,
                                         runId,
+                                        learningEvidence,
                                         learningOrdinal,
                                         "learning_canceled",
                                         softwareAttempt: attempt)
@@ -2407,6 +2605,7 @@ namespace Controller
                                         channel,
                                         learningCycleNumber,
                                         runId,
+                                        learningEvidence,
                                         learningOrdinal,
                                         "learning_failed",
                                         softwareAttempt: attempt)
@@ -2425,6 +2624,7 @@ namespace Controller
                                         channel,
                                         learningCycleNumber,
                                         runId,
+                                        learningEvidence,
                                         learningOrdinal,
                                         "learning_failed",
                                         softwareAttempt: attempt)
@@ -2487,6 +2687,7 @@ namespace Controller
             int channel,
             int cycleNumber,
             Guid runId,
+            LearningEvidenceContext learningEvidence,
             int learningOrdinal,
             string status,
             bool requireValidEvidence = false,
@@ -2494,9 +2695,11 @@ namespace Controller
         {
             var recorder = Recorder;
             if (cycleNumber == 0 || recorder == null) return;
+            if (learningEvidence == null || learningEvidence.RunId != runId)
+                throw new InvalidOperationException("学习证据上下文缺失或已跨运行代次。");
 
             var exportDir = System.IO.Path.Combine(
-                LearningExecutionDirectory(runId),
+                learningEvidence.ExecutionDirectory,
                 $"EPB{channel:D2}",
                 (status?.IndexOf("qualification", StringComparison.OrdinalIgnoreCase) >= 0
                     ? $"Qualification_{learningOrdinal:D4}"
@@ -2601,6 +2804,7 @@ namespace Controller
             // evidence directory before the model commit; successful status is
             // upgraded only after SaveWithReceipt/read-back succeeds.
             WriteLearningAttemptReceipt(
+                learningEvidence,
                 exportDir,
                 channel,
                 learningOrdinal,
@@ -2620,6 +2824,7 @@ namespace Controller
         }
 
         private void WriteLearningAttemptReceipt(
+            LearningEvidenceContext learningEvidence,
             string exportDir,
             int channel,
             int logicalOrdinal,
@@ -2631,11 +2836,9 @@ namespace Controller
             DateTime completedUtc,
             string reason)
         {
-            var chainRoot = Path.Combine(
-                _cfg.Test.StoreDir,
-                _cfg.Test.TestName,
-                "LearningCycles",
-                ActiveLearningChainId.ToString("N"));
+            if (learningEvidence == null)
+                throw new ArgumentNullException(nameof(learningEvidence));
+            var chainRoot = learningEvidence.ChainDirectory;
             var artifacts = new List<LearningArtifact>();
             if (Directory.Exists(exportDir))
             {
@@ -2684,6 +2887,7 @@ namespace Controller
         }
 
         private void UpdateLearningAttemptReceiptStatus(
+            LearningEvidenceContext learningEvidence,
             int channel,
             int logicalOrdinal,
             int attempt,
@@ -2693,7 +2897,8 @@ namespace Controller
         {
             var phase = qualification ? "Qualification" : "Learning";
             var dir = Path.Combine(
-                LearningExecutionDirectory(_activeBatchId),
+                learningEvidence?.ExecutionDirectory ??
+                throw new ArgumentNullException(nameof(learningEvidence)),
                 $"EPB{channel:D2}",
                 $"{phase}_{logicalOrdinal:D4}",
                 $"Attempt_{Math.Max(1, attempt):D4}");
@@ -2706,6 +2911,7 @@ namespace Controller
         }
 
         private void TryUpdateLearningAttemptReceiptStatusBestEffort(
+            LearningEvidenceContext learningEvidence,
             int channel,
             int logicalOrdinal,
             int attempt,
@@ -2717,7 +2923,7 @@ namespace Controller
             PreserveLearningPersistenceFailure(
                 originalFailure,
                 () => UpdateLearningAttemptReceiptStatus(
-                    channel, logicalOrdinal, attempt, "Failed", reason, qualification),
+                    learningEvidence, channel, logicalOrdinal, attempt, "Failed", reason, qualification),
                 receiptEx =>
                 {
                     // Receipt persistence is diagnostic after the model commit
@@ -3216,6 +3422,71 @@ namespace Controller
                 ex => _log?.Warn(
                     $"EPB[{channel}] 正式圈完成观察者异常已隔离，不影响后续试验：{ex.Message}",
                     "EPB"));
+        }
+
+        private void OnMechanicalCycleCompleted(
+            int channel,
+            CycleAttemptKind kind,
+            int cycleNumber)
+        {
+            var completedUtc = DateTime.UtcNow;
+            var nowTicks = completedUtc.Ticks;
+            if (cycleNumber != 0 && Recorder is IMechanicalCycleRecorder durableRecorder)
+            {
+                try
+                {
+                    durableRecorder.MarkMechanicalCycleCompleted(channel, cycleNumber, completedUtc);
+                }
+                catch (Exception ex)
+                {
+                    // 物理事实已发生，不能因索引辅助字段写入失败而重做一圈。
+                    _log?.Error(
+                        $"EPB[{channel}] 机械完成事实写入 index.db 失败；继续以内存/XML计数，" +
+                        $"禁止重做本圈。Cycle={cycleNumber} Kind={kind} Error={ex.Message}",
+                        "落盘",
+                        ex);
+                }
+            }
+            _watchdogLastMechanicalCompletedUtcTicks[channel] = nowTicks;
+            _watchdogMechanicalCompletedCount.AddOrUpdate(channel, 1, (_, value) => value + 1);
+            NonCriticalObserver.Invoke(
+                ChannelMechanicalCycleCompleted,
+                channel,
+                kind,
+                cycleNumber,
+                ex => _log?.Warn(
+                    $"EPB[{channel}] 机械完成圈观察者异常已隔离：{ex.Message}",
+                    "EPB"));
+        }
+
+        private long GetObservedMechanicalCycleCount(int channel)
+        {
+            _mechanicalCycleBaseline.TryGetValue(channel, out var baseline);
+            _watchdogMechanicalCompletedCount.TryGetValue(channel, out var processCompleted);
+            var observed = baseline + processCompleted;
+            var record = _cfg.Test.GetEpbRecord(channel);
+            if (record != null)
+                observed = Math.Max(observed, record.EffectiveMechanicalCycleCount);
+            return Math.Max(0L, observed);
+        }
+
+        private int GetRemainingMechanicalTargetCycles(int channel)
+        {
+            var record = _cfg.Test.GetEpbRecord(channel);
+            if (record == null) return 0;
+            var total = record.TotalCount > 0 ? record.TotalCount : Math.Max(0, _cfg.Test.TestTarget);
+            return (int)Math.Max(0L, total - GetObservedMechanicalCycleCount(channel));
+        }
+
+        private bool IsMechanicalTargetReached(int channel)
+            => GetRemainingMechanicalTargetCycles(channel) <= 0;
+
+        private void RecordWatchdogSoftwareAbort(int channel)
+        {
+            _watchdogConsecutiveSoftwareAborts.AddOrUpdate(
+                channel,
+                1,
+                (_, value) => value >= int.MaxValue ? int.MaxValue : value + 1);
         }
 
         private bool OnFormalCycleCommittedAndEvaluateClampFault(

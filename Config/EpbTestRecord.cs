@@ -63,6 +63,26 @@ namespace Config
         public int RunCount { get; set; }
 
         /// <summary>
+        /// 卡钳实际完成的机械夹紧+释放圈数。该口径包含学习圈、资格圈，
+        /// 以及控制已完整结束但随后证据提交失败的正式圈；RunCount 仍保留
+        /// “正式圈且证据已提交”的质量口径。
+        /// </summary>
+        public long MechanicalCycleCount { get; set; }
+
+        /// <summary>
+        /// 耐久目标的权威完成口径。旧项目没有 MechanicalCycleCount 时仍以
+        /// RunCount 兜底，升级后则包含学习、资格和证据作废但已完整释放的机械圈。
+        /// </summary>
+        public long EffectiveMechanicalCycleCount =>
+            Math.Max(MechanicalCycleCount, RunCount);
+
+        public int GetRemainingMechanicalCycles(int fallbackTotalCount = 0)
+        {
+            var total = TotalCount > 0 ? TotalCount : Math.Max(0, fallbackTotalCount);
+            return (int)Math.Max(0L, total - EffectiveMechanicalCycleCount);
+        }
+
+        /// <summary>
         /// 当前试验状态。
         /// </summary>
         public EpbTestStatus Status { get; set; } = EpbTestStatus.NotStarted;
@@ -100,6 +120,7 @@ namespace Config
                 RunTime = FormatTimeSpan(TimeSpan.Zero),
                 TotalCount = totalCount,
                 RunCount = 0,
+                MechanicalCycleCount = 0,
                 Status = EpbTestStatus.NotStarted,
                 _lastElapsedBaseUtc = null
             };
@@ -139,6 +160,7 @@ namespace Config
         /// <param name="now">当前时间（建议使用本地时间或统一的 UTC）。</param>
         public void InitializeOnLoad(DateTime now)
         {
+            MechanicalCycleCount = Math.Max(MechanicalCycleCount, RunCount);
             if (RunCount > 0)
             {
                 // 已有历史：尽量保留原值，仅做容错补充
@@ -259,6 +281,25 @@ namespace Config
             return delta;
         }
 
+        public long IncrementMechanicalCycle()
+        {
+            MechanicalCycleCount = EffectiveMechanicalCycleCount + 1;
+            return MechanicalCycleCount;
+        }
+
+        /// <summary>
+        /// Reconciles an absolute mechanical-completion fact from the controller
+        /// or SQLite.  This is idempotent and therefore safe when the formal and
+        /// mechanical UI callbacks arrive in either order.
+        /// </summary>
+        public long ReconcileMechanicalCycleCount(long observedCount)
+        {
+            MechanicalCycleCount = Math.Max(
+                EffectiveMechanicalCycleCount,
+                Math.Max(0L, observedCount));
+            return MechanicalCycleCount;
+        }
+
         /// <summary>
         /// 手动增加指定的运行时间（用于特殊场景修正）。
         /// <para>内部会更新 <see cref="RunTime"/> 字符串。</para>
@@ -303,6 +344,7 @@ namespace Config
             LatestStartTime = DateTime.Now;
             RunTimeSpan = TimeSpan.Zero;
             RunCount = 0;
+            MechanicalCycleCount = 0;
             Status = EpbTestStatus.NotStarted;
             _lastElapsedBaseUtc = null;
         }

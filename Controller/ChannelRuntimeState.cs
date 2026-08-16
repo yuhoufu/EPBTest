@@ -45,6 +45,45 @@ namespace Controller
         public Guid RunId { get; set; }
     }
 
+    public enum ManualPauseStage
+    {
+        None = 0,
+        CurrentCycleDrain = 1,
+        PhysicalOffConfirm = 2,
+        PersistenceDrain = 3,
+        Completed = 4,
+        SafetyFault = 5
+    }
+
+    /// <summary>供主界面与独立 Watchdog 共同使用的人工暂停权威进展。</summary>
+    public sealed class ManualPauseProgressSnapshot
+    {
+        public bool Active { get; set; }
+        public ManualPauseStage Stage { get; set; }
+        public long ProgressVersion { get; set; }
+        public DateTime StartedUtc { get; set; }
+        public DateTime StageStartedUtc { get; set; }
+        public DateTime HardDeadlineUtc { get; set; }
+        public int[] Channels { get; set; } = Array.Empty<int>();
+        public int[] EnergizedChannels { get; set; } = Array.Empty<int>();
+        public bool SafetyFault { get; set; }
+        public string Detail { get; set; } = string.Empty;
+
+        public ManualPauseProgressSnapshot Clone() => new ManualPauseProgressSnapshot
+        {
+            Active = Active,
+            Stage = Stage,
+            ProgressVersion = ProgressVersion,
+            StartedUtc = StartedUtc,
+            StageStartedUtc = StageStartedUtc,
+            HardDeadlineUtc = HardDeadlineUtc,
+            Channels = Channels?.ToArray() ?? Array.Empty<int>(),
+            EnergizedChannels = EnergizedChannels?.ToArray() ?? Array.Empty<int>(),
+            SafetyFault = SafetyFault,
+            Detail = Detail ?? string.Empty
+        };
+    }
+
     public sealed class ChannelRuntimeStateChangedEvent
     {
         /// <summary>
@@ -181,6 +220,8 @@ namespace Controller
         public int RecoveryOwnerCount { get; set; }
         public HydraulicGenerationSnapshot[] HydraulicGroups { get; set; } =
             Array.Empty<HydraulicGenerationSnapshot>();
+        public WatchdogChannelProgressSnapshot[] ChannelProgress { get; set; } =
+            Array.Empty<WatchdogChannelProgressSnapshot>();
 
         public bool IsQuiescent => !BatchLifecycleBusy &&
                                    !BatchSessionActive &&
@@ -206,6 +247,23 @@ namespace Controller
                    $"RecoveryOwners={RecoveryOwnerCount} " +
                    $"Hydraulics=[{string.Join(" | ", (HydraulicGroups ?? Array.Empty<HydraulicGenerationSnapshot>()).Select(x => x.ToString()))}]";
         }
+    }
+
+    public sealed class WatchdogChannelProgressSnapshot
+    {
+        public int Channel { get; set; }
+        public string State { get; set; } = string.Empty;
+        public long StateRevision { get; set; }
+        public long StateSinceUtcTicks { get; set; }
+        public bool TimerActive { get; set; }
+        public bool RunnerActive { get; set; }
+        public bool Energized { get; set; }
+        public long LastMechanicalCompletedUtcTicks { get; set; }
+        public long MechanicalCompletedCount { get; set; }
+        public int ConsecutiveSoftwareAbortCount { get; set; }
+        public long DoCommandSequence { get; set; }
+        public long PeakCutoffGeneration { get; set; }
+        public long PeakCutoffSequence { get; set; }
     }
 
     public sealed class WatchdogDeviceStorageSnapshot

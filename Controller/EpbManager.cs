@@ -88,6 +88,32 @@ namespace Controller
                         $"活动圈样本硬上限已设置：{maxRecords} 条（采样率={_acq.SampleRate:F1}Hz，周期={periodMs}ms，裕量=1.25）。",
                         "落盘");
                 }
+                if (value is IMechanicalCycleRecorder mechanicalRecorder)
+                {
+                    foreach (var channel in Enumerable.Range(1, 12))
+                    {
+                        try
+                        {
+                            var durableCount = mechanicalRecorder
+                                .GetMechanicalCycleCompletedCount(channel);
+                            _mechanicalCycleBaseline.AddOrUpdate(
+                                channel,
+                                durableCount,
+                                (_, existing) => Math.Max(existing, durableCount));
+                            var lastCompletedUtc = mechanicalRecorder
+                                .GetLastMechanicalCycleCompletedUtc(channel);
+                            if (lastCompletedUtc.HasValue)
+                                _watchdogLastMechanicalCompletedUtcTicks[channel] =
+                                    lastCompletedUtc.Value.Ticks;
+                        }
+                        catch (Exception ex)
+                        {
+                            _log?.Warn(
+                                $"EPB[{channel}] 初始化机械完成耐久水位失败：{ex.Message}",
+                                "落盘");
+                        }
+                    }
+                }
             }
         }
 
@@ -167,6 +193,11 @@ namespace Controller
         private readonly long _dev1ChannelMask;
         private readonly long _dev2ChannelMask;
         private readonly ChannelRuntimeStateStore _channelRuntimeStateStore = new();
+        private readonly ConcurrentDictionary<int, long> _watchdogLastMechanicalCompletedUtcTicks = new();
+        private readonly ConcurrentDictionary<int, long> _watchdogMechanicalCompletedCount = new();
+        private readonly ConcurrentDictionary<int, long> _mechanicalCycleBaseline = new();
+        private readonly ConcurrentDictionary<int, int> _watchdogConsecutiveSoftwareAborts = new();
+        private readonly ConcurrentDictionary<int, long> _watchdogDoCommandSequence = new();
 
         private readonly SafetyMarginControlMode _safetyMarginControlMode;
         private readonly EpbControlMode _epbControlMode;
@@ -1572,9 +1603,10 @@ namespace Controller
             // 添加每个epb通道的目标次数
             foreach (var epbRecord in cfg.Test.EpbRecords)
             {
-
-                EpbTestCycle!.Add(epbRecord.Id,epbRecord.TotalCount - epbRecord.RunCount);  // 需要能够每次开始由总次数-已运行次数
-                
+                _mechanicalCycleBaseline[epbRecord.Id] = epbRecord.EffectiveMechanicalCycleCount;
+                EpbTestCycle!.Add(
+                    epbRecord.Id,
+                    epbRecord.GetRemainingMechanicalCycles(cfg.Test.TestTarget));
             }
             
 
@@ -2001,6 +2033,7 @@ namespace Controller
             MarkHydraulicParticipant(channel);
 
             var runner = (EpbCycleRunner)GetRunner(channel);
+            var learningEvidence = CaptureLearningEvidenceContext(singleRunId);
 
             var learnCycles = GetProp<int>(rcfg, "LearnCycles");
             if (learnCycles <= 0) learnCycles = 5;
@@ -2035,6 +2068,8 @@ namespace Controller
                     var pressureGroup = channel <= 6 ? 1 : 2;
                     for (var ordinal = 1; ordinal <= learnCycles; ordinal++)
                     {
+                        if (IsMechanicalTargetReached(channel))
+                            break;
                         startLinked.Token.ThrowIfCancellationRequested();
                         await EnterHydraulicStartupPhaseWithSelfHealingAsync(
                                 new HydraulicGenerationKey(
@@ -2053,11 +2088,21 @@ namespace Controller
                                 staggerMs,
                                 ordinal,
                                 singleRunId,
+                                learningEvidence,
                                 startLinked.Token)
                             .ConfigureAwait(false);
                     }
-                    EnsureAdaptiveProfilesReady(new[] { channel });
-                    _log.Info($"EPB[{channel}] 自学习完成，进入正式试验。", "EPB");
+                    if (!IsMechanicalTargetReached(channel))
+                    {
+                        EnsureAdaptiveProfilesReady(new[] { channel });
+                        _log.Info($"EPB[{channel}] 自学习完成，进入正式试验。", "EPB");
+                    }
+                    else
+                    {
+                        _log.Info(
+                            $"EPB[{channel}] 自学习已消费最后的机械目标圈；不再进入正式试验。",
+                            "EPB");
+                    }
                 }
                 catch (OperationCanceledException) when (
                     uiToken.IsCancellationRequested || stopCts.IsCancellationRequested)
@@ -2086,6 +2131,15 @@ namespace Controller
                         ex);
                     throw;
                 }
+            }
+
+            if (IsMechanicalTargetReached(channel))
+            {
+                FinalizeChannelAfterNaturalCompletion(
+                    channel,
+                    Recorder?.GetLastCycleNumber(channel) ?? 0);
+                timer.Stop();
+                return;
             }
 
             PublishChannelRuntimeState(
@@ -2180,13 +2234,27 @@ namespace Controller
                 var controlSucceeded = IsFormalControlSucceeded(
                     ok,
                     cycleOutcome.IsSuccess);
+                if (controlSucceeded)
+                    _watchdogConsecutiveSoftwareAborts[channel] = 0;
+                var mechanicalTargetReached = false;
+                if (cycleOutcome.MechanicalCycleCompleted)
+                {
+                    OnMechanicalCycleCompleted(
+                        channel,
+                        CycleAttemptKind.FormalSingle,
+                        cycleNumber);
+                    mechanicalTargetReached = IsMechanicalTargetReached(channel);
+                }
                 var controlNeedsSoftwareRecovery =
                     cycleOutcome.Kind == EpbCycleOutcomeKind.SoftwareRecovery;
                 if (controlNeedsSoftwareRecovery)
+                {
+                    RecordWatchdogSoftwareAbort(channel);
                     ReportFormalControlSoftwareRecovery(
                         channel,
                         cycleNumber,
                         cycleOutcome.Reason);
+                }
 
                 // —— 圈结束：根据是否报警停机决定封圈状态 ——
                 var persistenceCommitted = false;
@@ -2277,11 +2345,16 @@ namespace Controller
                             channel,
                             cycleNumber,
                             committedCycles);
-                    if (!nonRecoverableAlarm && committedCycles >= _cfg.Test.TestTarget)
+                    if (!nonRecoverableAlarm && mechanicalTargetReached)
                     {
                         FinalizeChannelAfterNaturalCompletion(channel, cycleNumber);
                         timer.Stop();
                     }
+                }
+                else if (mechanicalTargetReached && !IsAlarmStopRequested(channel))
+                {
+                    FinalizeChannelAfterNaturalCompletion(channel, cycleNumber);
+                    timer.Stop();
                 }
 
                 _log.Info(
@@ -8540,7 +8613,38 @@ namespace Controller
                                         _formalPersistenceRecoveryPendingCycles.Count +
                                         _currentCycleNumberByChannel.Count,
                 RecoveryOwnerCount = _recoveryOwnership.ActiveCount,
-                HydraulicGroups = hydraulicGroups
+                HydraulicGroups = hydraulicGroups,
+                ChannelProgress = Enumerable.Range(1, 12).Select(channel =>
+                {
+                    var state = _channelRuntimeStateStore.Get(channel);
+                    _watchdogLastMechanicalCompletedUtcTicks.TryGetValue(channel, out var completedUtc);
+                    var completedCount = GetObservedMechanicalCycleCount(channel);
+                    _watchdogConsecutiveSoftwareAborts.TryGetValue(channel, out var aborts);
+                    _watchdogDoCommandSequence.TryGetValue(channel, out var doSequence);
+                    var cutoffGeneration = 0L;
+                    var cutoffSequence = 0L;
+                    if (_acq != null)
+                        _acq.TryGetLastEpbPeakCutoffWatermark(
+                            channel,
+                            out cutoffGeneration,
+                            out cutoffSequence);
+                    return new WatchdogChannelProgressSnapshot
+                    {
+                        Channel = channel,
+                        State = state?.State.ToString() ?? ChannelRuntimeState.NotEnabled.ToString(),
+                        StateRevision = state?.Revision ?? 0,
+                        StateSinceUtcTicks = state?.TimestampUtc.Ticks ?? 0,
+                        TimerActive = _timers.ContainsKey(channel) || _timerCache.ContainsKey(channel),
+                        RunnerActive = _runners.ContainsKey(channel) || _runnerCache.ContainsKey(channel),
+                        Energized = IsChannelEnergized(channel),
+                        LastMechanicalCompletedUtcTicks = completedUtc,
+                        MechanicalCompletedCount = completedCount,
+                        ConsecutiveSoftwareAbortCount = aborts,
+                        DoCommandSequence = doSequence,
+                        PeakCutoffGeneration = cutoffGeneration,
+                        PeakCutoffSequence = cutoffSequence
+                    };
+                }).ToArray()
             };
         }
 

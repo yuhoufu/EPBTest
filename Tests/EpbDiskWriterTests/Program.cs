@@ -56,6 +56,7 @@ namespace EpbDiskWriterTests
                 Run("学习负圈索引样本数竞态可从封存BIN恢复", LearningSnapshotRecoversWhenIndexCountIsZero);
                 Run("报警CSV和BIN不一致时校验失败", AlarmPairValidatorRejectsMismatch);
                 Run("学习与资格圈终态均落盘且不改变正式计数", LearningOutcomesDoNotAffectFormalCounters);
+                Run("机械完成事实跨终态和旧库迁移均可恢复", MechanicalCompletionSurvivesStatusAndMigration);
                 Run("学习负圈号跨重启连续且唯一", LearningCycleNumbersSurviveRestart);
                 Run("报警与学习收尾并发只封存一次", ConcurrentSealClaimsOnce);
                 Run("已完成报警触发圈可回读并导出最近10圈", CompletedAlarmTriggerCycleCanBeRecovered);
@@ -1124,6 +1125,78 @@ namespace EpbDiskWriterTests
                        rows.Any(row => row.Item2 == "qualification_failed") &&
                        rows.Any(row => row.Item2 == "alarm"),
                     "学习/资格圈终态未完整写入SQLite");
+            });
+        }
+
+        private static void MechanicalCompletionSurvivesStatusAndMigration()
+        {
+            WithRoot(root =>
+            {
+                var policy = NewPolicy(root);
+                Directory.CreateDirectory(policy.IndexAndExportPath);
+                var dbPath = Path.Combine(policy.IndexAndExportPath, "index.db");
+                using (var legacy = new SQLiteConnection($"Data Source={dbPath};Version=3;"))
+                {
+                    legacy.Open();
+                    using var create = legacy.CreateCommand();
+                    create.CommandText = @"
+CREATE TABLE epb_cycles(
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ epb_id INTEGER NOT NULL,
+ cycle_number INTEGER NOT NULL,
+ start_time TEXT NOT NULL,
+ end_time TEXT,
+ start_position INTEGER NOT NULL,
+ sample_count INTEGER DEFAULT 0,
+ status TEXT DEFAULT 'running',
+ created_at TEXT DEFAULT (datetime('now')),
+ UNIQUE(epb_id, cycle_number));";
+                    create.ExecuteNonQuery();
+                    create.CommandText = @"
+INSERT INTO epb_cycles(
+ epb_id,cycle_number,start_time,end_time,start_position,sample_count,status)
+VALUES(4,-1,'2026-08-16T12:00:00','2026-08-16T12:00:01',0,3,'learning_completed');";
+                    create.ExecuteNonQuery();
+                }
+
+                var start = DateTime.UtcNow;
+                using (var writer = new EpbDiskWriter(policy))
+                {
+                    var learning = writer.BeginLearningCycle(4, start);
+                    WriteSamples(writer, 4, 3, start);
+                    writer.MarkMechanicalCycleCompleted(4, learning, start.AddMilliseconds(500));
+                    writer.SealAndExportCycle(
+                        4,
+                        learning,
+                        Path.Combine(root, "Learning"),
+                        start.AddSeconds(1),
+                        "learning_failed");
+
+                    writer.BeginCycle(4, 1, start.AddSeconds(2));
+                    WriteSamples(writer, 4, 3, start.AddSeconds(2));
+                    writer.MarkMechanicalCycleCompleted(4, 1, start.AddSeconds(3));
+                    writer.AbortCycle(4, 1, 3, start.AddSeconds(3), "AbortedBySoftwareRecovery");
+                    Assert(writer.GetMechanicalCycleCompletedCount(4) == 3,
+                        "历史学习完成圈、学习失败圈或软件作废正式圈没有计入机械完成事实");
+                    var lastCompletedUtc = writer.GetLastMechanicalCycleCompletedUtc(4);
+                    Assert(lastCompletedUtc.HasValue &&
+                           Math.Abs((lastCompletedUtc.Value - start.AddSeconds(3)).TotalMilliseconds) < 2,
+                        "逐通道最后机械完成时间未从真实SQLite机械事实恢复");
+                }
+
+                using (var restarted = new EpbDiskWriter(policy))
+                    Assert(restarted.GetMechanicalCycleCompletedCount(4) == 3,
+                        "重启后机械完成事实计数丢失");
+
+                using var verify = OpenIndex(policy);
+                using var columns = verify.CreateCommand();
+                columns.CommandText = "PRAGMA table_info(epb_cycles)";
+                using var reader = columns.ExecuteReader();
+                var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                while (reader.Read()) names.Add(reader["name"].ToString());
+                Assert(names.Contains("mechanical_completed") &&
+                       names.Contains("mechanical_completed_at"),
+                    "旧 index.db 未原位迁移机械完成字段");
             });
         }
 

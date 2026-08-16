@@ -523,6 +523,13 @@ namespace Controller
             if (await Task.WhenAny(all, timeout).ConfigureAwait(false) == all)
                 return await all.ConfigureAwait(false);
 
+            foreach (var pair in operations.Select((task, index) => new { task, index }))
+                if (!pair.task.IsCompleted)
+                    ObserveLatePowerSafetyTask(
+                        pair.task,
+                        groups[pair.index],
+                        "DisableAllSafetyTotalDeadline");
+
             return operations.Select((task, index) =>
             {
                 if (task.Status == TaskStatus.RanToCompletion) return task.Result;
@@ -555,6 +562,7 @@ namespace Controller
             if (completed != task)
             {
                 RetirePowerDisableOwner(groupId, "GroupSafetyDeadline");
+                ObserveLatePowerSafetyTask(task, groupId, "GroupSafetyDeadline");
                 return new PowerSafetyDisableResult
                 {
                     ElectricalGroupId = groupId,
@@ -608,6 +616,32 @@ namespace Controller
                     Error = message
                 };
             }
+        }
+
+        private void ObserveLatePowerSafetyTask(Task task, int groupId, string deadline)
+        {
+            if (task == null || task.IsCompleted) return;
+            _tasks.Observe(task, "PowerSafetyLate." + deadline, Guid.Empty, groupId);
+            var observedUtc = DateTime.UtcNow;
+            var logTask = task.ContinueWith(
+                completed =>
+                {
+                    var status = completed.IsCanceled
+                        ? "Canceled"
+                        : completed.IsFaulted
+                            ? "Faulted"
+                            : "Completed";
+                    var error = completed.Exception?.GetBaseException().Message ?? string.Empty;
+                    _log.Warn(
+                        $"电源安全关闭任务在硬截止后终态化：Group={groupId}; " +
+                        $"Deadline={deadline}; Status={status}; " +
+                        $"LateMs={(DateTime.UtcNow - observedUtc).TotalMilliseconds:F0}; Error={error}",
+                        "程控电源");
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+            _tasks.Observe(logTask, "PowerSafetyLateLog." + deadline, Guid.Empty, groupId);
         }
 
         private void RetirePowerDisableOwner(int groupId, string reason)

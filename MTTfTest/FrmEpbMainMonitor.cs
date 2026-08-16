@@ -1104,7 +1104,8 @@ namespace MTEmbTest
                 foreach (var epbGroup in EpbGroup)
                 {
                     var epbRecord = EnsureEpbRecord(epbGroup.EpbNo);
-                    epbGroup.CtrlCycles.Text = epbRecord.RunCount.ToString();
+                    epbGroup.CtrlCycles.Text =
+                        Math.Max(epbRecord.MechanicalCycleCount, epbRecord.RunCount).ToString();
                 }
 
 
@@ -1123,6 +1124,7 @@ namespace MTEmbTest
 
                 // ★ 新增：订阅 EPB 单圈完成事件，用于更新 _uiEpbRecords
                 _epb.ChannelCycleCompleted += OnEpbChannelCycleCompleted;
+                _epb.ChannelMechanicalCycleCompleted += OnEpbMechanicalCycleCompleted;
                 _epb.ChannelAlarmRaised += OnEpbChannelAlarmRaised;
                 _epb.ChannelPaused += OnEpbChannelPaused;
                 _epb.ChannelResumed += OnEpbChannelResumed;
@@ -1318,6 +1320,17 @@ namespace MTEmbTest
                         rec.RunCount = dbLastCycleNumber;
                         changed = true;
                     }
+                    if (rec.MechanicalCycleCount < dbLastCycleNumber)
+                    {
+                        rec.MechanicalCycleCount = dbLastCycleNumber;
+                        changed = true;
+                    }
+                    var dbMechanicalCount = writer.GetMechanicalCycleCompletedCount(rec.Id);
+                    if (rec.MechanicalCycleCount < dbMechanicalCount)
+                    {
+                        rec.MechanicalCycleCount = dbMechanicalCount;
+                        changed = true;
+                    }
                 }
             }
             catch (Exception ex)
@@ -1404,7 +1417,8 @@ namespace MTEmbTest
             }
 
             // —— 3) 更新左侧 EPBGroup —— //
-            EpbGroup[channel - 1].CtrlCycles.Text = record.RunCount.ToString();
+            EpbGroup[channel - 1].CtrlCycles.Text =
+                Math.Max(record.MechanicalCycleCount, record.RunCount).ToString();
 
             if (_currentEpbSummaryChannel == channel && record.Status == EpbTestStatus.Completed)
             {
@@ -1426,6 +1440,53 @@ namespace MTEmbTest
 
             // —— 4) 下拉框右侧面板选中时刷新 —— //
             // —— ?? 取消实时保存，改为“定时自动保存” —— //
+        }
+
+        private void OnEpbMechanicalCycleCompleted(
+            int channel,
+            CycleAttemptKind kind,
+            int cycleNumber)
+        {
+            if (InvokeRequired)
+            {
+                try
+                {
+                    BeginInvoke(new Action<int, CycleAttemptKind, int>(
+                        OnEpbMechanicalCycleCompleted), channel, kind, cycleNumber);
+                }
+                catch { }
+                return;
+            }
+
+            EpbTestRecord record;
+            lock (_epbRecordsLock)
+            {
+                record = _uiEpbRecords?.FirstOrDefault(r => r.Id == channel);
+                if (record == null) return;
+                try
+                {
+                    // Use the manager/SQLite monotonic fact instead of blindly
+                    // adding one on the UI thread.  Mechanical and formal
+                    // completion callbacks are independently marshalled with
+                    // BeginInvoke; their arrival order must not double-count a
+                    // successful formal circle.
+                    record.ReconcileMechanicalCycleCount(
+                        _epb?.GetDurableMechanicalCycleCount(channel) ?? 0);
+                }
+                catch
+                {
+                    // The event itself proves one physical completion.  This is
+                    // only a last-resort fallback when durable reconciliation is
+                    // temporarily unavailable.
+                    record.IncrementMechanicalCycle();
+                }
+            }
+            EpbGroup[channel - 1].CtrlCycles.Text = record.MechanicalCycleCount.ToString();
+            RefreshCurrentEpbSummary(channel);
+            SaveEpbRecordsToTestConfigSafe();
+            // The durable database and the always-visible channel counter are
+            // the authoritative per-cycle evidence.  Emitting one operator UI
+            // line per channel/cycle obscures warnings and recovery events.
         }
 
         private void OnEpbChannelAlarmRaised(int channel, string reason)
@@ -2420,7 +2481,9 @@ namespace MTEmbTest
                 // 添加每个epb通道的目标次数
                 foreach (var epbRecord in _cfg.Test.EpbRecords)
                 {
-                    epbTestCycle!.Add(epbRecord.Id, epbRecord.TotalCount - epbRecord.RunCount); // 需要能够每次开始由总次数-已运行次数
+                    epbTestCycle!.Add(
+                        epbRecord.Id,
+                        epbRecord.GetRemainingMechanicalCycles(_cfg.Test.TestTarget));
                 }
 
                 _epb.EpbTestCycle = epbTestCycle;
@@ -2469,11 +2532,18 @@ namespace MTEmbTest
                     completedStart = startResult;
                     startedChannels = startResult.StartedChannels;
 
+                    if (startResult.CompletedDuringStartChannels.Length > 0)
+                        LogInfo(
+                            $"机械目标已在启动前或学习/资格阶段完成：" +
+                            $"[{string.Join(",", startResult.CompletedDuringStartChannels)}]；" +
+                            (startResult.StartedChannels.Length > 0
+                                ? $"其余运行通道=[{string.Join(",", startResult.StartedChannels)}]。"
+                                : "未再启动正式机械圈。"));
                     if (startResult.Faults.Length > 0)
                         LogInfo(
                             $"[安全] 批量部分启动：运行卡钳[{string.Join(",", startResult.StartedChannels)}]；" +
                             $"隔离卡钳[{string.Join(",", startResult.Faults.Select(x => x.Channel))}]。请查看上方通道报警及 AlarmSnapshots。");
-                    else
+                    else if (startResult.StartedChannels.Length > 0)
                         LogInfo("批量启动完成：学习阶段已对齐并错峰，上线后每圈对齐运行中…");
                 }
                 catch (OperationCanceledException)
@@ -2982,6 +3052,7 @@ namespace MTEmbTest
                 if (_epb != null)
                 {
                     _epb.ChannelCycleCompleted -= OnEpbChannelCycleCompleted;
+                    _epb.ChannelMechanicalCycleCompleted -= OnEpbMechanicalCycleCompleted;
                 }
             }
             catch
@@ -3330,15 +3401,17 @@ namespace MTEmbTest
             LedRunTime.Text = EpbTestRecord.FormatDHMS(record.RunTimeSpan);
 
             // === ③ 完成次数 ===
-            LedRunCycles.Text = record.RunCount.ToString();
+            uiLabel57.Text = "机械完成次数";
+            var mechanicalCount = Math.Max(record.MechanicalCycleCount, record.RunCount);
+            LedRunCycles.Text = mechanicalCount.ToString();
 
             // === ④ 剩余次数 ===
             int total = record.TotalCount > 0 ? record.TotalCount : (_cfg?.Test?.TestTarget ?? 0);
-            int left = Math.Max(0, total - record.RunCount);
+            int left = (int)Math.Max(0, total - mechanicalCount);
             LedLastCycles.Text = left.ToString();
 
             // === ⑤ 进度条百分比 ===
-            int percent = (total > 0) ? (int)Math.Round(record.RunCount * 100.0 / total) : 0;
+            int percent = (total > 0) ? (int)Math.Round(mechanicalCount * 100.0 / total) : 0;
 
             percent = Math.Max(0, Math.Min(100, percent));
             ProcBar.Value = percent;
@@ -4988,7 +5061,9 @@ namespace MTEmbTest
             if (!_uiInfoLogStore.Initialize(projectRoot))
                 return;
 
-            var existingLines = _uiInfoLogStore.ReadRecentLines(UiInfoRecentLineLimit);
+            var existingLines = _uiInfoLogStore.ReadRecentLines(UiInfoRecentLineLimit)
+                .Where(ShouldDisplayOperatorInfo)
+                .ToList();
             _suppressRtbInfoTextChanged = true;
             RtbInfo.Text = existingLines.Count == 0
                 ? string.Empty
@@ -5011,12 +5086,19 @@ namespace MTEmbTest
 
         private void LogInfo(string message)
         {
-            if (string.IsNullOrWhiteSpace(message))
+            if (!ShouldDisplayOperatorInfo(message))
                 return;
 
             var formatted = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {message.Trim()}";
             AppendInfoLine(formatted);
             _ = _uiInfoLogStore?.AppendAsync(formatted);
+        }
+
+        internal static bool ShouldDisplayOperatorInfo(string message)
+        {
+            if (string.IsNullOrWhiteSpace(message)) return false;
+            return message.IndexOf("机械完成圈已计数", StringComparison.OrdinalIgnoreCase) < 0 &&
+                   message.IndexOf("WatchdogJournalPolicy ", StringComparison.OrdinalIgnoreCase) < 0;
         }
 
         private void AppendInfoLine(string formattedLine)

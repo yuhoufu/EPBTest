@@ -481,6 +481,7 @@ namespace Controller
                     : 0;
                 try
                 {
+                    _watchdogDoCommandSequence.AddOrUpdate(channel, 1, (_, value) => value + 1);
                     _runIdByChannel.TryGetValue(channel, out var runId);
                     _staggerAssignmentByChannel.TryGetValue(channel, out var assignment);
                     _currentCycleNumberByChannel.TryGetValue(channel, out var cycleNumber);
