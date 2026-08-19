@@ -676,10 +676,22 @@ namespace MTTFTest.Watchdog
                         ElapsedSeconds(Interlocked.Read(ref _lastFormalProgressTimestamp)) >=
                         WatchdogTakeoverPolicy.SelectFormalProgressTimeoutSeconds(
                             heartbeat.ExpectedCyclePeriodMs);
-                    var channelSupervisionReason = EvaluateChannelSupervision(
+                    var channelSupervision = EvaluateChannelSupervision(
                         heartbeat,
                         manualPauseCommanded,
                         eligibleChannels);
+                    if (channelSupervision.RefreshRequested)
+                    {
+                        RecordEvent(
+                            "ChannelRuntimeContractRefreshRequested",
+                            channelSupervision.RefreshReason);
+                        Send(
+                            WatchdogMessageType.Ping,
+                            "ChannelRuntimeContractRefreshRequested:" +
+                            channelSupervision.RefreshReason,
+                            null);
+                    }
+                    var channelSupervisionReason = channelSupervision.TakeoverReason;
                     var channelSupervisionFailed =
                         !string.IsNullOrWhiteSpace(channelSupervisionReason);
                     var manualPauseDeadlineUtc = heartbeat?.ManualPauseHardDeadlineUtc ?? 0;
@@ -768,12 +780,12 @@ namespace MTTFTest.Watchdog
             _ = Task.Run(() => TakeoverAsync(reason));
         }
 
-        private string EvaluateChannelSupervision(
+        private WatchdogChannelSupervisionEvaluation EvaluateChannelSupervision(
             WatchdogHeartbeat heartbeat,
             bool manualPauseCommanded,
             int[] eligibleChannels)
         {
-            return _channelProgressTracker.Evaluate(
+            return _channelProgressTracker.EvaluateDetailed(
                 heartbeat,
                 eligibleChannels,
                 manualPauseCommanded,

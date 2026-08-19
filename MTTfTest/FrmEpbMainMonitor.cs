@@ -2669,9 +2669,7 @@ namespace MTEmbTest
                 var safety = await stopTask;
                 if (safety.RequiresProcessRestart || safety.TimedOut)
                 {
-                    LogInfo(safety.TimedOut
-                        ? "停止试验超过安全截止：本进程已永久禁止再次开始，正在等待 Watchdog 完成安全接管。"
-                        : "停止试验已安全收口，但诊断状态要求重启：本进程已永久禁止再次开始；请等待 Watchdog 重启，或关闭软件后重新启动。");
+                    LogInfo(ProcessRestartUiPolicy.GetOperatorMessage(safety.TimedOut));
                     BtnStop.Enabled = false;
                     BtnStartTest.Enabled = false;
                 }

@@ -514,6 +514,13 @@ namespace MTTFTest.Watchdog.Protocol
     /// deadline, otherwise an actively drawing but non-counting channel can
     /// remain in a fake-running state forever.
     /// </summary>
+    public sealed class WatchdogChannelSupervisionEvaluation
+    {
+        public string TakeoverReason { get; internal set; }
+        public bool RefreshRequested { get; internal set; }
+        public string RefreshReason { get; internal set; }
+    }
+
     public sealed class WatchdogChannelProgressTracker
     {
         private readonly object _gate = new object();
@@ -525,6 +532,8 @@ namespace MTTFTest.Watchdog.Protocol
             new Dictionary<int, long>();
         private readonly Dictionary<int, string> _invariantSignatures =
             new Dictionary<int, string>();
+        private readonly Dictionary<int, string> _refreshRequestedSignatures =
+            new Dictionary<int, string>();
         private string _runIdentity = string.Empty;
 
         public void Reset()
@@ -535,6 +544,7 @@ namespace MTTFTest.Watchdog.Protocol
                 _mechanicalProgressTimestamps.Clear();
                 _invariantTimestamps.Clear();
                 _invariantSignatures.Clear();
+                _refreshRequestedSignatures.Clear();
                 _runIdentity = string.Empty;
             }
         }
@@ -546,8 +556,23 @@ namespace MTTFTest.Watchdog.Protocol
             long nowTimestamp,
             long timestampFrequency)
         {
+            return EvaluateDetailed(
+                heartbeat,
+                eligibleChannels,
+                manualPauseCommanded,
+                nowTimestamp,
+                timestampFrequency).TakeoverReason;
+        }
+
+        public WatchdogChannelSupervisionEvaluation EvaluateDetailed(
+            WatchdogHeartbeat heartbeat,
+            IEnumerable<int> eligibleChannels,
+            bool manualPauseCommanded,
+            long nowTimestamp,
+            long timestampFrequency)
+        {
             if (heartbeat == null || manualPauseCommanded)
-                return null;
+                return new WatchdogChannelSupervisionEvaluation();
 
             var eligible = new HashSet<int>(eligibleChannels ?? Enumerable.Empty<int>());
             var frequency = Math.Max(1L, timestampFrequency);
@@ -564,6 +589,7 @@ namespace MTTFTest.Watchdog.Protocol
                     _mechanicalProgressTimestamps.Clear();
                     _invariantTimestamps.Clear();
                     _invariantSignatures.Clear();
+                    _refreshRequestedSignatures.Clear();
                     _runIdentity = runIdentity;
                 }
 
@@ -584,12 +610,14 @@ namespace MTTFTest.Watchdog.Protocol
                         _mechanicalProgressTimestamps.Remove(item.Channel);
                         _invariantTimestamps.Remove(item.Channel);
                         _invariantSignatures.Remove(item.Channel);
+                        _refreshRequestedSignatures.Remove(item.Channel);
                         continue;
                     }
 
                     if (recoveryEligible && item.ConsecutiveSoftwareAbortCount >= 2)
-                        return $"ChannelConsecutiveSoftwareAbort:EPB={item.Channel};" +
-                               $"Count={item.ConsecutiveSoftwareAbortCount}";
+                        return Takeover(
+                            $"ChannelConsecutiveSoftwareAbort:EPB={item.Channel};" +
+                            $"Count={item.ConsecutiveSoftwareAbortCount}");
 
                     if (recoveryEligible && active && contract.MechanicalProgressExpected)
                     {
@@ -622,7 +650,7 @@ namespace MTTFTest.Watchdog.Protocol
                                 true,
                                 progressAge,
                                 heartbeat.ExpectedCyclePeriodMs))
-                            return string.Format(
+                            return Takeover(string.Format(
                                 CultureInfo.InvariantCulture,
                                 "ChannelProgressStalled:EPB={0};AgeSeconds={1:F1};" +
                                 "Timer={2};Runner={3};Energized={4};Mechanical={5};" +
@@ -636,7 +664,7 @@ namespace MTTFTest.Watchdog.Protocol
                                 item.LastMechanicalCompletedUtcTicks,
                                 item.DoCommandSequence,
                                 item.PeakCutoffGeneration,
-                                item.PeakCutoffSequence);
+                                item.PeakCutoffSequence));
                     }
                     else
                     {
@@ -651,6 +679,7 @@ namespace MTTFTest.Watchdog.Protocol
                     {
                         _invariantTimestamps.Remove(item.Channel);
                         _invariantSignatures.Remove(item.Channel);
+                        _refreshRequestedSignatures.Remove(item.Channel);
                     }
                     else
                     {
@@ -676,6 +705,23 @@ namespace MTTFTest.Watchdog.Protocol
                             _invariantSignatures[item.Channel] = invariantSignature;
                             _invariantTimestamps[item.Channel] = nowTimestamp;
                         }
+                        if (RequiresStructuredRefresh(invariantCode) &&
+                            (!_refreshRequestedSignatures.TryGetValue(
+                                 item.Channel,
+                                 out var refreshSignature) ||
+                             !string.Equals(
+                                 refreshSignature,
+                                 invariantSignature,
+                                 StringComparison.Ordinal)))
+                        {
+                            _refreshRequestedSignatures[item.Channel] = invariantSignature;
+                            return Refresh(BuildInvariantReason(
+                                invariantCode,
+                                heartbeat,
+                                item,
+                                contract,
+                                0));
+                        }
                         if (!_invariantTimestamps.TryGetValue(item.Channel, out var invariantSince))
                         {
                             invariantSince = nowTimestamp;
@@ -690,27 +736,76 @@ namespace MTTFTest.Watchdog.Protocol
                                 ? 30
                                 : 5;
                         if (invariantAge >= invariantDeadlineSeconds)
-                            return string.Format(
-                                CultureInfo.InvariantCulture,
-                                "{0}:EPB={1};AgeSeconds={2:F1};Timer={3};Runner={4};" +
-                                "Energized={5};State={6};ExpectedTimer={7};ExpectedRunner={8};" +
-                                "ContractRevision={9};RunId={10};RunEpoch={11}",
+                            return Takeover(BuildInvariantReason(
                                 invariantCode,
-                                item.Channel,
-                                invariantAge,
-                                item.TimerActive,
-                                item.RunnerActive,
-                                item.Energized,
-                                item.State,
-                                contract.TimerRequired,
-                                contract.RunnerRequired,
-                                WatchdogRuntimeContractPolicy.CurrentRevision,
-                                heartbeat.RunId,
-                                heartbeat.RunEpoch);
+                                heartbeat,
+                                item,
+                                contract,
+                                invariantAge));
                     }
                 }
             }
-            return null;
+            return new WatchdogChannelSupervisionEvaluation();
+        }
+
+        private static WatchdogChannelSupervisionEvaluation Takeover(string reason) =>
+            new WatchdogChannelSupervisionEvaluation { TakeoverReason = reason };
+
+        private static WatchdogChannelSupervisionEvaluation Refresh(string reason) =>
+            new WatchdogChannelSupervisionEvaluation
+            {
+                RefreshRequested = true,
+                RefreshReason = reason
+            };
+
+        private static bool RequiresStructuredRefresh(string invariantCode)
+        {
+            return string.Equals(
+                       invariantCode,
+                       "ChannelRuntimeContractInconsistent",
+                       StringComparison.Ordinal) ||
+                   string.Equals(
+                       invariantCode,
+                       "ChannelExpectedRuntimeMissing",
+                       StringComparison.Ordinal) ||
+                   string.Equals(
+                       invariantCode,
+                       "LearningRunnerMissing",
+                       StringComparison.Ordinal) ||
+                   string.Equals(
+                       invariantCode,
+                       "QualificationRunnerMissing",
+                       StringComparison.Ordinal) ||
+                   string.Equals(
+                       invariantCode,
+                       "ChannelRecoveryOwnerMissing",
+                       StringComparison.Ordinal);
+        }
+
+        private static string BuildInvariantReason(
+            string invariantCode,
+            WatchdogHeartbeat heartbeat,
+            WatchdogChannelProgress item,
+            WatchdogRuntimeContract contract,
+            double invariantAge)
+        {
+            return string.Format(
+                CultureInfo.InvariantCulture,
+                "{0}:EPB={1};AgeSeconds={2:F1};Timer={3};Runner={4};" +
+                "Energized={5};State={6};ExpectedTimer={7};ExpectedRunner={8};" +
+                "ContractRevision={9};RunId={10};RunEpoch={11}",
+                invariantCode,
+                item.Channel,
+                invariantAge,
+                item.TimerActive,
+                item.RunnerActive,
+                item.Energized,
+                item.State,
+                contract.TimerRequired,
+                contract.RunnerRequired,
+                WatchdogRuntimeContractPolicy.CurrentRevision,
+                heartbeat.RunId,
+                heartbeat.RunEpoch);
         }
 
         private static string SelectInvariantCode(
@@ -726,6 +821,12 @@ namespace MTTFTest.Watchdog.Protocol
                 item.RuntimeContractRevision == WatchdogRuntimeContractPolicy.CurrentRevision &&
                 !item.RecoveryOwned)
                 return "ChannelRecoveryOwnerMissing";
+            if (contract.RunnerRequired && !item.RunnerActive &&
+                string.Equals(item.State, "Learning", StringComparison.OrdinalIgnoreCase))
+                return "LearningRunnerMissing";
+            if (contract.RunnerRequired && !item.RunnerActive &&
+                string.Equals(item.State, "Qualification", StringComparison.OrdinalIgnoreCase))
+                return "QualificationRunnerMissing";
             if ((contract.TimerRequired && !item.TimerActive) ||
                 (contract.RunnerRequired && !item.RunnerActive))
                 return "ChannelExpectedRuntimeMissing";

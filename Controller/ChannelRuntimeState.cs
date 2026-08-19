@@ -36,6 +36,27 @@ namespace Controller
         Stopping = 6
     }
 
+    /// <summary>
+    ///     当前进程一旦由 StopAll 撤销再次启动授权，所有界面入口必须共享同一闭锁语义。
+    ///     该策略不决定普通批次状态下按钮是否可用，只负责覆盖“必须重启”的终态。
+    /// </summary>
+    public static class ProcessRestartUiPolicy
+    {
+        public const string LockedStartButtonText = "需重启软件";
+
+        public static bool CanStartInProcess(bool requiresProcessRestart)
+        {
+            return !requiresProcessRestart;
+        }
+
+        public static string GetOperatorMessage(bool stopTimedOut)
+        {
+            return stopTimedOut
+                ? "停止试验超过安全截止：本进程已永久禁止再次开始，正在等待 Watchdog 完成安全接管。"
+                : "停止试验已安全收口，但诊断状态要求重启：本进程已永久禁止再次开始；请等待 Watchdog 重启，或关闭软件后重新启动。";
+        }
+    }
+
     public sealed class BatchPauseStateChangedEvent
     {
         public BatchPauseState State { get; set; }

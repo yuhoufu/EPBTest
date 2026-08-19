@@ -73,6 +73,7 @@ namespace MTEmbTest
     internal static class WatchdogRuntime
     {
         private static readonly object Gate = new object();
+        private static readonly object HeartbeatCaptureGate = new object();
         private static NamedPipeClientStream _pipe;
         private static StreamReader _reader;
         private static StreamWriter _writer;
@@ -455,28 +456,7 @@ namespace MTEmbTest
             {
                 try
                 {
-                    WatchdogHeartbeat heartbeat = null;
-                    Func<WatchdogHeartbeat> provider;
-                    string session;
-                    lock (Gate) { provider = _heartbeatProvider; session = _sessionId; }
-                    Exception providerError = null;
-                    try { heartbeat = provider?.Invoke(); }
-                    catch (Exception ex) { providerError = ex; }
-                    heartbeat ??= new WatchdogHeartbeat();
-                    if (providerError != null)
-                    {
-                        heartbeat.RecoveryCode = "HeartbeatProviderFault";
-                        heartbeat.RecoveryContext = providerError.GetBaseException().Message;
-                        RaiseTransportError("HeartbeatProvider", providerError);
-                    }
-                    using (var process = Process.GetCurrentProcess())
-                    {
-                        heartbeat.Sequence = Interlocked.Increment(ref _heartbeatSequence);
-                        heartbeat.SessionId = session;
-                        heartbeat.ProcessId = process.Id;
-                        heartbeat.ProcessStartUtcTicks = process.StartTime.ToUniversalTime().Ticks;
-                    }
-                    if (!Send(new WatchdogMessage { Type = WatchdogMessageType.Heartbeat, SessionId = session, Heartbeat = heartbeat }))
+                    if (!SendHeartbeatSnapshot("Periodic"))
                         RaiseTransportLost("HeartbeatSendFailed", "Heartbeat未能发送。");
                     await Task.Delay(1000, token).ConfigureAwait(false);
                 }
@@ -486,6 +466,52 @@ namespace MTEmbTest
                     RaiseTransportError("HeartbeatLoop", ex);
                     await Task.Delay(250).ConfigureAwait(false);
                 }
+            }
+        }
+
+        /// <summary>
+        ///     周期心跳与 Sidecar 主动刷新共用同一采集/序列化入口。采集串行化可避免
+        ///     刷新请求和一秒周期恰好重叠时并发读取控制器集合，返回相互矛盾的快照。
+        /// </summary>
+        private static bool SendHeartbeatSnapshot(string trigger)
+        {
+            lock (HeartbeatCaptureGate)
+            {
+                WatchdogHeartbeat heartbeat = null;
+                Func<WatchdogHeartbeat> provider;
+                string session;
+                lock (Gate)
+                {
+                    provider = _heartbeatProvider;
+                    session = _sessionId;
+                }
+                Exception providerError = null;
+                try { heartbeat = provider?.Invoke(); }
+                catch (Exception ex) { providerError = ex; }
+                heartbeat ??= new WatchdogHeartbeat();
+                if (providerError != null)
+                {
+                    heartbeat.RecoveryCode = "HeartbeatProviderFault";
+                    heartbeat.RecoveryContext = providerError.GetBaseException().Message;
+                    RaiseTransportError("HeartbeatProvider", providerError);
+                }
+                using (var process = Process.GetCurrentProcess())
+                {
+                    heartbeat.Sequence = Interlocked.Increment(ref _heartbeatSequence);
+                    heartbeat.SessionId = session;
+                    heartbeat.ProcessId = process.Id;
+                    heartbeat.ProcessStartUtcTicks = process.StartTime.ToUniversalTime().Ticks;
+                }
+                if (!string.Equals(trigger, "Periodic", StringComparison.Ordinal))
+                    RecordClientEvent(
+                        "HeartbeatRefreshSent",
+                        $"Trigger={trigger};Sequence={heartbeat.Sequence}");
+                return Send(new WatchdogMessage
+                {
+                    Type = WatchdogMessageType.Heartbeat,
+                    SessionId = session,
+                    Heartbeat = heartbeat
+                });
             }
         }
 
@@ -516,7 +542,18 @@ namespace MTEmbTest
                         }
                     }
                     else if (message.Type == WatchdogMessageType.Ping)
-                        Send(new WatchdogMessage { Type = WatchdogMessageType.Pong, SessionId = sessionId, Reason = "Alive" });
+                    {
+                        // Ping 同时承担“重新采集结构化证据”的请求语义。先回送完整
+                        // Heartbeat，再回 Pong；Sidecar 只有在新快照仍保持同一资源
+                        // 不变量达到硬截止时才允许接管。
+                        SendHeartbeatSnapshot(message.Reason ?? "PingRefresh");
+                        Send(new WatchdogMessage
+                        {
+                            Type = WatchdogMessageType.Pong,
+                            SessionId = sessionId,
+                            Reason = "Alive"
+                        });
+                    }
                     else if (message.Type == WatchdogMessageType.RequestStopAll)
                     {
                         lock (Gate)
