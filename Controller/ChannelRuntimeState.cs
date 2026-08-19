@@ -294,6 +294,9 @@ namespace Controller
         public bool ActiveRecovery { get; set; }
         public bool OrphanPaused { get; set; }
         public bool PowerDisablePending { get; set; }
+        public bool OutputsConfirmedOff { get; set; }
+        public bool PowerOffUnconfirmed { get; set; }
+        public long RecoveryHardDeadlineUtcTicks { get; set; }
         public Guid RunId { get; set; }
         public long RunEpoch { get; set; }
         public string IncidentId { get; set; } = string.Empty;

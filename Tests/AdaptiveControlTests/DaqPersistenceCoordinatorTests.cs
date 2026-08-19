@@ -703,9 +703,11 @@ namespace AdaptiveControlTests
                            state.State == DaqPersistenceState.Failed &&
                            state.Code == "DaqPersistenceWorkerFault"),
                     "worker异常未锁存并发布持久化失败");
-                Assert(states.Any(state =>
-                           state.State == DaqPersistenceState.Recovered &&
-                           state.Code == "DaqPersistenceRecovered"),
+                WaitUntil(
+                    () => states.Any(state =>
+                        state.State == DaqPersistenceState.Recovered &&
+                        state.Code == "DaqPersistenceRecovered"),
+                    1000,
                     "worker监督补写成功后未发布Recovered");
             }
         }
@@ -953,7 +955,8 @@ namespace AdaptiveControlTests
                     FileSizeMb = 1,
                     RetainAllData = true
                 };
-                var startedUtc = DateTime.UtcNow.AddHours(-3);
+                // 即使刚刚崩溃/重启，新的 Writer 构造前也不可能拥有合法 running 圈。
+                var startedUtc = DateTime.UtcNow.AddMinutes(-1);
                 using (var first = new EpbDiskWriter(policy))
                 {
                     first.BeginCycle(4, 101, startedUtc);

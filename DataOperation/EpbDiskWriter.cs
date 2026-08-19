@@ -2990,8 +2990,9 @@ SELECT mechanical_completed_at FROM {TABLE_CYCLES}
 
     /// <summary>
     /// 上一进程崩溃、断电或被强制结束时，SQLite 中可能留下 running 圈。
-    /// 仅收口超过宽限期的孤儿圈：短时间普通重启仍须保留原始 running 证据和既有导出兼容性，
-    /// 独立 Watchdog 的强制接管通过 AbortInterruptedCyclesForSoftwareRecovery 显式作废本轮事故圈。
+    /// 构造完成前本进程尚未创建任何新圈，因此现存 running 全部属于已终止的旧
+    /// Writer/进程。无论是 Watchdog、人工重启还是普通重新打开项目，都必须立即
+    /// 收口；保留 running 不会增加证据，只会制造永久孤儿和错误恢复基线。
     /// </summary>
     private void RecoverInterruptedCyclesOnStartup()
     {
@@ -3003,9 +3004,8 @@ UPDATE {TABLE_CYCLES}
    SET status='aborted_on_startup',
        end_time=COALESCE(end_time, @now)
  WHERE status='running'
-   AND julianday(start_time) <= julianday(@staleBefore);";
+;";
             cmd.Parameters.AddWithValue("@now", DateTime.Now.ToString("o"));
-            cmd.Parameters.AddWithValue("@staleBefore", DateTime.Now.AddHours(-2).ToString("o"));
             cmd.ExecuteNonQuery();
         }
     }

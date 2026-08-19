@@ -172,10 +172,25 @@ namespace Controller
             // 可能受 Timer、恢复 owner、日志或持久化锁影响的清场工作。
             Volatile.Write(ref _energizationRevoked, 1);
             Interlocked.Increment(ref _runEpoch);
+            // 在启动通用清场前先撤销旧液压代次。该操作不等待缺员屏障，防止一个
+            // 永不到达的成员占满整个 StopAll 15 秒预算；压力安全仍在后续独立确认。
+            var forceAbortedHydraulicObjects = _hydCoordinator?.ForceAbortRun(
+                runId,
+                $"StopAll:{context.Source}:{transactionId:N}") ?? 0;
+            foreach (var pair in _hydraulicLeaseByChannel.ToArray())
+            {
+                if (pair.Value?.Key?.TestRunId != runId) continue;
+                pair.Value.ForceCloseWithoutWait();
+                ((ICollection<KeyValuePair<int, HydraulicChannelLeaseScope>>)_hydraulicLeaseByChannel)
+                    .Remove(pair);
+            }
+            foreach (var channel in _hydraulicParticipants.Keys.ToArray())
+                _hydraulicParticipants.TryRemove(channel, out _);
             AdvanceStopSafetyProgress(
                 generation,
                 StopSafetyStage.RevokeExecutionAuthorization,
-                "已撤销旧 RunEpoch，并安装禁止再上电栅栏");
+                $"已撤销旧 RunEpoch、液压代次并安装禁止再上电栅栏；" +
+                $"ForceAbortedHydraulicObjects={forceAbortedHydraulicObjects}");
 
             var offCompletions = new List<Task<HighPriorityDoTelemetry>>();
             foreach (var channel in Enumerable.Range(1, 12))
@@ -236,6 +251,40 @@ namespace Controller
                 StopSafetyStage.StartPowerDisable,
                 "已并行启动全部电源组 Disable",
                 powerStarted: true);
+
+            // 物理 OFF 与总电源 Disable 均已提交，此处执行不可等待的软件撤权。
+            // 正常 RunStopSafety 会再次幂等清理并闭合数据边界，但不再有 Timer、
+            // Runner 或通道 CTS 能占用外层硬截止并推进新动作。
+            var forceRevokedRuntimes = 0;
+            foreach (var channel in Enumerable.Range(1, 12))
+            {
+                try
+                {
+                    if (_timers.TryGetValue(channel, out var timer))
+                        timer.Pause("StopAllForceQuiesce");
+                }
+                catch { }
+                try { CancelCyclePauseCts(channel); } catch { }
+                try { CancelStopCts(channel); } catch { }
+                try
+                {
+                    var existed = _timers.ContainsKey(channel) || _timerCache.ContainsKey(channel);
+                    RemoveTimerRuntime(channel, "StopAllForceQuiesce");
+                    if (existed) forceRevokedRuntimes++;
+                }
+                catch { }
+                try
+                {
+                    var existed = _runners.ContainsKey(channel) || _runnerCache.ContainsKey(channel);
+                    RemoveRunnerRuntime(channel, "StopAllForceQuiesce");
+                    if (existed) forceRevokedRuntimes++;
+                }
+                catch { }
+            }
+            AdvanceStopSafetyProgress(
+                generation,
+                StopSafetyStage.ClearTimerAndRunner,
+                $"ForceQuiesce已撤销Timer/Runner/CTS；Removed={forceRevokedRuntimes}");
 
             // StartNew 把同步前段也移出调用线程；无论它卡在何处，对外 owner 都由
             // WhenAny 的硬截止终态化，后续人工停止不会复用一个永不完成的旧任务。

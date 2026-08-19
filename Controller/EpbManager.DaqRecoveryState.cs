@@ -141,6 +141,9 @@ namespace Controller
                             context.Cancellation.Token)
                         .ConfigureAwait(false);
                     if (!IsCurrentRecovery(context)) return;
+                    // 截止阶段一旦提交，后续 Validation/Rejoin 中的 Active 或重新上电
+                    // 都不再属于“OFF 未确认”；不能用过期的 5 秒切断计时器越级接管。
+                    if (context.Phase.Current >= DaqRecoveryPhase.CutoffCompleted) return;
 
                     var pendingGroups = (context.PowerDisableTasksByGroup ??
                                          new Dictionary<int, Task>())
@@ -165,8 +168,7 @@ namespace Controller
                             var state = _powerSupply.GetRuntimeState(id);
                             return pendingGroups.Contains(id) ||
                                    state.ExpectedOutputEnabled ||
-                                   state.TelemetryOutputEnabled ||
-                                   state.Active;
+                                   state.TelemetryOutputEnabled;
                         })
                         .OrderBy(id => id)
                         .ToArray();

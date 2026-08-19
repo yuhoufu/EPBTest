@@ -222,6 +222,16 @@ namespace Controller
                 return _closeTask;
             }
         }
+
+        internal void ForceCloseWithoutWait()
+        {
+            lock (_gate)
+            {
+                if (_closeTask != null) return;
+                _closeKind = 2;
+                _closeTask = Task.CompletedTask;
+            }
+        }
     }
 
     internal sealed class HydraulicCoordinatorRebuildingException : InvalidOperationException
@@ -677,6 +687,67 @@ namespace Controller
             // 并以实际压力连续安全作为 StopAll/恢复流程的完成依据。
             await ExecuteReleaseOutputAsync(hydraulicId).ConfigureAwait(false);
             await WaitForSafePressureAsync(hydraulicId).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// StopAll 专用的不可等待撤权。它只收敛软件所有权和代次门，不把压力确认
+        /// 伪装为成功；物理 DO/AO 回零及新鲜压力确认仍由 StopAll 的独立路径完成。
+        /// </summary>
+        internal int ForceAbortRun(Guid runId, string reason)
+        {
+            if (runId == Guid.Empty) return 0;
+            var aborted = 0;
+            var groups = new HashSet<int>();
+            foreach (var scope in _activeLeaseScopes.Keys
+                         .Where(item => item.Key.TestRunId == runId)
+                         .ToArray())
+            {
+                groups.Add(scope.Key.HydraulicId);
+                scope.ForceCloseWithoutWait();
+                if (_activeLeaseScopes.TryRemove(scope, out _)) aborted++;
+            }
+
+            foreach (var state in _generations.Values
+                         .Where(item => item.Key.TestRunId == runId)
+                         .ToArray())
+            {
+                groups.Add(state.Key.HydraulicId);
+                Interlocked.Exchange(ref state.FailStarted, 1);
+                lock (state.Gate) state.ReleaseStarted = true;
+                try { state.MonitorCts?.Cancel(); } catch { }
+                var cancellation = new OperationCanceledException(
+                    $"HydraulicRunForceAborted RunId={runId:N} Reason={reason}");
+                state.BarrierReached.TrySetException(cancellation);
+                state.Completion.TrySetException(cancellation);
+                ReleaseGenerationGate(state);
+                RemoveCompletedGeneration(state);
+                aborted++;
+            }
+
+            foreach (var hydraulicId in groups)
+            {
+                _coordinatorEpochs.AddOrUpdate(hydraulicId, 2, (_, epoch) => epoch + 1);
+                _groupRebuildFlags.TryRemove(hydraulicId, out _);
+                if (_latches.TryRemove(hydraulicId, out var latch))
+                {
+                    lock (latch.Gate)
+                    {
+                        try { latch.Cts?.Cancel(); } catch { }
+                        latch.InFlight.Clear();
+                        latch.PressureOn = false;
+                        latch.ReleaseStarted = true;
+                        latch.ReleaseCompletion?.TrySetException(new OperationCanceledException(
+                            $"HydraulicLatchForceAborted RunId={runId:N}"));
+                    }
+                }
+            }
+            if (aborted > 0)
+                _log.Warn(
+                    $"液压运行代次已由StopAll强制撤权：RunId={runId:N} " +
+                    $"Objects={aborted} Groups=[{string.Join(",", groups.OrderBy(id => id))}] " +
+                    $"Reason={reason}",
+                    "液压协调");
+            return aborted;
         }
 
         public HydraulicGenerationSnapshot ProbeGroupHealth(int hydraulicId)

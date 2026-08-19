@@ -707,7 +707,9 @@ namespace Controller
                 .Select(pair => pair.Key)
                 .OrderBy(channel => channel)
                 .ToArray();
-            var powerGroups = current == null || _powerSupply == null
+            var cutoffCompleted = current != null &&
+                                  current.Phase.Current >= DaqRecoveryPhase.CutoffCompleted;
+            var powerGroups = current == null || _powerSupply == null || cutoffCompleted
                 ? Array.Empty<int>()
                 : current.AffectedChannels
                     .Select(GetElectricalGroupId)
@@ -721,8 +723,7 @@ namespace Controller
                                            task != null && !task.IsCompleted;
                         return taskPending ||
                                state.ExpectedOutputEnabled ||
-                               state.TelemetryOutputEnabled ||
-                               state.Active;
+                               state.TelemetryOutputEnabled;
                     })
                     .OrderBy(id => id)
                     .ToArray();
@@ -745,6 +746,11 @@ namespace Controller
                 ActiveRecovery = current != null || orphan.Length > 0,
                 OrphanPaused = orphanPaused,
                 PowerDisablePending = powerGroups.Length > 0,
+                PowerOffUnconfirmed = powerGroups.Length > 0,
+                OutputsConfirmedOff = cutoffCompleted,
+                RecoveryHardDeadlineUtcTicks = current == null
+                    ? 0L
+                    : current.StartedUtc.AddMilliseconds(RecoveryGroupHardDeadlineMs).Ticks,
                 RunId = _activeBatchId,
                 RunEpoch = Interlocked.Read(ref _runEpoch),
                 IncidentId = current == null ? string.Empty : current.CorrelationId.ToString("N"),
@@ -2001,7 +2007,8 @@ namespace Controller
                                         runner,
                                         ch,
                                         cycleNumber,
-                                        committedCycles);
+                                        committedCycles,
+                                        phaseSlot);
                                 if (!nonRecoverableAlarm && mechanicalTargetReached)
                                 {
                                     FinalizeChannelAfterNaturalCompletion(ch, cycleNumber);
@@ -3401,13 +3408,19 @@ namespace Controller
         /// </summary>
         /// <param name="channel">EPB 通道号（1..12）。</param>
         /// <param name="sessionRunCount">本次试验 Session 内的运行次数（从 1 开始）。</param>
-        private void OnFormalCycleCommitted(int channel, int sessionRunCount)
+        private void OnFormalCycleCommitted(
+            int channel,
+            int sessionRunCount,
+            long groupCycleSlot)
         {
             _faultConfirmationTracker.ResetScope($"Channel:{channel}");
             var device = _acq.GetDeviceForEpbChannel(channel);
             if (!string.IsNullOrWhiteSpace(device))
                 _faultConfirmationTracker.ResetScope($"Daq:{device}");
             CompleteFormalSoftwareRecoveryAfterCommit(channel);
+            // 完整正式圈已经通过控制与持久化提交，等价于本动作具备新鲜DAQ电流证据。
+            // 电源通信降级确认按共享物理槽位去重，组内多个通道不会重复计圈。
+            _powerSupply?.RecordSuccessfulActionCycle(channel, groupCycleSlot);
             var current = _channelRuntimeStateStore.Get(channel);
             if (current?.State == ChannelRuntimeState.WarningRunning)
                 PublishChannelRuntimeState(
@@ -3493,9 +3506,10 @@ namespace Controller
             IEpbCycleRunner runner,
             int channel,
             int cycleNumber,
-            int sessionRunCount)
+            int sessionRunCount,
+            long groupCycleSlot)
         {
-            OnFormalCycleCommitted(channel, sessionRunCount);
+            OnFormalCycleCommitted(channel, sessionRunCount, groupCycleSlot);
             Adaptive.FormalCycleFaultCommitResult result;
             try
             {

@@ -27,6 +27,7 @@ namespace AdaptiveControlTests
             Run("液压同代次重复进入不重新登记已释放成员", SameGenerationReentryDoesNotReAddReleasedMember, ref passed);
             Run("已完成液压代次不阻碍不同成员重新开始", CompletedGenerationAllowsFreshMembership, ref passed);
             Run("液压通道作用域作废后代次完整归还", ChannelLeaseScopesAlwaysCloseGeneration, ref passed);
+            Run("StopAll强制撤权不等待缺员液压屏障", StopAllForceAbortDoesNotWaitForMissingMember, ref passed);
             Run("液压组重建替换旧Gate并递增Epoch", RebuildGroupRestoresFreshStartHealth, ref passed);
             Run("DAQ压力失新不再阻塞协调器安全重建", StalePressureAllowsDeenergizedCoordinatorRebuild, ref passed);
             Run("迟到旧Epoch租约不得释放新代次成员", LateOldEpochLeaseCannotReleaseNewGeneration, ref passed);
@@ -221,6 +222,34 @@ namespace AdaptiveControlTests
                 "液压组重建次数未准确记录。 ");
             Assert(firstScope.IsClosed && secondScope.IsClosed && rebuilt.ActiveLeaseCount == 0,
                 "液压组重建未终结并清除旧作用域租约。 ");
+        }
+
+        private static void StopAllForceAbortDoesNotWaitForMissingMember()
+        {
+            var coordinator = NewCoordinator(
+                () => 80.0,
+                () => Task.CompletedTask,
+                stableMs: 0,
+                timeoutMs: 300,
+                barrierTimeoutMs: 15000);
+            var runId = Guid.NewGuid();
+            var key = new HydraulicGenerationKey(runId, 2, HydraulicPhaseKind.Formal, 99);
+            var lease = coordinator.EnterGenerationAsync(key, new[] { 8, 9 }, CancellationToken.None)
+                .GetAwaiter().GetResult();
+            var first = coordinator.CreateChannelScope(lease, 8);
+            var missing = coordinator.CreateChannelScope(lease, 9);
+            var clock = Stopwatch.StartNew();
+            var aborted = coordinator.ForceAbortRun(runId, "StopAllRegression");
+            clock.Stop();
+            var snapshot = coordinator.ProbeGroupHealth(2);
+            Assert(aborted >= 3 && first.IsClosed && missing.IsClosed,
+                "强制撤权没有终态化全部代次和通道租约");
+            Assert(clock.ElapsedMilliseconds < 1000,
+                "强制撤权仍等待了缺员液压屏障");
+            Assert(snapshot.ActiveGenerationCount == 0 &&
+                   snapshot.ActiveLeaseCount == 0 &&
+                   snapshot.GenerationGateAvailable,
+                "强制撤权后液压软件所有权未收敛：" + snapshot);
         }
 
         private static void StalePressureAllowsDeenergizedCoordinatorRebuild()

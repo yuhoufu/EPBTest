@@ -211,31 +211,51 @@ namespace Controller
             internal string Key { get; }
             internal int QueuedOrRunning;
 
-            internal bool Merge(DaqIncidentEvidenceSubmission submission)
+            internal bool Merge(
+                DaqIncidentEvidenceSubmission submission,
+                out string rejectionReason)
             {
+                rejectionReason = string.Empty;
                 lock (_gate)
                 {
-                    if (_terminalExported) return false;
+                    if (_terminalExported)
+                    {
+                        rejectionReason = "TerminalAlreadyExported";
+                        return false;
+                    }
                     var phase = (submission.PhaseKey ?? string.Empty).Trim();
-                    if (phase.Length == 0) return false;
+                    if (phase.Length == 0)
+                    {
+                        rejectionReason = "InvalidPhase";
+                        return false;
+                    }
                     if (!string.IsNullOrWhiteSpace(submission.SessionKey))
                     {
                         if (!string.IsNullOrWhiteSpace(_sessionKey) &&
                             !string.Equals(_sessionKey, submission.SessionKey,
                                 StringComparison.OrdinalIgnoreCase))
+                        {
+                            rejectionReason = "SessionKeyMismatch";
                             return false;
+                        }
                         _sessionKey = submission.SessionKey;
                     }
                     if (submission.SessionId != Guid.Empty)
                     {
                         if (_sessionId != Guid.Empty && _sessionId != submission.SessionId)
+                        {
+                            rejectionReason = "SessionIdMismatch";
                             return false;
+                        }
                         _sessionId = submission.SessionId;
                     }
                     if (submission.StorageSessionId != Guid.Empty)
                     {
                         if (_storageSessionId != Guid.Empty && _storageSessionId != submission.StorageSessionId)
+                        {
+                            rejectionReason = "StorageSessionIdMismatch";
                             return false;
+                        }
                         _storageSessionId = submission.StorageSessionId;
                     }
                     foreach (var expected in submission.ExpectedDevices ?? Array.Empty<string>())
@@ -244,8 +264,13 @@ namespace Controller
                         if (!string.IsNullOrWhiteSpace(normalized)) _expectedDevices.Add(normalized);
                     }
                     if (_phases.Contains(phase)) return true;
-                    // terminal 注册后根事故已经冻结；迟到派生症状不得写在终态之后。
-                    if (_terminal != null && !submission.IsTerminal) return false;
+                    // terminal 注册后仍允许因线程调度较晚到达的 trigger 补齐根事故；
+                    // 普通派生症状不得越过终态继续追加。
+                    if (_terminal != null && !submission.IsTerminal && !submission.IsTrigger)
+                    {
+                        rejectionReason = "TerminalAlreadyRegistered";
+                        return false;
+                    }
 
                     if (submission.IsTrigger)
                     {
@@ -276,8 +301,9 @@ namespace Controller
                 get
                 {
                     lock (_gate)
-                        return (!_triggerExported && _trigger != null) ||
-                               (!_terminalExported && _terminal != null);
+                        return _trigger != null &&
+                               ((!_triggerExported && _trigger != null) ||
+                                (!_terminalExported && _terminal != null));
                 }
             }
 
@@ -322,6 +348,9 @@ namespace Controller
         private readonly WarningSnapshotWorkGate _capacity = new();
         private readonly ConcurrentDictionary<string, RootState> _contexts =
             new(StringComparer.OrdinalIgnoreCase);
+        private readonly ConcurrentDictionary<string, byte> _completedContexts =
+            new(StringComparer.OrdinalIgnoreCase);
+        private readonly ConcurrentQueue<string> _completedContextOrder = new();
         private readonly ConcurrentQueue<RootState> _queue = new();
         private readonly Action<DaqIncidentEvidenceBatch> _export;
         private readonly Action<Task> _observeWorker;
@@ -346,13 +375,27 @@ namespace Controller
         internal int WorkerStartCount => Volatile.Read(ref _workerStartCount);
 
         internal bool Submit(DaqIncidentEvidenceSubmission submission)
+            => Submit(submission, out _);
+
+        internal bool Submit(
+            DaqIncidentEvidenceSubmission submission,
+            out string rejectionReason)
         {
-            if (submission == null || string.IsNullOrWhiteSpace(submission.ContextKey)) return false;
+            rejectionReason = string.Empty;
+            if (submission == null || string.IsNullOrWhiteSpace(submission.ContextKey))
+            {
+                rejectionReason = "InvalidSubmission";
+                return false;
+            }
+            if (_completedContexts.ContainsKey(submission.ContextKey))
+            {
+                rejectionReason = "TerminalAlreadyExported";
+                return false;
+            }
             var created = false;
             RootState state;
             while (!_contexts.TryGetValue(submission.ContextKey, out state))
             {
-                if (!submission.IsTrigger) return false;
                 var candidate = new RootState(submission.ContextKey);
                 if (!_contexts.TryAdd(submission.ContextKey, candidate)) continue;
                 state = candidate;
@@ -360,7 +403,7 @@ namespace Controller
                 break;
             }
 
-            if (!state.Merge(submission))
+            if (!state.Merge(submission, out rejectionReason))
             {
                 if (created) _contexts.TryRemove(submission.ContextKey, out _);
                 return false;
@@ -370,6 +413,7 @@ namespace Controller
             if (created)
             {
                 _contexts.TryRemove(submission.ContextKey, out _);
+                rejectionReason = "GlobalEvidenceQueueCapacity";
                 return false;
             }
             // 已获准的根事故绝不能因全局 pending 槽短暂占满而丢 terminal；
@@ -461,7 +505,10 @@ namespace Controller
                     }
 
                     if (state.IsComplete)
+                    {
+                        RememberCompletedContext(state.Key);
                         _contexts.TryRemove(state.Key, out _);
+                    }
                     else if (exported && state.HasQueueableWork)
                         EnsureQueued(state);
                     else if (!exported && state.HasQueueableWork)
@@ -488,6 +535,15 @@ namespace Controller
                 if (state.HasQueueableWork) EnsureQueued(state);
             }
         }
+
+        private void RememberCompletedContext(string key)
+        {
+            if (string.IsNullOrWhiteSpace(key) || !_completedContexts.TryAdd(key, 0)) return;
+            _completedContextOrder.Enqueue(key);
+            while (_completedContexts.Count > 1024 &&
+                   _completedContextOrder.TryDequeue(out var expired))
+                _completedContexts.TryRemove(expired, out _);
+        }
     }
 
     public sealed partial class EpbManager
@@ -506,6 +562,18 @@ namespace Controller
         private readonly ConcurrentDictionary<int, int> _formalPersistenceRecoveryAttempts = new();
         private readonly ConcurrentDictionary<int, int> _formalControlRecoveryAttempts = new();
         private readonly ConcurrentDictionary<int, int> _formalPersistenceRecoveryPendingCycles = new();
+        private sealed class RollingHistoricalSnapshotRequest
+        {
+            internal string Key;
+            internal int Channel;
+            internal int CycleNumber;
+            internal ICycleEvidenceExporter Exporter;
+        }
+
+        private const int HistoricalSnapshotQueueCapacity = 32;
+        private readonly ConcurrentDictionary<string, byte> _pendingHistoricalSnapshots =
+            new(StringComparer.OrdinalIgnoreCase);
+        private readonly ConcurrentQueue<RollingHistoricalSnapshotRequest> _historicalSnapshotQueue = new();
         private readonly object _daqIncidentEvidenceQueueInitGate = new();
         private DaqIncidentEvidenceQueue _daqIncidentEvidenceQueue;
         private readonly Lazy<IncidentSessionPolicy> _incidentSessionPolicy =
@@ -529,6 +597,9 @@ namespace Controller
         private long _historicalSnapshotWrittenBytes;
         private long _historicalSnapshotSkippedLowSpace;
         private long _historicalLastLowSpaceWarningTicks;
+        private int _historicalSnapshotQueueCount;
+        private int _historicalSnapshotWorkerRunning;
+        private long _historicalSnapshotDropped;
         private static readonly Regex WarningEventDirectoryPattern = new(
             @"^\d{8}_\d{9}-Cycle-?\d+-Streak\d+of\d+$",
             RegexOptions.CultureInvariant | RegexOptions.Compiled);
@@ -1357,10 +1428,11 @@ namespace Controller
                 HeavyEvidenceSuppressed = sessionDecision.HeavyEvidenceSuppressed,
                 WriteHeavyEvidence = writeHeavyEvidence
             };
-            if (!GetDaqIncidentEvidenceQueue().Submit(submission))
+            if (!GetDaqIncidentEvidenceQueue().Submit(submission, out var rejectionReason))
                 _log.Error(
                     $"DAQ事故取证有界门拒绝提交：Phase={phaseKey} Device={context.Device} " +
-                    $"RunId={runId:N} CorrelationId={context.CorrelationId:N}",
+                    $"RunId={runId:N} CorrelationId={context.CorrelationId:N} " +
+                    $"Reason={rejectionReason}",
                     "落盘");
         }
 
@@ -2469,38 +2541,102 @@ namespace Controller
         {
             if (!_historicalStorageEnabled) return;
             if (!(Recorder is ICycleEvidenceExporter exporter)) return;
-            ObserveBackgroundTask(Task.Run(() =>
+            var key = $"{channel}:{cycleNumber}";
+            if (!_pendingHistoricalSnapshots.TryAdd(key, 0)) return;
+            var queued = Interlocked.Increment(ref _historicalSnapshotQueueCount);
+            if (queued > HistoricalSnapshotQueueCapacity)
             {
-                try
+                Interlocked.Decrement(ref _historicalSnapshotQueueCount);
+                _pendingHistoricalSnapshots.TryRemove(key, out _);
+                var dropped = Interlocked.Increment(ref _historicalSnapshotDropped);
+                _log.Warn(
+                    $"HistoricalSnapshotQueueFull EPB={channel} Cycle={cycleNumber} " +
+                    $"Capacity={HistoricalSnapshotQueueCapacity} DroppedTotal={dropped}；" +
+                    "仅跳过可选历史副本，正式圈、控制及报警链不受影响。",
+                    "落盘");
+                return;
+            }
+
+            _historicalSnapshotQueue.Enqueue(new RollingHistoricalSnapshotRequest
+            {
+                Key = key,
+                Channel = channel,
+                CycleNumber = cycleNumber,
+                Exporter = exporter
+            });
+            StartRollingHistoricalSnapshotWorker(channel);
+        }
+
+        private void StartRollingHistoricalSnapshotWorker(int observerChannel)
+        {
+            if (Interlocked.CompareExchange(ref _historicalSnapshotWorkerRunning, 1, 0) != 0)
+                return;
+            var worker = Task.Factory.StartNew(
+                ProcessRollingHistoricalSnapshotQueue,
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default);
+            ObserveBackgroundTask(worker, "RollingHistoricalSnapshotWorker", observerChannel);
+        }
+
+        private void ProcessRollingHistoricalSnapshotQueue()
+        {
+            try
+            {
+                while (_historicalSnapshotQueue.TryDequeue(out var request))
                 {
-                    var root = Path.Combine(
-                        _cfg.Test.StoreDir,
-                        _cfg.Test.TestName,
-                        "HistoricalSnapshots",
-                        $"EPB{channel:D2}");
-                    if (!ShouldWriteHistoricalSnapshot(root, channel, cycleNumber)) return;
-                    var dir = Path.Combine(root, $"Cycle_{cycleNumber:D6}");
-                    exporter.ExportCompletedCycleTo(channel, cycleNumber, dir, false, true);
-                    var writtenBytes = HistoricalStorageBudget.MeasureDirectoryBytes(dir);
-                    var totalBytes = Interlocked.Add(ref _historicalSnapshotWrittenBytes, writtenBytes);
-                    _log.Info(
-                        $"HistoricalSnapshotWritten EPB={channel} Cycle={cycleNumber} " +
-                        $"Bytes={writtenBytes} TotalBytes={totalBytes} Retain={_historicalRetainCyclesPerChannel}",
-                        "落盘");
-                    var keep = Math.Max(1, _historicalRetainCyclesPerChannel);
-                    foreach (var old in new DirectoryInfo(root).EnumerateDirectories("Cycle_*")
-                                 .OrderByDescending(x => x.Name).Skip(keep))
+                    try
                     {
-                        try { old.Delete(true); } catch { }
+                        ExportRollingHistoricalSnapshot(request);
+                    }
+                    finally
+                    {
+                        _pendingHistoricalSnapshots.TryRemove(request.Key, out _);
+                        Interlocked.Decrement(ref _historicalSnapshotQueueCount);
                     }
                 }
-                catch (Exception ex)
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _historicalSnapshotWorkerRunning, 0);
+                if (!_historicalSnapshotQueue.IsEmpty)
+                    StartRollingHistoricalSnapshotWorker(0);
+            }
+        }
+
+        private void ExportRollingHistoricalSnapshot(RollingHistoricalSnapshotRequest request)
+        {
+            var channel = request.Channel;
+            var cycleNumber = request.CycleNumber;
+            try
+            {
+                var root = Path.Combine(
+                    _cfg.Test.StoreDir,
+                    _cfg.Test.TestName,
+                    "HistoricalSnapshots",
+                    $"EPB{channel:D2}");
+                if (!ShouldWriteHistoricalSnapshot(root, channel, cycleNumber)) return;
+                var dir = Path.Combine(root, $"Cycle_{cycleNumber:D6}");
+                request.Exporter.ExportCompletedCycleTo(channel, cycleNumber, dir, false, true);
+                var writtenBytes = HistoricalStorageBudget.MeasureDirectoryBytes(dir);
+                var totalBytes = Interlocked.Add(ref _historicalSnapshotWrittenBytes, writtenBytes);
+                _log.Info(
+                    $"HistoricalSnapshotWritten EPB={channel} Cycle={cycleNumber} " +
+                    $"Bytes={writtenBytes} TotalBytes={totalBytes} Retain={_historicalRetainCyclesPerChannel}",
+                    "落盘");
+                var keep = Math.Max(1, _historicalRetainCyclesPerChannel);
+                foreach (var old in new DirectoryInfo(root).EnumerateDirectories("Cycle_*")
+                             .OrderByDescending(x => x.Name).Skip(keep))
                 {
-                    ReportSnapshotFailure(
-                        $"HistoricalSnapshotExportFailed EPB={channel} Cycle={cycleNumber} Error={ex.Message}",
-                        ex);
+                    try { old.Delete(true); } catch { }
                 }
-            }), "RollingHistoricalSnapshot", channel);
+            }
+            catch (Exception ex)
+            {
+                ReportSnapshotFailure(
+                    $"HistoricalSnapshotExportFailed EPB={channel} Cycle={cycleNumber} Error={ex.Message}",
+                    ex);
+            }
         }
 
         private bool ShouldWriteHistoricalSnapshot(string root, int channel, int cycleNumber)

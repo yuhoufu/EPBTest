@@ -1860,7 +1860,8 @@ namespace Controller
                             runner,
                             channel,
                             cycleNumber,
-                            committedCycles);
+                            committedCycles,
+                            phaseSlot);
                     if (!nonRecoverableAlarm && mechanicalTargetReached)
                     {
                         FinalizeChannelAfterNaturalCompletion(channel, cycleNumber);

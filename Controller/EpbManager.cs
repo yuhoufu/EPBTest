@@ -496,6 +496,8 @@ namespace Controller
             new(StringComparer.OrdinalIgnoreCase);
         private readonly ConcurrentDictionary<string, byte> _daqRecoveredGapAbortedCycles =
             new(StringComparer.OrdinalIgnoreCase);
+        private readonly ConcurrentDictionary<string, long> _daqFreshnessSafetyCutoffGeneration =
+            new(StringComparer.OrdinalIgnoreCase);
         private readonly object _stopSafetyGate = new();
         private Task<StopSafetyResult> _stopSafetyTask;
         private StopSource _stopSafetyTaskSource = StopSource.UnknownLegacy;
@@ -1600,13 +1602,13 @@ namespace Controller
             PeriodMs = cfg.Test.PeriodMs; // 周期时长
             TestCycle = cfg.Test.TestTarget; // 总周期数
 
-            // 添加每个epb通道的目标次数
-            foreach (var epbRecord in cfg.Test.EpbRecords)
+            // 配置加载层会归一化；这里再次防御直接构造 GlobalConfig 的调用方。
+            // 使用索引赋值保证即便外部并发替换了列表，也不会因重复键阻断整机初始化。
+            foreach (var epbRecord in cfg.Test.EnsureEpbRecords(12))
             {
                 _mechanicalCycleBaseline[epbRecord.Id] = epbRecord.EffectiveMechanicalCycleCount;
-                EpbTestCycle!.Add(
-                    epbRecord.Id,
-                    epbRecord.GetRemainingMechanicalCycles(cfg.Test.TestTarget));
+                EpbTestCycle[epbRecord.Id] =
+                    epbRecord.GetRemainingMechanicalCycles(cfg.Test.TestTarget);
             }
             
 
@@ -2344,7 +2346,8 @@ namespace Controller
                             runner,
                             channel,
                             cycleNumber,
-                            committedCycles);
+                            committedCycles,
+                            i);
                     if (!nonRecoverableAlarm && mechanicalTargetReached)
                     {
                         FinalizeChannelAfterNaturalCompletion(channel, cycleNumber);
@@ -3277,6 +3280,13 @@ namespace Controller
             return "DaqSampleStale";
         }
 
+        internal static bool IsRunnerDaqFreshnessSafetyCutoff(string reason)
+        {
+            return (reason ?? string.Empty).IndexOf(
+                       "DaqSampleStale",
+                       StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
         private void OnRunnerRecoverableFaultRaised(int channel, string reason)
         {
             var device = _acq.GetDeviceForEpbChannel(channel);
@@ -3297,16 +3307,44 @@ namespace Controller
                 affectedChannels = new[] { channel };
             var faultCode = ExtractFaultCode(reason);
             var faultReason = reason;
-            if (faultCode.IndexOf("DaqSampleStale", StringComparison.OrdinalIgnoreCase) >= 0)
+            if (IsRunnerDaqFreshnessSafetyCutoff(faultCode))
             {
                 var freshness = _acq.GetDaqFreshnessSnapshot(device, 100);
                 faultCode = ClassifyDaqStaleRoot(freshness, 100);
                 faultReason =
-                    $"{faultCode}>100ms CallbackAge={freshness.CallbackAgeMs:F1}ms " +
-                    $"ControlEnqueueAge={freshness.ControlEnqueueAgeMs:F1}ms " +
-                    $"ControlProcessedAge={freshness.ControlProcessedAgeMs:F1}ms " +
-                    $"ProcessedSampleUtc={(freshness.ProcessedSampleUtc == default ? "none" : freshness.ProcessedSampleUtc.ToString("O"))} " +
+                    $"DaqFreshnessSafetyCutoff>100ms Root={faultCode} " +
+                    $"CallbackAge={freshness?.CallbackAgeMs ?? double.PositiveInfinity:F1}ms " +
+                    $"ControlEnqueueAge={freshness?.ControlEnqueueAgeMs ?? double.PositiveInfinity:F1}ms " +
+                    $"ControlProcessedAge={freshness?.ControlProcessedAgeMs ?? double.PositiveInfinity:F1}ms " +
+                    $"ProcessedSampleUtc={(freshness == null || freshness.ProcessedSampleUtc == default ? "none" : freshness.ProcessedSampleUtc.ToString("O"))} " +
                     $"Original={reason}";
+                var generation = Math.Max(0, freshness?.Generation ?? 0);
+                _daqFreshnessSafetyCutoffGeneration[device] = generation;
+                if (_currentCycleNumberByChannel.TryGetValue(channel, out var cutoffCycle))
+                {
+                    MarkDaqClockCycleAborted(
+                        _activeBatchId,
+                        Interlocked.Read(ref _runEpoch),
+                        channel,
+                        cutoffCycle);
+                    _daqRecoveredGapAbortedCycles[DaqAbortedCycleKey(
+                        _activeBatchId,
+                        Interlocked.Read(ref _runEpoch),
+                        channel,
+                        cutoffCycle)] = 0;
+                }
+                _log.Warn(
+                    $"FieldMetric DAQ_FRESHNESS_SAFETY_CUTOFF Device={device} EPB={channel} " +
+                    $"Generation={generation} Action=MotorOffAndAbortCurrentCycle;" +
+                    $"DaqRestart=false;EscalationOwner=DaqLivenessSupervisor Detail={faultReason}",
+                    "FIELD");
+                NonCriticalObserver.Invoke(
+                    ChannelWarningRaised,
+                    channel,
+                    $"{faultCode}：已立即断电并作废本圈；仅当独立存活监督达到" +
+                    $"{_daqLivenessTripThresholdMs:F0}ms×3 才重建DAQ。",
+                    ex => _log?.Warn($"DAQ安全切断预警观察者异常已隔离：{ex.Message}", "AI"));
+                return;
             }
             var attemptId = _currentAttemptIdByChannel.TryGetValue(channel, out var currentAttempt)
                 ? currentAttempt
@@ -5758,20 +5796,61 @@ namespace Controller
         {
             var device = _acq.GetDeviceForEpbChannel(channel);
             if (string.IsNullOrWhiteSpace(device)) return;
-            if (!_daqAutoRecovery.TryGetValue(device, out var context)) return;
-            var completed = await Task.WhenAny(
-                    context.Completion.Task,
-                    Task.Delay(Timeout.Infinite, token))
-                .ConfigureAwait(false);
-            if (completed != context.Completion.Task)
+            if (_daqAutoRecovery.TryGetValue(device, out var context))
+            {
+                var completed = await Task.WhenAny(
+                        context.Completion.Task,
+                        Task.Delay(Timeout.Infinite, token))
+                    .ConfigureAwait(false);
+                if (completed != context.Completion.Task)
+                {
+                    token.ThrowIfCancellationRequested();
+                    return;
+                }
+                var result = await context.Completion.Task.ConfigureAwait(false);
+                if (!result.Recovered)
+                    throw new InvalidOperationException(
+                        $"DaqRecoveryFailed Device={device} Reason={result.FailureReason}");
+            }
+
+            if (!_daqFreshnessSafetyCutoffGeneration.ContainsKey(device)) return;
+            var stableSince = Stopwatch.GetTimestamp();
+            while (true)
             {
                 token.ThrowIfCancellationRequested();
-                return;
+                if (_daqAutoRecovery.TryGetValue(device, out var lateRecovery) &&
+                    lateRecovery.Terminal.Current == DaqRecoveryTerminal.None)
+                {
+                    var completed = await Task.WhenAny(
+                            lateRecovery.Completion.Task,
+                            Task.Delay(Timeout.Infinite, token))
+                        .ConfigureAwait(false);
+                    if (completed != lateRecovery.Completion.Task)
+                    {
+                        token.ThrowIfCancellationRequested();
+                        return;
+                    }
+                    var lateResult = await lateRecovery.Completion.Task.ConfigureAwait(false);
+                    if (!lateResult.Recovered)
+                        throw new InvalidOperationException(
+                            $"DaqRecoveryFailed Device={device} Reason={lateResult.FailureReason}");
+                    stableSince = Stopwatch.GetTimestamp();
+                }
+                var freshness = _acq.GetDaqFreshnessSnapshot(device, 100);
+                var fresh = freshness?.IsFresh == true &&
+                            freshness.CallbackAgeMs <= 100 &&
+                            freshness.ControlEnqueueAgeMs <= 100 &&
+                            freshness.ControlProcessedAgeMs <= 100;
+                if (!fresh)
+                    stableSince = Stopwatch.GetTimestamp();
+                else if ((Stopwatch.GetTimestamp() - stableSince) * 1000.0 /
+                         Stopwatch.Frequency >= 500)
+                {
+                    _daqFreshnessSafetyCutoffGeneration.TryRemove(device, out _);
+                    return;
+                }
+                await Task.Delay(20, token).ConfigureAwait(false);
             }
-            var result = await context.Completion.Task.ConfigureAwait(false);
-            if (!result.Recovered)
-                throw new InvalidOperationException(
-                    $"DaqRecoveryFailed Device={device} Reason={result.FailureReason}");
         }
 
         private void OnPowerSupplyTelemetryUpdated(PowerSupplyTelemetry telemetry)

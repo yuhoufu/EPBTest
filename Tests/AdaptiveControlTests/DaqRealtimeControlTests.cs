@@ -60,6 +60,7 @@ namespace AdaptiveControlTests
             Run("后台冻结边界结果逐项报告Published与Raw未闭合谓词", BackgroundDrainResultExplainsPendingPredicate, ref passed);
             Run("恢复阶段只在终态导出完整重证据", IncidentSnapshotHeavyEvidencePolicy, ref passed);
             Run("百次事故症状共用容量2取证门且终态精确一次", IncidentEvidenceQueueIsBoundedAndCoalesced, ref passed);
+            Run("DAQ取证乱序到达仍按根触发到终态导出", IncidentEvidenceQueueAcceptsOutOfOrderPhases, ref passed);
             Run("同一批次双DAQ各自导出trigger和terminal且队列有界", DualDeviceIncidentEvidenceRootsRemainIndependent, ref passed);
             Run("DAQ事故根目录只由RunId和关联号决定", DaqIncidentEvidenceDirectoryIdentity, ref passed);
             Run("恢复边界矛盾只锁存首个原因并只允许一次", RecoveryBoundaryContradictionFirstWins, ref passed);
@@ -1206,6 +1207,52 @@ namespace AdaptiveControlTests
                 "未终态反例补交terminal失败");
             Assert(unfinished.DrainAsync(2000).GetAwaiter().GetResult(),
                 "未终态反例补交terminal后仍未收口");
+        }
+
+        private static void IncidentEvidenceQueueAcceptsOutOfOrderPhases()
+        {
+            var exported = new ConcurrentQueue<DaqIncidentEvidenceBatch>();
+            var queue = new DaqIncidentEvidenceQueue(batch => exported.Enqueue(batch));
+            var runId = Guid.NewGuid();
+            var correlationId = Guid.NewGuid();
+            var contextKey = $"{runId:N}:{correlationId:N}:out-of-order";
+            DaqIncidentEvidenceSubmission NewSubmission(
+                string phase,
+                bool trigger = false,
+                bool terminal = false) => new DaqIncidentEvidenceSubmission
+            {
+                ContextKey = contextKey,
+                RunId = runId,
+                CorrelationId = correlationId,
+                Device = "Dev1",
+                StartedUtc = DateTime.UtcNow,
+                PhaseKey = phase,
+                IncidentJson = "{}",
+                IsTrigger = trigger,
+                IsTerminal = terminal
+            };
+
+            Assert(queue.Submit(NewSubmission("symptom-callback-stale"), out var derivedReject),
+                "trigger前到达的派生症状被拒绝：" + derivedReject);
+            Assert(queue.Submit(NewSubmission("90-recovered", terminal: true), out var terminalReject),
+                "trigger前到达的终态被拒绝：" + terminalReject);
+            Assert(queue.WorkerStartCount == 0,
+                "根触发尚未到达时提前导出了无根事故");
+            Assert(queue.Submit(NewSubmission("00-trigger", trigger: true), out var triggerReject),
+                "迟到的根触发未能补齐事故：" + triggerReject);
+            Assert(queue.DrainAsync(5000).GetAwaiter().GetResult(),
+                "乱序事故证据补齐后未排空");
+
+            var submissions = exported
+                .SelectMany(batch => batch.OrderedSubmissions())
+                .ToArray();
+            Assert(submissions.Length == 3 && submissions[0].IsTrigger &&
+                   !submissions[1].IsTrigger && !submissions[1].IsTerminal &&
+                   submissions[2].IsTerminal,
+                "乱序提交没有按 trigger、derived、terminal 的规范顺序导出");
+            Assert(!queue.Submit(NewSubmission("symptom-too-late"), out var lateReject) &&
+                   lateReject == "TerminalAlreadyExported",
+                "已导出终态后的迟到证据未返回可统计的结构化拒绝原因：" + lateReject);
         }
 
         private static void DualDeviceIncidentEvidenceRootsRemainIndependent()
@@ -3224,6 +3271,9 @@ namespace AdaptiveControlTests
 
         private static void DaqStaleRootClassification()
         {
+            Assert(EpbManager.IsRunnerDaqFreshnessSafetyCutoff("DaqSampleStale>100ms") &&
+                   !EpbManager.IsRunnerDaqFreshnessSafetyCutoff("DaqCallbackStale"),
+                "100ms单圈安全切断与独立DAQ设备恢复触发未分层");
             Assert(EpbManager.ClassifyDaqStaleRoot(new DaqFreshnessSnapshot
             {
                 CallbackAgeMs = 1167,
