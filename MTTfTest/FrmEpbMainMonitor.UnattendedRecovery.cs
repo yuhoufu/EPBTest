@@ -202,6 +202,15 @@ namespace MTEmbTest
             var recoveryIncident = recoveryEvidence.Incident;
             var recoveryContext = recoveryEvidence.Context;
             var stageOrdinal = recoveryEvidence.StageOrdinal;
+            var recoveryActive = WatchdogRecoveryTelemetryPolicy.ShouldPublishRecoveryActive(
+                manualPauseCommanded,
+                recoveryEvidence.Active,
+                logical?.DaqRecoveryCount ?? 0,
+                logical?.SoftwareRecoveryCount ?? 0,
+                logical?.RecoveryOwnerCount ?? 0,
+                recovering.Length > 0,
+                !string.IsNullOrWhiteSpace(recoveryIncident) ||
+                !string.IsNullOrWhiteSpace(recoveryContext));
             var progressSignature = RecoveryProgressSignature.Build(
                 recovering.Select(state =>
                         $"{state.Channel}:{state.State}:{state.ReasonCode}:{state.Revision}")
@@ -257,11 +266,7 @@ namespace MTEmbTest
                 ManualPauseSafetyFault = manualPause?.SafetyFault == true,
                 ManualPauseSafetyFaultReason = manualPause?.Detail ?? string.Empty,
                 ManualPauseEnergizedChannels = manualPause?.EnergizedChannels ?? Array.Empty<int>(),
-                RecoveryActive = !manualPauseCommanded &&
-                                 (recoveryEvidence.Active ||
-                                  (logical?.DaqRecoveryCount ?? 0) > 0 ||
-                                  (logical?.SoftwareRecoveryCount ?? 0) > 0 ||
-                                  (logical?.RecoveryOwnerCount ?? 0) > 0),
+                RecoveryActive = recoveryActive,
                 RecoveryCode = manualPauseCommanded
                     ? "ManualGracefulPause"
                     : recovering.FirstOrDefault()?.ReasonCode ?? string.Empty,
@@ -285,6 +290,7 @@ namespace MTEmbTest
                     ref _watchdogRecoveryBatchCommitGeneration),
                 StageStartedMonotonic = Interlocked.Read(ref _watchdogStageStartedTicks),
                 DaqRecoveryCount = logical?.DaqRecoveryCount ?? 0,
+                ActiveCycleCount = logical?.ActiveCycleCount ?? 0,
                 SoftwareRecoveryCount = logical?.SoftwareRecoveryCount ?? 0,
                 RecoveryOwnerCount = logical?.RecoveryOwnerCount ?? 0,
                 StopAllActive = stop?.Active == true,
@@ -296,7 +302,8 @@ namespace MTEmbTest
                 TimerCount = logical?.TimerCount ?? 0,
                 RunnerCount = logical?.RunnerCount ?? 0,
                 EnergizedChannelCount = logical?.EnergizedChannelCount ?? 0,
-                CompletedCycleCount = (_cfg?.Test?.EpbRecords ?? Enumerable.Empty<Config.EpbTestRecord>())
+                CompletedCycleCount = (_cfg?.Test?.EpbRecords?.Snapshot() ??
+                                       Array.Empty<Config.EpbTestRecord>())
                     .Sum(record => Math.Max(record.MechanicalCycleCount, record.RunCount)),
                 ExpectedCyclePeriodMs = Math.Max(1, _cfg?.Test?.PeriodMs ?? 1),
                 StopCtsCount = logical?.StopCtsCount ?? 0,

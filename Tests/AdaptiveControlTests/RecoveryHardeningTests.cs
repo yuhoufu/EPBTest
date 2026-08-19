@@ -39,6 +39,14 @@ namespace AdaptiveControlTests
                 PowerDisableTimeoutEscalatesWithoutBlocking, ref passed);
             Run("Timer最终Paused必须绑定同一恢复owner",
                 TimerPausedStateCarriesRecoveryOwner, ref passed);
+            Run("生产Timer实例代次栅栏拒绝一万次迟到Paused",
+                ProductionTimerGenerationGateRejectsLatePause, ref passed);
+            Run("Recovering无人工owner时中央门禁拒绝Paused",
+                RecoveryLifecycleCannotBecomeManualPause, ref passed);
+            Run("冻结恢复cohort不因迟到Paused或兄弟Running丢通道",
+                FrozenRecoveryCohortSurvivesMutableUiState, ref passed);
+            Run("五个健康活动圈与软件恢复计数严格分离",
+                HealthyActiveCyclesAreNotSoftwareRecovery, ref passed);
             Run("旧Session和RunEpoch消息不能影响新运行",
                 StaleSessionMessagesAreIgnored, ref passed);
             Run("同批双DAQ共享Correlation且重复注册保持同一批次",
@@ -530,6 +538,82 @@ namespace AdaptiveControlTests
                     : ChannelRuntimeState.Recovering);
             Assert(selected.SequenceEqual(new[] { 4 }),
                 "生产恢复候选未排除永久报警、人工暂停或已完成通道");
+        }
+
+        private static void ProductionTimerGenerationGateRejectsLatePause()
+        {
+            for (var i = 0; i < 10000; i++)
+            {
+                var staleInstance = EpbManager.EvaluateTimerRuntimeEventGate(
+                    sourceActive: false,
+                    registrationMatches: false,
+                    sourceGeneration: 10,
+                    currentGeneration: 11,
+                    sourceRunEpoch: 7,
+                    currentRunEpoch: 7,
+                    currentState: ChannelRuntimeState.Recovering,
+                    timerState: HighPrecisionTimerRuntimeState.Paused);
+                Assert(!staleInstance.Accepted &&
+                       staleInstance.ReasonCode == "TimerInstanceNotActive",
+                    "已移除Timer的迟到Paused仍通过生产事件栅栏");
+
+                var currentButRecoveryOwned = EpbManager.EvaluateTimerRuntimeEventGate(
+                    sourceActive: true,
+                    registrationMatches: true,
+                    sourceGeneration: 11,
+                    currentGeneration: 11,
+                    sourceRunEpoch: 7,
+                    currentRunEpoch: 7,
+                    currentState: ChannelRuntimeState.Recovering,
+                    timerState: HighPrecisionTimerRuntimeState.Paused);
+                Assert(!currentButRecoveryOwned.Accepted &&
+                       currentButRecoveryOwned.ReasonCode == "RecoveryOwnsChannelLifecycle",
+                    "恢复owner存在时当前Timer仍能把业务态覆盖成Paused");
+            }
+        }
+
+        private static void RecoveryLifecycleCannotBecomeManualPause()
+        {
+            Assert(EpbManager.ShouldRejectRecoveryPauseOverride(
+                       ChannelRuntimeState.Recovering,
+                       ChannelRuntimeState.Paused,
+                       manualPauseOwned: false) &&
+                   EpbManager.ShouldRejectRecoveryPauseOverride(
+                       ChannelRuntimeState.Recovering,
+                       ChannelRuntimeState.PausePending,
+                       manualPauseOwned: false),
+                "无ManualPause owner的恢复态仍可变成普通暂停");
+            Assert(!EpbManager.ShouldRejectRecoveryPauseOverride(
+                       ChannelRuntimeState.Running,
+                       ChannelRuntimeState.Paused,
+                       manualPauseOwned: true),
+                "真实人工暂停被恢复状态门禁误伤");
+        }
+
+        private static void FrozenRecoveryCohortSurvivesMutableUiState()
+        {
+            var states = new Dictionary<int, ChannelRuntimeState>
+            {
+                [4] = ChannelRuntimeState.Paused,
+                [5] = ChannelRuntimeState.Running
+            };
+            var selected = EpbManager.SelectInfrastructureRecoveryEligibleChannels(
+                new[] { 4, 5 },
+                channel => true,
+                channel => false,
+                channel => false,
+                channel => states[channel]);
+            Assert(selected.SequenceEqual(new[] { 4, 5 }),
+                "冻结的EPB4/5恢复事务仍因EPB4迟到Paused或EPB5保持Running而部分提交");
+        }
+
+        private static void HealthyActiveCyclesAreNotSoftwareRecovery()
+        {
+            var counts = EpbManager.BuildLogicalRecoveryCounts(
+                5,
+                0, 0, 0, 0, 0, 0, 0, 0);
+            Assert(counts.ActiveCycleCount == 5 && counts.SoftwareRecoveryCount == 0,
+                "正常活动圈仍被计入SoftwareRecoveryCount");
         }
 
         private static void DaqBatchCorrelationIsSharedAndIdempotent()

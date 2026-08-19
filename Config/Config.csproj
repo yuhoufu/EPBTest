@@ -57,6 +57,7 @@
     <Compile Include="EpbAdaptiveProfiles.cs" />
     <Compile Include="EpbProjectPolicies.cs" />
     <Compile Include="EpbTestRecord.cs" />
+    <Compile Include="EpbTestRecordCollection.cs" />
     <Compile Include="FaultClassification.cs" />
     <Compile Include="ConfigLoader.cs" />
     <Compile Include="IAppLogger.cs" />

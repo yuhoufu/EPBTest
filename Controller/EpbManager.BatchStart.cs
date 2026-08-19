@@ -3174,6 +3174,7 @@ namespace Controller
         {
             var removed = _timerRuntime.Remove(channel, timer =>
             {
+                DetachTimerRuntimeObserver(channel, timer);
                 try { timer.Stop(); } catch { }
             });
             foreach (var timer in removed)
@@ -3198,9 +3199,8 @@ namespace Controller
             var timer = _timerRuntime.GetOrCreate(
                 ch,
                 () => new HighPrecisionTimer(periodMs, overrunPolicy, _log),
-                activate: null,
+                value => AttachTimerRuntimeObserver(ch, value),
                 out var created);
-            if (created) AttachTimerRuntimeObserver(ch, timer);
             _log?.Info(
                 $"EPB[{ch}] Timer {(created ? "已创建" : "缓存命中并激活")}，" +
                 $"Instance={System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(timer)}。",

@@ -48,8 +48,8 @@ namespace Controller
                 ProductVersion = FormatProductVersion(version),
                 AssemblyVersion = version?.ToString() ?? "unknown",
                 ExecutablePath = string.IsNullOrWhiteSpace(executable) ? "unknown" : executable,
-                ExecutableSha256 = TryComputeSha256(executable),
-                ConfigSha256 = TryComputeSha256(
+                ExecutableSha256 = ComputeFileSha256(executable),
+                ConfigSha256 = ComputeFileSha256(
                     string.IsNullOrWhiteSpace(executable) ? null : executable + ".config"),
                 ReleaseConfigSha256 = releaseConfigSha256,
                 ProcessBitness = IntPtr.Size * 8,
@@ -149,7 +149,7 @@ namespace Controller
             catch { return null; }
         }
 
-        private static string TryComputeSha256(string path)
+        public static string ComputeFileSha256(string path)
         {
             try
             {

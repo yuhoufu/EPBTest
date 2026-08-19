@@ -19,7 +19,7 @@ namespace Config
         /// <summary>
         /// EPB 通道 Id（1..12）。
         /// </summary>
-        public int Id { get; set; }
+        public int Id { get; internal set; }
 
         /// <summary>
         /// EPB 通道 启用

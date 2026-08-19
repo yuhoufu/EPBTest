@@ -1360,7 +1360,6 @@ namespace MTEmbTest
                     return rec;
 
                 rec = EpbTestRecord.CreateDefault(id);
-                rec.Id = id;
                 _uiEpbRecords.Add(rec);
                 return rec;
             }
@@ -2478,15 +2477,9 @@ namespace MTEmbTest
 
                 #region 重新给每个通道的执行次数赋值
 
-                Dictionary<int, int> epbTestCycle = new Dictionary<int, int>();
-                // 添加每个epb通道的目标次数
-                foreach (var epbRecord in _cfg.Test.EnsureEpbRecords(12))
-                {
-                    epbTestCycle[epbRecord.Id] =
-                        epbRecord.GetRemainingMechanicalCycles(_cfg.Test.TestTarget);
-                }
-
-                _epb.EpbTestCycle = epbTestCycle;
+                _epb.EpbTestCycle = _cfg.Test.CreateEpbStartPlan(
+                    _cfg.Test.TestTarget,
+                    12);
 
                 #endregion 
 
@@ -3467,16 +3460,8 @@ namespace MTEmbTest
 
             lock (_epbRecordsLock)
             {
-                var target = _cfg.Test.EpbRecords;
-                target.Clear();
-
-                // 按通道号排序后写回，保证 XML 中顺序规整（1..12）
-                foreach (var r in _uiEpbRecords.OrderBy(x => x.Id))
-                {
-                    // 这里直接把引用放回去即可：
-                    // _uiEpbRecords 本身就是 EpbTestRecord 对象列表，不必再克隆
-                    target.Add(r);
-                }
+                // 单次原子替换，读线程只会看到替换前或替换后的完整唯一快照。
+                _cfg.Test.EpbRecords.ReplaceAll(_uiEpbRecords.OrderBy(x => x.Id));
             }
         }
 

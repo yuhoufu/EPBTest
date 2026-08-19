@@ -25,6 +25,14 @@ namespace MTTFTest.Watchdog
         public int ConsecutiveStartupFailures { get; set; }
         public long RelaunchGeneration { get; set; }
         public int CircuitProbeAttempt { get; set; }
+        public bool RecoveryBlocked { get; set; }
+        public string RecoveryFailureCode { get; set; }
+        public bool RecoveryFailurePermanent { get; set; }
+        public string RecoveryFailureFingerprint { get; set; }
+        public int RecoveryFailureMaxProcessRelaunches { get; set; }
+        public long RecoveryFirstFailureUtcTicks { get; set; }
+        public long RecoveryLastFailureUtcTicks { get; set; }
+        public long RecoveryBlockedUtcTicks { get; set; }
         public long LastRecoveryBatchCommitGeneration { get; set; }
         public bool ManualStopRequested { get; set; }
         public string State { get; set; }
@@ -118,8 +126,6 @@ namespace MTTFTest.Watchdog
         private readonly object _journalGate = new object();
         private readonly WatchdogChannelProgressTracker _channelProgressTracker =
             new WatchdogChannelProgressTracker();
-        private readonly RecoveryFailureCircuitBreaker _recoveryFailureCircuitBreaker =
-            new RecoveryFailureCircuitBreaker();
         private readonly WatchdogJournalStore _journalStore;
         private readonly RecoveryTransitionWindow _transitionWindow;
         private StreamWriter _writer;
@@ -135,8 +141,9 @@ namespace MTTFTest.Watchdog
         private long _lastHeartbeatCheckpointTimestamp;
         private int _takeoverStarted;
         private int _relaunchStarted;
-        private int _circuitProbeStarted;
+        private int _recoveryBlockedStopRequested;
         private int _heartbeatSuspectLogged;
+        private int _unstructuredRecoveryLogged;
         private int _terminalPublished;
         private long _manualStopIntentTimestamp;
         private long _manualPauseStartedTimestamp;
@@ -166,6 +173,7 @@ namespace MTTFTest.Watchdog
                     process.StartTime.ToUniversalTime().Ticks);
             _transitionWindow = new RecoveryTransitionWindow(OnTransitionOperatorStopRequested);
             var startedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+            var previous = TryLoadPreviousJournal(args);
             _journal = new WatchdogJournal
             {
                 SessionId = args.SessionId,
@@ -173,12 +181,67 @@ namespace MTTFTest.Watchdog
                 PipeName = args.PipeName,
                 CurrentPid = args.ParentPid,
                 CurrentProcessStartUtcTicks = args.ParentStartTicks,
-                State = "Starting",
+                RecoveryAttempt = previous?.RecoveryAttempt ?? 0,
+                ConsecutiveStartupFailures = previous?.ConsecutiveStartupFailures ?? 0,
+                RelaunchGeneration = previous?.RelaunchGeneration ?? 0,
+                RecoveryBlocked = previous?.RecoveryBlocked == true,
+                RecoveryFailureCode = previous?.RecoveryFailureCode,
+                RecoveryFailurePermanent = previous?.RecoveryFailurePermanent == true,
+                RecoveryFailureFingerprint = previous?.RecoveryFailureFingerprint,
+                RecoveryFailureMaxProcessRelaunches =
+                    previous?.RecoveryFailureMaxProcessRelaunches ?? 0,
+                RecoveryFirstFailureUtcTicks = previous?.RecoveryFirstFailureUtcTicks ?? 0,
+                RecoveryLastFailureUtcTicks = previous?.RecoveryLastFailureUtcTicks ?? 0,
+                RecoveryBlockedUtcTicks = previous?.RecoveryBlockedUtcTicks ?? 0,
+                LastReason = previous?.LastReason,
+                State = previous?.RecoveryBlocked == true
+                    ? "SafeIdleRecoveryBlocked"
+                    : "Starting",
                 UpdatedUtc = startedUtc,
                 StartedUtc = startedUtc
             };
             SaveJournal();
-            RecordEvent("Starting", "SidecarStarted");
+            if (_journal.RecoveryBlocked)
+            {
+                RecordEvent(
+                    "RecoveryBlockedRestored",
+                    $"Code={_journal.RecoveryFailureCode};" +
+                    $"Fingerprint={_journal.RecoveryFailureFingerprint};" +
+                    $"Count={_journal.ConsecutiveStartupFailures}");
+                ShowRecoveryBlockedTransition(_journal.LastReason);
+            }
+            else
+            {
+                RecordEvent("Starting", "SidecarStarted");
+            }
+        }
+
+        private static WatchdogJournal TryLoadPreviousJournal(WatchdogArguments args)
+        {
+            try
+            {
+                var path = Path.Combine(
+                    args.JournalDirectory,
+                    "session-" + WatchdogJournalPaths.SafeName(args.SessionId) + ".json");
+                if (!File.Exists(path)) return null;
+                string content;
+                using (var stream = new FileStream(
+                           path,
+                           FileMode.Open,
+                           FileAccess.Read,
+                           FileShare.ReadWrite | FileShare.Delete))
+                using (var reader = new StreamReader(stream, new UTF8Encoding(false), true))
+                    content = reader.ReadToEnd();
+                var previous = Json.Deserialize<WatchdogJournal>(content);
+                return previous != null &&
+                       string.Equals(previous.SessionId, args.SessionId, StringComparison.OrdinalIgnoreCase)
+                    ? previous
+                    : null;
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         public static int Run(string[] rawArgs)
@@ -279,6 +342,20 @@ namespace MTTFTest.Watchdog
                             message.Session.RelaunchGeneration);
                     }
                     _attached = true;
+                    if (_journal.RecoveryBlocked)
+                    {
+                        RecordEvent(
+                            "RecoveryProcessRejectedByDurableBlock",
+                            $"Code={_journal.RecoveryFailureCode};" +
+                            $"Fingerprint={_journal.RecoveryFailureFingerprint}");
+                        ShowRecoveryBlockedTransition(_journal.LastReason);
+                        if (Interlocked.CompareExchange(ref _recoveryBlockedStopRequested, 1, 0) == 0)
+                            Send(
+                                WatchdogMessageType.RequestStopAll,
+                                "DurableRecoveryBlocked",
+                                Guid.NewGuid().ToString("N"));
+                        break;
+                    }
                     _takeoverStarted = 0;
                     _relaunchStarted = 0;
                     _lastProgressVersion = 0;
@@ -302,8 +379,12 @@ namespace MTTFTest.Watchdog
                     Send(WatchdogMessageType.Attached, "Attached", message.CorrelationId);
                     break;
                 case WatchdogMessageType.MainUiReady:
-                    Record("MainUiReady", message.Reason ?? "MainWindowShown");
-                    if (Interlocked.CompareExchange(ref _transitionActive, 0, 0) != 0)
+                    if (_journal.RecoveryBlocked)
+                        RecordEvent("MainUiReadyRejectedByDurableBlock", message.Reason);
+                    else
+                        Record("MainUiReady", message.Reason ?? "MainWindowShown");
+                    if (!_journal.RecoveryBlocked &&
+                        Interlocked.CompareExchange(ref _transitionActive, 0, 0) != 0)
                     {
                         _transitionWindow.Hide();
                         Interlocked.Exchange(ref _transitionActive, 0);
@@ -338,7 +419,8 @@ namespace MTTFTest.Watchdog
                     else
                         Interlocked.Exchange(ref _manualPauseStartedTimestamp, 0);
                     TrackManualPauseProgress(message.Heartbeat);
-                    if (Interlocked.CompareExchange(ref _transitionActive, 0, 0) != 0 &&
+                    if (!_journal.RecoveryBlocked &&
+                        Interlocked.CompareExchange(ref _transitionActive, 0, 0) != 0 &&
                         RecoveryTransitionPolicy.ShouldHide(message.Heartbeat))
                     {
                         _transitionWindow.Hide();
@@ -397,14 +479,26 @@ namespace MTTFTest.Watchdog
                     BeginTakeover("BatchStartFailed:" + message.Reason);
                     break;
                 case WatchdogMessageType.RecoveryAttemptFailed:
-                    Record("RecoveryAttemptFailed", message.Reason);
+                    var classification = RecoveryFailurePolicy.Classify(
+                        message.RecoveryFailureCode,
+                        message.RecoveryFailurePermanent,
+                        message.Reason);
+                    Record(
+                        "RecoveryAttemptFailed",
+                        $"Code={classification.Code};Permanent={classification.Permanent};" +
+                        $"ContextSha256={message.RecoveryFailureContextSha256};" +
+                        (message.Reason ?? string.Empty));
                     _attached = false;
-                    var failureDecision = RegisterRecoveryFailure(message.Reason);
-                    if (_journal.ConsecutiveStartupFailures >= RecoveryFailureCircuitBreaker.DefaultConsecutiveLimit)
+                    var failureDecision = RegisterRecoveryFailure(
+                        message.Reason,
+                        classification);
+                    if (classification.Permanent ||
+                        failureDecision.ConsecutiveCount >=
+                        Math.Max(1, classification.MaximumProcessRelaunches))
                         EnterRelaunchCircuitOpen(
                             failureDecision.Fingerprint,
-                            _journal.ConsecutiveStartupFailures,
-                            message.Reason);
+                            failureDecision.ConsecutiveCount,
+                            message.RecoveryFailureDetail ?? message.Reason);
                     else
                         BeginRelaunchAfterExit();
                     break;
@@ -481,6 +575,10 @@ namespace MTTFTest.Watchdog
                         _stop.Cancel();
                         continue;
                     }
+                    if (_journal.RecoveryBlocked)
+                    {
+                        continue;
+                    }
                     var heartbeatAge = ElapsedSeconds(Interlocked.Read(ref _lastHeartbeatTimestamp));
                     if (heartbeatAge >= 3 && heartbeatAge < 5)
                     {
@@ -529,11 +627,28 @@ namespace MTTFTest.Watchdog
                     var logicalResidue = heartbeat != null && !manualPauseCommanded && !heartbeat.RunActive &&
                         (heartbeat.TimerCount > 0 || heartbeat.RunnerCount > 0 ||
                          heartbeat.StopCtsCount > 0 || heartbeat.CyclePauseCtsCount > 0 ||
+                         heartbeat.ActiveCycleCount > 0 ||
                          heartbeat.DaqRecoveryCount > 0 || heartbeat.SoftwareRecoveryCount > 0 ||
                          heartbeat.RecoveryOwnerCount > 0);
                     var inconsistentRecovery = heartbeat != null && !manualPauseCommanded && !heartbeat.RecoveryActive &&
                         (heartbeat.DaqRecoveryCount > 0 || heartbeat.SoftwareRecoveryCount > 0 ||
                          heartbeat.RecoveryOwnerCount > 0);
+                    var unstructuredRecovery = heartbeat != null && !manualPauseCommanded &&
+                        WatchdogRecoveryTelemetryPolicy.IsUnstructuredRecoveryClaim(heartbeat);
+                    if (unstructuredRecovery)
+                    {
+                        if (Interlocked.CompareExchange(ref _unstructuredRecoveryLogged, 1, 0) == 0)
+                            RecordEvent(
+                                "RecoveryTelemetryInconsistent",
+                                $"RecoveryActive=true without owner/incident/stage;" +
+                                $"SoftwareRecoveryCount={heartbeat.SoftwareRecoveryCount};" +
+                                $"ActiveCycleCount={heartbeat.ActiveCycleCount};global takeover suppressed");
+                        Send(WatchdogMessageType.Ping, "RecoveryTelemetryRefreshRequested", null);
+                    }
+                    else
+                    {
+                        Interlocked.Exchange(ref _unstructuredRecoveryLogged, 0);
+                    }
                     var formalProgressStalled = heartbeat != null &&
                         heartbeat.RunActive &&
                         string.Equals(heartbeat.Phase, "Formal", StringComparison.OrdinalIgnoreCase) &&
@@ -574,7 +689,7 @@ namespace MTTFTest.Watchdog
                         Interlocked.CompareExchange(ref _takeoverStarted, 0, 0) != 0,
                         processAlive,
                         heartbeatAge,
-                        heartbeat?.RecoveryActive == true,
+                        WatchdogRecoveryTelemetryPolicy.ShouldTreatAsRecoveryActive(heartbeat),
                         heartbeat?.OrphanPaused == true,
                         heartbeat?.PowerOffUnconfirmed == true,
                         stageAgeSeconds,
@@ -619,7 +734,7 @@ namespace MTTFTest.Watchdog
 
         private void BeginTakeover(string reason)
         {
-            if (_journal.ManualStopRequested || IsSessionRevoked() ||
+            if (_journal.RecoveryBlocked || _journal.ManualStopRequested || IsSessionRevoked() ||
                 Interlocked.CompareExchange(ref _takeoverStarted, 1, 0) != 0) return;
             Record("TakeoverRequested", reason);
             Interlocked.Exchange(ref _transitionActive, 1);
@@ -806,11 +921,16 @@ namespace MTTFTest.Watchdog
 
         private void BeginRelaunchAfterExit()
         {
-            if (_journal.ManualStopRequested || IsSessionRevoked()) return;
+            if (_journal.RecoveryBlocked || _journal.ManualStopRequested || IsSessionRevoked()) return;
             _ = Task.Run(async () =>
             {
                 if (_journal.RecoveryAttempt > _journal.ConsecutiveStartupFailures)
-                    RegisterRecoveryFailure("RecoveryProcessExitedBeforeBatchCommit");
+                    RegisterRecoveryFailure(
+                        "RecoveryProcessExitedBeforeBatchCommit",
+                        RecoveryFailurePolicy.Classify(
+                            "RecoveryProcessExitedBeforeBatchCommit",
+                            false,
+                            "RecoveryProcessExitedBeforeBatchCommit"));
                 var deadline = DateTime.UtcNow.AddSeconds(15);
                 while (DateTime.UtcNow < deadline && !IsSessionRevoked() && IsCurrentProcessAlive())
                     await Task.Delay(250).ConfigureAwait(false);
@@ -843,17 +963,28 @@ namespace MTTFTest.Watchdog
             });
         }
 
-        private async Task RelaunchLoopAsync(string reason, bool circuitProbe = false)
+        private async Task RelaunchLoopAsync(string reason)
         {
+            if (!RecoveryFailurePolicy.CanLaunchMainProcess(_journal.RecoveryBlocked)) return;
             if (Interlocked.CompareExchange(ref _relaunchStarted, 1, 0) != 0) return;
-            var launchedAttempts = 0;
             while (!_journal.ManualStopRequested && !IsSessionRevoked() && !_stop.IsCancellationRequested)
             {
-                if (_journal.ConsecutiveStartupFailures >= RecoveryFailureCircuitBreaker.DefaultConsecutiveLimit &&
-                    !circuitProbe)
+                if (!RecoveryFailurePolicy.CanLaunchMainProcess(_journal.RecoveryBlocked))
+                    return;
+                var activeClassification = RecoveryFailurePolicy.Classify(
+                    _journal.RecoveryFailureCode,
+                    _journal.RecoveryFailurePermanent,
+                    reason);
+                var maximumRelaunches = _journal.RecoveryFailureMaxProcessRelaunches > 0
+                    ? _journal.RecoveryFailureMaxProcessRelaunches
+                    : Math.Max(1, activeClassification.MaximumProcessRelaunches);
+                if (activeClassification.Permanent ||
+                    _journal.ConsecutiveStartupFailures >= maximumRelaunches)
                 {
                     EnterRelaunchCircuitOpen(
-                        RecoveryFailurePolicy.BuildFingerprint(reason),
+                        string.IsNullOrWhiteSpace(_journal.RecoveryFailureFingerprint)
+                            ? RecoveryFailurePolicy.BuildFingerprint(reason)
+                            : _journal.RecoveryFailureFingerprint,
                         _journal.ConsecutiveStartupFailures,
                         reason);
                     return;
@@ -864,13 +995,13 @@ namespace MTTFTest.Watchdog
                     _journal.RecoveryAttempt = attempt;
                     _journal.RelaunchGeneration++;
                 }
-                launchedAttempts++;
-                var delay = circuitProbe
-                    ? 0
-                    : RecoveryFailurePolicy.SelectProcessRelaunchDelaySeconds(attempt);
+                var delay = RecoveryFailurePolicy.SelectProcessRelaunchDelaySeconds(attempt);
                 Record("RecoveryBackoff", $"Attempt={attempt};DelaySeconds={delay};Reason={reason}");
                 await DelayWithTransitionCountdownAsync(delay, attempt, reason).ConfigureAwait(false);
-                if (_journal.ManualStopRequested || IsSessionRevoked()) return;
+                if (_journal.ManualStopRequested ||
+                    IsSessionRevoked() ||
+                    !RecoveryFailurePolicy.CanLaunchMainProcess(_journal.RecoveryBlocked))
+                    return;
                 try
                 {
                     _transitionWindow.Show(
@@ -896,11 +1027,16 @@ namespace MTTFTest.Watchdog
                     lock (_processLaunchGate)
                     {
                         if (_journal.ManualStopRequested ||
+                            !RecoveryFailurePolicy.CanLaunchMainProcess(_journal.RecoveryBlocked) ||
                             RecoveryTransitionPolicy.MustSuppressAutomaticRestart(
                                 IsTransitionOperatorStopInProgress(),
                                 IsSessionRevoked()))
                         {
-                            Record("RecoveryProcessLaunchSuppressed", "OperatorTransitionStopOrSessionRevoked");
+                            Record(
+                                "RecoveryProcessLaunchSuppressed",
+                                _journal.RecoveryBlocked
+                                    ? "RecoveryBlocked"
+                                    : "OperatorTransitionStopOrSessionRevoked");
                             return;
                         }
                         started = Process.Start(new ProcessStartInfo
@@ -939,7 +1075,12 @@ namespace MTTFTest.Watchdog
                     }
                     try { if (!started.HasExited) started.Kill(); } catch { }
                     Record("RecoveryAttachFailed", $"Attempt={attempt}");
-                    RegisterRecoveryFailure("RecoveryAttachFailed");
+                    RegisterRecoveryFailure(
+                        "RecoveryAttachFailed",
+                        RecoveryFailurePolicy.Classify(
+                            "RecoveryAttachFailed",
+                            false,
+                            "RecoveryAttachFailed"));
                     _transitionWindow.Show(
                         "本次启动未能连接",
                         "主程序未在 20 秒内连接，将按退避策略再次尝试",
@@ -949,21 +1090,17 @@ namespace MTTFTest.Watchdog
                 catch (Exception ex)
                 {
                     Record("RecoveryLaunchFailed", ex.Message);
-                    RegisterRecoveryFailure("RecoveryLaunchFailed:" + ex.GetBaseException().Message);
+                    RegisterRecoveryFailure(
+                        "RecoveryLaunchFailed:" + ex.GetBaseException().Message,
+                        RecoveryFailurePolicy.Classify(
+                            "RecoveryLaunchFailed",
+                            false,
+                            ex.GetBaseException().ToString()));
                     _transitionWindow.Show(
                         "本次启动失败",
                         "将按退避策略重试：" + ex.GetBaseException().Message,
                         0,
                         attempt);
-                }
-                if (circuitProbe && launchedAttempts >= 1)
-                {
-                    Interlocked.Exchange(ref _relaunchStarted, 0);
-                    EnterRelaunchCircuitOpen(
-                        RecoveryFailurePolicy.BuildFingerprint(reason),
-                        _journal.ConsecutiveStartupFailures,
-                        reason);
-                    return;
                 }
             }
             Interlocked.Exchange(ref _relaunchStarted, 0);
@@ -973,30 +1110,70 @@ namespace MTTFTest.Watchdog
         {
             Interlocked.Exchange(ref _relaunchStarted, 0);
             Interlocked.Exchange(ref _transitionActive, 1);
+            lock (_journalGate)
+            {
+                _journal.RecoveryBlocked = true;
+                _journal.RecoveryFailureFingerprint = fingerprint ?? string.Empty;
+                _journal.ConsecutiveStartupFailures = Math.Max(
+                    1,
+                    consecutiveCount);
+                _journal.RecoveryBlockedUtcTicks = DateTime.UtcNow.Ticks;
+            }
             Record(
                 "SafeIdleRecoveryBlocked",
                 $"ProcessRelaunchCircuitOpen;Count={consecutiveCount};Fingerprint={fingerprint};Detail={detail}");
+            ShowRecoveryBlockedTransition(detail);
+        }
+
+        private void ShowRecoveryBlockedTransition(string detail)
+        {
             _transitionWindow.Show(
-                "快速恢复已暂停，设备保持安全",
-                $"连续 {Math.Max(RecoveryFailureCircuitBreaker.DefaultConsecutiveLimit, consecutiveCount)} 次恢复失败，" +
-                "已转入低频单实例探测。请检查设备通信；可点击下方按钮停止并关闭。\r\n" +
+                "自动恢复已阻断，设备保持安全",
+                $"恢复失败已进入持久终态（Code={_journal.RecoveryFailureCode ?? "Unknown"}，" +
+                $"Count={Math.Max(1, _journal.ConsecutiveStartupFailures)}）。" +
+                "不会再启动主程序；请处理配置/程序或设备问题后由操作员重新开始新会话。" +
+                "可点击下方按钮停止并关闭。\r\n" +
                 (detail ?? string.Empty),
                 0,
                 _journal.RecoveryAttempt);
-            ScheduleCircuitProbe();
         }
 
-        private RecoveryFailureDecision RegisterRecoveryFailure(string reason)
+        private RecoveryFailureDecision RegisterRecoveryFailure(
+            string reason,
+            RecoveryFailureClassification classification)
         {
-            var decision = _recoveryFailureCircuitBreaker.Observe(reason);
+            classification = classification ?? RecoveryFailurePolicy.Classify(null, false, reason);
+            var fingerprint = RecoveryFailurePolicy.BuildFingerprint(
+                classification.Code + ":" + (reason ?? string.Empty));
+            int consecutiveCount;
             lock (_journalGate)
             {
-                _journal.ConsecutiveStartupFailures = Math.Max(
-                    _journal.ConsecutiveStartupFailures,
-                    Math.Max(1, _journal.RecoveryAttempt));
+                var sameFingerprint = string.Equals(
+                    _journal.RecoveryFailureFingerprint,
+                    fingerprint,
+                    StringComparison.Ordinal);
+                consecutiveCount = sameFingerprint
+                    ? Math.Max(1, _journal.ConsecutiveStartupFailures + 1)
+                    : 1;
+                var nowTicks = DateTime.UtcNow.Ticks;
+                _journal.ConsecutiveStartupFailures = consecutiveCount;
+                _journal.RecoveryFailureCode = classification.Code;
+                _journal.RecoveryFailurePermanent = classification.Permanent;
+                _journal.RecoveryFailureFingerprint = fingerprint;
+                _journal.RecoveryFailureMaxProcessRelaunches =
+                    Math.Max(0, classification.MaximumProcessRelaunches);
+                if (!sameFingerprint || _journal.RecoveryFirstFailureUtcTicks <= 0)
+                    _journal.RecoveryFirstFailureUtcTicks = nowTicks;
+                _journal.RecoveryLastFailureUtcTicks = nowTicks;
             }
             SaveJournal();
-            return decision;
+            return new RecoveryFailureDecision
+            {
+                Fingerprint = fingerprint,
+                ConsecutiveCount = consecutiveCount,
+                ProcessRelaunchAllowed = !classification.Permanent &&
+                    consecutiveCount < Math.Max(1, classification.MaximumProcessRelaunches)
+            };
         }
 
         private void CommitRecoveryAttempt(long commitGeneration)
@@ -1006,44 +1183,18 @@ namespace MTTFTest.Watchdog
                 _journal.RecoveryAttempt = 0;
                 _journal.ConsecutiveStartupFailures = 0;
                 _journal.CircuitProbeAttempt = 0;
+                _journal.RecoveryBlocked = false;
+                _journal.RecoveryFailureCode = string.Empty;
+                _journal.RecoveryFailurePermanent = false;
+                _journal.RecoveryFailureFingerprint = string.Empty;
+                _journal.RecoveryFailureMaxProcessRelaunches = 0;
+                _journal.RecoveryFirstFailureUtcTicks = 0;
+                _journal.RecoveryLastFailureUtcTicks = 0;
+                _journal.RecoveryBlockedUtcTicks = 0;
                 _journal.LastRecoveryBatchCommitGeneration = Math.Max(
                     _journal.LastRecoveryBatchCommitGeneration,
                     commitGeneration);
             }
-            _recoveryFailureCircuitBreaker.Reset();
-            Interlocked.Exchange(ref _circuitProbeStarted, 0);
-        }
-
-        private void ScheduleCircuitProbe()
-        {
-            if (_journal.ManualStopRequested || IsSessionRevoked() ||
-                Interlocked.CompareExchange(ref _circuitProbeStarted, 1, 0) != 0)
-                return;
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    int probeAttempt;
-                    lock (_journalGate)
-                    {
-                        probeAttempt = ++_journal.CircuitProbeAttempt;
-                    }
-                    var minutes = RecoveryFailurePolicy.SelectCircuitProbeDelayMinutes(probeAttempt);
-                    Record("RecoveryCircuitProbeScheduled", $"Probe={probeAttempt};DelayMinutes={minutes}");
-                    await DelayWithTransitionCountdownAsync(minutes * 60, _journal.RecoveryAttempt, "CircuitProbe")
-                        .ConfigureAwait(false);
-                    if (_journal.ManualStopRequested || IsSessionRevoked() || _stop.IsCancellationRequested)
-                        return;
-                    Interlocked.Exchange(ref _circuitProbeStarted, 0);
-                    await RelaunchLoopAsync("CircuitProbe", true).ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    Interlocked.Exchange(ref _circuitProbeStarted, 0);
-                    Record("RecoveryCircuitProbeSchedulerFailed", ex.GetBaseException().Message);
-                    ScheduleCircuitProbe();
-                }
-            });
         }
 
         private async Task DelayWithTransitionCountdownAsync(int delaySeconds, int attempt, string reason)

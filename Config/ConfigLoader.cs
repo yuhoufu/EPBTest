@@ -151,7 +151,7 @@ public sealed class TestConfig
     ///     12 条 EPB 记录（通道 1..12）。通常由 ConfigLoader 从 XML 读取或第一次启动时 EnsureEpbRecords() 初始化。
     ///     每个记录包含：Id, StartTime, LatestStartTime, RunTime(字符串), TotalCount, RunCount, Status。
     /// </summary>
-    public List<EpbTestRecord> EpbRecords { get; set; } = new();
+    public EpbTestRecordCollection EpbRecords { get; } = new();
 
 
     /// <summary>
@@ -159,32 +159,29 @@ public sealed class TestConfig
     ///     调用场景：首次加载配置后补齐，或需要访问某通道记录时使用。
     ///     备注：历史文件若含重复 Id，会合并单调运行证据并保留任一副本的启用授权。
     /// </summary>
-    public List<EpbTestRecord> EnsureEpbRecords(int expectedCount = 12)
+    public EpbTestRecordCollection EnsureEpbRecords(int expectedCount = 12)
     {
         if (expectedCount <= 0) throw new ArgumentOutOfRangeException(nameof(expectedCount));
 
         lock (_epbRecordsGate)
         {
-            EpbRecords ??= new List<EpbTestRecord>();
-
-            var normalized = EpbRecords
+            var normalized = EpbRecords.Snapshot()
                 .Where(record => record != null && record.Id >= 1 && record.Id <= expectedCount)
                 .GroupBy(record => record.Id)
-                .Select(MergeDuplicateEpbRecords)
+                .Select(group => MergeDuplicateEpbRecords(group))
                 .ToDictionary(record => record.Id);
 
             for (var id = 1; id <= expectedCount; id++)
                 if (!normalized.ContainsKey(id))
                     normalized.Add(id, EpbTestRecord.CreateDefault(id));
 
-            EpbRecords.Clear();
-            EpbRecords.AddRange(normalized.Values.OrderBy(record => record.Id));
+            EpbRecords.ReplaceAll(normalized.Values.OrderBy(record => record.Id));
             return EpbRecords;
         }
     }
 
-    private static EpbTestRecord MergeDuplicateEpbRecords(
-        IGrouping<int, EpbTestRecord> duplicates)
+    internal static EpbTestRecord MergeDuplicateEpbRecords(
+        IEnumerable<EpbTestRecord> duplicates)
     {
         var records = duplicates.ToList();
         var primary = records
@@ -235,6 +232,32 @@ public sealed class TestConfig
         }
 
         return r;
+    }
+
+    /// <summary>
+    /// 在一个锁边界内生成卡钳启动计划。返回值是新的字典快照，后续 UI/保存线程
+    /// 对记录集合的修改不会改变本次启动身份，也不可能产生重复键。
+    /// </summary>
+    public Dictionary<int, int> CreateEpbStartPlan(
+        int fallbackTotalCount,
+        int expectedCount = 12)
+    {
+        if (expectedCount <= 0) throw new ArgumentOutOfRangeException(nameof(expectedCount));
+        lock (_epbRecordsGate)
+        {
+            EnsureEpbRecords(expectedCount);
+            var snapshot = EpbRecords.Snapshot();
+            var expectedIds = Enumerable.Range(1, expectedCount).ToArray();
+            var actualIds = snapshot.Select(record => record.Id).OrderBy(id => id).ToArray();
+            if (snapshot.Length != expectedCount || !actualIds.SequenceEqual(expectedIds))
+                throw new InvalidOperationException(
+                    "ConfigEpbRecordInvariant: EpbRecords 必须包含 1.." + expectedCount +
+                    " 每通道恰好一条记录。");
+
+            return snapshot.ToDictionary(
+                record => record.Id,
+                record => record.GetRemainingMechanicalCycles(fallbackTotalCount));
+        }
     }
 
     //EpbTestRecord.cs 中暂未实现Reset(),暂时注释；
@@ -621,7 +644,8 @@ public static class ConfigLoader
         }
 
 
-        // 读取 EpbRecords（若存在）
+        // 先保留原始行用于诊断，再一次性写入按 Id 唯一的运行时集合。
+        var loadedEpbRecords = new List<EpbTestRecord>();
         foreach (XmlNode n in doc.SelectNodes("//TestConfig/EpbRecords/Record")!)
         {
             var r = new EpbTestRecord
@@ -639,18 +663,19 @@ public static class ConfigLoader
             var st = GetString(n, "Status", "NotStarted");
             r.Status = Enum.TryParse<EpbTestStatus>(st, out var status) ? status : EpbTestStatus.NotStarted;
 
-            cfg.EpbRecords.Add(r);
+            loadedEpbRecords.Add(r);
         }
 
-        var duplicateEpbIds = cfg.EpbRecords
+        var duplicateEpbIds = loadedEpbRecords
             .Where(record => record != null)
             .GroupBy(record => record.Id)
             .Where(group => group.Count() > 1)
             .Select(group => group.Key)
             .OrderBy(id => id)
             .ToArray();
-        var invalidEpbRecordCount = cfg.EpbRecords.Count(record =>
+        var invalidEpbRecordCount = loadedEpbRecords.Count(record =>
             record == null || record.Id < 1 || record.Id > 12);
+        cfg.EpbRecords.ReplaceAll(loadedEpbRecords);
         cfg.EnsureEpbRecords(12);
         if (duplicateEpbIds.Length > 0 || invalidEpbRecordCount > 0)
         {

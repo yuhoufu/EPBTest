@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -22,6 +23,12 @@ namespace Controller
         internal string ReasonText { get; set; } = string.Empty;
     }
 
+    internal sealed class TimerRuntimeEventGateDecision
+    {
+        internal bool Accepted { get; set; }
+        internal string ReasonCode { get; set; } = string.Empty;
+    }
+
     public sealed partial class EpbManager
     {
         private readonly System.Threading.Timer _timerRuntimeWatchdog;
@@ -33,23 +40,94 @@ namespace Controller
         // 旧任务迟到或新 Run 复用通道号时，不能再次创建第二个恢复 owner。
         private readonly ConcurrentDictionary<string, byte> _orphanPauseRecoveryAttempts =
             new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
+        private readonly ConcurrentDictionary<int, long> _timerRuntimeGenerations =
+            new ConcurrentDictionary<int, long>();
+        private readonly ConcurrentDictionary<int, TimerRuntimeObserverRegistration>
+            _timerRuntimeObservers =
+                new ConcurrentDictionary<int, TimerRuntimeObserverRegistration>();
         private int _timerRuntimeWatchdogBusy;
+
+        private sealed class TimerRuntimeObserverRegistration
+        {
+            internal HighPrecisionTimer Timer { get; set; }
+            internal long Generation { get; set; }
+            internal long RunEpoch { get; set; }
+            internal Action<HighPrecisionTimerStateChangedEvent> Handler { get; set; }
+        }
 
         private void AttachTimerRuntimeObserver(int channel, HighPrecisionTimer timer)
         {
             if (timer == null) return;
-            timer.StateChanged += update => OnTimerRuntimeStateChanged(channel, timer, update);
+            var generation = _timerRuntimeGenerations.AddOrUpdate(
+                channel,
+                1,
+                (_, current) => checked(current + 1));
+            var runEpoch = Interlocked.Read(ref _runEpoch);
+            Action<HighPrecisionTimerStateChangedEvent> handler = update =>
+                OnTimerRuntimeStateChanged(
+                    channel,
+                    timer,
+                    generation,
+                    runEpoch,
+                    update);
+            var registration = new TimerRuntimeObserverRegistration
+            {
+                Timer = timer,
+                Generation = generation,
+                RunEpoch = runEpoch,
+                Handler = handler
+            };
+
+            while (true)
+            {
+                if (_timerRuntimeObservers.TryGetValue(channel, out var previous))
+                {
+                    if (!_timerRuntimeObservers.TryUpdate(channel, registration, previous))
+                        continue;
+                    try { previous.Timer.StateChanged -= previous.Handler; } catch { }
+                    break;
+                }
+                if (_timerRuntimeObservers.TryAdd(channel, registration)) break;
+            }
+            timer.StateChanged += handler;
+            _log?.Info(
+                $"TimerRuntimeObserverAttached Channel={channel} Generation={generation} " +
+                $"RunEpoch={runEpoch} Instance={System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(timer)}",
+                "Timer");
+        }
+
+        private void DetachTimerRuntimeObserver(int channel, HighPrecisionTimer timer)
+        {
+            if (timer == null ||
+                !_timerRuntimeObservers.TryGetValue(channel, out var registration) ||
+                !ReferenceEquals(registration.Timer, timer))
+                return;
+            var pair = new KeyValuePair<int, TimerRuntimeObserverRegistration>(
+                channel,
+                registration);
+            if (!((ICollection<KeyValuePair<int, TimerRuntimeObserverRegistration>>)
+                    _timerRuntimeObservers).Remove(pair))
+                return;
+            try { timer.StateChanged -= registration.Handler; } catch { }
+            _log?.Info(
+                $"TimerRuntimeObserverDetached Channel={channel} " +
+                $"Generation={registration.Generation} RunEpoch={registration.RunEpoch} " +
+                $"Instance={System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(timer)}",
+                "Timer");
         }
 
         private void OnTimerRuntimeStateChanged(
             int channel,
             HighPrecisionTimer timer,
+            long sourceGeneration,
+            long sourceRunEpoch,
             HighPrecisionTimerStateChangedEvent update)
         {
             if (update == null) return;
             _log?.Info(
                 $"TimerRuntimeState Channel={channel} " +
                 $"Instance={System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(timer)} " +
+                $"Generation={sourceGeneration} RunEpoch={sourceRunEpoch} " +
                 $"State={update.State} IsRunning={update.IsRunning} IsPaused={update.IsPaused} " +
                 $"Reason={update.Reason} LastStart={update.LastCycleStartedUtc:O} " +
                 $"LastCompleted={update.LastCycleCompletedUtc:O}",
@@ -57,9 +135,39 @@ namespace Controller
 
             var current = _channelRuntimeStateStore.Get(channel);
             if (current == null) return;
+            var sourceActive = _timers.TryGetValue(channel, out var activeTimer) &&
+                               ReferenceEquals(activeTimer, timer);
+            var registrationMatches =
+                _timerRuntimeObservers.TryGetValue(channel, out var registration) &&
+                ReferenceEquals(registration.Timer, timer) &&
+                registration.Generation == sourceGeneration &&
+                registration.RunEpoch == sourceRunEpoch;
+            var currentGeneration = _timerRuntimeGenerations.TryGetValue(
+                channel,
+                out var observedGeneration)
+                ? observedGeneration
+                : 0;
+            var gate = EvaluateTimerRuntimeEventGate(
+                sourceActive,
+                registrationMatches,
+                sourceGeneration,
+                currentGeneration,
+                sourceRunEpoch,
+                Interlocked.Read(ref _runEpoch),
+                current.State,
+                update.State);
+            if (!gate.Accepted)
+            {
+                _log?.Warn(
+                    $"StaleTimerEventIgnored Channel={channel} Code={gate.ReasonCode} " +
+                    $"SourceGeneration={sourceGeneration} CurrentGeneration={currentGeneration} " +
+                    $"SourceRunEpoch={sourceRunEpoch} CurrentRunEpoch={Interlocked.Read(ref _runEpoch)} " +
+                    $"RuntimeState={current.State} TimerState={update.State}",
+                    "Timer");
+                return;
+            }
             var pauseTransitionOwned =
-                (current.State == ChannelRuntimeState.PausePending ||
-                 current.State == ChannelRuntimeState.Recovering) &&
+                current.State == ChannelRuntimeState.PausePending &&
                 update.State == HighPrecisionTimerRuntimeState.Paused;
             if (!IsDisplayedAsRunning(current.State) && !pauseTransitionOwned) return;
 
@@ -100,6 +208,37 @@ namespace Controller
                     $"控制定时器已暂停。Reason={update.Reason}",
                     correlationId: ResolveTimerRecoveryCorrelation(channel));
             }
+        }
+
+        internal static TimerRuntimeEventGateDecision EvaluateTimerRuntimeEventGate(
+            bool sourceActive,
+            bool registrationMatches,
+            long sourceGeneration,
+            long currentGeneration,
+            long sourceRunEpoch,
+            long currentRunEpoch,
+            ChannelRuntimeState currentState,
+            HighPrecisionTimerRuntimeState timerState)
+        {
+            if (!sourceActive)
+                return new TimerRuntimeEventGateDecision
+                    { Accepted = false, ReasonCode = "TimerInstanceNotActive" };
+            if (!registrationMatches)
+                return new TimerRuntimeEventGateDecision
+                    { Accepted = false, ReasonCode = "TimerObserverRegistrationStale" };
+            if (sourceGeneration <= 0 || sourceGeneration != currentGeneration)
+                return new TimerRuntimeEventGateDecision
+                    { Accepted = false, ReasonCode = "TimerGenerationStale" };
+            if (sourceRunEpoch != currentRunEpoch)
+                return new TimerRuntimeEventGateDecision
+                    { Accepted = false, ReasonCode = "TimerRunEpochStale" };
+            if (currentState == ChannelRuntimeState.Recovering &&
+                (timerState == HighPrecisionTimerRuntimeState.PausePending ||
+                 timerState == HighPrecisionTimerRuntimeState.Paused))
+                return new TimerRuntimeEventGateDecision
+                    { Accepted = false, ReasonCode = "RecoveryOwnsChannelLifecycle" };
+            return new TimerRuntimeEventGateDecision
+                { Accepted = true, ReasonCode = "CurrentTimerEvent" };
         }
 
         private Guid ResolveTimerRecoveryCorrelation(int channel)

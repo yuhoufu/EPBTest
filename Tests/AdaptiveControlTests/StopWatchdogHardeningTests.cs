@@ -26,7 +26,11 @@ namespace AdaptiveControlTests
             Run("DO与峰值刷新不得掩盖机械圈60秒停滞", DiagnosticProgressCannotMaskMechanicalStall, ref passed);
             Run("人工暂停不得被恢复计数误判接管", ManualPauseSuppressesRecoveryInference, ref passed);
             Run("人工暂停按动态硬截止与进展判定接管", ManualPauseUsesDynamicDeadlineAndProgress, ref passed);
-            Run("恢复同指纹连续五次熔断且低频探测有界", RecoveryFailureCircuitBreakerIsBounded, ref passed);
+            Run("恢复失败分类有界且RecoveryBlocked禁止再启动", RecoveryFailureCircuitBreakerIsBounded, ref passed);
+            Run("健康活动圈假Recovery声明不得触发全局StopAll",
+                HealthyCycleRecoveryClaimIsSuppressed, ref passed);
+            Run("无人工owner的Paused通道五秒触发不变量接管",
+                PausedWithoutManualOwnerTriggersTakeover, ref passed);
             Run("检查点损坏时按分类回退到最近有效副本", DurableCheckpointFallsBackWithClassification, ref passed);
             Run("检查点并发轮询与原子替换无共享冲突", DurableCheckpointConcurrentReadWriteIsShareSafe, ref passed);
             Run("过渡窗公开人工停止按钮语义", TransitionWindowExposesOperatorStop, ref passed);
@@ -55,6 +59,7 @@ namespace AdaptiveControlTests
                     ManualPauseEnergizedChannels = new[] { 4, 5 },
                     HardwareUnavailable = true,
                     HardwareFailureFingerprint = "PowerSafetyProbe|Group1|IDN",
+                    ActiveCycleCount = 5,
                     TimerCount = 10,
                     RunnerCount = 10
                 }
@@ -66,7 +71,8 @@ namespace AdaptiveControlTests
                    roundTrip.Heartbeat.ManualPauseEnergizedChannels.Length == 2 &&
                    roundTrip.Heartbeat.HardwareUnavailable &&
                    roundTrip.Heartbeat.HardwareFailureFingerprint.Contains("Group1") &&
-                   roundTrip.Heartbeat.TimerCount == 10,
+                   roundTrip.Heartbeat.TimerCount == 10 &&
+                   roundTrip.Heartbeat.ActiveCycleCount == 5,
                 "v2停止字段未能序列化往返");
 
             var v1 = WatchdogProtocol.Deserialize(
@@ -310,11 +316,102 @@ namespace AdaptiveControlTests
                    RecoveryFailurePolicy.SelectInProcessProbeDelaySeconds(4) == 60 &&
                    RecoveryFailurePolicy.SelectInProcessProbeDelaySeconds(99) == 60,
                 "原进程硬件探测退避不是5/15/30/60秒上限");
-            Assert(RecoveryFailurePolicy.SelectCircuitProbeDelayMinutes(1) == 2 &&
-                   RecoveryFailurePolicy.SelectCircuitProbeDelayMinutes(2) == 5 &&
-                   RecoveryFailurePolicy.SelectCircuitProbeDelayMinutes(3) == 15 &&
-                   RecoveryFailurePolicy.SelectCircuitProbeDelayMinutes(99) == 15,
-                "快速五次失败后的低频探测不是2/5/15分钟上限");
+            var duplicate = RecoveryFailurePolicy.Classify(
+                "ConfigDuplicateEpbId",
+                true,
+                "已添加了具有相同键的项");
+            var transient = RecoveryFailurePolicy.Classify(
+                null,
+                false,
+                "PowerSupply timeout");
+            var unknown = RecoveryFailurePolicy.Classify(
+                null,
+                false,
+                "NullReferenceException during startup");
+            Assert(duplicate.Permanent && duplicate.MaximumProcessRelaunches == 0 &&
+                   !transient.Permanent && transient.MaximumProcessRelaunches == 5 &&
+                   !unknown.Permanent && unknown.MaximumProcessRelaunches == 2,
+                "永久/瞬态/未知启动失败没有进入0/5/2次结构化预算");
+            Assert(!RecoveryFailurePolicy.CanLaunchMainProcess(recoveryBlocked: true) &&
+                   RecoveryFailurePolicy.CanLaunchMainProcess(recoveryBlocked: false) &&
+                   !RecoveryFailurePolicy.AllowsMainProcessCircuitProbe,
+                "RecoveryBlocked或CircuitProbe仍允许启动完整主程序");
+        }
+
+        private static void HealthyCycleRecoveryClaimIsSuppressed()
+        {
+            var heartbeat = new WatchdogHeartbeat
+            {
+                RunActive = true,
+                Phase = "Formal",
+                RecoveryActive = true,
+                SoftwareRecoveryCount = 5,
+                ActiveCycleCount = 5,
+                RecoveryOwnerCount = 0,
+                DaqRecoveryCount = 0,
+                ChannelProgress = new[]
+                {
+                    new WatchdogChannelProgress
+                    {
+                        Channel = 4,
+                        State = "Running",
+                        TimerActive = true,
+                        RunnerActive = true
+                    }
+                }
+            };
+            Assert(WatchdogRecoveryTelemetryPolicy.IsUnstructuredRecoveryClaim(heartbeat) &&
+                   !WatchdogRecoveryTelemetryPolicy.ShouldTreatAsRecoveryActive(heartbeat),
+                "健康运行仅因SoftwareRecoveryCount=ActiveCycleCount仍被当作恢复阶段");
+            Assert(!WatchdogRecoveryTelemetryPolicy.ShouldPublishRecoveryActive(
+                       false, false, 0, 5, 0, false, false) &&
+                   WatchdogRecoveryTelemetryPolicy.ShouldPublishRecoveryActive(
+                       false, true, 0, 1, 1, true, true),
+                "心跳生产端仍允许无owner/事故/阶段的软件计数创建RecoveryActive");
+            Assert(!WatchdogTakeoverPolicy.ShouldTakeover(
+                       false, false, false, true, 1,
+                       WatchdogRecoveryTelemetryPolicy.ShouldTreatAsRecoveryActive(heartbeat),
+                       false, false, 600, true,
+                       recoveryNoProgressSeconds: 600),
+                "无结构恢复身份且机械资源健康时仍会触发ExternalRecoveryStageStalled/StopAll");
+        }
+
+        private static void PausedWithoutManualOwnerTriggersTakeover()
+        {
+            const long frequency = 1000;
+            const long started = 10000;
+            var tracker = new WatchdogChannelProgressTracker();
+            var heartbeat = new WatchdogHeartbeat
+            {
+                RunActive = true,
+                ChannelProgress = new[]
+                {
+                    new WatchdogChannelProgress
+                    {
+                        Channel = 4,
+                        State = "Paused",
+                        TimerActive = false,
+                        RunnerActive = false
+                    }
+                }
+            };
+            Assert(tracker.Evaluate(heartbeat, new[] { 4 }, false, started, frequency) == null,
+                "孤儿Paused首次观察即接管，未保留五秒去抖");
+            var result = tracker.Evaluate(
+                heartbeat,
+                new[] { 4 },
+                false,
+                started + 5000,
+                frequency);
+            Assert(result?.Contains("ChannelPausedWithoutManualOwner:EPB=4") == true,
+                "无ManualPause owner且Timer/Runner缺失的Paused通道五秒后仍未被发现");
+            Assert(tracker.Evaluate(
+                       heartbeat,
+                       new[] { 4 },
+                       true,
+                       started + 10000,
+                       frequency) == null,
+                "真实人工暂停被孤儿暂停监督误接管");
         }
 
         private static void DurableCheckpointFallsBackWithClassification()
@@ -474,6 +571,9 @@ namespace AdaptiveControlTests
             {
                 Type = WatchdogMessageType.Heartbeat,
                 SessionId = "channel-progress",
+                RecoveryFailureCode = "ConfigDuplicateEpbId",
+                RecoveryFailurePermanent = true,
+                RecoveryFailureContextSha256 = "abc123",
                 Heartbeat = heartbeat
             };
             var roundTrip = WatchdogProtocol.Deserialize(WatchdogProtocol.Serialize(message));
@@ -481,7 +581,10 @@ namespace AdaptiveControlTests
                    roundTrip.Heartbeat.ChannelProgress.Length == 1 &&
                    roundTrip.Heartbeat.ChannelProgress[0].MechanicalCompletedCount == 123 &&
                    roundTrip.Heartbeat.ChannelProgress[0].PeakCutoffGeneration == 12 &&
-                   roundTrip.Heartbeat.ChannelProgress[0].PeakCutoffSequence == 455,
+                   roundTrip.Heartbeat.ChannelProgress[0].PeakCutoffSequence == 455 &&
+                   roundTrip.RecoveryFailureCode == "ConfigDuplicateEpbId" &&
+                   roundTrip.RecoveryFailurePermanent &&
+                   roundTrip.RecoveryFailureContextSha256 == "abc123",
                 "逐通道监督字段未能序列化往返");
         }
 

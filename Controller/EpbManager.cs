@@ -272,6 +272,17 @@ namespace Controller
                     requestedState == ChannelRuntimeState.WarningRunning);
         }
 
+        internal static bool ShouldRejectRecoveryPauseOverride(
+            ChannelRuntimeState previousState,
+            ChannelRuntimeState requestedState,
+            bool manualPauseOwned)
+        {
+            return previousState == ChannelRuntimeState.Recovering &&
+                   !manualPauseOwned &&
+                   (requestedState == ChannelRuntimeState.PausePending ||
+                    requestedState == ChannelRuntimeState.Paused);
+        }
+
         private void PublishChannelRuntimeState(
             int channel,
             ChannelRuntimeState state,
@@ -321,6 +332,22 @@ namespace Controller
                 }
             }
             var previous = _channelRuntimeStateStore.Get(channel);
+            var manualPauseOwned = _channelPausedUtc.ContainsKey(channel) ||
+                                   CurrentBatchPauseState == BatchPauseState.PausePending ||
+                                   CurrentBatchPauseState == BatchPauseState.Paused;
+            if (previous != null &&
+                ShouldRejectRecoveryPauseOverride(
+                    previous.State,
+                    state,
+                    manualPauseOwned))
+            {
+                _log?.Warn(
+                    $"ChannelRuntimeTransitionRejected Channel={channel} " +
+                    $"Previous={previous.State} Requested={state} " +
+                    $"Code=RecoveryOwnsChannelLifecycle ReasonCode={reasonCode}",
+                    "EPB");
+                return;
+            }
             var update = _channelRuntimeStateStore.Publish(
                 new ChannelRuntimeStateChangedEvent
                 {
@@ -1604,11 +1631,11 @@ namespace Controller
 
             // 配置加载层会归一化；这里再次防御直接构造 GlobalConfig 的调用方。
             // 使用索引赋值保证即便外部并发替换了列表，也不会因重复键阻断整机初始化。
+            var initialStartPlan = cfg.Test.CreateEpbStartPlan(cfg.Test.TestTarget, 12);
             foreach (var epbRecord in cfg.Test.EnsureEpbRecords(12))
             {
                 _mechanicalCycleBaseline[epbRecord.Id] = epbRecord.EffectiveMechanicalCycleCount;
-                EpbTestCycle[epbRecord.Id] =
-                    epbRecord.GetRemainingMechanicalCycles(cfg.Test.TestTarget);
+                EpbTestCycle[epbRecord.Id] = initialStartPlan[epbRecord.Id];
             }
             
 
@@ -2372,6 +2399,7 @@ namespace Controller
         public void PauseChannel(int channel)
         {
             if (_timers.TryGetValue(channel, out var t)) t.Pause("ManualPause");
+            _channelPausedUtc[channel] = DateTime.UtcNow;
             PublishChannelRuntimeState(channel, ChannelRuntimeState.Paused, "Paused", "试验已暂停");
             NonCriticalObserver.Invoke(
                 ChannelPaused,
@@ -2382,6 +2410,7 @@ namespace Controller
         public void ResumeChannel(int channel)
         {
             if (_timers.TryGetValue(channel, out var t)) t.Resume();
+            _channelPausedUtc.TryRemove(channel, out _);
             PublishChannelRuntimeState(channel, ChannelRuntimeState.Running, "Running", "试验已恢复");
             NonCriticalObserver.Invoke(
                 ChannelResumed,
@@ -8658,6 +8687,18 @@ namespace Controller
                     "ElectricalGroupEmergencyImmediateOffFallback"));
         }
 
+        internal static LogicalRecoveryCounts BuildLogicalRecoveryCounts(
+            int activeCycleCount,
+            params int[] softwareRecoveryCounts)
+        {
+            return new LogicalRecoveryCounts
+            {
+                ActiveCycleCount = Math.Max(0, activeCycleCount),
+                SoftwareRecoveryCount = (softwareRecoveryCounts ?? Array.Empty<int>())
+                    .Sum(count => Math.Max(0, count))
+            };
+        }
+
         private LogicalQuiescenceSnapshot CaptureLogicalQuiescenceSnapshot()
         {
             var hydraulicGroups = _hydCoordinator == null
@@ -8669,6 +8710,16 @@ namespace Controller
                 .OrderBy(id => id)
                 .Select(_hydCoordinator.ProbeGroupHealth)
                 .ToArray();
+            var recoveryCounts = BuildLogicalRecoveryCounts(
+                _currentCycleNumberByChannel.Count,
+                _hydraulicSoftwareRecoveryGroups.Count,
+                _powerSoftwareRecoveryGroups.Count,
+                _affectedGroupResetInProgress.Count,
+                _isolatedInfrastructureRecoveryScheduled.Count,
+                _timerRuntimeRecoveries.Count,
+                _activeCycleLimitRecoveries.Count,
+                _alarmCycleFinalizationRetries.Count,
+                _formalPersistenceRecoveryPendingCycles.Count);
             return new LogicalQuiescenceSnapshot
             {
                 BatchLifecycleBusy = _batchLifecycleGate.IsBusy,
@@ -8682,15 +8733,8 @@ namespace Controller
                 HydraulicParticipantCount = _hydraulicParticipants.Count,
                 HydraulicLeaseCount = _hydraulicLeaseByChannel.Count,
                 DaqRecoveryCount = _daqAutoRecovery.Count,
-                SoftwareRecoveryCount = _hydraulicSoftwareRecoveryGroups.Count +
-                                        _powerSoftwareRecoveryGroups.Count +
-                                        _affectedGroupResetInProgress.Count +
-                                        _isolatedInfrastructureRecoveryScheduled.Count +
-                                        _timerRuntimeRecoveries.Count +
-                                        _activeCycleLimitRecoveries.Count +
-                                        _alarmCycleFinalizationRetries.Count +
-                                        _formalPersistenceRecoveryPendingCycles.Count +
-                                        _currentCycleNumberByChannel.Count,
+                ActiveCycleCount = recoveryCounts.ActiveCycleCount,
+                SoftwareRecoveryCount = recoveryCounts.SoftwareRecoveryCount,
                 RecoveryOwnerCount = _recoveryOwnership.ActiveCount,
                 HydraulicGroups = hydraulicGroups,
                 ChannelProgress = Enumerable.Range(1, 12).Select(channel =>

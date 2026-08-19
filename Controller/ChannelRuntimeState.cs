@@ -216,6 +216,8 @@ namespace Controller
         public int HydraulicParticipantCount { get; set; }
         public int HydraulicLeaseCount { get; set; }
         public int DaqRecoveryCount { get; set; }
+        /// <summary>正常执行中的机械圈；仅用于残留诊断，绝不代表软件恢复。</summary>
+        public int ActiveCycleCount { get; set; }
         public int SoftwareRecoveryCount { get; set; }
         public int RecoveryOwnerCount { get; set; }
         public HydraulicGenerationSnapshot[] HydraulicGroups { get; set; } =
@@ -231,7 +233,8 @@ namespace Controller
                                    StopCtsCount == 0 && CycleCtsCount == 0 &&
                                    HydraulicParticipantCount == 0 &&
                                    HydraulicLeaseCount == 0 &&
-                                   DaqRecoveryCount == 0 && SoftwareRecoveryCount == 0 &&
+                                   DaqRecoveryCount == 0 && ActiveCycleCount == 0 &&
+                                   SoftwareRecoveryCount == 0 &&
                                    RecoveryOwnerCount == 0 &&
                                    (HydraulicGroups ?? Array.Empty<HydraulicGenerationSnapshot>())
                                    .All(group => group.IsHealthyForFreshStart);
@@ -243,10 +246,17 @@ namespace Controller
                    $"Energized={EnergizedChannelCount} " +
                    $"StopCts={StopCtsCount} CycleCts={CycleCtsCount} " +
                    $"Participants={HydraulicParticipantCount} Leases={HydraulicLeaseCount} " +
-                   $"DaqRecovery={DaqRecoveryCount} SoftwareRecovery={SoftwareRecoveryCount} " +
+                   $"DaqRecovery={DaqRecoveryCount} ActiveCycles={ActiveCycleCount} " +
+                   $"SoftwareRecovery={SoftwareRecoveryCount} " +
                    $"RecoveryOwners={RecoveryOwnerCount} " +
                    $"Hydraulics=[{string.Join(" | ", (HydraulicGroups ?? Array.Empty<HydraulicGenerationSnapshot>()).Select(x => x.ToString()))}]";
         }
+    }
+
+    internal sealed class LogicalRecoveryCounts
+    {
+        internal int ActiveCycleCount { get; set; }
+        internal int SoftwareRecoveryCount { get; set; }
     }
 
     public sealed class WatchdogChannelProgressSnapshot

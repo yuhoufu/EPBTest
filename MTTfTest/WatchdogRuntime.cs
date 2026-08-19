@@ -368,7 +368,12 @@ namespace MTEmbTest
                     true,
                     intent.RecoveryAttempt)
                 .ConfigureAwait(false);
-            NotifyRecoveryAttemptFailed("RecoveryCheckpointRejected:" + (reason ?? "Unknown"));
+            NotifyRecoveryAttemptFailed(
+                "CheckpointInvariant",
+                true,
+                "RecoveryCheckpointRejected:" + (reason ?? "Unknown"),
+                reason,
+                string.Empty);
             await Task.Delay(100).ConfigureAwait(false);
         }
 
@@ -526,10 +531,39 @@ namespace MTEmbTest
         }
         internal static void NotifyRecoveryAttemptFailed(string reason)
         {
-            // 可重试恢复子进程退出不是运行终止，不写 revocation marker。
+            var classification = RecoveryFailurePolicy.Classify(null, false, reason);
+            NotifyRecoveryAttemptFailed(
+                classification.Code,
+                classification.Permanent,
+                reason,
+                reason,
+                string.Empty);
+        }
+
+        internal static void NotifyRecoveryAttemptFailed(
+            string failureCode,
+            bool permanent,
+            string reason,
+            string detail,
+            string contextSha256)
+        {
+            // 恢复子进程失败不是普通运行终止，不写 revocation marker；是否允许
+            // 重试由结构化 failureCode/permanent 和 sidecar 的耐久预算决定。
             Volatile.Write(ref _sessionClosing, 1);
-            RecordClientEvent("RecoveryAttemptFailed", reason);
-            SendSimple(WatchdogMessageType.RecoveryAttemptFailed, reason);
+            RecordClientEvent(
+                "RecoveryAttemptFailed",
+                $"Code={failureCode};Permanent={permanent};ContextSha256={contextSha256};{reason}");
+            Send(new WatchdogMessage
+            {
+                Type = WatchdogMessageType.RecoveryAttemptFailed,
+                SessionId = SessionId,
+                Reason = reason,
+                RecoveryFailureCode = failureCode,
+                RecoveryFailurePermanent = permanent,
+                RecoveryFailureDetail = detail,
+                RecoveryFailureContextSha256 = contextSha256,
+                CorrelationId = Guid.NewGuid().ToString("N")
+            });
             FlushClientJournal();
         }
         internal static void NotifyRecoveryCheckpointValidated(

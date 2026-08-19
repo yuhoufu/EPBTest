@@ -678,8 +678,15 @@ namespace Controller
                 {
                     var state = getRuntimeState?.Invoke(channel) ??
                                 ChannelRuntimeState.Recovering;
-                    return state == ChannelRuntimeState.Recovering ||
-                           state == ChannelRuntimeState.SystemFault;
+                    // channels 是在破坏 Timer/Runner 前冻结的恢复事务 cohort。
+                    // 运行、内部 Paused 或状态迟到均不能把兄弟通道从事务中删除；
+                    // 这里只排除有独立耐久事实的终态，人工暂停另由 isPaused 排除。
+                    return state != ChannelRuntimeState.NotEnabled &&
+                           state != ChannelRuntimeState.AlarmStopped &&
+                           state != ChannelRuntimeState.InterlockStopped &&
+                           state != ChannelRuntimeState.ManualStopped &&
+                           state != ChannelRuntimeState.Completed &&
+                           state != ChannelRuntimeState.StartBlocked;
                 })
                 .Distinct()
                 .OrderBy(channel => channel)

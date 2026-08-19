@@ -201,6 +201,16 @@ namespace MtEmbTest
             }
             catch (Exception ex)
             {
+                var baseError = ex.GetBaseException();
+                var classification = RecoveryFailurePolicy.Classify(
+                    null,
+                    false,
+                    baseError.ToString());
+                var testConfigPath = ConfigLoader.GetProjectTestConfigPath(
+                    Cfg?.Test?.StoreDir,
+                    Cfg?.Test?.TestName);
+                var testConfigSha256 = Controller.RuntimeBuildIdentity.ComputeFileSha256(
+                    testConfigPath);
                 ProjectLogHub.Write(
                     ProjectLogLevel.Error,
                     "独立看门狗恢复进程安全接管或启动失败；保持本轮授权，等待 Watchdog 退避重试：" + ex.Message,
@@ -208,7 +218,11 @@ namespace MtEmbTest
                     ex);
                 monitor?.PrepareForWatchdogRetryExit();
                 WatchdogRuntime.NotifyRecoveryAttemptFailed(
-                    "WatchdogRecoveryStartupFailed:" + ex.GetBaseException().Message);
+                    classification.Code,
+                    classification.Permanent,
+                    "WatchdogRecoveryStartupFailed:" + baseError.Message,
+                    ex.ToString(),
+                    testConfigSha256);
                 BeginInvoke((Action)System.Windows.Forms.Application.Exit);
             }
         }

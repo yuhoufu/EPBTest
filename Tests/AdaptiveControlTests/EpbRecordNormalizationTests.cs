@@ -17,6 +17,8 @@ namespace AdaptiveControlTests
             Run("加载重复EPB配置时归一化并记录诊断", LoadTestNormalizesDuplicateRecords, ref passed);
             Run("保存边界禁止重复EPB记录回写", SaveTestWritesCanonicalRecords, ref passed);
             Run("并发Ensure仍保持十二通道唯一", ConcurrentEnsureIsIdempotent, ref passed);
+            Run("归一化后恶意重复插入仍不能污染启动计划",
+                DuplicateReinsertionCannotCorruptStartPlan, ref passed);
             return passed;
         }
 
@@ -120,6 +122,27 @@ namespace AdaptiveControlTests
             Assert(config.EpbRecords.Count == 12 &&
                    config.EpbRecords.Select(record => record.Id).Distinct().Count() == 12,
                 "并发Ensure生成了重复通道记录");
+        }
+
+        private static void DuplicateReinsertionCannotCorruptStartPlan()
+        {
+            var config = new TestConfig { TestTarget = 100000 };
+            config.EnsureEpbRecords(12);
+            var duplicate = EpbTestRecord.CreateDefault(4, 100000);
+            duplicate.Enabled = true;
+            duplicate.RunCount = 321;
+            duplicate.MechanicalCycleCount = 321;
+
+            Parallel.For(0, 128, _ => config.EpbRecords.Add(duplicate));
+            var plan = config.CreateEpbStartPlan(config.TestTarget, 12);
+
+            Assert(config.EpbRecords.Count == 12 &&
+                   config.EpbRecords.Select(record => record.Id).Distinct().Count() == 12,
+                "唯一集合仍允许归一化后的并发重复插入");
+            Assert(plan.Count == 12 && plan.Keys.OrderBy(id => id)
+                       .SequenceEqual(Enumerable.Range(1, 12)) &&
+                   plan[4] == 99679,
+                "原子StartPlan存在重复/缺失键或没有保留单调完成证据");
         }
 
         private static string BuildDuplicateConfigXml()

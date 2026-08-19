@@ -47,6 +47,12 @@ namespace MTTFTest.Watchdog.Protocol
         public string SessionId { get; set; }
         public string CorrelationId { get; set; }
         public string Reason { get; set; }
+        /// <summary>机器可判定的恢复失败码；旧客户端缺失时由 sidecar 兼容分类。</summary>
+        public string RecoveryFailureCode { get; set; }
+        /// <summary>确定性配置/包/检查点不变量错误不得通过重启同一进程重试。</summary>
+        public bool RecoveryFailurePermanent { get; set; }
+        public string RecoveryFailureDetail { get; set; }
+        public string RecoveryFailureContextSha256 { get; set; }
         /// <summary>
         /// Heartbeat sequence acknowledged by the sidecar.  It is deliberately
         /// additive so old binaries can continue to deserialize the protocol.
@@ -146,6 +152,8 @@ namespace MTTFTest.Watchdog.Protocol
         public Dictionary<string, long> InFlight { get; set; } = new Dictionary<string, long>();
         public Dictionary<string, int> QueueDepth { get; set; } = new Dictionary<string, int>();
         public int DaqRecoveryCount { get; set; }
+        /// <summary>正常活动机械圈，仅用于残留/运行诊断，不参与 RecoveryActive。</summary>
+        public int ActiveCycleCount { get; set; }
         public int SoftwareRecoveryCount { get; set; }
         public int RecoveryOwnerCount { get; set; }
         public bool StopAllActive { get; set; }

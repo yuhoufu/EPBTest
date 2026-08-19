@@ -105,9 +105,16 @@ namespace MTTFTest.Watchdog.Protocol
 
     public sealed class RecoveryFailureDecision
     {
-        public string Fingerprint { get; internal set; }
-        public int ConsecutiveCount { get; internal set; }
-        public bool ProcessRelaunchAllowed { get; internal set; }
+        public string Fingerprint { get; set; }
+        public int ConsecutiveCount { get; set; }
+        public bool ProcessRelaunchAllowed { get; set; }
+    }
+
+    public sealed class RecoveryFailureClassification
+    {
+        public string Code { get; internal set; }
+        public bool Permanent { get; internal set; }
+        public int MaximumProcessRelaunches { get; internal set; }
     }
 
     /// <summary>
@@ -153,6 +160,60 @@ namespace MTTFTest.Watchdog.Protocol
 
     public static class RecoveryFailurePolicy
     {
+        public static RecoveryFailureClassification Classify(
+            string code,
+            bool permanent,
+            string reason)
+        {
+            var text = ((code ?? string.Empty) + " " + (reason ?? string.Empty)).Trim();
+            var deterministicConfigurationFailure =
+                Contains(text, "ConfigDuplicateEpbId") ||
+                Contains(text, "ConfigEpbRecordInvariant") ||
+                Contains(text, "已添加了具有相同键的项") ||
+                Contains(text, "RecoveryCheckpointRejected") ||
+                Contains(text, "CheckpointInvariant") ||
+                Contains(text, "PackageManifest") ||
+                Contains(text, "PackageVerification") ||
+                Contains(text, "AssemblyLoad") ||
+                Contains(text, "BadImageFormat");
+            if (permanent || deterministicConfigurationFailure)
+            {
+                return new RecoveryFailureClassification
+                {
+                    Code = string.IsNullOrWhiteSpace(code)
+                        ? InferPermanentCode(text)
+                        : code,
+                    Permanent = true,
+                    MaximumProcessRelaunches = 0
+                };
+            }
+
+            var transientHardware =
+                Contains(text, "HardwareUnavailable") ||
+                Contains(text, "DaqUnavailable") ||
+                Contains(text, "PowerSupply") ||
+                Contains(text, "Timeout") ||
+                Contains(text, "PortInUse") ||
+                Contains(text, "RecoveryAttachFailed");
+            return new RecoveryFailureClassification
+            {
+                Code = string.IsNullOrWhiteSpace(code)
+                    ? (transientHardware ? "TransientInfrastructure" : "UnhandledSoftwareStartup")
+                    : code,
+                Permanent = false,
+                MaximumProcessRelaunches = transientHardware
+                    ? RecoveryFailureCircuitBreaker.DefaultConsecutiveLimit
+                    : 2
+            };
+        }
+
+        public static bool CanLaunchMainProcess(bool recoveryBlocked) => !recoveryBlocked;
+
+        /// <summary>
+        /// CircuitProbe 只能探测设备存在性；sidecar 永远不得用它启动完整主程序。
+        /// </summary>
+        public static bool AllowsMainProcessCircuitProbe => false;
+
         public static string BuildFingerprint(string reason)
         {
             var normalized = string.Join(" ", (reason ?? "UnknownFailure")
@@ -184,6 +245,64 @@ namespace MTTFTest.Watchdog.Protocol
             if (probeAttempt == 2) return 5;
             return 15;
         }
+
+        private static bool Contains(string value, string token) =>
+            (value ?? string.Empty).IndexOf(token, StringComparison.OrdinalIgnoreCase) >= 0;
+
+        private static string InferPermanentCode(string text)
+        {
+            if (Contains(text, "Duplicate") || Contains(text, "相同键"))
+                return "ConfigDuplicateEpbId";
+            if (Contains(text, "Checkpoint")) return "CheckpointInvariant";
+            if (Contains(text, "Package") || Contains(text, "Assembly") ||
+                Contains(text, "BadImageFormat"))
+                return "PackageVerificationFailed";
+            return "PermanentRecoveryFailure";
+        }
+    }
+
+    /// <summary>
+    /// RecoveryActive 必须同时具备可核对的 owner/事故/阶段或通道恢复态。
+    /// 单独一个 SoftwareRecoveryCount（现场曾由活动圈数量误填）不是恢复证据。
+    /// </summary>
+    public static class WatchdogRecoveryTelemetryPolicy
+    {
+        public static bool ShouldPublishRecoveryActive(
+            bool manualPauseCommanded,
+            bool controllerRecoveryActive,
+            int daqRecoveryCount,
+            int softwareRecoveryCount,
+            int recoveryOwnerCount,
+            bool hasRecoveryLifecycle,
+            bool hasRecoveryIdentity)
+        {
+            if (manualPauseCommanded) return false;
+            var owned = daqRecoveryCount > 0 || recoveryOwnerCount > 0;
+            var structured = hasRecoveryLifecycle || hasRecoveryIdentity;
+            return owned || (structured &&
+                             (controllerRecoveryActive || softwareRecoveryCount > 0));
+        }
+
+        public static bool IsUnstructuredRecoveryClaim(WatchdogHeartbeat heartbeat)
+        {
+            if (heartbeat?.RecoveryActive != true) return false;
+            var hasOwnedRecovery = heartbeat.DaqRecoveryCount > 0 ||
+                                   heartbeat.RecoveryOwnerCount > 0;
+            var hasIdentity = !string.IsNullOrWhiteSpace(heartbeat.RecoveryCode) ||
+                              !string.IsNullOrWhiteSpace(heartbeat.RecoveryStage) ||
+                              !string.IsNullOrWhiteSpace(heartbeat.RecoveryIncident) ||
+                              !string.IsNullOrWhiteSpace(heartbeat.RecoveryContext);
+            var hasRecoveryLifecycle = (heartbeat.ChannelProgress ??
+                                        Array.Empty<WatchdogChannelProgress>())
+                .Any(item => item != null &&
+                    (string.Equals(item.State, "Recovering", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(item.State, "ResumeChecking", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(item.State, "SystemFault", StringComparison.OrdinalIgnoreCase)));
+            return !hasOwnedRecovery && !hasIdentity && !hasRecoveryLifecycle;
+        }
+
+        public static bool ShouldTreatAsRecoveryActive(WatchdogHeartbeat heartbeat) =>
+            heartbeat?.RecoveryActive == true && !IsUnstructuredRecoveryClaim(heartbeat);
     }
 
     /// <summary>
@@ -384,7 +503,14 @@ namespace MTTFTest.Watchdog.Protocol
                     var recovering =
                         string.Equals(item.State, "Recovering", StringComparison.OrdinalIgnoreCase) ||
                         string.Equals(item.State, "ResumeChecking", StringComparison.OrdinalIgnoreCase);
-                    var invariantMismatch = recovering && item.TimerActive != item.RunnerActive;
+                    var pausedWithoutOperator =
+                        string.Equals(item.State, "Paused", StringComparison.OrdinalIgnoreCase);
+                    var expectedActiveResourcesMissing = stateAllowsCycles &&
+                                                         (!item.TimerActive || !item.RunnerActive);
+                    var invariantMismatch =
+                        (recovering && item.TimerActive != item.RunnerActive) ||
+                        pausedWithoutOperator ||
+                        expectedActiveResourcesMissing;
                     if (!invariantMismatch)
                     {
                         _invariantTimestamps.Remove(item.Channel);
@@ -397,15 +523,24 @@ namespace MTTFTest.Watchdog.Protocol
                             _invariantTimestamps[item.Channel] = nowTimestamp;
                         }
                         var invariantAge = (nowTimestamp - invariantSince) / (double)frequency;
-                        if (invariantAge >= 30)
+                        var invariantDeadlineSeconds = pausedWithoutOperator ||
+                                                       expectedActiveResourcesMissing
+                            ? 5
+                            : 30;
+                        if (invariantAge >= invariantDeadlineSeconds)
                             return string.Format(
                                 CultureInfo.InvariantCulture,
-                                "ChannelRecoveryInvariantStalled:EPB={0};AgeSeconds={1:F1};" +
-                                "Timer={2};Runner={3}",
+                                "{0}:EPB={1};AgeSeconds={2:F1};Timer={3};Runner={4};State={5}",
+                                pausedWithoutOperator
+                                    ? "ChannelPausedWithoutManualOwner"
+                                    : expectedActiveResourcesMissing
+                                        ? "ChannelExpectedRuntimeMissing"
+                                        : "ChannelRecoveryInvariantStalled",
                                 item.Channel,
                                 invariantAge,
                                 item.TimerActive,
-                                item.RunnerActive);
+                                item.RunnerActive,
+                                item.State);
                     }
                 }
             }
