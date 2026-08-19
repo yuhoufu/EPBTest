@@ -11,7 +11,16 @@ namespace Config
     {
         public bool Enabled { get; set; } = true;
         public int PollIntervalMs { get; set; } = 100;
+        /// <summary>成功轮询超过该耗时时只记录慢查询预警，不触发电源故障。</summary>
+        public int TelemetryDelayWarnMs { get; set; } = 500;
+        /// <summary>兼容旧配置及安全证据判鲜；新代码不再用它单次锁存通信故障。</summary>
         public int TelemetryStaleMs { get; set; } = 500;
+        /// <summary>连续多少个电源组正式动作槽无成功通信才确认通信故障。</summary>
+        public int CommunicationAlarmConfirmCycles { get; set; } = 8;
+        /// <summary>没有周期推进时通信降级允许持续的最长墙钟时间。</summary>
+        public int CommunicationAlarmMaxMs { get; set; } = 120000;
+        /// <summary>通信异常后的重连间隔，避免以100ms节拍冲击设备和网络。</summary>
+        public int CommunicationRetryMs { get; set; } = 500;
         public int CcTripMs { get; set; } = 300;
         public int LowVoltageTripMs { get; set; } = 300;
         public double NearLimitWarnRatio { get; set; } = 0.90;
@@ -52,11 +61,16 @@ namespace Config
 
             var root = XDocument.Load(path).Root ??
                        throw new InvalidDataException("PowerSupplyConfig.xml 缺少根节点。");
+            var legacyTelemetryStaleMs = IntAttr(root, "TelemetryStaleMs", 500);
             var config = new PowerSupplyFleetConfig
             {
                 Enabled = BoolAttr(root, "Enabled", true),
                 PollIntervalMs = IntAttr(root, "PollIntervalMs", 100),
-                TelemetryStaleMs = IntAttr(root, "TelemetryStaleMs", 500),
+                TelemetryDelayWarnMs = IntAttr(root, "TelemetryDelayWarnMs", legacyTelemetryStaleMs),
+                TelemetryStaleMs = legacyTelemetryStaleMs,
+                CommunicationAlarmConfirmCycles = IntAttr(root, "CommunicationAlarmConfirmCycles", 8),
+                CommunicationAlarmMaxMs = IntAttr(root, "CommunicationAlarmMaxMs", 120000),
+                CommunicationRetryMs = IntAttr(root, "CommunicationRetryMs", 500),
                 CcTripMs = IntAttr(root, "CcTripMs", 300),
                 LowVoltageTripMs = IntAttr(root, "LowVoltageTripMs", 300),
                 NearLimitWarnRatio = DoubleAttr(root, "NearLimitWarnRatio", 0.90),
@@ -97,8 +111,18 @@ namespace Config
             if (!config.Enabled) return;
             var errors = new List<string>();
             if (config.PollIntervalMs < 50) errors.Add("PollIntervalMs 不能小于 50ms。");
+            if (config.TelemetryDelayWarnMs < config.PollIntervalMs * 2)
+                errors.Add("TelemetryDelayWarnMs 至少应为轮询周期的两倍。");
             if (config.TelemetryStaleMs < config.PollIntervalMs * 2)
                 errors.Add("TelemetryStaleMs 至少应为轮询周期的两倍。");
+            if (config.CommunicationAlarmConfirmCycles < 1 ||
+                config.CommunicationAlarmConfirmCycles > 100)
+                errors.Add("CommunicationAlarmConfirmCycles 必须在 1～100 之间。");
+            if (config.CommunicationAlarmMaxMs < config.TelemetryDelayWarnMs)
+                errors.Add("CommunicationAlarmMaxMs 不能小于 TelemetryDelayWarnMs。");
+            if (config.CommunicationRetryMs < config.PollIntervalMs ||
+                config.CommunicationRetryMs > 10000)
+                errors.Add("CommunicationRetryMs 必须在轮询周期与 10000ms 之间。");
             if (config.CcTripMs < config.PollIntervalMs) errors.Add("CcTripMs 不能小于轮询周期。");
             if (config.LowVoltageTripMs < config.PollIntervalMs) errors.Add("LowVoltageTripMs 不能小于轮询周期。");
             if (config.NearLimitWarnRatio <= 0 || config.NearLimitWarnRatio >= 1)

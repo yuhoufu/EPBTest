@@ -6,7 +6,11 @@
 -->
 <PowerSupplyConfig Enabled="true"
                    PollIntervalMs="100"
+                   TelemetryDelayWarnMs="500"
                    TelemetryStaleMs="500"
+                   CommunicationAlarmConfirmCycles="8"
+                   CommunicationAlarmMaxMs="120000"
+                   CommunicationRetryMs="500"
                    CcTripMs="300"
                    LowVoltageTripMs="300"
                    NearLimitWarnRatio="0.90"

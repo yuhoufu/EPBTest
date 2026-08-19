@@ -27,7 +27,10 @@ namespace Controller
         FreshnessLost = 1 << 7,
         FreshnessRestored = 1 << 8,
         ThresholdCrossed = 1 << 9,
-        Lifecycle = 1 << 10
+        Lifecycle = 1 << 10,
+        TelemetryDelayed = 1 << 11,
+        CommunicationDegraded = 1 << 12,
+        CommunicationRecovered = 1 << 13
     }
 
     public sealed class PowerSupplyFault
@@ -65,6 +68,11 @@ namespace Controller
         public DateTime TelemetryUtc { get; set; }
         public bool TelemetryOutputEnabled { get; set; }
         public bool ProtectionTripped { get; set; }
+        public bool CommunicationDegraded { get; set; }
+        public int ConsecutiveCommunicationMissCycles { get; set; }
+        public DateTime LastSuccessfulTelemetryUtc { get; set; }
+        public DateTime CommunicationDegradedSinceUtc { get; set; }
+        public string LastCommunicationError { get; set; } = string.Empty;
     }
 
     public enum PowerSafetyDisableOutcome
@@ -105,6 +113,7 @@ namespace Controller
         Task ResetFaultAsync(int electricalGroupId, CancellationToken token);
         bool HasFreshPowerFaultEvidence(int electricalGroupId);
         bool HasEnergizationPermit(int electricalGroupId, out string reason);
+        void RecordSuccessfulActionCycle(int epbChannel, long groupCycleSlot);
         PswSnapshot GetLatestSnapshot(int electricalGroupId);
         PowerSupplyRuntimeState GetRuntimeState(int electricalGroupId);
         IReadOnlyList<PowerSupplyTelemetry> GetRecentTelemetry(int electricalGroupId, TimeSpan window);
@@ -134,6 +143,8 @@ namespace Controller
             new ConcurrentDictionary<int, GroupOperationState>();
         private readonly ConcurrentDictionary<int, TelemetryEdgeState> _telemetryEdges =
             new ConcurrentDictionary<int, TelemetryEdgeState>();
+        private readonly ConcurrentDictionary<int, GroupCommunicationState> _communicationStates =
+            new ConcurrentDictionary<int, GroupCommunicationState>();
         private int _disposed;
 
         private sealed class TelemetryEdgeState
@@ -163,6 +174,21 @@ namespace Controller
             internal int PlannedTransition;
             internal long DisableStartedUtcTicks;
             internal int Retired;
+        }
+
+        private sealed class GroupCommunicationState
+        {
+            internal readonly object Sync = new object();
+            internal bool Degraded;
+            internal bool FaultConfirmed;
+            internal DateTime DegradedSinceUtc;
+            internal long DegradedSinceMonotonicTicks;
+            internal DateTime LastSuccessfulUtc;
+            internal long LastSuccessfulMonotonicTicks;
+            internal long LastCountedActionSlot = long.MinValue;
+            internal long LastDelayWarningMonotonicTicks;
+            internal int ConsecutiveMissCycles;
+            internal string LastError = string.Empty;
         }
 
         public PowerSupplyCoordinator(
@@ -258,6 +284,7 @@ namespace Controller
                     _log.Info(
                         $"{supply.DisplayName} 已通过本次实时身份/输出/保护预检，上一运行故障锁存已自动清除。",
                         "程控电源");
+                ResetCommunicationState(group.Id);
 
                 await ApplyAndVerifySetpointsAsync(client, supply, operationToken).ConfigureAwait(false);
                 var errors = await client.ReadErrorQueueAsync(operationToken).ConfigureAwait(false);
@@ -676,6 +703,7 @@ namespace Controller
                 _latest[electricalGroupId] = snapshot;
             }
             _faultedGroups.TryRemove(electricalGroupId, out _);
+            ResetCommunicationState(electricalGroupId);
             _log.Info($"电源组 {electricalGroupId} 故障锁存已人工复位；下次启动仍会执行完整预检。", "程控电源");
         }
 
@@ -699,7 +727,9 @@ namespace Controller
         {
             var state = GetRuntimeState(electricalGroupId);
             var snapshot = GetLatestSnapshot(electricalGroupId);
-            if (!state.ExpectedOutputEnabled)
+            if (_faultedGroups.ContainsKey(electricalGroupId))
+                reason = "PowerFaultLatched";
+            else if (!state.ExpectedOutputEnabled)
                 reason = "ExpectedOutputDisabled";
             else if (state.PlannedTransition)
                 reason = "PlannedTransition";
@@ -711,11 +741,16 @@ namespace Controller
                 reason = "ProtectionTripped";
             else if (snapshot == null || state.TelemetryUtc == default)
                 reason = "TelemetryMissing";
-            else if (!snapshot.IsConnected)
+            else if (!snapshot.IsConnected && !state.CommunicationDegraded)
                 reason = "TelemetryDisconnected";
-            else if ((DateTime.UtcNow - state.TelemetryUtc.ToUniversalTime()).TotalMilliseconds >
-                     _config.TelemetryStaleMs)
-                reason = "TelemetryStale";
+            else if (state.ConsecutiveCommunicationMissCycles >=
+                     _config.CommunicationAlarmConfirmCycles)
+                reason = "CommunicationAlarmConfirmed";
+            else if (state.CommunicationDegraded &&
+                     state.CommunicationDegradedSinceUtc != default &&
+                     DateTime.UtcNow - state.CommunicationDegradedSinceUtc >=
+                     TimeSpan.FromMilliseconds(_config.CommunicationAlarmMaxMs))
+                reason = "CommunicationAlarmDeadlineExceeded";
             else if (snapshot.MeasuredVoltage < RequiredSupply(electricalGroupId).MinimumOutputVoltageV)
                 reason = "OutputVoltageBelowMinimum";
             else
@@ -725,6 +760,57 @@ namespace Controller
             }
 
             return false;
+        }
+
+        /// <summary>
+        /// 正式圈已经完成意味着该通道取得了与本圈命令关联的新鲜动作电流证据。
+        /// 通信降级期间按电源组物理槽位只计一次，避免同组多个通道把8圈缩短。
+        /// </summary>
+        public void RecordSuccessfulActionCycle(int epbChannel, long groupCycleSlot)
+        {
+            var group = _groups.SingleOrDefault(item => item.Members.Contains(epbChannel));
+            if (group == null || !_activeGroups.ContainsKey(group.Id)) return;
+            var state = CommunicationState(group.Id);
+            int missCycles;
+            string lastError;
+            DateTime degradedSinceUtc;
+            lock (state.Sync)
+            {
+                if (groupCycleSlot <= state.LastCountedActionSlot) return;
+                state.LastCountedActionSlot = groupCycleSlot;
+                if (!state.Degraded || state.FaultConfirmed) return;
+                state.ConsecutiveMissCycles = state.ConsecutiveMissCycles >= int.MaxValue
+                    ? int.MaxValue
+                    : state.ConsecutiveMissCycles + 1;
+                missCycles = state.ConsecutiveMissCycles;
+                lastError = state.LastError;
+                degradedSinceUtc = state.DegradedSinceUtc;
+                if (missCycles >= _config.CommunicationAlarmConfirmCycles)
+                    state.FaultConfirmed = true;
+            }
+
+            var reason =
+                $"电源组通信连续 {missCycles}/{_config.CommunicationAlarmConfirmCycles} 个正式动作槽无成功遥测；" +
+                $"本圈 EPB{epbChannel} 已由DAQ动作电流证明供能成功。" +
+                $"Slot={groupCycleSlot} DegradedSinceUtc={degradedSinceUtc:O} LastError={lastError}";
+            AppendTelemetry(
+                group.Id,
+                GetLatestSnapshot(group.Id),
+                reason,
+                PowerSupplyTelemetryEventFlags.CommunicationDegraded,
+                "CommunicationMissCycle");
+            if (missCycles < _config.CommunicationAlarmConfirmCycles)
+            {
+                _log.Warn(reason, "程控电源");
+                return;
+            }
+
+            RaiseFault(
+                group.Id,
+                "CommunicationUnavailableConfirmed",
+                $"连续 {_config.CommunicationAlarmConfirmCycles} 个正式动作槽没有任何成功遥测；" +
+                "已按确认策略升级为通信故障。最后通信错误：" + lastError,
+                GetLatestSnapshot(group.Id));
         }
 
         public PswSnapshot GetLatestSnapshot(int electricalGroupId)
@@ -746,6 +832,20 @@ namespace Controller
                 planned = operation.PlannedTransition != 0;
             }
             var telemetry = GetLatestSnapshot(electricalGroupId);
+            var communication = CommunicationState(electricalGroupId);
+            bool degraded;
+            int missCycles;
+            DateTime lastSuccessfulUtc;
+            DateTime degradedSinceUtc;
+            string lastError;
+            lock (communication.Sync)
+            {
+                degraded = communication.Degraded;
+                missCycles = communication.ConsecutiveMissCycles;
+                lastSuccessfulUtc = communication.LastSuccessfulUtc;
+                degradedSinceUtc = communication.DegradedSinceUtc;
+                lastError = communication.LastError;
+            }
             return new PowerSupplyRuntimeState
             {
                 ElectricalGroupId = electricalGroupId,
@@ -755,7 +855,12 @@ namespace Controller
                 Active = _activeGroups.ContainsKey(electricalGroupId),
                 TelemetryUtc = telemetry?.TimestampUtc ?? default,
                 TelemetryOutputEnabled = telemetry?.OutputEnabled ?? false,
-                ProtectionTripped = telemetry?.ProtectionTripped ?? false
+                ProtectionTripped = telemetry?.ProtectionTripped ?? false,
+                CommunicationDegraded = degraded,
+                ConsecutiveCommunicationMissCycles = missCycles,
+                LastSuccessfulTelemetryUtc = lastSuccessfulUtc,
+                CommunicationDegradedSinceUtc = degradedSinceUtc,
+                LastCommunicationError = lastError
             };
         }
 
@@ -903,6 +1008,9 @@ namespace Controller
         private async Task StartMonitorAsync(int groupId)
         {
             await StopMonitorAsync(groupId).ConfigureAwait(false);
+            var latest = GetLatestSnapshot(groupId);
+            if (latest != null && latest.IsConnected)
+                MarkCommunicationSuccess(groupId, latest.TimestampUtc);
             var cts = new CancellationTokenSource();
             _monitorCts[groupId] = cts;
             _monitorTasks[groupId] = Task.Run(() => MonitorLoopAsync(groupId, cts.Token));
@@ -912,31 +1020,48 @@ namespace Controller
         {
             DateTime? ccSince = null;
             DateTime? lowVoltageSince = null;
-            DateTime lastSuccess = DateTime.UtcNow;
             while (!token.IsCancellationRequested && _activeGroups.ContainsKey(groupId))
             {
                 var started = Stopwatch.GetTimestamp();
+                var communicationFailed = false;
                 try
                 {
-                    var snapshot = await _clients[groupId].ReadSnapshotAsync(token).ConfigureAwait(false);
-                    var telemetryFresh = snapshot != null &&
-                                         (DateTime.UtcNow - snapshot.TimestampUtc.ToUniversalTime())
-                                         .TotalMilliseconds <= _config.TelemetryStaleMs;
-                    if (telemetryFresh) lastSuccess = DateTime.UtcNow;
+                    var client = _clients[groupId];
+                    var snapshot = client.IsConnected
+                        ? await client.ReadSnapshotAsync(token).ConfigureAwait(false)
+                        : await client.ConnectAsync(token).ConfigureAwait(false);
+                    if (snapshot == null || !snapshot.IsConnected)
+                        throw new IOException("程控电源轮询没有返回已连接的完整快照。");
+                    var pollDurationMs = ElapsedMilliseconds(started, Stopwatch.GetTimestamp());
+                    var recovered = MarkCommunicationSuccess(groupId, snapshot.TimestampUtc);
                     _latest[groupId] = snapshot;
                     var supply = RequiredSupply(groupId);
                     var nearLimit = supply.CurrentA.HasValue &&
                                     snapshot.MeasuredCurrent >=
                                     supply.CurrentA.Value * _config.NearLimitWarnRatio;
+                    var delayed = pollDurationMs >= _config.TelemetryDelayWarnMs;
+                    var telemetryDetail = nearLimit
+                        ? $"NearCurrentLimit I={snapshot.MeasuredCurrent:F3}A " +
+                          $"Warn={supply.CurrentA.Value * _config.NearLimitWarnRatio:F3}A"
+                        : delayed
+                            ? $"TelemetryDelayed PollDurationMs={pollDurationMs:F1} " +
+                              $"WarnMs={_config.TelemetryDelayWarnMs}"
+                            : null;
+                    var flags = delayed
+                        ? PowerSupplyTelemetryEventFlags.TelemetryDelayed
+                        : PowerSupplyTelemetryEventFlags.None;
+                    if (recovered) flags |= PowerSupplyTelemetryEventFlags.CommunicationRecovered;
                     AppendTelemetry(
                         groupId,
                         snapshot,
-                        nearLimit
-                            ? $"NearCurrentLimit I={snapshot.MeasuredCurrent:F3}A " +
-                              $"Warn={supply.CurrentA.Value * _config.NearLimitWarnRatio:F3}A"
-                            : null,
-                        PowerSupplyTelemetryEventFlags.None,
-                        null);
+                        telemetryDetail,
+                        flags,
+                        recovered ? "TelemetryRecovered" : delayed ? "TelemetryDelayed" : null);
+                    if (delayed && ShouldLogTelemetryDelay(groupId))
+                        _log.Warn(
+                            $"电源组 {groupId} 遥测成功但耗时 {pollDurationMs:F1}ms，" +
+                            $"超过诊断阈值 {_config.TelemetryDelayWarnMs}ms；继续监控，不触发停机。",
+                            "程控电源");
 
                     var operation = Operation(groupId);
                     bool expectedOn;
@@ -945,12 +1070,6 @@ namespace Controller
                     {
                         expectedOn = operation.ExpectedOutputEnabled;
                         planned = operation.PlannedTransition != 0;
-                    }
-                    if (!telemetryFresh)
-                    {
-                        RaiseFault(groupId, "TelemetryStale",
-                            $"程控电源遥测时间戳超过 {_config.TelemetryStaleMs}ms。", snapshot);
-                        break;
                     }
                     if (!snapshot.OutputEnabled && expectedOn && !planned)
                     {
@@ -989,32 +1108,133 @@ namespace Controller
                 }
                 catch (Exception ex)
                 {
+                    communicationFailed = true;
+                    var degradedElapsedMs = MarkCommunicationFailure(groupId, ex.Message, out var firstFailure);
                     AppendTelemetry(
                         groupId,
                         null,
                         ex.Message,
                         PowerSupplyTelemetryEventFlags.CommunicationError |
-                        PowerSupplyTelemetryEventFlags.FreshnessLost,
-                        "CommunicationError");
-                    if ((DateTime.UtcNow - lastSuccess).TotalMilliseconds >= _config.TelemetryStaleMs)
+                        PowerSupplyTelemetryEventFlags.FreshnessLost |
+                        PowerSupplyTelemetryEventFlags.CommunicationDegraded,
+                        firstFailure ? "CommunicationDegraded" : "CommunicationRetryFailed");
+                    if (firstFailure)
+                        _log.Warn(
+                            $"电源组 {groupId} 通信进入降级：{ex.Message}；" +
+                            $"继续重连，连续 {_config.CommunicationAlarmConfirmCycles} 个正式动作槽" +
+                            "仍无成功遥测才升级故障。",
+                            "程控电源");
+                    if (degradedElapsedMs >= _config.CommunicationAlarmMaxMs)
                     {
-                        RaiseFault(groupId, "TelemetryStale",
-                            $"程控电源通信/遥测中断超过 {_config.TelemetryStaleMs}ms：{ex.Message}",
+                        ConfirmCommunicationFault(groupId);
+                        RaiseFault(groupId, "CommunicationUnavailableDeadline",
+                            $"程控电源通信持续 {degradedElapsedMs:F0}ms，超过" +
+                            $"最大降级窗口 {_config.CommunicationAlarmMaxMs}ms：{ex.Message}",
                             GetLatestSnapshot(groupId));
                         break;
                     }
                 }
 
                 var elapsedMs = (Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency;
-                var delay = Math.Max(1, _config.PollIntervalMs - (int)elapsedMs);
+                var targetIntervalMs = communicationFailed
+                    ? _config.CommunicationRetryMs
+                    : _config.PollIntervalMs;
+                var delay = Math.Max(1, targetIntervalMs - (int)elapsedMs);
                 try { await Task.Delay(delay, token).ConfigureAwait(false); }
                 catch (OperationCanceledException) { break; }
+            }
+        }
+
+        private GroupCommunicationState CommunicationState(int groupId) =>
+            _communicationStates.GetOrAdd(groupId, _ => new GroupCommunicationState());
+
+        private bool ShouldLogTelemetryDelay(int groupId)
+        {
+            var nowTicks = Stopwatch.GetTimestamp();
+            var state = CommunicationState(groupId);
+            lock (state.Sync)
+            {
+                if (state.LastDelayWarningMonotonicTicks != 0 &&
+                    ElapsedMilliseconds(state.LastDelayWarningMonotonicTicks, nowTicks) < 60000)
+                    return false;
+                state.LastDelayWarningMonotonicTicks = nowTicks;
+                return true;
+            }
+        }
+
+        private bool MarkCommunicationSuccess(int groupId, DateTime completedUtc)
+        {
+            var state = CommunicationState(groupId);
+            lock (state.Sync)
+            {
+                var recovered = state.Degraded && !state.FaultConfirmed;
+                state.LastSuccessfulUtc = completedUtc == default
+                    ? DateTime.UtcNow
+                    : completedUtc.ToUniversalTime();
+                state.LastSuccessfulMonotonicTicks = Stopwatch.GetTimestamp();
+                if (!state.FaultConfirmed)
+                {
+                    state.Degraded = false;
+                    state.DegradedSinceUtc = default;
+                    state.DegradedSinceMonotonicTicks = 0;
+                    state.ConsecutiveMissCycles = 0;
+                    state.LastError = string.Empty;
+                }
+                return recovered;
+            }
+        }
+
+        private double MarkCommunicationFailure(int groupId, string error, out bool firstFailure)
+        {
+            var nowTicks = Stopwatch.GetTimestamp();
+            var state = CommunicationState(groupId);
+            lock (state.Sync)
+            {
+                firstFailure = !state.Degraded;
+                if (firstFailure)
+                {
+                    state.Degraded = true;
+                    state.DegradedSinceUtc = DateTime.UtcNow;
+                    state.DegradedSinceMonotonicTicks = nowTicks;
+                    state.ConsecutiveMissCycles = 0;
+                    state.LastCountedActionSlot = long.MinValue;
+                }
+                state.LastError = error ?? string.Empty;
+                return state.DegradedSinceMonotonicTicks <= 0
+                    ? 0
+                    : ElapsedMilliseconds(state.DegradedSinceMonotonicTicks, nowTicks);
+            }
+        }
+
+        private void ConfirmCommunicationFault(int groupId)
+        {
+            var state = CommunicationState(groupId);
+            lock (state.Sync) state.FaultConfirmed = true;
+        }
+
+        private void ResetCommunicationState(int groupId)
+        {
+            var state = CommunicationState(groupId);
+            lock (state.Sync)
+            {
+                state.Degraded = false;
+                state.FaultConfirmed = false;
+                state.DegradedSinceUtc = default;
+                state.DegradedSinceMonotonicTicks = 0;
+                state.LastSuccessfulUtc = DateTime.UtcNow;
+                state.LastSuccessfulMonotonicTicks = Stopwatch.GetTimestamp();
+                state.LastCountedActionSlot = long.MinValue;
+                state.LastDelayWarningMonotonicTicks = 0;
+                state.ConsecutiveMissCycles = 0;
+                state.LastError = string.Empty;
             }
         }
 
         private void RaiseFault(int groupId, string code, string reason, PswSnapshot snapshot)
         {
             if (!_faultedGroups.TryAdd(groupId, 0)) return;
+            if ((code ?? string.Empty).StartsWith("CommunicationUnavailable", StringComparison.OrdinalIgnoreCase))
+                ConfirmCommunicationFault(groupId);
             var supply = RequiredSupply(groupId);
             var fault = new PowerSupplyFault
             {

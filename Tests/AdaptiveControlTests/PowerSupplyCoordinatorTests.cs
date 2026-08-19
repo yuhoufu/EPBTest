@@ -27,6 +27,9 @@ namespace AdaptiveControlTests
             Run("计划关闭不产生意外掉电故障", PlannedShutdownIsNotUnexpectedOutputOff, ref passed);
             Run("电源保护新鲜回读才确认为硬件故障", ProtectionTripIsHardwareConfirmed, ref passed);
             Run("陈旧PSU限流回读不能确认双源过流", StaleTelemetryIsNotFreshFaultEvidence, ref passed);
+            Run("成功遥测超过500ms只诊断不报警", SlowSuccessfulTelemetryDoesNotFault, ref passed);
+            Run("电源通信恢复会清零动作圈计数", CommunicationRecoveryResetsMissCycles, ref passed);
+            Run("同组连续8个动作槽无遥测才报警", CommunicationFaultRequiresEightUniqueGroupSlots, ref passed);
             Run("停机等待在途遥测完成后再关闭输出", ShutdownWaitsForInFlightTelemetry, ref passed);
             Run("三个并发OFF请求共用一个安全任务", ConcurrentShutdownRequestsShareOneOwner, ref passed);
             Run("单组断线不误报关闭且不阻塞其他组", SafetyDisableIsStructuredAndIsolated, ref passed);
@@ -270,6 +273,147 @@ namespace AdaptiveControlTests
             }
         }
 
+        private static void SlowSuccessfulTelemetryDoesNotFault()
+        {
+            var config = NewConfig();
+            config.PollIntervalMs = 50;
+            config.TelemetryDelayWarnMs = 100;
+            config.TelemetryStaleMs = 100;
+            config.CommunicationRetryMs = 50;
+            var clients = NewClients(config);
+            using (var delayed = new ManualResetEventSlim(false))
+            using (var coordinator = NewCoordinator(config, clients))
+            {
+                var faults = new List<PowerSupplyFault>();
+                var faultGate = new object();
+                coordinator.FaultRaised += fault =>
+                {
+                    lock (faultGate) faults.Add(fault);
+                };
+                coordinator.TelemetryUpdated += telemetry =>
+                {
+                    if (telemetry.ElectricalGroupId == 1 &&
+                        telemetry.EventCode == "TelemetryDelayed")
+                        delayed.Set();
+                };
+                coordinator.PrepareAndEnableAsync(new[] { 1 }, CancellationToken.None)
+                    .GetAwaiter().GetResult();
+
+                clients[1].SnapshotReadDelayMs = 150;
+                Assert(delayed.Wait(TimeSpan.FromSeconds(3)),
+                    "成功但耗时超过阈值的遥测没有产生延迟诊断事件");
+                Assert(!coordinator.GetRuntimeState(1).CommunicationDegraded,
+                    "成功慢遥测被错误标记为通信中断");
+                Assert(coordinator.HasEnergizationPermit(1, out var reason),
+                    "成功慢遥测错误撤销动作许可：" + reason);
+                lock (faultGate)
+                    Assert(faults.Count == 0, "成功慢遥测错误升级为电源故障");
+            }
+        }
+
+        private static void CommunicationRecoveryResetsMissCycles()
+        {
+            var config = NewConfig();
+            config.PollIntervalMs = 50;
+            config.TelemetryDelayWarnMs = 100;
+            config.TelemetryStaleMs = 100;
+            config.CommunicationRetryMs = 50;
+            config.CommunicationAlarmMaxMs = 5000;
+            var clients = NewClients(config);
+            using (var degraded = new ManualResetEventSlim(false))
+            using (var recovered = new ManualResetEventSlim(false))
+            using (var coordinator = NewCoordinator(config, clients))
+            {
+                coordinator.TelemetryUpdated += telemetry =>
+                {
+                    if (telemetry.ElectricalGroupId != 1) return;
+                    if (telemetry.EventCode == "CommunicationDegraded") degraded.Set();
+                    if (telemetry.EventCode == "TelemetryRecovered") recovered.Set();
+                };
+                coordinator.PrepareAndEnableAsync(new[] { 1, 2 }, CancellationToken.None)
+                    .GetAwaiter().GetResult();
+                clients[1].FailSnapshotReads = true;
+                clients[1].FailConnect = true;
+                Assert(degraded.Wait(TimeSpan.FromSeconds(3)), "未进入通信降级状态");
+
+                for (var slot = 1L; slot <= 7; slot++)
+                {
+                    coordinator.RecordSuccessfulActionCycle(1, slot);
+                    coordinator.RecordSuccessfulActionCycle(2, slot);
+                }
+                var beforeRecovery = coordinator.GetRuntimeState(1);
+                Assert(beforeRecovery.ConsecutiveCommunicationMissCycles == 7,
+                    $"同组双通道被重复计圈：{beforeRecovery.ConsecutiveCommunicationMissCycles}");
+                Assert(coordinator.HasEnergizationPermit(1, out var degradedReason),
+                    "不足8圈即撤销动作许可：" + degradedReason);
+
+                clients[1].FailSnapshotReads = false;
+                clients[1].FailConnect = false;
+                Assert(recovered.Wait(TimeSpan.FromSeconds(3)), "通信恢复未被监控链确认");
+                var afterRecovery = coordinator.GetRuntimeState(1);
+                Assert(!afterRecovery.CommunicationDegraded &&
+                       afterRecovery.ConsecutiveCommunicationMissCycles == 0,
+                    "任意一次成功遥测未清零降级状态和连续动作圈计数");
+                Assert(coordinator.HasEnergizationPermit(1, out var reason),
+                    "通信恢复后动作许可未恢复：" + reason);
+            }
+        }
+
+        private static void CommunicationFaultRequiresEightUniqueGroupSlots()
+        {
+            var config = NewConfig();
+            config.PollIntervalMs = 50;
+            config.TelemetryDelayWarnMs = 100;
+            config.TelemetryStaleMs = 100;
+            config.CommunicationRetryMs = 50;
+            config.CommunicationAlarmConfirmCycles = 8;
+            config.CommunicationAlarmMaxMs = 5000;
+            var clients = NewClients(config);
+            using (var degraded = new ManualResetEventSlim(false))
+            using (var faulted = new ManualResetEventSlim(false))
+            using (var coordinator = NewCoordinator(config, clients))
+            {
+                var faults = new List<PowerSupplyFault>();
+                var faultGate = new object();
+                coordinator.TelemetryUpdated += telemetry =>
+                {
+                    if (telemetry.ElectricalGroupId == 1 &&
+                        telemetry.EventCode == "CommunicationDegraded")
+                        degraded.Set();
+                };
+                coordinator.FaultRaised += fault =>
+                {
+                    lock (faultGate) faults.Add(fault);
+                    faulted.Set();
+                };
+                coordinator.PrepareAndEnableAsync(new[] { 1, 2 }, CancellationToken.None)
+                    .GetAwaiter().GetResult();
+                clients[1].FailSnapshotReads = true;
+                clients[1].FailConnect = true;
+                Assert(degraded.Wait(TimeSpan.FromSeconds(3)), "未进入通信降级状态");
+
+                for (var slot = 1L; slot <= 7; slot++)
+                {
+                    coordinator.RecordSuccessfulActionCycle(1, slot);
+                    coordinator.RecordSuccessfulActionCycle(2, slot);
+                }
+                Assert(!faulted.IsSet, "少于8个组动作槽时提前报警");
+                coordinator.RecordSuccessfulActionCycle(2, 8);
+                Assert(faulted.Wait(TimeSpan.FromSeconds(2)), "第8个组动作槽仍未升级通信故障");
+                coordinator.RecordSuccessfulActionCycle(1, 8);
+
+                lock (faultGate)
+                {
+                    Assert(faults.Count == 1, "同一组动作槽由两个通道重复触发故障");
+                    Assert(faults[0].Code == "CommunicationUnavailableConfirmed" &&
+                           faults[0].Classification == FaultClassification.SystemFault,
+                        "8圈通信故障的代码或分类不正确");
+                }
+                Assert(!coordinator.HasEnergizationPermit(1, out _),
+                    "8圈确认后仍保留动作许可");
+            }
+        }
+
         private static void StartupZeroTimeoutRollsBackOutput()
         {
             var config = NewConfig();
@@ -402,7 +546,11 @@ namespace AdaptiveControlTests
             var config = new PowerSupplyFleetConfig
             {
                 PollIntervalMs = 100,
+                TelemetryDelayWarnMs = 500,
                 TelemetryStaleMs = 500,
+                CommunicationAlarmConfirmCycles = 8,
+                CommunicationAlarmMaxMs = 120000,
+                CommunicationRetryMs = 500,
                 CcTripMs = 300,
                 LowVoltageTripMs = 300,
                 NearLimitWarnRatio = 0.9,
@@ -506,6 +654,8 @@ namespace AdaptiveControlTests
             public ManualResetEventSlim AllowSnapshotRead { get; } = new ManualResetEventSlim(false);
             public bool BlockOutputOff { get; set; }
             public bool FailConnect { get; set; }
+            public bool FailSnapshotReads { get; set; }
+            public int SnapshotReadDelayMs { get; set; }
             public ManualResetEventSlim OutputOffStarted { get; } = new ManualResetEventSlim(false);
             public ManualResetEventSlim AllowOutputOff { get; } = new ManualResetEventSlim(false);
 
@@ -523,15 +673,25 @@ namespace AdaptiveControlTests
                 return Task.CompletedTask;
             }
 
-            public Task<PswSnapshot> ReadSnapshotAsync(CancellationToken token)
+            public async Task<PswSnapshot> ReadSnapshotAsync(CancellationToken token)
             {
-                if (!BlockSnapshotReads) return Task.FromResult(Snapshot());
-                SnapshotReadStarted.Set();
-                return Task.Run(() =>
+                if (FailSnapshotReads)
                 {
-                    AllowSnapshotRead.Wait();
-                    return Snapshot();
-                });
+                    IsConnected = false;
+                    throw new IOException("Injected snapshot communication failure");
+                }
+                if (BlockSnapshotReads)
+                {
+                    SnapshotReadStarted.Set();
+                    // 模拟已经进入不可取消的底层NetworkStream读取；停机必须等待
+                    // 该在途I/O退出，不能仅靠取消令牌假定它已经结束。
+                    await Task.Run(() => AllowSnapshotRead.Wait())
+                        .ConfigureAwait(false);
+                }
+                var delayMs = SnapshotReadDelayMs;
+                if (delayMs > 0)
+                    await Task.Delay(delayMs, token).ConfigureAwait(false);
+                return Snapshot();
             }
 
             public Task<double> SetVoltageAsync(double value, CancellationToken token)

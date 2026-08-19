@@ -23,6 +23,10 @@ namespace PowerSupply.Core
         private DateTime _lastPowerPhaseAggregateUtc = DateTime.UtcNow;
         private long _successfulPowerPhaseCount;
         private double _maximumSuccessfulPowerPhaseMs;
+        private static readonly TimeSpan ProtectionSetpointRefreshInterval = TimeSpan.FromMinutes(1);
+        private double? _cachedOvp;
+        private double? _cachedOcp;
+        private DateTime _lastProtectionSetpointReadUtc = DateTime.MinValue;
         private TcpClient _client;
         private NetworkStream _stream;
         private StreamWriter _writer;
@@ -175,7 +179,16 @@ namespace PowerSupply.Core
             EnsureWritable();
             if (!Capabilities.CanWriteOvp) throw new InvalidOperationException("设备未返回可信的 OVP 范围。");
             PswProtocol.ValidateRange(value, Capabilities.MinOvp.Value, Capabilities.MaxOvp.Value, "OVP");
-            return SetAndReadBackAsync("SOUR:VOLT:PROT", "SOUR:VOLT:PROT?", value, token);
+            return SetAndReadBackAsync(
+                "SOUR:VOLT:PROT",
+                "SOUR:VOLT:PROT?",
+                value,
+                token,
+                actual =>
+                {
+                    _cachedOvp = actual;
+                    _lastProtectionSetpointReadUtc = DateTime.UtcNow;
+                });
         }
 
         public Task<double> SetOcpAsync(double value, CancellationToken token)
@@ -183,7 +196,16 @@ namespace PowerSupply.Core
             EnsureWritable();
             if (!Capabilities.CanWriteOcp) throw new InvalidOperationException("设备未返回可信的 OCP 范围。");
             PswProtocol.ValidateRange(value, Capabilities.MinOcp.Value, Capabilities.MaxOcp.Value, "OCP");
-            return SetAndReadBackAsync("SOUR:CURR:PROT", "SOUR:CURR:PROT?", value, token);
+            return SetAndReadBackAsync(
+                "SOUR:CURR:PROT",
+                "SOUR:CURR:PROT?",
+                value,
+                token,
+                actual =>
+                {
+                    _cachedOcp = actual;
+                    _lastProtectionSetpointReadUtc = DateTime.UtcNow;
+                });
         }
 
         public Task<bool> SetOutputAsync(bool enabled, CancellationToken token)
@@ -230,6 +252,8 @@ namespace PowerSupply.Core
         private async Task<PswSnapshot> ReadSnapshotCoreAsync(CancellationToken token)
         {
             EnsureConnected();
+            var pollStartedUtc = DateTime.UtcNow;
+            var pollStartedTicks = Stopwatch.GetTimestamp();
             var output = PswProtocol.ParseBoolean(await QueryCoreAsync("OUTP?", token).ConfigureAwait(false), "OUTP?");
             var setV = PswProtocol.ParseNumber(await QueryCoreAsync("SOUR:VOLT?", token).ConfigureAwait(false), "SOUR:VOLT?");
             var setI = PswProtocol.ParseNumber(await QueryCoreAsync("SOUR:CURR?", token).ConfigureAwait(false), "SOUR:CURR?");
@@ -237,9 +261,20 @@ namespace PowerSupply.Core
             var operation = PswProtocol.ParseInteger(await QueryCoreAsync("STAT:OPER:COND?", token).ConfigureAwait(false), "STAT:OPER:COND?");
             var questionable = PswProtocol.ParseInteger(await QueryCoreAsync("STAT:QUES:COND?", token).ConfigureAwait(false), "STAT:QUES:COND?");
             var tripped = PswProtocol.ParseBoolean(await QueryCoreAsync("OUTP:PROT:TRIP?", token).ConfigureAwait(false), "OUTP:PROT:TRIP?");
+            if (!_cachedOvp.HasValue || !_cachedOcp.HasValue ||
+                DateTime.UtcNow - _lastProtectionSetpointReadUtc >= ProtectionSetpointRefreshInterval)
+            {
+                _cachedOvp = await QueryOptionalNumberCoreAsync("SOUR:VOLT:PROT?", token).ConfigureAwait(false);
+                _cachedOcp = await QueryOptionalNumberCoreAsync("SOUR:CURR:PROT?", token).ConfigureAwait(false);
+                _lastProtectionSetpointReadUtc = DateTime.UtcNow;
+            }
+            var completedUtc = DateTime.UtcNow;
             return new PswSnapshot
             {
-                TimestampUtc = DateTime.UtcNow,
+                PollStartedUtc = pollStartedUtc,
+                PollCompletedUtc = completedUtc,
+                PollDurationMs = ElapsedMs(pollStartedTicks),
+                TimestampUtc = completedUtc,
                 SupplyId = Endpoint.Id,
                 IsConnected = true,
                 Identity = Identity,
@@ -248,8 +283,8 @@ namespace PowerSupply.Core
                 OutputEnabled = output,
                 SetVoltage = setV,
                 SetCurrent = setI,
-                Ovp = await QueryOptionalNumberCoreAsync("SOUR:VOLT:PROT?", token).ConfigureAwait(false),
-                Ocp = await QueryOptionalNumberCoreAsync("SOUR:CURR:PROT?", token).ConfigureAwait(false),
+                Ovp = _cachedOvp,
+                Ocp = _cachedOcp,
                 MeasuredVoltage = measurement.Item1,
                 MeasuredCurrent = measurement.Item2,
                 MeasuredPower = measurement.Item3,
@@ -274,7 +309,12 @@ namespace PowerSupply.Core
             catch (InvalidDataException) { return null; }
         }
 
-        private Task<double> SetAndReadBackAsync(string set, string query, double value, CancellationToken token)
+        private Task<double> SetAndReadBackAsync(
+            string set,
+            string query,
+            double value,
+            CancellationToken token,
+            Action<double> onVerified = null)
         {
             return ExecuteLockedAsync(async ct =>
             {
@@ -283,6 +323,7 @@ namespace PowerSupply.Core
                 var tolerance = Math.Max(0.0001, Math.Abs(value) * 0.0001);
                 if (Math.Abs(actual - value) > tolerance)
                     throw new InvalidOperationException($"{set} 回读不一致：期望 {value:0.####}，实际 {actual:0.####}。");
+                onVerified?.Invoke(actual);
                 return actual;
             }, token);
         }
@@ -533,6 +574,7 @@ namespace PowerSupply.Core
             _writer = null;
             _stream = null;
             _client = null;
+            _lastProtectionSetpointReadUtc = DateTime.MinValue;
         }
 
         public void Dispose()

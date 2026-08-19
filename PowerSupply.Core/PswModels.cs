@@ -84,6 +84,16 @@ namespace PowerSupply.Core
 
     public sealed class PswSnapshot
     {
+        /// <summary>一次完整轮询开始的 UTC，仅用于诊断慢查询。</summary>
+        public DateTime PollStartedUtc { get; set; }
+        /// <summary>一次完整轮询全部查询结束的 UTC。</summary>
+        public DateTime PollCompletedUtc { get; set; }
+        /// <summary>一次完整轮询的单调时钟耗时。</summary>
+        public double PollDurationMs { get; set; }
+        /// <summary>
+        /// 快照可用时间。为兼容既有调用方保留该字段，其语义固定为 PollCompletedUtc，
+        /// 不能再在轮询中途赋值。
+        /// </summary>
         public DateTime TimestampUtc { get; set; } = DateTime.UtcNow;
         public int SupplyId { get; set; }
         public bool IsConnected { get; set; }
