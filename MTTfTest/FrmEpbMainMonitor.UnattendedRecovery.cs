@@ -28,6 +28,7 @@ namespace MTEmbTest
         private const int UnattendedQuiesceTotalTimeoutMs = 30000;
         private int _watchdogTakeoverExit;
         private long _watchdogRecoveryProgressVersion;
+        private long _watchdogRecoveryBatchCommitGeneration;
         private readonly object _watchdogProgressGate = new object();
         private string _watchdogProgressSignature = string.Empty;
         private long _watchdogStageStartedTicks = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -274,9 +275,14 @@ namespace MTEmbTest
                 StageOrdinal = stageOrdinal,
                 OrphanPaused = orphanPaused,
                 PowerDisablePending = powerDisablePending,
+                OutputsConfirmedOff = recoveryEvidence.OutputsConfirmedOff,
+                PowerOffUnconfirmed = recoveryEvidence.PowerOffUnconfirmed,
                 PauseSince = manualPauseCommanded ? 0 : pauseSince,
                 PowerDisableSince = recoveryEvidence.PowerDisableSince,
                 RecoveryProgressVersion = Interlocked.Read(ref _watchdogRecoveryProgressVersion),
+                RecoveryHardDeadlineUtc = recoveryEvidence.RecoveryHardDeadlineUtc,
+                RecoveryBatchCommitGeneration = Interlocked.Read(
+                    ref _watchdogRecoveryBatchCommitGeneration),
                 StageStartedMonotonic = Interlocked.Read(ref _watchdogStageStartedTicks),
                 DaqRecoveryCount = logical?.DaqRecoveryCount ?? 0,
                 SoftwareRecoveryCount = logical?.SoftwareRecoveryCount ?? 0,
@@ -360,6 +366,9 @@ namespace MTEmbTest
         {
             public bool OrphanPaused;
             public bool PowerDisablePending;
+            public bool OutputsConfirmedOff;
+            public bool PowerOffUnconfirmed;
+            public long RecoveryHardDeadlineUtc;
             public long PauseSince;
             public long PowerDisableSince;
             public string Incident = string.Empty;
@@ -377,6 +386,9 @@ namespace MTEmbTest
                 if (snapshot == null) return result;
                 result.OrphanPaused = snapshot.OrphanPaused;
                 result.PowerDisablePending = snapshot.PowerDisablePending;
+                result.OutputsConfirmedOff = snapshot.OutputsConfirmedOff;
+                result.PowerOffUnconfirmed = snapshot.PowerOffUnconfirmed;
+                result.RecoveryHardDeadlineUtc = snapshot.RecoveryHardDeadlineUtcTicks;
                 result.PauseSince = snapshot.PauseSinceUtcTicks;
                 result.PowerDisableSince = snapshot.PowerDisableSinceUtcTicks;
                 result.Incident = snapshot.RecoveryIncident ?? string.Empty;
@@ -706,6 +718,10 @@ namespace MTEmbTest
 
             var abortedOrphanCycles = _diskWriter?.AbortInterruptedCyclesForSoftwareRecovery(
                 DateTime.UtcNow) ?? 0;
+            WatchdogRuntime.NotifySafetyPreflightPassed(
+                $"MotorOff={safety.MotorOffCommandSucceeded};PowerOff={safety.PowerOffConfirmed};" +
+                $"PressureSafe={safety.PressureSafeConfirmed};Logical={safety.LogicalQuiescenceConfirmed};" +
+                $"AbortedOrphanCycles={abortedOrphanCycles}");
 
             if (intent.ExcludedChannels?.Length > 0)
             {
@@ -860,6 +876,16 @@ namespace MTEmbTest
                 startResult.StartedChannels,
                 startResult.TestRunId,
                 _epb.WatchdogRunEpoch);
+            var commitGeneration = Math.Max(
+                checkpoint.Revision,
+                Interlocked.Read(ref _watchdogRecoveryBatchCommitGeneration) + 1);
+            Interlocked.Exchange(
+                ref _watchdogRecoveryBatchCommitGeneration,
+                commitGeneration);
+            WatchdogRuntime.NotifyRecoveryBatchCommitted(
+                $"RunId={startResult.TestRunId:N};RunEpoch={_epb.WatchdogRunEpoch};" +
+                $"Channels=[{string.Join(",", startResult.StartedChannels.OrderBy(x => x))}]",
+                commitGeneration);
             try
             {
                 // 新 Run 身份已原子提交；从这里开始只允许观察性动作。日志或 UI

@@ -22,6 +22,10 @@ namespace MTTFTest.Watchdog
         public int CurrentPid { get; set; }
         public long CurrentProcessStartUtcTicks { get; set; }
         public int RecoveryAttempt { get; set; }
+        public int ConsecutiveStartupFailures { get; set; }
+        public long RelaunchGeneration { get; set; }
+        public int CircuitProbeAttempt { get; set; }
+        public long LastRecoveryBatchCommitGeneration { get; set; }
         public bool ManualStopRequested { get; set; }
         public string State { get; set; }
         public string LastReason { get; set; }
@@ -35,6 +39,7 @@ namespace MTTFTest.Watchdog
         public long EventSequence { get; set; }
         public long DroppedEventCount { get; set; }
         public WatchdogHeartbeat LastHeartbeat { get; set; }
+        public WatchdogCheckpointMirror LastCheckpointMirror { get; set; }
     }
 
     internal sealed class WatchdogArguments
@@ -130,6 +135,7 @@ namespace MTTFTest.Watchdog
         private long _lastHeartbeatCheckpointTimestamp;
         private int _takeoverStarted;
         private int _relaunchStarted;
+        private int _circuitProbeStarted;
         private int _heartbeatSuspectLogged;
         private int _terminalPublished;
         private long _manualStopIntentTimestamp;
@@ -268,6 +274,9 @@ namespace MTTFTest.Watchdog
                         _journal.CurrentProcessStartUtcTicks = message.Session.ProcessStartUtcTicks;
                         _journal.ExecutablePath = Path.GetFullPath(message.Session.ExecutablePath);
                         _journal.RecoveryAttempt = Math.Max(_journal.RecoveryAttempt, message.Session.RecoveryAttempt);
+                        _journal.RelaunchGeneration = Math.Max(
+                            _journal.RelaunchGeneration,
+                            message.Session.RelaunchGeneration);
                     }
                     _attached = true;
                     _takeoverStarted = 0;
@@ -307,6 +316,14 @@ namespace MTTFTest.Watchdog
                     _journal.CurrentPid = message.Heartbeat.ProcessId;
                     _journal.CurrentProcessStartUtcTicks = message.Heartbeat.ProcessStartUtcTicks;
                     _journal.LastHeartbeat = message.Heartbeat;
+                    if (message.Heartbeat.RecoveryBatchCommitGeneration >
+                        _journal.LastRecoveryBatchCommitGeneration)
+                    {
+                        CommitRecoveryAttempt(message.Heartbeat.RecoveryBatchCommitGeneration);
+                        RecordEvent(
+                            "RecoveryBatchCommitHeartbeatObserved",
+                            $"Generation={message.Heartbeat.RecoveryBatchCommitGeneration}");
+                    }
                     _lastHeartbeatSequence = message.Heartbeat.Sequence;
                     _journal.LastHeartbeatSequence = message.Heartbeat.Sequence;
                     _journal.LastHeartbeatUtcTicks = DateTime.UtcNow.Ticks;
@@ -332,8 +349,6 @@ namespace MTTFTest.Watchdog
                         _lastProgressVersion = message.Heartbeat.RecoveryProgressVersion;
                         Interlocked.Exchange(ref _lastProgressTimestamp, Stopwatch.GetTimestamp());
                     }
-                    if (RecoveryTransitionPolicy.ShouldHide(message.Heartbeat))
-                        _recoveryFailureCircuitBreaker.Reset();
                     if (!string.Equals(message.Heartbeat.Phase, "Formal", StringComparison.OrdinalIgnoreCase) ||
                         message.Heartbeat.CompletedCycleCount !=
                         Interlocked.Read(ref _lastCompletedCycleCount))
@@ -362,6 +377,21 @@ namespace MTTFTest.Watchdog
                 case WatchdogMessageType.ExternalRecoveryRequired:
                     BeginTakeover("ExternalRecoveryRequired:" + message.Reason);
                     break;
+                case WatchdogMessageType.RecoveryCheckpointValidated:
+                    if (message.CheckpointMirror != null)
+                        _journal.LastCheckpointMirror = message.CheckpointMirror;
+                    Record("RecoveryCheckpointValidated", message.Reason);
+                    break;
+                case WatchdogMessageType.SafetyPreflightPassed:
+                    Record("SafetyPreflightPassed", message.Reason);
+                    break;
+                case WatchdogMessageType.RecoveryBatchCommitted:
+                    CommitRecoveryAttempt(
+                        message.RecoveryCommitGeneration > 0
+                            ? message.RecoveryCommitGeneration
+                            : Math.Max(1, _journal.LastRecoveryBatchCommitGeneration + 1));
+                    Record("RecoveryBatchCommitted", message.Reason);
+                    break;
                 case WatchdogMessageType.BatchStartFailed:
                     Record("BatchStartFailed", message.Reason);
                     BeginTakeover("BatchStartFailed:" + message.Reason);
@@ -369,12 +399,11 @@ namespace MTTFTest.Watchdog
                 case WatchdogMessageType.RecoveryAttemptFailed:
                     Record("RecoveryAttemptFailed", message.Reason);
                     _attached = false;
-                    var failureDecision = _recoveryFailureCircuitBreaker.Observe(message.Reason);
-                    if (!failureDecision.ProcessRelaunchAllowed ||
-                        _journal.RecoveryAttempt >= RecoveryFailureCircuitBreaker.DefaultConsecutiveLimit)
+                    var failureDecision = RegisterRecoveryFailure(message.Reason);
+                    if (_journal.ConsecutiveStartupFailures >= RecoveryFailureCircuitBreaker.DefaultConsecutiveLimit)
                         EnterRelaunchCircuitOpen(
                             failureDecision.Fingerprint,
-                            failureDecision.ConsecutiveCount,
+                            _journal.ConsecutiveStartupFailures,
                             message.Reason);
                     else
                         BeginRelaunchAfterExit();
@@ -475,7 +504,7 @@ namespace MTTFTest.Watchdog
                         : 0;
                     var stageSinceUtc = heartbeat?.StopAllActive == true && heartbeat.StopStageStartedUtc > 0
                         ? heartbeat.StopStageStartedUtc
-                        : heartbeat?.PowerDisablePending == true && heartbeat.PowerDisableSince > 0
+                        : heartbeat?.PowerOffUnconfirmed == true && heartbeat.PowerDisableSince > 0
                             ? heartbeat.PowerDisableSince
                             : heartbeat?.PauseSince ?? 0;
                     var stageAgeSeconds = stageSinceUtc > 0
@@ -547,7 +576,7 @@ namespace MTTFTest.Watchdog
                         heartbeatAge,
                         heartbeat?.RecoveryActive == true,
                         heartbeat?.OrphanPaused == true,
-                        heartbeat?.PowerDisablePending == true,
+                        heartbeat?.PowerOffUnconfirmed == true,
                         stageAgeSeconds,
                         eligibleChannels.Length > 0,
                         heartbeat?.StopAllActive == true,
@@ -555,15 +584,18 @@ namespace MTTFTest.Watchdog
                         inconsistentRecovery,
                         formalProgressStalled || channelSupervisionFailed,
                         manualPauseCommanded,
-                        manualPauseUnsafe);
+                        manualPauseUnsafe,
+                        heartbeat?.RecoveryHardDeadlineUtc ?? 0,
+                        DateTime.UtcNow.Ticks,
+                        ElapsedSeconds(Interlocked.Read(ref _lastProgressTimestamp)));
                     if (shouldTakeover)
                     {
                         var reason = !processAlive || heartbeatAge >= 5
                             ? (heartbeatAge >= 5 ? "HeartbeatUnresponsive" : "ProcessExitedUnexpectedly")
                             : heartbeat?.StopAllActive == true && stageAgeSeconds >= 5
                                 ? "StopStageNoProgress5s"
-                                : heartbeat?.PowerDisablePending == true && stageAgeSeconds >= 5
-                                ? "PowerDisablePendingTimeout"
+                                : heartbeat?.PowerOffUnconfirmed == true && stageAgeSeconds >= 5
+                                ? "PowerOffUnconfirmedTimeout"
                                 : heartbeat?.OrphanPaused == true && stageAgeSeconds >= 5
                                     ? "OrphanPausedTimeout"
                                     : channelSupervisionFailed
@@ -654,6 +686,10 @@ namespace MTTFTest.Watchdog
                     {
                         if (MatchesCurrentProcess(process))
                         {
+                            await CaptureMiniDumpBeforeTerminationAsync(
+                                    process,
+                                    "ManualPauseSafety:" + reason)
+                                .ConfigureAwait(false);
                             process.Kill();
                             process.WaitForExit(5000);
                             Record("ManualPauseOldProcessTerminated", reason);
@@ -682,12 +718,7 @@ namespace MTTFTest.Watchdog
                                 manualStopRequested: true,
                                 MatchesCurrentProcess(process)))
                         {
-                            await MiniDumpCapture.TryCaptureAsync(
-                                    process,
-                                    _args.JournalDirectory,
-                                    _args.SessionId,
-                                    TimeSpan.FromSeconds(3),
-                                    message => RecordEvent("MiniDump", message))
+                            await CaptureMiniDumpBeforeTerminationAsync(process, "ManualStop:" + reason)
                                 .ConfigureAwait(false);
                             process.Kill();
                             process.WaitForExit(5000);
@@ -760,6 +791,8 @@ namespace MTTFTest.Watchdog
                                 _journal.ManualStopRequested,
                                 MatchesCurrentProcess(process)))
                         {
+                            await CaptureMiniDumpBeforeTerminationAsync(process, "AutomaticTakeover:" + reason)
+                                .ConfigureAwait(false);
                             process.Kill();
                             process.WaitForExit(5000);
                             Record("OldProcessTerminated", reason);
@@ -776,6 +809,8 @@ namespace MTTFTest.Watchdog
             if (_journal.ManualStopRequested || IsSessionRevoked()) return;
             _ = Task.Run(async () =>
             {
+                if (_journal.RecoveryAttempt > _journal.ConsecutiveStartupFailures)
+                    RegisterRecoveryFailure("RecoveryProcessExitedBeforeBatchCommit");
                 var deadline = DateTime.UtcNow.AddSeconds(15);
                 while (DateTime.UtcNow < deadline && !IsSessionRevoked() && IsCurrentProcessAlive())
                     await Task.Delay(250).ConfigureAwait(false);
@@ -791,6 +826,10 @@ namespace MTTFTest.Watchdog
                                 MatchesCurrentProcess(process));
                             if (canKill)
                             {
+                                await CaptureMiniDumpBeforeTerminationAsync(
+                                        process,
+                                        "StopCompletedButProcessAlive")
+                                    .ConfigureAwait(false);
                                 process.Kill();
                                 process.WaitForExit(5000);
                                 Record("OldProcessTerminated", "StopCompleted");
@@ -804,22 +843,31 @@ namespace MTTFTest.Watchdog
             });
         }
 
-        private async Task RelaunchLoopAsync(string reason)
+        private async Task RelaunchLoopAsync(string reason, bool circuitProbe = false)
         {
             if (Interlocked.CompareExchange(ref _relaunchStarted, 1, 0) != 0) return;
+            var launchedAttempts = 0;
             while (!_journal.ManualStopRequested && !IsSessionRevoked() && !_stop.IsCancellationRequested)
             {
-                if (_journal.RecoveryAttempt >= RecoveryFailureCircuitBreaker.DefaultConsecutiveLimit)
+                if (_journal.ConsecutiveStartupFailures >= RecoveryFailureCircuitBreaker.DefaultConsecutiveLimit &&
+                    !circuitProbe)
                 {
                     EnterRelaunchCircuitOpen(
                         RecoveryFailurePolicy.BuildFingerprint(reason),
-                        _journal.RecoveryAttempt,
+                        _journal.ConsecutiveStartupFailures,
                         reason);
                     return;
                 }
-                _journal.RecoveryAttempt++;
-                var attempt = _journal.RecoveryAttempt;
-                var delay = attempt == 1 ? 5 : attempt == 2 ? 15 : attempt == 3 ? 30 : 60;
+                var attempt = _journal.ConsecutiveStartupFailures + 1;
+                lock (_journalGate)
+                {
+                    _journal.RecoveryAttempt = attempt;
+                    _journal.RelaunchGeneration++;
+                }
+                launchedAttempts++;
+                var delay = circuitProbe
+                    ? 0
+                    : RecoveryFailurePolicy.SelectProcessRelaunchDelaySeconds(attempt);
                 Record("RecoveryBackoff", $"Attempt={attempt};DelaySeconds={delay};Reason={reason}");
                 await DelayWithTransitionCountdownAsync(delay, attempt, reason).ConfigureAwait(false);
                 if (_journal.ManualStopRequested || IsSessionRevoked()) return;
@@ -891,6 +939,7 @@ namespace MTTFTest.Watchdog
                     }
                     try { if (!started.HasExited) started.Kill(); } catch { }
                     Record("RecoveryAttachFailed", $"Attempt={attempt}");
+                    RegisterRecoveryFailure("RecoveryAttachFailed");
                     _transitionWindow.Show(
                         "本次启动未能连接",
                         "主程序未在 20 秒内连接，将按退避策略再次尝试",
@@ -900,11 +949,21 @@ namespace MTTFTest.Watchdog
                 catch (Exception ex)
                 {
                     Record("RecoveryLaunchFailed", ex.Message);
+                    RegisterRecoveryFailure("RecoveryLaunchFailed:" + ex.GetBaseException().Message);
                     _transitionWindow.Show(
                         "本次启动失败",
                         "将按退避策略重试：" + ex.GetBaseException().Message,
                         0,
                         attempt);
+                }
+                if (circuitProbe && launchedAttempts >= 1)
+                {
+                    Interlocked.Exchange(ref _relaunchStarted, 0);
+                    EnterRelaunchCircuitOpen(
+                        RecoveryFailurePolicy.BuildFingerprint(reason),
+                        _journal.ConsecutiveStartupFailures,
+                        reason);
+                    return;
                 }
             }
             Interlocked.Exchange(ref _relaunchStarted, 0);
@@ -918,12 +977,73 @@ namespace MTTFTest.Watchdog
                 "SafeIdleRecoveryBlocked",
                 $"ProcessRelaunchCircuitOpen;Count={consecutiveCount};Fingerprint={fingerprint};Detail={detail}");
             _transitionWindow.Show(
-                "自动恢复已停止，设备保持安全",
+                "快速恢复已暂停，设备保持安全",
                 $"连续 {Math.Max(RecoveryFailureCircuitBreaker.DefaultConsecutiveLimit, consecutiveCount)} 次恢复失败，" +
-                "已禁止继续创建新进程。请检查设备通信；可点击下方按钮停止并关闭。\r\n" +
+                "已转入低频单实例探测。请检查设备通信；可点击下方按钮停止并关闭。\r\n" +
                 (detail ?? string.Empty),
                 0,
                 _journal.RecoveryAttempt);
+            ScheduleCircuitProbe();
+        }
+
+        private RecoveryFailureDecision RegisterRecoveryFailure(string reason)
+        {
+            var decision = _recoveryFailureCircuitBreaker.Observe(reason);
+            lock (_journalGate)
+            {
+                _journal.ConsecutiveStartupFailures = Math.Max(
+                    _journal.ConsecutiveStartupFailures,
+                    Math.Max(1, _journal.RecoveryAttempt));
+            }
+            SaveJournal();
+            return decision;
+        }
+
+        private void CommitRecoveryAttempt(long commitGeneration)
+        {
+            lock (_journalGate)
+            {
+                _journal.RecoveryAttempt = 0;
+                _journal.ConsecutiveStartupFailures = 0;
+                _journal.CircuitProbeAttempt = 0;
+                _journal.LastRecoveryBatchCommitGeneration = Math.Max(
+                    _journal.LastRecoveryBatchCommitGeneration,
+                    commitGeneration);
+            }
+            _recoveryFailureCircuitBreaker.Reset();
+            Interlocked.Exchange(ref _circuitProbeStarted, 0);
+        }
+
+        private void ScheduleCircuitProbe()
+        {
+            if (_journal.ManualStopRequested || IsSessionRevoked() ||
+                Interlocked.CompareExchange(ref _circuitProbeStarted, 1, 0) != 0)
+                return;
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    int probeAttempt;
+                    lock (_journalGate)
+                    {
+                        probeAttempt = ++_journal.CircuitProbeAttempt;
+                    }
+                    var minutes = RecoveryFailurePolicy.SelectCircuitProbeDelayMinutes(probeAttempt);
+                    Record("RecoveryCircuitProbeScheduled", $"Probe={probeAttempt};DelayMinutes={minutes}");
+                    await DelayWithTransitionCountdownAsync(minutes * 60, _journal.RecoveryAttempt, "CircuitProbe")
+                        .ConfigureAwait(false);
+                    if (_journal.ManualStopRequested || IsSessionRevoked() || _stop.IsCancellationRequested)
+                        return;
+                    Interlocked.Exchange(ref _circuitProbeStarted, 0);
+                    await RelaunchLoopAsync("CircuitProbe", true).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    Interlocked.Exchange(ref _circuitProbeStarted, 0);
+                    Record("RecoveryCircuitProbeSchedulerFailed", ex.GetBaseException().Message);
+                    ScheduleCircuitProbe();
+                }
+            });
         }
 
         private async Task DelayWithTransitionCountdownAsync(int delaySeconds, int attempt, string reason)
@@ -1044,6 +1164,18 @@ namespace MTTFTest.Watchdog
         {
             try { using (var process = Process.GetProcessById(_journal.CurrentPid)) return MatchesCurrentProcess(process) && !process.HasExited; }
             catch { return false; }
+        }
+
+        private async Task CaptureMiniDumpBeforeTerminationAsync(Process process, string reason)
+        {
+            Record("MiniDumpRequested", $"PID={process.Id};Reason={reason}");
+            await MiniDumpCapture.TryCaptureAsync(
+                    process,
+                    _args.JournalDirectory,
+                    _args.SessionId,
+                    TimeSpan.FromSeconds(3),
+                    message => RecordEvent("MiniDump", message))
+                .ConfigureAwait(false);
         }
 
         private static int[] GetRecoveryEligibleChannels(WatchdogHeartbeat heartbeat)

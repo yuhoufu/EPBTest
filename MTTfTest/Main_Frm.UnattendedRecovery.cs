@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using Config;
@@ -132,6 +133,28 @@ namespace MtEmbTest
                 await WatchdogRuntime.AttachRecoverySessionAsync(
                     intent,
                     checkpoint.SelectedChannels).ConfigureAwait(true);
+                WatchdogRuntime.NotifyRecoveryCheckpointValidated(
+                    $"RunId={checkpoint.RunId};Revision={checkpoint.Revision};" +
+                    $"Source={checkpoint.LastRecoveryLoadSource}",
+                    new WatchdogCheckpointMirror
+                    {
+                        SchemaVersion = checkpoint.SchemaVersion,
+                        Revision = checkpoint.Revision,
+                        Armed = checkpoint.Armed,
+                        RunId = checkpoint.RunId,
+                        RunEpoch = checkpoint.RunEpoch,
+                        SessionId = checkpoint.WatchdogSessionId,
+                        StoreDir = checkpoint.StoreDir,
+                        TestName = checkpoint.TestName,
+                        SelectedChannels = checkpoint.SelectedChannels?.ToArray() ?? Array.Empty<int>(),
+                        RemainingFormalCycles = checkpoint.RemainingFormalCycles == null
+                            ? new System.Collections.Generic.Dictionary<string, int>()
+                            : new System.Collections.Generic.Dictionary<string, int>(
+                                checkpoint.RemainingFormalCycles),
+                        SourcePath = checkpoint.LastRecoveryLoadSource,
+                        Sha256 = checkpoint.LastRecoveryLoadSha256,
+                        UpdatedUtc = checkpoint.UpdatedUtc
+                    });
                 monitor = new FrmEpbMainMonitor(ProtectedRoot(checkpoint)) { Name = "实时监视" };
                 OpenChildForm(monitor);
                 var consecutiveHardwareFailures = 0;

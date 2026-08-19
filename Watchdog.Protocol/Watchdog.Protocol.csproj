@@ -28,6 +28,7 @@
     <Compile Include="WatchdogProtocol.cs" />
     <Compile Include="WatchdogPolicy.cs" />
     <Compile Include="WatchdogJournalStorage.cs" />
+    <Compile Include="DurableJsonFileStore.cs" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>

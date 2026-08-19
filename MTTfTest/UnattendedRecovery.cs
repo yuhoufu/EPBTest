@@ -15,6 +15,7 @@ using System.Xml;
 using Config;
 using Controller;
 using DataOperation;
+using MTTFTest.Watchdog.Protocol;
 
 namespace MTEmbTest
 {
@@ -28,6 +29,15 @@ namespace MTEmbTest
     internal sealed class UnattendedRunCheckpoint
     {
         public int SchemaVersion { get; set; } = 1;
+        public long Revision { get; set; }
+        [ScriptIgnore]
+        public string LastLoadSource { get; set; }
+        [ScriptIgnore]
+        public string LastLoadStatus { get; set; }
+        [ScriptIgnore]
+        public string LastLoadSha256 { get; set; }
+        public string LastRecoveryLoadSource { get; set; }
+        public string LastRecoveryLoadSha256 { get; set; }
         public bool Armed { get; set; }
         public bool RestartPending { get; set; }
         public bool GracefulPaused { get; set; }
@@ -84,6 +94,10 @@ namespace MTEmbTest
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "MTTFTest",
             "unattended-run-checkpoint.json");
+        internal static readonly string CheckpointBackupPath = CheckpointPath + ".bak";
+        internal static readonly string CheckpointAuditPath = Path.Combine(
+            Path.GetDirectoryName(CheckpointPath),
+            "unattended-run-checkpoint.audit.jsonl");
 
         internal static UnattendedRunChainTransition Arm(
             GlobalConfig config,
@@ -220,10 +234,19 @@ namespace MTEmbTest
             }
             lock (Sync)
             {
-                var current = LoadUnsafe();
+                DurableJsonReadResult<UnattendedRunCheckpoint> readResult;
+                var current = LoadForRecoveryUnsafe(config, out readResult);
                 if (current == null || !current.Armed || IsRunRevokedInMemory(current.RunId))
                 {
-                    error = "本轮试验已撤权或没有可恢复检查点。";
+                    if (current == null)
+                    {
+                        ArchiveCheckpointReadFailure(config, readResult);
+                        error = "CheckpointReadFailed:" + FormatReadAttempts(readResult);
+                    }
+                    else
+                        error = current.Armed
+                            ? "CheckpointRunRevoked"
+                            : "CheckpointDisarmed:" + (current.LastReason ?? "Unknown");
                     return false;
                 }
                 if (!string.Equals(current.WatchdogSessionId, sessionId, StringComparison.Ordinal))
@@ -247,6 +270,8 @@ namespace MTEmbTest
                 current.RecoveryChainPendingStart = true;
                 current.RestartHistoryUtc ??= new List<string>();
                 current.RestartHistoryUtc.Add(DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture));
+                current.LastRecoveryLoadSource = current.LastLoadSource ?? string.Empty;
+                current.LastRecoveryLoadSha256 = current.LastLoadSha256 ?? string.Empty;
                 current.LastReason = "WatchdogRecoveryInstanceValidated";
                 current.UpdatedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
                 SaveUnsafe(current);
@@ -1002,45 +1027,213 @@ namespace MTEmbTest
 
         private static UnattendedRunCheckpoint LoadUnsafe()
         {
-            try
-            {
-                if (!File.Exists(CheckpointPath)) return null;
-                return Json.Deserialize<UnattendedRunCheckpoint>(File.ReadAllText(CheckpointPath, Encoding.UTF8));
-            }
-            catch
-            {
-                return null;
-            }
+            var result = DurableJsonFileStore.ReadLatestValid<UnattendedRunCheckpoint>(
+                checkpoint => checkpoint?.Revision ?? 0,
+                CheckpointPath,
+                CheckpointBackupPath);
+            var local = ApplyLoadMetadata(result);
+            if (local == null) return null;
+            var projectPath = GetProjectCheckpointPath(local.StoreDir, local.TestName);
+            if (string.IsNullOrWhiteSpace(projectPath)) return local;
+            return ApplyLoadMetadata(
+                DurableJsonFileStore.ReadLatestValid<UnattendedRunCheckpoint>(
+                    checkpoint => checkpoint?.Revision ?? 0,
+                    CheckpointPath,
+                    CheckpointBackupPath,
+                    projectPath,
+                    projectPath + ".bak"));
         }
 
         private static void SaveUnsafe(UnattendedRunCheckpoint checkpoint)
         {
-            var directory = Path.GetDirectoryName(CheckpointPath);
-            Directory.CreateDirectory(directory);
-            var temporary = Path.Combine(directory, ".checkpoint-" + Guid.NewGuid().ToString("N") + ".tmp");
+            if (checkpoint == null) throw new ArgumentNullException(nameof(checkpoint));
+            var projectPath = GetProjectCheckpointPath(checkpoint.StoreDir, checkpoint.TestName);
+            var previousRead = DurableJsonFileStore.ReadLatestValid<UnattendedRunCheckpoint>(
+                candidate => candidate?.Revision ?? 0,
+                CheckpointPath,
+                CheckpointBackupPath,
+                projectPath,
+                string.IsNullOrWhiteSpace(projectPath) ? string.Empty : projectPath + ".bak");
+            var previous = previousRead.Value;
+            checkpoint.Revision = Math.Max(
+                checkpoint.Revision,
+                previous?.Revision ?? 0) + 1;
             var bytes = new UTF8Encoding(false).GetBytes(Json.Serialize(checkpoint));
+            var sha256 = DurableJsonFileStore.ComputeSha256(bytes);
+            DurableJsonFileStore.WriteAtomicWithBackup(CheckpointPath, bytes);
+            var mirrorWriteError = string.Empty;
+            if (!string.IsNullOrWhiteSpace(projectPath))
+            {
+                try { DurableJsonFileStore.WriteAtomicWithBackup(projectPath, bytes); }
+                catch (Exception ex) { mirrorWriteError = ex.GetBaseException().Message; }
+            }
+            if (ShouldAuditCheckpointTransition(previous, checkpoint) ||
+                !string.IsNullOrWhiteSpace(mirrorWriteError))
+                AppendCheckpointAudit(
+                    checkpoint,
+                    previous?.Armed,
+                    sha256,
+                    projectPath,
+                    mirrorWriteError);
+            checkpoint.LastLoadSource = CheckpointPath;
+            checkpoint.LastLoadStatus = DurableJsonReadStatus.Valid.ToString();
+            checkpoint.LastLoadSha256 = sha256;
+        }
+
+        private static UnattendedRunCheckpoint LoadForRecoveryUnsafe(
+            GlobalConfig config,
+            out DurableJsonReadResult<UnattendedRunCheckpoint> result)
+        {
+            var projectPath = GetProjectCheckpointPath(
+                config?.Test?.StoreDir,
+                config?.Test?.TestName);
+            result = DurableJsonFileStore.ReadLatestValid<UnattendedRunCheckpoint>(
+                checkpoint => checkpoint?.Revision ?? 0,
+                CheckpointPath,
+                CheckpointBackupPath,
+                projectPath,
+                string.IsNullOrWhiteSpace(projectPath) ? string.Empty : projectPath + ".bak");
+            return ApplyLoadMetadata(result);
+        }
+
+        private static UnattendedRunCheckpoint ApplyLoadMetadata(
+            DurableJsonReadResult<UnattendedRunCheckpoint> result)
+        {
+            var value = result?.Value;
+            if (value == null) return null;
+            value.LastLoadSource = result.SourcePath ?? string.Empty;
+            value.LastLoadStatus = result.Status.ToString();
+            value.LastLoadSha256 = result.Attempts.FirstOrDefault(attempt =>
+                string.Equals(attempt.Path, result.SourcePath, StringComparison.OrdinalIgnoreCase))
+                ?.Sha256 ?? string.Empty;
+            return value;
+        }
+
+        private static string GetProjectCheckpointPath(string storeDir, string testName)
+        {
+            if (string.IsNullOrWhiteSpace(storeDir) || string.IsNullOrWhiteSpace(testName))
+                return string.Empty;
             try
             {
+                return Path.Combine(
+                    Path.GetFullPath(storeDir),
+                    testName,
+                    "Recovery",
+                    "unattended-run-checkpoint.json");
+            }
+            catch { return string.Empty; }
+        }
+
+        private static void AppendCheckpointAudit(
+            UnattendedRunCheckpoint checkpoint,
+            bool? previousArmed,
+            string sha256,
+            string projectPath,
+            string mirrorWriteError)
+        {
+            var record = Json.Serialize(new Dictionary<string, object>
+            {
+                ["TimestampUtc"] = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture),
+                ["Revision"] = checkpoint.Revision,
+                ["PreviousArmed"] = previousArmed,
+                ["Armed"] = checkpoint.Armed,
+                ["Reason"] = checkpoint.LastReason ?? string.Empty,
+                ["RunId"] = checkpoint.RunId ?? string.Empty,
+                ["RunEpoch"] = checkpoint.RunEpoch,
+                ["WatchdogSessionId"] = checkpoint.WatchdogSessionId ?? string.Empty,
+                ["ProcessId"] = Process.GetCurrentProcess().Id,
+                ["Sha256"] = sha256 ?? string.Empty,
+                ["PrimaryPath"] = CheckpointPath,
+                ["ProjectMirrorPath"] = projectPath ?? string.Empty,
+                ["ProjectMirrorWriteError"] = mirrorWriteError ?? string.Empty
+            });
+            AppendAuditLine(CheckpointAuditPath, record);
+            if (!string.IsNullOrWhiteSpace(projectPath))
+                AppendAuditLine(Path.Combine(
+                    Path.GetDirectoryName(projectPath),
+                    "unattended-run-checkpoint.audit.jsonl"), record);
+        }
+
+        private static bool ShouldAuditCheckpointTransition(
+            UnattendedRunCheckpoint previous,
+            UnattendedRunCheckpoint current)
+        {
+            if (current == null || previous == null) return true;
+            if (previous.Armed != current.Armed ||
+                previous.RestartPending != current.RestartPending ||
+                previous.InProcessRecoveryPending != current.InProcessRecoveryPending ||
+                previous.RecoveryChainPendingStart != current.RecoveryChainPendingStart ||
+                !string.Equals(previous.RunId, current.RunId, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(
+                    previous.WatchdogSessionId,
+                    current.WatchdogSessionId,
+                    StringComparison.Ordinal))
+                return true;
+            var reason = current.LastReason ?? string.Empty;
+            return reason.IndexOf("Watchdog", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   reason.IndexOf("Recovery", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   reason.IndexOf("Restart", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   reason.IndexOf("GracefulPause", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   string.Equals(reason, "FormalRunArmed", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static void AppendAuditLine(string path, string line)
+        {
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(path));
+                var bytes = new UTF8Encoding(false).GetBytes((line ?? string.Empty) + Environment.NewLine);
                 using (var stream = new FileStream(
-                           temporary,
-                           FileMode.CreateNew,
+                           path,
+                           FileMode.Append,
                            FileAccess.Write,
-                           FileShare.None,
+                           FileShare.Read,
                            4096,
                            FileOptions.WriteThrough))
                 {
                     stream.Write(bytes, 0, bytes.Length);
                     stream.Flush(true);
                 }
-                if (File.Exists(CheckpointPath))
-                    File.Replace(temporary, CheckpointPath, null, true);
-                else
-                    File.Move(temporary, CheckpointPath);
             }
-            finally
+            catch { }
+        }
+
+        private static string FormatReadAttempts(
+            DurableJsonReadResult<UnattendedRunCheckpoint> result)
+        {
+            if (result?.Attempts == null || result.Attempts.Count == 0)
+                return "NoCandidate";
+            return string.Join(";", result.Attempts.Select(attempt =>
+                $"{attempt.Path}|{attempt.Status}|{attempt.Detail}"));
+        }
+
+        private static void ArchiveCheckpointReadFailure(
+            GlobalConfig config,
+            DurableJsonReadResult<UnattendedRunCheckpoint> result)
+        {
+            try
             {
-                try { if (File.Exists(temporary)) File.Delete(temporary); } catch { }
+                if (config?.Test == null || string.IsNullOrWhiteSpace(config.Test.StoreDir) ||
+                    string.IsNullOrWhiteSpace(config.Test.TestName)) return;
+                var directory = Path.Combine(
+                    config.Test.StoreDir,
+                    config.Test.TestName,
+                    "Recovery",
+                    "CheckpointFailures",
+                    DateTime.UtcNow.ToString("yyyyMMdd-HHmmssfff", CultureInfo.InvariantCulture));
+                Directory.CreateDirectory(directory);
+                foreach (var attempt in result?.Attempts ?? new List<DurableJsonReadAttempt>())
+                {
+                    if (string.IsNullOrWhiteSpace(attempt.Path) || !File.Exists(attempt.Path)) continue;
+                    var name = Path.GetFileName(attempt.Path);
+                    File.Copy(attempt.Path, Path.Combine(directory, name), true);
+                }
+                File.WriteAllText(
+                    Path.Combine(directory, "read-result.txt"),
+                    FormatReadAttempts(result),
+                    new UTF8Encoding(false));
             }
+            catch { }
         }
 
         private static string GetExecutablePath()
@@ -1139,7 +1332,6 @@ namespace MTEmbTest
                     _manager.RunAuthorizationRevocationBarrier -=
                         OnRunAuthorizationRevocationBarrier;
                     _manager.RunAuthorizationRevoking -= OnRunAuthorizationRevoking;
-                    _manager.ChannelCycleCompleted -= OnFormalCycleCompleted;
                     _manager.ChannelMechanicalCycleCompleted -= OnMechanicalCycleCompleted;
                 }
                 _manager = manager;
@@ -1148,7 +1340,6 @@ namespace MTEmbTest
                 manager.RunAuthorizationRevocationBarrier +=
                     OnRunAuthorizationRevocationBarrier;
                 manager.RunAuthorizationRevoking += OnRunAuthorizationRevoking;
-                manager.ChannelCycleCompleted += OnFormalCycleCompleted;
                 manager.ChannelMechanicalCycleCompleted += OnMechanicalCycleCompleted;
             }
         }
@@ -1402,11 +1593,6 @@ namespace MTEmbTest
 
         internal static Task<bool> DrainBackgroundTasksAsync(int timeoutMs)
             => RecoveryTasks.DrainAsync(timeoutMs);
-
-        private static void OnFormalCycleCompleted(int channel, int sessionRunCount)
-        {
-            UnattendedRunCheckpointStore.RecordFormalCycleCommitted(channel);
-        }
 
         private static void OnMechanicalCycleCompleted(
             int channel,

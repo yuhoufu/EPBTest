@@ -532,6 +532,40 @@ namespace MTEmbTest
             SendSimple(WatchdogMessageType.RecoveryAttemptFailed, reason);
             FlushClientJournal();
         }
+        internal static void NotifyRecoveryCheckpointValidated(
+            string reason,
+            WatchdogCheckpointMirror mirror)
+        {
+            RecordClientEvent("RecoveryCheckpointValidated", reason);
+            Send(new WatchdogMessage
+            {
+                Type = WatchdogMessageType.RecoveryCheckpointValidated,
+                SessionId = SessionId,
+                Reason = reason,
+                CorrelationId = Guid.NewGuid().ToString("N"),
+                CheckpointMirror = mirror
+            });
+            FlushClientJournal();
+        }
+        internal static void NotifySafetyPreflightPassed(string reason)
+        {
+            RecordClientEvent("SafetyPreflightPassed", reason);
+            SendSimple(WatchdogMessageType.SafetyPreflightPassed, reason);
+            FlushClientJournal();
+        }
+        internal static void NotifyRecoveryBatchCommitted(string reason, long commitGeneration)
+        {
+            RecordClientEvent("RecoveryBatchCommitted", reason);
+            Send(new WatchdogMessage
+            {
+                Type = WatchdogMessageType.RecoveryBatchCommitted,
+                SessionId = SessionId,
+                Reason = reason,
+                CorrelationId = Guid.NewGuid().ToString("N"),
+                RecoveryCommitGeneration = commitGeneration
+            });
+            FlushClientJournal();
+        }
         internal static void NotifyBatchStartFailed(string reason)
         {
             // 启动预检失败保留原 session/checkpoint；Sidecar 将安全接管并退避重试。

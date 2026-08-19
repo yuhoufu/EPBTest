@@ -116,7 +116,7 @@ namespace MTTFTest.Watchdog.Protocol
     /// </summary>
     public sealed class RecoveryFailureCircuitBreaker
     {
-        public const int DefaultConsecutiveLimit = 3;
+        public const int DefaultConsecutiveLimit = 5;
         private readonly int _limit;
         private string _lastFingerprint = string.Empty;
         private int _consecutiveCount;
@@ -169,6 +169,21 @@ namespace MTTFTest.Watchdog.Protocol
             if (consecutiveAttempt == 3) return 30;
             return 60;
         }
+
+        public static int SelectProcessRelaunchDelaySeconds(int consecutiveAttempt)
+        {
+            if (consecutiveAttempt <= 1) return 5;
+            if (consecutiveAttempt == 2) return 15;
+            if (consecutiveAttempt == 3) return 30;
+            return 60;
+        }
+
+        public static int SelectCircuitProbeDelayMinutes(int probeAttempt)
+        {
+            if (probeAttempt <= 1) return 2;
+            if (probeAttempt == 2) return 5;
+            return 15;
+        }
     }
 
     /// <summary>
@@ -214,7 +229,10 @@ namespace MTTFTest.Watchdog.Protocol
             bool inconsistentRecoveryEvidence = false,
             bool formalProgressStalled = false,
             bool manualPauseActive = false,
-            bool manualPauseUnsafe = false)
+            bool manualPauseUnsafe = false,
+            long recoveryHardDeadlineUtcTicks = 0,
+            long nowUtcTicks = 0,
+            double recoveryNoProgressSeconds = 0)
         {
             if (sessionRevoked || alreadyTakingOver)
                 return false;
@@ -238,7 +256,11 @@ namespace MTTFTest.Watchdog.Protocol
                 return true;
             if (powerDisablePending && stageAgeSeconds >= 5)
                 return true;
-            return recoveryActive && stageAgeSeconds >= 15;
+            if (!recoveryActive) return false;
+            var hardDeadlineExceeded = recoveryHardDeadlineUtcTicks > 0
+                ? nowUtcTicks > 0 && nowUtcTicks >= recoveryHardDeadlineUtcTicks
+                : stageAgeSeconds >= 60;
+            return hardDeadlineExceeded && recoveryNoProgressSeconds >= 5;
         }
     }
 

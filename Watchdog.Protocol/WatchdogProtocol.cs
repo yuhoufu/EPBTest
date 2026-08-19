@@ -24,6 +24,9 @@ namespace MTTFTest.Watchdog.Protocol
         public const string Ping = "Ping";
         public const string Pong = "Pong";
         public const string ExternalRecoveryRequired = "ExternalRecoveryRequired";
+        public const string RecoveryCheckpointValidated = "RecoveryCheckpointValidated";
+        public const string SafetyPreflightPassed = "SafetyPreflightPassed";
+        public const string RecoveryBatchCommitted = "RecoveryBatchCommitted";
         public const string RecoveryAttemptFailed = "RecoveryAttemptFailed";
         public const string BatchStartFailed = "BatchStartFailed";
         public const string RequestStopAll = "RequestStopAll";
@@ -49,9 +52,11 @@ namespace MTTFTest.Watchdog.Protocol
         /// additive so old binaries can continue to deserialize the protocol.
         /// </summary>
         public long AckSequence { get; set; }
+        public long RecoveryCommitGeneration { get; set; }
         public WatchdogRunSession Session { get; set; }
         public WatchdogHeartbeat Heartbeat { get; set; }
         public WatchdogStopSummary StopSummary { get; set; }
+        public WatchdogCheckpointMirror CheckpointMirror { get; set; }
     }
 
     public sealed class WatchdogRunSession
@@ -64,6 +69,8 @@ namespace MTTFTest.Watchdog.Protocol
         public string RunId { get; set; }
         public long RunEpoch { get; set; }
         public int RecoveryAttempt { get; set; }
+        /// <summary>每次创建恢复进程时递增，恢复成功后也不回退，用于审计。</summary>
+        public long RelaunchGeneration { get; set; }
         public bool RecoveryProcess { get; set; }
         public int[] SelectedChannels { get; set; } = Array.Empty<int>();
     }
@@ -113,6 +120,10 @@ namespace MTTFTest.Watchdog.Protocol
         public int StageOrdinal { get; set; }
         public bool OrphanPaused { get; set; }
         public bool PowerDisablePending { get; set; }
+        /// <summary>安全切断阶段已获得全部受影响电源组 OFF 的权威确认。</summary>
+        public bool OutputsConfirmedOff { get; set; }
+        /// <summary>仍在安全切断阶段且至少一个受影响电源组 OFF 未确认。</summary>
+        public bool PowerOffUnconfirmed { get; set; }
         /// <summary>
         /// UTC DateTime ticks.  A process-local Stopwatch value cannot be
         /// compared across the main process and the sidecar.
@@ -120,6 +131,10 @@ namespace MTTFTest.Watchdog.Protocol
         public long PauseSince { get; set; }
         public long PowerDisableSince { get; set; }
         public long RecoveryProgressVersion { get; set; }
+        /// <summary>控制器恢复流水线硬截止 UTC DateTime ticks。</summary>
+        public long RecoveryHardDeadlineUtc { get; set; }
+        /// <summary>恢复批次真正提交后递增，并在后续心跳重复发送直到 Sidecar 观察到。</summary>
+        public long RecoveryBatchCommitGeneration { get; set; }
         public long StageStartedMonotonic { get; set; }
         public long Dev1CallbackGapCount { get; set; }
         public long Dev2CallbackGapCount { get; set; }
@@ -196,5 +211,23 @@ namespace MTTFTest.Watchdog.Protocol
         public string Outcome { get; set; }
         public string LastStage { get; set; }
         public string Detail { get; set; }
+    }
+
+    public sealed class WatchdogCheckpointMirror
+    {
+        public int SchemaVersion { get; set; }
+        public long Revision { get; set; }
+        public bool Armed { get; set; }
+        public string RunId { get; set; }
+        public long RunEpoch { get; set; }
+        public string SessionId { get; set; }
+        public string StoreDir { get; set; }
+        public string TestName { get; set; }
+        public int[] SelectedChannels { get; set; } = Array.Empty<int>();
+        public Dictionary<string, int> RemainingFormalCycles { get; set; } =
+            new Dictionary<string, int>();
+        public string SourcePath { get; set; }
+        public string Sha256 { get; set; }
+        public string UpdatedUtc { get; set; }
     }
 }

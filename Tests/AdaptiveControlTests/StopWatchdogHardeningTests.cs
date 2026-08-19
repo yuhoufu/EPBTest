@@ -1,4 +1,8 @@
 using System;
+using System.IO;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using Controller;
 using Controller.Adaptive;
 using IO.NI;
@@ -22,7 +26,9 @@ namespace AdaptiveControlTests
             Run("DO与峰值刷新不得掩盖机械圈60秒停滞", DiagnosticProgressCannotMaskMechanicalStall, ref passed);
             Run("人工暂停不得被恢复计数误判接管", ManualPauseSuppressesRecoveryInference, ref passed);
             Run("人工暂停按动态硬截止与进展判定接管", ManualPauseUsesDynamicDeadlineAndProgress, ref passed);
-            Run("恢复同指纹三次熔断且退避有界", RecoveryFailureCircuitBreakerIsBounded, ref passed);
+            Run("恢复同指纹连续五次熔断且低频探测有界", RecoveryFailureCircuitBreakerIsBounded, ref passed);
+            Run("检查点损坏时按分类回退到最近有效副本", DurableCheckpointFallsBackWithClassification, ref passed);
+            Run("检查点并发轮询与原子替换无共享冲突", DurableCheckpointConcurrentReadWriteIsShareSafe, ref passed);
             Run("过渡窗公开人工停止按钮语义", TransitionWindowExposesOperatorStop, ref passed);
             Run("逐通道心跳字段可往返", PerChannelProgressIsSerializable, ref passed);
             Run("墙钟前后跳变均可检测", WallClockStepsAreDetected, ref passed);
@@ -289,9 +295,12 @@ namespace AdaptiveControlTests
             var first = breaker.Observe("PowerOffUnconfirmed:*IDN? response timeout");
             var second = breaker.Observe("PowerOffUnconfirmed:*IDN? response timeout");
             var third = breaker.Observe("PowerOffUnconfirmed:*IDN? response timeout");
+            var fourth = breaker.Observe("PowerOffUnconfirmed:*IDN? response timeout");
+            var fifth = breaker.Observe("PowerOffUnconfirmed:*IDN? response timeout");
             Assert(first.ProcessRelaunchAllowed && second.ProcessRelaunchAllowed &&
-                   !third.ProcessRelaunchAllowed && third.ConsecutiveCount == 3,
-                "同一恢复失败指纹没有在第三次熔断进程重拉");
+                   third.ProcessRelaunchAllowed && fourth.ProcessRelaunchAllowed &&
+                   !fifth.ProcessRelaunchAllowed && fifth.ConsecutiveCount == 5,
+                "同一恢复失败指纹没有在第五次熔断快速进程重拉");
             var changed = breaker.Observe("RecoveryAttachFailed");
             Assert(changed.ProcessRelaunchAllowed && changed.ConsecutiveCount == 1,
                 "故障指纹变化后连续计数没有重置");
@@ -301,6 +310,124 @@ namespace AdaptiveControlTests
                    RecoveryFailurePolicy.SelectInProcessProbeDelaySeconds(4) == 60 &&
                    RecoveryFailurePolicy.SelectInProcessProbeDelaySeconds(99) == 60,
                 "原进程硬件探测退避不是5/15/30/60秒上限");
+            Assert(RecoveryFailurePolicy.SelectCircuitProbeDelayMinutes(1) == 2 &&
+                   RecoveryFailurePolicy.SelectCircuitProbeDelayMinutes(2) == 5 &&
+                   RecoveryFailurePolicy.SelectCircuitProbeDelayMinutes(3) == 15 &&
+                   RecoveryFailurePolicy.SelectCircuitProbeDelayMinutes(99) == 15,
+                "快速五次失败后的低频探测不是2/5/15分钟上限");
+        }
+
+        private static void DurableCheckpointFallsBackWithClassification()
+        {
+            var directory = Path.Combine(
+                Path.GetTempPath(),
+                "MTTFTest-DurableCheckpoint-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            try
+            {
+                var primary = Path.Combine(directory, "checkpoint.json");
+                var mirror = Path.Combine(directory, "mirror.json");
+                DurableJsonFileStore.WriteAtomicWithBackup(
+                    primary,
+                    Encoding.UTF8.GetBytes("{\"Name\":\"v1\"}"));
+                DurableJsonFileStore.WriteAtomicWithBackup(
+                    primary,
+                    Encoding.UTF8.GetBytes("{\"Name\":\"v2\"}"));
+                File.WriteAllText(primary, "{broken", new UTF8Encoding(false));
+                var backup = DurableJsonFileStore.ReadFirstValid<CheckpointProbe>(
+                    primary,
+                    primary + ".bak");
+                Assert(backup.Value?.Name == "v1" &&
+                       backup.SourcePath == primary + ".bak" &&
+                       backup.Attempts[0].Status == DurableJsonReadStatus.JsonInvalid,
+                    "主检查点损坏后没有回退到最近有效 .bak，或没有标记 JsonInvalid");
+
+                DurableJsonFileStore.WriteAtomicWithBackup(
+                    mirror,
+                    Encoding.UTF8.GetBytes("{\"Name\":\"project\"}"));
+                var project = DurableJsonFileStore.ReadFirstValid<CheckpointProbe>(
+                    Path.Combine(directory, "missing-primary.json"),
+                    Path.Combine(directory, "missing-primary.json.bak"),
+                    mirror);
+                Assert(project.Value?.Name == "project" && project.SourcePath == mirror &&
+                       project.Attempts[0].Status == DurableJsonReadStatus.Missing,
+                    "本地双副本缺失后没有回退到项目镜像，或没有标记 Missing");
+
+                DurableJsonFileStore.WriteAtomicWithBackup(
+                    mirror,
+                    Encoding.UTF8.GetBytes(
+                        "{\"Name\":\"project-disarmed\",\"Revision\":2,\"Armed\":false}"));
+                var latestAuthorization = DurableJsonFileStore.ReadLatestValid<CheckpointProbe>(
+                    checkpoint => checkpoint.Revision,
+                    primary,
+                    primary + ".bak",
+                    mirror,
+                    mirror + ".bak");
+                Assert(latestAuthorization.Value?.Name == "project-disarmed" &&
+                       latestAuthorization.Value.Armed == false &&
+                       latestAuthorization.SourcePath == mirror,
+                    "主副本损坏后错误采用旧 Armed 备份，覆盖了较新项目 Disarm 镜像");
+            }
+            finally
+            {
+                try { Directory.Delete(directory, true); } catch { }
+            }
+        }
+
+        private sealed class CheckpointProbe
+        {
+            public string Name { get; set; }
+            public long Revision { get; set; }
+            public bool Armed { get; set; }
+        }
+
+        private static void DurableCheckpointConcurrentReadWriteIsShareSafe()
+        {
+            var directory = Path.Combine(
+                Path.GetTempPath(),
+                "MTTFTest-DurableCheckpoint-Concurrent-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            try
+            {
+                var path = Path.Combine(directory, "checkpoint.json");
+                DurableJsonFileStore.WriteAtomicWithBackup(
+                    path,
+                    Encoding.UTF8.GetBytes("{\"Name\":\"v0\",\"Revision\":0}"));
+                var writer = Task.Run(() =>
+                {
+                    for (var revision = 1; revision <= 200; revision++)
+                    {
+                        DurableJsonFileStore.WriteAtomicWithBackup(
+                            path,
+                            Encoding.UTF8.GetBytes(
+                                $"{{\"Name\":\"v{revision}\",\"Revision\":{revision}}}"));
+                    }
+                });
+
+                var invalidReads = 0;
+                var readCount = 0;
+                while (!writer.IsCompleted || readCount < 200)
+                {
+                    var read = DurableJsonFileStore.ReadLatestValid<CheckpointProbe>(
+                        value => value.Revision,
+                        path,
+                        path + ".bak");
+                    if (read.Value == null || read.Status != DurableJsonReadStatus.Valid)
+                        Interlocked.Increment(ref invalidReads);
+                    readCount++;
+                }
+                writer.GetAwaiter().GetResult();
+                var final = DurableJsonFileStore.ReadLatestValid<CheckpointProbe>(
+                    value => value.Revision,
+                    path,
+                    path + ".bak");
+                Assert(invalidReads == 0 && final.Value?.Revision == 200,
+                    $"并发读写出现{invalidReads}次共享冲突/无有效副本，或最终版本错误");
+            }
+            finally
+            {
+                try { Directory.Delete(directory, true); } catch { }
+            }
         }
 
         private static void TransitionWindowExposesOperatorStop()
