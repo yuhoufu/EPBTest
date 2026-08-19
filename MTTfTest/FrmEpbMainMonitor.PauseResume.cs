@@ -51,6 +51,14 @@ namespace MTEmbTest
         private void ApplyBatchPauseState(BatchPauseState state, string reason = null)
         {
             if (BtnStartTest == null || BtnStartTest.IsDisposed) return;
+            // StopAll 一旦把进程标记为必须重启，任何迟到的状态事件或 finally
+            // 都不能再把“开始/继续”按钮打开。该闭锁只由新进程初始化解除。
+            if (_epb?.RequiresProcessRestart == true)
+            {
+                ApplyBatchActionButton("需重启软件", false, false);
+                ApplyAllChannelOperationStates();
+                return;
+            }
             switch (state)
             {
                 case BatchPauseState.Running:

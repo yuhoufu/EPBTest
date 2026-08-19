@@ -100,12 +100,21 @@ namespace MTEmbTest
         private static WatchdogJournalPolicy _journalPolicy = new WatchdogJournalPolicy();
         private static WatchdogJournalStore _clientJournal;
         private static long _clientEventSequence;
+        private static string _activeTakeoverCorrelationId;
+        private static string _activeTakeoverReason;
 
         internal static event Action<string, string> StopAllRequested;
         internal static event Action<string, string> TransportLost;
         internal static event Action<string, string> TransportError;
         internal static bool IsAttached { get { lock (Gate) return _pipe?.IsConnected == true; } }
         internal static string SessionId { get { lock (Gate) return _sessionId; } }
+
+        internal static bool IsActiveTakeoverCancellation(Exception exception)
+        {
+            if (!(exception?.GetBaseException() is OperationCanceledException)) return false;
+            lock (Gate)
+                return !string.IsNullOrWhiteSpace(_activeTakeoverCorrelationId);
+        }
 
         internal static void ConfigureJournalExportPath(string directory)
         {
@@ -142,6 +151,8 @@ namespace MTEmbTest
                 _selectedChannels = (selectedChannels ?? Array.Empty<int>()).ToArray();
                 _recoveryProcess = false;
                 _recoveryAttempt = 0;
+                _activeTakeoverCorrelationId = string.Empty;
+                _activeTakeoverReason = string.Empty;
                 Interlocked.Exchange(ref _clientEventSequence, 0);
                 _journalPolicy = policy;
                 journalDirectory = _journalExportDirectory;
@@ -299,6 +310,8 @@ namespace MTEmbTest
                 _selectedChannels = (selectedChannels ?? Array.Empty<int>()).ToArray();
                 _recoveryProcess = true;
                 _recoveryAttempt = intent.RecoveryAttempt;
+                _activeTakeoverCorrelationId = string.Empty;
+                _activeTakeoverReason = string.Empty;
                 Interlocked.Exchange(ref _clientEventSequence, 0);
                 _mainExecutable = Process.GetCurrentProcess().MainModule?.FileName ??
                                   Assembly.GetEntryAssembly()?.Location;
@@ -506,6 +519,11 @@ namespace MTEmbTest
                         Send(new WatchdogMessage { Type = WatchdogMessageType.Pong, SessionId = sessionId, Reason = "Alive" });
                     else if (message.Type == WatchdogMessageType.RequestStopAll)
                     {
+                        lock (Gate)
+                        {
+                            _activeTakeoverCorrelationId = message.CorrelationId ?? string.Empty;
+                            _activeTakeoverReason = message.Reason ?? string.Empty;
+                        }
                         try { StopAllRequested?.Invoke(message.Reason, message.CorrelationId); }
                         catch (Exception ex) { RaiseTransportError("StopAllRequestedHandler", ex); }
                     }
@@ -547,6 +565,28 @@ namespace MTEmbTest
             string detail,
             string contextSha256)
         {
+            string takeoverCorrelationId;
+            string takeoverReason;
+            lock (Gate)
+            {
+                takeoverCorrelationId = _activeTakeoverCorrelationId;
+                takeoverReason = _activeTakeoverReason;
+            }
+            var failureOwner = string.IsNullOrWhiteSpace(takeoverCorrelationId)
+                ? string.Empty
+                : "WatchdogTakeover";
+            if (RecoveryFailurePolicy.IsSupersededByWatchdogTakeover(
+                    !string.IsNullOrWhiteSpace(takeoverCorrelationId),
+                    takeoverCorrelationId,
+                    failureOwner,
+                    takeoverCorrelationId,
+                    failureCode,
+                    reason,
+                    detail))
+            {
+                failureCode = "RecoverySupersededByTakeover";
+                permanent = false;
+            }
             // 恢复子进程失败不是普通运行终止，不写 revocation marker；是否允许
             // 重试由结构化 failureCode/permanent 和 sidecar 的耐久预算决定。
             Volatile.Write(ref _sessionClosing, 1);
@@ -562,8 +602,14 @@ namespace MTEmbTest
                 RecoveryFailurePermanent = permanent,
                 RecoveryFailureDetail = detail,
                 RecoveryFailureContextSha256 = contextSha256,
+                RecoveryFailureOwner = failureOwner,
+                RecoveryFailureCorrelationId = takeoverCorrelationId,
                 CorrelationId = Guid.NewGuid().ToString("N")
             });
+            if (!string.IsNullOrWhiteSpace(takeoverCorrelationId))
+                RecordClientEvent(
+                    "RecoveryFailureTakeoverContext",
+                    $"Owner={failureOwner};CorrelationId={takeoverCorrelationId};Reason={takeoverReason}");
             FlushClientJournal();
         }
         internal static void NotifyRecoveryCheckpointValidated(

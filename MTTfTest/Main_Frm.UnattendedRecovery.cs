@@ -202,8 +202,9 @@ namespace MtEmbTest
             catch (Exception ex)
             {
                 var baseError = ex.GetBaseException();
+                var supersededByTakeover = WatchdogRuntime.IsActiveTakeoverCancellation(baseError);
                 var classification = RecoveryFailurePolicy.Classify(
-                    null,
+                    supersededByTakeover ? "RecoverySupersededByTakeover" : null,
                     false,
                     baseError.ToString());
                 var testConfigPath = ConfigLoader.GetProjectTestConfigPath(
@@ -212,8 +213,12 @@ namespace MtEmbTest
                 var testConfigSha256 = Controller.RuntimeBuildIdentity.ComputeFileSha256(
                     testConfigPath);
                 ProjectLogHub.Write(
-                    ProjectLogLevel.Error,
-                    "独立看门狗恢复进程安全接管或启动失败；保持本轮授权，等待 Watchdog 退避重试：" + ex.Message,
+                    supersededByTakeover
+                        ? ProjectLogLevel.Warning
+                        : ProjectLogLevel.Error,
+                    supersededByTakeover
+                        ? "本次恢复已被同一 Watchdog 安全接管请求取代；该取消不登记为新的启动失败：" + ex.Message
+                        : "独立看门狗恢复进程安全接管或启动失败；保持本轮授权，等待 Watchdog 退避重试：" + ex.Message,
                     "独立看门狗",
                     ex);
                 monitor?.PrepareForWatchdogRetryExit();

@@ -2669,15 +2669,15 @@ namespace MTEmbTest
                 var safety = await stopTask;
                 if (safety.RequiresProcessRestart || safety.TimedOut)
                 {
-                    LogInfo("停止试验超过安全截止，正在等待 Watchdog 终止旧进程并重启到空闲模式。");
+                    LogInfo(safety.TimedOut
+                        ? "停止试验超过安全截止：本进程已永久禁止再次开始，正在等待 Watchdog 完成安全接管。"
+                        : "停止试验已安全收口，但诊断状态要求重启：本进程已永久禁止再次开始；请等待 Watchdog 重启，或关闭软件后重新启动。");
                     BtnStop.Enabled = false;
                     BtnStartTest.Enabled = false;
                 }
                 else
                 {
-                    LogInfo(safety.CanRestartInProcess
-                        ? "停止试验完成；可以关闭软件或重新开始。"
-                        : "停止试验完成；物理安全已确认，诊断项已记录。");
+                    LogInfo("停止试验完成；可以关闭软件或重新开始。");
                     if (safety.PhysicalSafetyConfirmed)
                         WatchdogRuntime.NotifyPhysicalStopConfirmed("ManualStopPhysicalSafetyConfirmed");
                     WatchdogRuntime.NotifyStopCompleted(ToWatchdogStopSummary(safety), "ManualStopCompleted");

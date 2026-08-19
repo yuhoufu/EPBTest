@@ -53,6 +53,10 @@ namespace MTTFTest.Watchdog.Protocol
         public bool RecoveryFailurePermanent { get; set; }
         public string RecoveryFailureDetail { get; set; }
         public string RecoveryFailureContextSha256 { get; set; }
+        /// <summary>恢复失败的直接触发方；用于区分业务失败与 Watchdog 自己发起的取消。</summary>
+        public string RecoveryFailureOwner { get; set; }
+        /// <summary>若失败由 RequestStopAll 引起，回传该请求的关联号。</summary>
+        public string RecoveryFailureCorrelationId { get; set; }
         /// <summary>
         /// Heartbeat sequence acknowledged by the sidecar.  It is deliberately
         /// additive so old binaries can continue to deserialize the protocol.
@@ -192,6 +196,17 @@ namespace MTTFTest.Watchdog.Protocol
     {
         public int Channel { get; set; }
         public string State { get; set; }
+        /// <summary>通道生命周期阶段；与 State 分开发送，便于协议审计。</summary>
+        public string LifecyclePhase { get; set; }
+        /// <summary>运行资源契约版本；0 表示旧客户端未发布显式契约。</summary>
+        public int RuntimeContractRevision { get; set; }
+        public bool MechanicalProgressExpected { get; set; }
+        public bool TimerRequired { get; set; }
+        public bool RunnerRequired { get; set; }
+        public bool ResourcesMustBeInactive { get; set; }
+        public bool ManualPauseOwned { get; set; }
+        public bool RecoveryOwned { get; set; }
+        public long PhaseHardDeadlineUtc { get; set; }
         public long StateRevision { get; set; }
         public long StateSinceUtcTicks { get; set; }
         public bool TimerActive { get; set; }

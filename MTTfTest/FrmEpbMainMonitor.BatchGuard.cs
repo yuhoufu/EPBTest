@@ -16,6 +16,12 @@ namespace MTEmbTest
         /// </summary>
         private async void BtnStartTestGuarded_Click(object sender, EventArgs e)
         {
+            if (_epb?.RequiresProcessRestart == true)
+            {
+                ApplyBatchPauseState(_epb.CurrentBatchPauseState);
+                LogInfo("当前进程已被安全闭锁，不能再次开始；请等待 Watchdog 重启，或关闭软件后重新启动。");
+                return;
+            }
             try
             {
                 await HandleBatchStartRequestAsync(

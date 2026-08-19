@@ -156,6 +156,7 @@ namespace MTTFTest.Watchdog
         private int _physicalStopConfirmed;
         private int _transitionActive;
         private int _operatorTransitionStopStarted;
+        private string _activeTakeoverCorrelationId = string.Empty;
         private readonly TaskCompletionSource<bool> _operatorStopAcknowledged =
             new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         private bool _attached;
@@ -357,6 +358,7 @@ namespace MTTFTest.Watchdog
                         break;
                     }
                     _takeoverStarted = 0;
+                    _activeTakeoverCorrelationId = string.Empty;
                     _relaunchStarted = 0;
                     _lastProgressVersion = 0;
                     _channelProgressTracker.Reset();
@@ -479,6 +481,22 @@ namespace MTTFTest.Watchdog
                     BeginTakeover("BatchStartFailed:" + message.Reason);
                     break;
                 case WatchdogMessageType.RecoveryAttemptFailed:
+                    if (RecoveryFailurePolicy.IsSupersededByWatchdogTakeover(
+                            Interlocked.CompareExchange(ref _takeoverStarted, 0, 0) != 0,
+                            _activeTakeoverCorrelationId,
+                            message.RecoveryFailureOwner,
+                            message.RecoveryFailureCorrelationId,
+                            message.RecoveryFailureCode,
+                            message.Reason,
+                            message.RecoveryFailureDetail))
+                    {
+                        Record(
+                            "RecoverySupersededByTakeover",
+                            $"CorrelationId={message.RecoveryFailureCorrelationId};" +
+                            $"Code={message.RecoveryFailureCode};{message.Reason}");
+                        _attached = false;
+                        break;
+                    }
                     var classification = RecoveryFailurePolicy.Classify(
                         message.RecoveryFailureCode,
                         message.RecoveryFailurePermanent,
@@ -626,6 +644,7 @@ namespace MTTFTest.Watchdog
                     }
                     var logicalResidue = heartbeat != null && !manualPauseCommanded && !heartbeat.RunActive &&
                         (heartbeat.TimerCount > 0 || heartbeat.RunnerCount > 0 ||
+                         heartbeat.EnergizedChannelCount > 0 ||
                          heartbeat.StopCtsCount > 0 || heartbeat.CyclePauseCtsCount > 0 ||
                          heartbeat.ActiveCycleCount > 0 ||
                          heartbeat.DaqRecoveryCount > 0 || heartbeat.SoftwareRecoveryCount > 0 ||
@@ -737,13 +756,15 @@ namespace MTTFTest.Watchdog
             if (_journal.RecoveryBlocked || _journal.ManualStopRequested || IsSessionRevoked() ||
                 Interlocked.CompareExchange(ref _takeoverStarted, 1, 0) != 0) return;
             Record("TakeoverRequested", reason);
+            var correlationId = Guid.NewGuid().ToString("N");
+            _activeTakeoverCorrelationId = correlationId;
             Interlocked.Exchange(ref _transitionActive, 1);
             _transitionWindow.Show(
                 "检测到异常，正在安全接管",
                 "正在请求原程序关闭全部输出。原因：" + DescribeRecoveryReason(reason),
                 0,
                 _journal.RecoveryAttempt + 1);
-            Send(WatchdogMessageType.RequestStopAll, reason, Guid.NewGuid().ToString("N"));
+            Send(WatchdogMessageType.RequestStopAll, reason, correlationId);
             _ = Task.Run(() => TakeoverAsync(reason));
         }
 
@@ -775,6 +796,8 @@ namespace MTTFTest.Watchdog
                 Interlocked.CompareExchange(ref _takeoverStarted, 1, 0) != 0)
                 return;
             Interlocked.Exchange(ref _manualPauseSafetyTakeoverStarted, 1);
+            var correlationId = Guid.NewGuid().ToString("N");
+            _activeTakeoverCorrelationId = correlationId;
             Interlocked.Exchange(ref _transitionActive, 1);
             Record("ManualPauseSafetyTakeoverRequested", reason);
             _transitionWindow.Show(
@@ -782,7 +805,7 @@ namespace MTTFTest.Watchdog
                 "仅执行全断能并安全重开到空闲态，不会自动续跑。原因：" + DescribeRecoveryReason(reason),
                 0,
                 0);
-            Send(WatchdogMessageType.RequestStopAll, "ManualPauseSafety:" + reason, Guid.NewGuid().ToString("N"));
+            Send(WatchdogMessageType.RequestStopAll, "ManualPauseSafety:" + reason, correlationId);
             _ = Task.Run(() => ManualPauseSafetyTakeoverAsync(reason));
         }
 

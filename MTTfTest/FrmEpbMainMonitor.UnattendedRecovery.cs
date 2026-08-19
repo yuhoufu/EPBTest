@@ -310,21 +310,40 @@ namespace MTEmbTest
                 CyclePauseCtsCount = logical?.CycleCtsCount ?? 0,
                 ChannelProgress = (logical?.ChannelProgress ??
                                    Array.Empty<Controller.WatchdogChannelProgressSnapshot>())
-                    .Select(item => new WatchdogChannelProgress
+                    .Select(item =>
                     {
-                        Channel = item.Channel,
-                        State = item.State,
-                        StateRevision = item.StateRevision,
-                        StateSinceUtcTicks = item.StateSinceUtcTicks,
-                        TimerActive = item.TimerActive,
-                        RunnerActive = item.RunnerActive,
-                        Energized = item.Energized,
-                        LastMechanicalCompletedUtcTicks = item.LastMechanicalCompletedUtcTicks,
-                        MechanicalCompletedCount = item.MechanicalCompletedCount,
-                        ConsecutiveSoftwareAbortCount = item.ConsecutiveSoftwareAbortCount,
-                        DoCommandSequence = item.DoCommandSequence,
-                        PeakCutoffGeneration = item.PeakCutoffGeneration,
-                        PeakCutoffSequence = item.PeakCutoffSequence
+                        var contract = WatchdogRuntimeContractPolicy.Resolve(item.State);
+                        return new WatchdogChannelProgress
+                        {
+                            Channel = item.Channel,
+                            State = item.State,
+                            LifecyclePhase = contract.LifecyclePhase,
+                            RuntimeContractRevision = contract.Revision,
+                            MechanicalProgressExpected = contract.MechanicalProgressExpected,
+                            TimerRequired = contract.TimerRequired,
+                            RunnerRequired = contract.RunnerRequired,
+                            ResourcesMustBeInactive = contract.ResourcesMustBeInactive,
+                            ManualPauseOwned = manualPauseCommanded &&
+                                contract.ManualPauseOwnerRequired,
+                            RecoveryOwned = contract.RecoveryOwnerRequired &&
+                                (recoveryActive || (logical?.RecoveryOwnerCount ?? 0) > 0),
+                            PhaseHardDeadlineUtc = contract.RecoveryOwnerRequired
+                                ? recoveryEvidence.RecoveryHardDeadlineUtc
+                                : contract.ManualPauseOwnerRequired
+                                    ? manualPause?.HardDeadlineUtc.Ticks ?? 0
+                                    : 0,
+                            StateRevision = item.StateRevision,
+                            StateSinceUtcTicks = item.StateSinceUtcTicks,
+                            TimerActive = item.TimerActive,
+                            RunnerActive = item.RunnerActive,
+                            Energized = item.Energized,
+                            LastMechanicalCompletedUtcTicks = item.LastMechanicalCompletedUtcTicks,
+                            MechanicalCompletedCount = item.MechanicalCompletedCount,
+                            ConsecutiveSoftwareAbortCount = item.ConsecutiveSoftwareAbortCount,
+                            DoCommandSequence = item.DoCommandSequence,
+                            PeakCutoffGeneration = item.PeakCutoffGeneration,
+                            PeakCutoffSequence = item.PeakCutoffSequence
+                        };
                     })
                     .ToArray(),
                 Dev1CallbackGapCount = storage?.Dev1?.CallbackGapCount ?? 0,

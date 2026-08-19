@@ -24,6 +24,14 @@ namespace AdaptiveControlTests
             Run("恢复对象与RecoveryActive矛盾必须接管", RecoveryEvidenceMismatchTriggersTakeover, ref passed);
             Run("15秒周期逐通道60秒无进展必须接管", FormalProgressStallTriggersTakeover, ref passed);
             Run("DO与峰值刷新不得掩盖机械圈60秒停滞", DiagnosticProgressCannotMaskMechanicalStall, ref passed);
+            Run("Learning与Qualification只要求Runner且仍监督机械进展",
+                PhaseAwareRuntimeContractPreventsLearningFalseTakeover, ref passed);
+            Run("运行资源不变量按Run与契约签名独立去抖",
+                RuntimeInvariantTimingUsesRunAndContractIdentity, ref passed);
+            Run("恢复态使用owner与成对资源契约而非正式Timer契约",
+                RecoveryAndTerminalContractsArePhaseAware, ref passed);
+            Run("Watchdog主动取消不得计为新的恢复启动失败",
+                WatchdogTakeoverCancellationIsSuperseded, ref passed);
             Run("人工暂停不得被恢复计数误判接管", ManualPauseSuppressesRecoveryInference, ref passed);
             Run("人工暂停按动态硬截止与进展判定接管", ManualPauseUsesDynamicDeadlineAndProgress, ref passed);
             Run("恢复失败分类有界且RecoveryBlocked禁止再启动", RecoveryFailureCircuitBreakerIsBounded, ref passed);
@@ -217,20 +225,6 @@ namespace AdaptiveControlTests
                    stalled.Contains("DO=999") && stalled.Contains("Peak=888"),
                 "DO、峰值或状态持续刷新掩盖了机械完成圈停滞");
 
-            tracker.Reset();
-            progress.State = "Recovering";
-            Assert(tracker.Evaluate(heartbeat, new[] { 4 }, false, started, frequency) == null,
-                "系统恢复态首次观察即错误接管");
-            progress.StateRevision = 999;
-            progress.DoCommandSequence = 2000;
-            Assert(tracker.Evaluate(
-                       heartbeat,
-                       new[] { 4 },
-                       false,
-                       started + 60000,
-                       frequency)?.Contains("ChannelProgressStalled:EPB=4") == true,
-                "系统自恢复标签与持续DO刷新仍掩盖机械圈停滞");
-
             progress.MechanicalCompletedCount++;
             progress.LastMechanicalCompletedUtcTicks++;
             Assert(tracker.Evaluate(
@@ -240,6 +234,212 @@ namespace AdaptiveControlTests
                        started + 60001,
                        frequency) == null,
                 "真实机械完成后未重置逐通道监督期限");
+        }
+
+        private static void PhaseAwareRuntimeContractPreventsLearningFalseTakeover()
+        {
+            const long frequency = 1000;
+            const long started = 200000;
+            var tracker = new WatchdogChannelProgressTracker();
+            var progress = ContractProgress("Learning", timer: false, runner: true);
+            var heartbeat = new WatchdogHeartbeat
+            {
+                RunActive = true,
+                RunId = "learning-run",
+                RunEpoch = 1,
+                ExpectedCyclePeriodMs = 15000,
+                ChannelProgress = new[] { progress }
+            };
+
+            Assert(tracker.Evaluate(heartbeat, new[] { 4 }, false, started, frequency) == null &&
+                   tracker.Evaluate(heartbeat, new[] { 4 }, false, started + 5001, frequency) == null,
+                "合法Learning(Timer=False,Runner=True)仍在5秒后触发ChannelExpectedRuntimeMissing");
+
+            tracker.Reset();
+            Assert(tracker.Evaluate(heartbeat, new[] { 4 }, false, started, frequency) == null &&
+                   tracker.Evaluate(heartbeat, new[] { 4 }, false, started + 60000, frequency)
+                       ?.Contains("ChannelProgressStalled:EPB=4") == true,
+                "修复Learning资源误判时错误移除了学习阶段机械进展监督");
+            tracker.Reset();
+
+            progress.State = "Qualification";
+            ApplyPublishedContract(progress);
+            progress.MechanicalCompletedCount++;
+            progress.LastMechanicalCompletedUtcTicks++;
+            Assert(tracker.Evaluate(heartbeat, new[] { 4 }, false, started + 10000, frequency) == null,
+                "合法Qualification(Timer=False,Runner=True)被误判为资源缺失");
+
+            progress.State = "Starting";
+            progress.RunnerActive = false;
+            ApplyPublishedContract(progress);
+            Assert(tracker.Evaluate(heartbeat, new[] { 4 }, false, started + 20000, frequency) == null &&
+                   tracker.Evaluate(heartbeat, new[] { 4 }, false, started + 26000, frequency) == null,
+                "Starting阶段被臆造Timer/Runner要求");
+
+            tracker.Reset();
+            progress = ContractProgress("Learning", timer: false, runner: false);
+            heartbeat.ChannelProgress = new[] { progress };
+            Assert(tracker.Evaluate(heartbeat, new[] { 4 }, false, started, frequency) == null,
+                "Learning缺Runner首次观察未去抖");
+            var missingRunner = tracker.Evaluate(
+                heartbeat, new[] { 4 }, false, started + 5000, frequency);
+            Assert(missingRunner?.Contains("ChannelExpectedRuntimeMissing:EPB=4") == true &&
+                   missingRunner.Contains("ExpectedTimer=False") &&
+                   missingRunner.Contains("ExpectedRunner=True"),
+                "Learning真正缺少Runner时未按阶段契约接管");
+        }
+
+        private static void RuntimeInvariantTimingUsesRunAndContractIdentity()
+        {
+            const long frequency = 1000;
+            const long started = 300000;
+            var tracker = new WatchdogChannelProgressTracker();
+            var progress = ContractProgress("Running", timer: false, runner: true);
+            var heartbeat = new WatchdogHeartbeat
+            {
+                RunActive = true,
+                RunId = "run-a",
+                RunEpoch = 10,
+                ChannelProgress = new[] { progress }
+            };
+            Assert(tracker.Evaluate(heartbeat, new[] { 4 }, false, started, frequency) == null,
+                "正式运行资源缺失首次观察未去抖");
+            progress.StateRevision = 999;
+            Assert(tracker.Evaluate(
+                       heartbeat, new[] { 4 }, false, started + 5000, frequency)
+                       ?.Contains("ChannelExpectedRuntimeMissing:EPB=4") == true,
+                "StateRevision刷新错误重置了同一运行资源不变量的5秒计时");
+
+            tracker.Reset();
+            Assert(tracker.Evaluate(heartbeat, new[] { 4 }, false, started, frequency) == null,
+                "重置后首次观察异常");
+            heartbeat.RunId = "run-b";
+            heartbeat.RunEpoch = 11;
+            Assert(tracker.Evaluate(
+                       heartbeat, new[] { 4 }, false, started + 4999, frequency) == null,
+                "新RunId/RunEpoch继承了上一轮不变量计时");
+            Assert(tracker.Evaluate(
+                       heartbeat, new[] { 4 }, false, started + 9999, frequency)
+                       ?.Contains("RunId=run-b;RunEpoch=11") == true,
+                "新运行独立去抖满5秒后没有报告带身份的资源缺失");
+
+            tracker.Reset();
+            heartbeat.RunId = "transition";
+            heartbeat.RunEpoch = 12;
+            progress.State = "Learning";
+            progress.TimerActive = false;
+            progress.RunnerActive = false;
+            ApplyPublishedContract(progress);
+            tracker.Evaluate(heartbeat, new[] { 4 }, false, started, frequency);
+            progress.State = "Running";
+            progress.RunnerActive = true;
+            ApplyPublishedContract(progress);
+            Assert(tracker.Evaluate(
+                       heartbeat, new[] { 4 }, false, started + 4999, frequency) == null,
+                "Learning到Running契约转换沿用了旧阶段的不变量计时");
+            Assert(tracker.Evaluate(
+                       heartbeat, new[] { 4 }, false, started + 9999, frequency)
+                       ?.Contains("State=Running") == true,
+                "契约转换后新的Running缺Timer未独立计时并报告");
+        }
+
+        private static void RecoveryAndTerminalContractsArePhaseAware()
+        {
+            const long frequency = 1000;
+            const long started = 400000;
+            var tracker = new WatchdogChannelProgressTracker();
+            var recovery = ContractProgress("Recovering", timer: false, runner: false);
+            recovery.RecoveryOwned = true;
+            var heartbeat = new WatchdogHeartbeat
+            {
+                RunActive = true,
+                RunId = "recovery",
+                RunEpoch = 20,
+                ChannelProgress = new[] { recovery }
+            };
+            Assert(tracker.Evaluate(heartbeat, new[] { 4 }, false, started, frequency) == null &&
+                   tracker.Evaluate(heartbeat, new[] { 4 }, false, started + 31000, frequency) == null,
+                "合法恢复态被强制要求正式Timer/Runner或机械圈进展");
+
+            recovery.RunnerActive = true;
+            Assert(tracker.Evaluate(heartbeat, new[] { 4 }, false, started + 32000, frequency) == null,
+                "恢复态单边资源首次观察未使用30秒去抖");
+            Assert(tracker.Evaluate(
+                       heartbeat, new[] { 4 }, false, started + 62000, frequency)
+                       ?.Contains("ChannelRecoveryInvariantStalled:EPB=4") == true,
+                "恢复态Timer/Runner单边残留30秒未被发现");
+
+            tracker.Reset();
+            var terminal = ContractProgress("Completed", timer: false, runner: true);
+            heartbeat.RunId = "terminal";
+            heartbeat.RunEpoch = 21;
+            heartbeat.RunActive = false;
+            heartbeat.ChannelProgress = new[] { terminal };
+            // Completed 在生产心跳中会从 RecoveryEligibleChannels 排除，但终态
+            // 资源残留仍必须被 sidecar 监督。
+            tracker.Evaluate(heartbeat, Array.Empty<int>(), false, started, frequency);
+            Assert(tracker.Evaluate(
+                       heartbeat, Array.Empty<int>(), false, started + 5000, frequency)
+                       ?.Contains("ChannelTerminalResourcesActive:EPB=4") == true,
+                "Completed终态残留Runner五秒后未被接管");
+        }
+
+        private static void WatchdogTakeoverCancellationIsSuperseded()
+        {
+            const string correlation = "takeover-correlation";
+            Assert(RecoveryFailurePolicy.IsSupersededByWatchdogTakeover(
+                    true,
+                    correlation,
+                    "WatchdogTakeover",
+                    correlation,
+                    "RecoverySupersededByTakeover",
+                    "WatchdogRecoveryStartupFailed:已取消该操作。",
+                    "System.OperationCanceledException: The operation was canceled."),
+                "同一Watchdog接管关联号引发的取消仍被当作新启动失败");
+            Assert(!RecoveryFailurePolicy.IsSupersededByWatchdogTakeover(
+                    true,
+                    correlation,
+                    "WatchdogTakeover",
+                    "other-correlation",
+                    "UnhandledSoftwareStartup",
+                    "OperationCanceledException",
+                    string.Empty) &&
+                   !RecoveryFailurePolicy.IsSupersededByWatchdogTakeover(
+                    false,
+                    correlation,
+                    "WatchdogTakeover",
+                    correlation,
+                    "UnhandledSoftwareStartup",
+                    "OperationCanceledException",
+                    string.Empty),
+                "无关关联号或无活动接管的业务取消被错误吞掉");
+        }
+
+        private static WatchdogChannelProgress ContractProgress(
+            string state,
+            bool timer,
+            bool runner)
+        {
+            var result = new WatchdogChannelProgress
+            {
+                Channel = 4,
+                State = state,
+                TimerActive = timer,
+                RunnerActive = runner
+            };
+            ApplyPublishedContract(result);
+            return result;
+        }
+
+        private static void ApplyPublishedContract(WatchdogChannelProgress progress)
+        {
+            var contract = WatchdogRuntimeContractPolicy.Resolve(progress.State);
+            progress.LifecyclePhase = contract.LifecyclePhase;
+            progress.RuntimeContractRevision = contract.Revision;
+            progress.MechanicalProgressExpected = contract.MechanicalProgressExpected;
+            progress.TimerRequired = contract.TimerRequired;
+            progress.RunnerRequired = contract.RunnerRequired;
+            progress.ResourcesMustBeInactive = contract.ResourcesMustBeInactive;
         }
 
         private static void ManualPauseSuppressesRecoveryInference()
@@ -563,7 +763,14 @@ namespace AdaptiveControlTests
                         ConsecutiveSoftwareAbortCount = 2,
                         DoCommandSequence = 456,
                         PeakCutoffGeneration = 12,
-                        PeakCutoffSequence = 455
+                        PeakCutoffSequence = 455,
+                        LifecyclePhase = "Learning",
+                        RuntimeContractRevision = WatchdogRuntimeContractPolicy.CurrentRevision,
+                        MechanicalProgressExpected = true,
+                        TimerRequired = false,
+                        RunnerRequired = true,
+                        RecoveryOwned = false,
+                        PhaseHardDeadlineUtc = 987654
                     }
                 }
             };
@@ -582,6 +789,10 @@ namespace AdaptiveControlTests
                    roundTrip.Heartbeat.ChannelProgress[0].MechanicalCompletedCount == 123 &&
                    roundTrip.Heartbeat.ChannelProgress[0].PeakCutoffGeneration == 12 &&
                    roundTrip.Heartbeat.ChannelProgress[0].PeakCutoffSequence == 455 &&
+                   roundTrip.Heartbeat.ChannelProgress[0].LifecyclePhase == "Learning" &&
+                   roundTrip.Heartbeat.ChannelProgress[0].RuntimeContractRevision == 1 &&
+                   roundTrip.Heartbeat.ChannelProgress[0].RunnerRequired &&
+                   roundTrip.Heartbeat.ChannelProgress[0].PhaseHardDeadlineUtc == 987654 &&
                    roundTrip.RecoveryFailureCode == "ConfigDuplicateEpbId" &&
                    roundTrip.RecoveryFailurePermanent &&
                    roundTrip.RecoveryFailureContextSha256 == "abc123",

@@ -210,6 +210,44 @@ namespace MTTFTest.Watchdog.Protocol
         public static bool CanLaunchMainProcess(bool recoveryBlocked) => !recoveryBlocked;
 
         /// <summary>
+        /// Watchdog 已发出 RequestStopAll 后，恢复进程中的等待任务会按设计收到取消。
+        /// 该取消是接管流程的结果，不是新的启动失败，不能消耗进程重启预算。
+        /// </summary>
+        public static bool IsSupersededByWatchdogTakeover(
+            bool takeoverInProgress,
+            string activeTakeoverCorrelationId,
+            string failureOwner,
+            string failureCorrelationId,
+            string failureCode,
+            string reason,
+            string detail)
+        {
+            if (!takeoverInProgress ||
+                !string.Equals(
+                    failureOwner,
+                    "WatchdogTakeover",
+                    StringComparison.OrdinalIgnoreCase) ||
+                string.IsNullOrWhiteSpace(activeTakeoverCorrelationId) ||
+                !string.Equals(
+                    activeTakeoverCorrelationId,
+                    failureCorrelationId,
+                    StringComparison.Ordinal))
+                return false;
+
+            var text = string.Join(
+                " ",
+                new[] { failureCode, reason, detail }.Where(value =>
+                    !string.IsNullOrWhiteSpace(value)));
+            return Contains(text, "OperationCanceledException") ||
+                   Contains(text, "TaskCanceledException") ||
+                   Contains(text, "已取消该操作") ||
+                   Contains(text, "operation was canceled") ||
+                   Contains(text, "operation was cancelled") ||
+                   Contains(text, "canceled") ||
+                   Contains(text, "cancelled");
+        }
+
+        /// <summary>
         /// CircuitProbe 只能探测设备存在性；sidecar 永远不得用它启动完整主程序。
         /// </summary>
         public static bool AllowsMainProcessCircuitProbe => false;
@@ -259,6 +297,92 @@ namespace MTTFTest.Watchdog.Protocol
                 return "PackageVerificationFailed";
             return "PermanentRecoveryFailure";
         }
+    }
+
+    public sealed class WatchdogRuntimeContract
+    {
+        public string LifecyclePhase { get; internal set; }
+        public int Revision { get; internal set; }
+        public bool MechanicalProgressExpected { get; internal set; }
+        public bool TimerRequired { get; internal set; }
+        public bool RunnerRequired { get; internal set; }
+        public bool RequireTimerRunnerParity { get; internal set; }
+        public bool ManualPauseOwnerRequired { get; internal set; }
+        public bool RecoveryOwnerRequired { get; internal set; }
+        public bool ResourcesMustBeInactive { get; internal set; }
+    }
+
+    /// <summary>
+    /// 通道阶段与执行资源之间的唯一权威契约。Timer 只代表正式计数调度，
+    /// Learning/Qualification 合法地只拥有 Runner；机械进展监督与 Timer 要求不可混为一谈。
+    /// </summary>
+    public static class WatchdogRuntimeContractPolicy
+    {
+        public const int CurrentRevision = 1;
+
+        public static WatchdogRuntimeContract Resolve(string state)
+        {
+            var phase = (state ?? string.Empty).Trim();
+            var contract = new WatchdogRuntimeContract
+            {
+                LifecyclePhase = phase,
+                Revision = CurrentRevision
+            };
+
+            if (EqualsPhase(phase, "Learning") || EqualsPhase(phase, "Qualification"))
+            {
+                contract.MechanicalProgressExpected = true;
+                contract.RunnerRequired = true;
+            }
+            else if (EqualsPhase(phase, "Running") || EqualsPhase(phase, "WarningRunning"))
+            {
+                contract.MechanicalProgressExpected = true;
+                contract.TimerRequired = true;
+                contract.RunnerRequired = true;
+            }
+            else if (EqualsPhase(phase, "Recovering") || EqualsPhase(phase, "ResumeChecking"))
+            {
+                contract.RequireTimerRunnerParity = true;
+                contract.RecoveryOwnerRequired = true;
+            }
+            else if (EqualsPhase(phase, "Paused") || EqualsPhase(phase, "PausePending"))
+            {
+                contract.ManualPauseOwnerRequired = true;
+            }
+            else if (EqualsPhase(phase, "NotEnabled") ||
+                     EqualsPhase(phase, "AlarmStopped") ||
+                     EqualsPhase(phase, "InterlockStopped") ||
+                     EqualsPhase(phase, "ManualStopped") ||
+                     EqualsPhase(phase, "Completed") ||
+                     EqualsPhase(phase, "StartBlocked") ||
+                     EqualsPhase(phase, "SystemFault"))
+            {
+                contract.ResourcesMustBeInactive = true;
+            }
+
+            // Starting/未知阶段不臆造 Timer 或 Runner 要求；上层启动与恢复硬截止继续兜底。
+            return contract;
+        }
+
+        public static bool PublishedContractMatches(
+            WatchdogChannelProgress progress,
+            WatchdogRuntimeContract expected)
+        {
+            if (progress == null || expected == null ||
+                progress.RuntimeContractRevision != CurrentRevision)
+                return true;
+            return string.Equals(
+                       progress.LifecyclePhase,
+                       expected.LifecyclePhase,
+                       StringComparison.OrdinalIgnoreCase) &&
+                   progress.MechanicalProgressExpected == expected.MechanicalProgressExpected &&
+                   progress.TimerRequired == expected.TimerRequired &&
+                   progress.RunnerRequired == expected.RunnerRequired &&
+                   progress.ResourcesMustBeInactive == expected.ResourcesMustBeInactive;
+        }
+
+        private static bool EqualsPhase(string left, string right) =>
+            string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -399,6 +523,9 @@ namespace MTTFTest.Watchdog.Protocol
             new Dictionary<int, long>();
         private readonly Dictionary<int, long> _invariantTimestamps =
             new Dictionary<int, long>();
+        private readonly Dictionary<int, string> _invariantSignatures =
+            new Dictionary<int, string>();
+        private string _runIdentity = string.Empty;
 
         public void Reset()
         {
@@ -407,6 +534,8 @@ namespace MTTFTest.Watchdog.Protocol
                 _mechanicalSignatures.Clear();
                 _mechanicalProgressTimestamps.Clear();
                 _invariantTimestamps.Clear();
+                _invariantSignatures.Clear();
+                _runIdentity = string.Empty;
             }
         }
 
@@ -417,35 +546,52 @@ namespace MTTFTest.Watchdog.Protocol
             long nowTimestamp,
             long timestampFrequency)
         {
-            if (heartbeat == null || manualPauseCommanded || !heartbeat.RunActive)
+            if (heartbeat == null || manualPauseCommanded)
                 return null;
 
             var eligible = new HashSet<int>(eligibleChannels ?? Enumerable.Empty<int>());
             var frequency = Math.Max(1L, timestampFrequency);
             lock (_gate)
             {
+                var runIdentity = string.Format(
+                    CultureInfo.InvariantCulture,
+                    "{0}:{1}",
+                    heartbeat.RunId ?? string.Empty,
+                    heartbeat.RunEpoch);
+                if (!string.Equals(_runIdentity, runIdentity, StringComparison.Ordinal))
+                {
+                    _mechanicalSignatures.Clear();
+                    _mechanicalProgressTimestamps.Clear();
+                    _invariantTimestamps.Clear();
+                    _invariantSignatures.Clear();
+                    _runIdentity = runIdentity;
+                }
+
                 foreach (var item in heartbeat.ChannelProgress ?? Array.Empty<WatchdogChannelProgress>())
                 {
-                    if (item == null || !eligible.Contains(item.Channel))
+                    if (item == null)
                         continue;
 
-                    if (item.ConsecutiveSoftwareAbortCount >= 2)
+                    var active = item.TimerActive || item.RunnerActive || item.Energized;
+                    var contract = WatchdogRuntimeContractPolicy.Resolve(item.State);
+                    var recoveryEligible = heartbeat.RunActive && eligible.Contains(item.Channel);
+                    var terminalResidue = contract.ResourcesMustBeInactive && active;
+                    // 已完成、永久报警或人工禁用通道通常不在恢复候选集中，但它们
+                    // 仍必须接受“终态不得残留执行资源”的物理安全监督。
+                    if (!recoveryEligible && !terminalResidue)
+                    {
+                        _mechanicalSignatures.Remove(item.Channel);
+                        _mechanicalProgressTimestamps.Remove(item.Channel);
+                        _invariantTimestamps.Remove(item.Channel);
+                        _invariantSignatures.Remove(item.Channel);
+                        continue;
+                    }
+
+                    if (recoveryEligible && item.ConsecutiveSoftwareAbortCount >= 2)
                         return $"ChannelConsecutiveSoftwareAbort:EPB={item.Channel};" +
                                $"Count={item.ConsecutiveSoftwareAbortCount}";
 
-                    var active = item.TimerActive || item.RunnerActive || item.Energized;
-                    var stateAllowsCycles =
-                        string.Equals(item.State, "Running", StringComparison.OrdinalIgnoreCase) ||
-                        string.Equals(item.State, "WarningRunning", StringComparison.OrdinalIgnoreCase) ||
-                        string.Equals(item.State, "Learning", StringComparison.OrdinalIgnoreCase) ||
-                        string.Equals(item.State, "Qualification", StringComparison.OrdinalIgnoreCase) ||
-                        // A fake-running incident can be mislabeled as system
-                        // recovery while Timer/Runner/DO keep moving.  Recovery
-                        // revisions are not proof of a completed mechanical circle.
-                        string.Equals(item.State, "Recovering", StringComparison.OrdinalIgnoreCase) ||
-                        string.Equals(item.State, "ResumeChecking", StringComparison.OrdinalIgnoreCase);
-
-                    if (active && stateAllowsCycles)
+                    if (recoveryEligible && active && contract.MechanicalProgressExpected)
                     {
                         // Only a mechanically completed circle is progress.
                         // DO/Peak/State can keep changing during the exact fake-running
@@ -500,50 +646,93 @@ namespace MTTFTest.Watchdog.Protocol
                         _mechanicalProgressTimestamps.Remove(item.Channel);
                     }
 
-                    var recovering =
-                        string.Equals(item.State, "Recovering", StringComparison.OrdinalIgnoreCase) ||
-                        string.Equals(item.State, "ResumeChecking", StringComparison.OrdinalIgnoreCase);
-                    var pausedWithoutOperator =
-                        string.Equals(item.State, "Paused", StringComparison.OrdinalIgnoreCase);
-                    var expectedActiveResourcesMissing = stateAllowsCycles &&
-                                                         (!item.TimerActive || !item.RunnerActive);
-                    var invariantMismatch =
-                        (recovering && item.TimerActive != item.RunnerActive) ||
-                        pausedWithoutOperator ||
-                        expectedActiveResourcesMissing;
-                    if (!invariantMismatch)
+                    var invariantCode = SelectInvariantCode(item, contract, active);
+                    if (string.IsNullOrEmpty(invariantCode))
                     {
                         _invariantTimestamps.Remove(item.Channel);
+                        _invariantSignatures.Remove(item.Channel);
                     }
                     else
                     {
+                        var invariantSignature = string.Format(
+                            CultureInfo.InvariantCulture,
+                            "{0}|{1}|EPB={2}|Code={3}|State={4}|Expected={5},{6},{7}|Actual={8},{9},{10}|Owners={11},{12}",
+                            heartbeat.RunId ?? string.Empty,
+                            heartbeat.RunEpoch,
+                            item.Channel,
+                            invariantCode,
+                            item.State ?? string.Empty,
+                            contract.TimerRequired,
+                            contract.RunnerRequired,
+                            contract.ResourcesMustBeInactive,
+                            item.TimerActive,
+                            item.RunnerActive,
+                            item.Energized,
+                            item.ManualPauseOwned,
+                            item.RecoveryOwned);
+                        if (!_invariantSignatures.TryGetValue(item.Channel, out var previousInvariant) ||
+                            !string.Equals(previousInvariant, invariantSignature, StringComparison.Ordinal))
+                        {
+                            _invariantSignatures[item.Channel] = invariantSignature;
+                            _invariantTimestamps[item.Channel] = nowTimestamp;
+                        }
                         if (!_invariantTimestamps.TryGetValue(item.Channel, out var invariantSince))
                         {
                             invariantSince = nowTimestamp;
                             _invariantTimestamps[item.Channel] = nowTimestamp;
                         }
                         var invariantAge = (nowTimestamp - invariantSince) / (double)frequency;
-                        var invariantDeadlineSeconds = pausedWithoutOperator ||
-                                                       expectedActiveResourcesMissing
-                            ? 5
-                            : 30;
+                        var invariantDeadlineSeconds =
+                            string.Equals(
+                                invariantCode,
+                                "ChannelRecoveryInvariantStalled",
+                                StringComparison.Ordinal)
+                                ? 30
+                                : 5;
                         if (invariantAge >= invariantDeadlineSeconds)
                             return string.Format(
                                 CultureInfo.InvariantCulture,
-                                "{0}:EPB={1};AgeSeconds={2:F1};Timer={3};Runner={4};State={5}",
-                                pausedWithoutOperator
-                                    ? "ChannelPausedWithoutManualOwner"
-                                    : expectedActiveResourcesMissing
-                                        ? "ChannelExpectedRuntimeMissing"
-                                        : "ChannelRecoveryInvariantStalled",
+                                "{0}:EPB={1};AgeSeconds={2:F1};Timer={3};Runner={4};" +
+                                "Energized={5};State={6};ExpectedTimer={7};ExpectedRunner={8};" +
+                                "ContractRevision={9};RunId={10};RunEpoch={11}",
+                                invariantCode,
                                 item.Channel,
                                 invariantAge,
                                 item.TimerActive,
                                 item.RunnerActive,
-                                item.State);
+                                item.Energized,
+                                item.State,
+                                contract.TimerRequired,
+                                contract.RunnerRequired,
+                                WatchdogRuntimeContractPolicy.CurrentRevision,
+                                heartbeat.RunId,
+                                heartbeat.RunEpoch);
                     }
                 }
             }
+            return null;
+        }
+
+        private static string SelectInvariantCode(
+            WatchdogChannelProgress item,
+            WatchdogRuntimeContract contract,
+            bool active)
+        {
+            if (!WatchdogRuntimeContractPolicy.PublishedContractMatches(item, contract))
+                return "ChannelRuntimeContractInconsistent";
+            if (contract.ManualPauseOwnerRequired && !item.ManualPauseOwned)
+                return "ChannelPausedWithoutManualOwner";
+            if (contract.RecoveryOwnerRequired &&
+                item.RuntimeContractRevision == WatchdogRuntimeContractPolicy.CurrentRevision &&
+                !item.RecoveryOwned)
+                return "ChannelRecoveryOwnerMissing";
+            if ((contract.TimerRequired && !item.TimerActive) ||
+                (contract.RunnerRequired && !item.RunnerActive))
+                return "ChannelExpectedRuntimeMissing";
+            if (contract.RequireTimerRunnerParity && item.TimerActive != item.RunnerActive)
+                return "ChannelRecoveryInvariantStalled";
+            if (contract.ResourcesMustBeInactive && active)
+                return "ChannelTerminalResourcesActive";
             return null;
         }
     }
