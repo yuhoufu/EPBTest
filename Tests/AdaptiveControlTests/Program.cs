@@ -85,6 +85,13 @@ namespace AdaptiveControlTests
                     return 0;
                 }
                 if (args.Length == 1 &&
+                    args[0].Equals("--epb-record-normalization", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += EpbRecordNormalizationTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
                     args[0].Equals("--incident-session", StringComparison.OrdinalIgnoreCase))
                 {
                     Run("Incident SessionKey/60秒窗口合并", IncidentSessionPolicyTests.SessionKeyAndWindowMerge);
@@ -355,6 +362,7 @@ namespace AdaptiveControlTests
                 Run("DAQ重叠回调保持时间分配与入队同序", OverlappingCallbacksCommitInTimestampOrder);
                 Run("采集重启重建高精度时基", HighResolutionClockReset);
                 Run("新项目清零且不改旧项目", NewProjectIsIsolatedAndReset);
+                _passed += EpbRecordNormalizationTests.RunAll();
                 Run("进度摘要默认选择最小已启动通道", InitialSummarySelectsFirstStarted);
                 Run("进度摘要完成后切换且全完成保持", SummaryAdvancesAfterCompletion);
                 Run("EPB勾选仅按设置到电源到曲线单向传播", EpbSelectionPropagatesOneWay);

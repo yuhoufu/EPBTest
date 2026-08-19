@@ -102,6 +102,8 @@ public enum OverrunPolicy
 
 public sealed class TestConfig
 {
+    private readonly object _epbRecordsGate = new();
+
     public string TestName { get; set; }
     public int TestTarget { get; set; }
     public bool IsSameCycleForAllEpb { get; set; }
@@ -153,23 +155,70 @@ public sealed class TestConfig
 
 
     /// <summary>
-    ///     确保 EpbRecords 至少包含 1..12 的记录（按 Id 升序），并返回集合引用。
+    ///     将 EpbRecords 归一化为 1..expectedCount 每个通道恰好一条记录（按 Id 升序），并返回集合引用。
     ///     调用场景：首次加载配置后补齐，或需要访问某通道记录时使用。
-    ///     备注：此方法不会覆盖已有记录（保留 Loader 从 XML 读取的值）。
+    ///     备注：历史文件若含重复 Id，会合并单调运行证据并保留任一副本的启用授权。
     /// </summary>
     public List<EpbTestRecord> EnsureEpbRecords(int expectedCount = 12)
     {
-        // 若已存在且数量合适则直接返回（但仍保证包含 1..expectedCount 的 id）
-        // 需要 using System.Linq;
-        var present = new HashSet<int>(EpbRecords.Select(r => r.Id));
+        if (expectedCount <= 0) throw new ArgumentOutOfRangeException(nameof(expectedCount));
 
-        for (var id = 1; id <= expectedCount; id++)
-            if (!present.Contains(id))
-                EpbRecords.Add(EpbTestRecord.CreateDefault(id));
+        lock (_epbRecordsGate)
+        {
+            EpbRecords ??= new List<EpbTestRecord>();
 
-        // 保持稳定顺序：按 Id 升序
-        EpbRecords.Sort((a, b) => a.Id.CompareTo(b.Id));
-        return EpbRecords;
+            var normalized = EpbRecords
+                .Where(record => record != null && record.Id >= 1 && record.Id <= expectedCount)
+                .GroupBy(record => record.Id)
+                .Select(MergeDuplicateEpbRecords)
+                .ToDictionary(record => record.Id);
+
+            for (var id = 1; id <= expectedCount; id++)
+                if (!normalized.ContainsKey(id))
+                    normalized.Add(id, EpbTestRecord.CreateDefault(id));
+
+            EpbRecords.Clear();
+            EpbRecords.AddRange(normalized.Values.OrderBy(record => record.Id));
+            return EpbRecords;
+        }
+    }
+
+    private static EpbTestRecord MergeDuplicateEpbRecords(
+        IGrouping<int, EpbTestRecord> duplicates)
+    {
+        var records = duplicates.ToList();
+        var primary = records
+            .OrderByDescending(record => record.EffectiveMechanicalCycleCount)
+            .ThenByDescending(record => record.RunCount)
+            .ThenByDescending(record => record.RunTimeSpan)
+            .ThenByDescending(record => record.Status != EpbTestStatus.NotStarted)
+            .ThenBy(record => record.StartTime ?? DateTime.MaxValue)
+            .First();
+
+        // 重复行是同一通道的多份快照，计数和时长只能取单调最大值，不能相加。
+        // Enabled 属于试验授权：任一历史副本为 true 都必须保留，避免静默漏跑卡钳。
+        primary.Enabled = records.Any(record => record.Enabled);
+        primary.TotalCount = records.Max(record => Math.Max(0, record.TotalCount));
+        primary.RunCount = records.Max(record => Math.Max(0, record.RunCount));
+        primary.MechanicalCycleCount = records.Max(record =>
+            Math.Max(record.MechanicalCycleCount, record.RunCount));
+        primary.RunTimeSpan = records.Max(record => record.RunTimeSpan);
+        primary.StartTime = records
+            .Where(record => record.StartTime.HasValue)
+            .Select(record => record.StartTime)
+            .OrderBy(value => value)
+            .FirstOrDefault();
+
+        if (!primary.LatestStartTime.HasValue)
+        {
+            primary.LatestStartTime = records
+                .Where(record => record.LatestStartTime.HasValue)
+                .Select(record => record.LatestStartTime)
+                .OrderByDescending(value => value)
+                .FirstOrDefault();
+        }
+
+        return primary;
     }
 
     /// <summary>获取指定通道的记录（不存在时自动创建并返回）。channel 范围期望 1..12。</summary>
@@ -593,6 +642,25 @@ public static class ConfigLoader
             cfg.EpbRecords.Add(r);
         }
 
+        var duplicateEpbIds = cfg.EpbRecords
+            .Where(record => record != null)
+            .GroupBy(record => record.Id)
+            .Where(group => group.Count() > 1)
+            .Select(group => group.Key)
+            .OrderBy(id => id)
+            .ToArray();
+        var invalidEpbRecordCount = cfg.EpbRecords.Count(record =>
+            record == null || record.Id < 1 || record.Id > 12);
+        cfg.EnsureEpbRecords(12);
+        if (duplicateEpbIds.Length > 0 || invalidEpbRecordCount > 0)
+        {
+            log?.Warn(
+                "TestConfig EpbRecords 已自动归一化：" +
+                $"DuplicateIds=[{string.Join(",", duplicateEpbIds)}] " +
+                $"InvalidCount={invalidEpbRecordCount} CanonicalCount={cfg.EpbRecords.Count} Path={path}",
+                "配置");
+        }
+
         #region 解析读取EpbCycleRunnerConfig
 
         // ===== 仅解析新版 <EpbCycleRunnerConfig>/<Record> =====
@@ -874,6 +942,9 @@ public static class ConfigLoader
 
     private static void SaveTestCore(string path, TestConfig cfg)
     {
+        // 保存边界再次归一化，禁止任何调用方把重复通道写回项目配置。
+        cfg.EnsureEpbRecords(12);
+
         var doc = new XmlDocument();
         doc.Load(path);
 
@@ -998,10 +1069,14 @@ public static class ConfigLoader
         // ===============================
         // 5) 保存 EpbRecords（EPB测试记录）
         // ===============================
-        var epbRecordsNode = root.SelectSingleNode("EpbRecords");
-        if (epbRecordsNode != null) root.RemoveChild(epbRecordsNode);
+        // 历史异常文件可能同时存在多个 <EpbRecords> 容器；只删第一个会让旧容器
+        // 与新容器同时保留，并在下一次加载时重新形成重复 Id。
+        var existingEpbRecordNodes = root.SelectNodes("EpbRecords");
+        if (existingEpbRecordNodes != null)
+            foreach (XmlNode existingEpbRecordNode in existingEpbRecordNodes)
+                root.RemoveChild(existingEpbRecordNode);
 
-        epbRecordsNode = doc.CreateElement("EpbRecords");
+        var epbRecordsNode = doc.CreateElement("EpbRecords");
 
         foreach (var record in cfg.EpbRecords.OrderBy(r => r.Id))
         {

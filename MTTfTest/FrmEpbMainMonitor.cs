@@ -1207,6 +1207,7 @@ namespace MTEmbTest
 
             catch (Exception ex)
             {
+                logger?.Error("主监控初始化失败。", "启动", ex);
                 ShowOperatorMessage(@"初始化错误 : " + ex.Message, "无人值守初始化", MessageBoxButtons.OK,
                     MessageBoxIcon.Error);
             }
@@ -2479,11 +2480,10 @@ namespace MTEmbTest
 
                 Dictionary<int, int> epbTestCycle = new Dictionary<int, int>();
                 // 添加每个epb通道的目标次数
-                foreach (var epbRecord in _cfg.Test.EpbRecords)
+                foreach (var epbRecord in _cfg.Test.EnsureEpbRecords(12))
                 {
-                    epbTestCycle!.Add(
-                        epbRecord.Id,
-                        epbRecord.GetRemainingMechanicalCycles(_cfg.Test.TestTarget));
+                    epbTestCycle[epbRecord.Id] =
+                        epbRecord.GetRemainingMechanicalCycles(_cfg.Test.TestTarget);
                 }
 
                 _epb.EpbTestCycle = epbTestCycle;
@@ -2583,9 +2583,11 @@ namespace MTEmbTest
             }
             catch (Exception ex)
             {
-                LogInfo($"启动卡钳{string.Join(",", channels)} 测试失败：{ex.Message}");
+                var channelText = string.Join(",", channels);
+                logger?.Error($"启动卡钳{channelText}测试失败。", "启动", ex);
+                LogInfo($"启动卡钳{channelText} 测试失败：{ex.Message}");
                 if (unattendedRecovery) throw;
-                ShowOperatorMessage($@"启动卡钳{channels}测试失败：{ex.Message}", @"提示", MessageBoxButtons.OK,
+                ShowOperatorMessage($@"启动卡钳{channelText}测试失败：{ex.Message}", @"提示", MessageBoxButtons.OK,
                     MessageBoxIcon.Warning);
                 return null;
             }

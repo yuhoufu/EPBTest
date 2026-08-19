@@ -50,6 +50,7 @@
     <Compile Include="CycleAttemptLifecycleTests.cs" />
     <Compile Include="DaqPersistenceCoordinatorTests.cs" />
     <Compile Include="DaqRealtimeControlTests.cs" />
+    <Compile Include="EpbRecordNormalizationTests.cs" />
     <Compile Include="IncidentSessionPolicyTests.cs" />
     <Compile Include="HydraulicGroupCoordinatorTests.cs" />
     <Compile Include="PowerSupplyCoordinatorTests.cs" />
