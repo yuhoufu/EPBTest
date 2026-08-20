@@ -20,10 +20,13 @@ namespace AdaptiveControlTests
             Run("液压超时与DAQ恢复只有一个所有者", HigherRecoveryPreemptsAndWaitsForHydraulic, ref passed);
             Run("双DAQ批次对同一液压组共享引用计数所有权", SameDaqBatchSharesHydraulicOwnership, ref passed);
             Run("同优先级不同电源恢复排队且不得互相取消", SamePriorityOwnersQueueWithoutCancellation, ref passed);
+            Run("硬件确认同步取消当前恢复所有者", ConfirmedHardwareCancelsRecoveryOwner, ref passed);
             Run("恢复任务登记覆盖全部受影响通道并在终态清除", RecoveryTaskRegistryTracksAffectedChannels, ref passed);
             Run("液压硬件确认仅永久禁用故障组所选卡钳", ConfirmedHydraulicDisableIsScoped, ref passed);
             Run("PSU4硬件确认仅永久禁用EPB10/11且EPB9继续", ConfirmedPowerDisableIsScoped, ref passed);
             Run("硬件锁存到达后旧软件恢复不得再次使能", HardwareLatchTerminatesSoftwareRecovery, ref passed);
+            Run("硬件确认先OFF和持久禁用再发布诊断", ConfirmedHardwareIsolationOrderIsSafetyFirst, ref passed);
+            Run("启动组级硬件隔离后仅健康通道继续", StartupInfrastructureIsolationKeepsHealthyChannels, ref passed);
             Run("恢复阶段忽略取消仍受硬期限约束", IgnoredCancellationCannotHoldRecoveryStage, ref passed);
             Run("DAQ恢复先到必须等待整组截止且重入后才能提交", RecoveryWaitsForCutoffAndRejoin, ref passed);
             Run("迟到旧代清理不得删除新代液压参与状态", LateCleanupCannotTouchNewParticipantVersion, ref passed);
@@ -154,6 +157,65 @@ namespace AdaptiveControlTests
             Assert(partialError.Contains("Missing=[6]") &&
                    partialError.Contains("EPB6:DaqStartPreflight"),
                 "自动重启子进程错误接受了部分通道启动");
+
+            var hardwarePartial = new BatchStartResult(
+                runId,
+                new[] { 4, 5, 9 },
+                new[]
+                {
+                    new ChannelStartFault(
+                        10,
+                        "PowerProtectionHardwareConfirmed",
+                        "PSU4 protection",
+                        FaultScope.ElectricalGroup),
+                    new ChannelStartFault(
+                        11,
+                        "PowerProtectionHardwareConfirmed",
+                        "PSU4 protection",
+                        FaultScope.ElectricalGroup)
+                });
+            Assert(string.IsNullOrEmpty(EpbManager.ValidateUnattendedBatchStartResult(
+                       new[] { 4, 5, 9, 10, 11 },
+                       hardwarePartial)),
+                "已由实时硬件证据永久禁用的PSU4成员仍触发整批恢复失败");
+
+            var allHardwareIsolated = new BatchStartResult(
+                runId,
+                Array.Empty<int>(),
+                new[]
+                {
+                    new ChannelStartFault(
+                        9,
+                        "HydraulicHardwareConfirmed",
+                        "Hydraulic2 failed",
+                        FaultScope.HydraulicGroup)
+                });
+            Assert(EpbManager.IsInfrastructureHardwareOnlyStartResult(allHardwareIsolated) &&
+                   string.IsNullOrEmpty(EpbManager.ValidateUnattendedBatchStartResult(
+                       new[] { 9 },
+                       allHardwareIsolated)),
+                "全部剩余通道硬件永久隔离后仍会进入无意义进程重启循环");
+
+            var persistenceFailed = new BatchStartResult(
+                runId,
+                new[] { 4, 5 },
+                new[]
+                {
+                    new ChannelStartFault(
+                        9,
+                        "InfrastructureHardwareIsolationPersistenceFailed",
+                        "Enabled=false atomic replace failed",
+                        FaultScope.HydraulicGroup)
+                });
+            var persistenceError = EpbManager.ValidateUnattendedBatchStartResult(
+                new[] { 4, 5, 9 },
+                persistenceFailed);
+            Assert(EpbManager.HasInfrastructureHardwareIsolationPersistenceFailure(
+                       persistenceFailed) &&
+                   !EpbManager.IsInfrastructureHardwareOnlyStartResult(persistenceFailed) &&
+                   persistenceError.Contains("Missing=[9]") &&
+                   persistenceError.Contains("InfrastructureHardwareIsolationPersistenceFailed"),
+                "项目禁用未耐久保存时仍被误认为永久隔离并允许无人值守重启");
             Assert(EpbManager.ValidateUnattendedBatchStartResult(
                        new[] { 1 },
                        null) == "UnattendedStartResultMissing" &&
@@ -401,6 +463,28 @@ namespace AdaptiveControlTests
             });
         }
 
+        private static void ConfirmedHardwareCancelsRecoveryOwner()
+        {
+            RunAsync(async () =>
+            {
+                var coordinator = new HydraulicRecoveryOwnershipCoordinator();
+                using (var owner = await coordinator.AcquireAsync(
+                           2,
+                           "POWER:4",
+                           RecoveryOwnerPriority.PowerSupply,
+                           1000,
+                           CancellationToken.None))
+                {
+                    Assert(coordinator.CancelGroup(2),
+                        "硬件确认未找到当前组恢复所有者");
+                    Assert(owner.Token.IsCancellationRequested,
+                        "硬件确认未同步取消旧软件恢复令牌");
+                }
+                Assert(!coordinator.CancelGroup(2) && coordinator.ActiveCount == 0,
+                    "所有者退出后仍报告取消成功或残留所有权");
+            });
+        }
+
         private static void RecoveryTaskRegistryTracksAffectedChannels()
         {
             var registry = new RecoveryTaskRegistry();
@@ -460,6 +544,45 @@ namespace AdaptiveControlTests
                     _ => false,
                     channel => channel == 10),
                 "报警停机后旧软件恢复仍可继续");
+        }
+
+        private static void ConfirmedHardwareIsolationOrderIsSafetyFirst()
+        {
+            var order = new List<string>();
+            EpbManager.ExecuteConfirmedInfrastructureIsolationOrder(
+                () => order.Add("latch-freeze-cancel"),
+                () => order.Add("off"),
+                () => order.Add("power-off"),
+                () => order.Add("off-fallback"),
+                () => order.Add("persist-disable"),
+                () => order.Add("diagnostics"));
+            Assert(order.SequenceEqual(new[]
+                {
+                    "latch-freeze-cancel",
+                    "off",
+                    "power-off",
+                    "off-fallback",
+                    "persist-disable",
+                    "diagnostics"
+                }),
+                "硬件确认的日志/UI/报警发布抢在OFF或耐久禁用之前");
+        }
+
+        private static void StartupInfrastructureIsolationKeepsHealthyChannels()
+        {
+            var eligible = EpbManager.SelectEligibleStartChannelsAfterInfrastructureIsolation(
+                new[] { 4, 5, 9, 10, 11 },
+                new[] { 10, 11 },
+                channel => channel != 12);
+            Assert(eligible.SequenceEqual(new[] { 4, 5, 9 }),
+                "PSU4故障隔离后健康EPB4/5/9未保留在启动集合");
+            Assert(EpbManager.IsInfrastructureHardwareStartFailureCode(
+                       "HydraulicHardwareConfirmed") &&
+                   EpbManager.IsInfrastructureHardwareStartFailureCode(
+                       "PowerProtectionHardwareConfirmed") &&
+                   !EpbManager.IsInfrastructureHardwareStartFailureCode(
+                       "StartupPositioningException"),
+                "启动故障组级/通道级分类错误");
         }
 
         private static void FutureSlotEligibilityIsAtomic()

@@ -293,9 +293,9 @@ namespace Controller
         internal bool IsFormalPhaseCommitted => Volatile.Read(ref _formalPhaseCommitted) != 0;
 
         /// <summary>
-        /// 自动进程交接不能沿用人工入口的“健康通道先跑、故障通道留给操作员”语义。
-        /// 检查点授权的是一个完整通道集合；其中任意通道未启动都意味着同一授权运行链
-        /// 无法完成每通道剩余正式圈，必须回到有界进程恢复，禁止静默部分运行。
+        /// 自动进程交接通常要求完整授权集合启动。唯一允许缩小集合的情况是：
+        /// 本次实时证据已经确认液压/电源硬件故障，缺失通道已原子持久禁用并返回
+        /// 明确的组级故障。DAQ、软件或普通通道启动缺失仍必须拒绝。
         /// </summary>
         internal static string ValidateUnattendedBatchStartResult(
             IEnumerable<int> expectedChannels,
@@ -326,18 +326,58 @@ namespace Controller
             var unexpected = started.Except(expected).ToArray();
             var unexpectedCompleted = completedDuringStart.Except(expected).ToArray();
             var faults = result.Faults ?? Array.Empty<ChannelStartFault>();
-            if (missing.Length == 0 && unexpected.Length == 0 &&
-                unexpectedCompleted.Length == 0 && faults.Length == 0)
+            var permanentlyIsolated = faults
+                .Where(fault => fault != null &&
+                                IsInfrastructureHardwareStartFailureCode(fault.Stage))
+                .Select(fault => fault.Channel)
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
+            var unresolvedMissing = missing.Except(permanentlyIsolated).ToArray();
+            var unresolvedFaults = faults
+                .Where(fault => fault == null ||
+                                !IsInfrastructureHardwareStartFailureCode(fault.Stage) ||
+                                !missing.Contains(fault.Channel))
+                .ToArray();
+            if (unresolvedMissing.Length == 0 && unexpected.Length == 0 &&
+                unexpectedCompleted.Length == 0 && unresolvedFaults.Length == 0)
                 return string.Empty;
 
             var faultSummary = string.Join(",", faults
+                .Where(fault => fault != null)
                 .OrderBy(fault => fault.Channel)
                 .Select(fault => $"EPB{fault.Channel}:{fault.Stage}:{fault.Reason}"));
             return
-                $"UnattendedStartIncomplete Missing=[{string.Join(",", missing)}] " +
+                $"UnattendedStartIncomplete Missing=[{string.Join(",", unresolvedMissing)}] " +
+                $"PermanentlyIsolated=[{string.Join(",", permanentlyIsolated)}] " +
                 $"Unexpected=[{string.Join(",", unexpected)}] " +
                 $"UnexpectedCompleted=[{string.Join(",", unexpectedCompleted)}] " +
                 $"Faults=[{faultSummary}]";
+        }
+
+        internal static bool IsInfrastructureHardwareOnlyStartResult(BatchStartResult result)
+        {
+            var started = result?.StartedChannels ?? Array.Empty<int>();
+            var completed = result?.CompletedDuringStartChannels ?? Array.Empty<int>();
+            var faults = result?.Faults ?? Array.Empty<ChannelStartFault>();
+            return result != null &&
+                   result.TestRunId != Guid.Empty &&
+                   started.Length == 0 &&
+                   completed.Length == 0 &&
+                   faults.Length > 0 &&
+                   faults.All(fault => fault != null &&
+                       IsInfrastructureHardwareStartFailureCode(fault.Stage));
+        }
+
+        internal static bool HasInfrastructureHardwareIsolationPersistenceFailure(
+            BatchStartResult result)
+        {
+            return (result?.Faults ?? Array.Empty<ChannelStartFault>())
+                .Any(fault => fault != null &&
+                    string.Equals(
+                        fault.Stage,
+                        "InfrastructureHardwareIsolationPersistenceFailed",
+                        StringComparison.OrdinalIgnoreCase));
         }
 
         /// <summary>
@@ -962,7 +1002,7 @@ namespace Controller
                 throw new InvalidOperationException("严格完整曲线控制要求 LearnCycle 至少为5圈。");
             if (reuseStableProfiles)
                 EnsureAdaptiveProfilesReady(selected);
-            var staggerPlan = ElectricalStaggerPlanner.Build(selected, _cfg.Test.Groups, PeriodMs);
+            ElectricalStaggerPlan staggerPlan = null;
             var sessionToken = BeginBatchSession(token);
             var startFaults = new List<ChannelStartFault>();
             var completedDuringStart = new List<int>(alreadyTargetCompleted);
@@ -999,21 +1039,66 @@ namespace Controller
                 BeginPowerSupplyTelemetryRecording(_activeBatchId);
                 EnsureStrictCurveControl(selected);
                 SaveProgramSafetySnapshot();
-                await EnsurePowerSupplyReadyBeforeStartAsync(selected, sessionToken)
+                var powerHardwareDisabled = await EnsurePowerSupplyReadyBeforeStartAsync(
+                        selected,
+                        sessionToken)
                     .ConfigureAwait(false);
+                foreach (var disabledChannel in powerHardwareDisabled)
+                    startFaults.Add(new ChannelStartFault(
+                        disabledChannel,
+                        ResolveInfrastructureHardwareStartFailureCode(
+                            disabledChannel,
+                            "PowerProtectionHardwareConfirmed"),
+                        AppendInfrastructureDisablePersistenceFailure(
+                            disabledChannel,
+                            "程控电源启动实时回读确认保护触发；所属电气组已停机。"),
+                        FaultScope.ElectricalGroup));
+
+                var activeStartChannels = SelectEligibleStartChannelsAfterInfrastructureIsolation(
+                    selected,
+                    powerHardwareDisabled,
+                    IsChannelEnabled);
+                if (activeStartChannels.Length == 0)
+                {
+                    var isolatedRunId = _activeBatchId;
+                    try { _acq?.Stop(); }
+                    catch (Exception stopEx)
+                    {
+                        _log?.Warn(
+                            $"全部电气故障组隔离后停止DAQ失败：{stopEx.Message}",
+                            "AI");
+                    }
+                    EndBatchSession(
+                        cancel: false,
+                        terminalStatus: "HardwareIsolated",
+                        terminalReason: "全部选中通道所属电气组均已确认硬件故障并隔离");
+                    EndPowerSupplyTelemetryRecording();
+                    return new BatchStartResult(
+                        isolatedRunId,
+                        Array.Empty<int>(),
+                        startFaults.ToArray(),
+                        completedDuringStart.ToArray());
+                }
+
+                _activePlannedChannels = activeStartChannels.ToArray();
+                BeginDaqIncidentRun(_activeBatchId, activeStartChannels);
+                staggerPlan = ElectricalStaggerPlanner.Build(
+                    activeStartChannels,
+                    _cfg.Test.Groups,
+                    PeriodMs);
 
                 // 只有实时 DAQ、电源和程序安全预检全部通过，且进程从未发生 Stop 超时，
                 // 才能为这个全新 Run 重新打开 DO 上电总闸。
                 AuthorizeFreshRunAfterSafetyPreflight();
 
                 // DAQ、电源及程序安全预检全部通过后，才允许旧停机锁存转为“启动中”。
-                foreach (var channel in selected)
+                foreach (var channel in activeStartChannels)
                     PublishChannelRuntimeState(
                         channel,
                         ChannelRuntimeState.Starting,
                         "Starting",
                         "安全预检通过，正在启动",
-                        affectedChannels: selected,
+                        affectedChannels: activeStartChannels,
                         correlationId: _activeBatchId,
                         allowTerminalReset: true);
 
@@ -1024,7 +1109,7 @@ namespace Controller
                 // 新批次必须复位上一次运行留下的报警停机锁存。
                 // 否则 IsAlarmStopRequested 会让后续成功圈也持续写成 status='alarm'，
                 // 且重复报警会在 OnRunnerAlarmRaised 中被去重后直接返回。
-                foreach (var channel in selected)
+                foreach (var channel in activeStartChannels)
                 {
                     _manualStopRequestedChannels.TryRemove(channel, out _);
                     _nonRecoverableChannelFaultLatch.TryRemove(channel, out _);
@@ -1033,7 +1118,7 @@ namespace Controller
 
                 // —— 1) 按压力组归类，并为每组计算“锚点零相位” t0（含预热裕度 + 周期上取整）—— //
                 var nowUtc = DateTime.UtcNow;
-                var groups = GroupByPressure(selected); // Dictionary<int, List<int>>，键为 1/2
+                var groups = GroupByPressure(activeStartChannels); // Dictionary<int, List<int>>，键为 1/2
                 var t0OfGroup = new Dictionary<int, DateTime>(); // key: PG(1/2), value: t0(UTC)
 
                 foreach (var kv in groups)
@@ -1068,16 +1153,23 @@ namespace Controller
                         foreach (var failedResult in preReleaseFailed)
                         {
                             var failedChannel = failedResult.Channel;
+                            var infrastructureHardware =
+                                IsInfrastructureHardwareIsolationFailureCode(failedResult.Code);
                             startFaults.Add(new ChannelStartFault(
                                 failedChannel,
                                 failedResult.Code,
                                 $"启动定位失败：Stage={failedResult.Stage}，{failedResult.Reason}",
-                                FaultScope.Channel));
-                            PublishStartBlockedAfterCleanup(
-                                failedChannel,
-                                failedResult.Code,
-                                failedResult.Reason,
-                                _activeBatchId);
+                                infrastructureHardware
+                                    ? FaultScope.HydraulicGroup
+                                    : FaultScope.Channel));
+                            // 基础设施硬件确认处理器已发布AlarmStopped并原子持久禁用。
+                            // 禁止随后用StartBlocked覆盖该终态或清掉不可恢复锁存。
+                            if (!infrastructureHardware)
+                                PublishStartBlockedAfterCleanup(
+                                    failedChannel,
+                                    failedResult.Code,
+                                    failedResult.Reason,
+                                    _activeBatchId);
                             UnmarkHydraulicParticipant(failedChannel);
                             foreach (var list in groups.Values) list.Remove(failedChannel);
                             _log?.Error(
@@ -1085,12 +1177,53 @@ namespace Controller
                                 $"Stage={failedResult.Stage} Code={failedResult.Code}。",
                                 "EPB");
                         }
+                        var remainingAfterIsolation = groups.Values
+                            .SelectMany(list => list)
+                            .Distinct()
+                            .OrderBy(channel => channel)
+                            .ToArray();
+                        if (remainingAfterIsolation.Length > 0)
+                        {
+                            staggerPlan = ElectricalStaggerPlanner.Build(
+                                remainingAfterIsolation,
+                                _cfg.Test.Groups,
+                                PeriodMs);
+                            _activeStaggerPlan = staggerPlan;
+                            RegisterRunContext(_activeBatchId, staggerPlan);
+                            LogStaggerPlan(_activeBatchId, staggerPlan);
+                        }
                     }
                 }
 
                 var activeChannels = groups.Values.SelectMany(x => x).Distinct().OrderBy(x => x).ToArray();
                 if (activeChannels.Length == 0)
+                {
+                    if (startFaults.Count > 0 &&
+                        startFaults.All(fault =>
+                            fault.Scope == FaultScope.HydraulicGroup ||
+                            fault.Scope == FaultScope.ElectricalGroup))
+                    {
+                        var isolatedRunId = _activeBatchId;
+                        try { _acq?.Stop(); }
+                        catch (Exception stopEx)
+                        {
+                            _log?.Warn(
+                                $"全部液压故障组隔离后停止DAQ失败：{stopEx.Message}",
+                                "AI");
+                        }
+                        EndBatchSession(
+                            cancel: false,
+                            terminalStatus: "HardwareIsolated",
+                            terminalReason: "全部选中通道所属基础设施组均已确认硬件故障并隔离");
+                        EndPowerSupplyTelemetryRecording();
+                        return new BatchStartResult(
+                            isolatedRunId,
+                            Array.Empty<int>(),
+                            startFaults.ToArray(),
+                            completedDuringStart.ToArray());
+                    }
                     throw new InvalidOperationException("全部选中通道均在预释放阶段被隔离，未启动正式试验。");
+                }
 
                 // —— 3) 学习阶段：次数不多，用“每圈循环 + 锚点屏障 + 相位延时”实现稳定对齐 —— //
                 if (learnCycles > 0)
@@ -1108,18 +1241,67 @@ namespace Controller
                         .ConfigureAwait(false);
                     foreach (var failedChannel in learningFailed)
                     {
+                        var alreadyHardwareIsolated =
+                            !IsChannelEnabled(failedChannel) &&
+                            (_nonRecoverableChannelFaultLatch.ContainsKey(failedChannel) ||
+                             IsAlarmStopRequested(failedChannel));
+                        _nonRecoverableChannelFaultReasons.TryGetValue(
+                            failedChannel,
+                            out var terminalReason);
+                        var hydraulicHardware = alreadyHardwareIsolated &&
+                            (terminalReason?.IndexOf(
+                                 "液压",
+                                 StringComparison.OrdinalIgnoreCase) ?? -1) >= 0;
+                        var electricalHardware = alreadyHardwareIsolated &&
+                            (terminalReason?.IndexOf(
+                                 "程控电源",
+                                 StringComparison.OrdinalIgnoreCase) ?? -1) >= 0;
+                        var persistenceFailed = alreadyHardwareIsolated &&
+                            _disablePersistenceFailureReasons.ContainsKey(failedChannel);
                         startFaults.Add(new ChannelStartFault(
                             failedChannel,
-                            "Learning",
-                            "自学习失败，已隔离通道。",
-                            FaultScope.Channel));
-                        PublishStartBlockedAfterCleanup(
-                            failedChannel,
-                            "LearningFailed",
-                            "自学习失败，已隔离通道",
-                            _activeBatchId);
+                            persistenceFailed
+                                ? "InfrastructureHardwareIsolationPersistenceFailed"
+                                : hydraulicHardware
+                                ? "HydraulicHardwareConfirmed"
+                                : electricalHardware
+                                    ? "PowerProtectionHardwareConfirmed"
+                                    : "Learning",
+                            persistenceFailed
+                                ? AppendInfrastructureDisablePersistenceFailure(
+                                    failedChannel,
+                                    terminalReason ?? "自学习阶段硬件故障已停机。")
+                                : alreadyHardwareIsolated
+                                    ? terminalReason ?? "自学习阶段硬件故障已永久隔离。"
+                                    : "自学习失败，已隔离通道。",
+                            hydraulicHardware
+                                ? FaultScope.HydraulicGroup
+                                : electricalHardware
+                                    ? FaultScope.ElectricalGroup
+                                    : FaultScope.Channel));
+                        if (!alreadyHardwareIsolated)
+                            PublishStartBlockedAfterCleanup(
+                                failedChannel,
+                                "LearningFailed",
+                                "自学习失败，已隔离通道",
+                                _activeBatchId);
                         UnmarkHydraulicParticipant(failedChannel);
                         foreach (var list in groups.Values) list.Remove(failedChannel);
+                    }
+                    var remainingAfterLearning = groups.Values
+                        .SelectMany(list => list)
+                        .Distinct()
+                        .OrderBy(channel => channel)
+                        .ToArray();
+                    if (learningFailed.Length > 0 && remainingAfterLearning.Length > 0)
+                    {
+                        staggerPlan = ElectricalStaggerPlanner.Build(
+                            remainingAfterLearning,
+                            _cfg.Test.Groups,
+                            PeriodMs);
+                        _activeStaggerPlan = staggerPlan;
+                        RegisterRunContext(_activeBatchId, staggerPlan);
+                        LogStaggerPlan(_activeBatchId, staggerPlan);
                     }
                 }
 
@@ -1141,24 +1323,99 @@ namespace Controller
                             .ConfigureAwait(false);
                     foreach (var failedChannel in qualificationFailed)
                     {
+                        var alreadyHardwareIsolated =
+                            !IsChannelEnabled(failedChannel) &&
+                            (_nonRecoverableChannelFaultLatch.ContainsKey(failedChannel) ||
+                             IsAlarmStopRequested(failedChannel));
+                        _nonRecoverableChannelFaultReasons.TryGetValue(
+                            failedChannel,
+                            out var terminalReason);
+                        var hydraulicHardware = alreadyHardwareIsolated &&
+                            (terminalReason?.IndexOf(
+                                 "液压",
+                                 StringComparison.OrdinalIgnoreCase) ?? -1) >= 0;
+                        var electricalHardware = alreadyHardwareIsolated &&
+                            (terminalReason?.IndexOf(
+                                 "程控电源",
+                                 StringComparison.OrdinalIgnoreCase) ?? -1) >= 0;
+                        var persistenceFailed = alreadyHardwareIsolated &&
+                            _disablePersistenceFailureReasons.ContainsKey(failedChannel);
                         startFaults.Add(new ChannelStartFault(
                             failedChannel,
-                            "Qualification",
-                            "资格复核失败，已隔离通道。",
-                            FaultScope.Channel));
-                        PublishStartBlockedAfterCleanup(
-                            failedChannel,
-                            "QualificationFailed",
-                            "资格复核失败，已隔离通道",
-                            _activeBatchId);
+                            persistenceFailed
+                                ? "InfrastructureHardwareIsolationPersistenceFailed"
+                                : hydraulicHardware
+                                ? "HydraulicHardwareConfirmed"
+                                : electricalHardware
+                                    ? "PowerProtectionHardwareConfirmed"
+                                    : "Qualification",
+                            persistenceFailed
+                                ? AppendInfrastructureDisablePersistenceFailure(
+                                    failedChannel,
+                                    terminalReason ?? "资格复核阶段硬件故障已停机。")
+                                : alreadyHardwareIsolated
+                                    ? terminalReason ?? "资格复核阶段硬件故障已永久隔离。"
+                                    : "资格复核失败，已隔离通道。",
+                            hydraulicHardware
+                                ? FaultScope.HydraulicGroup
+                                : electricalHardware
+                                    ? FaultScope.ElectricalGroup
+                                    : FaultScope.Channel));
+                        if (!alreadyHardwareIsolated)
+                            PublishStartBlockedAfterCleanup(
+                                failedChannel,
+                                "QualificationFailed",
+                                "资格复核失败，已隔离通道",
+                                _activeBatchId);
                         UnmarkHydraulicParticipant(failedChannel);
                         foreach (var list in groups.Values) list.Remove(failedChannel);
+                    }
+                    var remainingAfterQualification = groups.Values
+                        .SelectMany(list => list)
+                        .Distinct()
+                        .OrderBy(channel => channel)
+                        .ToArray();
+                    if (qualificationFailed.Length > 0 && remainingAfterQualification.Length > 0)
+                    {
+                        staggerPlan = ElectricalStaggerPlanner.Build(
+                            remainingAfterQualification,
+                            _cfg.Test.Groups,
+                            PeriodMs);
+                        _activeStaggerPlan = staggerPlan;
+                        RegisterRunContext(_activeBatchId, staggerPlan);
+                        LogStaggerPlan(_activeBatchId, staggerPlan);
                     }
                 }
 
                 activeChannels = groups.Values.SelectMany(x => x).Distinct().OrderBy(x => x).ToArray();
                 if (activeChannels.Length == 0)
+                {
+                    if (startFaults.Count > 0 &&
+                        startFaults.All(fault =>
+                            fault.Scope == FaultScope.HydraulicGroup ||
+                            fault.Scope == FaultScope.ElectricalGroup))
+                    {
+                        var isolatedRunId = _activeBatchId;
+                        try { _acq?.Stop(); }
+                        catch (Exception stopEx)
+                        {
+                            _log?.Warn(
+                                $"学习/资格阶段全部硬件故障组隔离后停止DAQ失败：{stopEx.Message}",
+                                "AI");
+                        }
+                        EndBatchSession(
+                            cancel: false,
+                            terminalStatus: "HardwareIsolated",
+                            terminalReason: "学习/资格阶段全部剩余通道所属基础设施组已确认硬件故障并隔离");
+                        EndPowerSupplyTelemetryRecording();
+                        return new BatchStartResult(
+                            isolatedRunId,
+                            Array.Empty<int>(),
+                            startFaults.ToArray(),
+                            completedDuringStart.ToArray());
+                    }
                     throw new InvalidOperationException("全部选中通道均在学习阶段被隔离，未启动正式试验。");
+                }
 
                 var targetCompletedChannels = activeChannels
                     .Where(IsMechanicalTargetReached)
@@ -1473,45 +1730,58 @@ namespace Controller
             return true;
         }
 
-        private async Task EnsurePowerSupplyReadyBeforeStartAsync(
+        private async Task<int[]> EnsurePowerSupplyReadyBeforeStartAsync(
             int[] selected,
             CancellationToken token)
         {
             var channels = (selected ?? Array.Empty<int>()).Distinct().OrderBy(x => x).ToArray();
+            var disabled = Array.Empty<int>();
             await InvokeAfterCycleExecutionQuiescenceAsync(
                     channels,
                     WaitForPreviousCycleExecutionAsync,
-                    ct => EnsurePowerSupplyReadyBeforeStartCoreAsync(channels, ct),
+                    async ct =>
+                    {
+                        disabled = await EnsurePowerSupplyReadyBeforeStartCoreAsync(channels, ct)
+                            .ConfigureAwait(false);
+                    },
                     "PowerReadyBeforeStart",
                     token)
                 .ConfigureAwait(false);
+            return disabled;
         }
 
-        private async Task EnsurePowerSupplyReadyBeforeStartCoreAsync(
+        private async Task<int[]> EnsurePowerSupplyReadyBeforeStartCoreAsync(
             int[] channels,
             CancellationToken token)
         {
-            if (_powerSupply == null) return;
+            if (_powerSupply == null) return Array.Empty<int>();
 
-            var groupIds = channels
-                .Select(GetElectricalGroupId)
-                .Where(groupId => groupId > 0)
+            var pending = (channels ?? Array.Empty<int>())
+                .Where(channel => channel >= 1 && channel <= 12)
                 .Distinct()
-                .OrderBy(groupId => groupId)
+                .OrderBy(channel => channel)
                 .ToArray();
+            var disabled = new List<int>();
             var attempt = 0;
-            while (true)
+            while (pending.Length > 0)
             {
                 token.ThrowIfCancellationRequested();
                 attempt++;
+                var groupIds = pending
+                    .Select(GetElectricalGroupId)
+                    .Where(groupId => groupId > 0)
+                    .Distinct()
+                    .OrderBy(groupId => groupId)
+                    .ToArray();
+                var attemptStartedUtc = DateTime.UtcNow;
                 try
                 {
-                    await _powerSupply.PrepareAndEnableAsync(channels, token).ConfigureAwait(false);
+                    await _powerSupply.PrepareAndEnableAsync(pending, token).ConfigureAwait(false);
                     _log?.Info(
                         $"程控电源启动实时预检通过：Groups=[{string.Join(",", groupIds)}] " +
                         $"Attempt={attempt}。",
                         "程控电源");
-                    return;
+                    return disabled.Distinct().OrderBy(channel => channel).ToArray();
                 }
                 catch (OperationCanceledException) when (token.IsCancellationRequested)
                 {
@@ -1524,24 +1794,56 @@ namespace Controller
                         {
                             var snapshot = _powerSupply.GetLatestSnapshot(groupId);
                             return snapshot?.ProtectionTripped == true &&
+                                   snapshot.TimestampUtc.ToUniversalTime() >= attemptStartedUtc &&
                                    (DateTime.UtcNow - snapshot.TimestampUtc.ToUniversalTime()) <=
                                    TimeSpan.FromSeconds(5);
                         })
                         .ToArray();
                     if (protectionGroups.Length > 0)
-                        throw new InvalidOperationException(
-                            $"程控电源实时回读确认保护已触发，停止本次启动。" +
-                            $"Code=PowerProtectionHardwareConfirmed; Groups=[{string.Join(",", protectionGroups)}]",
+                    {
+                        foreach (var groupId in protectionGroups)
+                        {
+                            var groupChannels = pending
+                                .Where(channel => GetElectricalGroupId(channel) == groupId)
+                                .OrderBy(channel => channel)
+                                .ToArray();
+                            if (groupChannels.Length == 0) continue;
+                            var snapshot = _powerSupply.GetLatestSnapshot(groupId);
+                            OnPowerSupplyFaultRaised(new PowerSupplyFault
+                            {
+                                TimestampUtc = DateTime.UtcNow,
+                                SupplyId = groupId,
+                                ElectricalGroupId = groupId,
+                                Code = "PowerProtectionHardwareConfirmed",
+                                Reason =
+                                    $"启动实时回读确认保护已触发；Group={groupId}; {ex.Message}",
+                                AffectedChannels = groupChannels,
+                                Snapshot = snapshot,
+                                Classification = FaultClassification.HardwareConfirmed
+                            });
+                            disabled.AddRange(groupChannels);
+                        }
+
+                        pending = pending.Except(disabled).OrderBy(channel => channel).ToArray();
+                        _log?.Error(
+                            $"程控电源启动预检已隔离保护触发组" +
+                            $"[{string.Join(",", protectionGroups)}]通道" +
+                            $"[{string.Join(",", disabled.Distinct().OrderBy(x => x))}]；" +
+                            $"健康独立电气组继续实时预检。",
+                            "程控电源",
                             ex);
+                        attempt = 0;
+                        continue;
+                    }
 
                     var delayMs = GetDaqSelfMaintenanceDelayMs(attempt);
-                    foreach (var channel in channels)
+                    foreach (var channel in pending)
                         PublishChannelRuntimeState(
                             channel,
                             ChannelRuntimeState.Recovering,
                             "PowerStartSelfHealing",
                             $"程控电源软件自愈第{attempt}次未通过，{delayMs}ms后继续完整重连预检。",
-                            affectedChannels: channels,
+                            affectedChannels: pending,
                             correlationId: _activeBatchId,
                             allowTerminalReset: false);
                     _log?.Warn(
@@ -1556,6 +1858,43 @@ namespace Controller
                     await Task.Delay(delayMs, token).ConfigureAwait(false);
                 }
             }
+            return disabled.Distinct().OrderBy(channel => channel).ToArray();
+        }
+
+        internal static bool IsInfrastructureHardwareStartFailureCode(string code)
+        {
+            return string.Equals(
+                       code,
+                       "HydraulicHardwareConfirmed",
+                       StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(
+                       code,
+                       "PowerProtectionHardwareConfirmed",
+                       StringComparison.OrdinalIgnoreCase);
+        }
+
+        internal static bool IsInfrastructureHardwareIsolationFailureCode(string code)
+        {
+            return IsInfrastructureHardwareStartFailureCode(code) ||
+                   string.Equals(
+                       code,
+                       "InfrastructureHardwareIsolationPersistenceFailed",
+                       StringComparison.OrdinalIgnoreCase);
+        }
+
+        internal static int[] SelectEligibleStartChannelsAfterInfrastructureIsolation(
+            IEnumerable<int> selectedChannels,
+            IEnumerable<int> isolatedChannels,
+            Func<int, bool> isEnabled)
+        {
+            var isolated = new HashSet<int>(isolatedChannels ?? Array.Empty<int>());
+            return (selectedChannels ?? Array.Empty<int>())
+                .Where(channel => channel >= 1 && channel <= 12)
+                .Where(channel => !isolated.Contains(channel))
+                .Where(channel => isEnabled?.Invoke(channel) ?? true)
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
         }
 
         internal static bool IsExpectedBatchCancellation(

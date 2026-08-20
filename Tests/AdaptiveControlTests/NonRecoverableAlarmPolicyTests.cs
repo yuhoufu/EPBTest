@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Xml;
 using Config;
 using Controller;
 using Controller.Adaptive;
@@ -18,6 +19,7 @@ namespace AdaptiveControlTests
             Run("反向或落盘失败不得提交异常圈", IncompleteCycleCannotCommitEvidence, ref passed);
             Run("四类客户报警使用持久禁用策略", CustomerFaultsDisableWithoutRecovery, ref passed);
             Run("持久禁用只改Enabled且保留已落盘圈数", PersistentDisablePreservesDiskProgress, ref passed);
+            Run("共享故障组一次原子禁用且失败不部分提交", PersistentDisableGroupIsAtomic, ref passed);
             return passed;
         }
 
@@ -167,6 +169,66 @@ namespace AdaptiveControlTests
                     "单通道禁用覆盖了磁盘上已提交的正式圈数");
                 Assert(Directory.GetFiles(directory, "*.tmp").Length == 0,
                     "单通道原子禁用遗留临时文件");
+            }
+            finally
+            {
+                Directory.Delete(directory, true);
+            }
+        }
+
+        private static void PersistentDisableGroupIsAtomic()
+        {
+            var directory = Path.Combine(
+                Path.GetTempPath(),
+                "epb-group-disable-test-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            var path = Path.Combine(directory, "TestConfig.xml");
+            try
+            {
+                var source = Path.GetFullPath(Path.Combine(
+                    AppDomain.CurrentDomain.BaseDirectory,
+                    "..", "..", "..", "..", "MTTfTest", "Config", "TestConfig.xml"));
+                File.Copy(source, path);
+                var config = ConfigLoader.LoadTest(path, null);
+                config.EnsureEpbRecords(12);
+                foreach (var channel in new[] { 4, 9, 10, 11 })
+                    config.GetEpbRecord(channel).Enabled = true;
+                config.GetEpbRecord(9).RunCount = 901;
+                config.GetEpbRecord(10).RunCount = 1001;
+                config.GetEpbRecord(11).RunCount = 1101;
+                ConfigLoader.SaveTest(path, config);
+
+                ConfigLoader.UpdateTestEpbEnabled(path, new[] { 9, 10, 11 }, false);
+                var reloaded = ConfigLoader.LoadTest(path, null);
+                Assert(reloaded.GetEpbRecord(4).Enabled &&
+                       !reloaded.GetEpbRecord(9).Enabled &&
+                       !reloaded.GetEpbRecord(10).Enabled &&
+                       !reloaded.GetEpbRecord(11).Enabled &&
+                       reloaded.GetEpbRecord(9).RunCount == 901 &&
+                       reloaded.GetEpbRecord(10).RunCount == 1001 &&
+                       reloaded.GetEpbRecord(11).RunCount == 1101,
+                    "共享故障组禁用牵连健康通道或覆盖耐久圈数");
+
+                foreach (var channel in new[] { 9, 10, 11 })
+                    reloaded.GetEpbRecord(channel).Enabled = true;
+                ConfigLoader.SaveTest(path, reloaded);
+                var xml = new XmlDocument();
+                xml.Load(path);
+                var missing = xml.SelectSingleNode(
+                    "/TestConfig/EpbRecords/Record[Id='11']");
+                missing?.ParentNode?.RemoveChild(missing);
+                xml.Save(path);
+                var before = File.ReadAllText(path);
+                var threw = false;
+                try
+                {
+                    ConfigLoader.UpdateTestEpbEnabled(path, new[] { 9, 11 }, false);
+                }
+                catch (InvalidOperationException) { threw = true; }
+                Assert(threw && string.Equals(before, File.ReadAllText(path), StringComparison.Ordinal),
+                    "组内记录缺失时仍部分禁用了其他通道");
+                Assert(Directory.GetFiles(directory, "*.tmp").Length == 0,
+                    "故障组原子禁用遗留临时文件");
             }
             finally
             {

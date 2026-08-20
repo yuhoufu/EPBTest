@@ -26,6 +26,7 @@ namespace AdaptiveControlTests
             Run("恢复复核不循环健康电源输出", RevalidationDoesNotCycleHealthyOutput, ref passed);
             Run("计划关闭不产生意外掉电故障", PlannedShutdownIsNotUnexpectedOutputOff, ref passed);
             Run("电源保护新鲜回读才确认为硬件故障", ProtectionTripIsHardwareConfirmed, ref passed);
+            Run("启动保护异常仍保留本次首份实时快照", StartupProtectionSnapshotSurvivesPreflightFailure, ref passed);
             Run("陈旧PSU限流回读不能确认双源过流", StaleTelemetryIsNotFreshFaultEvidence, ref passed);
             Run("成功遥测超过500ms只诊断不报警", SlowSuccessfulTelemetryDoesNotFault, ref passed);
             Run("电源通信恢复会清零动作圈计数", CommunicationRecoveryResetsMissCycles, ref passed);
@@ -254,6 +255,29 @@ namespace AdaptiveControlTests
                 Assert(raised != null && raised.Code == "ProtectionTrip" &&
                        raised.Classification == FaultClassification.HardwareConfirmed,
                     "明确的电源保护动作未归类为 HardwareConfirmed。");
+            }
+        }
+
+        private static void StartupProtectionSnapshotSurvivesPreflightFailure()
+        {
+            var config = NewConfig();
+            var clients = NewClients(config);
+            clients[1].ProtectionTripped = true;
+            using (var coordinator = NewCoordinator(config, clients))
+            {
+                var threw = false;
+                var startedUtc = DateTime.UtcNow;
+                try
+                {
+                    coordinator.PrepareAndEnableAsync(new[] { 1 }, CancellationToken.None)
+                        .GetAwaiter().GetResult();
+                }
+                catch (InvalidOperationException) { threw = true; }
+                var snapshot = coordinator.GetLatestSnapshot(1);
+                Assert(threw &&
+                       snapshot?.ProtectionTripped == true &&
+                       snapshot.TimestampUtc.ToUniversalTime() >= startedUtc,
+                    "启动保护抛出前未保存本次实时证据，批次层无法精确隔离电气组");
             }
         }
 

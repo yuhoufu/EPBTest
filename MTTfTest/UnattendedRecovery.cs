@@ -1768,12 +1768,46 @@ namespace MTEmbTest
                             Math.Max(1, checkpoint.RunEpoch + 1)),
                         CancellationToken.None)
                     .ConfigureAwait(false);
+                if (EpbManager.HasInfrastructureHardwareIsolationPersistenceFailure(startResult))
+                {
+                    UnattendedRunCheckpointStore.CompleteInProcessRecovery(
+                        false,
+                        "InfrastructureHardwareIsolationPersistenceFailed");
+                    UnattendedRunCheckpointStore.Disarm(
+                        "InfrastructureHardwareIsolationPersistenceFailed");
+                    recoveryBatchCommitted = true;
+                    var persistenceFaultSummary = string.Join(
+                        ";",
+                        startResult.Faults
+                            .Where(item => item != null)
+                            .Select(item => $"EPB{item.Channel}:{item.Reason}"));
+                    ProjectLogHub.Write(
+                        ProjectLogLevel.Error,
+                        "本次实时硬件证据已使故障通道安全停机，但项目Enabled=false未能耐久保存；" +
+                        "已关闭无人值守重启授权，禁止从旧XML重新选中故障通道。" +
+                        $"Faults=[{persistenceFaultSummary}]",
+                        "无人值守恢复");
+                    return;
+                }
                 var startValidation = EpbManager.ValidateUnattendedBatchStartResult(
                     selected,
                     startResult);
                 if (!string.IsNullOrWhiteSpace(startValidation))
                     throw new InvalidOperationException(
                         "同进程无人值守恢复未启动全部授权通道：" + startValidation);
+                if (EpbManager.IsInfrastructureHardwareOnlyStartResult(startResult))
+                {
+                    UnattendedRunCheckpointStore.Disarm(
+                        "AllRemainingChannelsPermanentlyIsolatedByHardwareEvidence");
+                    recoveryBatchCommitted = true;
+                    ProjectLogHub.Write(
+                        ProjectLogLevel.Warning,
+                        $"同进程恢复的全部剩余通道已由本次实时硬件证据永久隔离；" +
+                        $"Channels=[{string.Join(",", startResult.Faults.Select(item => item.Channel).Distinct())}]，" +
+                        "已关闭旧恢复授权，不再触发无意义的整批进程重启。",
+                        "无人值守恢复");
+                    return;
+                }
                 if (startResult.StartedChannels.Length == 0 &&
                     startResult.CompletedDuringStartChannels.Length > 0)
                 {

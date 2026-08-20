@@ -1218,8 +1218,27 @@ public static class ConfigLoader
     /// </summary>
     public static void UpdateTestEpbEnabled(string path, int channel, bool enabled)
     {
+        UpdateTestEpbEnabled(path, new[] { channel }, enabled);
+    }
+
+    /// <summary>
+    /// 原子更新项目 TestConfig 中多个通道的 Enabled。共享液压/电源硬件故障
+    /// 必须一次提交整个故障cohort，禁止逐通道替换文件留下部分已禁用状态。
+    /// </summary>
+    public static void UpdateTestEpbEnabled(
+        string path,
+        IEnumerable<int> channels,
+        bool enabled)
+    {
         if (string.IsNullOrWhiteSpace(path)) throw new ArgumentNullException(nameof(path));
-        if (channel < 1 || channel > 12) throw new ArgumentOutOfRangeException(nameof(channel));
+        var selected = (channels ?? throw new ArgumentNullException(nameof(channels)))
+            .Distinct()
+            .OrderBy(channel => channel)
+            .ToArray();
+        if (selected.Length == 0)
+            throw new ArgumentException("至少指定一个EPB通道", nameof(channels));
+        if (selected.Any(channel => channel < 1 || channel > 12))
+            throw new ArgumentOutOfRangeException(nameof(channels));
         path = Path.GetFullPath(path);
         var fileLock = TestFileLocks.GetOrAdd(path, _ => new object());
         lock (fileLock)
@@ -1227,7 +1246,7 @@ public static class ConfigLoader
             var doc = new XmlDocument();
             doc.Load(path);
             var records = doc.SelectNodes("/TestConfig/EpbRecords/Record");
-            XmlElement target = null;
+            var targets = new Dictionary<int, XmlElement>();
             if (records != null)
             {
                 foreach (XmlNode node in records)
@@ -1237,23 +1256,28 @@ public static class ConfigLoader
                             element.SelectSingleNode("Id")?.InnerText,
                             NumberStyles.Integer,
                             CultureInfo.InvariantCulture,
-                            out var id) && id == channel)
+                            out var id) && selected.Contains(id))
                     {
-                        target = element;
-                        break;
+                        targets[id] = element;
                     }
                 }
             }
-            if (target == null)
-                throw new InvalidOperationException($"TestConfig.xml 缺少 EPB{channel} 记录");
+            var missing = selected.Where(channel => !targets.ContainsKey(channel)).ToArray();
+            if (missing.Length > 0)
+                throw new InvalidOperationException(
+                    $"TestConfig.xml 缺少 EPB[{string.Join(",", missing)}] 记录");
 
-            var enabledNode = target.SelectSingleNode("Enabled") as XmlElement;
-            if (enabledNode == null)
+            foreach (var channel in selected)
             {
-                enabledNode = doc.CreateElement("Enabled");
-                target.AppendChild(enabledNode);
+                var target = targets[channel];
+                var enabledNode = target.SelectSingleNode("Enabled") as XmlElement;
+                if (enabledNode == null)
+                {
+                    enabledNode = doc.CreateElement("Enabled");
+                    target.AppendChild(enabledNode);
+                }
+                enabledNode.InnerText = enabled ? "True" : "False";
             }
-            enabledNode.InnerText = enabled ? "True" : "False";
 
             var tmp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
             try

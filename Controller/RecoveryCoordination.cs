@@ -51,6 +51,22 @@ namespace Controller
                     : string.Empty;
         }
 
+        /// <summary>
+        /// 硬件确认是当前组所有软件恢复事务的终止事实。先同步发出取消，调用方
+        /// 随后立即执行物理OFF；不在故障线程等待旧owner退出。
+        /// </summary>
+        internal bool CancelGroup(int hydraulicGroupId)
+        {
+            OwnerState owner;
+            lock (_gate)
+            {
+                if (!_owners.TryGetValue(hydraulicGroupId, out owner)) return false;
+                try { owner.Cancellation.Cancel(); }
+                catch { }
+            }
+            return true;
+        }
+
         internal async Task<bool> CancelAllAsync(int timeoutMs, CancellationToken token)
         {
             OwnerState[] owners;

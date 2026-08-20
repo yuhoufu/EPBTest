@@ -258,6 +258,10 @@ namespace Controller
                     : await client.ConnectAsync(operationToken).ConfigureAwait(false);
 
                 ValidateIdentity(supply, snapshot);
+                // 启动预检的首份实时回读也必须进入最新快照。否则保护已触发时
+                // PrepareGroupAsync 会先抛出，批次层只能看到旧快照，无法把故障
+                // 精确隔离到对应电气组。
+                _latest[group.Id] = snapshot;
                 if (snapshot.OutputEnabled)
                 {
                     _log.Warn(
