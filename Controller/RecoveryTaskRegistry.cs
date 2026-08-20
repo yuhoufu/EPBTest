@@ -18,6 +18,7 @@ namespace Controller
             internal long Id;
             internal string Operation;
             internal long RunEpoch;
+            internal int[] Channels;
             internal Task Task;
         }
 
@@ -26,7 +27,11 @@ namespace Controller
 
         internal int ActiveCount => _active.Count;
 
-        internal void Track(Task task, string operation, long runEpoch)
+        internal void Track(
+            Task task,
+            string operation,
+            long runEpoch,
+            params int[] channels)
         {
             if (task == null || !IsRecoveryOperation(operation)) return;
             var entry = new Entry
@@ -34,6 +39,11 @@ namespace Controller
                 Id = Interlocked.Increment(ref _sequence),
                 Operation = operation ?? "Recovery",
                 RunEpoch = runEpoch,
+                Channels = (channels ?? Array.Empty<int>())
+                    .Where(channel => channel >= 1 && channel <= 12)
+                    .Distinct()
+                    .OrderBy(channel => channel)
+                    .ToArray(),
                 Task = task
             };
             _active[entry.Id] = entry;
@@ -42,6 +52,26 @@ namespace Controller
                 CancellationToken.None,
                 TaskContinuationOptions.ExecuteSynchronously,
                 TaskScheduler.Default);
+        }
+
+        internal bool HasActiveTaskForChannel(int channel, long runEpoch)
+        {
+            if (channel < 1 || channel > 12) return false;
+            return _active.Values.Any(entry =>
+                entry.RunEpoch == runEpoch &&
+                !entry.Task.IsCompleted &&
+                entry.Channels != null &&
+                entry.Channels.Contains(channel));
+        }
+
+        internal int[] CaptureActiveChannels(long runEpoch)
+        {
+            return _active.Values
+                .Where(entry => entry.RunEpoch == runEpoch && !entry.Task.IsCompleted)
+                .SelectMany(entry => entry.Channels ?? Array.Empty<int>())
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
         }
 
         internal async Task<string[]> DrainThroughEpochAsync(long revokedRunEpoch, int timeoutMs)

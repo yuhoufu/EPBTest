@@ -124,7 +124,10 @@ namespace Controller
                         return new HydraulicRecoveryOwnershipLease(this, current);
                     }
 
-                    if (priority >= current.Priority)
+                    // 只有严格更高优先级才能抢占。两个不同电源组可能同时映射到
+                    // 同一液压组；同优先级恢复必须排队，不能互相取消后都把状态
+                    // 留在 Recovering。相同 ownerId 的同一事务已在上方共享租约。
+                    if (priority > current.Priority)
                     {
                         try { current.Cancellation.Cancel(); }
                         catch { }

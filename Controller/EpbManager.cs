@@ -369,6 +369,7 @@ namespace Controller
                 },
                 allowTerminalReset,
                 allowSystemFaultReset);
+            TrackRecoveringRuntimeTransition(previous, update);
             if (previous == null ||
                 previous.State != update.State ||
                 !string.Equals(previous.ReasonCode, update.ReasonCode, StringComparison.Ordinal) ||
@@ -1732,7 +1733,9 @@ namespace Controller
                     allowTerminalReset: true);
 
             _timerRuntimeWatchdogIntervalMs = ReadIntAppSetting(
-                "TimerRuntimeWatchdogIntervalMs", 2000, 500, 30000);
+                // Recovering owner/task 丢失必须在 1 秒内被观察到；扫描只读取
+                // 12 路内存状态，不执行设备 I/O。
+                "TimerRuntimeWatchdogIntervalMs", 500, 250, 1000);
             _timerRuntimeSilenceThresholdMs = ReadIntAppSetting(
                 "TimerRuntimeSilenceThresholdMs",
                 Math.Max(30000, PeriodMs * 2),
@@ -1940,7 +1943,33 @@ namespace Controller
         internal void ObserveBackgroundTask(Task task, string operation, int channel = 0)
         {
             _taskSupervisor.Observe(task, operation, _activeBatchId, channel);
-            _recoveryTaskRegistry.Track(task, operation, Interlocked.Read(ref _runEpoch));
+            _recoveryTaskRegistry.Track(
+                task,
+                operation,
+                Interlocked.Read(ref _runEpoch),
+                channel);
+        }
+
+        internal void ObserveBackgroundTask(
+            Task task,
+            string operation,
+            IEnumerable<int> channels)
+        {
+            var affected = (channels ?? Array.Empty<int>())
+                .Where(channel => channel >= 1 && channel <= 12)
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
+            _taskSupervisor.Observe(
+                task,
+                operation,
+                _activeBatchId,
+                affected.FirstOrDefault());
+            _recoveryTaskRegistry.Track(
+                task,
+                operation,
+                Interlocked.Read(ref _runEpoch),
+                affected);
         }
 
         internal TaskSupervisorEntry[] CaptureBackgroundTasks()
@@ -5909,6 +5938,14 @@ namespace Controller
         private void OnHydraulicFaultRaised(ControlFault fault)
         {
             if (fault == null) return;
+            if (fault.Classification == FaultClassification.HardwareConfirmed)
+            {
+                HandleConfirmedInfrastructureHardwareFault(
+                    fault,
+                    "液压",
+                    "HydraulicHardwareConfirmed");
+                return;
+            }
             if (IsBatchSessionActive && CurrentBatchPauseState != BatchPauseState.Running)
             {
                 // 启动定位/学习/资格的调用栈正在 await 同一液压代次并执行有界重试。
@@ -6002,6 +6039,121 @@ namespace Controller
                     catch { }
                 }
             }), "HydraulicHardFaultHandling");
+        }
+
+        private void HandleConfirmedInfrastructureHardwareFault(
+            ControlFault fault,
+            string domain,
+            string reasonCode)
+        {
+            var channels = SelectConfirmedGroupDisableChannels(
+                fault.AffectedChannels,
+                IsChannelEnabled);
+            if (channels.Length == 0)
+            {
+                NonCriticalObserver.Invoke(
+                    ControlFaultRaised,
+                    fault,
+                    ex => _log?.Warn($"{domain}硬件故障观察者异常，已隔离：{ex.Message}", domain));
+                return;
+            }
+
+            var alarmUtc = fault.TimestampUtc == default ? DateTime.UtcNow : fault.TimestampUtc;
+            var reason =
+                $"{domain}硬件故障已由连续新鲜证据确认；当前故障组所选卡钳永久停机，" +
+                $"健康独立组继续运行。Group={fault.GroupId}; Code={fault.Code}; {fault.Reason}";
+            _log.Error(
+                $"{reasonCode}Isolation Channels=[{string.Join(",", channels)}] " +
+                $"CorrelationId={fault.CorrelationId:N} Reason={reason}",
+                domain);
+            FlushPersistentLog(true);
+            NonCriticalObserver.Invoke(
+                ControlFaultRaised,
+                fault,
+                ex => _log?.Warn($"{domain}硬件故障观察者异常，已隔离：{ex.Message}", domain));
+
+            foreach (var channel in channels)
+            {
+                _nonRecoverableChannelFaultLatch[channel] = 0;
+                _nonRecoverableChannelFaultReasons[channel] = reason;
+                _alarmStopLatch.TryRequestStop(channel);
+                try { CommandEpbOffHighPriority(channel, reasonCode); } catch { }
+                try { CancelStopCts(channel); } catch { }
+                try { CancelCyclePauseCts(channel); } catch { }
+                UnmarkHydraulicParticipant(channel);
+                PublishChannelRuntimeState(
+                    channel,
+                    ChannelRuntimeState.AlarmStopped,
+                    reasonCode,
+                    reason,
+                    sourceChannel: channel,
+                    affectedChannels: channels,
+                    correlationId: fault.CorrelationId);
+                NonCriticalObserver.Invoke(
+                    ChannelAlarmRaised,
+                    channel,
+                    reason,
+                    ex => _log?.Warn($"EPB[{channel}] {domain}报警观察者异常，已隔离：{ex.Message}", domain));
+            }
+
+            ObserveBackgroundTask(Task.Run(async () =>
+            {
+                foreach (var channel in channels)
+                {
+                    try { StopChannelOnAlarm(channel); } catch { }
+                    try
+                    {
+                        await AbortHydraulicLeaseForChannelAsync(
+                                channel,
+                                reasonCode)
+                            .ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        _log.Warn(
+                            $"{domain}硬故障隔离归还EPB[{channel}]租约失败：{ex.Message}",
+                            domain);
+                    }
+                    try
+                    {
+                        if (Alarm != null)
+                            await Alarm.SetAlarmAsync(channel, true, reason).ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        _log.Warn($"{domain}硬故障声光报警输出失败 EPB[{channel}]：{ex.Message}", "报警");
+                    }
+                    try
+                    {
+                        await ExportAlarmSnapshotAsync(channel, reason, alarmUtc).ConfigureAwait(false);
+                    }
+                    catch { }
+                    try
+                    {
+                        await EnsureLatestStopSnapshotAsync(
+                                channel,
+                                _currentCycleNumberByChannel.TryGetValue(channel, out var cycle)
+                                    ? cycle
+                                    : 0,
+                                reasonCode)
+                            .ConfigureAwait(false);
+                    }
+                    catch { }
+                    PersistentlyDisableChannel(channel, reason);
+                }
+            }), reasonCode + "FaultHandling", channels);
+        }
+
+        internal static int[] SelectConfirmedGroupDisableChannels(
+            IEnumerable<int> affectedChannels,
+            Func<int, bool> isEnabled)
+        {
+            return (affectedChannels ?? Array.Empty<int>())
+                .Where(channel => channel >= 1 && channel <= 12)
+                .Where(channel => isEnabled?.Invoke(channel) ?? true)
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
         }
 
         private HousekeepingBusyState GetHousekeepingBusyState()
@@ -6243,7 +6395,7 @@ namespace Controller
                             hydraulicId,
                             $"HYDRAULIC:{hydraulicId}:{fault.CorrelationId:N}",
                             RecoveryOwnerPriority.Hydraulic,
-                            RecoveryOwnershipTakeoverTimeoutMs,
+                            RecoveryGroupHardDeadlineMs,
                             hardDeadline.Token)
                         .ConfigureAwait(false);
                     recoveryLinked = CancellationTokenSource.CreateLinkedTokenSource(
@@ -6408,8 +6560,24 @@ namespace Controller
                                 "液压协调");
                             return;
                         }
+                        catch (OperationCanceledException)
+                        {
+                            throw;
+                        }
                         catch (Exception ex)
                         {
+                            if (attempt >= SoftwareRecoveryEscalationAttempts)
+                            {
+                                hardDeadlineReached = IsSoftwareRecoveryRunCurrent(
+                                    recoveryRunId,
+                                    recoveryRunEpoch,
+                                    channels);
+                                _log.Error(
+                                    $"液压组{hydraulicId}软件自愈连续{attempt}次失败，" +
+                                    "转入受影响组Stop→Start等价清场：" + ex.Message,
+                                    "液压协调");
+                                break;
+                            }
                             var delayMs = GetDaqSelfMaintenanceDelayMs(attempt);
                             _log.Warn(
                                 $"液压组{hydraulicId}软件自愈第{attempt}次失败，" +
@@ -6467,7 +6635,7 @@ namespace Controller
                             recoveryRunId,
                             recoveryRunEpoch)
                         .ConfigureAwait(false);
-            }), "HydraulicSoftwareRecovery");
+            }), "HydraulicSoftwareRecovery", channels);
         }
 
         private void BeginPowerSupplyTelemetryRecording(Guid runId)
@@ -6504,14 +6672,6 @@ namespace Controller
         private void OnPowerSupplyFaultRaised(PowerSupplyFault fault)
         {
             if (fault == null) return;
-            if (fault.Classification == FaultClassification.HardwareConfirmed &&
-                !ShouldAutoRecoverExternalEquipmentFault(FaultScope.ElectricalGroup))
-                NotifyRunAuthorizationRevoking(
-                    StopSource.AlarmInterlock,
-                    fault.Reason,
-                    nameof(OnPowerSupplyFaultRaised),
-                    Guid.NewGuid(),
-                    FaultScope.ElectricalGroup);
             var controlFault = new ControlFault(
                 "PowerSupply" + fault.Code,
                 fault.Reason,
@@ -6521,6 +6681,26 @@ namespace Controller
                 fault.TimestampUtc == default ? DateTime.UtcNow : fault.TimestampUtc,
                 Guid.NewGuid(),
                 fault.Classification);
+            if (fault.Classification == FaultClassification.HardwareConfirmed)
+            {
+                HandleConfirmedInfrastructureHardwareFault(
+                    controlFault,
+                    "程控电源",
+                    "PowerSupplyHardwareConfirmed");
+                NonCriticalObserver.Invoke(
+                    PowerSupplyFaultRaised,
+                    fault,
+                    ex => _log?.Warn($"程控电源硬故障观察者异常，已隔离：{ex.Message}", "程控电源"));
+                if (_powerSupply != null)
+                    ObserveBackgroundTask(
+                        _powerSupply.DisableGroupAsync(
+                            fault.ElectricalGroupId,
+                            "PowerSupplyHardwareConfirmed:" + fault.Reason,
+                            CancellationToken.None),
+                        "PowerSupplyHardwareConfirmedDisable",
+                        controlFault.AffectedChannels);
+                return;
+            }
             if (ShouldAutoRecoverExternalEquipmentFault(controlFault.Scope))
             {
                 BeginPowerSupplySoftwareRecovery(fault, controlFault);
@@ -6633,7 +6813,8 @@ namespace Controller
                             $"POWER:{groupId}:{controlFault.CorrelationId:N}",
                             RecoveryOwnerPriority.PowerSupply,
                             channels,
-                            hardDeadline.Token)
+                            hardDeadline.Token,
+                            RecoveryGroupHardDeadlineMs)
                         .ConfigureAwait(false);
                     recoveryLinked = CancellationTokenSource.CreateLinkedTokenSource(
                         ownerships.Select(ownership => ownership.Token)
@@ -6840,8 +7021,24 @@ namespace Controller
                             _emergencyPowerGroupLatch.TryRemove(groupId);
                             return;
                         }
+                        catch (OperationCanceledException)
+                        {
+                            throw;
+                        }
                         catch (Exception ex)
                         {
+                            if (attempt >= SoftwareRecoveryEscalationAttempts)
+                            {
+                                hardDeadlineReached = IsSoftwareRecoveryRunCurrent(
+                                    recoveryRunId,
+                                    recoveryRunEpoch,
+                                    channels);
+                                _log.Error(
+                                    $"电源组{groupId}软件自愈连续{attempt}次失败，" +
+                                    "转入受影响组Stop→Start等价清场：" + ex.Message,
+                                    "程控电源");
+                                break;
+                            }
                             var delayMs = GetDaqSelfMaintenanceDelayMs(attempt);
                             _log.Warn(
                                 $"电源组{groupId}软件自愈第{attempt}次失败，" +
@@ -6901,7 +7098,7 @@ namespace Controller
                             recoveryRunId,
                             recoveryRunEpoch)
                         .ConfigureAwait(false);
-            }), "PowerSupplySoftwareRecovery");
+            }), "PowerSupplySoftwareRecovery", channels);
         }
 
         private bool IsSoftwareRecoveryRunCurrent(
@@ -6914,6 +7111,13 @@ namespace Controller
                 return false;
 
             var affected = (channels ?? Array.Empty<int>()).Distinct().ToArray();
+            // 硬件确认/报警停机是恢复事务的终止事实。旧的软件自愈任务即使仍持有
+            // Timer、Runner 或批次身份，也不得在隔离命令之后继续重新使能电源。
+            if (!CanContinueSoftwareRecovery(
+                    affected,
+                    channel => _nonRecoverableChannelFaultLatch.ContainsKey(channel),
+                    IsAlarmStopRequested))
+                return false;
             if (affected.Any(channel =>
                     _timers.ContainsKey(channel) ||
                     _runners.ContainsKey(channel) ||
@@ -6921,6 +7125,20 @@ namespace Controller
                 return true;
 
             return expectedRunId != Guid.Empty && IsBatchSessionActive;
+        }
+
+        internal static bool CanContinueSoftwareRecovery(
+            IEnumerable<int> affectedChannels,
+            Func<int, bool> isNonRecoverable,
+            Func<int, bool> isAlarmStopRequested)
+        {
+            var affected = (affectedChannels ?? Array.Empty<int>())
+                .Where(channel => channel >= 1 && channel <= 12)
+                .Distinct()
+                .ToArray();
+            return affected.Length > 0 && affected.All(channel =>
+                !(isNonRecoverable?.Invoke(channel) ?? false) &&
+                !(isAlarmStopRequested?.Invoke(channel) ?? false));
         }
 
         private void OnRunnerWarningRaised(int channel, string reason)

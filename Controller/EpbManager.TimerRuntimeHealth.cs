@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -40,12 +41,51 @@ namespace Controller
         // 旧任务迟到或新 Run 复用通道号时，不能再次创建第二个恢复 owner。
         private readonly ConcurrentDictionary<string, byte> _orphanPauseRecoveryAttempts =
             new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
+        // Recovering 的连续进入时刻独立于状态文本刷新保存。恢复任务即使被取消、
+        // owner 被移除或重复发布 Recovering，也不能重置 60 秒绝对期限。
+        private readonly ConcurrentDictionary<int, long> _recoveringSinceUtcTicks =
+            new ConcurrentDictionary<int, long>();
+        private readonly ConcurrentDictionary<int, long> _recoveringSinceMonotonicTicks =
+            new ConcurrentDictionary<int, long>();
+        private readonly ConcurrentDictionary<long, byte> _orphanRecoveryEscalations =
+            new ConcurrentDictionary<long, byte>();
         private readonly ConcurrentDictionary<int, long> _timerRuntimeGenerations =
             new ConcurrentDictionary<int, long>();
         private readonly ConcurrentDictionary<int, TimerRuntimeObserverRegistration>
             _timerRuntimeObservers =
                 new ConcurrentDictionary<int, TimerRuntimeObserverRegistration>();
         private int _timerRuntimeWatchdogBusy;
+
+        private void TrackRecoveringRuntimeTransition(
+            ChannelRuntimeStateChangedEvent previous,
+            ChannelRuntimeStateChangedEvent current)
+        {
+            if (current == null || current.Channel < 1 || current.Channel > 12) return;
+            if (current.State != ChannelRuntimeState.Recovering)
+            {
+                _recoveringSinceUtcTicks.TryRemove(current.Channel, out _);
+                _recoveringSinceMonotonicTicks.TryRemove(current.Channel, out _);
+                return;
+            }
+
+            var newRecoveryIdentity = previous == null ||
+                                      previous.State != ChannelRuntimeState.Recovering ||
+                                      previous.RunId != current.RunId ||
+                                      previous.RunEpoch != current.RunEpoch ||
+                                      previous.CorrelationId != current.CorrelationId;
+            if (newRecoveryIdentity)
+            {
+                _recoveringSinceUtcTicks[current.Channel] = current.TimestampUtc.Ticks;
+                _recoveringSinceMonotonicTicks[current.Channel] = Stopwatch.GetTimestamp();
+            }
+            else
+            {
+                _recoveringSinceUtcTicks.TryAdd(current.Channel, current.TimestampUtc.Ticks);
+                _recoveringSinceMonotonicTicks.TryAdd(
+                    current.Channel,
+                    Stopwatch.GetTimestamp());
+            }
+        }
 
         private sealed class TimerRuntimeObserverRegistration
         {
@@ -260,6 +300,7 @@ namespace Controller
             {
                 TryLogFieldRuntimeMetrics();
                 var nowUtc = DateTime.UtcNow;
+                InspectRecoveringRuntimeInvariants();
                 foreach (var pair in _timers.ToArray())
                 {
                     var channel = pair.Key;
@@ -310,6 +351,151 @@ namespace Controller
             {
                 Volatile.Write(ref _timerRuntimeWatchdogBusy, 0);
             }
+        }
+
+        private void InspectRecoveringRuntimeInvariants()
+        {
+            if (!IsBatchSessionActive) return;
+            var runId = _activeBatchId;
+            var runEpoch = Interlocked.Read(ref _runEpoch);
+            foreach (var runtime in _channelRuntimeStateStore.Snapshot()
+                         .Where(item => item != null &&
+                                        item.State == ChannelRuntimeState.Recovering &&
+                                        item.RunId == runId &&
+                                        item.RunEpoch == runEpoch &&
+                                        item.Enabled))
+            {
+                var startedTicks = _recoveringSinceUtcTicks.GetOrAdd(
+                    runtime.Channel,
+                    runtime.TimestampUtc.Ticks);
+                var startedMonotonic = _recoveringSinceMonotonicTicks.GetOrAdd(
+                    runtime.Channel,
+                    Stopwatch.GetTimestamp());
+                var ageMs = Math.Max(
+                    0d,
+                    (Stopwatch.GetTimestamp() - startedMonotonic) * 1000d /
+                    Stopwatch.Frequency);
+                var hardDeadlineReached = ageMs >= RecoveryGroupHardDeadlineMs;
+                var ownerOrTaskMissing = ageMs >= 1000d &&
+                                         !HasRecoveryExecutionCoverage(runtime, runEpoch);
+                if (!hardDeadlineReached && !ownerOrTaskMissing) continue;
+
+                ScheduleRecoveryInvariantEscalation(
+                    runtime,
+                    runId,
+                    runEpoch,
+                    startedTicks,
+                    hardDeadlineReached
+                        ? "RecoveryHardDeadlineExceeded"
+                        : "OrphanRecoveryOwnerOrTaskMissing");
+            }
+        }
+
+        private bool HasRecoveryExecutionCoverage(
+            ChannelRuntimeStateChangedEvent runtime,
+            long runEpoch)
+        {
+            if (runtime == null) return false;
+            var channel = runtime.Channel;
+            var device = _acq.GetDeviceForEpbChannel(channel);
+            if (!string.IsNullOrWhiteSpace(device) &&
+                _daqAutoRecovery.TryGetValue(device, out var daq) &&
+                daq != null && daq.RunEpoch == runEpoch &&
+                daq.Terminal.Current == DaqRecoveryTerminal.None &&
+                daq.AffectedChannels.Contains(channel))
+                return true;
+
+            // 启动定位由批次启动调用栈拥有；它不登记为后台恢复任务，但仍受同一个
+            // 连续 Recovering 60 秒硬期限约束。
+            if (_batchLifecycleGate.IsBusy &&
+                (runtime.ReasonCode ?? string.Empty).IndexOf(
+                    "Startup",
+                    StringComparison.OrdinalIgnoreCase) >= 0)
+                return true;
+
+            var taskOwned = _recoveryTaskRegistry.HasActiveTaskForChannel(channel, runEpoch);
+            if (!taskOwned) return false;
+            var hydraulicGroup = GetHydraulicGroupForChannel(channel);
+            var owner = hydraulicGroup > 0
+                ? _recoveryOwnership.GetOwner(hydraulicGroup)
+                : string.Empty;
+            if (!string.IsNullOrWhiteSpace(owner)) return true;
+
+            var electricalGroup = GetElectricalGroupId(channel);
+            return _timerRuntimeRecoveries.ContainsKey(channel) ||
+                   _recoverableChannelRestartJobs.ContainsKey(channel) ||
+                   (hydraulicGroup > 0 &&
+                    _hydraulicSoftwareRecoveryGroups.ContainsKey(hydraulicGroup)) ||
+                   (electricalGroup > 0 &&
+                    _powerSoftwareRecoveryGroups.ContainsKey(electricalGroup)) ||
+                   (hydraulicGroup > 0 &&
+                    _affectedGroupResetInProgress.ContainsKey(
+                        GetAffectedGroupResetKey(runEpoch, hydraulicGroup)));
+        }
+
+        private void ScheduleRecoveryInvariantEscalation(
+            ChannelRuntimeStateChangedEvent runtime,
+            Guid runId,
+            long runEpoch,
+            long startedUtcTicks,
+            string code)
+        {
+            var hydraulicGroup = GetHydraulicGroupForChannel(runtime.Channel);
+            if (hydraulicGroup <= 0) return;
+            var key = GetInfrastructureRecoveryAttemptKey(runEpoch, hydraulicGroup);
+            if (!_orphanRecoveryEscalations.TryAdd(key, 0)) return;
+            var channel = runtime.Channel;
+            var correlationId = runtime.CorrelationId == Guid.Empty
+                ? Guid.NewGuid()
+                : runtime.CorrelationId;
+            var reason =
+                $"Code={code}; EPB={channel}; StateReason={runtime.ReasonCode}; " +
+                $"RecoveringSinceUtc={new DateTime(startedUtcTicks, DateTimeKind.Utc):O}; " +
+                $"RunId={runId:N}; RunEpoch={runEpoch}; " +
+                $"Owner={_recoveryOwnership.GetOwner(hydraulicGroup)}; " +
+                $"TaskCovered={_recoveryTaskRegistry.HasActiveTaskForChannel(channel, runEpoch)}";
+            _log?.Error(
+                $"RecoveryInvariantViolation {reason}; " +
+                "立即执行受影响组Stop→Start等价清场。",
+                "Timer");
+
+            ObserveBackgroundTask(Task.Run(async () =>
+            {
+                try
+                {
+                    if (!IsAffectedGroupResetRunCurrent(runId, runEpoch)) return;
+                    var current = _channelRuntimeStateStore.Get(channel);
+                    if (current == null || current.State != ChannelRuntimeState.Recovering ||
+                        current.RunId != runId || current.RunEpoch != runEpoch)
+                        return;
+                    await ExecuteAffectedGroupResetAsync(
+                            new[] { channel },
+                            code,
+                            correlationId,
+                            runId,
+                            runEpoch)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _log?.Error(
+                        $"RecoveryInvariantEscalationFailed {reason}; Error={ex.Message}",
+                        "Timer",
+                        ex);
+                    TryEscalateSoftwareRecoveryCircuitOpen(
+                        code,
+                        reason + "; Error=" + ex.Message,
+                        new[] { channel },
+                        runId,
+                        runEpoch,
+                        SoftwareRecoveryEscalationAttempts,
+                        "ExternalRecoveryRequired");
+                }
+                finally
+                {
+                    _orphanRecoveryEscalations.TryRemove(key, out _);
+                }
+            }), "RecoveryInvariantAffectedGroupReset", new[] { channel });
         }
 
         private bool TryRecoverOrphanDaqPause(

@@ -343,6 +343,8 @@ namespace Controller
         public int[] ExpectedChannels { get; set; } = Array.Empty<int>();
         public int[] ExpectedRecoveryChannels { get; set; } = Array.Empty<int>();
         public int[] OrphanPausedChannels { get; set; } = Array.Empty<int>();
+        public int[] RecoveringChannels { get; set; } = Array.Empty<int>();
+        public int[] OrphanRecoveryChannels { get; set; } = Array.Empty<int>();
         public int[] PowerDisablePendingGroups { get; set; } = Array.Empty<int>();
         public DateTime? PowerDisableSinceUtc { get; set; }
         public int[] PermanentAlarmedChannels { get; set; } = Array.Empty<int>();

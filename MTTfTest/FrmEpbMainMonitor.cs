@@ -2627,6 +2627,9 @@ namespace MTEmbTest
             }
 
             Interlocked.Exchange(ref _operatorStopRequested, 1);
+            var stopCommandId = Guid.NewGuid().ToString("N");
+            LogInfo($"已接收停止试验命令，正在执行安全断能与数据收口。CommandId={stopCommandId}");
+            PostSafetyStatus("停止命令已接收，正在安全断能与收口…", false);
             UnattendedRecoveryCoordinator.Disarm("ManualStopIntent");
             WatchdogRuntime.NotifyManualStop("操作员点击停止试验");
             ClearGracefulPauseCheckpoint("ManualStopRequested");
@@ -2645,7 +2648,7 @@ namespace MTEmbTest
                         Source = StopSource.ManualUi,
                         Reason = "操作员点击停止试验",
                         Initiator = nameof(BtnStop_Click),
-                        CorrelationId = Guid.NewGuid().ToString("N"),
+                        CorrelationId = stopCommandId,
                         RequestedUtc = DateTime.UtcNow
                     });
                 var stopUiStarted = DateTime.UtcNow;
@@ -2675,7 +2678,7 @@ namespace MTEmbTest
                 }
                 else
                 {
-                    LogInfo("停止试验完成；可以关闭软件或重新开始。");
+                    LogInfo($"停止试验完成；可以关闭软件或重新开始。CommandId={stopCommandId}");
                     if (safety.PhysicalSafetyConfirmed)
                         WatchdogRuntime.NotifyPhysicalStopConfirmed("ManualStopPhysicalSafetyConfirmed");
                     WatchdogRuntime.NotifyStopCompleted(ToWatchdogStopSummary(safety), "ManualStopCompleted");

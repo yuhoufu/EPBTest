@@ -884,7 +884,8 @@ namespace Controller
                 string ownerId,
                 RecoveryOwnerPriority priority,
                 IEnumerable<int> channels,
-                CancellationToken token)
+                CancellationToken token,
+                int takeoverTimeoutMs = RecoveryOwnershipTakeoverTimeoutMs)
         {
             var leases = new List<HydraulicRecoveryOwnershipCoordinator.HydraulicRecoveryOwnershipLease>();
             try
@@ -899,7 +900,7 @@ namespace Controller
                             groupId,
                             ownerId,
                             priority,
-                            RecoveryOwnershipTakeoverTimeoutMs,
+                            takeoverTimeoutMs,
                             token)
                         .ConfigureAwait(false));
                 }

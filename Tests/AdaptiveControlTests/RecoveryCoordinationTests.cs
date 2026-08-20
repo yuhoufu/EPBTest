@@ -19,6 +19,11 @@ namespace AdaptiveControlTests
             Run("EPB8从Slot506起才进入液压成员快照", FutureSlotEligibilityIsAtomic, ref passed);
             Run("液压超时与DAQ恢复只有一个所有者", HigherRecoveryPreemptsAndWaitsForHydraulic, ref passed);
             Run("双DAQ批次对同一液压组共享引用计数所有权", SameDaqBatchSharesHydraulicOwnership, ref passed);
+            Run("同优先级不同电源恢复排队且不得互相取消", SamePriorityOwnersQueueWithoutCancellation, ref passed);
+            Run("恢复任务登记覆盖全部受影响通道并在终态清除", RecoveryTaskRegistryTracksAffectedChannels, ref passed);
+            Run("液压硬件确认仅永久禁用故障组所选卡钳", ConfirmedHydraulicDisableIsScoped, ref passed);
+            Run("PSU4硬件确认仅永久禁用EPB10/11且EPB9继续", ConfirmedPowerDisableIsScoped, ref passed);
+            Run("硬件锁存到达后旧软件恢复不得再次使能", HardwareLatchTerminatesSoftwareRecovery, ref passed);
             Run("恢复阶段忽略取消仍受硬期限约束", IgnoredCancellationCannotHoldRecoveryStage, ref passed);
             Run("DAQ恢复先到必须等待整组截止且重入后才能提交", RecoveryWaitsForCutoffAndRejoin, ref passed);
             Run("迟到旧代清理不得删除新代液压参与状态", LateCleanupCannotTouchNewParticipantVersion, ref passed);
@@ -360,6 +365,101 @@ namespace AdaptiveControlTests
                 Assert(coordinator.ActiveCount == 0,
                     "共享所有权全部租约释放后仍残留所有者");
             });
+        }
+
+        private static void SamePriorityOwnersQueueWithoutCancellation()
+        {
+            RunAsync(async () =>
+            {
+                var coordinator = new HydraulicRecoveryOwnershipCoordinator();
+                var first = await coordinator.AcquireAsync(
+                    2,
+                    "POWER:3",
+                    RecoveryOwnerPriority.PowerSupply,
+                    1000,
+                    CancellationToken.None);
+                var secondTask = coordinator.AcquireAsync(
+                    2,
+                    "POWER:4",
+                    RecoveryOwnerPriority.PowerSupply,
+                    1000,
+                    CancellationToken.None);
+                await Task.Delay(50).ConfigureAwait(false);
+                Assert(!first.Token.IsCancellationRequested,
+                    "同优先级第二个电源恢复取消了第一个所有者");
+                Assert(!secondTask.IsCompleted && coordinator.GetOwner(2) == "POWER:3",
+                    "同优先级第二个电源恢复没有等待现有所有者明确退出");
+
+                first.Dispose();
+                using (var second = await secondTask.ConfigureAwait(false))
+                {
+                    Assert(coordinator.GetOwner(2) == "POWER:4" &&
+                           !second.Token.IsCancellationRequested,
+                        "首个所有者释放后排队恢复未取得所有权");
+                }
+                Assert(coordinator.ActiveCount == 0, "同优先级排队完成后残留恢复所有者");
+            });
+        }
+
+        private static void RecoveryTaskRegistryTracksAffectedChannels()
+        {
+            var registry = new RecoveryTaskRegistry();
+            var completion = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            registry.Track(
+                completion.Task,
+                "PowerSupplySoftwareRecovery",
+                17,
+                10,
+                11);
+            Assert(registry.HasActiveTaskForChannel(10, 17) &&
+                   registry.HasActiveTaskForChannel(11, 17) &&
+                   !registry.HasActiveTaskForChannel(9, 17) &&
+                   registry.CaptureActiveChannels(17).SequenceEqual(new[] { 10, 11 }),
+                "恢复任务没有按完整受影响通道登记");
+            completion.TrySetResult(true);
+            SpinWait.SpinUntil(() => registry.ActiveCount == 0, 1000);
+            Assert(!registry.HasActiveTaskForChannel(10, 17) && registry.ActiveCount == 0,
+                "恢复任务终态后通道登记未原子清除");
+        }
+
+        private static void ConfirmedHydraulicDisableIsScoped()
+        {
+            var disabled = EpbManager.SelectConfirmedGroupDisableChannels(
+                new[] { 11, 9, 10, 10 },
+                channel => channel != 10);
+            Assert(disabled.SequenceEqual(new[] { 9, 11 }),
+                "液压硬件确认没有仅选择故障事件内仍启用的通道");
+            Assert(!disabled.Contains(4) && !disabled.Contains(5),
+                "液压2硬件故障牵连了健康液压1的卡钳");
+        }
+
+        private static void ConfirmedPowerDisableIsScoped()
+        {
+            var disabled = EpbManager.SelectConfirmedGroupDisableChannels(
+                new[] { 10, 11 },
+                _ => true);
+            Assert(disabled.SequenceEqual(new[] { 10, 11 }) && !disabled.Contains(9),
+                "PSU4硬件确认错误禁用了不属于电气组4的EPB9");
+        }
+
+        private static void HardwareLatchTerminatesSoftwareRecovery()
+        {
+            Assert(EpbManager.CanContinueSoftwareRecovery(
+                    new[] { 10, 11 },
+                    _ => false,
+                    _ => false),
+                "无终态锁存的软件恢复被错误终止");
+            Assert(!EpbManager.CanContinueSoftwareRecovery(
+                    new[] { 10, 11 },
+                    channel => channel == 11,
+                    _ => false),
+                "硬件锁存后旧软件恢复仍可继续");
+            Assert(!EpbManager.CanContinueSoftwareRecovery(
+                    new[] { 10, 11 },
+                    _ => false,
+                    channel => channel == 10),
+                "报警停机后旧软件恢复仍可继续");
         }
 
         private static void FutureSlotEligibilityIsAtomic()

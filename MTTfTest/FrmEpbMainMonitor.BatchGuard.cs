@@ -91,9 +91,12 @@ namespace MTEmbTest
                     if (unattendedRecovery)
                         throw new InvalidOperationException(
                             "自动重启子进程出现非预期 Paused 状态，拒绝把它当作新运行继续。");
+                    var commandId = Guid.NewGuid().ToString("N");
+                    LogInfo($"已接收继续试验命令，正在执行恢复预检。CommandId={commandId}");
+                    PostSafetyStatus("继续命令已接收，正在执行恢复预检…", false);
                     await _epb.ResumeBatchAsync().ConfigureAwait(true);
                     ClearGracefulPauseCheckpoint("SameProcessResumed");
-                    LogInfo("批次已通过恢复预检并继续试验。");
+                    LogInfo($"批次已通过恢复预检并继续试验。CommandId={commandId}");
                     return null;
                 }
 
@@ -102,9 +105,12 @@ namespace MTEmbTest
                     if (unattendedRecovery)
                         throw new InvalidOperationException(
                             "自动重启子进程已存在 Running 批次，拒绝重复提交恢复启动。");
+                    var commandId = Guid.NewGuid().ToString("N");
+                    LogInfo($"已接收暂停试验命令，等待所有运行卡钳完成当前圈。CommandId={commandId}");
+                    PostSafetyStatus("暂停命令已接收，正在等待当前圈安全结束…", false);
                     await _epb.PauseBatchGracefullyAsync().ConfigureAwait(true);
                     SaveGracefulPauseCheckpoint();
-                    LogInfo("批次已在所有卡钳完成当前圈后安全暂停。");
+                    LogInfo($"批次已在所有卡钳完成当前圈后安全暂停。CommandId={commandId}");
                     return null;
                 }
 

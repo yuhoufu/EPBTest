@@ -707,6 +707,43 @@ namespace Controller
                 .Select(pair => pair.Key)
                 .OrderBy(channel => channel)
                 .ToArray();
+            var runEpoch = Interlocked.Read(ref _runEpoch);
+            var recoveringStates = _channelRuntimeStateStore.Snapshot()
+                .Where(state => state != null &&
+                                state.State == ChannelRuntimeState.Recovering &&
+                                state.RunId == _activeBatchId &&
+                                state.RunEpoch == runEpoch &&
+                                state.Enabled)
+                .OrderBy(state => state.Channel)
+                .ToArray();
+            var recoveringChannels = recoveringStates
+                .Select(state => state.Channel)
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
+            var nowMonotonicTicks = Stopwatch.GetTimestamp();
+            var orphanRecovering = recoveringStates
+                .Where(state =>
+                {
+                    var since = _recoveringSinceMonotonicTicks.TryGetValue(
+                        state.Channel,
+                        out var ticks)
+                        ? ticks
+                        : nowMonotonicTicks;
+                    return nowMonotonicTicks - since >= Stopwatch.Frequency &&
+                           !HasRecoveryExecutionCoverage(state, runEpoch);
+                })
+                .Select(state => state.Channel)
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
+            var recoveringStartedTicks = recoveringStates
+                .Select(state => _recoveringSinceUtcTicks.TryGetValue(state.Channel, out var ticks)
+                    ? ticks
+                    : state.TimestampUtc.Ticks)
+                .Where(ticks => ticks > 0)
+                .DefaultIfEmpty(0L)
+                .Min();
             var cutoffCompleted = current != null &&
                                   current.Phase.Current >= DaqRecoveryPhase.CutoffCompleted;
             var powerGroups = current == null || _powerSupply == null || cutoffCompleted
@@ -727,9 +764,22 @@ namespace Controller
                     })
                     .OrderBy(id => id)
                     .ToArray();
+            var genericPowerGroups = _powerSupply == null
+                ? Array.Empty<int>()
+                : recoveringChannels
+                    .Where(IsChannelEnergized)
+                    .Select(GetElectricalGroupId)
+                    .Where(id => id > 0)
+                    .Distinct()
+                    .OrderBy(id => id)
+                    .ToArray();
+            powerGroups = powerGroups.Concat(genericPowerGroups)
+                .Distinct()
+                .OrderBy(id => id)
+                .ToArray();
             // Orphan pauses are independently actionable even when another DAQ device
             // currently owns a recovery context.  Do not hide them behind `current`.
-            var orphanPaused = orphan.Length > 0;
+            var orphanPaused = orphan.Length > 0 || orphanRecovering.Length > 0;
             var pauseSinceUtcTicks = orphan.Length == 0
                 ? 0L
                 : _timers
@@ -741,31 +791,66 @@ namespace Controller
             var powerDisableSinceUtcTicks = powerGroups.Length == 0 || current == null
                 ? 0L
                 : Interlocked.Read(ref current.PowerDisableStartedUtcTicks);
+            var expectedRecoveryChannels = (current?.AffectedChannels ?? Array.Empty<int>())
+                .Concat(orphan)
+                .Concat(recoveringChannels)
+                .Distinct()
+                .OrderBy(channel => channel)
+                .ToArray();
+            var genericOutputsConfirmedOff = recoveringChannels.Length > 0 &&
+                                             recoveringChannels.All(channel =>
+                                                 !IsChannelEnergized(channel));
+            var recoveryDeadlineTicks = recoveringStartedTicks <= 0
+                ? 0L
+                : recoveringStartedTicks +
+                  RecoveryGroupHardDeadlineMs * TimeSpan.TicksPerMillisecond;
+            if (current != null)
+            {
+                var daqDeadline = current.StartedUtc
+                    .AddMilliseconds(RecoveryGroupHardDeadlineMs).Ticks;
+                recoveryDeadlineTicks = recoveryDeadlineTicks <= 0
+                    ? daqDeadline
+                    : Math.Min(recoveryDeadlineTicks, daqDeadline);
+            }
+            var primaryRecovering = recoveringStates.FirstOrDefault();
             return new WatchdogRecoverySnapshot
             {
-                ActiveRecovery = current != null || orphan.Length > 0,
+                ActiveRecovery = current != null || orphan.Length > 0 || recoveringChannels.Length > 0,
                 OrphanPaused = orphanPaused,
                 PowerDisablePending = powerGroups.Length > 0,
                 PowerOffUnconfirmed = powerGroups.Length > 0,
-                OutputsConfirmedOff = cutoffCompleted,
-                RecoveryHardDeadlineUtcTicks = current == null
-                    ? 0L
-                    : current.StartedUtc.AddMilliseconds(RecoveryGroupHardDeadlineMs).Ticks,
+                OutputsConfirmedOff = cutoffCompleted || genericOutputsConfirmedOff,
+                RecoveryHardDeadlineUtcTicks = recoveryDeadlineTicks,
                 RunId = _activeBatchId,
-                RunEpoch = Interlocked.Read(ref _runEpoch),
-                IncidentId = current == null ? string.Empty : current.CorrelationId.ToString("N"),
-                RecoveryIncident = current == null ? string.Empty : current.CorrelationId.ToString("N"),
-                RecoveryContext = current == null ? string.Empty : current.Device,
+                RunEpoch = runEpoch,
+                IncidentId = current != null
+                    ? current.CorrelationId.ToString("N")
+                    : primaryRecovering?.CorrelationId.ToString("N") ?? string.Empty,
+                RecoveryIncident = current != null
+                    ? current.CorrelationId.ToString("N")
+                    : primaryRecovering?.CorrelationId.ToString("N") ?? string.Empty,
+                RecoveryContext = current != null
+                    ? current.Device
+                    : primaryRecovering?.ReasonCode ?? string.Empty,
                 Device = current?.Device ?? string.Empty,
-                CorrelationId = current?.CorrelationId ?? Guid.Empty,
-                Stage = current?.ValidationPhase ?? (orphan.Length == 0 ? string.Empty : "OrphanPause"),
-                StageOrdinal = current == null ? (orphan.Length == 0 ? 0 : 5) : (int)current.Phase.Current,
-                StartedUtc = current?.StartedUtc ?? DateTime.UtcNow,
+                CorrelationId = current?.CorrelationId ?? primaryRecovering?.CorrelationId ?? Guid.Empty,
+                Stage = current?.ValidationPhase ??
+                        (primaryRecovering?.ReasonCode ??
+                         (orphan.Length == 0 ? string.Empty : "OrphanPause")),
+                StageOrdinal = current == null
+                    ? (recoveringChannels.Length > 0 || orphan.Length > 0 ? 5 : 0)
+                    : (int)current.Phase.Current,
+                StartedUtc = current?.StartedUtc ??
+                             (recoveringStartedTicks > 0
+                                 ? new DateTime(recoveringStartedTicks, DateTimeKind.Utc)
+                                 : DateTime.UtcNow),
                 PauseSinceUtcTicks = pauseSinceUtcTicks,
                 PowerDisableSinceUtcTicks = powerDisableSinceUtcTicks,
-                ExpectedChannels = current?.AffectedChannels?.ToArray() ?? orphan,
-                ExpectedRecoveryChannels = current?.AffectedChannels?.ToArray() ?? orphan,
+                ExpectedChannels = expectedRecoveryChannels,
+                ExpectedRecoveryChannels = expectedRecoveryChannels,
                 OrphanPausedChannels = orphan,
+                RecoveringChannels = recoveringChannels,
+                OrphanRecoveryChannels = orphanRecovering,
                 PowerDisablePendingGroups = powerGroups,
                 PowerDisableSinceUtc = powerDisableSinceUtcTicks <= 0
                     ? (DateTime?)null
