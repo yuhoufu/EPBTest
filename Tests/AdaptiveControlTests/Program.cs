@@ -92,6 +92,42 @@ namespace AdaptiveControlTests
                     return 0;
                 }
                 if (args.Length == 1 &&
+                    args[0].Equals("--hydraulic-coordination", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += HydraulicGroupCoordinatorTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
+                    args[0].Equals("--stagger-plan", StringComparison.OrdinalIgnoreCase))
+                {
+                    Run("错峰部分通道保持固定首中尾身份", StaggerPartialSelection);
+                    Run("错峰同组全选", StaggerFullGroup);
+                    Run("错峰不同组并行", StaggerAcrossGroups);
+                    Run("错峰计划配置快照", StaggerPlanIsImmutableSnapshot);
+                    Run("连续圈保持固定墙钟相位", StaggerPhaseRemainsFixedAcrossCycles);
+                    Run("错峰重复组ID被拒绝", StaggerRejectsDuplicateGroupId);
+                    Run("错峰重复归组被拒绝", StaggerRejectsDuplicateMembership);
+                    Run("错峰漏配通道被拒绝", StaggerRejectsMissingChannel);
+                    Run("错峰越界通道被拒绝", StaggerRejectsOutOfRangeChannel);
+                    Run("错峰零步长被拒绝", StaggerRejectsZeroDelta);
+                    Run("错峰最大相位越周期被拒绝", StaggerRejectsPhaseBeyondPeriod);
+                    Run("错峰单通道保持固定物理相位", StaggerSingleChannelKeepsPhysicalPhase);
+                    Run("错峰任务不等待前相位完成", StaggerExecutorDoesNotSerialize);
+                    Run("正式圈液压950ms达标后仍保持800ms相位", FormalStaggerSurvivesLateHydraulicQualification);
+                    Run("正式圈液压早于第二相位时不同时补发", FormalStaggerDoesNotCollapseBeforeSecondPhase);
+                    Run("正式圈连续500圈相位无累积漂移", FormalStaggerHasNoCumulativeDrift);
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
+                    args[0].Equals("--control-evidence", StringComparison.OrdinalIgnoreCase))
+                {
+                    Run("报警辅助证据包含固定批次和DO时序", AlarmControlEvidenceIsReconstructable);
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
                     args[0].Equals("--incident-session", StringComparison.OrdinalIgnoreCase))
                 {
                     Run("Incident SessionKey/60秒窗口合并", IncidentSessionPolicyTests.SessionKeyAndWindowMerge);
@@ -202,6 +238,7 @@ namespace AdaptiveControlTests
                 Run("正式控制仍按程序级期限拦截无负载上升", ForwardLoadRiseDeadlineFaults);
                 Run("正向低平台200ms立即断电并软预警", ForwardCurrentRiseStallWarnsAndCutsPower);
                 Run("14.6A近目标平台200ms软完成", NearTargetPlateauCompletesWithWarning);
+                Run("EPB10第85993圈首样本越阈值不再误报高位平台", Epb10Cycle85993RapidLoadRiseReplay);
                 Run("13.9A短平台恢复后不误停", LowPlateauRecoversBeforeFaultWindow);
                 Run("13.9A持续平台按低目标预警完成", Sustained139AmpPlateauWarns);
                 Run("EPB10第28圈全数据峰值回放", Epb10Cycle28FullRatePeakReplay);
@@ -310,7 +347,7 @@ namespace AdaptiveControlTests
                 Run("项目禁用通道不得通过RUN按钮重新启动", DisabledChannelCannotRestart);
                 Run("新运行复位报警停机锁存", AlarmStopLatchResetsForNewRun);
                 Run("报警状态要求CSV和BIN同时存在", AlarmRequiresCsvAndBinFiles);
-                Run("错峰部分通道重新编号", StaggerPartialSelection);
+                Run("错峰部分通道保持固定首中尾身份", StaggerPartialSelection);
                 Run("错峰同组全选", StaggerFullGroup);
                 Run("错峰不同组并行", StaggerAcrossGroups);
                 Run("错峰计划配置快照", StaggerPlanIsImmutableSnapshot);
@@ -321,7 +358,7 @@ namespace AdaptiveControlTests
                 Run("错峰越界通道被拒绝", StaggerRejectsOutOfRangeChannel);
                 Run("错峰零步长被拒绝", StaggerRejectsZeroDelta);
                 Run("错峰最大相位越周期被拒绝", StaggerRejectsPhaseBeyondPeriod);
-                Run("错峰单通道相位为零", StaggerSingleChannelStartsAtZero);
+                Run("错峰单通道保持固定物理相位", StaggerSingleChannelKeepsPhysicalPhase);
                 Run("错峰任务不等待前相位完成", StaggerExecutorDoesNotSerialize);
                 Run("正式圈液压950ms达标后仍保持800ms相位", FormalStaggerSurvivesLateHydraulicQualification);
                 Run("正式圈液压早于第二相位时不同时补发", FormalStaggerDoesNotCollapseBeforeSecondPhase);
@@ -831,6 +868,57 @@ namespace AdaptiveControlTests
             }
 
             Assert(!learningStarted, "预释放失败后仍进入学习阶段");
+        }
+
+        private static void Epb10Cycle85993RapidLoadRiseReplay()
+        {
+            var profile = new EpbAdaptiveProfile
+            {
+                Channel = 10,
+                ForwardEmptyCurrentA = 0.6135815,
+                ForwardEmptyMadA = 0.0251518,
+                ForwardClampMedianMs = 3000,
+                ForwardClampMadMs = 100,
+                ValidSampleCount = 5
+            };
+            var machine = new EpbAdaptiveCurrentStateMachine(profile);
+            machine.ArmForward(Tick(0), 100, 9000, 15, 0, 3);
+
+            var fieldHead = new[]
+            {
+                (46, 0.054),
+                (94, 1.719),
+                (109, 2.318),
+                (141, 2.054),
+                (189, 1.843),
+                (283, 2.975),
+                (328, 4.028),
+                (531, 6.926),
+                (1044, 12.973),
+                (1233, 14.548)
+            };
+            EpbAdaptiveDecision terminal = null;
+            foreach (var point in fieldHead)
+            {
+                var decision = machine.OnSample(Tick(point.Item1), point.Item2);
+                Assert(!decision.HardFault,
+                    $"85993现场头部在{point.Item1}ms仍被误判：{decision.Reason}");
+            }
+            for (var ms = 1243; ms <= 1500; ms += 10)
+            {
+                var decision = machine.OnSample(Tick(ms), 14.556);
+                if (!decision.ClampReached && !decision.HardFault) continue;
+                terminal = decision;
+                break;
+            }
+
+            Assert(terminal != null && terminal.ClampReached && !terminal.HardFault &&
+                   terminal.CutoffReason == "NearTargetPlateau",
+                $"85993未按目标附近平台安全完成：{terminal?.Reason ?? "NoTerminal"}");
+            Assert(terminal.Reason.IndexOf(
+                       "AbnormalHighCurrentPlateau",
+                       StringComparison.OrdinalIgnoreCase) < 0,
+                "85993仍被7.5A通用高平台规则错误归类");
         }
 
         private static void FullRateRapidClampBeforeLoadRiseIsAccepted()
@@ -3897,10 +3985,10 @@ namespace AdaptiveControlTests
                 new[] { NewElectricalGroup(3, 800, 7, 8, 9) },
                 15_000);
 
-            Assert(plan.Get(8).SelectedIndexInGroup == 0 && plan.Get(8).PhaseMs == 0,
-                "EPB8未按已选通道重新编号为0相位");
-            Assert(plan.Get(9).SelectedIndexInGroup == 1 && plan.Get(9).PhaseMs == 800,
-                "EPB9未按已选通道重新编号为800ms相位");
+            Assert(plan.Get(8).BatchOrdinal == 1 && plan.Get(8).PhaseMs == 800,
+                "EPB8稀疏选择后未保持中批800ms相位");
+            Assert(plan.Get(9).BatchOrdinal == 2 && plan.Get(9).PhaseMs == 1600,
+                "EPB9稀疏选择后未保持尾批1600ms相位");
         }
 
         private static void StaggerFullGroup()
@@ -3926,10 +4014,10 @@ namespace AdaptiveControlTests
                 },
                 15_000);
 
-            Assert(plan.Get(8).PhaseMs == 0 && plan.Get(10).PhaseMs == 0,
-                "不同电源组首通道未并行使用0相位");
-            Assert(plan.Get(9).PhaseMs == 800 && plan.Get(12).PhaseMs == 800,
-                "不同电源组第二通道未使用800ms相位");
+            Assert(plan.Get(8).PhaseMs == 800 && plan.Get(10).PhaseMs == 0,
+                "稀疏选择错误压缩了不同电源组的固定批次身份");
+            Assert(plan.Get(9).PhaseMs == 1600 && plan.Get(12).PhaseMs == 1600,
+                "不同电源组尾批未统一使用1600ms相位");
         }
 
         private static void StaggerPlanIsImmutableSnapshot()
@@ -3940,7 +4028,7 @@ namespace AdaptiveControlTests
             group.StaggerMs = 1200;
             group.Members.Clear();
 
-            Assert(plan.Get(8).StaggerMs == 800 && plan.Get(9).PhaseMs == 800,
+            Assert(plan.Get(8).StaggerMs == 800 && plan.Get(9).PhaseMs == 1600,
                 "配置修改污染了已生成的错峰计划");
         }
 
@@ -4036,15 +4124,15 @@ namespace AdaptiveControlTests
                 "必须小于试验周期");
         }
 
-        private static void StaggerSingleChannelStartsAtZero()
+        private static void StaggerSingleChannelKeepsPhysicalPhase()
         {
             var plan = ElectricalStaggerPlanner.Build(
                 new[] { 12 },
                 new[] { NewElectricalGroup(4, 800, 10, 11, 12) },
                 15_000);
 
-            Assert(plan.Get(12).SelectedIndexInGroup == 0 && plan.Get(12).PhaseMs == 0,
-                "单通道启动仍保留了物理工位空相位");
+            Assert(plan.Get(12).BatchOrdinal == 2 && plan.Get(12).PhaseMs == 1600,
+                "单通道启动错误压缩了尾批物理相位");
         }
 
         private static void StaggerExecutorDoesNotSerialize()
@@ -5000,7 +5088,8 @@ namespace AdaptiveControlTests
                             CycleNumber = 42,
                             ElectricalGroupId = 3,
                             Channel = 9,
-                            PlannedPhaseMs = 800,
+                            BatchOrdinal = 2,
+                            PlannedPhaseMs = 1600,
                             Stage = "RunOneAdaptiveAsync",
                             Command = EpbDoCommand.OffHighPriority,
                             DoCommandResult = true,
@@ -5015,7 +5104,8 @@ namespace AdaptiveControlTests
                             CycleNumber = 42,
                             ElectricalGroupId = 3,
                             Channel = 9,
-                            PlannedPhaseMs = 800,
+                            BatchOrdinal = 2,
+                            PlannedPhaseMs = 1600,
                             ElectricalPhaseDueUtc = utc.AddMilliseconds(-12),
                             ElectricalPhaseStartDeviationMs = 2,
                             Stage = "RunOneAdaptiveAsync",
@@ -5034,9 +5124,9 @@ namespace AdaptiveControlTests
                 var adaptiveTimeline = File.ReadAllText(
                     Path.Combine(directory, "adaptive-decision-timeline.csv"));
 
-                Assert(metadata.Contains("\"schemaVersion\": 5") &&
+                Assert(metadata.Contains("\"schemaVersion\": 7") &&
                        metadata.Contains("\"terminalOffSafety\":"),
-                    "报警元数据未升级到包含DO四时刻证据的schema 5");
+                    "报警元数据未升级到包含样本序号完整性和DO四时刻证据的schema 7");
                 Assert(metadata.Contains("\"decisionUtc\":") &&
                        metadata.Contains("\"doWriteStartedUtc\":") &&
                        metadata.Contains("\"doWriteCompletedUtc\":") &&
@@ -5049,17 +5139,27 @@ namespace AdaptiveControlTests
                     "报警元数据未记录CSV/BIN完整性");
                 Assert(metadata.Contains("\"evidenceSampleCount\": 7000"),
                     "报警元数据未记录冻结后的证据样本数");
+                Assert(metadata.Contains("\"alarmCycleSemanticEvidenceComplete\":") &&
+                       metadata.Contains("\"cycleStartAfterSequence\":") &&
+                       metadata.Contains("\"lastWrittenSequence\":") &&
+                       metadata.Contains("\"preTriggerSampleCount\":") &&
+                       metadata.Contains("\"requiredPreTriggerSampleCount\":"),
+                    "报警元数据未记录预触发和DAQ序号语义完整性");
                 Assert(metadata.Contains("\"physicalPowerState\": \"NotMeasured\""),
                     "报警元数据误将DO返回值当成物理断电确认");
                 Assert(metadata.Contains("\"selectedChannelsInElectricalGroup\": [8, 9]") &&
+                       metadata.Contains("\"batchOrdinal\": 2") &&
                        metadata.Contains("\"forward\": {") &&
                        metadata.Contains("\"off\": {") &&
                        metadata.Contains("\"adaptiveDecision\": {") &&
                        metadata.Contains("\"releaseThresholdA\": 2.440000"),
                     "报警元数据缺少同组计划或最近DO命令");
-                Assert(stagger.Contains("\"channel\": 9") && stagger.Contains("\"phaseMs\": 800"),
-                    "错峰计划证据缺少通道相位");
+                Assert(stagger.Contains("\"schemaVersion\": 2") &&
+                       stagger.Contains("\"channel\": 9") &&
+                       stagger.Contains("\"batchOrdinal\": 2"),
+                    "错峰计划证据缺少固定批次身份");
                 Assert(timeline.Contains("OffHighPriority") &&
+                       timeline.Contains("BatchOrdinal") &&
                        timeline.Contains("12.345600") &&
                        timeline.Contains("NotMeasured"),
                     "DO时间线缺少命令、电流或物理状态语义");
@@ -5104,7 +5204,7 @@ namespace AdaptiveControlTests
 
             Assert(affected.Count == 1 && affected[0] == 8,
                 "硬故障停机范围扩展到了同组其他通道");
-            Assert(plan.Get(9).PhaseMs == 800,
+            Assert(plan.Get(9).PhaseMs == 1600,
                 "同组正常通道的原计划相位被硬故障策略改变");
         }
 

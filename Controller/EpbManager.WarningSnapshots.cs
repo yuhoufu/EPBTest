@@ -1293,10 +1293,7 @@ namespace Controller
                 $"\"protection\":{state.ProtectionTripped.ToString().ToLowerInvariant()}," +
                 $"\"telemetryUtc\":\"{state.TelemetryUtc:O}\"" + "}"));
             var sequence = Interlocked.Increment(ref context.SnapshotSequence);
-            var requiredFresh = string.Equals(
-                context.TriggerCode,
-                "DaqClockModelInvalid",
-                StringComparison.OrdinalIgnoreCase)
+            var requiredFresh = IsDaqClockRecoveryTrigger(context.TriggerCode)
                 ? _daqClockRecoveryFreshBatches
                 : _daqPersistenceRequiredFreshBatches;
             var incidentJson =

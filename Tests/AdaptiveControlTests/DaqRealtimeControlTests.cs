@@ -58,6 +58,9 @@ namespace AdaptiveControlTests
             Run("DAQ存活日志转换按批次关联与参与设备有界去重", DaqLivenessLogTransitionDedup, ref passed);
             Run("未带电DAQ回调空窗只记录一次且不触发恢复", UnenergizedDaqGapObservationPolicy, ref passed);
             Run("后台冻结边界结果逐项报告Published与Raw未闭合谓词", BackgroundDrainResultExplainsPendingPredicate, ref passed);
+            Run("圈封口使用Accepted而非滞后的DiskPublished且恢复冻结边界优先",
+                CycleEndBoundaryUsesAcceptedOrFrozenSequence,
+                ref passed);
             Run("恢复阶段只在终态导出完整重证据", IncidentSnapshotHeavyEvidencePolicy, ref passed);
             Run("百次事故症状共用容量2取证门且终态精确一次", IncidentEvidenceQueueIsBoundedAndCoalesced, ref passed);
             Run("DAQ取证乱序到达仍按根触发到终态导出", IncidentEvidenceQueueAcceptsOutOfOrderPhases, ref passed);
@@ -766,6 +769,9 @@ namespace AdaptiveControlTests
                 "短暂回调停顿仍被强制Stop/Start，未先复核已自行恢复的新鲜回调");
             Assert(EpbManager.RequiresDaqTaskRecreate("DaqClockModelInvalid"),
                 "时钟模型失效未要求DAQ任务重建");
+            Assert(EpbManager.RequiresDaqTaskRecreate("DaqWallClockStep") &&
+                   EpbManager.IsDaqClockRecoveryTrigger("DaqWallClockStep"),
+                "墙钟跳变未进入时钟代次重建和加严新鲜度验证");
         }
 
         private static void DaqSelfMaintenancePolicy()
@@ -4041,6 +4047,14 @@ namespace AdaptiveControlTests
             var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
             Assert(allocated <= 1024,
                 $"快速滤波稳态热路径产生持续托管分配：{allocated} bytes");
+        }
+
+        private static void CycleEndBoundaryUsesAcceptedOrFrozenSequence()
+        {
+            Assert(EpbManager.SelectAuthoritativeCycleEndSequence(1002, 1000) == 1002,
+                "普通圈仍用滞后的DiskPublished=1000封口，已接纳尾批1001/1002会丢失");
+            Assert(EpbManager.SelectAuthoritativeCycleEndSequence(1002, 1000, 998) == 998,
+                "DAQ恢复没有保持事故首次冻结的Accepted边界");
         }
 
         private static void StartupClassifierIgnoresDuplicateBatch()

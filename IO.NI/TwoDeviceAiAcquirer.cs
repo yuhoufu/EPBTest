@@ -3091,6 +3091,26 @@ namespace IO.NI
                 // 不得写快照、入队或给新任务 re-arm。
                 if (!IsCurrentGeneration(device, generation)) return;
                 int n = raw.GetLength(1);
+                if (wallClockStep != null)
+                {
+                    // 样本时间轴仍属于旧墙钟映射。该批不得继续进入控制/落盘；立即按
+                    // 软件时钟故障安全断能并重建 generation，避免后续圈被 UTC 边界截头。
+                    PublishQueueFullFault(
+                        device,
+                        generation,
+                        "DaqWallClockStep",
+                        "Control",
+                        0,
+                        string.Equals(device, "Dev1", StringComparison.OrdinalIgnoreCase)
+                            ? _controlRingDev1.Capacity
+                            : _controlRingDev2.Capacity,
+                        0,
+                        $"Device={device} Generation={generation} 检测到系统墙钟{wallClockStep.Direction}跳变" +
+                        $"{wallClockStep.StepMilliseconds:F3}ms；已丢弃映射不确定批次并安全重建DAQ时间代次。" +
+                        $"WallElapsedMs={wallClockStep.WallElapsedMilliseconds:F3} " +
+                        $"MonotonicElapsedMs={wallClockStep.MonotonicElapsedMilliseconds:F3}。");
+                    return;
+                }
 
                 // 同设备生产区必须严格串行。下一次读取只在控制批入环后 re-arm，
                 // 从结构上保证 SPSC 控制环只有一个活动生产者。
@@ -5096,7 +5116,8 @@ namespace IO.NI
                 latchedGeneration = ref isDev1
                     ? ref _controlInvariantFaultGenerationDev1
                     : ref _controlInvariantFaultGenerationDev2;
-            else if (string.Equals(code, "DaqClockModelInvalid", StringComparison.OrdinalIgnoreCase))
+            else if (string.Equals(code, "DaqClockModelInvalid", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(code, "DaqWallClockStep", StringComparison.OrdinalIgnoreCase))
                 latchedGeneration = ref isDev1
                     ? ref _clockFaultGenerationDev1
                     : ref _clockFaultGenerationDev2;

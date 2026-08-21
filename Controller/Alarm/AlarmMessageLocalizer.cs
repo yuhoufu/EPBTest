@@ -40,6 +40,7 @@ namespace Controller.Alarm
                 ["FastPathFilterStateInvalid"] = "快速滤波状态无效",
                 ["DaqSampleTimelineFuture"] = "采集样本时间轴异常超前",
                 ["DaqClockModelInvalid"] = "采集时钟模型正在自动恢复",
+                ["DaqWallClockStep"] = "系统时间跳变，采集时间轴正在自动重建",
                 ["DaqClockRecoveryFailed"] = "采集时钟自动恢复失败",
                 ["DaqClockRecoveryLimitExceeded"] = "采集时钟恢复次数达到安全上限",
                 ["DaqCallbackStale"] = "采集回调中断",

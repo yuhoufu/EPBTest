@@ -950,7 +950,8 @@ namespace Controller
                         sample.ValueBar,
                         sample.ValueBar,
                         item.PressureThresholdBar,
-                        double.NaN);
+                        double.NaN,
+                        DateTime.UtcNow);
                 }
 
                 state.Qualification = qualification;

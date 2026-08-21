@@ -11,6 +11,7 @@ using System.Globalization;
 using System.IO;
 using System.IO.MemoryMappedFiles;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -168,11 +169,19 @@ public sealed class EpbDiskWriter : IDisposable
     private sealed class EpbState
     {
         public readonly object Gate = new();
+        public readonly Queue<PreTriggerSample> PreTriggerSamples = new();
         public long CapacityRecords; // 文件可容纳记录数
         public int? CurrentCycle; // 正式圈号（null=未开圈）
         public int CurrentSampleIndex; // 当前圈内样本序号（0..）
         public DateTime CurrentCycleStartUtc;
         public DateTime? CurrentCycleEndUtc;
+        public bool SequenceBoundaryEnabled;
+        public string CurrentCycleDevice = string.Empty;
+        public long CurrentCycleGeneration;
+        public long CurrentCycleStartAfterSequence;
+        public long CurrentCycleLastSequence;
+        public long? CurrentCycleEndSequence;
+        public int CurrentCyclePreTriggerSamples;
         public DateTime LastProgressCheckpointUtc = DateTime.MinValue;
         public bool ActiveCycleLimitLatched;
         public bool FreeRunOn; // 是否开启 Free-Run
@@ -185,13 +194,46 @@ public sealed class EpbDiskWriter : IDisposable
         public long TotalWritten; // 已写入总条数（单调递增）
     }
 
+    private readonly struct PreTriggerSample
+    {
+        public PreTriggerSample(
+            string device,
+            long generation,
+            long sequence,
+            DateTime timestampUtc,
+            double current,
+            double pressure)
+        {
+            Device = device ?? string.Empty;
+            Generation = generation;
+            Sequence = sequence;
+            TimestampBinary = timestampUtc.ToLocalTime().ToBinary();
+            Current = current;
+            Pressure = pressure;
+        }
+
+        public string Device { get; }
+        public long Generation { get; }
+        public long Sequence { get; }
+        public long TimestampBinary { get; }
+        public double Current { get; }
+        public double Pressure { get; }
+    }
+
     private struct StateWriteSnapshot
     {
         public long TotalWritten;
         public int CurrentSampleIndex;
         public int FreeRunSampleIndex;
         public DateTime LastProgressCheckpointUtc;
+        public long CurrentCycleLastSequence;
+        public int CurrentCyclePreTriggerSamples;
     }
+
+    // 2 kHz 下保留 250 ms。缓存只在未开圈时更新，正式圈开始后原子写入圈头。
+    private const int PRE_TRIGGER_SAMPLE_CAPACITY = 500;
+    // 语义完整至少要求 200 ms 未上电证据；2 kHz 下为 400 点。
+    private const int MINIMUM_PRE_TRIGGER_SAMPLE_COUNT = 400;
 
     #endregion
 
@@ -506,9 +548,138 @@ public sealed class EpbDiskWriter : IDisposable
             s.CurrentSampleIndex = 0;
             s.CurrentCycleStartUtc = startUtc.ToUniversalTime();
             s.CurrentCycleEndUtc = null;
+            ResetSequenceBoundary(s);
             s.LastProgressCheckpointUtc = DateTime.MinValue;
             s.ActiveCycleLimitLatched = false;
         }
+    }
+
+    /// <summary>
+    /// 使用 DAQ 代次/批次序号原子开始正式圈。startAfterSequence 及以前的未上电缓存
+    /// 写入圈头；后续圈归属只按同一 generation 的 sequence 判断，不再比较墙钟 UTC。
+    /// </summary>
+    public void BeginCycleAtDaqBoundary(
+        int epbId,
+        int cycleNumber,
+        DateTime startUtc,
+        string device,
+        long generation,
+        long startAfterSequence)
+    {
+        if (string.IsNullOrWhiteSpace(device))
+            throw new ArgumentException("device is required", nameof(device));
+        if (generation < 0) throw new ArgumentOutOfRangeException(nameof(generation));
+        if (startAfterSequence < 0) throw new ArgumentOutOfRangeException(nameof(startAfterSequence));
+
+        var s = GetState(epbId);
+        lock (s.Gate)
+        {
+            if (s.CapacityRecords <= 0)
+                throw new InvalidOperationException("CapacityRecords must be positive.");
+            if (s.CurrentCycle.HasValue)
+                throw new InvalidOperationException(
+                    $"EPB[{epbId}] 圈 {s.CurrentCycle.Value} 尚未封存，不能开始圈 {cycleNumber}。");
+
+            var matching = s.PreTriggerSamples
+                .Where(sample =>
+                    sample.Generation == generation &&
+                    string.Equals(sample.Device, device, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            var effectiveBoundary = matching.Length == 0
+                ? startAfterSequence
+                : Math.Max(startAfterSequence, matching[matching.Length - 1].Sequence);
+            var startIndex = s.TotalWritten % s.CapacityRecords;
+            UpsertCycleStart(epbId, cycleNumber, startUtc.ToLocalTime(), startIndex);
+
+            s.CurrentCycle = cycleNumber;
+            s.CurrentSampleIndex = 0;
+            s.CurrentCycleStartUtc = startUtc.ToUniversalTime();
+            s.CurrentCycleEndUtc = null;
+            s.SequenceBoundaryEnabled = true;
+            s.CurrentCycleDevice = device;
+            s.CurrentCycleGeneration = generation;
+            s.CurrentCycleStartAfterSequence = effectiveBoundary;
+            s.CurrentCycleLastSequence = 0;
+            s.CurrentCycleEndSequence = null;
+            s.CurrentCyclePreTriggerSamples = 0;
+            s.LastProgressCheckpointUtc = DateTime.MinValue;
+            s.ActiveCycleLimitLatched = false;
+
+            if (matching.Length > 0)
+            {
+                var records = ArrayPool<SampleRecord>.Shared.Rent(matching.Length);
+                try
+                {
+                    for (var i = 0; i < matching.Length; i++)
+                    {
+                        records[i] = new SampleRecord
+                        {
+                            TimestampBinary = matching[i].TimestampBinary,
+                            CycleNumber = cycleNumber,
+                            SampleIndex = i,
+                            EpbCurrent = matching[i].Current,
+                            GroupPressure = matching[i].Pressure
+                        };
+                    }
+                    WriteRecordBatch(epbId, s, records, matching.Length);
+                    s.TotalWritten += matching.Length;
+                    s.CurrentSampleIndex = matching.Length;
+                    s.CurrentCyclePreTriggerSamples = matching.Length;
+                    s.CurrentCycleLastSequence = matching[matching.Length - 1].Sequence;
+                }
+                finally
+                {
+                    ArrayPool<SampleRecord>.Shared.Return(records, clearArray: false);
+                }
+            }
+            s.PreTriggerSamples.Clear();
+        }
+    }
+
+    private static void ResetSequenceBoundary(EpbState state)
+    {
+        state.SequenceBoundaryEnabled = false;
+        state.CurrentCycleDevice = string.Empty;
+        state.CurrentCycleGeneration = 0;
+        state.CurrentCycleStartAfterSequence = 0;
+        state.CurrentCycleLastSequence = 0;
+        state.CurrentCycleEndSequence = null;
+        state.CurrentCyclePreTriggerSamples = 0;
+    }
+
+    private static bool ValidateSequencedCycleSemantics(
+        EpbState state,
+        out string validationError)
+    {
+        validationError = string.Empty;
+        if (!state.SequenceBoundaryEnabled) return true;
+        if (state.CurrentCyclePreTriggerSamples < MINIMUM_PRE_TRIGGER_SAMPLE_COUNT)
+        {
+            validationError =
+                $"未上电预触发样本不足：Actual={state.CurrentCyclePreTriggerSamples} " +
+                $"Required={MINIMUM_PRE_TRIGGER_SAMPLE_COUNT}。";
+            return false;
+        }
+        if (!state.CurrentCycleEndSequence.HasValue)
+        {
+            validationError = "缺少权威DAQ圈尾序号。";
+            return false;
+        }
+        if (state.CurrentCycleEndSequence.Value < state.CurrentCycleStartAfterSequence)
+        {
+            validationError =
+                $"DAQ圈尾早于圈头：StartAfter={state.CurrentCycleStartAfterSequence} " +
+                $"End={state.CurrentCycleEndSequence.Value}。";
+            return false;
+        }
+        if (state.CurrentCycleLastSequence < state.CurrentCycleEndSequence.Value)
+        {
+            validationError =
+                $"已接纳圈尾尚未完整写入：LastWritten={state.CurrentCycleLastSequence} " +
+                $"RequiredEnd={state.CurrentCycleEndSequence.Value}。";
+            return false;
+        }
+        return true;
     }
 
     /// <summary>
@@ -594,6 +765,7 @@ public sealed class EpbDiskWriter : IDisposable
             s.CurrentSampleIndex = 0;
             s.CurrentCycleStartUtc = startUtc.ToUniversalTime();
             s.CurrentCycleEndUtc = null;
+            ResetSequenceBoundary(s);
             s.LastProgressCheckpointUtc = DateTime.MinValue;
             s.ActiveCycleLimitLatched = false;
             return cycleNumber;
@@ -613,6 +785,7 @@ public sealed class EpbDiskWriter : IDisposable
             s.CurrentCycle = null;
             s.CurrentSampleIndex = 0;
             s.CurrentCycleEndUtc = null;
+            ResetSequenceBoundary(s);
             s.LastProgressCheckpointUtc = DateTime.MinValue;
             s.ActiveCycleLimitLatched = false;
 
@@ -652,6 +825,7 @@ public sealed class EpbDiskWriter : IDisposable
             s.CurrentCycle = null;
             s.CurrentSampleIndex = 0;
             s.CurrentCycleEndUtc = null;
+            ResetSequenceBoundary(s);
             s.LastProgressCheckpointUtc = DateTime.MinValue;
             s.ActiveCycleLimitLatched = false;
         }
@@ -776,6 +950,25 @@ public sealed class EpbDiskWriter : IDisposable
                 evidence.WasClaimed = true;
                 evidence.FinalStatus = normalizedStatus;
                 evidence.StorageFormat = storage.ToString();
+                evidence.SampleClockDevice = s.CurrentCycleDevice;
+                evidence.SampleClockGeneration = s.CurrentCycleGeneration;
+                evidence.CycleStartAfterSequence = s.CurrentCycleStartAfterSequence;
+                evidence.CycleEndSequence = s.CurrentCycleEndSequence ?? s.CurrentCycleLastSequence;
+                evidence.LastWrittenSequence = s.CurrentCycleLastSequence;
+                evidence.PreTriggerSampleCount = s.CurrentCyclePreTriggerSamples;
+                evidence.RequiredPreTriggerSampleCount = s.SequenceBoundaryEnabled
+                    ? MINIMUM_PRE_TRIGGER_SAMPLE_COUNT
+                    : 0;
+                evidence.SemanticEvidenceComplete = ValidateSequencedCycleSemantics(
+                    s,
+                    out var semanticValidationError);
+                if (evidence.IsValid && !evidence.SemanticEvidenceComplete)
+                {
+                    evidence.IsValid = false;
+                    evidence.ValidationError =
+                        $"EPB[{epbId}] Cycle={cycleNumber} 文件存在但波形语义不完整：" +
+                        semanticValidationError;
+                }
                 if (!evidence.IsValid)
                     throw new InvalidDataException(evidence.ValidationError);
 
@@ -821,6 +1014,7 @@ public sealed class EpbDiskWriter : IDisposable
                     s.CurrentCycle = null;
                     s.CurrentSampleIndex = 0;
                     s.CurrentCycleEndUtc = null;
+                    ResetSequenceBoundary(s);
                     s.LastProgressCheckpointUtc = DateTime.MinValue;
                     s.ActiveCycleLimitLatched = false;
                 }
@@ -1146,6 +1340,7 @@ public sealed class EpbDiskWriter : IDisposable
             s.CurrentCycle = null;
             s.CurrentSampleIndex = 0;
             s.CurrentCycleEndUtc = null;
+            ResetSequenceBoundary(s);
             s.LastProgressCheckpointUtc = DateTime.MinValue;
             s.ActiveCycleLimitLatched = false;
         }
@@ -1310,6 +1505,130 @@ public sealed class EpbDiskWriter : IDisposable
         }
     }
 
+    private void WriteSequencedBatch(
+        int epbId,
+        string device,
+        long generation,
+        long sequence,
+        DateTime[] tsUtc,
+        double[] epbCurrents,
+        double[] groupPressures,
+        int count)
+    {
+        if (tsUtc == null || epbCurrents == null || groupPressures == null)
+            throw new ArgumentNullException("tsUtc/epbCurrents/groupPressures");
+        if (string.IsNullOrWhiteSpace(device))
+            throw new ArgumentException("device is required", nameof(device));
+        if (generation < 0 || sequence <= 0)
+            throw new ArgumentOutOfRangeException(nameof(sequence));
+        if (count < 0 || count > tsUtc.Length || count > epbCurrents.Length || count > groupPressures.Length)
+            throw new ArgumentOutOfRangeException(nameof(count));
+
+        var state = GetState(epbId);
+        lock (state.Gate)
+        {
+            if (!state.CurrentCycle.HasValue)
+            {
+                BufferPreTriggerSamples(
+                    state,
+                    device,
+                    generation,
+                    sequence,
+                    tsUtc,
+                    epbCurrents,
+                    groupPressures,
+                    count);
+                if (!state.FreeRunOn) return;
+                WriteBatch(epbId, tsUtc, epbCurrents, groupPressures, count);
+                return;
+            }
+
+            if (!state.SequenceBoundaryEnabled)
+            {
+                WriteBatch(epbId, tsUtc, epbCurrents, groupPressures, count);
+                return;
+            }
+            if (!string.Equals(state.CurrentCycleDevice, device, StringComparison.OrdinalIgnoreCase) ||
+                state.CurrentCycleGeneration != generation)
+                throw new InvalidDataException(
+                    $"EPB[{epbId}] 圈跨越DAQ代次或设备。" +
+                    $"Expected={state.CurrentCycleDevice}/{state.CurrentCycleGeneration} " +
+                    $"Actual={device}/{generation} Sequence={sequence}。");
+            if (state.CurrentCycleEndSequence.HasValue && sequence > state.CurrentCycleEndSequence.Value)
+                return;
+            if (state.CurrentCycleLastSequence > 0 && sequence <= state.CurrentCycleLastSequence)
+                return;
+            if (state.CurrentCycleLastSequence > 0 && sequence != state.CurrentCycleLastSequence + 1)
+                throw new InvalidDataException(
+                    $"EPB[{epbId}] 圈内DAQ批次序号不连续。" +
+                    $"Previous={state.CurrentCycleLastSequence} Current={sequence}。");
+            if (state.ActiveCycleLimitLatched || count == 0) return;
+            if (_policy.MaxActiveCycleRecords > 0 &&
+                state.CurrentSampleIndex + count > _policy.MaxActiveCycleRecords)
+            {
+                state.ActiveCycleLimitLatched = true;
+                throw new ActiveCycleDataLimitExceededException(
+                    epbId,
+                    state.CurrentCycle.Value,
+                    _policy.MaxActiveCycleRecords);
+            }
+
+            var cycle = state.CurrentCycle.Value;
+            var firstSampleIndex = state.CurrentSampleIndex;
+            var records = ArrayPool<SampleRecord>.Shared.Rent(count);
+            try
+            {
+                for (var i = 0; i < count; i++)
+                {
+                    records[i] = new SampleRecord
+                    {
+                        TimestampBinary = tsUtc[i].ToLocalTime().ToBinary(),
+                        CycleNumber = cycle,
+                        SampleIndex = firstSampleIndex + i,
+                        EpbCurrent = epbCurrents[i],
+                        GroupPressure = groupPressures[i]
+                    };
+                }
+                WriteRecordBatch(epbId, state, records, count);
+                state.CurrentSampleIndex += count;
+                state.TotalWritten += count;
+                state.CurrentCycleLastSequence = sequence;
+                if (sequence <= state.CurrentCycleStartAfterSequence)
+                    state.CurrentCyclePreTriggerSamples += count;
+                if (ShouldCheckpointCycleProgress(state, tsUtc[count - 1], commit: true))
+                    UpdateCycleProgress(epbId, cycle, state.CurrentSampleIndex, tsUtc[count - 1]);
+            }
+            finally
+            {
+                ArrayPool<SampleRecord>.Shared.Return(records, clearArray: false);
+            }
+        }
+    }
+
+    private static void BufferPreTriggerSamples(
+        EpbState state,
+        string device,
+        long generation,
+        long sequence,
+        DateTime[] timestampsUtc,
+        double[] currents,
+        double[] pressures,
+        int count)
+    {
+        for (var i = 0; i < count; i++)
+        {
+            state.PreTriggerSamples.Enqueue(new PreTriggerSample(
+                device,
+                generation,
+                sequence,
+                timestampsUtc[i],
+                currents[i],
+                pressures[i]));
+            while (state.PreTriggerSamples.Count > PRE_TRIGGER_SAMPLE_CAPACITY)
+                state.PreTriggerSamples.Dequeue();
+        }
+    }
+
     public void WriteDeviceBatch(
         DateTime[] timestampsUtc,
         IReadOnlyList<EpbChannelDiskBatch> channels,
@@ -1331,6 +1650,48 @@ public sealed class EpbDiskWriter : IDisposable
     }
 
     public void WriteDeviceBatch(
+        DateTime[] timestampsUtc,
+        EpbChannelDiskBatch[] channels,
+        int channelCount,
+        int sampleCount)
+        => WriteDeviceBatchCore(
+            null,
+            timestampsUtc,
+            channels,
+            channelCount,
+            sampleCount);
+
+    public void WriteDeviceBatch(
+        string device,
+        long generation,
+        long sequence,
+        DateTime[] timestampsUtc,
+        EpbChannelDiskBatch[] channels,
+        int channelCount,
+        int sampleCount)
+        => WriteDeviceBatchCore(
+            new DeviceBatchBoundary(device, generation, sequence),
+            timestampsUtc,
+            channels,
+            channelCount,
+            sampleCount);
+
+    private readonly struct DeviceBatchBoundary
+    {
+        public DeviceBatchBoundary(string device, long generation, long sequence)
+        {
+            Device = device;
+            Generation = generation;
+            Sequence = sequence;
+        }
+
+        public string Device { get; }
+        public long Generation { get; }
+        public long Sequence { get; }
+    }
+
+    private void WriteDeviceBatchCore(
+        DeviceBatchBoundary? boundary,
         DateTime[] timestampsUtc,
         EpbChannelDiskBatch[] channels,
         int channelCount,
@@ -1370,7 +1731,9 @@ public sealed class EpbDiskWriter : IDisposable
                     TotalWritten = state.TotalWritten,
                     CurrentSampleIndex = state.CurrentSampleIndex,
                     FreeRunSampleIndex = state.FreeRunSampleIndex,
-                    LastProgressCheckpointUtc = state.LastProgressCheckpointUtc
+                    LastProgressCheckpointUtc = state.LastProgressCheckpointUtc,
+                    CurrentCycleLastSequence = state.CurrentCycleLastSequence,
+                    CurrentCyclePreTriggerSamples = state.CurrentCyclePreTriggerSamples
                 };
                 lockedStates[acquired++] = state;
             }
@@ -1402,7 +1765,18 @@ public sealed class EpbDiskWriter : IDisposable
                         for (var i = 0; i < channelCount; i++)
                         {
                             var channel = channels[i];
-                            WriteBatch(channel.EpbId, timestampsUtc, channel.Currents, channel.Pressures, sampleCount);
+                            if (boundary.HasValue)
+                                WriteSequencedBatch(
+                                    channel.EpbId,
+                                    boundary.Value.Device,
+                                    boundary.Value.Generation,
+                                    boundary.Value.Sequence,
+                                    timestampsUtc,
+                                    channel.Currents,
+                                    channel.Pressures,
+                                    sampleCount);
+                            else
+                                WriteBatch(channel.EpbId, timestampsUtc, channel.Currents, channel.Pressures, sampleCount);
                         }
                         transaction.Commit();
                     }
@@ -1417,7 +1791,18 @@ public sealed class EpbDiskWriter : IDisposable
                 for (var i = 0; i < channelCount; i++)
                 {
                     var channel = channels[i];
-                    WriteBatch(channel.EpbId, timestampsUtc, channel.Currents, channel.Pressures, sampleCount);
+                    if (boundary.HasValue)
+                        WriteSequencedBatch(
+                            channel.EpbId,
+                            boundary.Value.Device,
+                            boundary.Value.Generation,
+                            boundary.Value.Sequence,
+                            timestampsUtc,
+                            channel.Currents,
+                            channel.Pressures,
+                            sampleCount);
+                    else
+                        WriteBatch(channel.EpbId, timestampsUtc, channel.Currents, channel.Pressures, sampleCount);
                 }
             }
         }
@@ -1432,6 +1817,8 @@ public sealed class EpbDiskWriter : IDisposable
                 lockedStates[i].CurrentSampleIndex = snapshots[i].CurrentSampleIndex;
                 lockedStates[i].FreeRunSampleIndex = snapshots[i].FreeRunSampleIndex;
                 lockedStates[i].LastProgressCheckpointUtc = snapshots[i].LastProgressCheckpointUtc;
+                lockedStates[i].CurrentCycleLastSequence = snapshots[i].CurrentCycleLastSequence;
+                lockedStates[i].CurrentCyclePreTriggerSamples = snapshots[i].CurrentCyclePreTriggerSamples;
             }
             throw;
         }
@@ -1474,6 +1861,38 @@ public sealed class EpbDiskWriter : IDisposable
                     cutoffUtc < state.CurrentCycleEndUtc.Value)
                     state.CurrentCycleEndUtc = cutoffUtc;
             }
+        }
+    }
+
+    public void SealCycleWindowAtDaqBoundary(
+        int epbId,
+        int cycleNumber,
+        DateTime endUtc,
+        string device,
+        long generation,
+        long endSequence)
+    {
+        var state = GetState(epbId);
+        lock (state.Gate)
+        {
+            if (state.CurrentCycle != cycleNumber) return;
+            if (!state.SequenceBoundaryEnabled)
+            {
+                SealCycleWindow(epbId, cycleNumber, endUtc);
+                return;
+            }
+            if (!string.Equals(state.CurrentCycleDevice, device, StringComparison.OrdinalIgnoreCase) ||
+                state.CurrentCycleGeneration != generation)
+                throw new InvalidDataException(
+                    $"EPB[{epbId}] 圈封口代次不一致。" +
+                    $"Expected={state.CurrentCycleDevice}/{state.CurrentCycleGeneration} " +
+                    $"Actual={device}/{generation}。");
+            var bounded = Math.Max(0, endSequence);
+            if (!state.CurrentCycleEndSequence.HasValue || bounded < state.CurrentCycleEndSequence.Value)
+                state.CurrentCycleEndSequence = bounded;
+            var cutoffUtc = endUtc.ToUniversalTime();
+            if (!state.CurrentCycleEndUtc.HasValue || cutoffUtc < state.CurrentCycleEndUtc.Value)
+                state.CurrentCycleEndUtc = cutoffUtc;
         }
     }
 
@@ -1596,6 +2015,12 @@ public sealed class EpbDiskWriter : IDisposable
                 var latestStorage = NormalizeStorageLevel(_policy.LatestStorageLevel, StorageFormatLevel.CsvOnly);
                 ExportCycleList(epbId, latestList, staging, latestStorage);
                 ValidateExportDirectory(epbId, latestList, staging, latestStorage);
+                WriteLatestManifest(
+                    staging,
+                    epbId,
+                    latestList,
+                    latestStorage,
+                    requiredTerminalCycleNumber);
                 Directory.Move(staging, final);
                 published = true;
             }
@@ -1608,6 +2033,70 @@ public sealed class EpbDiskWriter : IDisposable
             }
         }
         if (published) QueueLatestPackageRetention(epbId);
+    }
+
+    private static void WriteLatestManifest(
+        string directory,
+        int epbId,
+        IReadOnlyList<CycleInfo> cycles,
+        StorageFormatLevel storage,
+        int? requiredTerminalCycleNumber)
+    {
+        var path = Path.Combine(directory, "latest-manifest.json");
+        WriteAtomically(path, tempPath =>
+        {
+            var json = new StringBuilder();
+            json.AppendLine("{");
+            json.AppendLine("  \"schemaVersion\": 1,");
+            json.AppendLine("  \"snapshotState\": \"Final\",");
+            json.AppendLine($"  \"generatedUtc\": \"{DateTime.UtcNow:O}\",");
+            json.AppendLine($"  \"epbId\": {epbId},");
+            json.AppendLine($"  \"storageFormat\": \"{storage}\",");
+            json.AppendLine($"  \"requiredTerminalCycle\": {(requiredTerminalCycleNumber?.ToString(CultureInfo.InvariantCulture) ?? "null")},");
+            json.AppendLine("  \"cycles\": [");
+            for (var i = 0; i < cycles.Count; i++)
+            {
+                var cycle = cycles[i];
+                var files = new List<string>();
+                if (HasCsv(storage))
+                    files.Add($"EPB{epbId}_Cycle_{cycle.CycleNumber:D6}.csv");
+                if (HasBin(storage))
+                    files.Add($"EPB{epbId}_Cycle_{cycle.CycleNumber:D6}.bin");
+                json.Append("    {");
+                json.Append($"\"cycleNumber\": {cycle.CycleNumber}, ");
+                json.Append($"\"status\": \"{EscapeJson(cycle.Status)}\", ");
+                json.Append($"\"sampleCount\": {cycle.SampleCount}, ");
+                json.Append("\"files\": [");
+                for (var fileIndex = 0; fileIndex < files.Count; fileIndex++)
+                {
+                    var file = files[fileIndex];
+                    json.Append(
+                        $"{{\"name\": \"{file}\", \"sha256\": \"{ComputeSha256(Path.Combine(directory, file))}\"}}");
+                    if (fileIndex < files.Count - 1) json.Append(", ");
+                }
+                json.Append("]}");
+                json.AppendLine(i < cycles.Count - 1 ? "," : string.Empty);
+            }
+            json.AppendLine("  ]");
+            json.AppendLine("}");
+            File.WriteAllText(tempPath, json.ToString(), new UTF8Encoding(false));
+        });
+    }
+
+    private static string ComputeSha256(string path)
+    {
+        using var algorithm = SHA256.Create();
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        return string.Concat(algorithm.ComputeHash(stream).Select(value => value.ToString("x2")));
+    }
+
+    private static string EscapeJson(string value)
+    {
+        return (value ?? string.Empty)
+            .Replace("\\", "\\\\")
+            .Replace("\"", "\\\"")
+            .Replace("\r", "\\r")
+            .Replace("\n", "\\n");
     }
 
     private bool HasMatchingLatestPackage(
@@ -1635,6 +2124,15 @@ public sealed class EpbDiskWriter : IDisposable
         {
             try
             {
+                // 旧版本没有最终态 manifest，不能作为“相同停止证据包”复用，
+                // 否则升级后仍可能把缺少终止语义的临时包误认为最终包。
+                var manifestPath = Path.Combine(directory, "latest-manifest.json");
+                if (!File.Exists(manifestPath)) continue;
+                var manifest = File.ReadAllText(manifestPath);
+                if (manifest.IndexOf(
+                        "\"snapshotState\": \"Final\"",
+                        StringComparison.Ordinal) < 0)
+                    continue;
                 if (requireCsv && Directory.GetFiles(directory, "*.csv", SearchOption.TopDirectoryOnly).Length < cycles.Count ||
                     requireBin && Directory.GetFiles(directory, "*.bin", SearchOption.TopDirectoryOnly).Length < cycles.Count)
                     continue;
@@ -3320,6 +3818,14 @@ public sealed class AlarmCycleSnapshotEvidence
     public string StorageFormat { get; set; }
     public string FinalStatus { get; set; }
     public string ValidationError { get; set; }
+    public string SampleClockDevice { get; set; }
+    public long SampleClockGeneration { get; set; }
+    public long CycleStartAfterSequence { get; set; }
+    public long CycleEndSequence { get; set; }
+    public long LastWrittenSequence { get; set; }
+    public int PreTriggerSampleCount { get; set; }
+    public int RequiredPreTriggerSampleCount { get; set; }
+    public bool SemanticEvidenceComplete { get; set; }
 }
 
 #region 圈记录器接口与适配器
@@ -3420,6 +3926,38 @@ public interface ICountedBatchedEpbCycleRecorder : IBatchedEpbCycleRecorder
         EpbChannelDiskBatch[] channels,
         int channelCount,
         int sampleCount);
+}
+
+/// <summary>
+/// 内建 Recorder 的权威 DAQ 圈边界扩展。UTC 仅作审计；样本归属由
+/// device/generation/sequence 决定，并保证圈头包含未上电预触发样本。
+/// </summary>
+public interface ISequencedEpbCycleRecorder : ICountedBatchedEpbCycleRecorder
+{
+    void BeginCycleAtDaqBoundary(
+        int epbId,
+        int cycleNumber,
+        DateTime startUtc,
+        string device,
+        long generation,
+        long startAfterSequence);
+
+    void WriteDeviceBatch(
+        string device,
+        long generation,
+        long sequence,
+        DateTime[] timestampsUtc,
+        EpbChannelDiskBatch[] channels,
+        int channelCount,
+        int sampleCount);
+
+    void SealCycleWindowAtDaqBoundary(
+        int epbId,
+        int cycleNumber,
+        DateTime endUtc,
+        string device,
+        long generation,
+        long endSequence);
 }
 
 public struct EpbChannelDiskBatch
@@ -3587,7 +4125,7 @@ public interface IMechanicalCycleRecorder
 /// <summary>
 ///     将 EpbDiskWriter 适配为 IEpbCycleRecorder，避免 EpbManager 直接依赖具体类。
 /// </summary>
-public sealed class DiskWriterRecorderAdapter : IEpbCycleRecorder, ICountedBatchedEpbCycleRecorder, ICycleEvidenceExporter, ICycleAttemptEvidenceExporter, IStopRecentCycleEvidenceExporter, IAlarmRecentCycleEvidenceExporter, IActiveCycleLimitConfigurator, IRecoverableCycleRecorder, IMechanicalCycleRecorder
+public sealed class DiskWriterRecorderAdapter : IEpbCycleRecorder, ISequencedEpbCycleRecorder, ICycleEvidenceExporter, ICycleAttemptEvidenceExporter, IStopRecentCycleEvidenceExporter, IAlarmRecentCycleEvidenceExporter, IActiveCycleLimitConfigurator, IRecoverableCycleRecorder, IMechanicalCycleRecorder
 {
     private readonly EpbDiskWriter _writer;
 
@@ -3625,6 +4163,36 @@ public sealed class DiskWriterRecorderAdapter : IEpbCycleRecorder, ICountedBatch
     public void SealCycleWindow(int epbId, int cycleNumber, DateTime endUtc)
         => _writer.SealCycleWindow(epbId, cycleNumber, endUtc);
 
+    public void BeginCycleAtDaqBoundary(
+        int epbId,
+        int cycleNumber,
+        DateTime startUtc,
+        string device,
+        long generation,
+        long startAfterSequence)
+        => _writer.BeginCycleAtDaqBoundary(
+            epbId,
+            cycleNumber,
+            startUtc,
+            device,
+            generation,
+            startAfterSequence);
+
+    public void SealCycleWindowAtDaqBoundary(
+        int epbId,
+        int cycleNumber,
+        DateTime endUtc,
+        string device,
+        long generation,
+        long endSequence)
+        => _writer.SealCycleWindowAtDaqBoundary(
+            epbId,
+            cycleNumber,
+            endUtc,
+            device,
+            generation,
+            endSequence);
+
     public void WriteDeviceBatch(
         DateTime[] timestampsUtc,
         IReadOnlyList<EpbChannelDiskBatch> channels,
@@ -3637,6 +4205,23 @@ public sealed class DiskWriterRecorderAdapter : IEpbCycleRecorder, ICountedBatch
         int channelCount,
         int sampleCount)
         => _writer.WriteDeviceBatch(timestampsUtc, channels, channelCount, sampleCount);
+
+    public void WriteDeviceBatch(
+        string device,
+        long generation,
+        long sequence,
+        DateTime[] timestampsUtc,
+        EpbChannelDiskBatch[] channels,
+        int channelCount,
+        int sampleCount)
+        => _writer.WriteDeviceBatch(
+            device,
+            generation,
+            sequence,
+            timestampsUtc,
+            channels,
+            channelCount,
+            sampleCount);
 
     public int GetCurrentCycleSampleCount(int epbId)
     {

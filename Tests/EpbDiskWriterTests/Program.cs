@@ -37,6 +37,13 @@ namespace EpbDiskWriterTests
                 if (args.Length == 2 &&
                     args[0].Equals("--inspect-index", StringComparison.OrdinalIgnoreCase))
                     return InspectIndex(args[1]);
+                if (args.Length == 1 &&
+                    args[0].Equals("--sequence-boundary", StringComparison.OrdinalIgnoreCase))
+                {
+                    Run("DAQ序号圈边界抵抗1.5秒墙钟偏移且保留预触发", SequencedBoundaryKeepsPreTriggerAcrossWallClockSkew);
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
 
                 Run("重启后写指针连续", RestartRestoresWritePosition);
                 Run("running 圈重启后不覆盖", RestartAfterRunningCycle);
@@ -66,6 +73,9 @@ namespace EpbDiskWriterTests
                 Run("连续100次活动圈超限均原子作废且无running遗留", HundredActiveCycleLimitFaultsLeaveNoRunningRows);
                 Run("批量时间窗边界与重启恢复", BatchedWindowBoundarySurvivesRestart);
                 Run("设备多通道批次事务写入", DeviceBatchWritesMultipleChannels);
+                Run("DAQ序号圈边界抵抗1.5秒墙钟偏移且保留预触发", SequencedBoundaryKeepsPreTriggerAcrossWallClockSkew);
+                Run("圈封口后仍接纳冻结Accepted边界内的延迟尾批", SequencedBoundaryIncludesDelayedAcceptedTail);
+                Run("不足200ms预触发不得标记语义完整", InsufficientPreTriggerIsEvidenceIncomplete);
                 Run("Latest并发导出原子且无临时残留", ConcurrentLatestExportsAreAtomic);
                 Run("Latest每通道计数收敛且Unlimited不删除", LatestPackageRetentionModes);
                 Run("暂停最近10圈重复请求只生成一个证据包", PauseLatestExportIsIdempotent);
@@ -367,6 +377,7 @@ namespace EpbDiskWriterTests
                     WriteCompletedCycle(writer, 1, 2, 2, DateTime.UtcNow.AddSeconds(10));
                     var exportDir = Path.Combine(root, "export");
                     writer.ExportLatestCyclesTo(1, 10, exportDir, true);
+                    writer.ExportCycleAttemptTo(1, 1, exportDir, true, true);
                     AssertCsvCycle(exportDir, 1, 1, 3);
                     AssertCsvCycle(exportDir, 1, 2, 2);
                 }
@@ -387,7 +398,7 @@ namespace EpbDiskWriterTests
                 using (var writer = new EpbDiskWriter(policy))
                 {
                     var affected = writer.AbortInterruptedCyclesForSoftwareRecovery(DateTime.UtcNow);
-                    Assert(affected == 1, "Watchdog 接管没有且只作废一个事故圈");
+                    Assert(affected == 0, "启动构造已原子作废事故圈后Watchdog不应重复修改");
                     Assert(writer.AbortInterruptedCyclesForSoftwareRecovery(DateTime.UtcNow) == 0,
                         "Watchdog 接管重复调用再次修改事故圈");
                     using var connection = new SQLiteConnection(
@@ -396,8 +407,8 @@ namespace EpbDiskWriterTests
                     using var command = connection.CreateCommand();
                     command.CommandText = "SELECT status FROM epb_cycles WHERE epb_id=1 AND cycle_number=7;";
                     Assert(string.Equals(Convert.ToString(command.ExecuteScalar()),
-                            "AbortedBySoftwareRecovery", StringComparison.OrdinalIgnoreCase),
-                        "Watchdog 接管事故圈终态不正确");
+                            "aborted_on_startup", StringComparison.OrdinalIgnoreCase),
+                        "启动恢复事故圈终态不正确");
                 }
             });
         }
@@ -1364,6 +1375,202 @@ VALUES(4,-1,'2026-08-16T12:00:00','2026-08-16T12:00:01',0,3,'learning_completed'
             });
         }
 
+        private static void SequencedBoundaryKeepsPreTriggerAcrossWallClockSkew()
+        {
+            WithRoot(root =>
+            {
+                var policy = NewPolicy(root);
+                policy.AlarmStorageLevel = StorageFormatLevel.CsvOnly;
+                using var writer = new EpbDiskWriter(policy);
+                var sampleUtc = new DateTime(2026, 8, 21, 9, 33, 16, DateTimeKind.Utc);
+                var timestamps = Enumerable.Range(0, 400)
+                    .Select(index => sampleUtc.AddTicks(index * 5000L))
+                    .ToArray();
+                var baseline = Enumerable.Repeat(0.05, 400).ToArray();
+                var pressure = Enumerable.Repeat(100.0, 400).ToArray();
+                var channels = new[]
+                {
+                    new EpbChannelDiskBatch(10, baseline, pressure)
+                };
+                writer.WriteDeviceBatch("Dev2", 7, 100, timestamps, channels, 1, 400);
+
+                var wallClockStart = sampleUtc.AddMilliseconds(1500);
+                writer.BeginCycleAtDaqBoundary(10, 85993, wallClockStart, "Dev2", 7, 100);
+                var liveTimestamps = Enumerable.Range(0, 20)
+                    .Select(index => sampleUtc.AddMilliseconds(200).AddTicks(index * 5000L))
+                    .ToArray();
+                var liveCurrent = Enumerable.Range(0, 20)
+                    .Select(index => 2.0 + index * 0.5)
+                    .ToArray();
+                writer.WriteDeviceBatch(
+                    "Dev2",
+                    7,
+                    101,
+                    liveTimestamps,
+                    new[] { new EpbChannelDiskBatch(10, liveCurrent, pressure) },
+                    1,
+                    20);
+                writer.SealCycleWindowAtDaqBoundary(
+                    10,
+                    85993,
+                    wallClockStart.AddSeconds(1),
+                    "Dev2",
+                    7,
+                    101);
+                var evidence = writer.SealAndExportAlarmCycle(
+                    10,
+                    85993,
+                    Path.Combine(root, "alarm"),
+                    wallClockStart.AddSeconds(1));
+
+                Assert(evidence.IsValid && evidence.SemanticEvidenceComplete,
+                    "序号边界圈未通过预触发语义完整性校验：" + evidence.ValidationError);
+                Assert(evidence.SampleCount == 420 && evidence.PreTriggerSampleCount == 400 &&
+                       evidence.RequiredPreTriggerSampleCount == 400,
+                    $"序号边界未保留200ms预触发或错误截样：" +
+                    $"Total={evidence.SampleCount} Pre={evidence.PreTriggerSampleCount} " +
+                    $"Required={evidence.RequiredPreTriggerSampleCount}");
+                Assert(evidence.FirstSampleUtc.HasValue &&
+                       evidence.FirstSampleUtc.Value < wallClockStart.AddSeconds(-1),
+                    "样本仍按跳变后的墙钟开始时间被截断");
+                Assert(evidence.CycleStartAfterSequence == 100 && evidence.CycleEndSequence == 101 &&
+                       evidence.LastWrittenSequence == 101,
+                    "报警证据未记录权威DAQ序号边界");
+            });
+        }
+
+        private static void SequencedBoundaryIncludesDelayedAcceptedTail()
+        {
+            WithRoot(root =>
+            {
+                var policy = NewPolicy(root);
+                policy.AlarmStorageLevel = StorageFormatLevel.CsvOnly;
+                using var writer = new EpbDiskWriter(policy);
+                var utc = new DateTime(2026, 8, 21, 10, 0, 0, DateTimeKind.Utc);
+                var preTs = Enumerable.Range(0, 400)
+                    .Select(index => utc.AddTicks(index * 5000L))
+                    .ToArray();
+                var preCurrent = Enumerable.Repeat(0.04, 400).ToArray();
+                var prePressure = Enumerable.Repeat(100.0, 400).ToArray();
+                writer.WriteDeviceBatch(
+                    "Dev2",
+                    9,
+                    100,
+                    preTs,
+                    new[] { new EpbChannelDiskBatch(10, preCurrent, prePressure) },
+                    1,
+                    400);
+                writer.BeginCycleAtDaqBoundary(10, 90001, utc.AddSeconds(1), "Dev2", 9, 100);
+
+                void WriteLive(long sequence, double current)
+                {
+                    var ts = Enumerable.Range(0, 20)
+                        .Select(index => utc.AddSeconds(1).AddMilliseconds((sequence - 101) * 10)
+                            .AddTicks(index * 5000L))
+                        .ToArray();
+                    writer.WriteDeviceBatch(
+                        "Dev2",
+                        9,
+                        sequence,
+                        ts,
+                        new[]
+                        {
+                            new EpbChannelDiskBatch(
+                                10,
+                                Enumerable.Repeat(current, 20).ToArray(),
+                                Enumerable.Repeat(100.0, 20).ToArray())
+                        },
+                        1,
+                        20);
+                }
+
+                WriteLive(101, 2.0);
+                // 模拟控制链已接纳到103，但落盘链当前只发布到101：先冻结103，
+                // 102/103随后到达仍必须归入本圈；104属于截止后批次，必须排除。
+                writer.SealCycleWindowAtDaqBoundary(
+                    10,
+                    90001,
+                    utc.AddSeconds(2),
+                    "Dev2",
+                    9,
+                    103);
+                WriteLive(102, 8.0);
+                WriteLive(103, 14.5);
+                WriteLive(104, 0.0);
+
+                var evidence = writer.SealAndExportAlarmCycle(
+                    10,
+                    90001,
+                    Path.Combine(root, "delayed-tail"),
+                    utc.AddSeconds(2));
+                Assert(evidence.IsValid && evidence.SemanticEvidenceComplete,
+                    "冻结Accepted边界内的延迟尾批未形成完整证据：" + evidence.ValidationError);
+                Assert(evidence.SampleCount == 460,
+                    $"延迟尾批未完整纳入或截止后批次越界：SampleCount={evidence.SampleCount}");
+                Assert(evidence.CycleEndSequence == 103 && evidence.LastWrittenSequence == 103,
+                    $"圈尾水位不一致：End={evidence.CycleEndSequence} " +
+                    $"LastWritten={evidence.LastWrittenSequence}");
+            });
+        }
+
+        private static void InsufficientPreTriggerIsEvidenceIncomplete()
+        {
+            WithRoot(root =>
+            {
+                var policy = NewPolicy(root);
+                policy.AlarmStorageLevel = StorageFormatLevel.CsvOnly;
+                using var writer = new EpbDiskWriter(policy);
+                var utc = DateTime.UtcNow;
+                var timestamps = Enumerable.Range(0, 20)
+                    .Select(index => utc.AddTicks(index * 5000L))
+                    .ToArray();
+                var pressure = Enumerable.Repeat(100.0, 20).ToArray();
+                writer.WriteDeviceBatch(
+                    "Dev2",
+                    11,
+                    200,
+                    timestamps,
+                    new[]
+                    {
+                        new EpbChannelDiskBatch(10, Enumerable.Repeat(0.04, 20).ToArray(), pressure)
+                    },
+                    1,
+                    20);
+                writer.BeginCycleAtDaqBoundary(10, 90002, utc.AddSeconds(1), "Dev2", 11, 200);
+                writer.WriteDeviceBatch(
+                    "Dev2",
+                    11,
+                    201,
+                    timestamps.Select(value => value.AddSeconds(1)).ToArray(),
+                    new[]
+                    {
+                        new EpbChannelDiskBatch(10, Enumerable.Repeat(10.0, 20).ToArray(), pressure)
+                    },
+                    1,
+                    20);
+                writer.SealCycleWindowAtDaqBoundary(
+                    10,
+                    90002,
+                    utc.AddSeconds(2),
+                    "Dev2",
+                    11,
+                    201);
+                var evidence = writer.SealAndExportAlarmCycle(
+                    10,
+                    90002,
+                    Path.Combine(root, "short-pretrigger"),
+                    utc.AddSeconds(2));
+
+                Assert(evidence.WasClaimed && !evidence.IsValid &&
+                       !evidence.SemanticEvidenceComplete,
+                    "不足200ms预触发仍被标记为完整报警证据");
+                Assert(evidence.PreTriggerSampleCount == 20 &&
+                       evidence.RequiredPreTriggerSampleCount == 400 &&
+                       evidence.ValidationError.Contains("预触发样本不足"),
+                    "不完整证据未记录实际/要求预触发数量和明确原因");
+            });
+        }
+
         private static void ConcurrentLatestExportsAreAtomic()
         {
             WithRoot(root =>
@@ -1463,6 +1670,10 @@ VALUES(4,-1,'2026-08-16T12:00:00','2026-08-16T12:00:01',0,3,'learning_completed'
                 var packages = Directory.GetDirectories(
                     Path.Combine(policy.IndexAndExportPath, "Latest", "EPB2"));
                 Assert(packages.Length == 1, $"暂停后停止重复生成了{packages.Length}个相同包");
+                var manifest = Path.Combine(packages[0], "latest-manifest.json");
+                Assert(File.Exists(manifest) &&
+                       File.ReadAllText(manifest).Contains("\"snapshotState\": \"Final\""),
+                    "最终Latest缺少可审计manifest或Final语义");
             });
         }
 

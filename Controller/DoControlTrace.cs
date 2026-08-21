@@ -42,6 +42,7 @@ namespace Controller
         public int CycleNumber { get; set; }
         public int ElectricalGroupId { get; set; }
         public int Channel { get; set; }
+        public int BatchOrdinal { get; set; }
         public int PlannedPhaseMs { get; set; }
         public DateTime? ElectricalPhaseDueUtc { get; set; }
         public double? ElectricalPhaseStartDeviationMs { get; set; }
@@ -498,6 +499,7 @@ namespace Controller
                         CycleNumber = cycleNumber,
                         ElectricalGroupId = assignment?.ElectricalGroupId ?? 0,
                         Channel = channel,
+                        BatchOrdinal = assignment?.BatchOrdinal ?? 0,
                         PlannedPhaseMs = assignment?.PhaseMs ?? 0,
                         ElectricalPhaseDueUtc = hasPhaseDue ? phaseDueUtc : (DateTime?)null,
                         ElectricalPhaseStartDeviationMs =
@@ -517,7 +519,7 @@ namespace Controller
                             : current.ToString("F6", CultureInfo.InvariantCulture);
                         var message =
                             $"DO命令 UTC={utc:O} MonoTicks={ticks} Run={runId:N} Cycle={cycleNumber} " +
-                            $"Group={traceEvent.ElectricalGroupId} EPB={channel} Phase={traceEvent.PlannedPhaseMs}ms " +
+                            $"Group={traceEvent.ElectricalGroupId} EPB={channel} Batch={traceEvent.BatchOrdinal} Phase={traceEvent.PlannedPhaseMs}ms " +
                             $"PhaseDueUtc={(hasPhaseDue ? phaseDueUtc.ToString("O") : "Unknown")} " +
                             $"PhaseDeviationMs={(traceEvent.ElectricalPhaseStartDeviationMs?.ToString("F3", CultureInfo.InvariantCulture) ?? "Unknown")} " +
                             $"Stage={traceEvent.Stage} Command={command} DoCommandResult={loggedResult} " +
@@ -659,7 +661,7 @@ namespace Controller
         {
             var groupAssignments = plan?.Assignments.Values
                 .Where(x => assignment != null && x.ElectricalGroupId == assignment.ElectricalGroupId)
-                .OrderBy(x => x.SelectedIndexInGroup)
+                .OrderBy(x => x.BatchOrdinal)
                 .ToArray() ?? Array.Empty<ChannelStaggerAssignment>();
             var channelEvents = (events ?? Array.Empty<DoControlTraceEvent>())
                 .Where(x => x.Channel == alarmChannel)
@@ -676,13 +678,14 @@ namespace Controller
             };
             var json = new StringBuilder();
             json.AppendLine("{");
-            json.AppendLine("  \"schemaVersion\": 5,");
+            json.AppendLine("  \"schemaVersion\": 7,");
             json.AppendLine($"  \"alarmUtc\": \"{alarmUtc:O}\",");
             json.AppendLine($"  \"runId\": \"{runId:N}\",");
             json.AppendLine($"  \"alarmChannel\": {alarmChannel},");
             json.AppendLine($"  \"alarmCycleNumber\": {alarmCycleNumber},");
             json.AppendLine($"  \"electricalGroupId\": {assignment?.ElectricalGroupId ?? 0},");
             json.AppendLine($"  \"selectedIndexInGroup\": {assignment?.SelectedIndexInGroup ?? 0},");
+            json.AppendLine($"  \"batchOrdinal\": {assignment?.BatchOrdinal ?? 0},");
             json.AppendLine($"  \"staggerMs\": {assignment?.StaggerMs ?? 0},");
             json.AppendLine($"  \"plannedPhaseMs\": {assignment?.PhaseMs ?? 0},");
             json.AppendLine($"  \"reason\": \"{EscapeJson(reason)}\",");
@@ -695,6 +698,8 @@ namespace Controller
                 $"  \"alarmCycleCsvAndBinComplete\": {legacyCsvAndBinComplete.ToString().ToLowerInvariant()},");
             json.AppendLine(
                 $"  \"alarmCycleEvidenceComplete\": {snapshotEvidence.IsValid.ToString().ToLowerInvariant()},");
+            json.AppendLine(
+                $"  \"alarmCycleSemanticEvidenceComplete\": {snapshotEvidence.SemanticEvidenceComplete.ToString().ToLowerInvariant()},");
             var storageFormat = snapshotEvidence.StorageFormat ?? "Unknown";
             json.AppendLine(
                 $"  \"alarmCycleStorageFormat\": \"{EscapeJson(storageFormat)}\",");
@@ -704,6 +709,15 @@ namespace Controller
             json.AppendLine(
                 $"  \"evidenceLastSampleUtc\": {JsonDate(snapshotEvidence.LastSampleUtc)},");
             json.AppendLine(
+                $"  \"sampleClockDevice\": \"{EscapeJson(snapshotEvidence.SampleClockDevice)}\",");
+            json.AppendLine($"  \"sampleClockGeneration\": {snapshotEvidence.SampleClockGeneration},");
+            json.AppendLine($"  \"cycleStartAfterSequence\": {snapshotEvidence.CycleStartAfterSequence},");
+            json.AppendLine($"  \"cycleEndSequence\": {snapshotEvidence.CycleEndSequence},");
+            json.AppendLine($"  \"lastWrittenSequence\": {snapshotEvidence.LastWrittenSequence},");
+            json.AppendLine($"  \"preTriggerSampleCount\": {snapshotEvidence.PreTriggerSampleCount},");
+            json.AppendLine(
+                $"  \"requiredPreTriggerSampleCount\": {snapshotEvidence.RequiredPreTriggerSampleCount},");
+            json.AppendLine(
                 $"  \"evidenceValidationError\": \"{EscapeJson(snapshotEvidence.ValidationError)}\",");
             json.AppendLine(
                 $"  \"selectedChannelsInElectricalGroup\": [{string.Join(", ", groupAssignments.Select(x => x.Channel))}],");
@@ -712,7 +726,7 @@ namespace Controller
             {
                 var x = groupAssignments[i];
                 json.Append(
-                    $"    {{\"channel\": {x.Channel}, \"selectedIndexInGroup\": {x.SelectedIndexInGroup}, \"phaseMs\": {x.PhaseMs}}}");
+                    $"    {{\"channel\": {x.Channel}, \"selectedIndexInGroup\": {x.SelectedIndexInGroup}, \"batchOrdinal\": {x.BatchOrdinal}, \"phaseMs\": {x.PhaseMs}}}");
                 json.AppendLine(i == groupAssignments.Length - 1 ? string.Empty : ",");
             }
             json.AppendLine("  ],");
@@ -853,7 +867,7 @@ namespace Controller
         {
             var json = new StringBuilder();
             json.AppendLine("{");
-            json.AppendLine("  \"schemaVersion\": 1,");
+            json.AppendLine("  \"schemaVersion\": 2,");
             json.AppendLine($"  \"runId\": \"{runId:N}\",");
             json.AppendLine($"  \"planAvailable\": {(plan != null).ToString().ToLowerInvariant()},");
             json.AppendLine($"  \"createdUtc\": \"{(plan == null ? string.Empty : plan.CreatedUtc.ToString("O"))}\",");
@@ -862,7 +876,7 @@ namespace Controller
 
             var assignments = plan?.Assignments.Values
                 .OrderBy(x => x.ElectricalGroupId)
-                .ThenBy(x => x.SelectedIndexInGroup)
+                .ThenBy(x => x.BatchOrdinal)
                 .ToArray() ?? Array.Empty<ChannelStaggerAssignment>();
             for (var i = 0; i < assignments.Length; i++)
             {
@@ -871,6 +885,7 @@ namespace Controller
                 json.Append($"\"channel\": {x.Channel}, ");
                 json.Append($"\"electricalGroupId\": {x.ElectricalGroupId}, ");
                 json.Append($"\"selectedIndexInGroup\": {x.SelectedIndexInGroup}, ");
+                json.Append($"\"batchOrdinal\": {x.BatchOrdinal}, ");
                 json.Append($"\"staggerMs\": {x.StaggerMs}, ");
                 json.Append($"\"phaseMs\": {x.PhaseMs}");
                 json.Append(i == assignments.Length - 1 ? "}" : "},");
@@ -886,7 +901,7 @@ namespace Controller
         {
             var csv = new StringBuilder();
             csv.AppendLine(
-                "Utc,MonotonicTicks,MonotonicElapsedMs,RunId,Cycle,ElectricalGroup,Channel,PlannedPhaseMs,ElectricalPhaseDueUtc,ElectricalPhaseStartDeviationMs,Stage,Command,DoCommandResult,BranchCurrentA,PhysicalPowerState,CommandElapsedMs");
+                "Utc,MonotonicTicks,MonotonicElapsedMs,RunId,Cycle,ElectricalGroup,Channel,BatchOrdinal,PlannedPhaseMs,ElectricalPhaseDueUtc,ElectricalPhaseStartDeviationMs,Stage,Command,DoCommandResult,BranchCurrentA,PhysicalPowerState,CommandElapsedMs");
             foreach (var item in (events ?? Array.Empty<DoControlTraceEvent>())
                          .OrderBy(x => x.Utc)
                          .ThenBy(x => x.MonotonicTicks))
@@ -898,6 +913,7 @@ namespace Controller
                 csv.Append(item.CycleNumber).Append(',');
                 csv.Append(item.ElectricalGroupId).Append(',');
                 csv.Append(item.Channel).Append(',');
+                csv.Append(item.BatchOrdinal).Append(',');
                 csv.Append(item.PlannedPhaseMs).Append(',');
                 csv.Append(item.ElectricalPhaseDueUtc?.ToString("O", CultureInfo.InvariantCulture) ?? string.Empty)
                     .Append(',');

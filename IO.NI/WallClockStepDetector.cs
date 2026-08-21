@@ -21,7 +21,7 @@ namespace IO.NI
         private long _lastUtcTicks;
         private long _lastMonotonicTicks;
 
-        public WallClockStepDetector(double thresholdMilliseconds = 500)
+        public WallClockStepDetector(double thresholdMilliseconds = 100)
         {
             _thresholdMilliseconds = Math.Max(50, thresholdMilliseconds);
         }

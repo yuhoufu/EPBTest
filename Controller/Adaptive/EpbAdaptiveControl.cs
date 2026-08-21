@@ -627,6 +627,23 @@ namespace Controller.Adaptive
                     }
                 }
 
+                // 现场可能在涌流忽略期结束时已经越过历史负载上升阈值，本圈因而没有
+                // 机会形成空行程窗口。稳定历史基线 + 明确正斜率足以证明“正在负载上升”，
+                // 允许进入 LoadRise；仍保留软预警，禁止把历史基线冒充本圈观测值。
+                if (_observedForwardEmptyA <= 0 &&
+                    historicalBaselineAvailable &&
+                    current >= provisionalLoadRiseThreshold &&
+                    WindowSlopeAperMs() > 0.001)
+                {
+                    SetStage(EpbCurrentStage.LoadRise);
+                    _loadRiseStartTick = tick;
+                    decision.StateChanged = true;
+                    decision.SoftWarning = true;
+                    decision.Reason =
+                        $"RapidLoadRiseWithoutObservedEmpty I={current:F3}A " +
+                        $"Threshold={provisionalLoadRiseThreshold:F3}A";
+                }
+
                 if (_observedForwardEmptyA > 0)
                 {
                     var baseline = historicalBaselineAvailable

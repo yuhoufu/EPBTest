@@ -13,7 +13,7 @@ namespace Controller
     {
         public PressureQualification(int hydraulicId, long generationId, double targetBar, double actualBar,
             DateTime reachedUtc, int stableMs, double minBar, double maxBar,
-            double aoCommandPressureBar, double aoVoltage)
+            double aoCommandPressureBar, double aoVoltage, DateTime buildStartedUtc = default)
         {
             HydraulicId = hydraulicId;
             GenerationId = generationId;
@@ -25,6 +25,7 @@ namespace Controller
             MaxBar = maxBar;
             AoCommandPressureBar = aoCommandPressureBar;
             AoVoltage = aoVoltage;
+            BuildStartedUtc = buildStartedUtc == default ? reachedUtc : buildStartedUtc;
         }
 
         public int HydraulicId { get; }
@@ -37,6 +38,7 @@ namespace Controller
         public double MaxBar { get; }
         public double AoCommandPressureBar { get; }
         public double AoVoltage { get; }
+        public DateTime BuildStartedUtc { get; }
     }
 
     public class HydraulicBuildException : InvalidOperationException
@@ -205,8 +207,10 @@ namespace Controller
 
             var aoDevName = hydId == 1 ? "Cylinder1" : "Cylinder2";
             var outputArmed = false;
+            var buildStartedUtc = DateTime.MinValue;
             try
             {
+                buildStartedUtc = DateTime.UtcNow;
                 if (!_do.SetPressure(hydId, true))
                     throw new HydraulicBuildException($"Hydraulic={hydId} PressureDOOpenFailed");
 
@@ -270,7 +274,8 @@ namespace Controller
                                     double.IsPositiveInfinity(min) ? last : min,
                                     double.IsNegativeInfinity(max) ? last : max,
                                     aoResult.CommandPressureBar,
-                                    aoResult.Voltage);
+                                    aoResult.Voltage,
+                                    buildStartedUtc);
                                 _log.Info(
                                     $"PressureQualified Hydraulic={hydId} Generation={generationId} " +
                                     $"TargetPressureBar={qualification.TargetBar:F3} ActualPressureBar={last:F3} " +

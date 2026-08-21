@@ -986,7 +986,18 @@ namespace Controller
                                 : batch.PressureGroup2) ?? zeroPressure);
                     }
 
-                    if (batched is ICountedBatchedEpbCycleRecorder counted)
+                    if (batched is ISequencedEpbCycleRecorder sequenced)
+                    {
+                        sequenced.WriteDeviceBatch(
+                            batch.Device,
+                            batch.Generation,
+                            batch.Sequence,
+                            batch.TimestampsUtc,
+                            channels,
+                            batch.ChannelCount,
+                            batch.SampleCount);
+                    }
+                    else if (batched is ICountedBatchedEpbCycleRecorder counted)
                     {
                         counted.WriteDeviceBatch(
                             batch.TimestampsUtc,

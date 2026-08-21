@@ -667,28 +667,43 @@ namespace Controller
             {
                 token.ThrowIfCancellationRequested();
                 var tasks = new List<Task>();
-                foreach (var pair in groups.Where(pair => pair.Value.Count > 0))
-                {
-                    var groupChannels = pair.Value
-                        .Where(channel => !quarantined.ContainsKey(channel))
-                        .Where(channel => !IsMechanicalTargetReached(channel))
-                        .OrderBy(x => x)
-                        .ToArray();
-                    if (groupChannels.Length == 0) continue;
-                    var slot = Interlocked.Increment(ref _qualificationGeneration);
-                    var key = new HydraulicGenerationKey(
+                var participantsByHydraulic = groups
+                    .Where(pair => pair.Value != null)
+                    .Select(pair => new
+                    {
+                        HydraulicId = pair.Key,
+                        Members = pair.Value
+                            .Where(channel => !quarantined.ContainsKey(channel))
+                            .Where(channel => !IsMechanicalTargetReached(channel))
+                            .OrderBy(channel => channel)
+                            .ToArray()
+                    })
+                    .Where(item => item.Members.Length > 0)
+                    .ToDictionary(
+                        item => item.HydraulicId,
+                        item => (IReadOnlyList<int>)item.Members);
+                if (participantsByHydraulic.Count == 0) break;
+
+                var slot = Interlocked.Increment(ref _qualificationGeneration);
+                var globalTimelineUtc = CeilToBoundary(
+                    DateTime.UtcNow.AddMilliseconds(Math.Max(2, AnchorWarmupMs)),
+                    PeriodMs);
+                var globalSlot = await EnterGlobalHydraulicSlotAsync(
                         _activeBatchId,
-                        pair.Key,
                         HydraulicPhaseKind.Qualification,
-                        slot);
-                    var anchorTask = EnterHydraulicStartupPhaseWithSelfHealingAsync(
-                        key,
-                        groupChannels,
-                        token);
-                    var maxPhase = groupChannels.Max(channel => staggerPlan.Get(channel).PhaseMs);
-                    var groupTimelineUtc = CeilToBoundary(
-                        DateTime.UtcNow.AddMilliseconds(Math.Max(2, AnchorWarmupMs)),
-                        PeriodMs);
+                        slot,
+                        participantsByHydraulic,
+                        globalTimelineUtc,
+                        globalTimelineUtc,
+                        staggerPlan,
+                        startupSelfHealing: true,
+                        token)
+                    .ConfigureAwait(false);
+
+                foreach (var pair in participantsByHydraulic)
+                {
+                    var groupChannels = pair.Value.OrderBy(x => x).ToArray();
+                    if (groupChannels.Length == 0) continue;
                     foreach (var channel in groupChannels)
                     {
                         var capturedChannel = channel;
@@ -710,16 +725,19 @@ namespace Controller
                             await FaultIsolatedPhaseWork.RunAsync(
                                 async () =>
                                 {
-                                    // 资格阶段的共享液压锚点异常只能隔离本压力组，不能越过
-                                    // WhenAll 把另一压力组和整个重新开始流程一起回滚。
-                                    var lease = await anchorTask.ConfigureAwait(false);
                                     channelToken.ThrowIfCancellationRequested();
-                                    var window = ElectricalStaggerExecutor.CreateQualifiedPhaseWindow(
-                                        lease?.ActuationAnchorUtc ?? DateTime.UtcNow.AddMilliseconds(2),
-                                        groupTimelineUtc,
-                                        PeriodMs,
-                                        maxPhase);
-                                    var dueUtc = window.GetDueUtc(phase);
+                                    if (globalSlot.HasFailures)
+                                    {
+                                        if (globalSlot.Groups.TryGetValue(capturedPressureGroup, out var outcome) &&
+                                            outcome.IsSuccess)
+                                            return;
+                                        globalSlot.GetLeaseOrThrow(capturedPressureGroup);
+                                        return;
+                                    }
+
+                                    globalSlot.GetLeaseOrThrow(capturedPressureGroup);
+                                    var dueUtc = globalSlot.MotorAnchorUtc.Value
+                                        .AddMilliseconds(phase);
                                     var delay = dueUtc - DateTime.UtcNow;
                                     if (delay.TotalMilliseconds > 1)
                                         await Task.Delay(delay, channelToken).ConfigureAwait(false);
@@ -750,6 +768,16 @@ namespace Controller
                     }
                 }
                 await Task.WhenAll(tasks).ConfigureAwait(false);
+                if (globalSlot.HasFailures &&
+                    groups.Values.SelectMany(list => list ?? new List<int>())
+                        .Any(channel => !quarantined.ContainsKey(channel) &&
+                                        !IsMechanicalTargetReached(channel)))
+                {
+                    _log?.Warn(
+                        $"暂停资格逻辑圈{ordinal}遇到降级液压槽，健康组将在新全局槽重试本圈。",
+                        "液压全局槽");
+                    ordinal--;
+                }
             }
 
             return quarantined.Keys.OrderBy(x => x).ToArray();
@@ -1683,29 +1711,40 @@ namespace Controller
                 await EnsurePowerSupplyReadyForChannelsAsync(new[] { channel }, ct)
                     .ConfigureAwait(false);
 
-                var candidates = pressureGroup == 1
-                    ? Enumerable.Range(1, 6).ToArray()
-                    : Enumerable.Range(7, 6).ToArray();
-                var participants = GetHydraulicParticipantsInPressureGroupSnapshot(
-                    pressureGroup,
-                    candidates,
-                    phaseSlot);
-                var key = new HydraulicGenerationKey(
+                var participantsByHydraulic = CaptureGlobalFormalParticipants(
                     _activeBatchId,
-                    pressureGroup,
-                    HydraulicPhaseKind.Formal,
+                    staggerPlan,
                     phaseSlot);
-                var lease = await HydraulicEnterAtGroupAnchorAsync(key, participants, ct)
-                    .ConfigureAwait(false);
-                var maxPhase = participants.Count == 0
-                    ? phase
-                    : participants.Max(member => staggerPlan.Get(member).PhaseMs);
-                var window = ElectricalStaggerExecutor.CreateQualifiedPhaseWindow(
-                    lease?.ActuationAnchorUtc ?? DateTime.UtcNow.AddMilliseconds(2),
+                var globalSlot = await EnterGlobalHydraulicSlotAsync(
+                    _activeBatchId,
+                    HydraulicPhaseKind.Formal,
+                    phaseSlot,
+                    participantsByHydraulic,
+                    t0.AddMilliseconds(phaseSlot * (double)PeriodMs),
                     t0,
-                    PeriodMs,
-                    maxPhase);
-                var plannedUtc = window.GetDueUtc(phase);
+                    staggerPlan,
+                    startupSelfHealing: false,
+                    GetBatchSessionTokenOr(timerToken))
+                    .ConfigureAwait(false);
+                if (globalSlot.HasFailures)
+                {
+                    ReleaseCyclePauseCts(channel, cyclePauseCts);
+                    if (globalSlot.Groups.TryGetValue(pressureGroup, out var outcome) &&
+                        outcome.IsSuccess)
+                    {
+                        _log?.Warn(
+                            $"重入健康液压组跳过降级槽 Run={_activeBatchId:N} " +
+                            $"GlobalSlot={phaseSlot} Hydraulic={pressureGroup} EPB={channel}",
+                            "液压全局槽");
+                        return false;
+                    }
+
+                    globalSlot.GetLeaseOrThrow(pressureGroup);
+                    return false;
+                }
+
+                globalSlot.GetLeaseOrThrow(pressureGroup);
+                var plannedUtc = globalSlot.MotorAnchorUtc.Value.AddMilliseconds(phase);
                 var delay = plannedUtc - DateTime.UtcNow;
                 if (delay.TotalMilliseconds > 1)
                     await Task.Delay(delay, ct).ConfigureAwait(false);
@@ -1754,7 +1793,7 @@ namespace Controller
                             T8BaseMs,
                             phase,
                             T8MinMs,
-                            window.DeadlineUtc,
+                            globalSlot.MotorDeadlineUtc.Value,
                             cycleAttempt.AttemptCts.Token)
                         .ConfigureAwait(false);
                 }

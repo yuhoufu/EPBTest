@@ -530,6 +530,8 @@ namespace Controller
             new(StringComparer.OrdinalIgnoreCase);
         private readonly ConcurrentDictionary<string, long> _daqFreshnessSafetyCutoffGeneration =
             new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<int, long> _daqMechanicalRequalificationGeneration = new();
+        private readonly object _daqMechanicalRequalificationGate = new();
         private readonly object _stopSafetyGate = new();
         private Task<StopSafetyResult> _stopSafetyTask;
         private StopSource _stopSafetyTaskSource = StopSource.UnknownLegacy;
@@ -720,8 +722,11 @@ namespace Controller
                     var committed = context.AbortRecorderOnce(
                         () =>
                         {
-                            if (Recorder is IBatchedEpbCycleRecorder batchedRecorder)
-                                batchedRecorder.SealCycleWindow(channel, context.Cycle, cutoffUtc);
+                            SealCyclePersistenceWindow(
+                                Recorder,
+                                channel,
+                                context.Cycle,
+                                cutoffUtc);
                             if (durableBoundaryAlreadyConfirmed)
                                 AbortCycleAtConfirmedDurableBoundary(
                                     Recorder,
@@ -788,8 +793,7 @@ namespace Controller
             _currentAttemptIdByChannel.TryRemove(channel, out var attemptId);
             try
             {
-                if (Recorder is IBatchedEpbCycleRecorder batched)
-                    batched.SealCycleWindow(channel, cycleNumber, cutoffUtc);
+                SealCyclePersistenceWindow(Recorder, channel, cycleNumber, cutoffUtc);
                 if (durableBoundaryAlreadyConfirmed)
                     AbortCycleAtConfirmedDurableBoundary(
                         Recorder,
@@ -842,14 +846,79 @@ namespace Controller
             return result;
         }
 
+        private readonly struct CycleDaqBoundary
+        {
+            public CycleDaqBoundary(string device, long generation, long sequence)
+            {
+                Device = device ?? string.Empty;
+                Generation = Math.Max(0, generation);
+                Sequence = Math.Max(0, sequence);
+            }
+
+            public string Device { get; }
+            public long Generation { get; }
+            public long Sequence { get; }
+        }
+
+        internal static long SelectAuthoritativeCycleEndSequence(
+            long lastAcceptedSequence,
+            long lastDiskPublishedSequence,
+            long? frozenRecoveryBoundary = null)
+        {
+            if (lastAcceptedSequence < 0) throw new ArgumentOutOfRangeException(nameof(lastAcceptedSequence));
+            if (lastDiskPublishedSequence < 0)
+                throw new ArgumentOutOfRangeException(nameof(lastDiskPublishedSequence));
+            if (frozenRecoveryBoundary.HasValue && frozenRecoveryBoundary.Value < 0)
+                throw new ArgumentOutOfRangeException(nameof(frozenRecoveryBoundary));
+
+            // Published 只表示后台当前已经走到哪里，不能作为圈尾：Accepted 与 Published
+            // 之间的批次已经被实时链正式接纳，封口后仍必须等待并归入本圈。
+            return frozenRecoveryBoundary ?? lastAcceptedSequence;
+        }
+
+        private Dictionary<string, CycleDaqBoundary> CaptureCycleDaqBoundaries(
+            IReadOnlyDictionary<int, int> cycles)
+        {
+            var result = new Dictionary<string, CycleDaqBoundary>(StringComparer.OrdinalIgnoreCase);
+            if (cycles == null || cycles.Count == 0) return result;
+
+            foreach (var device in cycles.Keys
+                         .Select(channel => _acq.GetDeviceForEpbChannel(channel))
+                         .Where(device => !string.IsNullOrWhiteSpace(device))
+                         .Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                var generation = _acq.GetCurrentGeneration(device);
+                var accepted = _acq.GetLastAcceptedSequence(device);
+                var published = _acq.GetLastDiskPublishedSequence(device);
+                long? frozenBoundary = null;
+                if (_daqAutoRecovery.TryGetValue(device, out var recovery) &&
+                    recovery?.CutoffSnapshot != null &&
+                    recovery.CutoffSnapshot.Cycles.Any(pair =>
+                        cycles.TryGetValue(pair.Key, out var requestedCycle) &&
+                        requestedCycle == pair.Value))
+                {
+                    frozenBoundary = recovery.CutoffSnapshot.FrozenBoundary;
+                    generation = recovery.PreviousGeneration;
+                }
+
+                result[device] = new CycleDaqBoundary(
+                    device,
+                    generation,
+                    SelectAuthoritativeCycleEndSequence(accepted, published, frozenBoundary));
+            }
+            return result;
+        }
+
         private bool TrySealSoftwareRecoveryCycleWindows(
             IReadOnlyDictionary<int, int> cycles,
             DateTime cutoffUtc,
             string reason,
-            Func<bool> canMutate = null)
+            Func<bool> canMutate = null,
+            IReadOnlyDictionary<string, CycleDaqBoundary> capturedBoundaries = null)
         {
             if (cycles == null || cycles.Count == 0) return true;
-            if (!(Recorder is IBatchedEpbCycleRecorder batched)) return true;
+            if (!(Recorder is IBatchedEpbCycleRecorder)) return true;
+            capturedBoundaries ??= CaptureCycleDaqBoundaries(cycles);
             var succeeded = true;
             foreach (var pair in cycles)
             {
@@ -870,7 +939,17 @@ namespace Controller
                 }
                 try
                 {
-                    batched.SealCycleWindow(pair.Key, pair.Value, cutoffUtc);
+                    var device = _acq.GetDeviceForEpbChannel(pair.Key);
+                    CycleDaqBoundary? boundary = null;
+                    if (!string.IsNullOrWhiteSpace(device) &&
+                        capturedBoundaries.TryGetValue(device, out var captured))
+                        boundary = captured;
+                    SealCyclePersistenceWindow(
+                        Recorder,
+                        pair.Key,
+                        pair.Value,
+                        cutoffUtc,
+                        boundary);
                 }
                 catch (Exception ex)
                 {
@@ -882,6 +961,38 @@ namespace Controller
                 }
             }
             return succeeded;
+        }
+
+        private void SealCyclePersistenceWindow(
+            IEpbCycleRecorder recorder,
+            int channel,
+            int cycleNumber,
+            DateTime cutoffUtc,
+            CycleDaqBoundary? capturedBoundary = null)
+        {
+            if (recorder is ISequencedEpbCycleRecorder sequenced)
+            {
+                var device = _acq.GetDeviceForEpbChannel(channel);
+                if (!string.IsNullOrWhiteSpace(device))
+                {
+                    var boundary = capturedBoundary ?? new CycleDaqBoundary(
+                        device,
+                        _acq.GetCurrentGeneration(device),
+                        SelectAuthoritativeCycleEndSequence(
+                            _acq.GetLastAcceptedSequence(device),
+                            _acq.GetLastDiskPublishedSequence(device)));
+                    sequenced.SealCycleWindowAtDaqBoundary(
+                        channel,
+                        cycleNumber,
+                        cutoffUtc,
+                        boundary.Device,
+                        boundary.Generation,
+                        boundary.Sequence);
+                    return;
+                }
+            }
+            if (recorder is IBatchedEpbCycleRecorder batched)
+                batched.SealCycleWindow(channel, cycleNumber, cutoffUtc);
         }
 
         /// <summary>
@@ -947,33 +1058,31 @@ namespace Controller
             Func<bool> canMutate = null)
         {
             if (cycles == null || cycles.Count == 0) return true;
-            if (!TrySealSoftwareRecoveryCycleWindows(cycles, cutoffUtc, reason, canMutate)) return false;
-
             var devices = cycles.Keys
                 .Select(channel => _acq.GetDeviceForEpbChannel(channel))
                 .Where(device => !string.IsNullOrWhiteSpace(device))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToArray();
-            // 先冻结本次调用要证明的边界，再排 Raw。旧实现排空后动态读取 Published，
-            // 会把恢复 suppression 尾段误纳入正式义务，形成永远无法 Persist 的边界。
-            var boundaries = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+            // 同一次冻结快照同时驱动圈封口、Raw 排空和 SQLite 耐久等待。Published
+            // 只是后台进度，不能截断已经被实时链 Accepted、但尚未发布到落盘链的尾批。
+            var boundaries = CaptureCycleDaqBoundaries(cycles);
+            if (!TrySealSoftwareRecoveryCycleWindows(
+                    cycles,
+                    cutoffUtc,
+                    reason,
+                    canMutate,
+                    boundaries))
+                return false;
             foreach (var device in devices)
             {
-                if (canMutate != null && !canMutate()) return false;
-                var boundary = _acq.GetLastDiskPublishedSequence(device);
+                if (!boundaries.TryGetValue(device, out var captured)) return false;
                 if (_daqAutoRecovery.TryGetValue(device, out var recovery) &&
                     recovery?.CutoffSnapshot != null &&
-                    recovery.CutoffSnapshot.Cycles.Any(pair =>
-                        cycles.TryGetValue(pair.Key, out var requestedCycle) &&
-                        requestedCycle == pair.Value))
-                {
-                    boundary = recovery.CutoffSnapshot.FrozenBoundary;
+                    captured.Sequence == recovery.CutoffSnapshot.FrozenBoundary)
                     _log.Info(
                         $"通用圈 Finalizer 复用 DAQ 冻结边界 Device={device} " +
-                        $"FrozenBoundary={boundary} Reason={reason}",
+                        $"FrozenBoundary={captured.Sequence} Reason={reason}",
                         "落盘");
-                }
-                boundaries[device] = Math.Max(0, boundary);
             }
 
             var deadline = Stopwatch.GetTimestamp() +
@@ -982,8 +1091,12 @@ namespace Controller
                 1,
                 (deadline - Stopwatch.GetTimestamp()) * 1000.0 / Stopwatch.Frequency);
             var rawDrain = await _acq.DrainBackgroundPipelinesToBoundariesDetailedAsync(
-                    boundaries.TryGetValue("Dev1", out var dev1Boundary) ? dev1Boundary : 0,
-                    boundaries.TryGetValue("Dev2", out var dev2Boundary) ? dev2Boundary : 0,
+                    boundaries.TryGetValue("Dev1", out var dev1Boundary)
+                        ? dev1Boundary.Sequence
+                        : 0,
+                    boundaries.TryGetValue("Dev2", out var dev2Boundary)
+                        ? dev2Boundary.Sequence
+                        : 0,
                     rawTimeoutMs,
                     token)
                 .ConfigureAwait(false);
@@ -991,7 +1104,7 @@ namespace Controller
             {
                 _log.Warn(
                     $"软件恢复截止 Raw 固定边界排空超时；保持圈事务开放且禁止重入。" +
-                    $"Dev1Boundary={dev1Boundary} Dev2Boundary={dev2Boundary} " +
+                    $"Dev1Boundary={dev1Boundary.Sequence} Dev2Boundary={dev2Boundary.Sequence} " +
                     $"Pending={rawDrain.PendingPredicate} Channels=[{string.Join(",", cycles.Keys)}] Reason={reason}",
                     "落盘");
                 return false;
@@ -1002,7 +1115,7 @@ namespace Controller
             foreach (var device in devices)
             {
                 if (canMutate != null && !canMutate()) return false;
-                var boundary = boundaries[device];
+                var boundary = boundaries[device].Sequence;
                 var remainingMs = (int)Math.Max(
                     1,
                     (deadline - Stopwatch.GetTimestamp()) * 1000.0 / Stopwatch.Frequency);
@@ -2093,7 +2206,7 @@ namespace Controller
             var staggerMs = singleAssignment.PhaseMs;
             _log.Info(
                 $"EPB[{channel}] 单通道运行 Run={singleRunId:N}，归属组 {singleAssignment.ElectricalGroupId}，" +
-                $"按已选集合重新编号后首启相位={staggerMs}ms。",
+                $"固定批次={singleAssignment.BatchOrdinal}，首启相位={staggerMs}ms。",
                 "EPB");
 
             //日志记录周期
@@ -2651,28 +2764,8 @@ namespace Controller
 
             RemoveRunnerRuntime(channel, nameof(StopChannelOnAlarm));
 
-            // —— 现场要求：停止即存最近10圈 ——
-            // 说明：报警停机路径不应阻塞 Runner/定时器线程，因此这里用后台任务异步 Flush。
-            try
-            {
-                var recorder = Recorder;
-                if (recorder != null)
-                    ObserveBackgroundTask(Task.Run(() =>
-                    {
-                        try
-                        {
-                            recorder.FlushRecent(channel, 10);
-                        }
-                        catch (Exception ex)
-                        {
-                            _log.Warn($"EPB[{channel}] 停止导出失败：{ex.Message}", "落盘");
-                        }
-                    }), "FlushRecentAfterAlarmStop", channel);
-            }
-            catch
-            {
-                // ignore
-            }
+            // Latest 由报警圈原子封账后的 EnsureLatestStopSnapshotAsync 单一发布。
+            // 快速停机阶段只锁存安全动作，禁止生成不含终止圈的临时 Latest。
 
             TryEndBatchSessionWhenIdle("AlarmStop");
             TryDisableIdlePowerGroup(channel, "报警通道停止后电源组已无运行通道");
@@ -3467,6 +3560,7 @@ namespace Controller
                     $"Original={reason}";
                 var generation = Math.Max(0, freshness?.Generation ?? 0);
                 _daqFreshnessSafetyCutoffGeneration[device] = generation;
+                RequireDaqMechanicalRequalification(channel, generation);
                 if (_currentCycleNumberByChannel.TryGetValue(channel, out var cutoffCycle))
                 {
                     MarkDaqClockCycleAborted(
@@ -3802,6 +3896,18 @@ namespace Controller
                    !string.Equals(triggerCode, "DaqPersistenceWriteStall", StringComparison.OrdinalIgnoreCase);
         }
 
+        internal static bool IsDaqClockRecoveryTrigger(string triggerCode)
+        {
+            return string.Equals(
+                       triggerCode,
+                       "DaqClockModelInvalid",
+                       StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(
+                       triggerCode,
+                       "DaqWallClockStep",
+                       StringComparison.OrdinalIgnoreCase);
+        }
+
         internal static int GetDaqSelfMaintenanceDelayMs(int consecutiveFailures)
         {
             if (consecutiveFailures <= 1) return 1000;
@@ -3900,13 +4006,6 @@ namespace Controller
             int timeoutMs,
             CancellationToken token)
         {
-            if (!TrySealSoftwareRecoveryCycleWindows(
-                    context.CutoffCycles,
-                    context.CutoffUtc,
-                    $"DAQ:{context.TriggerCode}:FrozenBoundary",
-                    () => IsCurrentRecovery(context)))
-                return false;
-
             // CutoffSnapshot 在首次恢复登记时已经冻结。这里只排该设备的
             // 冻结前缀；另一设备传 0，既不等待健康设备的新流量，也绝不重新抓取一个
             // 更大的 LastAccepted/Published 边界。
@@ -3917,6 +4016,22 @@ namespace Controller
                 return false;
             }
             var boundary = cutoff.FrozenBoundary;
+            var capturedBoundaries = new Dictionary<string, CycleDaqBoundary>(
+                StringComparer.OrdinalIgnoreCase)
+            {
+                [context.Device] = new CycleDaqBoundary(
+                    context.Device,
+                    context.PreviousGeneration,
+                    boundary)
+            };
+            if (!TrySealSoftwareRecoveryCycleWindows(
+                    context.CutoffCycles,
+                    context.CutoffUtc,
+                    $"DAQ:{context.TriggerCode}:FrozenBoundary",
+                    () => IsCurrentRecovery(context),
+                    capturedBoundaries))
+                return false;
+
             var legacyBoundary = Interlocked.Read(ref context.CutoffPersistenceBoundary);
             if (legacyBoundary != boundary)
             {
@@ -4615,10 +4730,7 @@ namespace Controller
                             ready = await _acq.EnsureChannelsReadyAsync(
                                     context.AffectedChannels,
                                     _daqPersistenceRecoveryTimeoutMs,
-                                    string.Equals(
-                                        context.TriggerCode,
-                                        "DaqClockModelInvalid",
-                                        StringComparison.OrdinalIgnoreCase)
+                                    IsDaqClockRecoveryTrigger(context.TriggerCode)
                                         ? _daqClockRecoveryFreshBatches
                                         : _daqPersistenceRequiredFreshBatches,
                                     (int)_daqPersistenceResumeAgeMs,
@@ -4728,6 +4840,10 @@ namespace Controller
                             context.Cancellation.Token)
                         .ConfigureAwait(false);
                     if (!IsCurrentRecovery(context)) return;
+                    foreach (var rejoinedChannel in rejoinChannels)
+                        CompleteDaqMechanicalRequalification(
+                            rejoinedChannel,
+                            context.PreviousGeneration);
                     ResetTransientFaultStateForRestart(rejoinChannels, "DaqRecoveryRejoin");
                 }
                 var result = new DaqRecoveryResult
@@ -5993,10 +6109,49 @@ namespace Controller
                 else if ((Stopwatch.GetTimestamp() - stableSince) * 1000.0 /
                          Stopwatch.Frequency >= 500)
                 {
+                    if (TryGetDaqMechanicalRequalification(channel, out var requiredGeneration))
+                    {
+                        await EnsurePowerSupplyReadyForChannelsAsync(new[] { channel }, token)
+                            .ConfigureAwait(false);
+                        var plan = GetCompatibleStaggerPlan(new[] { channel });
+                        await EnsureMotorReleasedBeforeFormalRejoinAsync(
+                                new[] { channel },
+                                plan,
+                                $"DaqFreshnessRequalification:{device}:Generation={requiredGeneration}",
+                                token)
+                            .ConfigureAwait(false);
+                        CompleteDaqMechanicalRequalification(channel, requiredGeneration);
+                    }
                     _daqFreshnessSafetyCutoffGeneration.TryRemove(device, out _);
                     return;
                 }
                 await Task.Delay(20, token).ConfigureAwait(false);
+            }
+        }
+
+        private void RequireDaqMechanicalRequalification(int channel, long generation)
+        {
+            lock (_daqMechanicalRequalificationGate)
+            {
+                if (!_daqMechanicalRequalificationGeneration.TryGetValue(channel, out var existing) ||
+                    generation > existing)
+                    _daqMechanicalRequalificationGeneration[channel] = generation;
+            }
+        }
+
+        private bool TryGetDaqMechanicalRequalification(int channel, out long generation)
+        {
+            lock (_daqMechanicalRequalificationGate)
+                return _daqMechanicalRequalificationGeneration.TryGetValue(channel, out generation);
+        }
+
+        private void CompleteDaqMechanicalRequalification(int channel, long generation)
+        {
+            lock (_daqMechanicalRequalificationGate)
+            {
+                if (_daqMechanicalRequalificationGeneration.TryGetValue(channel, out var required) &&
+                    required <= generation)
+                    _daqMechanicalRequalificationGeneration.Remove(channel);
             }
         }
 

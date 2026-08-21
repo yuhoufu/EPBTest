@@ -16,19 +16,26 @@ namespace Controller
         internal ChannelStaggerAssignment(
             int channel,
             int electricalGroupId,
-            int selectedIndexInGroup,
+            int batchOrdinal,
             int staggerMs)
         {
             Channel = channel;
             ElectricalGroupId = electricalGroupId;
-            SelectedIndexInGroup = selectedIndexInGroup;
+            BatchOrdinal = batchOrdinal;
             StaggerMs = staggerMs;
-            PhaseMs = checked(selectedIndexInGroup * staggerMs);
+            PhaseMs = checked(batchOrdinal * staggerMs);
         }
 
         public int Channel { get; }
         public int ElectricalGroupId { get; }
-        public int SelectedIndexInGroup { get; }
+        /// <summary>
+        /// 固定首/中/尾批次序号。它来自 XML Group/Members 中的物理位置，
+        /// 不随稀疏选择、故障隔离或恢复重入而压缩。
+        /// </summary>
+        public int BatchOrdinal { get; }
+
+        /// <summary>兼容旧取证字段；语义已升级为固定批次序号。</summary>
+        public int SelectedIndexInGroup => BatchOrdinal;
         public int StaggerMs { get; }
         public int PhaseMs { get; }
     }
@@ -98,7 +105,8 @@ namespace Controller
     }
 
     /// <summary>
-    /// 按“本次选中 ∩ XML组成员”的通道号升序重新编号并生成固定相位。
+    /// 按 XML Group/Members 中的固定物理位置生成首/中/尾相位。
+    /// 未选、禁用或隔离的成员只跳过自身位置，后续成员不得向前压缩。
     /// </summary>
     internal static class ElectricalStaggerPlanner
     {
@@ -145,6 +153,9 @@ namespace Controller
                     errors.Add($"电气组 {group.Id} 未配置成员通道。");
                     continue;
                 }
+                if (group.Members.Count > 3)
+                    errors.Add(
+                        $"电气组 {group.Id} 配置了 {group.Members.Count} 个成员；固定首/中/尾批次最多允许3个成员。");
 
                 var membersSeenInGroup = new HashSet<int>();
                 foreach (var channel in group.Members)
@@ -168,9 +179,10 @@ namespace Controller
             var assignments = new Dictionary<int, ChannelStaggerAssignment>();
             foreach (var group in groups.Where(x => x?.Members != null))
             {
-                var selectedMembers = selected
-                    .Where(channel => group.Members.Contains(channel))
-                    .OrderBy(channel => channel)
+                var selectedSet = new HashSet<int>(selected);
+                var selectedMembers = group.Members
+                    .Select((channel, batchOrdinal) => new { channel, batchOrdinal })
+                    .Where(item => selectedSet.Contains(item.channel))
                     .ToList();
                 if (selectedMembers.Count == 0)
                     continue;
@@ -179,10 +191,11 @@ namespace Controller
                 {
                     try
                     {
+                        var member = selectedMembers[index];
                         var assignment = new ChannelStaggerAssignment(
-                            selectedMembers[index],
+                            member.channel,
                             group.Id,
-                            index,
+                            member.batchOrdinal,
                             group.StaggerMs);
                         assignments[assignment.Channel] = assignment;
                     }
@@ -195,7 +208,7 @@ namespace Controller
 
                 if (periodMs > 0 && group.StaggerMs > 0)
                 {
-                    var maxPhase = (long)(selectedMembers.Count - 1) * group.StaggerMs;
+                    var maxPhase = (long)selectedMembers.Max(item => item.batchOrdinal) * group.StaggerMs;
                     if (maxPhase >= periodMs)
                         errors.Add(
                             $"电气组 {group.Id} 最大相位 {maxPhase} ms 必须小于试验周期 {periodMs} ms。");

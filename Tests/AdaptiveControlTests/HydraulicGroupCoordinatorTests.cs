@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Threading;
@@ -21,6 +23,10 @@ namespace AdaptiveControlTests
         public static int RunAll()
         {
             var passed = 0;
+            Run("双液压全局槽仅并发建压一次并共享电机锚点", GlobalSlotBuildsTogetherAndSharesAnchor, ref passed);
+            Run("全局槽成员快照不可变", GlobalSlotMembershipIsImmutable, ref passed);
+            Run("单液压失败时健康组释压并跳过半槽", GlobalSlotFailureReleasesHealthyGroup, ref passed);
+            Run("全局槽整批取消保持取消语义", GlobalSlotCancellationIsNotHardwareFailure, ref passed);
             Run("液压非末成员等待全组低压确认", NonLastMemberWaitsForSafePressure, ref passed);
             Run("液压释放超时产生指定硬故障", ReleaseTimeoutIsExplicit, ref passed);
             Run("陈旧低压不得通过释压确认", StaleLowPressureCannotConfirmRelease, ref passed);
@@ -42,6 +48,195 @@ namespace AdaptiveControlTests
             Run("未知液压异常不得绕过连续确认", UnknownHydraulicFaultIsNotHardware, ref passed);
             Run("报警电源组仅在无兄弟通道活动时关闭", PowerGroupIdlePredicateIsScoped, ref passed);
             return passed;
+        }
+
+        private static void GlobalSlotBuildsTogetherAndSharesAnchor()
+        {
+            var coordinator = new GlobalHydraulicSlotCoordinator();
+            var runId = Guid.NewGuid();
+            var key = new GlobalHydraulicSlotKey(runId, HydraulicPhaseKind.Formal, 42);
+            var participants = new Dictionary<int, IReadOnlyList<int>>
+            {
+                [1] = new[] { 1, 2, 3 },
+                [2] = new[] { 7, 8, 9 }
+            };
+            var calls = new ConcurrentDictionary<int, int>();
+            var starts = new ConcurrentDictionary<int, DateTime>();
+            var plannedBuildUtc = DateTime.UtcNow.AddMilliseconds(30);
+            var wallClockUtc = DateTime.UtcNow;
+
+            async Task<HydraulicCycleLease> Enter(int hydraulicId, IReadOnlyList<int> members,
+                CancellationToken token)
+            {
+                calls.AddOrUpdate(hydraulicId, 1, (_, value) => value + 1);
+                var buildStartedUtc = DateTime.UtcNow;
+                starts[hydraulicId] = buildStartedUtc;
+                await Task.Delay(hydraulicId == 1 ? 20 : 70, token).ConfigureAwait(false);
+                var reachedUtc = DateTime.UtcNow;
+                var qualification = new PressureQualification(
+                    hydraulicId, 1, 70, 70, reachedUtc, 10, 69, 71, 70, 7,
+                    buildStartedUtc);
+                return new HydraulicCycleLease(
+                    new HydraulicGenerationKey(runId, hydraulicId, HydraulicPhaseKind.Formal, 42),
+                    members,
+                    qualification,
+                    reachedUtc,
+                    Task.CompletedTask,
+                    1);
+            }
+
+            var first = coordinator.EnterAsync(
+                key, participants, plannedBuildUtc, wallClockUtc, 1000, 160, 20,
+                Enter, (_, __) => Task.CompletedTask, CancellationToken.None);
+            var second = coordinator.EnterAsync(
+                key, participants, plannedBuildUtc, wallClockUtc, 1000, 160, 20,
+                Enter, (_, __) => Task.CompletedTask, CancellationToken.None);
+            Task.WaitAll(first, second);
+            var result = first.Result;
+
+            Assert(ReferenceEquals(first.Result, second.Result),
+                "同一全局槽的等待者未复用唯一结果。");
+            Assert(calls.Count == 2 && calls.All(pair => pair.Value == 1),
+                "同一全局槽重复触发了液压建压。");
+            Assert(Math.Abs((starts[1] - starts[2]).TotalMilliseconds) < 100,
+                "双液压建压未从同一并发门发起。");
+            Assert(!result.HasFailures && result.MotorAnchorUtc.HasValue &&
+                   result.MotorDeadlineUtc.HasValue,
+                "双液压成功后未生成公共电机窗口。");
+            var lastQualified = result.Groups.Values.Max(item => item.QualifiedUtc.Value);
+            Assert(result.MotorAnchorUtc.Value >= lastQualified.AddMilliseconds(20),
+                "公共电机锚点早于最后一组达压加保护裕量。");
+            Assert(result.MotorDeadlineUtc.Value >
+                   result.MotorAnchorUtc.Value.AddMilliseconds(160),
+                "公共截止点未覆盖尾批相位。");
+        }
+
+        private static void GlobalSlotMembershipIsImmutable()
+        {
+            var coordinator = new GlobalHydraulicSlotCoordinator();
+            var runId = Guid.NewGuid();
+            var key = new GlobalHydraulicSlotKey(runId, HydraulicPhaseKind.Learning, 3);
+            Task<HydraulicCycleLease> Enter(int hydraulicId, IReadOnlyList<int> members,
+                CancellationToken token)
+            {
+                var now = DateTime.UtcNow;
+                return Task.FromResult(new HydraulicCycleLease(
+                    new HydraulicGenerationKey(runId, hydraulicId, HydraulicPhaseKind.Learning, 3),
+                    members,
+                    new PressureQualification(hydraulicId, 1, 70, 70, now, 0, 70, 70, 70, 7, now),
+                    now,
+                    Task.CompletedTask,
+                    1));
+            }
+
+            var original = new Dictionary<int, IReadOnlyList<int>> { [1] = new[] { 1, 2 } };
+            coordinator.EnterAsync(key, original, DateTime.UtcNow, DateTime.UtcNow,
+                1000, 800, 10, Enter, (_, __) => Task.CompletedTask, CancellationToken.None)
+                .GetAwaiter().GetResult();
+            try
+            {
+                var changed = new Dictionary<int, IReadOnlyList<int>> { [1] = new[] { 1 } };
+                coordinator.EnterAsync(key, changed, DateTime.UtcNow, DateTime.UtcNow,
+                        1000, 800, 10, Enter, (_, __) => Task.CompletedTask, CancellationToken.None)
+                    .GetAwaiter().GetResult();
+                throw new InvalidOperationException("同一全局槽接受了变化后的成员集合。");
+            }
+            catch (InvalidOperationException ex)
+            {
+                Assert(ex.Message.Contains("GlobalHydraulicSlotMembersImmutable"),
+                    "成员变化未返回稳定的不可变错误码。");
+            }
+        }
+
+        private static void GlobalSlotFailureReleasesHealthyGroup()
+        {
+            var coordinator = new GlobalHydraulicSlotCoordinator();
+            var runId = Guid.NewGuid();
+            var key = new GlobalHydraulicSlotKey(runId, HydraulicPhaseKind.Qualification, 8);
+            var released = Array.Empty<int>();
+            async Task<HydraulicCycleLease> Enter(int hydraulicId, IReadOnlyList<int> members,
+                CancellationToken token)
+            {
+                await Task.Yield();
+                if (hydraulicId == 2)
+                    throw new HydraulicBuildException("P2BuildFailed");
+                var now = DateTime.UtcNow;
+                return new HydraulicCycleLease(
+                    new HydraulicGenerationKey(runId, hydraulicId, HydraulicPhaseKind.Qualification, 8),
+                    members,
+                    new PressureQualification(hydraulicId, 1, 70, 70, now, 0, 70, 70, 70, 7, now),
+                    now,
+                    Task.CompletedTask,
+                    1);
+            }
+
+            var result = coordinator.EnterAsync(
+                    key,
+                    new Dictionary<int, IReadOnlyList<int>>
+                    {
+                        [1] = new[] { 1, 2 },
+                        [2] = new[] { 7, 8 }
+                    },
+                    DateTime.UtcNow,
+                    DateTime.UtcNow,
+                    1000,
+                    800,
+                    10,
+                    Enter,
+                    (channels, _) =>
+                    {
+                        released = channels.ToArray();
+                        return Task.CompletedTask;
+                    },
+                    CancellationToken.None)
+                .GetAwaiter().GetResult();
+
+            Assert(result.HasFailures && result.ShouldDeferHealthyGroups &&
+                   !result.MotorAnchorUtc.HasValue,
+                "单组失败后仍生成了半槽电机锚点。");
+            Assert(released.SequenceEqual(new[] { 1, 2 }),
+                "降级槽未释放已成功建压的健康组成员。");
+            try
+            {
+                result.GetLeaseOrThrow(2);
+                throw new InvalidOperationException("失败液压组未重抛原始异常。");
+            }
+            catch (HydraulicBuildException ex)
+            {
+                Assert(ex.Message.Contains("P2BuildFailed"),
+                    "失败液压组丢失原始异常语义。");
+            }
+        }
+
+        private static void GlobalSlotCancellationIsNotHardwareFailure()
+        {
+            var coordinator = new GlobalHydraulicSlotCoordinator();
+            using var cts = new CancellationTokenSource();
+            cts.Cancel();
+            try
+            {
+                coordinator.EnterAsync(
+                        new GlobalHydraulicSlotKey(Guid.NewGuid(), HydraulicPhaseKind.Formal, 1),
+                        new Dictionary<int, IReadOnlyList<int>>
+                        {
+                            [1] = new[] { 1 },
+                            [2] = new[] { 7 }
+                        },
+                        DateTime.UtcNow,
+                        DateTime.UtcNow,
+                        1000,
+                        0,
+                        10,
+                        (_, __, token) => Task.FromCanceled<HydraulicCycleLease>(token),
+                        (_, __) => Task.CompletedTask,
+                        cts.Token)
+                    .GetAwaiter().GetResult();
+                throw new InvalidOperationException("整批取消被错误转换为降级液压结果。");
+            }
+            catch (OperationCanceledException)
+            {
+                // expected
+            }
         }
 
         private static void NonLastMemberWaitsForSafePressure()

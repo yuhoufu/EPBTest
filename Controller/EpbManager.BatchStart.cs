@@ -105,6 +105,14 @@ namespace Controller
         private long _learningRetryGeneration;
         private long _softwareHydraulicRetryGeneration;
         private ElectricalStaggerPlan _activeStaggerPlan;
+        private readonly GlobalHydraulicSlotCoordinator _globalHydraulicSlots =
+            new GlobalHydraulicSlotCoordinator();
+        private readonly ConcurrentDictionary<
+            GlobalHydraulicSlotKey,
+            IReadOnlyDictionary<int, IReadOnlyList<int>>> _globalHydraulicParticipantSnapshots =
+                new ConcurrentDictionary<
+                    GlobalHydraulicSlotKey,
+                    IReadOnlyDictionary<int, IReadOnlyList<int>>>();
         private RunChainIdentity _activeRunChainIdentity;
         private int _learningManifestPublished;
         private string _learningManifestReason = string.Empty;
@@ -140,6 +148,146 @@ namespace Controller
                 return active;
 
             return ElectricalStaggerPlanner.Build(selected, _cfg.Test.Groups, PeriodMs);
+        }
+
+        /// <summary>全部液压资格完成后到首批电机放行的共同调度裕量。</summary>
+        public int GlobalMotorAnchorGuardMs { get; set; } = 30;
+
+        private CancellationToken GetBatchSessionTokenOr(CancellationToken fallback)
+        {
+            var source = Volatile.Read(ref _batchSessionCts);
+            if (source == null) return fallback;
+            try { return source.Token; }
+            catch (ObjectDisposedException) { return fallback; }
+        }
+
+        private IReadOnlyDictionary<int, IReadOnlyList<int>> CaptureGlobalFormalParticipants(
+            Guid runId,
+            ElectricalStaggerPlan staggerPlan,
+            long formalSlot)
+        {
+            if (staggerPlan == null) throw new ArgumentNullException(nameof(staggerPlan));
+            var key = new GlobalHydraulicSlotKey(runId, HydraulicPhaseKind.Formal, formalSlot);
+            var snapshot = _globalHydraulicParticipantSnapshots.GetOrAdd(key, _ =>
+            {
+                var candidates = staggerPlan.Assignments.Keys.OrderBy(channel => channel).ToArray();
+                var result = new Dictionary<int, IReadOnlyList<int>>();
+                var pressure1 = GetHydraulicParticipantsInPressureGroupSnapshot(1, candidates, formalSlot);
+                var pressure2 = GetHydraulicParticipantsInPressureGroupSnapshot(2, candidates, formalSlot);
+                if (pressure1.Count > 0) result[1] = pressure1;
+                if (pressure2.Count > 0) result[2] = pressure2;
+                return result;
+            });
+            TrimGlobalParticipantSnapshots(key);
+            return snapshot;
+        }
+
+        private void TrimGlobalParticipantSnapshots(GlobalHydraulicSlotKey current)
+        {
+            foreach (var pair in _globalHydraulicParticipantSnapshots.Where(pair =>
+                         pair.Key.RunId == current.RunId &&
+                         pair.Key.PhaseKind == current.PhaseKind &&
+                         pair.Key.Slot < current.Slot - 4).ToArray())
+                _globalHydraulicParticipantSnapshots.TryRemove(pair.Key, out _);
+        }
+
+        private async Task<GlobalHydraulicSlotResult> EnterGlobalHydraulicSlotAsync(
+            Guid runId,
+            HydraulicPhaseKind phaseKind,
+            long slot,
+            IReadOnlyDictionary<int, IReadOnlyList<int>> participantsByHydraulic,
+            DateTime pressureBuildPlannedUtc,
+            DateTime wallClockAnchorUtc,
+            ElectricalStaggerPlan staggerPlan,
+            bool startupSelfHealing,
+            CancellationToken token)
+        {
+            if (staggerPlan == null) throw new ArgumentNullException(nameof(staggerPlan));
+            var allParticipants = (participantsByHydraulic ??
+                                   new Dictionary<int, IReadOnlyList<int>>())
+                .Values
+                .SelectMany(channels => channels ?? Array.Empty<int>())
+                .Distinct()
+                .ToArray();
+            if (allParticipants.Length == 0)
+                throw new InvalidOperationException(
+                    $"全局液压槽没有活动成员。Run={runId:N} Phase={phaseKind} Slot={slot}");
+            var maxPhaseMs = allParticipants.Max(channel => staggerPlan.Get(channel).PhaseMs);
+            var key = new GlobalHydraulicSlotKey(runId, phaseKind, slot);
+            var result = await _globalHydraulicSlots.EnterAsync(
+                    key,
+                    participantsByHydraulic,
+                    pressureBuildPlannedUtc,
+                    wallClockAnchorUtc,
+                    PeriodMs,
+                    maxPhaseMs,
+                    GlobalMotorAnchorGuardMs,
+                    (hydraulicId, members, ct) =>
+                    {
+                        var generationKey = new HydraulicGenerationKey(
+                            runId,
+                            hydraulicId,
+                            phaseKind,
+                            slot);
+                        return startupSelfHealing
+                            ? EnterHydraulicStartupPhaseWithSelfHealingAsync(generationKey, members, ct)
+                            : HydraulicEnterAtGroupAnchorAsync(generationKey, members, ct);
+                    },
+                    ReleaseSuccessfulGlobalSlotGroupsAsync,
+                    token)
+                .ConfigureAwait(false);
+            LogGlobalHydraulicSlotOnce(result, staggerPlan);
+            return result;
+        }
+
+        private async Task ReleaseSuccessfulGlobalSlotGroupsAsync(
+            IReadOnlyList<int> channels,
+            string reason)
+        {
+            var tasks = (channels ?? Array.Empty<int>())
+                .Distinct()
+                .Select(async channel =>
+                {
+                    if (!_hydraulicLeaseByChannel.TryGetValue(channel, out var scope) || scope.IsClosed)
+                        return;
+                    await AbortHydraulicLeaseForChannelAsync(channel, reason).ConfigureAwait(false);
+                })
+                .ToArray();
+            if (tasks.Length > 0)
+                await Task.WhenAll(tasks).ConfigureAwait(false);
+        }
+
+        private void LogGlobalHydraulicSlotOnce(
+            GlobalHydraulicSlotResult result,
+            ElectricalStaggerPlan staggerPlan)
+        {
+            if (result == null || !result.TryClaimLogOwnership()) return;
+            var groups = string.Join(
+                " ",
+                result.Groups.Values.OrderBy(item => item.HydraulicId).Select(item =>
+                    $"H{item.HydraulicId}[Members={string.Join(",", item.Participants)} " +
+                    $"DispatchUtc={item.DispatchUtc:O} " +
+                    $"BuildActualUtc={(item.BuildStartedUtc?.ToString("O") ?? "Unknown")} " +
+                    $"QualifiedUtc={(item.QualifiedUtc?.ToString("O") ?? "Unknown")} " +
+                    $"Error={(item.Error?.GetBaseException().Message ?? "None")}]"));
+            var batches = string.Join(
+                ",",
+                result.Groups.Values.SelectMany(item => item.Participants)
+                    .Distinct()
+                    .OrderBy(channel => channel)
+                    .Select(channel =>
+                        $"EPB{channel}:B{staggerPlan.Get(channel).BatchOrdinal}/P{staggerPlan.Get(channel).PhaseMs}"));
+            var message =
+                $"GlobalSlotAlignment Run={result.Key.RunId:N} Phase={result.Key.PhaseKind} " +
+                $"GlobalSlot={result.Key.Slot} AlignmentState={result.AlignmentState} " +
+                $"PressureBuildPlannedUtc={result.PressureBuildPlannedUtc:O} " +
+                $"MotorAnchorUtc={(result.MotorAnchorUtc?.ToString("O") ?? "Deferred")} " +
+                $"MotorDeadlineUtc={(result.MotorDeadlineUtc?.ToString("O") ?? "Deferred")} " +
+                $"Batches=[{batches}] {groups}";
+            if (result.HasFailures)
+                _log?.Warn(message, "液压全局槽");
+            else
+                _log?.Info(message, "液压全局槽");
         }
         private readonly ConcurrentDictionary<int, DateTime> _activeFormalT0ByPressureGroup =
             new ConcurrentDictionary<int, DateTime>();
@@ -2002,6 +2150,10 @@ namespace Controller
 
             Interlocked.Exchange(ref _batchSessionActive, 0);
             Interlocked.Exchange(ref _formalPhaseCommitted, 0);
+            _globalHydraulicSlots.ClearRun(_activeBatchId);
+            foreach (var key in _globalHydraulicParticipantSnapshots.Keys
+                         .Where(key => key.RunId == _activeBatchId).ToArray())
+                _globalHydraulicParticipantSnapshots.TryRemove(key, out _);
             _activeStaggerPlan = null;
             _activeFormalT0ByPressureGroup.Clear();
             _activeBatchId = Guid.Empty;
@@ -2025,9 +2177,9 @@ namespace Controller
             {
                 var assignments = string.Join(
                     ", ",
-                    group.OrderBy(x => x.SelectedIndexInGroup)
+                    group.OrderBy(x => x.BatchOrdinal)
                         .Select(x =>
-                            $"EPB{x.Channel}(index={x.SelectedIndexInGroup},phase={x.PhaseMs}ms)"));
+                            $"EPB{x.Channel}(batch={x.BatchOrdinal},phase={x.PhaseMs}ms)"));
                 _log?.Info(
                     $"Group{group.Key} Stagger={group.First().StaggerMs}ms: {assignments}",
                     "EPB");
@@ -2104,6 +2256,9 @@ namespace Controller
             ElectricalStaggerPlan staggerPlan,
             CancellationToken token)
         {
+            // 全局液压槽不得绑定任一通道的暂停令牌；只有整批会话取消才可取消
+            // 同槽的双液压建压/资格任务，避免单通道暂停拖垮另一健康压力组。
+            var sessionToken = token;
             foreach (var kv in groups)
             {
                 var pg = kv.Key;
@@ -2196,35 +2351,45 @@ namespace Controller
                             await EnsurePowerSupplyReadyForChannelsAsync(new[] { ch }, token)
                                 .ConfigureAwait(false);
 
-                            // 1) 在本圈锚点时刻为该压力组建压：
-                            //    对本组所有参与通道调用 EnterElectricalPhaseAsync，
-                            //    这样 HydraulicGroupCoordinator 能正确维护 InFlight 集合。
-                            var participants = GetHydraulicParticipantsInPressureGroupSnapshot(
-                                pg,
-                                enabled,
-                                phaseSlot);
-                            var hydraulicKey = new HydraulicGenerationKey(
+                            // 1) 同一 Run/Phase/Slot 由唯一 owner 同时下发双液压建压；
+                            //    两组全部达压后只生成一个电机锚点。任一组失败时，健康组
+                            //    释放压力并跳过当前半槽，在下一完整槽重新会合。
+                            var participantsByHydraulic = CaptureGlobalFormalParticipants(
                                 _activeBatchId,
-                                pg,
-                                HydraulicPhaseKind.Formal,
+                                staggerPlan,
                                 phaseSlot);
-                            var lease = await HydraulicEnterAtGroupAnchorAsync(
-                                    hydraulicKey,
-                                    participants,
-                                    token)
-                                .ConfigureAwait(false);
-
-                            // 液压资格完成后，所有等待同一代次的通道使用同一个未来锚点，
-                            // 再叠加各自电气相位。不能让过期的0/800ms相位同时补发。
-                            var maxPhaseMs = participants.Count == 0
-                                ? phase
-                                : participants.Max(member => staggerPlan.Get(member).PhaseMs);
-                            var phaseWindow = ElectricalStaggerExecutor.CreateQualifiedPhaseWindow(
-                                lease?.ActuationAnchorUtc ?? DateTime.UtcNow.AddMilliseconds(2),
+                            var globalSlot = await EnterGlobalHydraulicSlotAsync(
+                                _activeBatchId,
+                                HydraulicPhaseKind.Formal,
+                                phaseSlot,
+                                participantsByHydraulic,
+                                t0.AddMilliseconds(phaseSlot * (double)PeriodMs),
                                 t0,
-                                PeriodMs,
-                                maxPhaseMs);
-                            var plannedStartUtc = phaseWindow.GetDueUtc(phase);
+                                staggerPlan,
+                                startupSelfHealing: false,
+                                sessionToken)
+                                .ConfigureAwait(false);
+                            if (globalSlot.HasFailures)
+                            {
+                                ReleaseCyclePauseCts(ch, cyclePauseCts);
+                                if (globalSlot.Groups.TryGetValue(pg, out var groupOutcome) &&
+                                    groupOutcome.IsSuccess)
+                                {
+                                    _log?.Warn(
+                                        $"正式阶段健康液压组跳过降级槽 Run={_activeBatchId:N} " +
+                                        $"GlobalSlot={phaseSlot} Hydraulic={pg} EPB={ch}",
+                                        "液压全局槽");
+                                    return false;
+                                }
+
+                                // 保留原始异常栈，交由现有故障隔离策略仅处置失败组。
+                                globalSlot.GetLeaseOrThrow(pg);
+                                return false;
+                            }
+
+                            var lease = globalSlot.GetLeaseOrThrow(pg);
+                            var plannedStartUtc = globalSlot.MotorAnchorUtc.Value
+                                .AddMilliseconds(phase);
                             var delay = plannedStartUtc - DateTime.UtcNow;
                             if (delay.TotalMilliseconds > 1)
                                 await Task.Delay(delay, token).ConfigureAwait(false);
@@ -2246,8 +2411,8 @@ namespace Controller
                                 $"HydraulicQualifiedUtc={lease?.Qualification?.ReachedUtc:O}",
                                 "EPB");
 
-                            // 本压力组按最后一个相位选择统一墙钟截止点；资格过晚时整组共同顺延。
-                            var deadlineUtc = phaseWindow.DeadlineUtc;
+                            // 双压力组共享最后相位截止点；资格过晚时整批共同顺延。
+                            var deadlineUtc = globalSlot.MotorDeadlineUtc.Value;
 
                             // 2.5) ★ 圈开始：通知 Recorder
                             var cycleNumber = cycleIndex + baseCycle;
@@ -2608,35 +2773,49 @@ namespace Controller
                 phaseToken.ThrowIfCancellationRequested();
                 var tasksAllGroups = new List<Task>();
 
-                foreach (var kv in groups)
+                // 每个学习逻辑圈先冻结双液压成员快照，再由全局槽一次性并发建压。
+                // Slot 使用单调代次而非逻辑圈号，使降级槽可以原圈重试而不复用失败结果。
+                var participantsByHydraulic = groups
+                    .Where(pair => pair.Value != null)
+                    .Select(pair => new
+                    {
+                        HydraulicId = pair.Key,
+                        Members = pair.Value
+                            .Where(ch => !quarantined.ContainsKey(ch))
+                            .Where(ch => !IsMechanicalTargetReached(ch))
+                            .OrderBy(ch => ch)
+                            .ToArray()
+                    })
+                    .Where(item => item.Members.Length > 0)
+                    .ToDictionary(
+                        item => item.HydraulicId,
+                        item => (IReadOnlyList<int>)item.Members);
+                if (participantsByHydraulic.Count == 0) break;
+
+                var learningSlot = Interlocked.Increment(ref _learningRetryGeneration);
+                var learningTimelineUtc = t0OfGroup.Values.Min()
+                    .AddMilliseconds(k * (double)PeriodMs);
+                var globalSlot = await EnterGlobalHydraulicSlotAsync(
+                        learningRunId,
+                        HydraulicPhaseKind.Learning,
+                        learningSlot,
+                        participantsByHydraulic,
+                        learningTimelineUtc,
+                        learningTimelineUtc,
+                        staggerPlan,
+                        startupSelfHealing: true,
+                        phaseToken)
+                    .ConfigureAwait(false);
+
+                foreach (var kv in participantsByHydraulic)
                 {
                     var pg = kv.Key; // 压力组 ID：1/2
                     var list = kv.Value;
                     if (list == null || list.Count == 0) continue;
 
-                    // 本圈该压力组的锚点时刻
-                    var t0 = t0OfGroup[pg];
-                    var tk = t0.AddMilliseconds(k * PeriodMs);
-
-                    // —— 1.2) 组内通道：液压资格后的共享窗口 + 相位错峰（0/Δ/2Δ） —— //
-                    var enabled = list
-                        .Where(ch => !quarantined.ContainsKey(ch))
-                        .Where(ch => !IsMechanicalTargetReached(ch))
-                        .OrderBy(x => x)
-                        .ToList();
+                    // —— 1.2) 组内通道：全局液压锚点 + 固定批次相位（0/Δ/2Δ） —— //
+                    var enabled = list.OrderBy(x => x).ToList();
                     if (enabled.Count == 0) continue;
-
-                    // —— 1.1) 组锚点任务（屏障） —— //
-                    var hydraulicKey = new HydraulicGenerationKey(
-                        learningRunId,
-                        pg,
-                        HydraulicPhaseKind.Learning,
-                        k + 1L);
-                    var anchorTask = EnterHydraulicStartupPhaseWithSelfHealingAsync(
-                        hydraulicKey,
-                        enabled,
-                        phaseToken);
-                    var maxPhaseMs = enabled.Max(member => staggerPlan.Get(member).PhaseMs);
 
                     for (var i = 0; i < enabled.Count; i++)
                     {
@@ -2655,52 +2834,54 @@ namespace Controller
                             await FaultIsolatedPhaseWork.RunAsync(
                                 async () =>
                                 {
-                                    // ① 等待液压锚点到位（屏障：确保本组已经建压 + 所有通道已登记 InFlight）。
-                                    // 锚点异常也必须在本组/本通道内收口，不能越过 WhenAll 触发整批启动回滚。
-                                    var lease = await anchorTask.ConfigureAwait(false);
                                     channelToken.ThrowIfCancellationRequested();
                                     try
                                     {
+                                        // ① 任一液压组失败时，失败组仍走既有通道隔离；健康组
+                                        // 不执行半个学习槽，待外层以新全局代次重试同一逻辑圈。
+                                        if (globalSlot.HasFailures)
+                                        {
+                                            if (globalSlot.Groups.TryGetValue(pg, out var outcome) &&
+                                                outcome.IsSuccess)
+                                                return;
+                                            globalSlot.GetLeaseOrThrow(pg);
+                                            return;
+                                        }
 
-                                    // ② 液压资格完成后整组共享同一执行窗口。
-                                    // 禁止各通道按自己的原始相位独立滚动，否则资格时刻恰好落在
-                                    // 0ms 与 800ms 相位之间时，会把同代次成员拆到相邻两个周期。
-                                    var phaseWindow = ElectricalStaggerExecutor.CreateQualifiedPhaseWindow(
-                                        lease?.ActuationAnchorUtc ?? DateTime.UtcNow.AddMilliseconds(2),
-                                        tk,
-                                        PeriodMs,
-                                        maxPhaseMs);
-                                    var atFuture = phaseWindow.GetDueUtc(phase);
-                                    var now = DateTime.UtcNow;
+                                        globalSlot.GetLeaseOrThrow(pg);
+                                        // ② 双液压全部资格完成后，所有电气组共享同一执行窗口。
+                                        var atFuture = globalSlot.MotorAnchorUtc.Value
+                                            .AddMilliseconds(phase);
+                                        var now = DateTime.UtcNow;
 
-                                    var delay = atFuture - now;
-                                    _log?.Info(
-                                        $"通道{ch}: tk={tk:HH:mm:ss.fff}, phase={phase}ms, qualified-at={atFuture:HH:mm:ss.fff}, delay={delay.TotalMilliseconds}ms");
+                                        var delay = atFuture - now;
+                                        _log?.Info(
+                                            $"通道{ch}: global-slot={learningSlot}, phase={phase}ms, qualified-at={atFuture:HH:mm:ss.fff}, delay={delay.TotalMilliseconds}ms");
 
-                                    var ms = (int)Math.Floor(delay.TotalMilliseconds);
-                                    if (ms > 0)
-                                        await Task.Delay(ms, channelToken).ConfigureAwait(false);
-                                    else
-                                        await Task.Yield();
+                                        var ms = (int)Math.Floor(delay.TotalMilliseconds);
+                                        if (ms > 0)
+                                            await Task.Delay(ms, channelToken).ConfigureAwait(false);
+                                        else
+                                            await Task.Yield();
 
-                                    var actualStartUtc = DateTime.UtcNow;
-                                    MarkElectricalPhaseDue(ch, atFuture);
-                                    _log?.Info(
-                                        $"学习阶段启动 Run={learningRunId:N} EPB={ch} Group={staggerPlan.Get(ch).ElectricalGroupId} " +
-                                        $"LearnCycle={k + 1} Phase={phase}ms PlannedUtc={atFuture:O} " +
-                                        $"ActualUtc={actualStartUtc:O} DeviationMs={(actualStartUtc - atFuture).TotalMilliseconds:F3}",
-                                        "EPB");
+                                        var actualStartUtc = DateTime.UtcNow;
+                                        MarkElectricalPhaseDue(ch, atFuture);
+                                        _log?.Info(
+                                            $"学习阶段启动 Run={learningRunId:N} EPB={ch} Group={staggerPlan.Get(ch).ElectricalGroupId} " +
+                                            $"LearnCycle={k + 1} Phase={phase}ms PlannedUtc={atFuture:O} " +
+                                            $"ActualUtc={actualStartUtc:O} DeviationMs={(actualStartUtc - atFuture).TotalMilliseconds:F3}",
+                                            "EPB");
 
-                                    await RunLearningLogicalCycleWithSelfHealingAsync(
-                                            GetRunner(ch),
-                                            ch,
-                                            pg,
-                                            phase,
-                                            k + 1,
-                                            learningRunId,
-                                            learningEvidence,
-                                            channelToken)
-                                        .ConfigureAwait(false);
+                                        await RunLearningLogicalCycleWithSelfHealingAsync(
+                                                GetRunner(ch),
+                                                ch,
+                                                pg,
+                                                phase,
+                                                k + 1,
+                                                learningRunId,
+                                                learningEvidence,
+                                                channelToken)
+                                            .ConfigureAwait(false);
                                     }
                                     finally
                                     {
@@ -2730,6 +2911,15 @@ namespace Controller
 
                 // 本圈所有任务结束后进入下一圈
                 await Task.WhenAll(tasksAllGroups).ConfigureAwait(false);
+                if (globalSlot.HasFailures &&
+                    groups.Values.SelectMany(list => list ?? new List<int>())
+                        .Any(ch => !quarantined.ContainsKey(ch) && !IsMechanicalTargetReached(ch)))
+                {
+                    _log?.Warn(
+                        $"学习逻辑圈{k + 1}遇到降级液压槽，健康组将在新全局槽重试本圈。",
+                        "液压全局槽");
+                    k--;
+                }
             }
 
             // —— 2) 学习聚合结束：写回中位数/统计量 —— //

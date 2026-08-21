@@ -44,7 +44,21 @@ namespace Controller
                     // 三者均在 Recorder.BeginCycle 之前可见。
                     _currentCycleNumberByChannel[channel] = cycleNumber;
                     _currentAttemptIdByChannel[channel] = created.AttemptId;
-                    recorder?.BeginCycle(channel, cycleNumber, beginUtc);
+                    if (recorder is ISequencedEpbCycleRecorder sequenced &&
+                        !string.IsNullOrWhiteSpace(device))
+                    {
+                        sequenced.BeginCycleAtDaqBoundary(
+                            channel,
+                            cycleNumber,
+                            beginUtc,
+                            device,
+                            _acq.GetCurrentGeneration(device),
+                            _acq.GetLastAcceptedSequence(device));
+                    }
+                    else
+                    {
+                        recorder?.BeginCycle(channel, cycleNumber, beginUtc);
+                    }
                     created.MarkBeginSucceeded();
                 });
                 if (accepted &&
