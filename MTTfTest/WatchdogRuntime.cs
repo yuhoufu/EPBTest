@@ -73,7 +73,11 @@ namespace MTEmbTest
     internal static class WatchdogRuntime
     {
         private static readonly object Gate = new object();
+        // 命名管道写入可能因 Sidecar/系统 I/O 停滞而阻塞。发送串行锁与全局状态锁分离，
+        // 保证停止线程仍可撤销会话、关闭管道并让阻塞写入退出。
+        private static readonly object SendGate = new object();
         private static readonly object HeartbeatCaptureGate = new object();
+        private const int SendGateWaitMs = 100;
         private static NamedPipeClientStream _pipe;
         private static StreamReader _reader;
         private static StreamWriter _writer;
@@ -908,6 +912,7 @@ namespace MTEmbTest
         {
             Exception error = null;
             StreamWriter writer;
+            string payload;
             lock (Gate) writer = _writer;
             if (writer == null)
             {
@@ -918,13 +923,31 @@ namespace MTEmbTest
             }
             try
             {
-                lock (Gate)
+                payload = WatchdogProtocol.Serialize(message);
+                if (!Monitor.TryEnter(SendGate, SendGateWaitMs))
                 {
-                    if (!ReferenceEquals(_writer, writer)) return false;
-                    writer.WriteLine(WatchdogProtocol.Serialize(message));
+                    if (Interlocked.CompareExchange(ref _sendFailureReported, 1, 0) == 0)
+                        RaiseTransportError(
+                            "SendBusy",
+                            $"命名管道发送超过 {SendGateWaitMs}ms 未获得串行锁，消息={message?.Type ?? "Unknown"}。");
+                    return false;
                 }
-                Interlocked.Exchange(ref _sendFailureReported, 0);
-                return true;
+                try
+                {
+                    lock (Gate)
+                    {
+                        if (!ReferenceEquals(_writer, writer)) return false;
+                    }
+
+                    // 禁止在 Gate 内执行任何可能阻塞的管道 I/O。
+                    writer.WriteLine(payload);
+                    Interlocked.Exchange(ref _sendFailureReported, 0);
+                    return true;
+                }
+                finally
+                {
+                    Monitor.Exit(SendGate);
+                }
             }
             catch (Exception ex) { error = ex; }
             if (Interlocked.CompareExchange(ref _sendFailureReported, 1, 0) == 0)

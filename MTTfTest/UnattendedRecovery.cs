@@ -1431,6 +1431,14 @@ namespace MTEmbTest
             UnattendedRunCheckpointStore.Disarm(reason);
         }
 
+        internal static Task DisarmAsync(string reason)
+        {
+            // 先在调用线程撤销仍在等待的恢复/交接，再把 WriteThrough + Flush(true)
+            // 检查点持久化移出 UI 线程。磁盘或网络盘抖动不能挡在物理断电之前。
+            CancelRestartRetrySequence();
+            return Task.Run(() => UnattendedRunCheckpointStore.Disarm(reason));
+        }
+
         private static void CancelRestartRetrySequence()
         {
             CancellationTokenSource cancellation;

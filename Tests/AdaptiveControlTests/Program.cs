@@ -239,6 +239,7 @@ namespace AdaptiveControlTests
                 Run("正向低平台200ms立即断电并软预警", ForwardCurrentRiseStallWarnsAndCutsPower);
                 Run("14.6A近目标平台200ms软完成", NearTargetPlateauCompletesWithWarning);
                 Run("EPB10第85993圈首样本越阈值不再误报高位平台", Epb10Cycle85993RapidLoadRiseReplay);
+                Run("2.13.0.16现场中段平台不得提前断电", RapidLoadRiseMidTravelPlateauDoesNotCutPower);
                 Run("13.9A短平台恢复后不误停", LowPlateauRecoversBeforeFaultWindow);
                 Run("13.9A持续平台按低目标预警完成", Sustained139AmpPlateauWarns);
                 Run("EPB10第28圈全数据峰值回放", Epb10Cycle28FullRatePeakReplay);
@@ -919,6 +920,42 @@ namespace AdaptiveControlTests
                        "AbnormalHighCurrentPlateau",
                        StringComparison.OrdinalIgnoreCase) < 0,
                 "85993仍被7.5A通用高平台规则错误归类");
+        }
+
+        private static void RapidLoadRiseMidTravelPlateauDoesNotCutPower()
+        {
+            var machine = new EpbAdaptiveCurrentStateMachine(StableProfile());
+            machine.ArmForward(Tick(0), 100, 9000, 15, 0, 3);
+
+            machine.OnSample(Tick(46), 0.054);
+            machine.OnSample(Tick(94), 1.719);
+            var rapidRise = machine.OnSample(Tick(109), 2.318);
+            Assert(
+                rapidRise.Stage == EpbCurrentStage.LoadRise &&
+                rapidRise.SoftWarning &&
+                rapidRise.Reason.Contains("RapidLoadRiseWithoutObservedEmpty"),
+                "现场涌流结束后的快速负载上升回放未进入预期状态");
+
+            Feed(
+                machine,
+                119,
+                359,
+                10,
+                ms => Math.Min(10.8, 2.318 + (ms - 109) * 0.04));
+            var midTravelPlateau = Feed(machine, 369, 699, 10, _ => 10.8);
+            Assert(
+                !midTravelPlateau.ClampReached && !midTravelPlateau.HardFault,
+                $"10.8A中段平台被提前断电：{midTravelPlateau.Reason}");
+
+            var completed = Feed(
+                machine,
+                709,
+                1300,
+                10,
+                ms => Math.Min(15.0, 10.8 + (ms - 699) * 0.012));
+            Assert(
+                completed.ClampReached && !completed.HardFault,
+                $"中段平台恢复上升后未能达到目标：{completed.Reason}");
         }
 
         private static void FullRateRapidClampBeforeLoadRiseIsAccepted()

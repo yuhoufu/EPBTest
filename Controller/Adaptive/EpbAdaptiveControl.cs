@@ -253,6 +253,9 @@ namespace Controller.Adaptive
         private const double MaximumPredictionSlopeAperMs = 1.0;
         private const double MaximumPredictionLeadMs = 100.0;
         private const double MaximumPlateauSpreadA = 0.75;
+        // “低目标平台”只能用于接近夹紧目标的尾段。低于目标 90% 的平台仍可能是
+        // 机构中段负载变化，必须继续供电并交给正向进展硬截止保护，不能当作夹紧完成。
+        private const double MinimumLowTargetPlateauFraction = 0.90;
         private const int WindowCapacity = 1024;
 
         private readonly object _gate = new object();
@@ -778,6 +781,9 @@ namespace Controller.Adaptive
                     var acceptableFloorA = Math.Max(
                         0,
                         _forwardA - _safetyLimits.ForwardAcceptableUndershootA);
+                    var lowTargetPlateauFloorA = Math.Min(
+                        acceptableFloorA,
+                        _forwardA * MinimumLowTargetPlateauFraction);
                     if (effectiveObservedPeakA >= acceptableFloorA)
                     {
                         ApplyWindowDiagnostics(decision, stallProbeStats);
@@ -810,6 +816,8 @@ namespace Controller.Adaptive
                             out var progressStats,
                             out var progressSlope) &&
                         progressStats.P90 < _forwardA &&
+                        effectiveObservedPeakA >= lowTargetPlateauFloorA &&
+                        progressStats.P90 >= lowTargetPlateauFloorA &&
                         progressSlope <= _safetyLimits.ForwardMinimumRiseSlopeAperMs)
                     {
                         ApplyWindowDiagnostics(decision, progressStats);
@@ -823,7 +831,8 @@ namespace Controller.Adaptive
                             0,
                             "LowTargetPlateau",
                             $"ClampReachedLowTargetPlateau Peak={effectiveObservedPeakA:F3}A " +
-                            $"I={current:F3}A Floor={acceptableFloorA:F3}A Target={_forwardA:F3}A " +
+                            $"I={current:F3}A AcceptableFloor={acceptableFloorA:F3}A " +
+                            $"PlateauFloor={lowTargetPlateauFloorA:F3}A Target={_forwardA:F3}A " +
                             $"slope={progressSlope:F6}A/ms " +
                             $"limit={_safetyLimits.ForwardMinimumRiseSlopeAperMs:F6}A/ms " +
                             $"confirm={progressStats.SpanMs}ms");

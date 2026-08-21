@@ -2612,14 +2612,6 @@ namespace MTEmbTest
 
             #endregion
 
-            // 关闭所有通道
-            for (var chIndex = 0; chIndex < 12; chIndex++)
-            {
-                var ch = chIndex + 1;
-                EpbGroup[chIndex].CtrlRunning.Checked = false; // 启动按钮设为允许
-            }
-
-
             if (Interlocked.CompareExchange(ref _stopUiGuard, 1, 0) != 0)
             {
                 LogInfo("停止试验正在处理中，请勿重复点击。");
@@ -2630,18 +2622,14 @@ namespace MTEmbTest
             var stopCommandId = Guid.NewGuid().ToString("N");
             LogInfo($"已接收停止试验命令，正在执行安全断能与数据收口。CommandId={stopCommandId}");
             PostSafetyStatus("停止命令已接收，正在安全断能与收口…", false);
-            UnattendedRecoveryCoordinator.Disarm("ManualStopIntent");
-            WatchdogRuntime.NotifyManualStop("操作员点击停止试验");
-            ClearGracefulPauseCheckpoint("ManualStopRequested");
             BtnStop.Enabled = false;
             BtnStop.Cursor = Cursors.WaitCursor;
             BtnStartTest.Enabled = false;
             BtnStartTest.Cursor = Cursors.WaitCursor;
             try
             {
-                try { _batchCts?.Cancel(); }
-                catch (ObjectDisposedException) { }
-
+                // 物理断电必须成为停止按钮后的第一个可能阻塞操作。恢复检查点的
+                // WriteThrough/Flush、Watchdog 管道与批次取消回调全部移到后台并行执行。
                 var stopTask = _epb.StopAllAsync(
                     new StopContext
                     {
@@ -2651,6 +2639,28 @@ namespace MTEmbTest
                         CorrelationId = stopCommandId,
                         RequestedUtc = DateTime.UtcNow
                     });
+
+                // StopAll 已经开始后再同步 UI 开关；即使控件事件处理异常，也不会挡住断能。
+                for (var chIndex = 0; chIndex < 12; chIndex++)
+                    EpbGroup[chIndex].CtrlRunning.Checked = false;
+
+                var watchdogNotificationTask = System.Threading.Tasks.Task.Run(() =>
+                {
+                    try { WatchdogRuntime.NotifyManualStop("操作员点击停止试验"); }
+                    catch (Exception ex)
+                    {
+                        logger?.Warn(
+                            $"人工停止已进入安全断能，但 Watchdog 通知失败：{ex.Message}",
+                            "Watchdog");
+                    }
+                });
+                QueueManualStopCheckpointCleanup(stopCommandId);
+                QueueBatchCancellation(stopCommandId);
+
+                // 让 ManualStopIntent 优先于完成消息抵达，但绝不让外部 I/O 挡住安全停机。
+                await System.Threading.Tasks.Task.WhenAny(
+                    watchdogNotificationTask,
+                    System.Threading.Tasks.Task.Delay(250));
                 var stopUiStarted = DateTime.UtcNow;
                 while (!stopTask.IsCompleted)
                 {
@@ -2670,6 +2680,10 @@ namespace MTEmbTest
                             $"{Math.Max(0, 15 - (int)elapsed)} 秒。阶段={progress.Stage}");
                 }
                 var safety = await stopTask;
+                if (!watchdogNotificationTask.IsCompleted)
+                    await System.Threading.Tasks.Task.WhenAny(
+                        watchdogNotificationTask,
+                        System.Threading.Tasks.Task.Delay(750));
                 if (safety.RequiresProcessRestart || safety.TimedOut)
                 {
                     LogInfo(ProcessRestartUiPolicy.GetOperatorMessage(safety.TimedOut));
@@ -2679,10 +2693,7 @@ namespace MTEmbTest
                 else
                 {
                     LogInfo($"停止试验完成；可以关闭软件或重新开始。CommandId={stopCommandId}");
-                    if (safety.PhysicalSafetyConfirmed)
-                        WatchdogRuntime.NotifyPhysicalStopConfirmed("ManualStopPhysicalSafetyConfirmed");
-                    WatchdogRuntime.NotifyStopCompleted(ToWatchdogStopSummary(safety), "ManualStopCompleted");
-                    WatchdogRuntime.ShutdownLocalClient();
+                    QueueManualStopCompletionNotifications(safety, stopCommandId);
                 }
             }
             catch (Exception ex)
@@ -2706,6 +2717,88 @@ namespace MTEmbTest
                         BtnStartTest.Enabled = false;
                 }
             }
+        }
+
+        private void QueueManualStopCheckpointCleanup(string stopCommandId)
+        {
+            _pendingGracefulPauseCheckpoint = null;
+            _ = System.Threading.Tasks.Task.Run(async () =>
+            {
+                try
+                {
+                    await UnattendedRecoveryCoordinator
+                        .DisarmAsync("ManualStopIntent")
+                        .ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    logger?.Warn(
+                        $"人工停止检查点撤权失败，安全断能不受影响。CommandId={stopCommandId}; " +
+                        $"Error={ex.Message}",
+                        "Recovery");
+                }
+
+                try
+                {
+                    UnattendedRunCheckpointStore.ClearGracefulPause("ManualStopRequested");
+                }
+                catch (Exception ex)
+                {
+                    logger?.Warn(
+                        $"人工停止清理正常暂停检查点失败。CommandId={stopCommandId}; Error={ex.Message}",
+                        "Recovery");
+                }
+            });
+        }
+
+        private void QueueBatchCancellation(string stopCommandId)
+        {
+            var batchCancellation = _batchCts;
+            _ = System.Threading.Tasks.Task.Run(() =>
+            {
+                try { batchCancellation?.Cancel(); }
+                catch (ObjectDisposedException) { }
+                catch (Exception ex)
+                {
+                    logger?.Warn(
+                        $"人工停止的批次取消回调异常，StopAll 已独立执行。" +
+                        $"CommandId={stopCommandId}; Error={ex.Message}",
+                        "EPB");
+                }
+            });
+        }
+
+        private void QueueManualStopCompletionNotifications(
+            StopSafetyResult safety,
+            string stopCommandId)
+        {
+            var summary = ToWatchdogStopSummary(safety);
+            var notificationTask = System.Threading.Tasks.Task.Run(() =>
+            {
+                try
+                {
+                    if (safety.PhysicalSafetyConfirmed)
+                        WatchdogRuntime.NotifyPhysicalStopConfirmed(
+                            "ManualStopPhysicalSafetyConfirmed");
+                    WatchdogRuntime.NotifyStopCompleted(summary, "ManualStopCompleted");
+                }
+                catch (Exception ex)
+                {
+                    logger?.Warn(
+                        $"人工停止已完成，但 Watchdog 完成通知失败。" +
+                        $"CommandId={stopCommandId}; Error={ex.Message}",
+                        "Watchdog");
+                }
+            });
+
+            _ = System.Threading.Tasks.Task.Run(async () =>
+            {
+                await System.Threading.Tasks.Task.WhenAny(
+                        notificationTask,
+                        System.Threading.Tasks.Task.Delay(1000))
+                    .ConfigureAwait(false);
+                WatchdogRuntime.ShutdownLocalClient();
+            });
         }
 
         #region 3) 窗体关闭：一次性解绑/停止/释放
