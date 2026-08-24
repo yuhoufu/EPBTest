@@ -71,6 +71,32 @@ namespace AdaptiveControlTests
                     return 0;
                 }
                 if (args.Length == 1 &&
+                    args[0].Equals("--durable-json-store", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += DurableJsonFileStoreProductionTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length >= 1 &&
+                    args[0].Equals("--durable-json-store-child", StringComparison.OrdinalIgnoreCase))
+                {
+                    return DurableJsonFileStoreProductionTests.RunChild(args);
+                }
+                if (args.Length == 1 &&
+                    args[0].Equals("--durable-json-store-stress", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += DurableJsonFileStoreProductionTests.RunStress();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
+                    args[0].Equals("--durable-json-store-tail", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += DurableJsonFileStoreProductionTests.RunTail();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
                     args[0].Equals("--watchdog-journal", StringComparison.OrdinalIgnoreCase))
                 {
                     _passed += WatchdogJournalStorageTests.RunAll();
