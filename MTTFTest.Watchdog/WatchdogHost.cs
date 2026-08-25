@@ -684,15 +684,11 @@ namespace MTTFTest.Watchdog
                     if (message.Heartbeat.RecoveryBatchCommitGeneration >
                         _journal.LastRecoveryBatchCommitGeneration)
                     {
-                        TryCommitRecoveryBatch(
-                            message.Heartbeat.RunId ?? _journal.RunId,
-                            message.Heartbeat.RecoveryProgressVersion.ToString(CultureInfo.InvariantCulture),
-                            message.Heartbeat.RecoveryBatchCommitGeneration);
-                        ObserveRecoveryBatchCommit(
+                        TryAcceptRecoveryBatchCommit(
                             message.Heartbeat.RecoveryBatchCommitGeneration,
                             "Heartbeat",
                             $"Generation={message.Heartbeat.RecoveryBatchCommitGeneration}",
-                            message.Heartbeat.RunId);
+                            message.Heartbeat);
                     }
                     _lastHeartbeatSequence = message.Heartbeat.Sequence;
                     _journal.LastHeartbeatSequence = message.Heartbeat.Sequence;
@@ -757,21 +753,16 @@ namespace MTTFTest.Watchdog
                     Record("SafetyPreflightPassed", message.Reason);
                     break;
                 case WatchdogMessageType.RecoveryBatchCommitted:
-                    TryCommitRecoveryBatch(
-                        message.RunId ?? message.Heartbeat?.RunId ?? _journal.RunId,
-                        message.RecoveryProgressToken ??
-                        message.Heartbeat?.RecoveryProgressVersion.ToString(CultureInfo.InvariantCulture) ??
-                        _journal.RecoveryProgressToken,
-                        message.RecoveryCommitGeneration > 0
-                            ? message.RecoveryCommitGeneration
-                            : Math.Max(1, _journal.LastRecoveryBatchCommitGeneration + 1));
-                    ObserveRecoveryBatchCommit(
-                        message.RecoveryCommitGeneration > 0
-                            ? message.RecoveryCommitGeneration
-                            : Math.Max(1, _journal.LastRecoveryBatchCommitGeneration + 1),
+                    var pipeCommitGeneration = message.RecoveryCommitGeneration > 0
+                        ? message.RecoveryCommitGeneration
+                        : Math.Max(1, _journal.LastRecoveryBatchCommitGeneration + 1);
+                    var pipeCommitHeartbeat = message.Heartbeat ?? _journal.LastHeartbeat;
+                    TryAcceptRecoveryBatchCommit(
+                        pipeCommitGeneration,
                         "PipeMessage",
                         message.Reason,
-                        message.RunId ?? message.Heartbeat?.RunId);
+                        pipeCommitHeartbeat,
+                        message.RecoveryProgressToken);
                     break;
                 case WatchdogMessageType.BatchStartFailed:
                     Record("BatchStartFailed", message.Reason);
@@ -1011,11 +1002,20 @@ namespace MTTFTest.Watchdog
                             _args.SessionId,
                             out var durableCommitGeneration) &&
                         durableCommitGeneration > _journal.LastRecoveryBatchCommitGeneration)
-                        ObserveRecoveryBatchCommit(
-                            durableCommitGeneration,
-                            "DurableMarker",
-                            $"Generation={durableCommitGeneration}",
-                            _journal.LastHeartbeat?.RunId);
+                    {
+                        var commitHeartbeat = _journal.LastHeartbeat;
+                        // The marker proves only that the client durably reached
+                        // the boundary.  Wait for a heartbeat carrying the same
+                        // generation and full new-run context before mutating the
+                        // strict authority.
+                        if (commitHeartbeat != null &&
+                            commitHeartbeat.RecoveryBatchCommitGeneration >= durableCommitGeneration)
+                            TryAcceptRecoveryBatchCommit(
+                                durableCommitGeneration,
+                                "DurableMarker",
+                                $"Generation={durableCommitGeneration}",
+                                commitHeartbeat);
+                    }
                     if (IsSessionRevoked())
                     {
                         // 过渡窗人工停止会先写耐久撤权 marker，让主程序在管道失效时
@@ -1488,6 +1488,21 @@ namespace MTTFTest.Watchdog
                     !_automaticTakeover.IsAuthorized(transaction))
                     return;
 
+                // Persist and read back an immediately consumable permit before
+                // crossing the irreversible process-termination boundary.  A
+                // stale Attached/Started authority is not a permit and must leave
+                // the old process untouched.
+                if (!_automaticTakeover.TryExecute(
+                        transaction,
+                        TakeoverTransactionStage.RelaunchPermit,
+                        () => ApproveRelaunchPermit(reason),
+                        out var permitGeneration) ||
+                    permitGeneration <= 0)
+                {
+                    Record("TakeoverAbortedNoConsumablePermit", reason);
+                    return;
+                }
+
                 if (!IsSessionRevoked() && !_journal.ManualStopRequested && IsCurrentProcessAlive())
                 {
                     try
@@ -1531,13 +1546,6 @@ namespace MTTFTest.Watchdog
                 if (_journal.ManualStopRequested ||
                     IsSessionRevoked() ||
                     !_automaticTakeover.IsAuthorized(transaction))
-                    return;
-                if (!_automaticTakeover.TryExecute(
-                        transaction,
-                        TakeoverTransactionStage.RelaunchPermit,
-                        () => ApproveRelaunchPermit(reason),
-                        out var permitGeneration) ||
-                    permitGeneration <= 0)
                     return;
                 if (!_automaticTakeover.TryAdvance(
                         transaction,
@@ -1591,6 +1599,13 @@ namespace MTTFTest.Watchdog
                 if (permitGeneration <= 0)
                     permitGeneration = ApproveRelaunchPermit("StopCompleted");
                 if (permitGeneration <= 0) return;
+                if (!IsConsumableRelaunchPermit(permitGeneration))
+                {
+                    Record(
+                        "RelaunchAfterExitAbortedNoConsumablePermit",
+                        $"Generation={permitGeneration}");
+                    return;
+                }
                 var deadline = DateTime.UtcNow.AddSeconds(15);
                 while (DateTime.UtcNow < deadline && !IsSessionRevoked() && IsCurrentProcessAlive())
                     await Task.Delay(250).ConfigureAwait(false);
@@ -1838,13 +1853,17 @@ namespace MTTFTest.Watchdog
         private long GetActiveRelaunchPermit()
         {
             var record = _relaunchCoordinator?.Snapshot;
-            if (record == null ||
-                (record.State != DurableRelaunchPermitState.Approved &&
-                 record.State != DurableRelaunchPermitState.LaunchIntent &&
-                 record.State != DurableRelaunchPermitState.Started &&
-                 record.State != DurableRelaunchPermitState.Attached))
+            if (record == null || record.State != DurableRelaunchPermitState.Approved)
                 return 0;
             return record.Generation;
+        }
+
+        private bool IsConsumableRelaunchPermit(long generation)
+        {
+            var record = _relaunchCoordinator?.Snapshot;
+            return generation > 0 && record != null &&
+                   record.Generation == generation &&
+                   record.State == DurableRelaunchPermitState.Approved;
         }
 
         private long ApproveRelaunchPermit(string reason)
@@ -1880,6 +1899,7 @@ namespace MTTFTest.Watchdog
                         : _journal.RecoveryFailureCode,
                     DeviceOrChannelGroup = _journal.DeviceOrChannelGroup,
                     RunId = _journal.RunId,
+                    RunEpoch = _journal.LastHeartbeat?.RunEpoch ?? 0,
                     RecoveryStage = _journal.RecoveryStage,
                     RecoveryProgressToken = _journal.RecoveryProgressToken,
                     RecoveryProcessSource = _journal.RecoveryProcessSource
@@ -1899,9 +1919,22 @@ namespace MTTFTest.Watchdog
                 (!decision.ProcessRelaunchAllowed &&
                  !decision.RelaunchPermitAlreadyPending))
                 return 0;
-            return decision.RelaunchPermitGeneration > 0
+            var generation = decision.RelaunchPermitGeneration > 0
                 ? decision.RelaunchPermitGeneration
                 : GetActiveRelaunchPermit();
+            var approved = _relaunchCoordinator?.Snapshot;
+            if (generation <= 0 || approved == null ||
+                approved.Generation != generation ||
+                approved.State != DurableRelaunchPermitState.Approved)
+            {
+                Record(
+                    "RelaunchPermitNotConsumable",
+                    $"DecisionGeneration={generation};" +
+                    $"State={approved?.State.ToString() ?? "Missing"};" +
+                    $"AuthorityGeneration={approved?.Generation ?? 0};Reason={reason}");
+                return 0;
+            }
+            return generation;
         }
 
         private bool TryConsumeRelaunchPermit(long permitGeneration, out int attempt)
@@ -2110,17 +2143,33 @@ namespace MTTFTest.Watchdog
 
         private bool TryCommitRecoveryBatch(
             string runId,
+            long runEpoch,
+            string recoveryStage,
             string progressToken,
             long commitGeneration)
         {
             if (commitGeneration <= 0) return false;
             var record = _relaunchCoordinator?.Snapshot;
-            if (record == null || record.State != DurableRelaunchPermitState.Attached)
+            if (record == null)
+                return false;
+            if (record.State == DurableRelaunchPermitState.Committed)
+            {
+                return record.RecoveryCommitGeneration >= commitGeneration &&
+                       string.Equals(record.RunId, runId, StringComparison.Ordinal) &&
+                       record.RunEpoch == runEpoch &&
+                       string.Equals(record.RecoveryStage, recoveryStage, StringComparison.Ordinal) &&
+                       string.Equals(record.ProgressToken, progressToken, StringComparison.Ordinal);
+            }
+            if (record.State != DurableRelaunchPermitState.Attached)
                 return false;
             var result = ExecuteAuthorityTransitionWithBusyRetry(
                 () => _relaunchCoordinator.CommitRecoveryBatch(
                     record.Identity,
                     string.IsNullOrWhiteSpace(runId) ? record.RunId : runId,
+                    runEpoch > 0 ? runEpoch : record.RunEpoch,
+                    string.IsNullOrWhiteSpace(recoveryStage)
+                        ? record.RecoveryStage
+                        : recoveryStage,
                     string.IsNullOrWhiteSpace(progressToken) ? record.ProgressToken : progressToken,
                     commitGeneration));
             if (result != null &&
@@ -2135,14 +2184,60 @@ namespace MTTFTest.Watchdog
                 ApplyDurablePermitLocked(result.Record);
                 if (!result.Succeeded || result.Blocked)
                 {
-                    _journal.RecoveryBlocked = true;
-                    _journal.RecoveryFailurePermanent = true;
                     _journal.LastReason = result.Reason ?? "RecoveryBatchCommitFailed";
+                    if (result.Blocked ||
+                        result.TransitionStatus == DurableAuthorityTransitionStatus.Unproven)
+                    {
+                        _journal.RecoveryBlocked = true;
+                        _journal.RecoveryFailurePermanent = true;
+                    }
                     try { TryPersistJournalSnapshotLocked(); } catch { }
                     return false;
                 }
                 return true;
             }
+        }
+
+        private bool TryAcceptRecoveryBatchCommit(
+            long commitGeneration,
+            string evidence,
+            string detail,
+            WatchdogHeartbeat heartbeat,
+            string progressToken = null)
+        {
+            if (heartbeat == null ||
+                string.IsNullOrWhiteSpace(heartbeat.RunId) ||
+                heartbeat.RunEpoch <= 0 ||
+                string.IsNullOrWhiteSpace(heartbeat.RecoveryStage))
+            {
+                Record(
+                    "RecoveryBatchCommitDeferred",
+                    $"Evidence={evidence};Generation={commitGeneration};ContextMissing");
+                return false;
+            }
+            var token = string.IsNullOrWhiteSpace(progressToken)
+                ? heartbeat.RecoveryProgressVersion.ToString(CultureInfo.InvariantCulture)
+                : progressToken;
+            if (!TryCommitRecoveryBatch(
+                    heartbeat.RunId,
+                    heartbeat.RunEpoch,
+                    heartbeat.RecoveryStage,
+                    token,
+                    commitGeneration))
+            {
+                Record(
+                    "RecoveryBatchCommitRejected",
+                    $"Evidence={evidence};Generation={commitGeneration};" +
+                    $"RunId={heartbeat.RunId};RunEpoch={heartbeat.RunEpoch};" +
+                    $"Stage={heartbeat.RecoveryStage}");
+                return false;
+            }
+            ObserveRecoveryBatchCommit(
+                commitGeneration,
+                evidence,
+                detail,
+                heartbeat.RunId);
+            return true;
         }
 
         private DurableRelaunchResult ExecuteAuthorityTransitionWithBusyRetry(
@@ -2272,6 +2367,7 @@ namespace MTTFTest.Watchdog
                     RootCode = classification.Code,
                     DeviceOrChannelGroup = _journal.DeviceOrChannelGroup,
                     RunId = _journal.RunId,
+                    RunEpoch = _journal.LastHeartbeat?.RunEpoch ?? 0,
                     RecoveryStage = _journal.RecoveryStage,
                     RecoveryProgressToken = _journal.RecoveryProgressToken,
                     RecoveryProcessSource = RecoveryFailurePolicy.RecoveryProcessSource
@@ -2345,7 +2441,7 @@ namespace MTTFTest.Watchdog
                 Permanent = classification.Permanent,
                 DetailCode = "RecoveryAttemptFailed",
                 RunId = string.IsNullOrWhiteSpace(report?.RunId) ? "watchdog-run" : report.RunId,
-                RunEpoch = 1,
+                RunEpoch = report?.RunEpoch > 0 ? report.RunEpoch : 1,
                 RecoveryStage = string.IsNullOrWhiteSpace(report?.RecoveryStage) ? "Recovery" : report.RecoveryStage,
                 RecoveryProgressToken = string.IsNullOrWhiteSpace(report?.RecoveryProgressToken) ? "watchdog-progress" : report.RecoveryProgressToken,
                 RecoveryProcessSource = string.IsNullOrWhiteSpace(report?.RecoveryProcessSource) ? RecoveryFailurePolicy.RecoveryProcessSource : report.RecoveryProcessSource,
@@ -2459,6 +2555,7 @@ namespace MTTFTest.Watchdog
                 RunId = string.IsNullOrWhiteSpace(message?.RunId)
                     ? heartbeat?.RunId
                     : message.RunId,
+                RunEpoch = heartbeat?.RunEpoch ?? 0,
                 RecoveryStage = string.IsNullOrWhiteSpace(message?.RecoveryStage)
                     ? heartbeat?.RecoveryStage
                     : message.RecoveryStage,

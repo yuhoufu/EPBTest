@@ -1031,13 +1031,14 @@ namespace Controller
         {
             var permanent = CaptureWatchdogPermanentAlarmedChannels();
             var reasons = CaptureWatchdogPermanentAlarmReasons();
-            var current = _daqAutoRecovery.Values
+            var activeDaqRecoveries = _daqAutoRecovery.Values
                 .Where(context => context != null &&
                                   context.RunId == _activeBatchId &&
                                   context.RunEpoch == Interlocked.Read(ref _runEpoch) &&
                                   context.Terminal.Current == DaqRecoveryTerminal.None)
                 .OrderBy(context => context.StartedUtc)
-                .FirstOrDefault();
+                .ToArray();
+            var current = activeDaqRecoveries.FirstOrDefault();
             var retainedTerminal = current == null
                 ? CaptureRetainedDaqRecoveryTerminalSnapshot(
                     string.Empty,
@@ -1160,36 +1161,43 @@ namespace Controller
                 .Where(ticks => ticks > 0)
                 .DefaultIfEmpty(0L)
                 .Min();
-            var cutoffCompleted = current != null &&
-                                  current.Phase.Current >= DaqRecoveryPhase.CutoffCompleted;
-            var powerGroups = current == null || _powerSupply == null || cutoffCompleted
+            var cutoffCompleted = activeDaqRecoveries.Length > 0 &&
+                                  activeDaqRecoveries.All(context =>
+                                      context.Phase.Current >= DaqRecoveryPhase.CutoffCompleted);
+            var cutoffPowerGroups = activeDaqRecoveries.Length == 0 || _powerSupply == null
                 ? Array.Empty<int>()
-                : current.AffectedChannels
-                    .Select(GetElectricalGroupId)
-                    .Where(id => id > 0)
+                : activeDaqRecoveries
+                    .SelectMany(context => context.AffectedChannels
+                        .Select(GetElectricalGroupId)
+                        .Where(id => id > 0)
+                        .Distinct()
+                        .Where(id =>
+                        {
+                            var state = _powerSupply.GetRuntimeState(id);
+                            var taskPending = context.PowerDisableTasksByGroup != null &&
+                                              context.PowerDisableTasksByGroup.TryGetValue(id, out var task) &&
+                                              task != null && !task.IsCompleted;
+                            return ShouldProjectPowerDisablePending(
+                                cutoffCompleted: context.Phase.Current >=
+                                                 DaqRecoveryPhase.CutoffCompleted,
+                                disableTaskPending: taskPending,
+                                expectedOutputEnabled: state.ExpectedOutputEnabled,
+                                telemetryOutputEnabled: state.TelemetryOutputEnabled,
+                                orphanRecovery: false);
+                        }))
                     .Distinct()
-                    .Where(id =>
-                    {
-                        var state = _powerSupply.GetRuntimeState(id);
-                        var taskPending = current.PowerDisableTasksByGroup != null &&
-                                           current.PowerDisableTasksByGroup.TryGetValue(id, out var task) &&
-                                           task != null && !task.IsCompleted;
-                        return taskPending ||
-                               state.ExpectedOutputEnabled ||
-                               state.TelemetryOutputEnabled;
-                    })
                     .OrderBy(id => id)
                     .ToArray();
             var genericPowerGroups = _powerSupply == null
                 ? Array.Empty<int>()
-                : recoveringChannels
+                : orphanRecovering
                     .Where(IsChannelEnergized)
                     .Select(GetElectricalGroupId)
                     .Where(id => id > 0)
                     .Distinct()
                     .OrderBy(id => id)
                     .ToArray();
-            powerGroups = powerGroups.Concat(genericPowerGroups)
+            var powerGroups = cutoffPowerGroups.Concat(genericPowerGroups)
                 .Distinct()
                 .OrderBy(id => id)
                 .ToArray();
@@ -1204,9 +1212,18 @@ namespace Controller
                     .Where(ticks => ticks > 0)
                     .DefaultIfEmpty(0L)
                     .Min();
-            var powerDisableSinceUtcTicks = powerGroups.Length == 0 || current == null
+            var cutoffDisableSinceUtcTicks = activeDaqRecoveries
+                .Where(context =>
+                    context.Phase.Current < DaqRecoveryPhase.CutoffCompleted)
+                .Select(context => Interlocked.Read(ref context.PowerDisableStartedUtcTicks))
+                .Where(ticks => ticks > 0)
+                .DefaultIfEmpty(0L)
+                .Min();
+            var powerDisableSinceUtcTicks = powerGroups.Length == 0
                 ? 0L
-                : Interlocked.Read(ref current.PowerDisableStartedUtcTicks);
+                : cutoffDisableSinceUtcTicks > 0
+                    ? cutoffDisableSinceUtcTicks
+                    : recoveringStartedTicks;
             var expectedRecoveryChannels = (current?.AffectedChannels ?? Array.Empty<int>())
                 .Concat(retainedTerminal?.AffectedChannels ?? Array.Empty<int>())
                 .Concat(retainedCommitted?.AffectedChannels ?? Array.Empty<int>())
@@ -1315,6 +1332,23 @@ namespace Controller
                     PauseSinceUtcTicks = pauseSinceUtcTicks,
                     OrphanPausedChannels = orphan
                 });
+        }
+
+        internal static bool ShouldProjectPowerDisablePending(
+            bool cutoffCompleted,
+            bool disableTaskPending,
+            bool expectedOutputEnabled,
+            bool telemetryOutputEnabled,
+            bool orphanRecovery)
+        {
+            // Expected/telemetry ON is a fault only while the OFF boundary is
+            // still being established.  After CutoffCompleted, recovery is
+            // allowed to re-enable the group for validation/rejoin; projecting
+            // that intended ON state as an old PowerDisablePending timer caused
+            // the sidecar to terminate a healthy recovered process.
+            if (cutoffCompleted && !orphanRecovery) return false;
+            return disableTaskPending || expectedOutputEnabled ||
+                   telemetryOutputEnabled;
         }
 
         public WatchdogStorageSnapshot CaptureWatchdogStorageSnapshot()
@@ -2931,7 +2965,7 @@ namespace Controller
                     MarkHydraulicParticipant(ch);
 
                     // 本次启动为该通道刷新“硬停机”取消源
-                    var stopCts = RenewStopCts(ch);
+                    var stopCts = RenewStopCts(ch, out var stopToken);
 
                     var timer = GetTimer(ch, PeriodMs, OverrunPolicy.AlignToWallClock);
 
@@ -2959,11 +2993,13 @@ namespace Controller
                         initialDelay,
                         async (cycleIndex, ct) =>
                         {
-                            var cyclePauseCts = RenewCyclePauseCts(ch);
+                            var cyclePauseCts = RenewCyclePauseCts(
+                                ch,
+                                out var cyclePauseToken);
                             using var linked = CancellationTokenSource.CreateLinkedTokenSource(
                                 ct,
-                                stopCts.Token,
-                                cyclePauseCts.Token);
+                                stopToken,
+                                cyclePauseToken);
                             var token = linked.Token;
                             // cycleIndex 是本计时器的逻辑圈序号；所有组员使用共同首槽，
                             // 因而即使实际回调有毫秒级抖动，也不会在周期边界两侧分槽。
@@ -3360,6 +3396,7 @@ namespace Controller
             // “任一故障取消整批”的令牌，否则健康电源组也会被启动回滚停止。
             var phaseToken = token;
             var stopCtsByChannel = new Dictionary<int, CancellationTokenSource>();
+            var stopTokensByChannel = new Dictionary<int, CancellationToken>();
             var learningRunId = _activeBatchId;
             var learningEvidence = CaptureLearningEvidenceContext(learningRunId);
             var quarantined = new ConcurrentDictionary<int, string>();
@@ -3375,7 +3412,8 @@ namespace Controller
                     var ch = enabled[i];
                     var r = GetRunner(ch);
                     MarkHydraulicParticipant(ch);
-                    stopCtsByChannel[ch] = RenewStopCts(ch);
+                    stopCtsByChannel[ch] = RenewStopCts(ch, out var stopToken);
+                    stopTokensByChannel[ch] = stopToken;
 
                     r.UseNoHeadPhase = true; // 学习不做①，错峰由外层“相位”承担
                     r.EnableTailCompensation = true; // ⑧尾部由外壳统一对齐（学习单圈不等待）
@@ -3452,13 +3490,14 @@ namespace Controller
                         var ch = enabled[i];
                         var phase = staggerPlan.Get(ch).PhaseMs;
                         var stopCts = stopCtsByChannel[ch];
+                        var stopToken = stopTokensByChannel[ch];
 
                         tasksAllGroups.Add(Task.Run(async () =>
                         {
                             using var channelLinkedCts =
                                 CancellationTokenSource.CreateLinkedTokenSource(
                                     phaseToken,
-                                    stopCts.Token);
+                                    stopToken);
                             var channelToken = channelLinkedCts.Token;
 
                             await FaultIsolatedPhaseWork.RunAsync(

@@ -2165,7 +2165,12 @@ namespace Controller
         /// </summary>
         /// <param name="channel">EPB 通道号（1..12）。</param>
         /// <returns>新的取消源实例。</returns>
-        private CancellationTokenSource RenewStopCts(int channel)
+        private CancellationTokenSource RenewStopCts(int channel) =>
+            RenewStopCts(channel, out _);
+
+        private CancellationTokenSource RenewStopCts(
+            int channel,
+            out CancellationToken token)
         {
             if (_stopCtsByChannel.TryRemove(channel, out var old))
             {
@@ -2174,6 +2179,9 @@ namespace Controller
             }
 
             var cts = new CancellationTokenSource();
+            // Capture the value token before another stop/renew owner can
+            // dispose the published source.
+            token = cts.Token;
             _stopCtsByChannel[channel] = cts;
             return cts;
         }
@@ -2484,9 +2492,17 @@ namespace Controller
                 "FIELD");
         }
 
-        private CancellationTokenSource RenewCyclePauseCts(int channel)
+        private CancellationTokenSource RenewCyclePauseCts(int channel) =>
+            RenewCyclePauseCts(channel, out _);
+
+        private CancellationTokenSource RenewCyclePauseCts(
+            int channel,
+            out CancellationToken token)
         {
             var cts = new CancellationTokenSource();
+            // Capture before publishing the source. StopAll may cancel and
+            // dispose it immediately after publication.
+            token = cts.Token;
             if (_cyclePauseCtsByChannel.TryGetValue(channel, out var previous))
             {
                 try { previous.Cancel(); } catch { }
@@ -3178,8 +3194,8 @@ namespace Controller
             InvalidateStopSafetyCache();
             ResetTransientFaultStateForRestart(new[] { channel }, "FreshSingleChannelStart");
             // 单通道启动的DAQ自愈最多三次；提前建立停止令牌，使“停止”按钮随时可取消。
-            var stopCts = RenewStopCts(channel);
-            using var startLinked = CancellationTokenSource.CreateLinkedTokenSource(uiToken, stopCts.Token);
+            var stopCts = RenewStopCts(channel, out var stopToken);
+            using var startLinked = CancellationTokenSource.CreateLinkedTokenSource(uiToken, stopToken);
             try
             {
                 // 空闲台架的单通道开始同样必须消除上次进程退出后可能遗留的物理DO状态。
@@ -3427,11 +3443,13 @@ namespace Controller
             var singleSuccessfulCycles = 0;
             ObserveBackgroundTask(timer.StartAsync(null, staggerMs, async (i, token) =>
             {
-                var cyclePauseCts = RenewCyclePauseCts(channel);
+                var cyclePauseCts = RenewCyclePauseCts(
+                    channel,
+                    out var cyclePauseToken);
                 using var linked = CancellationTokenSource.CreateLinkedTokenSource(
                     token,
-                    stopCts.Token,
-                    cyclePauseCts.Token);
+                    stopToken,
+                    cyclePauseToken);
                 var ct = linked.Token;
                 var actualStartUtc = DateTime.UtcNow;
                 var nominalDueUtc = singleFormalAnchorUtc.AddMilliseconds((long)(i - 1) * periodMs);
@@ -10243,6 +10261,7 @@ namespace Controller
         public Task<StopSafetyResult> StopAllAsync(StopContext context, CancellationToken token = default)
         {
             context ??= StopContext.Legacy(null);
+            InstallStopPreemptionFence(context);
             lock (_stopSafetyGate)
             {
                 if (_stopSafetyTask != null && !_stopSafetyTask.IsCompleted)
@@ -10282,6 +10301,26 @@ namespace Controller
                 if (IsFinalExitStopSource(context.Source))
                     _stopSafetyFinalExitTask = _stopSafetyTask;
                 return _stopSafetyTask;
+            }
+        }
+
+        private void InstallStopPreemptionFence(StopContext context)
+        {
+            // This is the synchronous linearization point for every StopAll
+            // caller.  It runs before the shared stop-task lock and before any
+            // stage worker can wait on a recovery/channel gate.  Existing
+            // cycle/power-enable linked tokens are cancelled immediately;
+            // physical OFF remains owned by the ordered stop transaction.
+            Volatile.Write(ref _energizationRevoked, 1);
+            foreach (var channel in Enumerable.Range(1, 12))
+            {
+                try
+                {
+                    RevokeChannelExecutionPermit(
+                        channel,
+                        "StopAllAdmission:" + (context?.Source.ToString() ?? "Unknown"));
+                }
+                catch { }
             }
         }
 

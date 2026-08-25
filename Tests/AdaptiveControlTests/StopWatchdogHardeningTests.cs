@@ -45,6 +45,8 @@ namespace AdaptiveControlTests
                 LogicalSourceCommitIsVersionedIndependently, ref passed);
             Run("SafeIdle取消与终止授权一万次交错保持线性化",
                 SafeIdleCancellationIsLinearizable, ref passed);
+            Run("自动接管必须先取得可消费许可再越过kill边界",
+                RelaunchPermitPrecedesTerminationBoundary, ref passed);
             Run("运行资源不变量按Run与契约签名独立去抖",
                 RuntimeInvariantTimingUsesRunAndContractIdentity, ref passed);
             Run("恢复态使用owner与成对资源契约而非正式Timer契约",
@@ -836,6 +838,30 @@ namespace AdaptiveControlTests
                     "SafeIdle取消与kill授权同时获胜，违反线性化不变量");
                 coordinator.Complete(lease);
             }
+        }
+
+        private static void RelaunchPermitPrecedesTerminationBoundary()
+        {
+            Assert(TakeoverTransactionStage.RelaunchPermit <
+                   TakeoverTransactionStage.ProcessTermination,
+                "接管阶段排序仍允许先kill后取许可。");
+            var coordinator = new TakeoverTransactionCoordinator();
+            Assert(coordinator.TryBegin("permit-first", "authority", out var lease),
+                "无法创建许可前置接管事务。");
+            Assert(coordinator.TryAdvance(lease, TakeoverTransactionStage.DumpCapture) &&
+                   coordinator.TryAdvance(lease, TakeoverTransactionStage.RelaunchPermit),
+                "无法在kill前提交许可阶段。");
+            Assert(coordinator.TryCancel("permit-not-consumed", out var cancelled) &&
+                   cancelled.CancelledFromStage == TakeoverTransactionStage.RelaunchPermit,
+                "许可阶段尚未kill时不再允许安全取消。");
+            var killed = false;
+            Assert(!coordinator.TryExecute(
+                       lease,
+                       TakeoverTransactionStage.ProcessTermination,
+                       () => killed = true,
+                       out _) && !killed,
+                "取消后仍执行了进程终止动作。");
+            coordinator.Complete(lease);
         }
 
         private static void RuntimeInvariantTimingUsesRunAndContractIdentity()

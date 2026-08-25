@@ -103,6 +103,15 @@ namespace MTTFTest.Watchdog.Protocol
         public string LastFailureFingerprint { get; set; }
         public string LastFailureCode { get; set; }
         public string LastFailureDetailCode { get; set; }
+        // Frozen failure-run context.  RunId/RunEpoch/Recovery* above become
+        // the successfully recovered run after CommitCommitted and therefore
+        // cannot also remain the canonical failure evidence.
+        public string LastFailureRunId { get; set; }
+        public long LastFailureRunEpoch { get; set; }
+        public string LastFailureRecoveryStage { get; set; }
+        public string LastFailureRecoveryProgressToken { get; set; }
+        public string LastFailureRecoveryProcessSource { get; set; }
+        public string LastFailureDeviceOrChannelGroup { get; set; }
         public string LastFailureSessionNonce { get; set; }
         public int LastFailureProcessId { get; set; }
         public long LastFailureProcessStartUtcTicks { get; set; }
@@ -467,10 +476,16 @@ namespace MTTFTest.Watchdog.Protocol
                     var candidate = _record.Clone();
                     var nextCount = checked(Math.Max(0, candidate.ConsecutiveFailures) + 1);
                     var budget = frozen.MaximumProcessRelaunches;
+                    // Approved/LaunchIntent/Started describe an action which has
+                    // not yet reached an authenticated running client.  Attached
+                    // is different: an exact operation replay was handled above,
+                    // while a new failure from/for the attached process must close
+                    // that generation and mint the next permit atomically.  Treating
+                    // Attached as merely "pending" stranded the authority at the old
+                    // generation after a later watchdog takeover.
                     var pending = candidate.State == DurableRelaunchPermitState.Approved ||
                                   candidate.State == DurableRelaunchPermitState.LaunchIntent ||
-                                  candidate.State == DurableRelaunchPermitState.Started ||
-                                  candidate.State == DurableRelaunchPermitState.Attached;
+                                  candidate.State == DurableRelaunchPermitState.Started;
                     var disposition = pending ? RecoveryFailureDispositions.RelaunchAlreadyPending : RecoveryFailureDispositions.RelaunchApproved;
                     var detail = pending ? "RelaunchAlreadyPending" : "RelaunchApproved";
                     var blocked = frozen.Permanent || nextCount >= budget;
@@ -487,6 +502,7 @@ namespace MTTFTest.Watchdog.Protocol
                         candidate.Generation = Math.Max(candidate.Generation, 0) + 1;
                         candidate.PermitId = Guid.NewGuid().ToString("N");
                         candidate.PermitNonce = Guid.NewGuid().ToString("N");
+                        ClearLaunchIdentity(candidate);
                     }
                     ApplyFailure(candidate, frozen, disposition, detail, nextCount);
                     var receipt = BuildReceipt(frozen, candidate, disposition, false, true, false, blocked, detail);
@@ -665,15 +681,27 @@ namespace MTTFTest.Watchdog.Protocol
                 string.IsNullOrWhiteSpace(recoveryStage) || string.IsNullOrWhiteSpace(progressToken) ||
                 recoveryCommitGeneration <= 0)
                 return TransitionInvalid("CommittedEvidenceMissing");
-            var current = Snapshot;
-            if (current != null && current.State == DurableRelaunchPermitState.Attached &&
-                ((!string.IsNullOrEmpty(current.RunId) && !string.Equals(current.RunId, runId, StringComparison.Ordinal)) ||
-                 (current.RunEpoch > 0 && current.RunEpoch != runEpoch) ||
-                 (!string.IsNullOrEmpty(current.RecoveryStage) && !string.Equals(current.RecoveryStage, recoveryStage, StringComparison.Ordinal)) ||
-                 (!string.IsNullOrEmpty(current.RecoveryProgressToken) && !string.Equals(current.RecoveryProgressToken, progressToken, StringComparison.Ordinal))))
-                return TransitionInvalid("CommittedContextMismatch");
+            // The Attached record intentionally contains the failed run's
+            // recovery context.  A successful recovery batch is the boundary
+            // which replaces it with the newly-created run identity.  Capability
+            // and Attached lifecycle validation authenticate the writer; requiring
+            // the new RunId/epoch/stage/token to equal the old failure context made
+            // every real recovery commit impossible.
             return TransitionLifecycle(capability, DurableRelaunchPermitState.Attached, candidate =>
             {
+                // Format-2 records created before this fix used the mutable
+                // current context as their canonical failure context.  Freeze
+                // it before replacing the current fields so old Attached
+                // records can complete recovery without migration ambiguity.
+                if (string.IsNullOrEmpty(candidate.LastFailureRunId))
+                {
+                    candidate.LastFailureRunId = candidate.RunId;
+                    candidate.LastFailureRunEpoch = candidate.RunEpoch;
+                    candidate.LastFailureRecoveryStage = candidate.RecoveryStage;
+                    candidate.LastFailureRecoveryProgressToken = candidate.RecoveryProgressToken;
+                    candidate.LastFailureRecoveryProcessSource = candidate.RecoveryProcessSource;
+                    candidate.LastFailureDeviceOrChannelGroup = candidate.DeviceOrChannelGroup;
+                }
                 candidate.State = DurableRelaunchPermitState.Committed;
                 candidate.RunId = runId;
                 candidate.RunEpoch = runEpoch;
@@ -1359,6 +1387,12 @@ namespace MTTFTest.Watchdog.Protocol
             candidate.LastFailureFingerprint = frozen.FailureFingerprint;
             candidate.LastFailureCode = frozen.FailureCode;
             candidate.LastFailureDetailCode = frozen.DetailCode;
+            candidate.LastFailureRunId = frozen.RunId;
+            candidate.LastFailureRunEpoch = frozen.RunEpoch;
+            candidate.LastFailureRecoveryStage = frozen.RecoveryStage;
+            candidate.LastFailureRecoveryProgressToken = frozen.RecoveryProgressToken;
+            candidate.LastFailureRecoveryProcessSource = frozen.RecoveryProcessSource;
+            candidate.LastFailureDeviceOrChannelGroup = frozen.DeviceOrChannelGroup;
             candidate.LastFailureSessionNonce = frozen.SessionNonce;
             candidate.LastFailureProcessId = frozen.SidecarProcessId;
             candidate.LastFailureProcessStartUtcTicks = frozen.SidecarProcessStartUtcTicks;
@@ -1372,6 +1406,24 @@ namespace MTTFTest.Watchdog.Protocol
             candidate.LastFailureDecisionUtcTicks = DateTime.UtcNow.Ticks;
             candidate.LastFailurePermanent = frozen.Permanent;
             candidate.DetailCode = detail;
+        }
+
+        private static void ClearLaunchIdentity(DurableRelaunchAuthorityRecord candidate)
+        {
+            if (candidate == null) return;
+            candidate.ProcessId = 0;
+            candidate.ProcessStartUtcTicks = 0;
+            candidate.LaunchIntentId = null;
+            candidate.LaunchExecutablePath = null;
+            candidate.LaunchExecutableSha256 = null;
+            candidate.LaunchArguments = null;
+            candidate.LaunchWorkingDirectory = null;
+            candidate.LaunchOptionsCanonical = null;
+            candidate.LaunchSpecSha256 = null;
+            candidate.LaunchAuthorityRevision = 0;
+            candidate.LaunchAuthoritySha256 = null;
+            candidate.LaunchConsumed = false;
+            candidate.RecoveryCommitGeneration = 0;
         }
 
         private static string CanonicalForAuthorityBudget(RecoveryFailureFrozenOperation frozen, int budget)

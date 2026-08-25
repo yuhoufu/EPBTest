@@ -31,6 +31,8 @@ namespace AdaptiveControlTests
             var passed = 0;
             Run("EpbManager.StopAllAsync真实十阶段与虚拟12秒液压",
                 EpbManagerStopAllRunsProductionStages, ref passed);
+            Run("StopAll入口同步安装禁止再上电栅栏",
+                StopAllAdmissionInstallsEnergizationFenceSynchronously, ref passed);
             Run("EpbManager生产DO物理失败与准入拒绝进入统一终态",
                 EpbManagerPhysicalOffFailureIsSticky, ref passed);
             Run("EpbManager生产DO准入拒绝先启动PSU再安全收口",
@@ -364,6 +366,21 @@ namespace AdaptiveControlTests
                 Assert(progress.Stage == StopSafetyStage.Completed &&
                        !progress.Active && progress.PhysicalSafe,
                     "真实StopAll未发布Completed物理安全终态。");
+            }
+        }
+
+        private static void StopAllAdmissionInstallsEnergizationFenceSynchronously()
+        {
+            using (var fixture = new ProductionManagerFixture(
+                       new FailingPowerSupply(fail: false)))
+            {
+                fixture.ConfigurePhysicalOff(new ProductionDoBatchWriter());
+                var stopTask = fixture.Manager.StopAllAsync(NewContext());
+                Assert(fixture.Manager.IsEnergizationRevoked,
+                    "StopAll返回共享Task前尚未安装进程级禁止再上电栅栏。");
+                var result = stopTask.GetAwaiter().GetResult();
+                Assert(result != null && fixture.Manager.IsEnergizationRevoked,
+                    "StopAll终态错误清除了禁止再上电栅栏。");
             }
         }
 

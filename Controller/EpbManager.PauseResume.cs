@@ -1854,18 +1854,20 @@ namespace Controller
                 1,
                 (int)Math.Ceiling((firstCallbackUtc - DateTime.UtcNow).TotalMilliseconds));
             var phase = staggerPlan.Get(channel).PhaseMs;
-            var stopCts = RenewStopCts(channel);
+            var stopCts = RenewStopCts(channel, out var stopToken);
             var timer = GetTimer(channel, PeriodMs, OverrunPolicy.AlignToWallClock);
             var baseCycle = Recorder?.GetLastCycleNumber(channel) ?? 0;
             var successfulCycles = 0;
             EpbTestCycle[channel] = remainingRuns;
             ObserveBackgroundTask(timer.StartAsync(null, initialDelay, async (cycleIndex, timerToken) =>
             {
-                var cyclePauseCts = RenewCyclePauseCts(channel);
+                var cyclePauseCts = RenewCyclePauseCts(
+                    channel,
+                    out var cyclePauseToken);
                 using var linked = CancellationTokenSource.CreateLinkedTokenSource(
                     timerToken,
-                    stopCts.Token,
-                    cyclePauseCts.Token);
+                    stopToken,
+                    cyclePauseToken);
                 var ct = linked.Token;
                 var phaseSlot = firstSlot + cycleIndex - 1L;
                 if (!await WaitForPreviousCycleExecutionAsync(channel, ct)

@@ -341,6 +341,7 @@ namespace MTTFTest.Watchdog.Protocol
         public string RootCode { get; set; }
         public string DeviceOrChannelGroup { get; set; }
         public string RunId { get; set; }
+        public long RunEpoch { get; set; }
         public string RecoveryStage { get; set; }
         public string RecoveryProgressToken { get; set; }
         public string RecoveryProcessSource { get; set; }
@@ -350,6 +351,7 @@ namespace MTTFTest.Watchdog.Protocol
             RootCode = RootCode,
             DeviceOrChannelGroup = DeviceOrChannelGroup,
             RunId = RunId,
+            RunEpoch = RunEpoch,
             RecoveryStage = RecoveryStage,
             RecoveryProgressToken = RecoveryProgressToken,
             RecoveryProcessSource = RecoveryProcessSource
@@ -420,6 +422,7 @@ namespace MTTFTest.Watchdog.Protocol
                     report.DeviceOrChannelGroup,
                     "UnknownDeviceOrChannelGroup"),
                 RunId = NormalizeStable(report.RunId, "UnknownRun"),
+                RunEpoch = Math.Max(0, report.RunEpoch),
                 RecoveryStage = NormalizeStable(report.RecoveryStage, "UnknownStage"),
                 RecoveryProgressToken = NormalizeToken(report.RecoveryProgressToken),
                 RecoveryProcessSource = NormalizeStable(

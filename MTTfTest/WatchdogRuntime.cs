@@ -2088,6 +2088,7 @@ namespace MTEmbTest
                 RootCode = string.IsNullOrWhiteSpace(failureCode) ? "UnknownFailure" : failureCode,
                 DeviceOrChannelGroup = heartbeat?.RecoveryIncident,
                 RunId = heartbeat?.RunId,
+                RunEpoch = heartbeat?.RunEpoch ?? 0,
                 RecoveryStage = heartbeat?.RecoveryStage,
                 RecoveryProgressToken = heartbeat == null ? string.Empty : heartbeat.RecoveryProgressVersion.ToString(CultureInfo.InvariantCulture),
                 RecoveryProcessSource = context.RecoveryProcess ? RecoveryFailurePolicy.RecoveryProcessSource : RecoveryFailurePolicy.InitialProcessSource
@@ -2154,8 +2155,16 @@ namespace MTEmbTest
         {
             var context = CaptureContext();
             if (context == null) return;
-            string runId = string.Empty;
-            try { runId = context.State.HeartbeatSource.Capture()?.RunId ?? string.Empty; } catch { }
+            WatchdogHeartbeat heartbeat = null;
+            try
+            {
+                lock (HeartbeatCaptureGate)
+                    heartbeat = context.State.HeartbeatSource.Capture();
+            }
+            catch (Exception ex)
+            {
+                RaiseTransportError(context, "RecoveryBatchCommitContext", ex.Message);
+            }
             try { WatchdogRecoveryCommitMarker.WriteLocal(context.SessionId, commitGeneration, reason); }
             catch (Exception ex) { RaiseTransportError(context, "RecoveryCommitMarkerLocal", ex.Message); }
             _ = Task.Run(() =>
@@ -2169,7 +2178,12 @@ namespace MTEmbTest
                 Type = WatchdogMessageType.RecoveryBatchCommitted,
                 SessionId = context.SessionId,
                 Reason = reason,
-                RunId = runId,
+                RunId = heartbeat?.RunId ?? string.Empty,
+                RecoveryStage = heartbeat?.RecoveryStage ?? string.Empty,
+                RecoveryProgressToken = heartbeat == null
+                    ? string.Empty
+                    : heartbeat.RecoveryProgressVersion.ToString(CultureInfo.InvariantCulture),
+                Heartbeat = heartbeat,
                 CorrelationId = Guid.NewGuid().ToString("N"),
                 RecoveryCommitGeneration = commitGeneration
             });

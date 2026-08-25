@@ -182,8 +182,11 @@ namespace MTTFTest.Watchdog.Protocol
     {
         StopRequested = 10,
         DumpCapture = 20,
-        ProcessTermination = 30,
-        RelaunchPermit = 40,
+        // A durable, immediately consumable permit must exist before the old
+        // process is terminated.  If approval fails, takeover remains
+        // cancelable and the host leaves the old process untouched.
+        RelaunchPermit = 30,
+        ProcessTermination = 40,
         Relaunching = 50,
         Cancelled = 90,
         Completed = 100

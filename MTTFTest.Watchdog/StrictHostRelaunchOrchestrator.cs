@@ -138,6 +138,7 @@ namespace MTTFTest.Watchdog
                 request?.ProgressToken,
                 request?.ProcessSource,
                 request?.RunId,
+                request?.RunEpoch ?? 0,
                 request?.RecoveryStage,
                 budget);
             var decision = _authority.RegisterFailureAndDecide(operation);
@@ -239,7 +240,12 @@ namespace MTTFTest.Watchdog
         }
 
         internal DurableRelaunchResult CommitRecoveryBatch(
-            DurableRelaunchPermitIdentity identity, string runId, string progressToken, long recoveryCommitGeneration)
+            DurableRelaunchPermitIdentity identity,
+            string runId,
+            long runEpoch,
+            string recoveryStage,
+            string progressToken,
+            long recoveryCommitGeneration)
         {
             DurableLaunchIntentCapability capability;
             _capabilities.TryGetValue(identity?.Generation ?? 0, out capability);
@@ -247,8 +253,8 @@ namespace MTTFTest.Watchdog
             var transition = _authority.CommitCommitted(
                 capability,
                 string.IsNullOrWhiteSpace(runId) ? record?.RunId : runId,
-                record?.RunEpoch > 0 ? record.RunEpoch : 1,
-                string.IsNullOrWhiteSpace(record?.RecoveryStage) ? "Recovery" : record.RecoveryStage,
+                runEpoch > 0 ? runEpoch : record?.RunEpoch ?? 0,
+                string.IsNullOrWhiteSpace(recoveryStage) ? record?.RecoveryStage : recoveryStage,
                 string.IsNullOrWhiteSpace(progressToken) ? record?.RecoveryProgressToken : progressToken,
                 recoveryCommitGeneration);
             if (transition?.Succeeded == true) _capabilities.TryRemove(identity.Generation, out _);
@@ -277,7 +283,7 @@ namespace MTTFTest.Watchdog
         }
 
         private RecoveryFailureOperation MakeOperation(string operationSeed, string failureCode, string fingerprint,
-            string progress, string source, string runId, string stage, int budget)
+            string progress, string source, string runId, long runEpoch, string stage, int budget)
         {
             var seed = Sha256Text(_sessionId + "|" + operationSeed + "|" + (_authority.Snapshot?.ConsecutiveFailures ?? 0).ToString(CultureInfo.InvariantCulture));
             return new RecoveryFailureOperation
@@ -289,7 +295,8 @@ namespace MTTFTest.Watchdog
                 FailureCode = failureCode, FailureFingerprint = fingerprint ?? "HostRecovery",
                 Permanent = false, DetailCode = "HostRecoveryFailure",
                 RunId = string.IsNullOrWhiteSpace(runId) ? "host-run" : runId,
-                RunEpoch = 1, RecoveryStage = string.IsNullOrWhiteSpace(stage) ? "Recovery" : stage,
+                RunEpoch = runEpoch > 0 ? runEpoch : 1,
+                RecoveryStage = string.IsNullOrWhiteSpace(stage) ? "Recovery" : stage,
                 RecoveryProgressToken = string.IsNullOrWhiteSpace(progress) ? "host-progress" : progress,
                 RecoveryProcessSource = string.IsNullOrWhiteSpace(source) ? "WatchdogHost" : source,
                 DeviceOrChannelGroup = "WatchdogHost", MaximumProcessRelaunches = Math.Max(1, budget)
@@ -354,6 +361,7 @@ namespace MTTFTest.Watchdog
                 Generation = value.Generation, PermitId = value.PermitId, State = value.State,
                 Fingerprint = value.LastFailureFingerprint, ProgressToken = value.RecoveryProgressToken,
                 ProcessSource = value.RecoveryProcessSource, RunId = value.RunId,
+                RunEpoch = value.RunEpoch,
                 RecoveryStage = value.RecoveryStage, PermitNonce = value.PermitNonce,
                 ConsecutiveFailures = value.ConsecutiveFailures, MaximumProcessRelaunches = value.MaximumProcessRelaunches,
                 ProcessId = value.ProcessId, ProcessStartUtcTicks = value.ProcessStartUtcTicks,

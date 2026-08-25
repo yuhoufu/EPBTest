@@ -39,6 +39,7 @@ namespace MTTFTest.Watchdog.Protocol
         public string ProgressToken { get; set; }
         public string ProcessSource { get; set; }
         public string RunId { get; set; }
+        public long RunEpoch { get; set; }
         public string RecoveryStage { get; set; }
         /// <summary>
         /// Launch nonce is transport evidence only; permit identity remains
@@ -53,6 +54,7 @@ namespace MTTFTest.Watchdog.Protocol
             ProgressToken = ProgressToken,
             ProcessSource = ProcessSource,
             RunId = RunId,
+            RunEpoch = RunEpoch,
             RecoveryStage = RecoveryStage,
             PermitNonce = PermitNonce,
             MaximumProcessRelaunches = MaximumProcessRelaunches
@@ -113,6 +115,7 @@ namespace MTTFTest.Watchdog.Protocol
         public string ProgressToken { get; set; }
         public string ProcessSource { get; set; }
         public string RunId { get; set; }
+        public long RunEpoch { get; set; }
         public string RecoveryStage { get; set; }
         public string PermitNonce { get; set; }
         public int ConsecutiveFailures { get; set; }
@@ -158,6 +161,7 @@ namespace MTTFTest.Watchdog.Protocol
             ProgressToken = ProgressToken,
             ProcessSource = ProcessSource,
             RunId = RunId,
+            RunEpoch = RunEpoch,
             RecoveryStage = RecoveryStage,
             PermitNonce = PermitNonce,
             ConsecutiveFailures = ConsecutiveFailures,

@@ -50,7 +50,8 @@ namespace MTTFTest.Watchdog.Protocol
             if (!string.Equals(record.SessionId, expectedSessionId, StringComparison.Ordinal)) { reason = "SessionMismatch"; return false; }
             if (record.AuthorityRevision < 0 || record.Generation < 0 || record.ConsecutiveFailures < 0 || record.MaximumProcessRelaunches <= 0 || record.MaximumProcessRelaunches > 1000000 ||
                 record.ProcessId < 0 || record.ProcessStartUtcTicks < 0 || record.ConnectionGeneration < 0 || record.RecoveryAttemptGeneration < 0 ||
-                record.RunEpoch < 0 || record.RecoveryCommitGeneration < 0 || record.LastFailureDecisionSequence < 0 || record.LastFailureDecisionUtcTicks < 0)
+                record.RunEpoch < 0 || record.LastFailureRunEpoch < 0 ||
+                record.RecoveryCommitGeneration < 0 || record.LastFailureDecisionSequence < 0 || record.LastFailureDecisionUtcTicks < 0)
             { reason = "NegativeAuthorityField"; return false; }
             if (!HasProof(record)) { reason = "BootstrapProofMissing"; return false; }
             if (!Enum.IsDefined(typeof(DurableRelaunchPermitState), record.State)) { reason = "StateInvalid"; return false; }
@@ -99,7 +100,8 @@ namespace MTTFTest.Watchdog.Protocol
                     if (record.CircuitOpen || !permit || !evidence || record.ProcessId != 0 ||
                         record.ProcessStartUtcTicks != 0 || record.RecoveryCommitGeneration != 0 || !pendingDisposition)
                         reason = "PermitIdentityIncomplete";
-                    else if (!ValidateActiveEvidenceBinding(record, expectedSessionId, false, out reason))
+                    else if (!ValidateActiveEvidenceBinding(
+                                 record, expectedSessionId, false, false, out reason))
                         return false;
                     else if (record.State == DurableRelaunchPermitState.LaunchIntent && !HasLaunchIntent(record))
                         reason = "LaunchIntentIncomplete";
@@ -113,7 +115,8 @@ namespace MTTFTest.Watchdog.Protocol
                         record.RecoveryAttemptGeneration <= 0 || record.RecoveryCommitGeneration != 0 ||
                         !pendingDisposition || !record.LaunchConsumed)
                         reason = "ProcessIdentityIncomplete";
-                    else if (!ValidateActiveEvidenceBinding(record, expectedSessionId, true, out reason))
+                    else if (!ValidateActiveEvidenceBinding(
+                                 record, expectedSessionId, true, false, out reason))
                         return false;
                     else if (!HasLaunchIntent(record))
                         reason = "StartedLaunchIntentMissing";
@@ -124,7 +127,8 @@ namespace MTTFTest.Watchdog.Protocol
                         string.IsNullOrEmpty(record.RecoveryStage) || string.IsNullOrEmpty(record.RecoveryProgressToken) ||
                         !record.LaunchConsumed)
                         reason = "CommittedEvidenceIncomplete";
-                    else if (!ValidateActiveEvidenceBinding(record, expectedSessionId, true, out reason))
+                    else if (!ValidateActiveEvidenceBinding(
+                                 record, expectedSessionId, true, true, out reason))
                         return false;
                     else if (!HasLaunchIntent(record))
                         reason = "CommittedLaunchIntentMissing";
@@ -164,6 +168,7 @@ namespace MTTFTest.Watchdog.Protocol
             DurableRelaunchAuthorityRecord record,
             string expectedSessionId,
             bool requiresProcess,
+            bool allowRecoveredContext,
             out string reason)
         {
             reason = null;
@@ -195,6 +200,17 @@ namespace MTTFTest.Watchdog.Protocol
                 !string.Equals(record.LastFailurePermitNonce, record.PermitNonce, StringComparison.Ordinal))
             {
                 reason = "ActivePermitIdentityMismatch";
+                return false;
+            }
+            if (!allowRecoveredContext && !string.IsNullOrEmpty(record.LastFailureRunId) &&
+                (!string.Equals(record.RunId, record.LastFailureRunId, StringComparison.Ordinal) ||
+                 record.RunEpoch != record.LastFailureRunEpoch ||
+                 !string.Equals(record.RecoveryStage, record.LastFailureRecoveryStage, StringComparison.Ordinal) ||
+                 !string.Equals(record.RecoveryProgressToken, record.LastFailureRecoveryProgressToken, StringComparison.Ordinal) ||
+                 !string.Equals(record.RecoveryProcessSource, record.LastFailureRecoveryProcessSource, StringComparison.Ordinal) ||
+                 !string.Equals(record.DeviceOrChannelGroup, record.LastFailureDeviceOrChannelGroup, StringComparison.Ordinal)))
+            {
+                reason = "ActiveRecoveryContextMismatch";
                 return false;
             }
             // LastFailureProcess* identifies the sidecar/reporting process
@@ -338,6 +354,11 @@ namespace MTTFTest.Watchdog.Protocol
                    string.IsNullOrEmpty(record.LastFailureCanonicalSha256) && string.IsNullOrEmpty(record.LastFailureCorrelationId) &&
                    string.IsNullOrEmpty(record.LastFailureOperationId) && string.IsNullOrEmpty(record.LastFailurePayloadSha256) &&
                    string.IsNullOrEmpty(record.LastFailureCode) && string.IsNullOrEmpty(record.LastFailureDetailCode) && string.IsNullOrEmpty(record.LastFailureFingerprint) &&
+                   string.IsNullOrEmpty(record.LastFailureRunId) && record.LastFailureRunEpoch == 0 &&
+                   string.IsNullOrEmpty(record.LastFailureRecoveryStage) &&
+                   string.IsNullOrEmpty(record.LastFailureRecoveryProgressToken) &&
+                   string.IsNullOrEmpty(record.LastFailureRecoveryProcessSource) &&
+                   string.IsNullOrEmpty(record.LastFailureDeviceOrChannelGroup) &&
                    record.LastFailureProcessId == 0 && record.LastFailureProcessStartUtcTicks == 0 &&
                    record.LastFailureConnectionGeneration == 0 && record.LastFailureAttemptGeneration == 0 &&
                    record.LastFailurePermitGeneration == 0 && string.IsNullOrEmpty(record.LastFailurePermitId) &&
@@ -375,6 +396,11 @@ namespace MTTFTest.Watchdog.Protocol
                     LastFailureCorrelationId = String(map, "LastFailureCorrelationId"), LastFailurePayloadSha256 = String(map, "LastFailurePayloadSha256"),
                     LastFailureCanonicalSha256 = String(map, "LastFailureCanonicalSha256"), LastFailureFingerprint = String(map, "LastFailureFingerprint"),
                     LastFailureCode = String(map, "LastFailureCode"), LastFailureDetailCode = String(map, "LastFailureDetailCode"), LastFailureSessionNonce = String(map, "LastFailureSessionNonce"),
+                    LastFailureRunId = String(map, "LastFailureRunId"), LastFailureRunEpoch = Long(map, "LastFailureRunEpoch", 0),
+                    LastFailureRecoveryStage = String(map, "LastFailureRecoveryStage"),
+                    LastFailureRecoveryProgressToken = String(map, "LastFailureRecoveryProgressToken"),
+                    LastFailureRecoveryProcessSource = String(map, "LastFailureRecoveryProcessSource"),
+                    LastFailureDeviceOrChannelGroup = String(map, "LastFailureDeviceOrChannelGroup"),
                     LastFailureProcessId = Int(map, "LastFailureProcessId", 0), LastFailureProcessStartUtcTicks = Long(map, "LastFailureProcessStartUtcTicks", 0),
                     LastFailureConnectionGeneration = Long(map, "LastFailureConnectionGeneration", 0), LastFailureAttemptGeneration = Long(map, "LastFailureAttemptGeneration", 0),
                     LastFailurePermitGeneration = Long(map, "LastFailurePermitGeneration", 0), LastFailurePermitId = String(map, "LastFailurePermitId"),
@@ -452,6 +478,11 @@ namespace MTTFTest.Watchdog.Protocol
                    !string.IsNullOrEmpty(record.LastFailureFingerprint) ||
                    !string.IsNullOrEmpty(record.LastFailureCode) ||
                    !string.IsNullOrEmpty(record.LastFailureDetailCode) ||
+                   !string.IsNullOrEmpty(record.LastFailureRunId) || record.LastFailureRunEpoch != 0 ||
+                   !string.IsNullOrEmpty(record.LastFailureRecoveryStage) ||
+                   !string.IsNullOrEmpty(record.LastFailureRecoveryProgressToken) ||
+                   !string.IsNullOrEmpty(record.LastFailureRecoveryProcessSource) ||
+                   !string.IsNullOrEmpty(record.LastFailureDeviceOrChannelGroup) ||
                    !string.IsNullOrEmpty(record.LastFailureSessionNonce) ||
                    record.LastFailureProcessId != 0 || record.LastFailureProcessStartUtcTicks != 0 ||
                    record.LastFailureConnectionGeneration != 0 || record.LastFailureAttemptGeneration != 0 ||
@@ -491,6 +522,24 @@ namespace MTTFTest.Watchdog.Protocol
 
         private static bool HasFailureEvidence(DurableRelaunchAuthorityRecord record)
         {
+            var runId = string.IsNullOrEmpty(record?.LastFailureRunId)
+                ? record?.RunId
+                : record.LastFailureRunId;
+            var runEpoch = record?.LastFailureRunEpoch > 0
+                ? record.LastFailureRunEpoch
+                : record?.RunEpoch ?? 0;
+            var recoveryStage = string.IsNullOrEmpty(record?.LastFailureRecoveryStage)
+                ? record?.RecoveryStage
+                : record.LastFailureRecoveryStage;
+            var progress = string.IsNullOrEmpty(record?.LastFailureRecoveryProgressToken)
+                ? record?.RecoveryProgressToken
+                : record.LastFailureRecoveryProgressToken;
+            var source = string.IsNullOrEmpty(record?.LastFailureRecoveryProcessSource)
+                ? record?.RecoveryProcessSource
+                : record.LastFailureRecoveryProcessSource;
+            var device = string.IsNullOrEmpty(record?.LastFailureDeviceOrChannelGroup)
+                ? record?.DeviceOrChannelGroup
+                : record.LastFailureDeviceOrChannelGroup;
             if (record == null || !RecoveryFailureReceipt.IsSha256(record.LastFailureCanonicalSha256) ||
                 !RecoveryFailureReceipt.IsValidCorrelation(record.LastFailureCorrelationId) ||
                 !RecoveryFailureReceipt.IsSha256(record.LastFailurePayloadSha256) ||
@@ -500,9 +549,9 @@ namespace MTTFTest.Watchdog.Protocol
                 record.LastFailureProcessStartUtcTicks <= 0 || record.LastFailureConnectionGeneration <= 0 ||
                 record.LastFailureAttemptGeneration <= 0 || record.LastFailureDecisionSequence <= 0 ||
                 record.LastFailureDecisionUtcTicks <= 0 || record.ConsecutiveFailures <= 0 ||
-                string.IsNullOrEmpty(record.RunId) || record.RunEpoch <= 0 ||
-                string.IsNullOrEmpty(record.RecoveryStage) || string.IsNullOrEmpty(record.RecoveryProgressToken) ||
-                string.IsNullOrEmpty(record.RecoveryProcessSource) || string.IsNullOrEmpty(record.DeviceOrChannelGroup))
+                string.IsNullOrEmpty(runId) || runEpoch <= 0 ||
+                string.IsNullOrEmpty(recoveryStage) || string.IsNullOrEmpty(progress) ||
+                string.IsNullOrEmpty(source) || string.IsNullOrEmpty(device))
                 return false;
             string recomputed;
             return TryCanonicalFromRecord(record, out recomputed) &&
@@ -527,9 +576,19 @@ namespace MTTFTest.Watchdog.Protocol
                 RequestPayloadSha256 = record.LastFailurePayloadSha256,
                 FailureCode = record.LastFailureCode, FailureFingerprint = record.LastFailureFingerprint,
                 Permanent = record.LastFailurePermanent, DetailCode = record.LastFailureDetailCode,
-                RunId = record.RunId, RunEpoch = record.RunEpoch, RecoveryStage = record.RecoveryStage,
-                RecoveryProgressToken = record.RecoveryProgressToken, RecoveryProcessSource = record.RecoveryProcessSource,
-                DeviceOrChannelGroup = record.DeviceOrChannelGroup, MaximumProcessRelaunches = record.MaximumProcessRelaunches
+                RunId = string.IsNullOrEmpty(record.LastFailureRunId)
+                    ? record.RunId : record.LastFailureRunId,
+                RunEpoch = record.LastFailureRunEpoch > 0
+                    ? record.LastFailureRunEpoch : record.RunEpoch,
+                RecoveryStage = string.IsNullOrEmpty(record.LastFailureRecoveryStage)
+                    ? record.RecoveryStage : record.LastFailureRecoveryStage,
+                RecoveryProgressToken = string.IsNullOrEmpty(record.LastFailureRecoveryProgressToken)
+                    ? record.RecoveryProgressToken : record.LastFailureRecoveryProgressToken,
+                RecoveryProcessSource = string.IsNullOrEmpty(record.LastFailureRecoveryProcessSource)
+                    ? record.RecoveryProcessSource : record.LastFailureRecoveryProcessSource,
+                DeviceOrChannelGroup = string.IsNullOrEmpty(record.LastFailureDeviceOrChannelGroup)
+                    ? record.DeviceOrChannelGroup : record.LastFailureDeviceOrChannelGroup,
+                MaximumProcessRelaunches = record.MaximumProcessRelaunches
             };
             try { canonical = RecoveryFailureCanonical.Sha256(op); return true; }
             catch { return false; }

@@ -88,6 +88,9 @@ namespace AdaptiveControlTests
             Run("RecoveryAggregateStore operational infrastructure/power/timer同一提交版本且深拷贝",
                 RecoveryAggregateStoreOperationalSourcesAreSingleRevision,
                 ref passed);
+            Run("DAQ截止后恢复上电不再投影为PowerDisablePending",
+                DaqPostCutoffPowerOnIsNotDisablePending,
+                ref passed);
             Run("Watchdog heartbeat缺失aggregate严格空快照且字段共用同一版本",
                 HeartbeatAggregateSourceFailsClosed,
                 ref passed);
@@ -1109,6 +1112,38 @@ namespace AdaptiveControlTests
                    next.Power.OutputsConfirmedOff &&
                    !next.Timer.OrphanPaused,
                 "operational source更新没有生成新的整体版本。");
+        }
+
+        private static void DaqPostCutoffPowerOnIsNotDisablePending()
+        {
+            Assert(EpbManager.ShouldProjectPowerDisablePending(
+                       cutoffCompleted: false,
+                       disableTaskPending: true,
+                       expectedOutputEnabled: false,
+                       telemetryOutputEnabled: false,
+                       orphanRecovery: false),
+                "真实OFF任务在截止前未投影为PowerDisablePending。");
+            Assert(EpbManager.ShouldProjectPowerDisablePending(
+                       cutoffCompleted: false,
+                       disableTaskPending: false,
+                       expectedOutputEnabled: true,
+                       telemetryOutputEnabled: true,
+                       orphanRecovery: false),
+                "截止前仍带电组未投影为PowerDisablePending。");
+            Assert(!EpbManager.ShouldProjectPowerDisablePending(
+                       cutoffCompleted: true,
+                       disableTaskPending: false,
+                       expectedOutputEnabled: true,
+                       telemetryOutputEnabled: true,
+                       orphanRecovery: false),
+                "CutoffCompleted后的计划恢复上电仍被误报为旧关闭超时。");
+            Assert(EpbManager.ShouldProjectPowerDisablePending(
+                       cutoffCompleted: true,
+                       disableTaskPending: false,
+                       expectedOutputEnabled: true,
+                       telemetryOutputEnabled: true,
+                       orphanRecovery: true),
+                "无owner孤儿恢复带电没有保持失效安全投影。");
         }
 
         private static void CompleteDaqTransactionToRejoining(DaqRecoveryTransaction transaction)

@@ -290,11 +290,13 @@ namespace Controller
                         ? requestedCorrelation
                         : Guid.NewGuid(),
                     context.FaultScope);
-            // Freeze is the ownership barrier.  Pause and re-sample the
-            // active cycle before cancelling its CTS/timer/runner and leaving
-            // the hydraulic participant set.  The later timer stage is an
-            // idempotent observation only; it must not duplicate these
-            // actions after the physical OFF/PSU stages have started.
+            // Freeze is a non-blocking producer barrier.  The process-wide
+            // energization fence and execution-permit cancellation were
+            // installed synchronously at StopAll admission.  Here we only
+            // pause/cancel producers and freeze cycle evidence; runtime-map
+            // removal is deliberately deferred until after DO OFF and PSU
+            // Disable have been submitted so a channel/recovery lock cannot
+            // consume the two-second immediate safety deadline.
             FreezeStopRuntimeObjects(state);
             return StopSafetyPortResult.Success(
                 "停止事务已冻结活动圈与身份；等待后续安全动作。",
@@ -306,7 +308,7 @@ namespace Controller
         private void FreezeStopRuntimeObjects(
             StopSafetyProductionState state)
         {
-            if (state.RuntimeObjectsFrozen)
+            if (state.RuntimeProducersFrozen)
                 return;
 
             var reason = "StopAll:" + state.Context.Source;
@@ -338,26 +340,17 @@ namespace Controller
                 }
             }
 
-            // Cancellation/removal is deliberately after the second cycle
-            // sample.  Each operation is idempotent and independently
-            // guarded so one stale channel cannot prevent the rest from
-            // reaching a safe state.
+            // Cancellation is deliberately after the second cycle sample.
+            // Do not acquire channel execution gates in this immediate stage:
+            // an in-flight recovery callback may still own one of them.
             foreach (var channel in state.Channels)
             {
                 try { CancelCyclePauseCts(channel); }
                 catch (Exception ex) { state.FreezeErrors.Add($"EPB{channel}:取消PauseCTS:{ex.Message}"); }
                 try { CancelStopCts(channel); }
                 catch (Exception ex) { state.FreezeErrors.Add($"EPB{channel}:取消StopCTS:{ex.Message}"); }
-                try { RemoveTimerRuntime(channel, "StopSafetyTransaction"); }
-                catch (Exception ex) { state.FreezeErrors.Add($"EPB{channel}:移除Timer:{ex.Message}"); }
-                try { RemoveRunnerRuntime(channel, "StopSafetyTransaction"); }
-                catch (Exception ex) { state.FreezeErrors.Add($"EPB{channel}:移除Runner:{ex.Message}"); }
-                try { UnmarkHydraulicParticipant(channel); }
-                catch (Exception ex) { state.FreezeErrors.Add($"EPB{channel}:移除液压参与者:{ex.Message}"); }
             }
-            try { ClearChannelRuntimes("StopSafetyTransaction"); }
-            catch (Exception ex) { state.FreezeErrors.Add("ClearRuntime:" + ex.Message); }
-            state.RuntimeObjectsFrozen = true;
+            state.RuntimeProducersFrozen = true;
         }
 
         private StopSafetyPortResult ExecuteStopRevokeStage(
@@ -508,16 +501,29 @@ namespace Controller
         private StopSafetyPortResult ExecuteStopTimerRunnerStage(
             StopSafetyProductionState state)
         {
-            // All mutating freeze work is performed before physical actions.
-            // Keep this stage as a monotonic, idempotent ledger checkpoint so
-            // a late/re-entered stop cannot pause or remove a second core.
-            return StopSafetyPortResult.Success(
-                state.RuntimeObjectsFrozen
-                    ? "Freeze阶段已清理Timer、Runner、CTS并移除液压参与者。"
-                    : "Freeze阶段清理状态已确认。",
-                materialProgress: true,
-                evidenceSource: "StopTimerRunner",
-                evidenceVersion: 1);
+            if (!state.RuntimeObjectsFrozen)
+            {
+                foreach (var channel in state.Channels)
+                {
+                    try { RemoveTimerRuntime(channel, "StopSafetyTransaction"); }
+                    catch (Exception ex) { state.FreezeErrors.Add($"EPB{channel}:移除Timer:{ex.Message}"); }
+                    try { RemoveRunnerRuntime(channel, "StopSafetyTransaction"); }
+                    catch (Exception ex) { state.FreezeErrors.Add($"EPB{channel}:移除Runner:{ex.Message}"); }
+                    try { UnmarkHydraulicParticipant(channel); }
+                    catch (Exception ex) { state.FreezeErrors.Add($"EPB{channel}:移除液压参与者:{ex.Message}"); }
+                }
+                try { ClearChannelRuntimes("StopSafetyTransaction"); }
+                catch (Exception ex) { state.FreezeErrors.Add("ClearRuntime:" + ex.Message); }
+                state.RuntimeObjectsFrozen = true;
+            }
+            return state.FreezeErrors.Count == 0
+                ? StopSafetyPortResult.Success(
+                    "已清理Timer、Runner、CTS并移除液压参与者。",
+                    materialProgress: true,
+                    evidenceSource: "StopTimerRunner",
+                    evidenceVersion: 1)
+                : StopSafetyPortResult.Failure(
+                    "运行对象清理失败:" + string.Join(";", state.FreezeErrors));
         }
 
         private async Task<StopSafetyPortResult> ExecuteStopRecoveryOwnerStageAsync(
@@ -955,6 +961,7 @@ namespace Controller
             internal bool RawStorageFlushed { get; set; } = true;
             internal bool PersistenceBoundaryConfirmed { get; set; }
             internal bool CyclesSealed { get; set; } = true;
+            internal bool RuntimeProducersFrozen { get; set; }
             internal bool RuntimeObjectsFrozen { get; set; }
             internal int ForceAbortedHydraulicObjects { get; set; }
             internal LogicalQuiescenceSnapshot Logical { get; set; } =

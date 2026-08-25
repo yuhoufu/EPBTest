@@ -100,6 +100,7 @@ namespace Controller
         internal bool StopSafetyHasOrphanCore => HasOrphanCore;
 
         public bool RequiresProcessRestart => Volatile.Read(ref _processRestartRequired) != 0;
+        internal bool IsEnergizationRevoked => Volatile.Read(ref _energizationRevoked) != 0;
 
         /// <summary>
         /// 仅供全新 Watchdog 恢复进程使用：硬件暂不可用期间本进程从未获得过上电授权；

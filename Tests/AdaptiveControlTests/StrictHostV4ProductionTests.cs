@@ -21,11 +21,13 @@ namespace AdaptiveControlTests
         internal static int RunAll()
         {
             var passed = 0;
-            Run("V2.13.0.24 watchdog assembly identity", WatchdogAssemblyVersionIdentity, ref passed);
+            Run("V2.13.0.25 watchdog assembly identity", WatchdogAssemblyVersionIdentity, ref passed);
             Run("strict bootstrap format2", StrictBootstrapFormat2, ref passed);
             Run("approved intent durable", ApprovedToIntent, ref passed);
             Run("started requires durable consume", StartedRequiresDurableConsume, ref passed);
             Run("started attached committed", StartedAttachedCommitted, ref passed);
+            Run("recovery commit replaces failed context and second takeover gets fresh permit",
+                RecoveryCommitReplacesContextAndMintsSecondPermit, ref passed);
             Run("resume intent no start", ResumeIntentNoStart, ref passed);
             Run("wrong capability rejected", WrongCapabilityRejected, ref passed);
             Run("same op replay", SameOperationReplay, ref passed);
@@ -43,13 +45,13 @@ namespace AdaptiveControlTests
 
         private static void WatchdogAssemblyVersionIdentity()
         {
-            var expected = new Version(2, 13, 0, 24);
+            var expected = new Version(2, 13, 0, 25);
             Require(typeof(WatchdogProtocol).Assembly.GetName().Version == expected,
-                "Protocol assembly version is not V2.13.0.24");
+                "Protocol assembly version is not V2.13.0.25");
             Require(typeof(WatchdogClientTransportEngine).Assembly.GetName().Version == expected,
-                "Client assembly version is not V2.13.0.24");
+                "Client assembly version is not V2.13.0.25");
             Require(typeof(StrictHostV4AuthorityAdapter).Assembly.GetName().Version == expected,
-                "Host assembly version is not V2.13.0.24");
+                "Host assembly version is not V2.13.0.25");
             Require(WatchdogProtocol.Version == 3 &&
                     WatchdogJournalPolicy.CurrentSchemaVersion == 4 &&
                     DurableRelaunchAuthorityV4Validator.RequiredFormatRevision == 2,
@@ -157,6 +159,110 @@ namespace AdaptiveControlTests
                         authority.Snapshot.State == DurableRelaunchPermitState.LaunchIntent &&
                         !authority.Snapshot.LaunchConsumed,
                     "CommitStarted bypassed durable consume");
+            });
+        }
+
+        private static void RecoveryCommitReplacesContextAndMintsSecondPermit()
+        {
+            WithAuthority((dir, session, authority) =>
+            {
+                var firstFailure = Operation(
+                    session,
+                    "23232323232323232323232323232323");
+                firstFailure.RunId = "failed-run";
+                firstFailure.RunEpoch = 1;
+                firstFailure.RecoveryStage = "DoOffConfirmed";
+                firstFailure.RecoveryProgressToken = "17";
+                var first = authority.RegisterFailureAndDecide(firstFailure);
+                Require(first.ActionAllowed && first.Record.Generation == 1,
+                    "first failure did not mint generation 1");
+
+                var intent = authority.PrepareLaunchIntent(
+                    Intent(authority.Snapshot, session));
+                Require(intent.Succeeded, "first launch intent failed");
+                Require(authority.ConsumeLaunchIntent(intent.Capability).Succeeded,
+                    "first launch intent was not consumed");
+                using (var process = Process.GetCurrentProcess())
+                {
+                    Require(authority.CommitStarted(
+                                intent.Capability,
+                                process.Id + 3000,
+                                process.StartTime.ToUniversalTime().Ticks + 3)
+                            .Succeeded,
+                        "first recovery process did not reach Started");
+                }
+                var attached = authority.CommitAttached(intent.Capability);
+                Require(attached.Succeeded,
+                    "first recovery process did not reach Attached");
+
+                var committedCandidate = attached.Record.Clone();
+                committedCandidate.State = DurableRelaunchPermitState.Committed;
+                committedCandidate.RunId = "recovered-run";
+                committedCandidate.RunEpoch = 3;
+                committedCandidate.RecoveryStage = "Rejoining";
+                committedCandidate.RecoveryProgressToken = "42";
+                committedCandidate.RecoveryCommitGeneration = 1;
+                DurableRelaunchAuthorityV4Validator.TryValidateRecord(
+                    committedCandidate,
+                    session,
+                    out var candidateValidation);
+
+                var committed = authority.CommitCommitted(
+                    intent.Capability,
+                    "recovered-run",
+                    3,
+                    "Rejoining",
+                    "42",
+                    1);
+                Require(committed.Succeeded &&
+                        committed.Record.State == DurableRelaunchPermitState.Committed &&
+                        committed.Record.RunId == "recovered-run" &&
+                        committed.Record.RunEpoch == 3 &&
+                        committed.Record.RecoveryStage == "Rejoining" &&
+                        committed.Record.RecoveryProgressToken == "42",
+                    "new recovered run context was rejected or not persisted: " +
+                    (committed?.Reason ?? "null") + "/candidate=" +
+                    (candidateValidation ?? "valid") +
+                    $"/circuit={committedCandidate.CircuitOpen}" +
+                    $"/gen={committedCandidate.Generation}" +
+                    $"/permit={committedCandidate.PermitId}" +
+                    $"/nonce={committedCandidate.PermitNonce}" +
+                    $"/canonical={committedCandidate.LastFailureCanonicalSha256}" +
+                    $"/commitGen={committedCandidate.RecoveryCommitGeneration}" +
+                    $"/candidateRun={committedCandidate.RunId}/{committedCandidate.RunEpoch}" +
+                    $"/candidateStage={committedCandidate.RecoveryStage}" +
+                    $"/candidateProgress={committedCandidate.RecoveryProgressToken}" +
+                    $"/consumed={committedCandidate.LaunchConsumed}/" +
+                    (committed?.Record?.State.ToString() ?? "no-record") + "/" +
+                    (committed?.Record?.RunId ?? "no-run") + "/" +
+                    (committed?.Record?.RunEpoch.ToString() ?? "no-epoch") + "/" +
+                    (committed?.Record?.RecoveryStage ?? "no-stage") + "/" +
+                    (committed?.Record?.RecoveryProgressToken ?? "no-progress"));
+
+                var secondFailure = Operation(
+                    session,
+                    "24242424242424242424242424242424");
+                secondFailure.OperationId = Guid.NewGuid().ToString("N");
+                secondFailure.RunId = "recovered-run";
+                secondFailure.RunEpoch = 3;
+                secondFailure.RecoveryStage = "PowerOffUnconfirmed";
+                secondFailure.RecoveryProgressToken = "43";
+                var second = authority.RegisterFailureAndDecide(secondFailure);
+                Require(second.Durable && second.ActionAllowed &&
+                        second.Record.State == DurableRelaunchPermitState.Approved &&
+                        second.Record.Generation == 2,
+                    "second failure did not mint a fresh consumable permit");
+                Require(second.Record.ProcessId == 0 &&
+                        second.Record.ProcessStartUtcTicks == 0 &&
+                        string.IsNullOrEmpty(second.Record.LaunchIntentId) &&
+                        string.IsNullOrEmpty(second.Record.LaunchSpecSha256) &&
+                        !second.Record.LaunchConsumed,
+                    "generation 2 retained generation 1 launch/process identity");
+                var secondIntent = authority.PrepareLaunchIntent(
+                    Intent(authority.Snapshot, session));
+                Require(secondIntent.Succeeded &&
+                        secondIntent.Record.State == DurableRelaunchPermitState.LaunchIntent,
+                    "fresh generation could not enter LaunchIntent");
             });
         }
 
