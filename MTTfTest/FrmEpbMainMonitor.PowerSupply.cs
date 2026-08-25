@@ -264,10 +264,11 @@ namespace MTEmbTest
                     {
                         Name = $"RuntimeStateEpb{channel}",
                         Dock = DockStyle.Fill,
-                        Margin = new Padding(4, 12, 4, 12),
+                        // 状态列较窄，保留足够的横向和纵向空间，让较长状态语自动换行完整显示。
+                        Margin = new Padding(2, 6, 2, 6),
                         TextAlign = ContentAlignment.MiddleCenter,
-                        AutoEllipsis = true,
-                        Font = new Font("Microsoft YaHei UI", 8.5F, FontStyle.Bold),
+                        AutoEllipsis = false,
+                        Font = new Font("Microsoft YaHei UI", 8F, FontStyle.Bold),
                         ForeColor = Color.White,
                         BackColor = Color.FromArgb(120, 120, 120),
                         Text = "未启用",
@@ -361,8 +362,7 @@ namespace MTEmbTest
                 warning = _channelWarningOverlays.TryGetValue(state.Channel, out var currentWarning)
                     ? currentWarning.Clone()
                     : null;
-            var warningActive = warning?.Active == true &&
-                                (warning.RunEpoch == 0 || warning.RunEpoch == state.RunEpoch);
+            var warningActive = IsWarningOverlayActiveForState(state, warning);
             var record = EnsureEpbRecord(state.Channel);
             if (!record.Enabled && state.State != ChannelRuntimeState.NotEnabled)
             {
@@ -376,7 +376,7 @@ namespace MTEmbTest
                 : state.TimestampUtc.ToLocalTime();
             // 状态格宽度很小，原来的第二行时间会被截成“运行1…”或“运行0…”，
             // 容易被误解为数值状态。格内只保留状态，时间和原因放在悬浮提示中。
-            label.Text = GetRuntimeStateText(state.State) + (warningActive ? " · 预警" : string.Empty);
+            label.Text = GetRuntimeStateDisplayText(state.State, warningActive);
             label.BackColor = warningActive &&
                               (state.State == ChannelRuntimeState.Running ||
                                state.State == ChannelRuntimeState.WarningRunning)
@@ -435,9 +435,14 @@ namespace MTEmbTest
             var running = states.Count(x => x.State == ChannelRuntimeState.Starting ||
                                             x.State == ChannelRuntimeState.Learning ||
                                             x.State == ChannelRuntimeState.Running);
-            var warning = warnings.Count(x => x.Active) +
+            var warning = warnings.Count(x =>
+                              states.Any(state =>
+                                  state.Channel == x.Channel &&
+                                  IsWarningOverlayActiveForState(state, x))) +
                           states.Count(x => x.State == ChannelRuntimeState.WarningRunning &&
-                                            warnings.All(w => w.Channel != x.Channel || !w.Active));
+                                             warnings.All(w =>
+                                                 w.Channel != x.Channel ||
+                                                 !IsWarningOverlayActiveForState(x, w)));
             var alarm = states.Count(x => x.State == ChannelRuntimeState.AlarmStopped ||
                                           x.State == ChannelRuntimeState.StartBlocked);
             var interlock = states.Count(x => x.State == ChannelRuntimeState.InterlockStopped);
@@ -491,6 +496,23 @@ namespace MTEmbTest
                 case ChannelRuntimeState.StartBlocked: return "启动受阻";
                 default: return "未启用";
             }
+        }
+
+        internal static bool IsWarningOverlayActiveForState(
+            ChannelRuntimeStateChangedEvent state,
+            ChannelWarningOverlayChangedEvent warning)
+        {
+            return state != null &&
+                   warning?.Active == true &&
+                   warning.Channel == state.Channel &&
+                   (warning.RunEpoch == 0 || warning.RunEpoch == state.RunEpoch);
+        }
+
+        internal static string GetRuntimeStateDisplayText(
+            ChannelRuntimeState state,
+            bool warningActive)
+        {
+            return GetRuntimeStateText(state) + (warningActive ? " · 预警" : string.Empty);
         }
 
         private static string GetDaqPersistenceStateText(DaqPersistenceState state)

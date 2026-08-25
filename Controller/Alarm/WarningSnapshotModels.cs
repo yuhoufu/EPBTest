@@ -8,6 +8,7 @@ namespace Controller.Alarm
 {
     public enum AdaptiveWarningCode
     {
+        GenericAdaptiveWarning = -1,
         ForwardPeakOvershootWarning,
         ForwardCurrentRiseStallWarning,
         PeakEvidenceMismatchWarning,
@@ -35,6 +36,7 @@ namespace Controller.Alarm
         public string ScopeKey { get; set; } = string.Empty;
         public Guid CorrelationId { get; set; }
         public long AttemptId { get; set; }
+        public int CycleNumber { get; set; }
 
         public string NormalizedCode => string.IsNullOrWhiteSpace(FaultCode)
             ? Code.ToString()

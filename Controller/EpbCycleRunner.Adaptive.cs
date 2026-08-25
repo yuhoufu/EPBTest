@@ -1781,10 +1781,22 @@ namespace Controller
         private void RaiseAdaptiveWarning(string reason)
         {
             var warningReason = reason ?? "AdaptiveWarning";
-            ObserveAdaptiveBackground(Task.Run(() =>
+            NotifyWarningOverlaySafely(new AdaptiveWarningEvent
             {
-                NotifyWarningSafely(warningReason);
-            }), "AdaptiveWarningNotification");
+                Channel = _channel,
+                Code = AdaptiveWarningCode.GenericAdaptiveWarning,
+                OccurredUtc = DateTime.UtcNow,
+                Reason = warningReason
+            });
+            QueueAdaptiveWarningNotification(warningReason);
+        }
+
+        private void QueueAdaptiveWarningNotification(string reason)
+        {
+            var warningReason = reason ?? "AdaptiveWarning";
+            ObserveAdaptiveBackground(
+                Task.Run(() => NotifyWarningMessageSafely(warningReason)),
+                "AdaptiveWarningNotification");
         }
 
         private void PublishAdaptiveDiagnosticOverlay(EpbAdaptiveDecision decision)
@@ -1863,8 +1875,11 @@ namespace Controller
             if (warning == null) return;
             warning.Channel = _channel;
             if (warning.OccurredUtc == default) warning.OccurredUtc = DateTime.UtcNow;
+            // overlay 是控制状态，必须在判定线程同步到达 Manager；否则迟到的 Task.Run
+            // 可能在下一可信正常圈清除之后重新点亮陈旧预警。
+            NotifyWarningOverlaySafely(warning);
             NotifyWarningEvidenceSafely(warning);
-            RaiseAdaptiveWarning(warning.Reason);
+            QueueAdaptiveWarningNotification(warning.Reason);
         }
 
         private async Task<EpbAdaptiveDecision> WaitAdaptiveDecisionAsync(

@@ -3222,10 +3222,12 @@ namespace Controller
                                 var nonRecoverableAlarm =
                                     OnFormalCycleCommittedAndEvaluateClampFault(
                                         runner,
-                                        ch,
-                                        cycleNumber,
-                                        committedCycles,
-                                        phaseSlot);
+                                         ch,
+                                         cycleNumber,
+                                         committedCycles,
+                                         phaseSlot,
+                                         cycleAttempt,
+                                         cycleOutcome);
                                 if (!nonRecoverableAlarm && mechanicalTargetReached)
                                 {
                                     FinalizeChannelAfterNaturalCompletion(ch, cycleNumber);
@@ -3590,6 +3592,7 @@ namespace Controller
             if (runner == null) throw new ArgumentNullException(nameof(runner));
             var modelBeforeLogicalCycle = runner.CaptureAdaptiveProfile();
             var learningCycleNumber = 0;
+            var runEpoch = Interlocked.Read(ref _runEpoch);
             BeginLearningProfileTransaction(channel);
 
             int attempts;
@@ -3621,6 +3624,9 @@ namespace Controller
                         }
 
                         EpbCycleRunner.LearnSample pendingLegacySample = null;
+                        Adaptive.EpbCycleOutcome trustedOutcome = null;
+                        long trustedAttemptId = 0;
+                        var trustedCycleNumber = 0;
                         try
                         {
                             try
@@ -3635,7 +3641,10 @@ namespace Controller
                                     ex);
                             }
                             if (learningCycleNumber != 0)
+                            {
                                 MarkCurrentCycleNumber(channel, learningCycleNumber);
+                                _currentAttemptIdByChannel.TryGetValue(channel, out trustedAttemptId);
+                            }
 
                             if (GetEpbControlMode(channel) == Adaptive.EpbControlMode.AdaptiveCurrent)
                             {
@@ -3702,7 +3711,10 @@ namespace Controller
                                             ex);
                                     }
                                     if (learningCycleNumber != 0)
+                                    {
                                         MarkCurrentCycleNumber(channel, learningCycleNumber);
+                                        _currentAttemptIdByChannel.TryGetValue(channel, out trustedAttemptId);
+                                    }
                                     outcome = await runner.RunOneAdaptiveLearningAsync(
                                             PeriodMs,
                                             attemptToken)
@@ -3727,6 +3739,8 @@ namespace Controller
                                     throw new InvalidOperationException(
                                         $"EPB[{channel}] 自适应学习圈失败：" +
                                         $"阶段={outcome.Stage}，原因={outcome.Reason}");
+                                trustedOutcome = outcome;
+                                trustedCycleNumber = learningCycleNumber;
                                 _watchdogConsecutiveSoftwareAborts[channel] = 0;
                             }
                             else
@@ -3771,6 +3785,14 @@ namespace Controller
                                     learningEvidence,
                                     channel, learningOrdinal, attempt, "Successful", string.Empty,
                                     qualification: false);
+                                TryClearChannelWarningOverlayAfterTrustedCycle(
+                                    channel,
+                                    runId,
+                                    runEpoch,
+                                    trustedCycleNumber,
+                                    trustedAttemptId,
+                                    trustedOutcome,
+                                    "Learning");
                             }
                             catch (EpbAdaptiveProfilePersistenceFatalException fatalEx)
                             {
@@ -4906,7 +4928,9 @@ namespace Controller
         private void OnFormalCycleCommitted(
             int channel,
             int sessionRunCount,
-            long groupCycleSlot)
+            long groupCycleSlot,
+            CycleAttemptContext attempt,
+            Adaptive.EpbCycleOutcome outcome)
         {
             _faultConfirmationTracker.ResetScope($"Channel:{channel}");
             var device = _acq.GetDeviceForEpbChannel(channel);
@@ -4916,13 +4940,14 @@ namespace Controller
             // 完整正式圈已经通过控制与持久化提交，等价于本动作具备新鲜DAQ电流证据。
             // 电源通信降级确认按共享物理槽位去重，组内多个通道不会重复计圈。
             _powerSupply?.RecordSuccessfulActionCycle(channel, groupCycleSlot);
-            var current = _channelRuntimeStateStore.Get(channel);
-            if (current?.State == ChannelRuntimeState.WarningRunning)
-                PublishChannelRuntimeState(
-                    channel,
-                    ChannelRuntimeState.Running,
-                    "WarningCleared",
-                    "后续完整圈正常，软预警已解除");
+            TryClearChannelWarningOverlayAfterTrustedCycle(
+                channel,
+                attempt?.RunId ?? Guid.Empty,
+                attempt?.RunEpoch ?? 0,
+                attempt?.Cycle ?? 0,
+                attempt?.AttemptId ?? 0,
+                outcome,
+                "Formal");
             NonCriticalObserver.Invoke(
                 ChannelCycleCompleted,
                 channel,
@@ -5024,9 +5049,16 @@ namespace Controller
             int channel,
             int cycleNumber,
             int sessionRunCount,
-            long groupCycleSlot)
+            long groupCycleSlot,
+            CycleAttemptContext attempt,
+            Adaptive.EpbCycleOutcome outcome)
         {
-            OnFormalCycleCommitted(channel, sessionRunCount, groupCycleSlot);
+            OnFormalCycleCommitted(
+                channel,
+                sessionRunCount,
+                groupCycleSlot,
+                attempt,
+                outcome);
             Adaptive.FormalCycleFaultCommitResult result;
             try
             {

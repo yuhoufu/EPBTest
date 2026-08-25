@@ -655,6 +655,9 @@ namespace Controller
             if (warning.AttemptId <= 0 &&
                 _currentAttemptIdByChannel.TryGetValue(warning.Channel, out var attemptId))
                 warning.AttemptId = attemptId;
+            if (warning.CycleNumber == 0 &&
+                _currentCycleNumberByChannel.TryGetValue(warning.Channel, out var warningCycleNumber))
+                warning.CycleNumber = warningCycleNumber;
             if (string.IsNullOrWhiteSpace(warning.ScopeKey))
                 warning.ScopeKey = $"Channel:{warning.Channel}";
             NonCriticalObserver.Invoke(

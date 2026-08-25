@@ -796,6 +796,7 @@ namespace Controller
             var learningEvidence = CaptureLearningEvidenceContext(runId);
             var modelBeforeLogicalCycle = runner.CaptureAdaptiveProfile();
             var cycleNumber = 0;
+            var runEpoch = Interlocked.Read(ref _runEpoch);
             BeginLearningProfileTransaction(channel);
             int attempts;
             try
@@ -824,6 +825,8 @@ namespace Controller
                                 .ConfigureAwait(false);
                         try
                         {
+                            long trustedAttemptId = 0;
+                            var trustedCycleNumber = 0;
                             try
                             {
                                 cycleNumber = Recorder?.BeginLearningCycle(channel, DateTime.UtcNow) ?? 0;
@@ -834,7 +837,11 @@ namespace Controller
                                     $"EPB[{channel}] 无法建立资格圈落盘边界。",
                                     ex);
                             }
-                            if (cycleNumber != 0) MarkCurrentCycleNumber(channel, cycleNumber);
+                            if (cycleNumber != 0)
+                            {
+                                MarkCurrentCycleNumber(channel, cycleNumber);
+                                _currentAttemptIdByChannel.TryGetValue(channel, out trustedAttemptId);
+                            }
 
                             var outcome = await runner.RunOneAdaptiveLearningAsync(PeriodMs, attemptToken)
                                 .ConfigureAwait(false);
@@ -876,6 +883,7 @@ namespace Controller
                             if (!outcome.IsSuccess)
                                 throw new InvalidOperationException(
                                     $"EPB[{channel}] 资格圈失败：{outcome.Stage}/{outcome.Reason}");
+                            trustedCycleNumber = cycleNumber;
                             _watchdogConsecutiveSoftwareAborts[channel] = 0;
 
                             await SealLearningCycleAsync(
@@ -896,6 +904,14 @@ namespace Controller
                                     learningEvidence,
                                     channel, qualificationOrdinal, attempt, "Successful", string.Empty,
                                     qualification: true);
+                                TryClearChannelWarningOverlayAfterTrustedCycle(
+                                    channel,
+                                    runId,
+                                    runEpoch,
+                                    trustedCycleNumber,
+                                    trustedAttemptId,
+                                    outcome,
+                                    "Qualification");
                             }
                             catch (EpbAdaptiveProfilePersistenceFatalException fatalEx)
                             {
@@ -2052,10 +2068,12 @@ namespace Controller
                     var nonRecoverableAlarm =
                         OnFormalCycleCommittedAndEvaluateClampFault(
                             runner,
-                            channel,
-                            cycleNumber,
-                            committedCycles,
-                            phaseSlot);
+                             channel,
+                             cycleNumber,
+                             committedCycles,
+                             phaseSlot,
+                             cycleAttempt,
+                             cycleOutcome);
                     if (!nonRecoverableAlarm && mechanicalTargetReached)
                     {
                         FinalizeChannelAfterNaturalCompletion(channel, cycleNumber);

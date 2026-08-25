@@ -314,27 +314,47 @@ namespace Controller
             return currentState ?? ChannelRuntimeState.Running;
         }
 
-        private void PublishChannelWarningOverlay(
-            int channel,
-            string warningCode,
-            string warningText,
-            Guid correlationId = default)
+        private void OnRunnerWarningOverlayRaised(AdaptiveWarningEvent warning)
         {
+            if (warning == null || warning.Channel < 1 || warning.Channel > 12) return;
+            if (warning.OccurredUtc == default) warning.OccurredUtc = DateTime.UtcNow;
+            if (warning.CorrelationId == Guid.Empty) warning.CorrelationId = Guid.NewGuid();
+            if (warning.AttemptId <= 0 &&
+                _currentAttemptIdByChannel.TryGetValue(warning.Channel, out var attemptId))
+                warning.AttemptId = attemptId;
+            if (warning.CycleNumber == 0 &&
+                _currentCycleNumberByChannel.TryGetValue(warning.Channel, out var cycleNumber))
+                warning.CycleNumber = cycleNumber;
+            if (string.IsNullOrWhiteSpace(warning.ScopeKey))
+                warning.ScopeKey = $"Channel:{warning.Channel}";
+
+            var runId = _runIdByChannel.TryGetValue(warning.Channel, out var channelRunId)
+                ? channelRunId
+                : _activeBatchId;
             var update = _channelWarningOverlayStore.Publish(new ChannelWarningOverlayChangedEvent
             {
-                Channel = channel,
+                Channel = warning.Channel,
                 Active = true,
-                WarningCode = warningCode ?? string.Empty,
-                WarningText = warningText ?? string.Empty,
-                TimestampUtc = DateTime.UtcNow,
-                CorrelationId = correlationId,
-                RunId = _activeBatchId,
-                RunEpoch = Interlocked.Read(ref _runEpoch)
+                WarningCode = warning.NormalizedCode,
+                WarningText = warning.Reason ?? string.Empty,
+                TimestampUtc = warning.OccurredUtc,
+                CorrelationId = warning.CorrelationId,
+                RunId = runId,
+                RunEpoch = Interlocked.Read(ref _runEpoch),
+                RaisedAttemptId = warning.AttemptId,
+                RaisedCycleNumber = warning.CycleNumber,
+                RaisedUtc = warning.OccurredUtc
             });
             NonCriticalObserver.Invoke(
                 ChannelWarningOverlayChanged,
                 update,
                 ex => _log?.Warn($"通道预警覆盖层观察者异常已隔离：{ex.Message}", "EPB"));
+            var lifecycle = _channelRuntimeStateStore.Get(warning.Channel);
+            _log.Info(
+                $"FieldMetric WARNING_OVERLAY EPB={warning.Channel} Code={warning.NormalizedCode} " +
+                $"Revision={update.Revision} Attempt={warning.AttemptId} Cycle={warning.CycleNumber} " +
+                $"LifecyclePreserved={lifecycle?.State} LifecycleRevision={lifecycle?.Revision ?? 0}",
+                "FIELD");
         }
 
         private void ClearChannelWarningOverlay(int channel, Guid correlationId = default)
@@ -350,6 +370,95 @@ namespace Controller
                 ChannelWarningOverlayChanged,
                 update,
                 ex => _log?.Warn($"通道预警覆盖层观察者异常已隔离：{ex.Message}", "EPB"));
+        }
+
+        internal static bool IsTrustedWarningOverlayRecoveryCandidate(
+            ChannelWarningOverlayChangedEvent warning,
+            Guid recoveredRunId,
+            long recoveredRunEpoch,
+            long recoveredAttemptId,
+            int recoveredCycleNumber,
+            EpbCycleOutcome outcome)
+        {
+            if (warning == null || !warning.Active) return false;
+            if (recoveredRunId == Guid.Empty || warning.RunId != recoveredRunId) return false;
+            if (recoveredRunEpoch <= 0 || warning.RunEpoch != recoveredRunEpoch) return false;
+            if (recoveredAttemptId <= 0 || recoveredCycleNumber == 0) return false;
+            if (outcome == null ||
+                outcome.Kind != EpbCycleOutcomeKind.Success ||
+                !outcome.MechanicalCycleCompleted)
+                return false;
+
+            // 预警所属尝试本身即便被误标为 Success，也绝不能在同圈末尾清除。
+            // RaisedAttemptId=0 仅兼容进入首圈前的启动定位预警。
+            return warning.RaisedAttemptId <= 0 || recoveredAttemptId > warning.RaisedAttemptId;
+        }
+
+        private bool TryClearChannelWarningOverlayAfterTrustedCycle(
+            int channel,
+            Guid runId,
+            long runEpoch,
+            int cycleNumber,
+            long attemptId,
+            EpbCycleOutcome outcome,
+            string phase)
+        {
+            var current = _channelWarningOverlayStore.Get(channel);
+            if (!IsTrustedWarningOverlayRecoveryCandidate(
+                    current,
+                    runId,
+                    runEpoch,
+                    attemptId,
+                    cycleNumber,
+                    outcome))
+                return false;
+
+            var reason = $"SubsequentTrustedCycleHealthy:{phase ?? "Unknown"}";
+            if (!_channelWarningOverlayStore.TryClearIfCurrent(
+                    channel,
+                    current.RunId,
+                    current.RunEpoch,
+                    current.Revision,
+                    current.WarningCode,
+                    attemptId,
+                    cycleNumber,
+                    current.CorrelationId,
+                    reason,
+                    out var cleared))
+            {
+                var latest = _channelWarningOverlayStore.Get(channel);
+                if (latest?.Active == true &&
+                    latest.Revision == current.Revision &&
+                    latest.RunId == current.RunId &&
+                    latest.RunEpoch == current.RunEpoch &&
+                    string.Equals(
+                        latest.WarningCode,
+                        current.WarningCode,
+                        StringComparison.Ordinal))
+                {
+                    _log.Warn(
+                        $"FieldMetric WARNING_OVERLAY_CLEAR_MISSING EPB={channel} " +
+                        $"Code={current.WarningCode} Revision={current.Revision} " +
+                        $"RecoveredAttempt={attemptId} RecoveredCycle={cycleNumber} Phase={phase}",
+                        "FIELD");
+                }
+                return false;
+            }
+
+            NonCriticalObserver.Invoke(
+                ChannelWarningOverlayChanged,
+                cleared,
+                ex => _log?.Warn($"通道预警覆盖层清除观察者异常已隔离：{ex.Message}", "EPB"));
+            var latencyMs = current.RaisedUtc == default
+                ? 0D
+                : Math.Max(0D, (cleared.TimestampUtc - current.RaisedUtc).TotalMilliseconds);
+            _log.Info(
+                $"FieldMetric WARNING_OVERLAY_CLEARED EPB={channel} Code={current.WarningCode} " +
+                $"RaisedRevision={current.Revision} ClearRevision={cleared.Revision} " +
+                $"RaisedAttempt={current.RaisedAttemptId} RecoveredAttempt={attemptId} " +
+                $"RecoveredCycle={cycleNumber} ClearLatencyMs={latencyMs:F3} Reason={reason}",
+                "FIELD");
+            return true;
         }
 
         internal static bool ShouldRejectRecoveryPauseOverride(
@@ -2107,6 +2216,7 @@ namespace Controller
             _adaptiveLifecyclePort = new EpbManagerAdaptiveLifecyclePort(
                 alarmRaised: OnRunnerAlarmRaised,
                 warningRaised: OnRunnerWarningRaised,
+                warningOverlayRaised: OnRunnerWarningOverlayRaised,
                 warningEvidenceRaised: OnRunnerWarningEvidenceRaised,
                 recoverableFaultRaised: OnRunnerRecoverableFaultRaised,
                 decisionObserved: OnRunnerAdaptiveDecisionObserved,
@@ -3502,10 +3612,12 @@ namespace Controller
                     var nonRecoverableAlarm =
                         OnFormalCycleCommittedAndEvaluateClampFault(
                             runner,
-                            channel,
-                            cycleNumber,
-                            committedCycles,
-                            i);
+                             channel,
+                             cycleNumber,
+                             committedCycles,
+                             i,
+                             cycleAttempt,
+                             cycleOutcome);
                     if (!nonRecoverableAlarm && mechanicalTargetReached)
                     {
                         FinalizeChannelAfterNaturalCompletion(channel, cycleNumber);
@@ -4391,7 +4503,7 @@ namespace Controller
             var correlationId = Guid.NewGuid();
             if (_currentCycleNumberByChannel.TryGetValue(channel, out var cycleNumber))
                 _frozenFaultCycleByChannel[channel] = cycleNumber;
-            OnRunnerWarningEvidenceRaised(new AdaptiveWarningEvent
+            var warning = new AdaptiveWarningEvent
             {
                 Channel = channel,
                 Code = AdaptiveWarningCode.RecoverableControlFaultWarning,
@@ -4403,20 +4515,15 @@ namespace Controller
                 Streak = confirmation.Streak,
                 ConfirmThreshold = confirmation.ConfirmThreshold,
                 Reason = reason
-            });
+            };
+            OnRunnerWarningOverlayRaised(warning);
+            OnRunnerWarningEvidenceRaised(warning);
             NonCriticalObserver.Invoke(
                 ChannelWarningRaised,
                 channel,
                 $"{faultCode} 连续={confirmation.Streak}/{confirmation.ConfirmThreshold}；" +
                 "已安全断电，本圈作废并自动重试。",
                 ex => _log?.Warn($"EPB[{channel}] 预警观察者异常已隔离：{ex.Message}", "EPB"));
-            var lifecycle = _channelRuntimeStateStore.Get(channel);
-            PublishChannelWarningOverlay(channel, faultCode, reason, correlationId);
-            _log.Info(
-                $"FieldMetric WARNING_OVERLAY EPB={channel} " +
-                $"LifecyclePreserved={lifecycle?.State} " +
-                $"LifecycleRevision={lifecycle?.Revision ?? 0} Reason={faultCode}",
-                "FIELD");
             if (!TryEnsureSoftwareRecoveryOutputOff(channel, "ConfirmedFaultWarning")) return;
             var pauseCompletion = _timers.TryGetValue(channel, out var timer)
                 ? timer.PauseAfterCurrentCycleAsync($"RecoverableWarning:{faultCode}")
@@ -4632,7 +4739,7 @@ namespace Controller
                 _frozenFaultCycleByChannel[channel] = frozenCycle;
             if (confirmation.Disposition == FaultConfirmationDisposition.RecoverableWarningFault)
             {
-                OnRunnerWarningEvidenceRaised(new AdaptiveWarningEvent
+                var warning = new AdaptiveWarningEvent
                 {
                     Channel = channel,
                     Code = AdaptiveWarningCode.RecoverableControlFaultWarning,
@@ -4644,7 +4751,9 @@ namespace Controller
                     Streak = confirmation.Streak,
                     ConfirmThreshold = confirmation.ConfirmThreshold,
                     Reason = faultReason
-                });
+                };
+                OnRunnerWarningOverlayRaised(warning);
+                OnRunnerWarningEvidenceRaised(warning);
                 NonCriticalObserver.Invoke(
                     ChannelWarningRaised,
                     channel,
@@ -9596,14 +9705,6 @@ namespace Controller
         private void OnRunnerWarningRaised(int channel, string reason)
         {
             _log.Warn($"EPB[{channel}] 自适应软预警：{reason}", "EPB");
-            var warningCode = ExtractFaultCode(reason);
-            var lifecycle = _channelRuntimeStateStore.Get(channel);
-            PublishChannelWarningOverlay(channel, warningCode, reason);
-            _log.Info(
-                $"FieldMetric WARNING_OVERLAY EPB={channel} " +
-                $"LifecyclePreserved={lifecycle?.State} " +
-                $"LifecycleRevision={lifecycle?.Revision ?? 0} Reason={warningCode}",
-                "FIELD");
             NonCriticalObserver.Invoke(
                 ChannelWarningRaised,
                 channel,
@@ -11423,6 +11524,17 @@ namespace Controller
             };
         }
 
+        internal static WatchdogChannelProgressSnapshot ApplyWarningOverlayToWatchdogProgress(
+            WatchdogChannelProgressSnapshot progress,
+            ChannelWarningOverlayChangedEvent warning)
+        {
+            if (progress == null) throw new ArgumentNullException(nameof(progress));
+            progress.WarningActive = warning?.Active == true;
+            progress.WarningCode = warning?.WarningCode ?? string.Empty;
+            progress.WarningRevision = warning?.Revision ?? 0;
+            return progress;
+        }
+
         private LogicalQuiescenceSnapshot CaptureLogicalQuiescenceSnapshot()
         {
             // Recovery contracts, registry leases and channel lifecycle must
@@ -11492,7 +11604,7 @@ namespace Controller
                             channel,
                             out cutoffGeneration,
                             out cutoffSequence);
-                    return new WatchdogChannelProgressSnapshot
+                    var progress = new WatchdogChannelProgressSnapshot
                     {
                         Channel = channel,
                         State = state?.State.ToString() ?? ChannelRuntimeState.NotEnabled.ToString(),
@@ -11514,11 +11626,9 @@ namespace Controller
                         RecoveryOwnerId = state?.RecoveryOwnerId.ToString("N") ?? string.Empty,
                         RecoveryOwnerGeneration = state?.RecoveryOwnerGeneration ?? 0,
                         RecoveryTargetPhase = state?.RecoveryTargetPhase.ToString() ?? string.Empty,
-                        SourceStateRevision = state?.SourceStateRevision ?? 0,
-                        WarningActive = warning?.Active == true,
-                        WarningCode = warning?.WarningCode ?? string.Empty,
-                        WarningRevision = warning?.Revision ?? 0
+                        SourceStateRevision = state?.SourceStateRevision ?? 0
                     };
+                    return ApplyWarningOverlayToWatchdogProgress(progress, warning);
                 }).ToArray()
             };
             _recoveryAggregateStore.PublishLogicalSource(snapshot);

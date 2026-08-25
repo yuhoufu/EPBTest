@@ -18,7 +18,8 @@ namespace Controller
         TimerPause = 9,
         SafeIdle = 10,
         Stop = 11,
-        SystemFault = 12
+        SystemFault = 12,
+        WarningOverlay = 13
     }
 
     internal readonly struct EpbManagerAdaptiveLifecycleEventIdentity
@@ -82,6 +83,7 @@ namespace Controller
     {
         private readonly Action<int, string> _alarmRaised;
         private readonly Action<int, string> _warningRaised;
+        private readonly Action<AdaptiveWarningEvent> _warningOverlayRaised;
         private readonly Action<AdaptiveWarningEvent> _warningEvidenceRaised;
         private readonly Action<int, string> _recoverableFaultRaised;
         private readonly Action<AdaptiveDecisionTraceSample> _decisionObserved;
@@ -100,6 +102,7 @@ namespace Controller
         internal EpbManagerAdaptiveLifecyclePort(
             Action<int, string> alarmRaised = null,
             Action<int, string> warningRaised = null,
+            Action<AdaptiveWarningEvent> warningOverlayRaised = null,
             Action<AdaptiveWarningEvent> warningEvidenceRaised = null,
             Action<int, string> recoverableFaultRaised = null,
             Action<AdaptiveDecisionTraceSample> decisionObserved = null,
@@ -117,6 +120,7 @@ namespace Controller
         {
             _alarmRaised = alarmRaised;
             _warningRaised = warningRaised;
+            _warningOverlayRaised = warningOverlayRaised;
             _warningEvidenceRaised = warningEvidenceRaised;
             _recoverableFaultRaised = recoverableFaultRaised;
             _decisionObserved = decisionObserved;
@@ -177,6 +181,18 @@ namespace Controller
             var identity = CaptureIdentity(warning?.Channel ?? 0);
             Observe(new EpbManagerAdaptiveLifecycleEvent(
                 EpbManagerAdaptiveLifecycleEventKind.WarningEvidence,
+                warning?.Channel ?? 0,
+                warning?.Reason,
+                identity.RunId,
+                identity.RunEpoch));
+        }
+
+        internal void OnRunnerWarningOverlayRaised(AdaptiveWarningEvent warning)
+        {
+            _warningOverlayRaised?.Invoke(warning);
+            var identity = CaptureIdentity(warning?.Channel ?? 0);
+            Observe(new EpbManagerAdaptiveLifecycleEvent(
+                EpbManagerAdaptiveLifecycleEventKind.WarningOverlay,
                 warning?.Channel ?? 0,
                 warning?.Reason,
                 identity.RunId,
@@ -352,6 +368,8 @@ namespace Controller
             runner.AlarmRaised += port.OnRunnerAlarmRaised;
             runner.WarningRaised -= port.OnRunnerWarningRaised;
             runner.WarningRaised += port.OnRunnerWarningRaised;
+            runner.WarningOverlayRaised -= port.OnRunnerWarningOverlayRaised;
+            runner.WarningOverlayRaised += port.OnRunnerWarningOverlayRaised;
             runner.WarningEvidenceRaised -= port.OnRunnerWarningEvidenceRaised;
             runner.WarningEvidenceRaised += port.OnRunnerWarningEvidenceRaised;
             runner.RecoverableFaultRaised -= port.OnRunnerRecoverableFaultRaised;
@@ -368,6 +386,7 @@ namespace Controller
             EpbCycleRunner runner,
             Action<int, string> alarm,
             Action<int, string> warning,
+            Action<AdaptiveWarningEvent> warningOverlay,
             Action<AdaptiveWarningEvent> warningEvidence,
             Action<int, string> recoverableFault,
             Action<AdaptiveDecisionTraceSample> decision,
@@ -379,6 +398,8 @@ namespace Controller
             runner.AlarmRaised += alarm;
             runner.WarningRaised -= warning;
             runner.WarningRaised += warning;
+            runner.WarningOverlayRaised -= warningOverlay;
+            runner.WarningOverlayRaised += warningOverlay;
             runner.WarningEvidenceRaised -= warningEvidence;
             runner.WarningEvidenceRaised += warningEvidence;
             runner.RecoverableFaultRaised -= recoverableFault;
@@ -404,6 +425,7 @@ namespace Controller
             }
             runner.AlarmRaised -= port.OnRunnerAlarmRaised;
             runner.WarningRaised -= port.OnRunnerWarningRaised;
+            runner.WarningOverlayRaised -= port.OnRunnerWarningOverlayRaised;
             runner.WarningEvidenceRaised -= port.OnRunnerWarningEvidenceRaised;
             runner.RecoverableFaultRaised -= port.OnRunnerRecoverableFaultRaised;
             runner.AdaptiveDecisionObserved -= port.OnRunnerDecisionObserved;
@@ -415,6 +437,7 @@ namespace Controller
             EpbCycleRunner runner,
             Action<int, string> alarm,
             Action<int, string> warning,
+            Action<AdaptiveWarningEvent> warningOverlay,
             Action<AdaptiveWarningEvent> warningEvidence,
             Action<int, string> recoverableFault,
             Action<AdaptiveDecisionTraceSample> decision,
@@ -430,6 +453,7 @@ namespace Controller
             }
             runner.AlarmRaised -= alarm;
             runner.WarningRaised -= warning;
+            runner.WarningOverlayRaised -= warningOverlay;
             runner.WarningEvidenceRaised -= warningEvidence;
             runner.RecoverableFaultRaised -= recoverableFault;
             runner.AdaptiveDecisionObserved -= decision;

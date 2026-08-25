@@ -83,6 +83,13 @@ namespace AdaptiveControlTests
                     return 0;
                 }
                 if (args.Length == 1 &&
+                    args[0].Equals("--warning-overlay-recovery", StringComparison.OrdinalIgnoreCase))
+                {
+                    _passed += WarningOverlayRecoveryTests.RunAll();
+                    Console.WriteLine($"PASS {_passed}/{_passed}");
+                    return 0;
+                }
+                if (args.Length == 1 &&
                     args[0].Equals("--recovery-production-seam", StringComparison.OrdinalIgnoreCase))
                 {
                     _passed += RecoveryProductionSeamTests.RunAll();

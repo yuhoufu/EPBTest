@@ -253,6 +253,14 @@ namespace Controller
         public Guid CorrelationId { get; set; }
         public Guid RunId { get; set; }
         public long RunEpoch { get; set; }
+        /// <summary>预警首次激活时所属的圈尝试；用于阻止同圈结果提前清除。</summary>
+        public long RaisedAttemptId { get; set; }
+        public int RaisedCycleNumber { get; set; }
+        public DateTime RaisedUtc { get; set; }
+        /// <summary>仅在 Active=false 的恢复事件中赋值，保留完整审计链。</summary>
+        public long ClearedAttemptId { get; set; }
+        public int ClearedCycleNumber { get; set; }
+        public string ClearReason { get; set; } = string.Empty;
 
         public ChannelWarningOverlayChangedEvent Clone()
         {
@@ -281,6 +289,8 @@ namespace Controller
 
             next.TimestampUtc = next.TimestampUtc == default ? DateTime.UtcNow : next.TimestampUtc;
             next.CorrelationId = next.CorrelationId == Guid.Empty ? Guid.NewGuid() : next.CorrelationId;
+            if (next.Active && next.RaisedUtc == default)
+                next.RaisedUtc = next.TimestampUtc;
             var candidate = next.Clone();
             return _warnings.AddOrUpdate(
                     candidate.Channel,
@@ -293,17 +303,71 @@ namespace Controller
             int channel,
             Guid runId,
             long runEpoch,
-            Guid correlationId = default)
+            Guid correlationId = default,
+            string clearReason = "LifecycleReset")
         {
+            var current = Get(channel);
             return Publish(new ChannelWarningOverlayChangedEvent
             {
                 Channel = channel,
                 Active = false,
+                WarningCode = current?.WarningCode ?? string.Empty,
+                WarningText = current?.WarningText ?? string.Empty,
                 RunId = runId,
                 RunEpoch = runEpoch,
-                CorrelationId = correlationId,
-                TimestampUtc = DateTime.UtcNow
+                CorrelationId = correlationId == Guid.Empty
+                    ? current?.CorrelationId ?? Guid.Empty
+                    : correlationId,
+                TimestampUtc = DateTime.UtcNow,
+                RaisedAttemptId = current?.RaisedAttemptId ?? 0,
+                RaisedCycleNumber = current?.RaisedCycleNumber ?? 0,
+                RaisedUtc = current?.RaisedUtc ?? default,
+                ClearReason = clearReason ?? string.Empty
             });
+        }
+
+        /// <summary>
+        ///     只清除调用方刚刚读取并验证过的那一条预警。Revision/运行身份/代码任一变化，
+        ///     都表示有更新的事实到达，旧圈的恢复提交不得覆盖它。
+        /// </summary>
+        internal bool TryClearIfCurrent(
+            int channel,
+            Guid expectedRunId,
+            long expectedRunEpoch,
+            long expectedRevision,
+            string expectedWarningCode,
+            long recoveredAttemptId,
+            int recoveredCycleNumber,
+            Guid correlationId,
+            string clearReason,
+            out ChannelWarningOverlayChangedEvent cleared)
+        {
+            cleared = null;
+            if (channel < 1 || channel > 12) return false;
+            if (!_warnings.TryGetValue(channel, out var current) || !current.Active) return false;
+            if (current.Revision != expectedRevision ||
+                current.RunId != expectedRunId ||
+                current.RunEpoch != expectedRunEpoch ||
+                !string.Equals(
+                    current.WarningCode ?? string.Empty,
+                    expectedWarningCode ?? string.Empty,
+                    StringComparison.Ordinal))
+                return false;
+
+            var candidate = current.Clone();
+            candidate.Active = false;
+            candidate.Revision = current.Revision + 1;
+            candidate.TimestampUtc = DateTime.UtcNow;
+            candidate.CorrelationId = correlationId == Guid.Empty
+                ? current.CorrelationId
+                : correlationId;
+            candidate.ClearedAttemptId = recoveredAttemptId;
+            candidate.ClearedCycleNumber = recoveredCycleNumber;
+            candidate.ClearReason = clearReason ?? string.Empty;
+            if (!_warnings.TryUpdate(channel, candidate, current)) return false;
+
+            cleared = candidate.Clone();
+            return true;
         }
 
         internal ChannelWarningOverlayChangedEvent Get(int channel)

@@ -97,12 +97,36 @@ namespace Controller
 
         private void NotifyWarningSafely(string reason)
         {
+            var warning = new AdaptiveWarningEvent
+            {
+                Channel = _channel,
+                Code = AdaptiveWarningCode.GenericAdaptiveWarning,
+                OccurredUtc = DateTime.UtcNow,
+                Reason = reason ?? string.Empty
+            };
+            NotifyWarningOverlaySafely(warning);
+            NotifyWarningMessageSafely(reason);
+        }
+
+        private void NotifyWarningMessageSafely(string reason)
+        {
             NonCriticalObserver.Invoke(
                 WarningRaised,
                 _channel,
                 reason ?? string.Empty,
                 ex => _log?.Warn(
                     $"EPB[{_channel}] 预警观察者异常已隔离：{ex.Message}",
+                    "EPB"));
+        }
+
+        private void NotifyWarningOverlaySafely(AdaptiveWarningEvent warning)
+        {
+            if (warning == null) return;
+            NonCriticalObserver.Invoke(
+                WarningOverlayRaised,
+                warning,
+                ex => _log?.Warn(
+                    $"EPB[{_channel}] 预警状态观察者异常已隔离：{ex.Message}",
                     "EPB"));
         }
 

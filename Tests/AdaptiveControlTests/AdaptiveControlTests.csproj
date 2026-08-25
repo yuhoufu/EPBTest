@@ -65,6 +65,7 @@
     <Compile Include="RecoveryCoordinationTests.cs" />
     <Compile Include="RecoveryHardeningTests.cs" />
     <Compile Include="RecoveryLifecycleIsolationTests.cs" />
+    <Compile Include="WarningOverlayRecoveryTests.cs" />
     <Compile Include="RecoveryProductionSeamTests.cs" />
     <Compile Include="FieldWaveformReplayTests.cs" />
     <Compile Include="StopWatchdogHardeningTests.cs" />

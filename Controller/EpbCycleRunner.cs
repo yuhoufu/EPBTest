@@ -136,6 +136,11 @@ namespace Controller
         /// 软预警事件：只用于黄色提示和日志，不触发停机或蜂鸣器。
         /// </summary>
         public event Action<int, string> WarningRaised;
+        /// <summary>
+        /// 结构化预警状态事件；在判定线程同步发布，使 overlay 先于本圈提交可见。
+        /// 字符串 WarningRaised 仅保留为非关键日志/UI 兼容通知。
+        /// </summary>
+        public event Action<AdaptiveWarningEvent> WarningOverlayRaised;
         public event Action<AdaptiveWarningEvent> WarningEvidenceRaised;
 
         /// <summary>已经先断电的可恢复故障；上层可在安全释压后执行一次受控恢复。</summary>
