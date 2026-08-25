@@ -94,6 +94,7 @@ namespace MTEmbTest
                     var commandId = Guid.NewGuid().ToString("N");
                     LogInfo($"已接收继续试验命令，正在执行恢复预检。CommandId={commandId}");
                     PostSafetyStatus("继续命令已接收，正在执行恢复预检…", false);
+                    RevokeManualStopExitAuthorizationBeforeEnergization();
                     await _epb.ResumeBatchAsync().ConfigureAwait(true);
                     ClearGracefulPauseCheckpoint("SameProcessResumed");
                     LogInfo($"批次已通过恢复预检并继续试验。CommandId={commandId}");

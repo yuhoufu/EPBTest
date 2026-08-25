@@ -222,6 +222,7 @@
     <Compile Include="WinFormsWatchdogUiEntryCoordinator.cs" />
     <Compile Include="WinFormsWatchdogUiProductionSession.cs" />
     <Compile Include="WinFormsWatchdogUiResourceOwner.cs" />
+    <Compile Include="EpbMonitorShutdownOwnership.cs" />
     <Compile Include="WinFormsWatchdogStopHandlerCore.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <EmbeddedResource Include="AxisRangeDialog.resx">

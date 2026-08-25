@@ -22,6 +22,8 @@ namespace AdaptiveControlTests
         internal static int RunAll()
         {
             var passed = 0;
+            Run("生产Engine单Owner首次PipeUnavailable不产生未观察共享任务异常",
+                ColdStartOwnerOnlyObservesReservationFailure, ref passed);
             Run("生产Engine冷启动64并发共享一次launch并传播成功/失败/取消结果",
                 ColdStartAdmissionSharesOutcome, ref passed);
             Run("生产Engine已Attached时64次Start不创建新worker或pipe",
@@ -725,6 +727,59 @@ namespace AdaptiveControlTests
                 Assert(failures.Select(error => ((WatchdogConnectException)error).Kind)
                            .Distinct().Count() == 1,
                     "cancel场景caller没有共享同一取消结果");
+            }
+        }
+
+        private static void ColdStartOwnerOnlyObservesReservationFailure()
+        {
+            var unobservedPipeUnavailable = 0;
+            EventHandler<UnobservedTaskExceptionEventArgs> handler = (_, args) =>
+            {
+                var flattened = args.Exception.Flatten();
+                if (flattened.InnerExceptions.Any(error =>
+                        error is WatchdogConnectException connect &&
+                        connect.Kind == WatchdogConnectFailureKind.PipeUnavailable))
+                    Interlocked.Increment(ref unobservedPipeUnavailable);
+                args.SetObserved();
+            };
+
+            TaskScheduler.UnobservedTaskException += handler;
+            try
+            {
+                for (var attempt = 0; attempt < 3; attempt++)
+                    RunOwnerOnlyColdStartOnce();
+
+                // The reservation fault has no joiner by construction. Force
+                // collection so the test proves the publisher observed its own
+                // TCS failure instead of relying on a later concurrent caller.
+                for (var i = 0; i < 4; i++)
+                {
+                    GC.Collect();
+                    GC.WaitForPendingFinalizers();
+                    GC.Collect();
+                    Thread.Sleep(50);
+                }
+
+                Assert(Volatile.Read(ref unobservedPipeUnavailable) == 0,
+                    "单Owner冷启动仍产生未观察PipeUnavailable共享任务异常：" +
+                    unobservedPipeUnavailable);
+            }
+            finally
+            {
+                TaskScheduler.UnobservedTaskException -= handler;
+            }
+        }
+
+        private static void RunOwnerOnlyColdStartOnce()
+        {
+            using (var harness = TestHarness.Create(LaunchMode.Success))
+            {
+                harness.Engine.BeginSession(harness.Options, harness.Callbacks);
+                var start = harness.Engine.StartAsync();
+                Assert(start.Wait(15000), "单Owner冷启动未在有界时间内成功");
+                Assert(harness.Launcher.LaunchCount == 1 && harness.Snapshot().IsAttached,
+                    "单Owner冷启动没有完成一次launch/Attached");
+                harness.Engine.Shutdown();
             }
         }
 

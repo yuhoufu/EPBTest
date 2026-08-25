@@ -7,6 +7,7 @@ using Config;
 using Controller;
 using DataOperation;
 using IO.NI;
+using MTEmbTest;
 using MTTFTest.Watchdog;
 using MTTFTest.Watchdog.Protocol;
 using PowerSupply.Core;
@@ -38,6 +39,14 @@ namespace AdaptiveControlTests
                 EpbManagerPowerAndPersistenceFailuresUseOuterRunner, ref passed);
             Run("P0-5场景8：生产aggregate到heartbeat身份与一次派发",
                 ProductionAggregateHeartbeatMonitorDispatchesOnce, ref passed);
+            Run("EpbManager硬件释放并发重入只执行一次并同步完成",
+                EpbManagerHardwareReleaseIsSynchronousAndOnce, ref passed);
+            Run("监控窗体硬件释放所有者统一manager与fallback路径",
+                MonitorHardwareReleaseOwnerIsOnce, ref passed);
+            Run("人工停止关闭凭证绑定Run并在新启动时撤权",
+                ManualStopExitReceiptIsRunBound, ref passed);
+            Run("AO释放后拒绝写入且不伪报冷启动归零失败",
+                AoDisposedOperationsDoNotReportColdStartFailure, ref passed);
             return passed;
         }
 
@@ -70,6 +79,139 @@ namespace AdaptiveControlTests
         internal static int RunAll()
         {
             return RunUnitTests() + RunProductionAcceptance();
+        }
+
+        private static void EpbManagerHardwareReleaseIsSynchronousAndOnce()
+        {
+            using (var fixture = new ProductionManagerFixture())
+            {
+                var callers = Enumerable.Range(0, 16)
+                    .Select(_ => Task.Run((Action)fixture.Manager.ReleaseHardwareForRestart))
+                    .ToArray();
+                Assert(Task.WaitAll(callers, 15000),
+                    "并发硬件释放调用没有全部等待唯一owner完成");
+                Assert(fixture.Manager.HardwareReleaseExecutionCount == 1,
+                    "EpbManager并发硬件释放执行次数不是1：" +
+                    fixture.Manager.HardwareReleaseExecutionCount);
+                Assert(fixture.Ao.IsDisposed && fixture.Ao.ResetAllExecutionCount == 1,
+                    "EpbManager没有在Dispose前唯一执行一次AO归零");
+
+                fixture.Manager.ReleaseHardwareForRestart();
+                Assert(fixture.Manager.HardwareReleaseExecutionCount == 1 &&
+                       fixture.Ao.ResetAllExecutionCount == 1,
+                    "已完成后的硬件释放重入重复执行AO/资源释放");
+            }
+        }
+
+        private static void MonitorHardwareReleaseOwnerIsOnce()
+        {
+            var owner = new EpbMonitorHardwareReleaseOwner();
+            var managerCalls = 0;
+            var fallbackCalls = 0;
+            var callers = Enumerable.Range(0, 32)
+                .Select(_ => Task.Run(() => owner.Release(
+                    () =>
+                    {
+                        Interlocked.Increment(ref managerCalls);
+                        Thread.Sleep(25);
+                    },
+                    () => Interlocked.Increment(ref fallbackCalls),
+                    null)))
+                .ToArray();
+            Assert(Task.WaitAll(callers, 5000) && callers.All(task => task.Result),
+                "FormClosing/FormClosed并发释放没有共享同一完成结果");
+            Assert(managerCalls == 1 && fallbackCalls == 0 && owner.ReleaseCount == 1,
+                "正常manager释放路径没有CAS-once：manager=" + managerCalls +
+                ";fallback=" + fallbackCalls + ";owner=" + owner.ReleaseCount);
+
+            var failedOwner = new EpbMonitorHardwareReleaseOwner();
+            var failures = 0;
+            fallbackCalls = 0;
+            Assert(failedOwner.Release(
+                       () => throw new InvalidOperationException("manager-release-test"),
+                       () => Interlocked.Increment(ref fallbackCalls),
+                       _ =>
+                       {
+                           Interlocked.Increment(ref failures);
+                           throw new InvalidOperationException("diagnostic-sink-test");
+                       }) &&
+                   failedOwner.Release(
+                       () => Interlocked.Increment(ref managerCalls),
+                       () => Interlocked.Increment(ref fallbackCalls),
+                       null),
+                "manager失败后的fallback没有形成可复用终态");
+            Assert(failures == 1 && fallbackCalls == 1 && failedOwner.ReleaseCount == 1,
+                "manager失败路径没有只执行一次fallback/失败通知");
+
+            var partialInitializationOwner = new EpbMonitorHardwareReleaseOwner();
+            fallbackCalls = 0;
+            Assert(partialInitializationOwner.Release(
+                       null,
+                       () => Interlocked.Increment(ref fallbackCalls),
+                       null) &&
+                   fallbackCalls == 1 && partialInitializationOwner.ReleaseCount == 1,
+                "EpbManager未创建时没有执行一次直接硬件兜底");
+        }
+
+        private static void ManualStopExitReceiptIsRunBound()
+        {
+            var owner = new ManualStopExitReceiptOwner();
+            var runId = Guid.NewGuid();
+            var result = new StopSafetyResult
+            {
+                Outcome = StopSafetyOutcome.CompletedSafe,
+                LastStage = StopSafetyStage.Completed,
+                Source = StopSource.ManualUi,
+                CorrelationId = Guid.NewGuid().ToString("N"),
+                RunId = runId,
+                MotorOffCommandSucceeded = true,
+                PowerOffConfirmed = true,
+                PressureSafeConfirmed = false,
+                PersistenceBoundaryConfirmed = true,
+                CompletedUtc = DateTime.UtcNow
+            };
+
+            Assert(owner.Publish(result), "满足现有关闭准入的人工停止结果未被保留");
+            Assert(owner.TryCapture(batchSessionActive: true) == null,
+                "仍有活动批次时错误复用人工停止结果");
+            var captured = owner.TryCapture(batchSessionActive: false);
+            Assert(captured != null && captured.ReusedPreviousResult &&
+                   captured.RunId == runId && captured.CorrelationId == result.CorrelationId &&
+                   !captured.PressureSafeConfirmed,
+                "人工停止结果没有按Run/Correlation复用或改变了既有压力退出策略");
+
+            owner.RevokeForNewStart();
+            Assert(owner.TryCapture(batchSessionActive: false) == null,
+                "新启动后仍能复用上一轮人工停止授权");
+            result.Source = StopSource.ApplicationClosing;
+            Assert(!owner.Publish(result), "非人工停止结果错误获得人工退出授权");
+            result.Source = StopSource.ManualUi;
+            result.RunId = Guid.Empty;
+            Assert(!owner.Publish(result), "缺少RunId的停止结果错误获得退出授权");
+        }
+
+        private static void AoDisposedOperationsDoNotReportColdStartFailure()
+        {
+            var logger = new RecordingAoLogger();
+            var ao = new AoController(new AoConfig(), logger);
+            Assert(!ao.TryResetAll() && logger.Errors.Any(message =>
+                       message.IndexOf("冷启动安全基线写零失败", StringComparison.Ordinal) >= 0),
+                "Dispose前真实AO基线不完整没有保留ERROR");
+
+            logger.Clear();
+            ao.Dispose();
+            ao.Dispose();
+            Assert(!ao.TryResetAll(), "Dispose后的AO归零错误返回成功");
+            Assert(!ao.WritePressureDetailed("missing", 0).Success,
+                "Dispose后的AO写入错误返回成功");
+            Assert(ao.IsDisposed && ao.ResetAllExecutionCount == 1,
+                "Dispose后仍执行了第二次真实AO归零");
+            Assert(logger.Errors.All(message =>
+                       message.IndexOf("冷启动安全基线写零失败", StringComparison.Ordinal) < 0),
+                "Dispose后的拒绝仍伪报冷启动AO归零失败");
+            Assert(logger.Warnings.Count(message =>
+                       message.IndexOf("AO 控制器已释放", StringComparison.Ordinal) >= 0) == 1,
+                "Dispose后生命周期拒绝没有形成唯一准确WARN");
         }
 
         private static void AssertStrictProductionStageSequence(
@@ -2014,6 +2156,8 @@ namespace AdaptiveControlTests
 
             internal DoController Do => _do;
 
+            internal AoController Ao => _ao;
+
             internal void ConfigurePhysicalOff(IHighPriorityOffPhysicalWriter writer)
             {
                 _do.HighPriorityOffPhysicalWriter = writer;
@@ -2050,6 +2194,44 @@ namespace AdaptiveControlTests
                         System.IO.Directory.Delete(_root, true);
                 }
                 catch { }
+            }
+        }
+
+        private sealed class RecordingAoLogger : Config.IAppLogger
+        {
+            private readonly object _gate = new object();
+            private readonly List<string> _warnings = new List<string>();
+            private readonly List<string> _errors = new List<string>();
+
+            internal string[] Warnings
+            {
+                get { lock (_gate) return _warnings.ToArray(); }
+            }
+
+            internal string[] Errors
+            {
+                get { lock (_gate) return _errors.ToArray(); }
+            }
+
+            public void Info(string message, string category = null) { }
+
+            public void Warn(string message, string category = null)
+            {
+                lock (_gate) _warnings.Add(message ?? string.Empty);
+            }
+
+            public void Error(string message, string category = null, Exception ex = null)
+            {
+                lock (_gate) _errors.Add(message ?? string.Empty);
+            }
+
+            internal void Clear()
+            {
+                lock (_gate)
+                {
+                    _warnings.Clear();
+                    _errors.Clear();
+                }
             }
         }
 

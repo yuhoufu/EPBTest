@@ -163,6 +163,10 @@ namespace MTEmbTest
         /// <summary>操作员已明确点击“停止试验”；允许关闭或抛弃旧批次诊断后重新开始。</summary>
         private int _operatorStopRequested;
         private int _stopUiGuard;
+        private readonly ManualStopExitReceiptOwner _manualStopExitReceipt =
+            new ManualStopExitReceiptOwner();
+        private readonly EpbMonitorHardwareReleaseOwner _hardwareReleaseOwner =
+            new EpbMonitorHardwareReleaseOwner();
 
         private string _currentDev = "EMB1"; // 添加私有字段
 
@@ -1974,19 +1978,51 @@ namespace MTEmbTest
         /// <param name="e"></param>
         private void FrmEpbMainMonitor_FormClosed(object sender, FormClosedEventArgs e)
         {
-            // _do?.Dispose(); // 释放DO对象资源
-            // _ao?.Dispose(); // 释放AO对象资源
-            _do?.AllOff(); // 停止所有EPB操作
-            _do?.Dispose();
-            _ao?.ResetAll(); // 停止所有AO操作
-            _ao?.Dispose(); // 释放AO对象资源
+            try
+            {
+                ReleaseOwnedControlHardwareOnce();
+            }
+            catch (Exception ex)
+            {
+                logger?.Warn("FormClosed 最终硬件释放重试失败：" + ex.Message, "EPB");
+            }
+        }
 
-            // twoDeviceAiAcquirer.Stop();
-            //
-            // twoDeviceAiAcquirer?.Dispose();
+        private bool ReleaseOwnedControlHardwareOnce()
+        {
+            Action managerRelease = _epb == null
+                ? null
+                : (Action)_epb.ReleaseHardwareForRestart;
+            return _hardwareReleaseOwner.Release(
+                managerRelease,
+                ReleaseDirectControlHardwareFallback,
+                ex => logger?.Warn(
+                    "关闭窗口时控制层后台任务/硬件释放失败，执行直接硬件兜底：" + ex.Message,
+                    "EPB"));
+        }
 
+        private void ReleaseDirectControlHardwareFallback()
+        {
+            // EpbManager 尚未接管（初始化中途失败）或管理器释放异常时，先断开
+            // 电机DO，再归零液压AO，最后停止采集。每个控制器本身也必须幂等。
+            try { _do?.AllOff(); }
+            catch (Exception ex) { logger?.Warn("直接兜底关闭DO失败：" + ex.Message, "DO"); }
+            try { _do?.Dispose(); }
+            catch (Exception ex) { logger?.Warn("直接兜底释放DO失败：" + ex.Message, "DO"); }
+            try { _ao?.ResetAll(); }
+            catch (Exception ex) { logger?.Warn("直接兜底归零AO失败：" + ex.Message, "AO"); }
+            try { _ao?.Dispose(); }
+            catch (Exception ex) { logger?.Warn("直接兜底释放AO失败：" + ex.Message, "AO"); }
+            try { twoDeviceAiAcquirer?.Stop(); }
+            catch (Exception ex) { logger?.Warn("直接兜底停止DAQ失败：" + ex.Message, "DAQ"); }
+            try { twoDeviceAiAcquirer?.Dispose(); }
+            catch (Exception ex) { logger?.Warn("直接兜底释放DAQ失败：" + ex.Message, "DAQ"); }
+        }
 
-            //base.OnFormClosed(e);
+        private void RevokeManualStopExitAuthorizationBeforeEnergization()
+        {
+            _manualStopExitReceipt.RevokeForNewStart();
+            Interlocked.Exchange(ref _operatorStopRequested, 0);
         }
 
         #region 1) 批次回调：只做“路由 + 追加点”
@@ -2471,6 +2507,10 @@ namespace MTEmbTest
                         return null;
                 }
 
+                // Revoke the preceding run's manual-stop authorization before
+                // any new batch can reconfigure or energize control hardware.
+                RevokeManualStopExitAuthorizationBeforeEnergization();
+
                 // 读取自学习圈数（比如从一个文本框；没有就用3）
                 var learnCycles = _cfg.Test.LearnCycles;
 
@@ -2625,6 +2665,7 @@ namespace MTEmbTest
                 return;
             }
 
+            _manualStopExitReceipt.Revoke();
             Interlocked.Exchange(ref _operatorStopRequested, 1);
             var stopCommandId = Guid.NewGuid().ToString("N");
             LogInfo($"已接收停止试验命令，正在执行安全断能与数据收口。CommandId={stopCommandId}");
@@ -2687,6 +2728,12 @@ namespace MTEmbTest
                             $"{Math.Max(0, 15 - (int)elapsed)} 秒。阶段={progress.Stage}");
                 }
                 var safety = await stopTask;
+                if (!_manualStopExitReceipt.Publish(safety))
+                    logger?.Warn(
+                        $"人工停止结果不满足关闭复用条件，将在关闭时重新执行安全停机。" +
+                        $"CommandId={stopCommandId}; RunId={safety.RunId:N}; " +
+                        $"CanClose={safety.CanCloseApplication}",
+                        "EPB");
                 if (!watchdogNotificationTask.IsCompleted)
                     await System.Threading.Tasks.Task.WhenAny(
                         watchdogNotificationTask,
@@ -2836,27 +2883,39 @@ namespace MTEmbTest
                 if (Interlocked.CompareExchange(ref _closingReentry, 1, 0) != 0) return;
                 _isClosing = true;
                 StopSafetyResult safety;
-                try
+                var reusableManualStop = _manualStopExitReceipt.TryCapture(
+                    _epb?.IsBatchSessionActive ?? false);
+                if (reusableManualStop != null)
                 {
-                    using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10)))
-                        safety = await _epb.StopAllAsync(
-                            new StopContext
-                            {
-                                Source = StopSource.ApplicationClosing,
-                                Reason = "主窗体关闭",
-                                Initiator = nameof(FrmEpbMainMonitor_FormClosing),
-                                CorrelationId = Guid.NewGuid().ToString("N"),
-                                RequestedUtc = DateTime.UtcNow
-                            },
-                            cts.Token);
+                    safety = reusableManualStop;
+                    LogInfo(
+                        $"关闭复用已完成的人工停止安全凭证，不重复执行StopAll。" +
+                        $"CorrelationId={safety.CorrelationId}; RunId={safety.RunId:N}");
                 }
-                catch (Exception ex)
+                else
                 {
-                    safety = new StopSafetyResult
+                    try
                     {
-                        MotorError = ex.Message,
-                        PowerError = ex.Message
-                    };
+                        using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10)))
+                            safety = await _epb.StopAllAsync(
+                                new StopContext
+                                {
+                                    Source = StopSource.ApplicationClosing,
+                                    Reason = "主窗体关闭",
+                                    Initiator = nameof(FrmEpbMainMonitor_FormClosing),
+                                    CorrelationId = Guid.NewGuid().ToString("N"),
+                                    RequestedUtc = DateTime.UtcNow
+                                },
+                                cts.Token);
+                    }
+                    catch (Exception ex)
+                    {
+                        safety = new StopSafetyResult
+                        {
+                            MotorError = ex.Message,
+                            PowerError = ex.Message
+                        };
+                    }
                 }
 
                 if (!safety.CanReleaseAcquisition)
@@ -2937,12 +2996,11 @@ namespace MTEmbTest
             var controlHardwareReleased = false;
             try
             {
-                _epb?.ReleaseHardwareForRestart();
-                controlHardwareReleased = _epb != null;
+                controlHardwareReleased = ReleaseOwnedControlHardwareOnce();
             }
             catch (Exception ex)
             {
-                logger?.Warn("关闭窗口时控制层后台任务/硬件释放失败：" + ex.Message, "EPB");
+                logger?.Warn("关闭窗口时统一硬件释放失败：" + ex.Message, "EPB");
             }
 
             // 1) 解绑曲线可见性事件（避免关闭过程中再次触发）

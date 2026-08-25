@@ -1037,6 +1037,9 @@ namespace Controller
         private Task<StopSafetyResult> _stopSafetyFinalExitTask;
         private StopSource _stopSafetyTaskSource = StopSource.UnknownLegacy;
         private StopSafetyResult _lastStopSafetyResult;
+        private readonly object _hardwareReleaseGate = new object();
+        private int _hardwareReleaseState;
+        private int _hardwareReleaseExecutionCount;
 
         private sealed class DaqAutoRecoveryContext
         {
@@ -10320,6 +10323,31 @@ namespace Controller
         }
 
         public void ReleaseHardwareForRestart()
+        {
+            lock (_hardwareReleaseGate)
+            {
+                // Keep the lock for the full synchronous release. Concurrent callers
+                // wait for the owner to finish and then observe the completed state;
+                // same-thread re-entry is rejected while the outer owner continues.
+                if (_hardwareReleaseState == 2) return;
+                if (_hardwareReleaseState == 1) return;
+                _hardwareReleaseState = 1;
+                Interlocked.Increment(ref _hardwareReleaseExecutionCount);
+                try
+                {
+                    ReleaseHardwareForRestartCore();
+                }
+                finally
+                {
+                    Volatile.Write(ref _hardwareReleaseState, 2);
+                }
+            }
+        }
+
+        internal int HardwareReleaseExecutionCount =>
+            Volatile.Read(ref _hardwareReleaseExecutionCount);
+
+        private void ReleaseHardwareForRestartCore()
         {
             try
             {

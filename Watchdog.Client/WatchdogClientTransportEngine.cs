@@ -143,6 +143,20 @@ namespace MTTFTest.Watchdog.Client
                 Completion = new TaskCompletionSource<bool>(
                     TaskCreationOptions.RunContinuationsAsynchronously);
             }
+
+            internal void PublishFailure(Exception exception)
+            {
+                if (exception == null) throw new ArgumentNullException(nameof(exception));
+                if (!Completion.TrySetException(exception)) return;
+
+                // The owner observes and rethrows the ConnectOwnerAsync failure, while
+                // concurrent joiners observe this separate reservation task. A cold
+                // start commonly has no joiners, so explicitly observe the published
+                // fault here as well; otherwise the TCS task can surface later through
+                // TaskScheduler.UnobservedTaskException even though the expected first
+                // PipeUnavailable result was already handled by connect-first launch.
+                _ = Completion.Task.Exception;
+            }
         }
 
         private enum ReconnectAttemptDisposition
@@ -1622,12 +1636,12 @@ namespace MTTFTest.Watchdog.Client
                 // launch/reconnect while the owner is still unwinding.
                 if (IsTransportFailClosedKind(ex.Kind))
                     EnterTransportFailClosed(sessionLease, ex.Kind, ex.Message);
-                reservation.Completion.TrySetException(ex);
+                reservation.PublishFailure(ex);
                 throw;
             }
             catch (Exception ex)
             {
-                reservation.Completion.TrySetException(ex);
+                reservation.PublishFailure(ex);
                 throw;
             }
             finally

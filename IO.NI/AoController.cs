@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 using Config;
 using NationalInstruments.DAQmx;
@@ -34,6 +35,10 @@ namespace IO.NI
     {
         private readonly AoConfig _cfg;
         private readonly Logger _log;
+        private readonly object _lifecycleGate = new object();
+        private int _disposed;
+        private int _postDisposeWarningLogged;
+        private int _resetAllExecutionCount;
 
         // 每个设备名 -> 物理通道信息
         private readonly Dictionary<string, AnalogSingleChannelWriter> _writers = new(StringComparer.OrdinalIgnoreCase);
@@ -85,26 +90,30 @@ namespace IO.NI
         /// </summary>
         public bool WritePercent(string deviceName, double percent)
         {
-            if (!_writers.TryGetValue(deviceName, out var writer)) return false;
-            if (!_cfg.Devices.TryGetValue(deviceName, out var dev)) return false;
-
-            // 限幅
-            percent = Math.Max(_cfg.MinPressure, Math.Min(_cfg.MaxPressure, percent));
-
-            // 转电压
-            double v = (percent * (_cfg.MaxVoltage - _cfg.MinVoltage) / 100.0) + _cfg.MinVoltage;
-            v = v * dev.ScaleK + dev.Offset;
-
-            try
+            lock (_lifecycleGate)
             {
-                writer.WriteSingleSample(true, v);
-                _log.Info($"AO[{deviceName}] 输出百分比 {percent:F1}% -> 电压 {v:F2} V", "AO");
-                return true;
-            }
-            catch (Exception ex)
-            {
-                _log.Error($"AO[{deviceName}] 输出失败：{ex.Message}", "AO", ex);
-                return false;
+                if (RejectDisposedOperation(nameof(WritePercent))) return false;
+                if (!_writers.TryGetValue(deviceName, out var writer)) return false;
+                if (!_cfg.Devices.TryGetValue(deviceName, out var dev)) return false;
+
+                // 限幅
+                percent = Math.Max(_cfg.MinPressure, Math.Min(_cfg.MaxPressure, percent));
+
+                // 转电压
+                double v = (percent * (_cfg.MaxVoltage - _cfg.MinVoltage) / 100.0) + _cfg.MinVoltage;
+                v = v * dev.ScaleK + dev.Offset;
+
+                try
+                {
+                    writer.WriteSingleSample(true, v);
+                    _log.Info($"AO[{deviceName}] 输出百分比 {percent:F1}% -> 电压 {v:F2} V", "AO");
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    _log.Error($"AO[{deviceName}] 输出失败：{ex.Message}", "AO", ex);
+                    return false;
+                }
             }
         }
 
@@ -117,27 +126,32 @@ namespace IO.NI
         /// <summary>按压力标定写入，并返回实际限幅命令及换算电压。</summary>
         public AoWriteResult WritePressureDetailed(string deviceName, double pressure)
         {
-            if (!_writers.TryGetValue(deviceName, out var writer))
-                return new AoWriteResult(false, deviceName, pressure, double.NaN);
-            if (!_cfg.Devices.TryGetValue(deviceName, out var dev))
-                return new AoWriteResult(false, deviceName, pressure, double.NaN);
-
-            // 限幅
-            pressure = Math.Min(Math.Max(pressure, _cfg.MinPressure), _cfg.MaxPressure);
-
-            // 恢复原线性换算；校正页通过多点拟合更新 ScaleK/Offset。
-            var v = (pressure - dev.Offset) / dev.ScaleK;
-
-            try
+            lock (_lifecycleGate)
             {
-                writer.WriteSingleSample(true, v);
-                _log.Info($"AO[{deviceName}] CommandPressure={pressure:F1}bar AoVoltage={v:F3}V", "AO");
-                return new AoWriteResult(true, deviceName, pressure, v);
-            }
-            catch (Exception ex)
-            {
-                _log.Error($"AO[{deviceName}] 输出失败：{ex.Message}", "AO", ex);
-                return new AoWriteResult(false, deviceName, pressure, v);
+                if (RejectDisposedOperation(nameof(WritePressureDetailed)))
+                    return new AoWriteResult(false, deviceName, pressure, double.NaN);
+                if (!_writers.TryGetValue(deviceName, out var writer))
+                    return new AoWriteResult(false, deviceName, pressure, double.NaN);
+                if (!_cfg.Devices.TryGetValue(deviceName, out var dev))
+                    return new AoWriteResult(false, deviceName, pressure, double.NaN);
+
+                // 限幅
+                pressure = Math.Min(Math.Max(pressure, _cfg.MinPressure), _cfg.MaxPressure);
+
+                // 恢复原线性换算；校正页通过多点拟合更新 ScaleK/Offset。
+                var v = (pressure - dev.Offset) / dev.ScaleK;
+
+                try
+                {
+                    writer.WriteSingleSample(true, v);
+                    _log.Info($"AO[{deviceName}] CommandPressure={pressure:F1}bar AoVoltage={v:F3}V", "AO");
+                    return new AoWriteResult(true, deviceName, pressure, v);
+                }
+                catch (Exception ex)
+                {
+                    _log.Error($"AO[{deviceName}] 输出失败：{ex.Message}", "AO", ex);
+                    return new AoWriteResult(false, deviceName, pressure, v);
+                }
             }
         }
 
@@ -168,26 +182,48 @@ namespace IO.NI
         /// <summary>将所有 AO 通道复位为零，并返回每一路写入是否全部成功。</summary>
         public bool TryResetAll()
         {
-            var success = _cfg.Devices.Count > 0 && _writers.Count == _cfg.Devices.Count;
-            foreach (var name in _cfg.Devices.Keys)
+            lock (_lifecycleGate)
             {
-                if (!WritePressure(name, 0)) success = false;
+                if (RejectDisposedOperation(nameof(TryResetAll))) return false;
+                Interlocked.Increment(ref _resetAllExecutionCount);
+                var success = _cfg.Devices.Count > 0 && _writers.Count == _cfg.Devices.Count;
+                foreach (var name in _cfg.Devices.Keys)
+                {
+                    if (!WritePressure(name, 0)) success = false;
+                }
+                if (success)
+                    _log.Info("AO 所有通道已复位为 0%。", "AO");
+                else
+                    _log.Error("AO 冷启动安全基线写零失败；至少一路未确认归零。", "AO");
+                return success;
             }
-            if (success)
-                _log.Info("AO 所有通道已复位为 0%。", "AO");
-            else
-                _log.Error("AO 冷启动安全基线写零失败；至少一路未确认归零。", "AO");
-            return success;
         }
 
         public void Dispose()
         {
-            foreach (var t in _tasks.Values)
+            lock (_lifecycleGate)
             {
-                try { t?.Dispose(); } catch { }
+                if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+                foreach (var t in _tasks.Values)
+                {
+                    try { t?.Dispose(); } catch { }
+                }
+                _tasks.Clear();
+                _writers.Clear();
             }
-            _tasks.Clear();
-            _writers.Clear();
+            GC.SuppressFinalize(this);
+        }
+
+        internal bool IsDisposed => Volatile.Read(ref _disposed) != 0;
+
+        internal int ResetAllExecutionCount => Volatile.Read(ref _resetAllExecutionCount);
+
+        private bool RejectDisposedOperation(string operation)
+        {
+            if (Volatile.Read(ref _disposed) == 0) return false;
+            if (Interlocked.Exchange(ref _postDisposeWarningLogged, 1) == 0)
+                _log.Warn($"AO 控制器已释放，拒绝后续操作：{operation}。", "AO");
+            return true;
         }
     }
 }

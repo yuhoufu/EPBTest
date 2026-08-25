@@ -157,6 +157,7 @@ namespace MTEmbTest
                 }
                 if (state.State == ChannelRuntimeState.Paused && !_epb.IsBatchPaused)
                 {
+                    RevokeManualStopExitAuthorizationBeforeEnergization();
                     await _epb.ResumePausedChannelAsync(channel).ConfigureAwait(true);
                     return;
                 }
@@ -164,6 +165,7 @@ namespace MTEmbTest
                 {
                     ApplyChannelStartTransitionUi(channel);
                     LogInfo($"EPB{channel} 重新开始：已抛弃上次故障锁存，进入实时预检与自愈。");
+                    RevokeManualStopExitAuthorizationBeforeEnergization();
                     await _epb.ResumeAlarmStoppedChannelAsync(channel, true).ConfigureAwait(true);
                     return;
                 }
@@ -384,6 +386,7 @@ namespace MTEmbTest
                 LogInfo("暂停检查点中的所有通道均已完成目标正式圈；不会重复启动已完成通道。");
                 return true;
             }
+            RevokeManualStopExitAuthorizationBeforeEnergization();
             _epb.EpbTestCycle = remainingByChannel
                 .Where(pair => pair.Value > 0)
                 .ToDictionary(pair => pair.Key, pair => pair.Value);
